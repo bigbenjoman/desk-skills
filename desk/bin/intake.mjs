@@ -697,7 +697,9 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
   const plan = [];
   const epics = [];
   const refuse = (key, text) => { refused.push(key); say(`not admitted ${key}: ${text}`); };
-  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, plan, epics, ...extra });
+  // The refused tickets a usage limit stopped, refused or put off: each is admitted again once it lifts.
+  const limited = new Set();
+  const done = (extra = {}) => ({ ran: true, lines, admitted, refused, limited: [...limited], plan, epics, ...extra });
   // Starting a standing batch has no plan approval, so it needs what standing intake needs.
   const mayStart = E.permission('autopilot-workers') === 'yes';
   // Why the tickets have nowhere to go, or null: nothing is triaged for a batch they cannot join.
@@ -758,10 +760,10 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
   // epic's children are triaged in its feature batch, and a ticket joining one is triaged again there.
   let limit = null;
   const later = [];
-  const putOff = (key) => { refused.push(key); later.push(key); };
+  const putOff = (key) => { refused.push(key); later.push(key); limited.add(key); };
   // One finished triage: refused, an epic started or left to plan, or its record left to place.
   const triaged = async (key, t) => {
-    if (!t.rec) return refuse(key, `${t.why}: ${triageAgain(t, key)}`);
+    if (!t.rec) { if (t.limit) limited.add(key); return refuse(key, `${t.why}: ${triageAgain(t, key)}`); }
     if (isEpic({ name: t.rec.type })) {
       // Each epic runs as its own feature batch, beside the standing batch and any other epic's.
       if (liveFeatureBatches().some((b) => b.name === key)) return refuse(key, `an epic, and its feature batch ${key} is already running: admit its children, which join that batch`);
@@ -776,6 +778,7 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
       const s = await startEpic(key, t.rec, { by, say });
       // A child's triage at a usage limit stops the pool as the epic's own would.
       if (s.limited) limit ??= triageOutcome(key, state, s.limited).limit;
+      if (s.why && s.limited) limited.add(key);
       if (s.why) return refuse(key, `an epic, and its feature batch was not started: ${s.why}${s.limited ? `: run /desk-admit ${key} again once the limit lifts` : ''}`);
       noteEpic(state, key, s, by, now);
       epics.push(key);
@@ -807,6 +810,7 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
       if (limit) return putOff(key);
       const j = await joinFeature(key, joinTo, { by, say });
       limit ??= j.limit ?? null;
+      if (j.limit) limited.add(key);
       const why = r.elsewhere.epic ? `${key} is a child of epic ${joinTo}, but not admitted into its feature batch` : `${r.elsewhere.why}, but it was not admitted there`;
       r = j.why ? { admitFailed: `${why}: ${j.why}` } : j;
       feature = j.batch ?? null;
@@ -886,6 +890,7 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
   }
   const unstarted = toTriage.filter((key) => !taken(key));
   refused.push(...unstarted);
+  unstarted.forEach((key) => limited.add(key));
   for (const key of toTriage) unsettled.delete(key);
   await placeReady(true);
   const untriaged = [...later, ...unstarted];

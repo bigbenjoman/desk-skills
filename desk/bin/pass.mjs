@@ -56,6 +56,7 @@ import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirU
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress } from './intake.mjs';
+import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 
@@ -3312,9 +3313,10 @@ for (const t of onTracker) {
 // pass admits it (intake.mjs admit, /desk-admit's checks) into this batch: a named one by --into, the
 // standing one where intake places it. Once here it is an ordinary hold (outside holds, below). Left
 // out: a person's step (personStep), a ticket outside §4 Jira project, and every blocker of a ticket
-// whose held item the person put off with not-now. Each is tried once per held ticket
-// (outside_admit_tried), so a refusal costs one triage and stays in needs-you to admit by hand; at
-// most MAX_TRIAGE are tried a pass, as intake triages at most that many a run.
+// whose held item the person put off with not-now, as needs-you judges it (heldPutOff), so one a moved
+// blocker brought back is admitted. Each is tried once per held ticket (outside_admit_tried), so a
+// refusal costs one triage and stays in needs-you to admit by hand; at most MAX_TRIAGE are tried a
+// pass, as intake triages at most that many a run.
 {
   const qA = queue();
   const project = String(E.configValue('jira-project') ?? '').trim();
@@ -3331,20 +3333,24 @@ for (const t of onTracker) {
     const stepOf = (k) => personStep((Array.isArray(rec?.blockers) ? rec.blockers : []).find((b) => b?.key === k), rec, stepLabels, inputLabels);
     const due = (t.outside_blockers ?? []).map((b) => b?.key).filter((k) => k && keysOf(t.held_outside).includes(k) && keysOf(t.held_by).includes(k)
       && !qA.tickets[k] && !before.includes(k) && !tried.has(k) && !!project && String(k).replace(/-\d+$/, '') === project && !stepOf(k));
-    if (!due.length || lookup(REGISTER, { question: `${t.key} held` }).status !== 'ask') continue;
+    if (!due.length || heldPutOff({ slug: REPO_SLUG, stateDir: STATE, q: qA }, t)) continue;
     const now = due.slice(0, budget);
     budget -= now.length;
     now.forEach((k) => tried.add(k));
     if (DRY) { epicLines.push(`outside blockers (dry run): would admit ${now.join(', ')}, holding ${t.key}, to this batch`); continue; }
-    // A triage cut off by a usage limit is not a try: the next pass after it lifts tries again.
+    // A triage cut off by a usage limit (intake's `limited`) is not a try: the next pass after it lifts
+    // tries again.
     const spent = [];
     for (const k of now) {
-      const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', ...(into ? ['--into', into] : [])]);
-      const said = r.out.split('\n').filter((line) => line && !isProgress(line));
-      if (!said.some((line) => line.startsWith('not triaged (usage limit'))) spent.push(k);
-      epicLines.push(queue().tickets[k]
-        ? `outside blockers: ${k}, holding ${t.key}, admitted to this batch`
-        : `outside blockers: ${k}, holding ${t.key}, not admitted to this batch (${said.filter((line) => line.includes(k)).pop() ?? said.pop() ?? `exit ${r.code}`}): admit it with /desk-admit ${k}`);
+      const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', '--json', ...(into ? ['--into', into] : [])]);
+      let res = null;
+      try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
+      const said = (Array.isArray(res?.lines) ? res.lines : r.out.split('\n')).filter((line) => line && !isProgress(line));
+      if (!res?.limited?.includes(k)) spent.push(k);
+      const why = said.filter((line) => line.includes(k)).pop() ?? said.pop() ?? `exit ${r.code}`;
+      epicLines.push(queue().tickets[k] ? `outside blockers: ${k}, holding ${t.key}, admitted to this batch`
+        : res?.admitted?.includes(k) ? `outside blockers: ${k}, holding ${t.key}, admitted to another batch (${why})`
+          : `outside blockers: ${k}, holding ${t.key}, not admitted to this batch (${why}): admit it with /desk-admit ${k}`);
     }
     const inQueue = queue().tickets;
     if (spent.length) q('set', t.key, `outside_admit_tried=${[...before, ...spent].join('|')}`);

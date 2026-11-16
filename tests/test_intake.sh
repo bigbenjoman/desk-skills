@@ -445,6 +445,9 @@ check "DS-505 AC4: /desk-admit refuses a ticket stopped at the usage limit with 
 out=$(admit U-2); rc=$?
 check "DS-505 AC4: a limit with no reset time names the limit alone" \
   '[ $rc -eq 11 ] && grep -qx "not admitted U-2: triage stopped at the usage limit: run /desk-admit U-2 again once the limit lifts" <<< "$out"'
+out=$(admit U-2 --json); out2=$(admit H-2 --json)
+check "DS-569: --json names a ticket the usage limit stopped as limited, and one refused for its own reason as not" \
+  '[ "$(jq -c "[.refused, .limited]" <<< "$out")" = "[[\"U-2\"],[\"U-2\"]]" ] && [ "$(jq -c "[.refused, .limited]" <<< "$out2")" = "[[\"H-2\"],[]]" ]'
 rec H-5 A '"blockers":[{"key":"H-4","category":"new"}]'; rec H-4 A
 out=$(admit H-5 H-4 --front)
 check "admit: a blocker named in the same call goes first, and the other is held behind it" '[ "$(qget tickets.H-4.state)" = triaged ] && [ "$(qget tickets.H-5.held_by)" = H-4 ]'
