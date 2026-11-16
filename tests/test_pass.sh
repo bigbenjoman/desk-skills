@@ -3949,4 +3949,41 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view 70[4-8] " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
 
+# Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
+# gate holds every spawn.
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `5 / 8` |\n'; } > "$T/config-mx.md"
+export DESK_CONFIG="$T/config-mx.md" DESK_QUEUE="$T/queue-mx.json" DESK_AUTOPILOT_STATE="$T/state-mx"; mkdir -p "$T/state-mx/logs" "$T/state-mx/triage"
+printf '{"files_in_scope":["src/a.ts","src/b.ts"]}\n' > "$T/state-mx/triage/MX-1.json"
+printf '{"files_in_scope":["src/a.ts"]}\n' > "$T/state-mx/triage/MX-2.json"
+printf '{"files_in_scope":["src/c.ts"]}\n' > "$T/state-mx/triage/MX-3.json"
+q init mx; q set-batch concurrency=5 concurrency_by=user pass.collision_streak=9 pass.collision_warned=false
+q add MX-1; q set MX-1 state=running branch=fix/MX-1 session_id=live-1
+q add MX-2; q set MX-2 state=triaged branch=fix/MX-2 collides_with=MX-1
+q add MX-3; q set MX-3 state=triaged branch=fix/MX-3
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+ml=$(tail -n 1 "$T/state-mx/passes.jsonl" 2>/dev/null)
+check "DS-758 AC1 a pass appends one metrics line with its time, repo, batch, counts, spawns, duration and queue-write failures" \
+  '[ "$(wc -l < "$T/state-mx/passes.jsonl")" -eq 1 ] && echo "$ml" | jq -e ".at and (.repo | type == \"string\") and has(\"batch\") and .running == 1 and .eligible == 1 and .spawned == 0 and (.duration_ms | type == \"number\") and .queue_write_failures == 0 and (.held | keys) == [\"collision\",\"lock\",\"memory\",\"usage\"]" >/dev/null'
+check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
+  'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
+check "DS-758 the line names the held ticket, the running one holding it and the file" \
+  'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+check "DS-758 AC4 after nine such passes, this 10th one (1 of 5 running) carries the warning, stamped when written" \
+  'echo "$ml" | jq -e ".concurrency == 5 and (.warning | test(\"^10 passes in a row .*MX-2 \\\\(behind MX-1 on src/a.ts\\\\)\")) and .warned_at >= .at" >/dev/null && echo "$out" | grep -q "^collision warning (sent to the check-in digest): 10 passes"'
+check "DS-758 the queue's pass record carries the streak and the warning on to the next pass" \
+  '[ "$(jq -c "[.pass.collision_streak, .pass.collision_warned]" "$DESK_QUEUE")" = "[10,true]" ]'
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-758 AC1 the next pass appends a second line" '[ "$(wc -l < "$T/state-mx/passes.jsonl")" -eq 2 ]'
+check "DS-758 AC5 the 11th pass in a row gives no second warning" \
+  '! tail -n 1 "$T/state-mx/passes.jsonl" | jq -e "has(\"warning\")" >/dev/null && [ "$(jq -c "[.pass.collision_streak, .pass.collision_warned]" "$DESK_QUEUE")" = "[11,true]" ]'
+q set-batch concurrency=4 concurrency_by=user
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-758 AC6 a pass where it clears (1 of 4 running is 25%) resets the streak and the warning" \
+  '[ "$(jq -c "[.pass.collision_streak, .pass.collision_warned]" "$DESK_QUEUE")" = "[0,false]" ]'
+rm -f "$T/state-mx/passes.jsonl"; mkdir -p "$T/state-mx/passes.jsonl"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
+check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
+  'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

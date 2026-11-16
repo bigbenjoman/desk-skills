@@ -105,6 +105,12 @@ moves; a cancelled one pushes nothing. Each move goes in `maintenance.log` as a 
 - **Merging PRs that stopped moving.** Per repo, under `Merging, no change for 2h or more`: each PR
   the last pass found in Merging whose head and check results have not changed for two hours, with
   how long and the check holding it. Listed, never pushed.
+- **Collision warnings.** Each pass appends one JSON line to `<state>/passes.jsonl` (running,
+  eligible, held by reason, spawned, duration, queue-write failures). After 10 passes in a row each
+  holding a ticket on a collision while fewer than 25% of the batch's concurrency run, that pass's
+  line carries one warning naming the held tickets and the files holding them, listed per batch under
+  `Warnings` and counted in the push. It is given once until the condition clears; the streak lives on
+  the queue's `pass` record (`collision_streak`, `collision_warned`).
 - **Parks already Done in Jira.** Before listing a repo's parks, the digest asks that repo's Jira
   (its own `desk-jira`, run from its checkout) for their status, one `key in (...)` search per 100
   keys. A park whose status is in Jira's Done category is not asked; the repo's section names them

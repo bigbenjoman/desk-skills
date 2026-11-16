@@ -25,7 +25,8 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutO
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
-import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
@@ -5015,13 +5016,51 @@ const heldWhy = report.spawned.length || !eligible.length ? null
   : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
+
+// ---- pass metrics ------------------------------------------------------------
+// One line per pass (pass-metrics.mjs). An eligible ticket left unspawned counts under the hold that
+// kept it: the usage limit or pacing, then the memory gate, then the repo's shared cap with no lock.
+// Any other hold, or full slots, counts it under none. A line not written is said, and the pass goes on.
+let collisionRec = {};
+if (!DRY) {
+  const prevPass = (() => { try { return readQueue(QUEUE_FILE).pass ?? {}; } catch { return {}; } })();
+  const runningEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'running');
+  const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
+  // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
+  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
+  const appendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs;
+  const collisions = heldBack.map((r) => {
+    const by = String(r.collides_with ?? '').split('|').filter((k) => runningKeys.has(k));
+    const mine = triageRec(r.key)?.files_in_scope ?? [];
+    return { key: r.key, with: by, files: [...new Set(by.flatMap((k) => sharedFiles(mine, triageRec(k)?.files_in_scope ?? [], appendOnly)))] };
+  });
+  let batch = null;
+  try { batch = E.batchName(); } catch { /* the standing batch */ }
+  const line = {
+    at: PASS_AT, repo: SLUG, batch, by: PASS_BY,
+    running: runningEnd.length, concurrency, eligible: eligible.length,
+    held: heldCounts({ collision: heldBack.length, unspawned, why: holdWhy }),
+    spawned: report.spawned.length, duration_ms: Date.now() - Date.parse(PASS_AT),
+    queue_write_failures: report.failed.filter((x) => x.includes('queue write refused')).length,
+    collisions,
+  };
+  const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
+  // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
+  // began (this pass's own, above, or another repo's) has already read past PASS_AT.
+  if (step.warn) Object.assign(line, { warning: warningText(line, step.streak), warned_at: new Date().toISOString() });
+  const wrote = appendMetrics(STATE, line);
+  if (!wrote.ok) lines.push(`metrics: this pass's metrics line was not written to ${metricsPath(STATE)} (${wrote.why})`);
+  else if (step.warn) lines.push(`collision warning (sent to the check-in digest): ${line.warning}`);
+  // A warning whose line was not written was not given: the next pass gives it.
+  collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
+}
 recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors };
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, ...collisionRec };
 });
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
 process.exitCode = verdict(status, lines.join('\n'), {
