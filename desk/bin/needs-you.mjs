@@ -702,10 +702,11 @@ function followItem(r, t) {
 // A blocker in no batch Done under a resolution that ships nothing (Won't Do, Duplicate) never lands,
 // so whatever waits on it waits for ever. Each such link is one triage item, `link:<KEY>:<BLOCKER>`,
 // asking whether it is still right; the ticket's own item (a hold, a park) stays as it is. The pass
-// clears the marker once its read no longer lists the link, and the item leaves the list.
+// clears the marker once its read no longer lists the link, and the item leaves the list. A ticket done
+// and waiting to merge on no step waits on nothing, and the pass reads it no more, so it has none.
 const LINK = 'link:';
 function linkItems(r) {
-  return Object.values(r.q?.tickets ?? {}).filter((t) => !t.merged_at && keysOf(t.wont_do_link).length)
+  return Object.values(r.q?.tickets ?? {}).filter((t) => !t.merged_at && !(t.state === 'done' && !keysOf(t.merge_after).length) && keysOf(t.wont_do_link).length)
     .flatMap((t) => keysOf(t.wont_do_link).map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b) })));
 }
 function linkItem(r, t, b) {

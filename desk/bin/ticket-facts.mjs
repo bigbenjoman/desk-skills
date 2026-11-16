@@ -13,8 +13,8 @@
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category, status, summary, type, resolution?, assignee?, labels?}] — "is blocked by" (Blocks)
-//                links, with the blocker's status category and name, summary and issue type, a Done one's
+//   blockers     [{key, category, summary, type, resolution?, assignee?, labels?}] — "is blocked by" (Blocks)
+//                links, with the blocker's status category, summary and issue type, a Done one's
 //                resolution (name, null when none is set, absent when it could not be read), an open one's assignee (display name,
 //                null when unassigned, absent when it could not be read), and its labels where §4
 //                Person-step labels or Person-input labels names any, less any to its own epic (its parent epic or the

@@ -1894,6 +1894,12 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const q717 = queueOf('phi717'); delete q717.tickets['W-1'].wont_do_link;
   writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q717));
   t('DS-717 AC3 once the pass clears the marker the item leaves the list', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+  // The pass reads a done ticket waiting on no step no more, so it would never clear the marker.
+  const q2 = queueOf('phi717'); q2.tickets['W-2'] = { ...q2.tickets['W-2'], state: 'done', park: null, result: {} };
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
+  q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
 }
 
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),

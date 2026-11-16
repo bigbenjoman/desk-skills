@@ -308,12 +308,10 @@ export function epicFact(issue, children) {
 }
 
 // The triage record's `blockers`, from a `desk-jira get --json` issue: its "is blocked by" (Blocks)
-// links, [{key, category, status, summary, type}], with each blocker's status category, status name,
-// summary and type.
+// links, [{key, category, summary, type}], with each blocker's status category, summary and type.
 export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
-    status: l.inwardIssue.fields?.status?.name ?? null,
     summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
 
 // Whether a blocker record is Done in Jira under a resolution that ships nothing (Won't Do, Duplicate,

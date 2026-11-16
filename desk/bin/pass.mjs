@@ -3286,13 +3286,17 @@ const outsideOf = (rec) => (Array.isArray(rec?.blockers)
 const wontDoOf = (rec) => (Array.isArray(rec?.blockers)
   ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && closedUnlanded(b)).map((b) => b.key)
   : null);
+// A blocker in no batch read Done with no resolution read (a record from before resolutions were, or
+// a read that failed): read again once, or one closed without landing is never told from one that landed.
+const resolutionUnread = (rec) => Array.isArray(rec?.blockers)
+  && ownEpicSplit(rec).blockers.some((b) => !(b.key in qB.tickets) && b.category === 'done' && !('resolution' in b));
 const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 const onTracker = Object.values(qB.tickets).filter((t) => {
   if (!onJira || (t.state === 'done' && !waitsOnStep(t))) return false;
   const k = E.ticketKind(t.key);
   return k.ok && k.kind === 'tracker';
 });
-const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || keysOf(t.wont_do_link).length > 0 || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
+const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || keysOf(t.wont_do_link).length > 0 || resolutionUnread(triageRec(t.key)) || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
   && !(t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS)).map((t) => t.key);
 if (blockersDue.length) {
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...blockersDue], { timeout: 120_000 });
@@ -3395,7 +3399,8 @@ const epicMerged = (qO, key) => {
 // read it Done (a step has no code to land), or no longer list it; lifting the last lets the driver
 // merge it, in the order the batch's own holds give. A blocker in no batch that triage called needed only
 // to merge (triageGate) is another ticket's code, so it is lifted as an outside hold is: once Done and on
-// this batch's base, or Done alone where its Jira Repository is another configured repo.
+// this batch's base, or Done alone where its Jira Repository is another configured repo, and never while
+// it is Done under a resolution that ships nothing (closedUnlanded), until its link is removed.
 {
   const qM = queue();
   const stepLabels = E.personStepLabels();
@@ -3411,7 +3416,7 @@ const epicMerged = (qO, key) => {
     const blockers = rec?.blockers;
     if (!Array.isArray(blockers)) continue;
     const doneNow = steps.filter((p) => blockers.some((b) => b?.key === p && b.category === 'done'
-      && (!triageGate(b, rec, stepLabels, inputLabels) || landedHere(p))));
+      && (!triageGate(b, rec, stepLabels, inputLabels) || (!closedUnlanded(b) && landedHere(p)))));
     const unlinked = steps.filter((p) => !blockers.some((b) => b?.key === p));
     const left = steps.filter((p) => !doneNow.includes(p) && !unlinked.includes(p));
     if (left.length === steps.length) continue;
