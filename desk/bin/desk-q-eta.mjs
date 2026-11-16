@@ -308,11 +308,19 @@ export function epicFact(issue, children) {
 }
 
 // The triage record's `blockers`, from a `desk-jira get --json` issue: its "is blocked by" (Blocks)
-// links, [{key, category, summary, type}], with each blocker's status category, summary and type.
+// links, [{key, category, status, summary, type}], with each blocker's status category, status name,
+// summary and type.
 export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
+    status: l.inwardIssue.fields?.status?.name ?? null,
     summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
+
+// Whether a blocker record is Done in Jira under a resolution that ships nothing (Won't Do, Duplicate,
+// Cannot Reproduce): its code never lands, so a hold waiting for it to land waits for ever. A Done one
+// with no resolution read, or none set, is an ordinary Done blocker.
+const LANDS = /^(done|fixed)$/i;
+export const closedUnlanded = (b) => b?.category === 'done' && typeof b.resolution === 'string' && !!b.resolution.trim() && !LANDS.test(b.resolution.trim());
 
 // A ticket's blockers split from those that are its own epic: its Jira parent epic (`epicKey`) or the
 // epic its batch runs (`batchEpic`). An epic is Done only once its children are, so a link to it would

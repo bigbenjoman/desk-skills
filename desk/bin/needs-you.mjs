@@ -698,6 +698,26 @@ function followItem(r, t) {
     since: timeOf(t.merged_at) };
 }
 
+// ---- links to a blocker closed without landing (pass.mjs wont_do_link) ---------------------------
+// A blocker in no batch Done under a resolution that ships nothing (Won't Do, Duplicate) never lands,
+// so whatever waits on it waits for ever. Each such link is one triage item, `link:<KEY>:<BLOCKER>`,
+// asking whether it is still right; the ticket's own item (a hold, a park) stays as it is. The pass
+// clears the marker once its read no longer lists the link, and the item leaves the list.
+const LINK = 'link:';
+function linkItems(r) {
+  return Object.values(r.q?.tickets ?? {}).filter((t) => !t.merged_at && keysOf(t.wont_do_link).length)
+    .flatMap((t) => keysOf(t.wont_do_link).map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b) })));
+}
+function linkItem(r, t, b) {
+  const rec = (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b);
+  const closed = rec?.resolution ? `closed as ${rec.resolution}` : 'closed';
+  const waits = keysOf(t.held_outside).includes(b) ? `is held behind it, and stays held until the link goes` : 'still links it as a blocker';
+  return { kind: 'triage', ticket: t.key, blocker: b,
+    need: `${t.key} is blocked by ${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}, which is in no batch and was ${closed} without landing, so ${t.key} ${waits}. Is the link still right? If not, remove it in Jira; the next pass that reads it lifts any hold and clears this. If ${t.key} still needs that work, link the ticket that does it instead`,
+    actions: [['done', `once the link is fixed in Jira, the next pass that reads ${t.key}'s blockers clears this item`], ['not-now']],
+    since: timeOf(t.added_at) };
+}
+
 // ---- the repo's reviewer check (health.mjs): one item, naming every PR it holds ------------------
 // While a batch's last health run told its reviewer check failing (the account desk posts verdicts
 // from is not one §4 Gate reviewers counts, or cannot be read), the PRs the pass holds for it
@@ -883,6 +903,7 @@ function putOffKey(r, t, item) {
   // A step: what waits on it in every batch of the repo, not its need, which names only those passed.
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
+  if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -972,7 +993,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap(followItems)) {
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b)])) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -1034,7 +1055,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
     }
   }
-  for (const f of inScope.flatMap(followItems)) repoItem(f.r, f.t, f.item, f.item.since);
+  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
@@ -1121,7 +1142,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1386,7 +1407,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, now, repos }) {
   const c = collect({ word, now, repos, reads: null });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow') && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -1410,6 +1431,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
+  if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);

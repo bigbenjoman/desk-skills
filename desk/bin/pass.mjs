@@ -35,7 +35,7 @@ import { usageLimit, resetText, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
-import { firstSpawnFromLogs, epicUnread, splitOwnEpic, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { firstSpawnFromLogs, epicUnread, splitOwnEpic, closedUnlanded, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded, restateLapsed, RESTATE_MS, UNREADABLE } from './clears-when.mjs';
@@ -3280,13 +3280,19 @@ const outsideOf = (rec) => (Array.isArray(rec?.blockers)
   ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && b.category !== 'done')
     .map((b) => ({ key: b.key, category: b.category, ...('assignee' in b ? { assignee: b.assignee } : {}) }))
   : null);
+// Its blockers in no batch Done under a resolution that ships nothing (closedUnlanded): no hold on one
+// ever lifts by itself, so each link is raised once as a triage item (wont_do_link, read by
+// needs-you), and the record is read again while one is until the link is gone. null when unread.
+const wontDoOf = (rec) => (Array.isArray(rec?.blockers)
+  ? ownEpicSplit(rec).blockers.filter((b) => !(b.key in qB.tickets) && closedUnlanded(b)).map((b) => b.key)
+  : null);
 const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 const onTracker = Object.values(qB.tickets).filter((t) => {
   if (!onJira || (t.state === 'done' && !waitsOnStep(t))) return false;
   const k = E.ticketKind(t.key);
   return k.ok && k.kind === 'tracker';
 });
-const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
+const blockersDue = onTracker.filter((t) => (waitsOnStep(t) || keysOf(t.wont_do_link).length > 0 || (t.outside_blockers ?? outsideOf(triageRec(t.key)) ?? []).length > 0)
   && !(t.outside_blockers_read && Date.now() - Date.parse(t.outside_blockers_read) < INTAKE_EVERY_MS)).map((t) => t.key);
 if (blockersDue.length) {
   const r = shOut('node', [join(BIN, 'ticket-facts.mjs'), '--blockers', ...blockersDue], { timeout: 120_000 });
@@ -3305,6 +3311,12 @@ for (const t of onTracker) {
     if (own.length) epicLines.push(`lint: ${t.key} is linked as blocked by its own epic ${own.join(', ')}, which is Done only once its children are: the link is ignored`);
     if (!DRY) q('set', t.key, `own_epic_link=${own.join('|') || 'null'}`);
   }
+  const wontDo = wontDoOf(rec);
+  if (wontDo && wontDo.join('|') !== keysOf(t.wont_do_link).join('|')) {
+    const fresh = wontDo.filter((k) => !keysOf(t.wont_do_link).includes(k));
+    if (fresh.length) epicLines.push(`triage: ${t.key} is blocked by ${fresh.join(', ')}, closed without landing (${fresh.map((k) => rec.blockers.find((b) => b.key === k).resolution).join(', ')}): is the link still right? Raised once, in needs-you`);
+    if (!DRY) q('set', t.key, `wont_do_link=${wontDo.join('|') || 'null'}`);
+  }
 }
 
 // ---- outside holds -------------------------------------------------------
@@ -3314,7 +3326,8 @@ for (const t of onTracker) {
 // alone (plan-batch handed it there). Each such blocker is lifted from the hold, as is one the record
 // no longer lists (its link was removed, so it blocks nothing), and one that is the ticket's own epic
 // (ownEpicOf) at once; one admitted to this batch since is left in held_by as an ordinary hold,
-// released when it merges here. The merge driver never releases a
+// released when it merges here. One Done under a resolution that ships nothing stays, raised once
+// (wont_do_link), until its link is removed. The merge driver never releases a
 // ticket held outside its batch, so lifting the last blocker releases it here.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
