@@ -58,6 +58,7 @@ import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } f
 import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
 import { accountEnv } from './review-post.mjs';
 import { signedIn, SIGNIN_CMD } from './upload-queue.mjs';
+import { sessionFile } from './find-playwright.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -185,11 +186,16 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
   });
 }
 
+// `file` is the login's session file, resolved before it is read, so a file that does not parse is
+// still the item of that login, which signing it in clears.
 function browserCheck() {
+  let file = null;
   try {
-    const s = signedIn();
+    const profile = E.browserProfile();
+    file = sessionFile(profile);
+    const s = signedIn({ profile });
     return s.ok ? { ok: true, file: s.file } : { ok: false, why: s.why, file: s.file };
-  } catch (e) { return { ok: false, why: e.message, file: null }; }
+  } catch (e) { return { ok: false, why: file ? `the GitHub login in ${file} could not be read (${e.message})` : e.message, file }; }
 }
 
 // The machine's browser sign-in items, one per saved GitHub login (its session file, `file`) found
@@ -383,7 +389,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   if (browserOut) tellsBrowser = tellsSignin(state, slug, browserOut.why, now, browserOut.file);
   // Only a check run now clears the item, and only its own login's: a reused pass predates any failure
   // another slot has found since.
-  else if (wanted.includes('browser') && !reused && results.browser.file) clearSignin(results.browser.file);
+  // One whose profile could not be resolved names no login, so any login passing clears it.
+  else if (wanted.includes('browser') && !reused && results.browser.file) { clearSignin(results.browser.file); clearSignin(null); }
   const streak = reused ? prev.streak ?? {} : nextStreak(prev, units);
   const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);

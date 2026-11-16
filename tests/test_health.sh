@@ -203,13 +203,20 @@ mode codex ok
 signin "$(( $(date +%s) + 31536000 ))"
 pj
 check "DS-675 AC2 signed in again: the machine's sign-in item is gone" '[ -d "$HOME/.desk-autopilot/health-browser-signin" ] && [ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ] && [ -z "$(pushes)" ] && grep -q "recovered: .*browser" <<< "$out"'
+# A session file that does not parse is still its login's item, which signing it in clears.
+sid=$(node --input-type=module -e 'const { signinId } = await import(process.argv[1]); console.log(signinId(process.argv[2]))' "$B/health.mjs" "$T/profile.github-session.json")
+printf 'not json\n' > "$T/profile.github-session.json"
+pj
+check "DS-675 a session file that does not parse is its login's item, naming the file" '[ -f "$HOME/.desk-autopilot/health-browser-signin/$sid.json" ] && grep -qF "the GitHub login in $T/profile.github-session.json could not be read" <<< "$out"'
+signin "$(( $(date +%s) + 31536000 ))"
+pj
+check "DS-675 and signing it in clears it"                    '[ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ]'
 
 # ---- AC9: results under 15 minutes old are reused ----------------------------------------------
 pj
 n=$(calls gh)
 mode gh out
 # Another slot has found the login failing since: a reused passing result does not clear its item.
-sid=$(node --input-type=module -e 'const { signinId } = await import(process.argv[1]); console.log(signinId(process.argv[2]))' "$B/health.mjs" "$T/profile.github-session.json")
 mkdir -p "$HOME/.desk-autopilot/health-browser-signin"
 printf '{"at":"2026-11-16T08:00:00.000Z","why":"x","state":"%s","slug":"other","file":"%s"}\n' "$T" "$T/profile.github-session.json" > "$HOME/.desk-autopilot/health-browser-signin/$sid.json"
 out=$(node "$B/pass.mjs" 2>&1)
