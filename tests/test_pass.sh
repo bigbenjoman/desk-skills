@@ -1488,6 +1488,15 @@ out=$(AUTOPILOT_DRY_RUN=1 DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
 check "DS-683 AC9 a dry run reports the change and writes nothing" \
   '[ "$(field J-17 state)" = "\"parked\"" ] && [ "$(field J-17 held_outside)" = "\"OPS-7\"" ] && [ "$(field J-17 merge_after)" = null ] && echo "$out" | grep -q "RECLASSIFIED J-17: OPS-7 is a person step: build now, merge after (dry run)"'
 q drop J-17
+# A person's release (held_by=null) leaves held_outside behind. Date-held since, the stale key is no hold
+# to lift, so the date hold stands.
+q add J-18; q set J-18 state=parked held_outside=OPS-8 held_label=blocked-until-2099-01-01 'park={"question":"held by orchestrator: blocked until 2099-01-01 (label blocked-until-2099-01-01) — starts on that date by itself"}'
+step J-18 OPS-8 ben-step
+printf '{"epic":null,"labels":["blocked-until-2099-01-01"],"blockers":[{"key":"OPS-8","category":"new","type":"Task","summary":"Set up the account","labels":["ben-step"]}]}\n' > "$T/state-j/triage/J-18.json"
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 a held_outside key a release left behind does not lift a date hold" \
+  '[ "$(field J-18 state)" = "\"parked\"" ] && [ "$(field J-18 held_label)" = "\"blocked-until-2099-01-01\"" ] && [ "$(field J-18 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-18\|person-step hold: J-18"'
+q drop J-18
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'

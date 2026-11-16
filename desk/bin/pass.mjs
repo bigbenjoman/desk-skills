@@ -1695,11 +1695,14 @@ const dateLines = [];
   const openOutside = (rec, p) => (qS.tickets[p] ? null : (Array.isArray(rec?.blockers) ? rec.blockers : []).find((b) => b?.key === p && b.category !== 'done') ?? null);
   for (const t of Object.values(qS.tickets).filter((x) => isHeld(x) && x.held_outside)) {
     const rec = triageRec(t.key);
-    const steps = keysOf(t.held_outside).filter((p) => { const b = openOutside(rec, p); return !!b && personStep(b, rec, stepLabels, inputLabels) === 'merge'; });
+    // Only keys still in held_by: a person's release (held_by=null) leaves held_outside behind, and a
+    // stale key there is no hold to lift (a date hold set since would be released on it).
+    const holding = keysOf(t.held_by);
+    const steps = keysOf(t.held_outside).filter((p) => { if (!holding.includes(p)) return false; const b = openOutside(rec, p); return !!b && personStep(b, rec, stepLabels, inputLabels) === 'merge'; });
     if (!steps.length) continue;
     const what = steps.map((p) => `RECLASSIFIED ${t.key}: ${p} is a person step: build now, merge after`);
     if (DRY) { dateLines.push(...what.map((l) => `${l} (dry run)`)); continue; }
-    const by = keysOf(t.held_by).filter((p) => !steps.includes(p));
+    const by = holding.filter((p) => !steps.includes(p));
     const outside = keysOf(t.held_outside).filter((p) => !steps.includes(p));
     const mergeAfter = [...new Set([...keysOf(t.merge_after), ...steps])];
     if (by.length) q('set', t.key, `held_by=${by.join('|')}`, `held_outside=${outside.join('|') || 'null'}`, `merge_after=${mergeAfter.join('|')}`);
