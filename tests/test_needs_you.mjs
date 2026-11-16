@@ -313,9 +313,9 @@ t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', th
 const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
 moveBlocker('indeterminate');
 t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
-  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
-// DS-599: admit is recommended only for a blocker in no batch that is the person's to queue: in To Do, in
-// this repo's Jira project, and unassigned or theirs. Otherwise not-now is, naming why, and admit is offered.
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none\+yours → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+// Admit is recommended only for a blocker in no batch that is the person's to queue: in To Do, in this
+// repo's Jira project, and unassigned or theirs. Otherwise not-now is, naming why, and admit is offered.
 const outsideOne = (b) => ({ state: 'triaged', lane: 'A', open_questions: 1, outside_blockers: [b] });
 put('admit599', { port: 3860, beat: 1, supervised: true, project: 'P', owner: 'Ben Example', tickets: {
   'A-1': outsideOne({ key: 'P-1', category: 'new', assignee: 'Sam Other' }),
@@ -336,6 +336,15 @@ t('DS-599 AC3 a blocker in progress does not recommend admit', lead599('A-3'), '
 t('DS-599 AC4 a blocker in another Jira project does not recommend admit', lead599('A-4'), 'not-now,admit,answer | Q-4: it is in Jira project Q, not P. So it is not yours to queue here; not-now puts this off until a blocker moves');
 t('DS-599 AC5 a blocker whose assignee was not read does not recommend admit', lead599('A-5'), 'not-now,admit,answer | P-5: its assignee could not be read. So it is not yours to queue here; not-now puts this off until a blocker moves');
 t('DS-599 admit, offered unrecommended, still names the /desk-admit to run', /Run \/desk-admit P-1 in /.test(N.record({ word: 'admit599', ticket: 'A-1', action: 'admit' }).line ?? ''), true);
+const a599now = () => Object.fromEntries(N.collect({ word: 'admit599' }).items.map((i) => [i.t.key, i]));
+const reassign599 = (assignee) => { const q = queueOf('admit599'); q.tickets['A-1'].outside_blockers = [{ key: 'P-1', category: 'new', assignee }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__admit599', 'queue.json'), JSON.stringify(q)); };
+N.record({ word: 'admit599', ticket: 'A-1', action: 'not-now' });
+t('DS-599 put off as someone else\'s, it stays put off while the blocker is still theirs', a599now()['A-1'], undefined);
+reassign599('Alex Else');
+t('DS-599 a blocker passed to another person who is not you does not bring it back', a599now()['A-1'], undefined);
+reassign599(null);
+t('DS-599 once that blocker is unassigned it is listed again, recommending admit and saying what changed',
+  `${a599now()['A-1']?.actions[0][0]} | ${/\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers P-1:new@none → P-1:new@none\+yours\.\)$/.test(a599now()['A-1']?.need ?? '')}`, 'admit | true');
 // DS-669: a ticket held inside its batch with a triage question of its own is asked that question.
 put('zeta', { port: 3850, beat: 1, supervised: true, tickets: {
   'Z-1': { state: 'running', lane: 'A' },

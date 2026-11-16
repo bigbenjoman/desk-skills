@@ -545,9 +545,12 @@ export function notAdmittable(o, { project, owner }) {
 const admitRules = (r) => ({ project: repoConfigValue(r.slug, 'jira-project'), owner: repoConfigValue(r.slug, 'jira-display-name') ?? repoConfigValue(r.slug, 'name') });
 const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
 // Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
-// blocker that moves brings it back.
+// blocker that moves brings it back. One in no batch that is the person's to queue (notAdmittable) is
+// marked `+yours`, so a blocker put off as someone else's comes back once it is unassigned or theirs.
 function blockerStates(r, t) {
-  const out = new Map(outsideHolds(r, t).map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}`]));
+  const holds = outsideHolds(r, t), rules = holds.some((o) => !o.batch) ? admitRules(r) : null;
+  const yours = (o) => (!o.batch && !notAdmittable(o, rules) ? '+yours' : '');
+  const out = new Map(holds.map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}${yours(o)}`]));
   return [...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => `${b}:${r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none'}`).join(',');
 }
 // An item's action names, once each: what a put-off entry records, so one it gains brings it back.
