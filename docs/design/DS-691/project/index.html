@@ -1427,7 +1427,7 @@ S.links=()=>panel(620,`<div style="padding:20px;display:flex;flex-direction:colu
   <div class="eyebrow">Link rule</div>
   <div class="row" style="gap:16px;flex-wrap:wrap">${lk('DS-563',{hov:1})}<span>${lk('#651',{show:1})}</span><span>${lk('unit (node 24)',{mono:false,show:1})}</span><span>${lk('73ee8aca',{show:1})}</span></div>
   <div class="tt" style="position:static;align-self:flex-start">Open DS-563 \u00b7 \u2318-click to open in Jira</div>
-  <dl class="facts" style="margin:0;grid-template-columns:120px 1fr"><dt>Click</dt><dd>opens it in Desk (ticket page, PR &amp; CI tab, check detail)</dd><dt>\u2318-click or \u2197</dt><dd>opens it in Chrome</dd><dt>DS-563</dt><dd class="mono" style="font-size:12px">https://jira.example.net/browse/DS-563</dd><dt>#651</dt><dd class="mono" style="font-size:12px">https://github.com/bigbenjoman/desk-skills/pull/651</dd><dt>desk:// links</dt><dd class="mono" style="font-size:12px">desk://ticket/DS-563 \u00b7 desk://pr/studia-web/3084</dd></dl></div>`);
+  <dl class="facts" style="margin:0;grid-template-columns:120px 1fr"><dt>Click</dt><dd>opens it in Desk (ticket page, PR &amp; CI tab, check detail)</dd><dt>\u2318-click or \u2197</dt><dd>opens it in your browser</dd><dt>DS-563</dt><dd class="mono" style="font-size:12px">https://jira.example.net/browse/DS-563</dd><dt>#651</dt><dd class="mono" style="font-size:12px">https://github.com/bigbenjoman/desk-skills/pull/651</dd><dt>desk:// links</dt><dd class="mono" style="font-size:12px">desk://ticket/DS-563 \u00b7 desk://pr/studia-web/3084</dd></dl></div>`);
 
 /* ================= DESK UPDATES (for approval) ================= */
 /* Verified on main: maintenance.mjs autoRelease (5-min fetch, tests check, Stage 7 wait, window skip, release.json, release-failed-<sha>), installed.mjs oldCode, desk-q notes, skills-upstream outdated/plugins. The app's own rebuild and restartRequired come from desktop-architecture.md \u00a711 (planned). */
@@ -1885,9 +1885,9 @@ function signedOut(){
   const body=`<div style="flex:1;display:flex;align-items:center;justify-content:center;padding:40px">
    <div class="card" style="width:520px;padding:24px;display:flex;flex-direction:column;gap:14px;box-shadow:var(--sh-md)">
     <div class="row" style="gap:10px">${ic('lock','lg muted')}<h2 style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.015em">This window isn't signed in to Desk</h2></div>
-    <p style="margin:0;font-size:14px;line-height:22px">Run <span class="mono">desk ui</span> in Terminal to open a signed-in window.</p>
-    ${code('desk ui')}
-    <p class="muted" style="margin:0;font-size:13px;line-height:19px">Desk signs in each window it opens. This one's sign-in has expired or was never given, so it can't show or change anything. Your queues and workers keep running.</p>
+    <p style="margin:0;font-size:14px;line-height:22px">Re-run <span class="mono">install.sh</span> in Terminal. It writes Desk\u2019s sign-in again, and this window signs in by itself.</p>
+    ${code('cd ~/studia/desk-skills && ./install.sh')}
+    <p class="muted" style="margin:0;font-size:13px;line-height:19px">Desk signs itself in when it opens. This time it couldn\u2019t: its sign-in file is missing or the server didn\u2019t accept it, so this window can\u2019t show or change anything. Your queues and workers keep running.</p>
    </div></div>`;
   return shell({page:'Desk',active:'',signedOut:1,blank:1,mute:1,body});
 }

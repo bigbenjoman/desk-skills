@@ -1,10 +1,10 @@
 {
   "url": "https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV",
-  "version": "2026-11-15T17:19:26.950Z",
-  "fetched_at": "2026-11-15T17:19:51.404Z",
+  "version": "2026-11-16T14:41:06.784Z",
+  "fetched_at": "2026-11-16T14:41:06.827Z",
   "from": "export",
-  "file": "design-canvas.selfcontained.html",
-  "sha256": "b004be54489b0152257b700a13ed6e0d58b0d285705711012afd4bc98c4d4743",
+  "file": "design-canvas.html",
+  "sha256": "48e105fb61899a1dd0174ce4aaf4b4ef0198bce6cd8e1c7ed98d20ae8e920608",
   "kind": "page",
   "dir": "DS-691",
   "tickets": [

@@ -1,7 +1,7 @@
 # Design canvas DS-691
 
-Saved by `desk-design` from design-canvas.selfcontained.html, an HTML export of <https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV> (sha256 b004be54489b0152257b700a13ed6e0d58b0d285705711012afd4bc98c4d4743),
-version 2026-11-15T17:19:26.950Z, imported 2026-11-15T17:19:51.404Z.
+Saved by `desk-design` from design-canvas.html, an HTML export of <https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV> (sha256 48e105fb61899a1dd0174ce4aaf4b4ef0198bce6cd8e1c7ed98d20ae8e920608),
+version 2026-11-16T14:41:06.784Z, imported 2026-11-16T14:41:06.827Z.
 Open any board's HTML from `project/`: it renders offline with the files saved beside it.
 Do not edit these files by hand. For a newer export, run `desk-design import` on it, then
 `desk-design save`, which replaces them.
