@@ -93,7 +93,7 @@ cat > "$T/fixture.json" <<'EOF'
                   "inwardIssue": {"key": "KAN-59", "fields": {"summary": "Rebuild the images on production", "issuetype": {"name": "Story"}, "status": {"name": "To Do", "statusCategory": {"key": "new"}}}}},
                  {"id": "26", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"},
                   "inwardIssue": {"key": "KAN-1569", "fields": {"summary": "Apply the migration", "issuetype": {"name": "Task"}, "status": {"name": "Done", "statusCategory": {"key": "done"}}}}}]},
-    "KAN-59": {"labels": ["ben-step", "operator-task"]},
+    "KAN-59": {"labels": ["ben-step", "operator-task"], "assignee": {"displayName": "Sam Other"}},
     "KAN-1569": {"labels": ["ben-step"]},
     "KAN-1100": {"summary": "epic with a definition of done", "issuetype": {"name": "Epic", "subtask": false, "hierarchyLevel": 1},
                  "description": "h2. Outcome\nA feature.\n\nh2. Definition of done\n# DoD1: Given a, then b.\n# DoD2: Given c, then d.\n# DoD1: named twice\n\nh2. Acceptance criteria\n# AC1: not read while a DoD exists"},
@@ -346,6 +346,8 @@ check "DS-568 AC2: a blockers refresh reads them again" '[ "$(jq -c ".blockers[0
 mkcfg "http://127.0.0.1:$PORT" yes
 node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
 check "DS-568 AC3: with no Person-step labels row, no blocker is read for labels" '[ "$(jq -c "[.blockers[] | has(\"labels\")]" "$T/state/triage/KAN-58.json")" = "[false,false]" ]'
+check "DS-599: facts record an open blocker's assignee, read from the blocker itself, and not a Done one's" \
+  '[ "$(jq -c "[.blockers[] | [.key, has(\"assignee\"), .assignee]]" "$T/state/triage/KAN-58.json")" = "[[\"KAN-59\",true,\"Sam Other\"],[\"KAN-1569\",false,null]]" ]'
 printf '| Person-input labels | `ben-input` |\n' >> "$CD/config.md"
 node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
 check "DS-682 AC8: with only Person-input labels set, an open blocker's labels are read too" \
