@@ -31,7 +31,7 @@ t('the admission pin is the row\'s set and the time', pinAtAdmission({ on: ['pre
 t('levers() reads DESK_LEVERS before the row', levers({ DESK_LEVERS: 'Memory, preflight' }).on, ['memory', 'preflight']);
 t('levers() reads DESK_LEVERS=none as every lever off', levers({ DESK_LEVERS: 'none' }), { on: [], unknown: [] });
 
-// DS-639: the supervisor reads a lever per ticket, from its pin, and from the row only with no pin.
+// The supervisor reads a lever per ticket, from its pin, and from the row only with no pin.
 const row = { on: ['review-reuse', 'failure-class'], unknown: [] };
 t('DS-639 a ticket pinned with the lever reads it on', leverOnFor('review-reuse', { key: 'A-1', levers: { set: ['review-reuse'] } }, { on: [], unknown: [] }), true);
 t('DS-639 a ticket pinned without it reads it off whatever the row', leverOnFor('review-reuse', { key: 'A-2', levers: { set: [] } }, row), false);

@@ -358,7 +358,7 @@ t('per-ticket AC5: no triage size is null and the row is still printed', rowOf('
 t('per-ticket AC6: a start that recorded no claude version is null', JSON.stringify(rowOf('P-3').start_records.map((s) => [s.desk_commit, s.claude_version])), '[["feedface00112233",null]]');
 t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
 t('per-ticket AC9: a ticket with no pin holds null', rowOf('P-2').pin, null);
-// DS-639: P-1 is pinned to codex and memory, and its start recorded codex alone.
+// P-1 is pinned to codex and memory, and its start recorded codex alone.
 t('DS-639 AC8 a ticket whose start recorded levers other than its pin carries pin_mismatch true', p1.pin_mismatch, true);
 t('DS-639 AC8 a ticket with no pin never mismatches', `${rowOf('P-3').pin_mismatch} ${rowOf('P-2').pin_mismatch}`, 'false false');
 const ptReport = report({ ...base, batches: ptBatches, ci: false });

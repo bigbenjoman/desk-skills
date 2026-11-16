@@ -2030,7 +2030,7 @@ for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB
 q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
 q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
 q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
-# DS-639: the pass reads the lever from each ticket's pin. FB-1 to FB-3 are pinned with it; FB-10 is
+# The pass reads the lever from each ticket's pin. FB-1 to FB-3 are pinned with it; FB-10 is
 # FB-3's case, pinned without it, in the same pass.
 for k in 1 2 3; do q set "FB-$k" 'levers={"set":["failure-class"],"at":"2026-11-14T00:00:00Z"}'; done
 q add FB-10; q set FB-10 state=done lane=A branch=fix/FB-10 result.pr=820 held_by=X-9 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
@@ -2607,7 +2607,7 @@ check "DS-448 AC8 lever on, a clean merge over a recorded file sends the head to
   '! grep -q "^pr ready 762" "$T/gh-calls" && [ "$(field R-2 fix.kind)" = "\"rereview\"" ] && [ "$(field R-2 undraft.carried_from)" = null ]'
 check "DS-449 AC1 that review try reads only the recorded file the base changed, and the PR code that names it" \
   '[ "$(field R-2 fix.targeted | jq -c "[.from, .files, .users]")" = "[\"$CA\",[\"c.txt\"],[]]" ]'
-# DS-639: the pass reads the lever from each ticket's pin, with the row (review-reuse) only for a ticket
+# The pass reads the lever from each ticket's pin, with the row (review-reuse) only for a ticket
 # with no pin. fix/C-3 is C-1's reviewed commit CA rebased onto main (CR), past the base's c.txt: off,
 # a rebase never carries, and on it carries while the review rests on none of the files the base moved.
 # R-3 and R-4 rest on b.txt, R-5 and R-6 on c.txt; R-3 and R-5 are pinned with the lever, R-4 and R-6
@@ -3356,7 +3356,7 @@ check "DS-124 and names the session to resume, never a local requeue" 'field CW-
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
-# Placed before pins too (DS-639), so the pass reads the row for it.
+# Placed before pins too, so the pass reads the row for it.
 effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
 effort_cfg 0=low; cloud_ticket CW-4; q set CW-4 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)

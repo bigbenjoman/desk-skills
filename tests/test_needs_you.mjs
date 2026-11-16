@@ -2206,7 +2206,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-609 a folder in the fixtures folder is never removed for a same-named file', `${f9.ok} ${readFileSync(join(fxb('F-9'), 'kept', 'mine.txt'), 'utf8')} ${f9.line.includes(`${join(cc, 'kept')} was not copied: ${join(fxb('F-9'), 'kept')} is a folder, which is never replaced.`)}`, 'true person true');
 }
 
-// DS-639 AC6: with the row reading failure-class, the park of a ticket pinned without it is listed as
+// With the row reading failure-class, the park of a ticket pinned without it is listed as
 // with the lever off: the same line, word for word, as the same park under a row of none.
 {
   const pinOff = { ...parked('A', 45, 'Which reviewer handle goes in the PR body?'), levers: { set: [], at: minsAgo(60) } };
