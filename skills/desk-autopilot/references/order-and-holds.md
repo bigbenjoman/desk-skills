@@ -62,10 +62,11 @@ the batch by blast radius*): pass it to the merge driver as it stands.
 
 **A batch planned before those parks kept their blockers** has them with `held_by` empty. `queue.mjs
 backfill-holds --dry-run` (with `--batch <name>` for a named batch) prints the hold each would gain from
-its triage record: its unmerged blockers in the batch, and in no batch the open ones triage calls
-`build` (in `held_outside` too). Read it, then run it without `--dry-run` to add them. The park itself,
-and any park that already has a `held_by`, is left as it is, so a second run changes nothing. It is
-run once, by hand: no pass runs it, and `plan.md` stays the record of plan time.
+its triage record, as intake holds a ticket it admits: its blockers in the batch not yet merged or
+done, and those in no batch it holds (in `held_outside` too). A blocker that failed in the batch is
+named, not held, as is one that would close a cycle. Read it, then run it without `--dry-run` to add
+them. The park itself, and any park that already has a `held_by`, is left as it is, so a second run
+changes nothing. It is run once, by hand: no pass runs it, and `plan.md` stays the record of plan time.
 
 **A held ticket is in flight, not idle.** While every blocker is still on its way (running, waiting
 to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and never exits

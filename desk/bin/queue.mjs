@@ -409,29 +409,28 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
 }
 
-// The holds each lane, size or design park in `q` with no held_by should carry beside its park, read
-// from its triage record as plan-batch seeds them: every blocker in the batch whose PR has not merged
-// (the person's step aside), and every open one in no batch that holds its build (held_outside too).
-// A blocker already waiting behind the park is left out, as a hold on it would be a cycle.
-// -> [{ key, holds, outside, cycles, park }], one per park that gains a hold or skips one.
-function missingHolds(q) {
+// The holds each lane, size or design park in `q` with no held_by should carry beside its park: its
+// triage record's blockers held as intake holds a ticket it admits (holdsFor, passed in), less those in
+// the batch already finished (merged, or done with no PR), which nothing would release. One that failed
+// in the batch is named and not held, for the same reason. One already waiting behind the park, counting
+// the holds this run adds to the parks before it, is left out, as a hold on it would be a cycle.
+// -> [{ key, holds, outside, cycles, failed, park }], one per park that gains a hold or skips one.
+function missingHolds(q, holdsFor) {
+  const view = structuredClone(q);
   const found = [];
   for (const t of Object.values(q.tickets)) {
     if (!triagePark(t) || personStepPark(t) || t.held_by) continue;
     if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
-    const r = readTriage(stateDir(), t.key);
-    const behind = heldBehindOf(q, t.key);
-    const holds = []; const outside = []; const cycles = [];
-    for (const b of Array.isArray(r.blockers) ? r.blockers : []) {
-      const k = b?.key;
-      if (!k || k === t.key || holds.includes(k) || cycles.includes(k)) continue;
+    const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
+    const behind = heldBehindOf(view, t.key);
+    const holds = []; const cycles = [];
+    for (const k of new Set([...h.held, ...h.outside])) {
       const o = q.tickets[k];
-      if (o ? o.merged_at || personStepPark(o) : b.category === 'done' || blockerHold(b, r, personStepLabels(), personInputLabels())?.needs !== 'build') continue;
-      if (behind.has(k)) { cycles.push(k); continue; }
-      holds.push(k);
-      if (!o) outside.push(k);
+      if (k === t.key || (o && (o.merged_at || childDone(o)))) continue;
+      (behind.has(k) ? cycles : holds).push(k);
     }
-    if (holds.length || cycles.length) found.push({ key: t.key, holds, outside, cycles, park: t.park.question });
+    if (holds.length) view.tickets[t.key].held_by = holds.join('|');
+    if (holds.length || cycles.length || h.failed.length) found.push({ key: t.key, holds, outside: holds.filter((k) => !q.tickets[k]), cycles, failed: h.failed, park: t.park.question });
   }
   return found;
 }
@@ -771,15 +770,17 @@ switch (cmd) {
   }
 
   // Run by hand, once, on a queue whose lane, size and design parks carry no held_by: each gains the
-  // holds plan-batch gives such a park (missingHolds), beside a park left as it is. --dry-run prints
-  // them and writes nothing. A park that already has held_by is never touched, so a rerun changes nothing.
+  // holds its blockers give it (missingHolds), beside a park left as it is. --dry-run prints them and
+  // writes nothing. A park that already has held_by is never touched, so a rerun changes nothing.
   case 'backfill-holds': {
     const dry = args.includes('--dry-run');
     if (args.some((a) => a !== '--dry-run')) throw new Error('usage: queue.mjs backfill-holds [--dry-run]');
-    const found = missingHolds(q);
+    // Loaded here alone: intake.mjs pulls in modules no other queue.mjs command needs.
+    const { holdsFor } = await import('./intake.mjs');
+    const found = missingHolds(q, holdsFor);
     const lines = [];
-    for (const { key, holds, outside, cycles, park } of found) {
-      const skipped = cycles.length ? ` (not behind ${cycles.join(', ')}, which already ${cycles.length === 1 ? 'waits' : 'wait'} behind it)` : '';
+    for (const { key, holds, outside, cycles, failed, park } of found) {
+      const skipped = `${cycles.length ? ` (not behind ${cycles.join(', ')}, which ${cycles.length === 1 ? 'waits' : 'wait'} behind it)` : ''}${failed.length ? ` (not behind ${failed.join(', ')}, which failed in the batch, so nothing would release the hold: requeue or drop ${failed.length === 1 ? 'it' : 'them'}, then hold ${key} with queue.mjs hold if it still needs ${failed.length === 1 ? 'it' : 'them'})` : ''}`;
       if (!holds.length) { lines.push(`${key}: no hold to add${skipped}`); continue; }
       const out = outside.length ? ` (${outside.join(', ')} outside the batch)` : '';
       lines.push(`${key}: ${dry ? 'would hold' : 'held'} behind ${holds.join(', ')}${out}, beside its own park (${park})${skipped}`);
