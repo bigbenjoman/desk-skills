@@ -53,7 +53,7 @@ jobs:
         id: shards
         env:
           SUITES: ${{ steps.scope.outputs.suites }}
-        run: node tests/plan_shards.mjs --shards 6 --suites "$SUITES" --github-output
+        run: node tests/plan_shards.mjs --suites "$SUITES" --github-output
 
   # The stock macOS bash (3.2.57) in Docker: `bash -n`, and a scan for bash 4+ features that parse
   # in 3.2 but fail when run, over the changed shell scripts and those the chosen suites run.

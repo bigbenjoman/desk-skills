@@ -5,7 +5,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { plan, matrix, describe, durationsFromLog, median, readDurations } from './plan_shards.mjs';
+import { plan, matrix, describe, durationsFromLog, median, readDurations, SHARDS } from './plan_shards.mjs';
 import { repoMap } from './scope_sections.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
@@ -65,19 +65,21 @@ t('one job\'s raw log reads too', durationsFromLog('2026-11-16T05:11:24Z == beta
 const suites = repoMap(R).suites.map((s) => s.file);
 const rec = readDurations();
 t('the recorded durations name only suites that exist', Object.keys(rec).filter((k) => !suites.includes(k)), []);
-const real = plan(suites, rec, 6);
-t('AC1 every suite, once, in six shards', [real.shards.length, every(real).length, new Set(every(real)).size], [6, suites.length, suites.length]);
+const real = plan(suites, rec, SHARDS);
+t('AC1 every suite, once, in 6 to 8 shards', [SHARDS >= 6 && SHARDS <= 8, real.shards.length, every(real).length, new Set(every(real)).size], [true, SHARDS, suites.length, suites.length]);
 t('AC2 the repo plan is within the bound', slowest(real) <= bound(real), true);
 const cli = (...a) => spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), ...a], { encoding: 'utf8' });
 const T = mkdtempSync(join(tmpdir(), 'desk-shards-'));
 try {
   const out = join(T, 'out');
   writeFileSync(out, '');
-  const gh = spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), '--shards', '6', '--suites', 'test_lint.sh tests/test_pass.sh', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
+  const gh = spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), '--suites', 'test_lint.sh tests/test_pass.sh', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
   const m = JSON.parse(readFileSync(out, 'utf8').replace(/^matrix=/, ''));
   t('cli --github-output prints the plan and writes the matrix', [gh.status, /^shard 1\/2: .* predicted: test_pass\.sh$/m.test(gh.stdout), m.include.map((x) => x.suites)], [0, true, ['test_pass.sh', 'test_lint.sh']]);
-  t('cli with no --suites plans every suite', JSON.parse(cli('--shards', '6', '--json').stdout).shards.flatMap((x) => x.suites).length, suites.length);
-  t('cli refuses a name that is no suite', [cli('--shards', '6', '--suites', 'test_nope.sh').status, cli('--shards', '6', '--suites', '').status, cli('--suites', 'test_lint.sh').status], [2, 2, 2]);
+  const whole = JSON.parse(cli('--json').stdout);
+  t('cli with no flags plans every suite into SHARDS shards', [whole.shards.length, whole.shards.flatMap((x) => x.suites).length], [SHARDS, suites.length]);
+  t('cli --shards overrides the count', JSON.parse(cli('--shards', '2', '--json').stdout).shards.length, 2);
+  t('cli refuses a name that is no suite, no suites, or a bad count', [cli('--suites', 'test_nope.sh').status, cli('--suites', '').status, cli('--shards', '0', '--suites', 'test_lint.sh').status], [2, 2, 2]);
 
   // ---- tests/run.sh's flag for every shard but the first ------------------------------------------
   const run = spawnSync('bash', [join(R, 'tests/run.sh'), '--no-hook-test', 'test_review_verdict.mjs'], { encoding: 'utf8' });

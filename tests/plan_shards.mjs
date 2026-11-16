@@ -1,13 +1,15 @@
 // Splits tests/run.sh's suites into the tests workflow's parallel shards, balanced by each suite's
-// recorded duration in tests/suite_durations.json. This is the one place the shard layout comes from.
+// recorded duration in tests/suite_durations.json. This is the one place the shard layout comes from,
+// its shard count (SHARDS) included, so a later workflow that reads it gets the layout tests ran.
 //
 // Longest suite first, each into the shard with the least predicted time so far, so the slowest shard
 // predicts no more than the even split plus the longest single suite. A suite with no recorded
 // duration (one added since the last refresh) is planned at the median recorded duration.
 //
 // CLI (from anywhere in the repo):
-//   node tests/plan_shards.mjs --shards <n> [--suites '<test_a.sh test_b.mjs ...>'] [--json | --github-output]
-//     plans the named suites (every suite without --suites) into at most n shards and prints each
+//   node tests/plan_shards.mjs [--shards <n>] [--suites '<test_a.sh test_b.mjs ...>'] [--json | --github-output]
+//     plans the named suites (every suite without --suites) into at most n shards (SHARDS without
+//     --shards) and prints each
 //     shard's suites and predicted minutes; --github-output appends matrix= to $GITHUB_OUTPUT, one
 //     entry per shard: { shard, of, suites, hook }, where hook is the shard that also runs run.sh's
 //     attribution hook self-test.
@@ -19,6 +21,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoMap } from './scope_sections.mjs';
 
+// Six, not eight: test_pass.sh alone is longer than the even split at either, so both finish together.
+export const SHARDS = 6;
 export const DURATIONS = join(dirname(fileURLToPath(import.meta.url)), 'suite_durations.json');
 
 export function median(xs) {
@@ -101,8 +105,8 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     console.log(`recorded ${Object.keys(got.seconds).length} suite(s); ${Object.keys(seconds).length} in ${DURATIONS}`);
     process.exit(0);
   }
-  const n = Number(opt('--shards'));
-  if (!Number.isInteger(n) || n < 1) { console.error('usage: plan_shards.mjs --shards <n> [--suites \'<suite> ...\'] [--json | --github-output] | --record < log'); process.exit(2); }
+  const n = args.includes('--shards') ? Number(opt('--shards')) : SHARDS;
+  if (!Number.isInteger(n) || n < 1) { console.error('usage: plan_shards.mjs [--shards <n>] [--suites \'<suite> ...\'] [--json | --github-output] | --record < log'); process.exit(2); }
   const names = args.includes('--suites') ? (opt('--suites') ?? '').split(/\s+/).filter(Boolean).map((s) => s.replace(/^.*\//, '')) : all.map((s) => s.file);
   const bad = names.filter((s) => !all.some((x) => x.file === s));
   if (bad.length) { console.error(`not a suite: ${bad.join(' ')}`); process.exit(2); }
