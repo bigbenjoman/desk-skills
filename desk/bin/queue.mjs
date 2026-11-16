@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -369,7 +369,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
   const stepPark = labelPark(r, personStepLabels(), personInputLabels());
-  const park = stepPark ?? lanePark(r) ?? designPark(r) ?? (['L', 'XL'].includes(size) ? `size ${size} — split it before batching` : null);
+  const park = stepPark ?? lanePark(r) ?? designPark(r) ?? sizePark(size);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
   // The collision check plan-batch makes, against every ticket still to finish: two tickets that
   // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
@@ -391,11 +391,9 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   const behind = heldBehindOf(q, key);
   if (holdCollisions) for (const k of collides) if (!holds.includes(k) && !behind.has(k)) holds.push(k);
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
-  // A hold would let a release send a ticket parked for its own reason to a worker (hold, above). A
-  // design park keeps its holds in held_by instead, unreleased, and requeue holds it behind the open
-  // ones once the design is snapshotted; so does the person's step, which no release starts.
-  const designOnly = park != null && (park === designPark(r) || park === stepPark);
-  if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
+  // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
+  // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
+  // holds it behind the open ones once its own park is settled.
   q.tickets[key] = {
     key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
     worktree: null, branch: r.branch ?? null, database: null, port: null,
@@ -408,7 +406,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
-  return `${designOnly && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
+  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
 }
 
 const batchWord = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
@@ -680,7 +678,10 @@ switch (cmd) {
     if (!key || !preds.length) throw new Error('usage: queue.mjs hold <TICKET> <BLOCKER> [<BLOCKER> ...]');
     const t = ticket(q, key);
     for (const p of preds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
-    if (t.state === 'parked' && !isHeld(t)) throw new Error(`${key} is parked for its own reason (${t.park?.question ?? '?'}): a hold would let a release send it to a worker`);
+    // A triage park (lane, size, design, the person's step) keeps its park, its holds in held_by beside
+    // it, so no release can send it to a worker. Any other park of its own would lose its question.
+    const keeps = !isHeld(t) && triagePark(t);
+    if (t.state === 'parked' && !isHeld(t) && !keeps) throw new Error(`${key} is parked for its own reason (${t.park?.question ?? '?'}): a hold would let a release send it to a worker`);
     if (['running', 'done', 'failed'].includes(t.state)) throw new Error(`${key} is ${t.state}: too late to hold it`);
     // A release sets state=triaged, so only a ticket that is triaged (or already held) may be held.
     if (t.state === 'queued') throw new Error(`${key} has not been triaged: triage it and \`queue.mjs admit\` it before holding it`);
@@ -689,10 +690,10 @@ switch (cmd) {
     const all = [...new Set([...String(t.held_by ?? '').split('|').filter(Boolean), ...preds])];
     t.held_by = all.join('|');
     t.state = 'parked';
-    t.park = heldPark(all);
+    if (!keeps) t.park = heldPark(all);
     t.updated_at = new Date().toISOString();
     save(q);
-    console.log(`${key} held behind ${all.join(', ')}`);
+    console.log(keeps ? `${key} held behind ${all.join(', ')}, beside its own park (${t.park.question})` : `${key} held behind ${all.join(', ')}`);
     break;
   }
 

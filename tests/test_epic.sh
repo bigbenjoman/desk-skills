@@ -417,16 +417,19 @@ check "in-batch blocker: successor held with release_chain's prefix" \
 check "held_by unions every in-batch blocker" '[ "$(qg KAN-103 .held_by)" = "KAN-101|KAN-102" ]'
 check "--deps printed, one entry per successor, predecessors unioned" \
   'printf "%s" "$out" | grep -q -- "--deps \".*KAN-103:KAN-101,KAN-102.*\"" && printf "%s" "$out" | grep -q -- "KAN-102:KAN-101"'
-check "a lane C successor is parked by its lane, never held, no --deps entry" \
-  '[[ "$(qg KAN-104 .park.question)" == "lane C"* ]] && [ "$(qg KAN-104 .held_by)" = null ] && ! printf "%s" "$out" | grep -- "^--deps" | grep -q "KAN-104:"'
-check "size L is parked, never held" '[[ "$(qg KAN-105 .park.question)" == "size L"* ]] && [ "$(qg KAN-105 .held_by)" = null ]'
+check "DS-714 AC1: a lane C successor keeps its lane park, its blocker in held_by beside it" \
+  '[ "$(qg KAN-104 .state)" = parked ] && [[ "$(qg KAN-104 .park.question)" == "lane C"* ]] && [ "$(qg KAN-104 .held_by)" = KAN-101 ]'
+check "DS-714 AC1: its verdict reads HELD and names its lane C park" \
+  'printf "%s" "$out" | grep -q "^KAN-104  lane C  size -  HELD (blocked by KAN-101 — until their PRs merge, and parked: lane C — run manually)"'
+check "DS-714 AC5: a held lane C park has no --deps entry, so the driver never releases it" '! printf "%s" "$out" | grep -- "^--deps" | grep -q "KAN-104:"'
+check "DS-714 AC3: size L keeps its size park, its blocker in held_by beside it" '[[ "$(qg KAN-105 .park.question)" == "size L"* ]] && [ "$(qg KAN-105 .held_by)" = KAN-101 ]'
 check "an open blocker outside the batch is a question" \
   '[ "$(qg KAN-106 .state)" = triaged ] && [ "$(qg KAN-106 .open_questions)" = 1 ] && printf "%s" "$out" | grep -q "\[KAN-106\].*KAN-900"'
 check "a done blocker outside the batch is ignored" '[ "$(qg KAN-107 .state)" = triaged ] && [ "$(qg KAN-107 .open_questions)" = 0 ]'
 check "unreadable links are a question (fail closed)" '[ "$(qg KAN-108 .open_questions)" = 1 ] && printf "%s" "$out" | grep -q "\[KAN-108\].*could not be read"'
 check "a missing facts record is a question too" '[ "$(qg KAN-124 .open_questions)" = 1 ]'
-check "a blocker parked by its lane makes the successor a question, not held" \
-  '[ "$(qg KAN-109 .state)" = triaged ] && [ "$(qg KAN-109 .open_questions)" = 1 ] && [ "$(qg KAN-109 .held_by)" = null ]'
+check "DS-714 AC7: a blocker parked by its lane holds its successor, and no question is asked about it" \
+  '[[ "$(qg KAN-109 .park.question)" == "held by orchestrator"* ]] && [ "$(qg KAN-109 .open_questions)" = 0 ] && [ "$(qg KAN-109 .held_by)" = KAN-104 ] && ! printf "%s" "$out" | grep -q "\[KAN-109\]"'
 check "a cycle parks both, no --deps" \
   '[[ "$(qg KAN-110 .park.question)" == "dependency cycle"* ]] && [[ "$(qg KAN-111 .park.question)" == "dependency cycle"* ]] && ! printf "%s" "$out" | grep -- "^--deps" | grep -q "KAN-110:\|KAN-111:"'
 check "every ticket on a longer cycle is parked (strongly connected)" \
@@ -447,6 +450,21 @@ node "$B/queue.mjs" init t2 >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-202 KAN-201 P1-5 2>&1); rc=$?
 check "regression: no links -> all triaged, argument order kept, no deps" \
   '[ $rc -eq 0 ] && [ "$(jq -r ".tickets|keys_unsorted|join(\" \")" "$DESK_QUEUE")" = "KAN-202 KAN-201 P1-5" ] && [ "$(jq -r "[.tickets[].state]|unique|join(\",\")" "$DESK_QUEUE")" = triaged ] && ! printf "%s" "$out" | grep -q -- "--deps"'
+
+# A lane D or lane C park keeps its Jira blockers in held_by beside its park.
+rm -f "$T/state/triage/"*.json "$T/state/expansion.json"
+r KAN-701 A '[]'
+r KAN-702 D "[$(nb KAN-701)]"
+r KAN-703 C "[$(nb KAN-901 'done')]"
+r KAN-704 C '[{"key":"KAN-990","category":"new"}]' '"blocker_needs":{"KAN-990":{"needs":"build","why":"it adds the table"}}'
+node "$B/queue.mjs" init s714 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-701 KAN-702 KAN-703 KAN-704 2>&1); rc=$?
+check "DS-714 AC2: a lane D child its design gap parks keeps that park, its sibling in held_by beside it" \
+  '[ "$(qg KAN-702 .state)" = parked ] && [[ "$(qg KAN-702 .park.question)" == "lane D"* ]] && [ "$(qg KAN-702 .held_by)" = KAN-701 ]'
+check "DS-714 AC4: a lane C child whose every blocker is Done is the lane C park with no hold" \
+  '[[ "$(qg KAN-703 .park.question)" == "lane C"* ]] && [ "$(qg KAN-703 .held_by)" = null ] && printf "%s" "$out" | grep -q "^KAN-703  lane C  size -  PARK (lane C — run manually)"'
+check "DS-714 AC6: a blocker in no batch triage found needed to build is in a lane C child's held_by and held_outside" \
+  '[[ "$(qg KAN-704 .park.question)" == "lane C"* ]] && [ "$(qg KAN-704 .held_by)" = KAN-990 ] && [ "$(qg KAN-704 .held_outside)" = KAN-990 ] && ! printf "%s" "$out" | grep -q "\[KAN-704\]"'
 
 # DS-568: a ticket labelled as the person's step (§4 Person-step labels) parks on it whatever its lane,
 # and a ticket it blocks, in the batch or out of it, is built now and merged after it.
@@ -484,8 +502,8 @@ rm -f "$T/state/expansion.json"
 mkcfg "http://127.0.0.1:$PORT" yes
 node "$B/queue.mjs" init s568b >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 2>&1); rc=$?
-check "DS-568 AC3: with no Person-step labels row, the labelled ticket is parked by its lane and its successor asked about, as before" \
-  '[[ "$(qg KAN-451 .park.question)" == "lane C"* ]] && [ "$(qg KAN-452 .merge_after)" = null ] && [ "$(qg KAN-452 .open_questions)" = 1 ]'
+check "DS-568 AC3: with no Person-step labels row, the labelled ticket is parked by its lane and holds its successor, as any lane C blocker does" \
+  '[[ "$(qg KAN-451 .park.question)" == "lane C"* ]] && [ "$(qg KAN-452 .merge_after)" = null ] && [ "$(qg KAN-452 .held_by)" = KAN-451 ] && [ "$(qg KAN-452 .open_questions)" = 0 ]'
 
 # plan-batch reads a blocker in no batch as intake does (personStep): a Person-input label
 # holds the build, and wins over a Person-step label; a ben_steps entry naming the blocker's key is a
@@ -733,7 +751,10 @@ check "hold records every blocker (unioned) with the release prefix" \
   '[ "$(qg KAN-803 .held_by)" = "KAN-801|KAN-802" ] && [[ "$(qg KAN-803 .park.question)" == "held by orchestrator"* ]]'
 node "$B/queue.mjs" park KAN-802 "lane C — needs a plan" >/dev/null
 out=$(node "$B/queue.mjs" hold KAN-802 KAN-801 2>&1); rc=$?
-check "hold refuses a ticket parked for its own reason" '[ $rc -ne 0 ] && [[ "$(qg KAN-802 .park.question)" == "lane C"* ]]'
+check "DS-714: hold keeps a lane park, its blocker in held_by beside it" '[ $rc -eq 0 ] && [[ "$(qg KAN-802 .park.question)" == "lane C"* ]] && [ "$(qg KAN-802 .held_by)" = KAN-801 ]'
+node "$B/queue.mjs" park KAN-802 "which copy?" >/dev/null
+out=$(node "$B/queue.mjs" hold KAN-802 KAN-801 2>&1); rc=$?
+check "hold refuses a ticket parked on a question of its own" '[ $rc -ne 0 ] && [ "$(qg KAN-802 .park.question)" = "which copy?" ]'
 out=$(node "$B/queue.mjs" hold KAN-801 KAN-801 2>&1); rc=$?
 check "hold refuses a self hold" '[ $rc -ne 0 ]'
 node "$B/queue.mjs" add KAN-804 Task A >/dev/null

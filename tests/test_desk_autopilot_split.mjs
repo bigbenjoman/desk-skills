@@ -54,6 +54,8 @@ const REWRITTEN = [
   ['DS-589', 'and the disk on the first', 1], // the local database is a health check
   ['DS-669', 'and each triaged ticket\'s unknowns)', 1], // a held ticket's triage unknowns are asked too
   ['DS-673', '`pass.mjs` serialises it *within* your batch;', 1], // every repo uploads through the machine's one queue
+  ['DS-714', '| in the batch, admitted | holds the successor', 1], // a lane or size park holds what it blocks, and keeps its own blockers beside its park
+  ['DS-714', 'is **never held and never in `--deps`**', 1],
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
