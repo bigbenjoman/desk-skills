@@ -1183,6 +1183,15 @@ export const defaultBranch = () => {
 };
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
+// The bin a running script starts desk's other scripts from: the release folder it was loaded from
+// (node loads a script by its real path), so an install mid-run never mixes two releases. Paths shown
+// to a person or written into settings stay binDir(), which follows the current release.
+export function runBin() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  let releases;
+  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
+  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+}
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
 // them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never

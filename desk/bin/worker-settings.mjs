@@ -741,8 +741,10 @@ if (mode === 'triage') {
   const agents = join(E.HOME, '.claude', 'agents');
   if (existsSync(agents)) dirs.add(agents);
   // The installed desk templates (install.sh copies them beside bin), which a ticket may tell a worker to commit.
+  // It links through the current release, so whichever release an install makes current is readable too.
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
+  try { if (realpathSync(templates) !== templates) allow.push(`Read(${abs(join(realpathSync(E.deskHome()), 'releases'))}/*/templates/**)`); } catch { /* not installed */ }
 
   // The repo memory the user's own sessions write: the default login's, whatever login the worker runs on.
   // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its
