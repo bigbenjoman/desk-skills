@@ -114,6 +114,12 @@ dropping the step (`queue.mjs drop`, once it is Done) moves the hold to `held_ou
 lifts on Done. A blocker labelled both Person-step and Person-input is an input. Intake and
 plan-batch read a blocker the same way (`batch-state.mjs` `personStep`).
 
+**Every pass reads these again, before it spawns.** A ticket held outside on a blocker that has since
+become the person's step (a label row set, a label added) has that hold moved to `merge_after`, logged
+`RECLASSIFIED <TICKET>: <BLOCKER> is a person step: build now, merge after`, and starts in that pass
+once no hold is left. Triage's own `build` call still holds it, as at admission. The one way back is a
+ticket not yet started whose `merge_after` blocker gains a Person-input label: it is held again.
+
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
 closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails
 on it keeps it held. One that ends with no marker is parked, not done, so it keeps it held too.

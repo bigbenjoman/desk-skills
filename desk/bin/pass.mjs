@@ -1711,8 +1711,9 @@ const dateLines = [];
     }
     dateLines.push(...what, ...(by.length ? [`person-step hold: ${t.key}: still held behind ${by.join(', ')}`] : [`person-step hold: ${t.key}: RELEASED`]));
   }
-  // Not yet started: triaged, or held, and never given a worktree.
-  for (const t of Object.values(qS.tickets).filter((x) => keysOf(x.merge_after).length && !x.worktree && (x.state === 'triaged' || isHeld(x)))) {
+  // Not yet started: triaged, or held, and never given a worktree. Read after the writes above, so a
+  // ticket both change keeps the step just moved to its merge gate.
+  for (const t of Object.values(queue().tickets).filter((x) => keysOf(x.merge_after).length && !x.worktree && (x.state === 'triaged' || isHeld(x)))) {
     const rec = triageRec(t.key);
     const inputs = keysOf(t.merge_after).filter((p) => { const b = openOutside(rec, p); return !!b && personStep(b, rec, stepLabels, inputLabels) === 'build'; });
     if (!inputs.length) continue;
