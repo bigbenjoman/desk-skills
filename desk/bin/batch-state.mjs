@@ -103,9 +103,10 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
-// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
+// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it. A
+// ticket parked for its own reason (triagePark) that keeps holds in held_by waits behind them too.
 export function heldBehindOf(q, key) {
-  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
+  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && (isHeld(o) || triagePark(o)));
   const behind = new Set();
   for (let edge = new Set([key]); edge.size;) {
     const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
