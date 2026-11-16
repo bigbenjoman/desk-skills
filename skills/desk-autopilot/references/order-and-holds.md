@@ -36,12 +36,12 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 
 | Blocker | What `plan-batch` does |
 |---|---|
-| in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
+| in the batch, admitted or parked for its lane or size | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
 | outside the batch, not done, and triage's `blocker_needs` calls it `build` (needed to build) | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
 | outside the batch, not done, and `blocker_needs` calls it `merge` (needed only to merge) | built now, its merge held: `merge_after` set, lifted by the pass once the blocker is Done and on the base (Done alone where its Jira Repository is another configured repo) |
 | outside the batch, not done, and `blocker_needs` calls it `none` (not needed), under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
-| outside the batch and not done otherwise; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
+| outside the batch and not done otherwise; in the batch but someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
 | on a cycle | parks every ticket on it: the links need fixing |
 
 Triage gives every open blocker one of the three calls, and refuses a record missing one. A record
@@ -53,8 +53,10 @@ of it, so a step in the batch that triage calls `build` holds the build, not onl
 (`queue.mjs transfer`) into a batch holding that blocker keeps the merge-only gate while Jira reads the
 blocker Done, so the gate lifts only once the blocker's code is on the base.
 
-A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
-those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue
+A ticket parked for its lane (C, D), its size (L, XL) or its design is planned like any other: its
+blockers go in `held_by` (and `held_outside`) **beside its park**, and the plan reads `HELD (blocked
+by … , and parked: <its park>)`. The park wins and it is **never in `--deps`**, so a release can never
+send one to a headless worker; `queue.mjs hold`, `admit` and `transfer` keep that park beside the hold. `plan-batch` seeds the queue
 blockers first, and its `--deps` already carries the merge chain for tickets that share files (*Order
 the batch by blast radius*): pass it to the merge driver as it stands.
 
