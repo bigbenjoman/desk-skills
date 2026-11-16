@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, gitHold, gitHeld, triageGate, blockerHold, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1674,6 +1674,61 @@ const MAINT = await maintenance({
   }),
 });
 
+const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
+const dateLines = [];
+
+// ---- person-step holds ---------------------------------------------------
+// Holds are set at admit, but what counts as the person's step can change after it (a Person-step or
+// Person-input labels row set, a label added in Jira, a step named in ben_steps), so every pass reads
+// each open blocker in no batch again, as admit would judge it now (blockerHold), before spawning. A
+// full hold (held_outside) on one that now holds only the merge, a step of the person's, becomes a
+// merge-only gate (merge_after), and a ticket with no hold left is released to spawn in this pass. The
+// one way back: a not-yet-started ticket's merge-only gate on a blocker that has since gained a
+// Person-input label (personStep 'build') becomes a full hold again. Triage's own call on a blocker
+// (blocker_needs) still wins over the step, as at admit.
+{
+  const qS = queue();
+  const stepLabels = E.personStepLabels();
+  const inputLabels = E.personInputLabels();
+  const openOutside = (rec, p) => (qS.tickets[p] ? null : (Array.isArray(rec?.blockers) ? rec.blockers : []).find((b) => b?.key === p && b.category !== 'done') ?? null);
+  for (const t of Object.values(qS.tickets).filter((x) => isHeld(x) && x.held_outside)) {
+    const rec = triageRec(t.key);
+    const steps = keysOf(t.held_outside).filter((p) => {
+      const b = openOutside(rec, p);
+      const hold = b ? blockerHold(b, rec, stepLabels, inputLabels) : null;
+      return hold?.needs === 'merge' && hold.by === 'step';
+    });
+    if (!steps.length) continue;
+    const what = steps.map((p) => `RECLASSIFIED ${t.key}: ${p} is a person step: build now, merge after`);
+    if (DRY) { dateLines.push(...what.map((l) => `${l} (dry run)`)); continue; }
+    const by = keysOf(t.held_by).filter((p) => !steps.includes(p));
+    const outside = keysOf(t.held_outside).filter((p) => !steps.includes(p));
+    const mergeAfter = [...new Set([...keysOf(t.merge_after), ...steps])];
+    if (by.length) q('set', t.key, `held_by=${by.join('|')}`, `held_outside=${outside.join('|') || 'null'}`, `merge_after=${mergeAfter.join('|')}`);
+    else {
+      q('set', t.key, 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null', `merge_after=${mergeAfter.join('|')}`);
+      q('front', t.key);
+    }
+    dateLines.push(...what, ...(by.length ? [`person-step hold: ${t.key}: still held behind ${by.join(', ')}`] : [`person-step hold: ${t.key}: RELEASED`]));
+  }
+  // Not yet started: triaged, or held, and never given a worktree.
+  for (const t of Object.values(qS.tickets).filter((x) => keysOf(x.merge_after).length && !x.worktree && (x.state === 'triaged' || isHeld(x)))) {
+    const rec = triageRec(t.key);
+    const inputs = keysOf(t.merge_after).filter((p) => { const b = openOutside(rec, p); return !!b && personStep(b, rec, stepLabels, inputLabels) === 'build'; });
+    if (!inputs.length) continue;
+    const line = `person-step hold: ${t.key}: ${inputs.join(', ')} now labelled as your input (config §4 Person-input labels), so the build waits for ${inputs.length === 1 ? 'it' : 'them'}: HELD again`;
+    if (DRY) { dateLines.push(`${line} (dry run)`); continue; }
+    const by = [...new Set([...keysOf(t.held_by), ...inputs])];
+    const outside = [...new Set([...keysOf(t.held_outside), ...inputs])];
+    const mergeAfter = keysOf(t.merge_after).filter((p) => !inputs.includes(p));
+    const others = by.filter((p) => !inputs.includes(p));
+    q('park', t.key, `${HELD_PREFIX}: blocked by ${by.join(', ')} — starts once ${inputs.join(', ')} ${inputs.length === 1 ? 'is' : 'are'} Done in Jira${others.length ? ` and ${others.join(', ')} ${others.length === 1 ? 'is' : 'are'} no longer holding it` : ''}`);
+    // A date hold waits behind these, and is read again once they release it (queue.mjs hold).
+    q('set', t.key, `held_by=${by.join('|')}`, `held_outside=${outside.join('|')}`, `merge_after=${mergeAfter.join('|') || 'null'}`, ...(dateHeld(t) ? ['held_label=null'] : []));
+    dateLines.push(line);
+  }
+}
+
 // ---- date holds ----------------------------------------------------------
 // A triaged ticket whose triage record carries a blocked-until-YYYY-MM-DD label is held until that day
 // on this machine's local date, then goes back to triaged in its place in the queue. One whose label's
@@ -1681,9 +1736,7 @@ const MAINT = await maintenance({
 // read against its labels on every pass, so a label fixed, moved or taken away moves its hold with it.
 // held_label keeps the label a hold was for, and survives a release, so a ticket the person let start
 // is not held on that label again.
-const triageRec = (key) => { try { return JSON.parse(readFileSync(join(STATE, 'triage', `${key}.json`), 'utf8')); } catch { return null; } };
 const TODAY = localDay();
-const dateLines = [];
 const holds = (h) => h && (h.bad || h.until > TODAY);
 for (const t of Object.values(queue().tickets)) {
   const held = dateHeld(t);

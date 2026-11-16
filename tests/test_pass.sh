@@ -1441,6 +1441,52 @@ q drop X-7
 x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
 q drop J-12
+# DS-683: every pass reads a full hold on a blocker in no batch again, as admit would judge it now. J-13
+# is the KAN-529 shape: admitted fully held on OPS-3, a step no row named yet, then the label row set.
+cat "$T/config-j.md" > "$T/config-jl.md"
+printf '| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$T/config-jl.md"
+# step <TICKET> <BLOCKER> <label>: the ticket's Jira links, its triage record, and the blocker's labels.
+step(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"%s","fields":{"summary":"Set up the account","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$2" > "$T/jira/$1.json"
+  printf '{"fields":{"labels":["%s"]}}\n' "$3" > "$T/jira/$2.json"
+  printf '{"epic":null,"blockers":[{"key":"%s","category":"new","type":"Task","summary":"Set up the account","labels":["%s"]}]}\n' "$2" "$3" > "$T/state-j/triage/$1.json"; }
+held_on(){ q add "$1"; q set "$1" state=parked held_by="$2" held_outside="$2" "park={\"question\":\"held by orchestrator: blocked by $2 — starts once $2 is Done in Jira\"}"; }
+held_on J-13 OPS-3; step J-13 OPS-3 ben-step
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-683 AC4 a full hold on a blocker that is no person's step stays as it is" \
+  '[ "$(field J-13 state)" = "\"parked\"" ] && [ "$(field J-13 held_outside)" = "\"OPS-3\"" ] && [ "$(field J-13 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-13"'
+# With no label row, that pass's blocker re-read kept no labels: a re-read with the row set reads them.
+step J-13 OPS-3 ben-step; out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC1 once its label row is set, the full hold becomes a merge-only gate, logged" \
+  '[ "$(field J-13 held_outside)" = null ] && [ "$(field J-13 held_by)" = null ] && [ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && [ "$(echo "$out" | grep -c "RECLASSIFIED J-13: OPS-3 is a person step: build now, merge after")" = 1 ]'
+check "DS-683 AC2 its last full hold gone, it is released and spawned in the same pass" \
+  '[ "$(field J-13 state)" = "\"running\"" ] && [ "$(field J-13 park)" = null ] && echo "$out" | grep -q "person-step hold: J-13: RELEASED"'
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC5 the next pass changes nothing and logs nothing again" \
+  '[ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && ! echo "$out" | grep -q "J-13: OPS-3\|person-step hold: J-13"'
+step J-13 OPS-3 ben-input; out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 a ticket already started keeps its merge-only gate when the step gains an input label" \
+  '[ "$(field J-13 merge_after)" = "\"OPS-3\"" ] && [ "$(field J-13 held_outside)" = null ] && ! echo "$out" | grep -q "person-step hold: J-13"'
+q drop J-13
+held_on J-14 OPS-4; step J-14 OPS-4 ben-input
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC3 a full hold on a Person-input blocker stays as it is, with nothing logged" \
+  '[ "$(field J-14 state)" = "\"parked\"" ] && [ "$(field J-14 held_outside)" = "\"OPS-4\"" ] && [ "$(field J-14 merge_after)" = null ] && ! echo "$out" | grep -q "RECLASSIFIED J-14\|person-step hold: J-14"'
+q drop J-14
+q add J-15; q set J-15 state=triaged merge_after=OPS-5; step J-15 OPS-5 ben-input
+q add J-16; q set J-16 state=triaged merge_after=OPS-6; step J-16 OPS-6 ben-step
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC6 a not-yet-started gate whose blocker gained an input label is a full hold again, logged once" \
+  '[ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 held_outside)" = "\"OPS-5\"" ] && [ "$(field J-15 held_by)" = "\"OPS-5\"" ] && [ "$(field J-15 merge_after)" = null ] && [ "$(echo "$out" | grep -c "person-step hold: J-15: OPS-5 now labelled as your input")" = 1 ] && field J-15 park.question | grep -q "^\"held by orchestrator: blocked by OPS-5"'
+check "DS-683 AC7 a merge-only gate on a blocker with no input label is never moved back" \
+  '[ "$(field J-16 merge_after)" = "\"OPS-6\"" ] && [ "$(field J-16 held_outside)" = null ] && ! echo "$out" | grep -q "person-step hold: J-16"'
+out=$(DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC6 the next pass leaves it held and says nothing more" '[ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 held_outside)" = "\"OPS-5\"" ] && ! echo "$out" | grep -q "RECLASSIFIED J-15\|person-step hold: J-15"'
+q drop J-15; q drop J-16
+held_on J-17 OPS-7; step J-17 OPS-7 ben-step
+out=$(AUTOPILOT_DRY_RUN=1 DESK_CONFIG="$T/config-jl.md" node "$B/pass.mjs" 2>&1)
+check "DS-683 AC9 a dry run reports the change and writes nothing" \
+  '[ "$(field J-17 state)" = "\"parked\"" ] && [ "$(field J-17 held_outside)" = "\"OPS-7\"" ] && [ "$(field J-17 merge_after)" = null ] && echo "$out" | grep -q "RECLASSIFIED J-17: OPS-7 is a person step: build now, merge after (dry run)"'
+q drop J-17
 # AC7: a pass that errors (here: no repo config to read its permissions from), twice, then one that succeeds.
 out=$(DESK_CONFIG="$T/no-such-config.md" DESK_REPO_ROOT="$T/repo" DESK_WORKTREES_DIR="$T/wt" DESK_GH_REPO=acme/widgets node "$B/pass.mjs" 2>&1)
 check "DS-221 AC7 a pass that errors counts one error and holds its first line" '[ "$(pass_rec errors)" = 1 ] && pass_rec error | grep -q "no repo config found"'
