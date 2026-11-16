@@ -2081,6 +2081,67 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
+// ---- DS-716: a park whose own blockers are open is not listed, put off or not; the put-off override
+// moves to the ticket first in its chain, and a count behind a ticket counts each ticket once.
+{
+  const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
+  const nine = (by) => Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`H-${i + 1}`, behind(`H-${i + 1}`, by)]));
+  const laneC = (by) => ({ ...parked('C', 90, 'lane C — spans layers'), held_by: by });
+  const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
+  const qPath = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json');
+  const edit = (name, f) => { const q = queueOf(name); f(q.tickets); writeFileSync(qPath(name), JSON.stringify(q)); };
+
+  // AC6 first: with no open blockers, put off with nine behind it, it is listed with the count, as today.
+  put('ds716a', { port: 4716, beat: 1, supervised: true, tickets: { 'S-1': { state: 'running', lane: 'A' }, 'C-1': laneC(null), ...nine('C-1') } });
+  const off = N.record({ word: 'ds716a', ticket: 'C-1', action: 'not-now' });
+  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.t.key === 'C-1');
+  t('DS-716 AC6 a lane C park with no open blockers, put off with 9 behind it, is listed with the count',
+    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it/.test(c1?.need ?? '')}`, 'true session 9 true');
+  // AC1 and AC2: held behind its unmerged sibling, it is not listed, and desk-q shows it waiting behind it.
+  edit('ds716a', (ts) => { ts['C-1'].held_by = 'S-1'; });
+  const a = N.collect({ word: 'ds716a' });
+  t('DS-716 AC1/AC2 put off with 9 behind it and held behind an unmerged sibling, it is not listed', a.items.some((i) => i.t.key === 'C-1'), false);
+  const ra = loadRepos().find((r) => r.name === 'ds716a');
+  t('DS-716 AC1 desk-q shows it waiting, not needing you', ra.rows.find((x) => x.t.key === 'C-1')?.k, 'waiting');
+  t('DS-716 AC1 its page says it moves without you, behind the sibling', ticketScreen(ra, 'C-1', { width: 200 }).includes('Moves without you: behind S-1 (running, stage'), true);
+  t('DS-716 AC1 desk-q counts nothing for it', N.needsCount(ra).shown, 0);
+  // Never put off, it is not listed either.
+  put('ds716b', { port: 4726, beat: 1, supervised: true, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'C-1': laneC('S-1') } });
+  t('DS-716 AC1 a lane C park behind a sibling waiting to spawn is not listed', keysIn('ds716b').join(), '');
+
+  // AC3: the ticket first in its chain parks on a step only Ben takes: it is listed, and put off it is
+  // still listed, with every ticket waiting behind it counted (the put-off park and its nine).
+  put('ds716c', { port: 4718, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716c', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC3 the chain head is listed in place of the put-off park', keysIn('ds716c').join(), 'S-1');
+  N.record({ word: 'ds716c', ticket: 'S-1', action: 'not-now' });
+  const s1 = N.collect({ word: 'ds716c' }).items;
+  t('DS-716 AC3 put off too, the head is still listed with the count of tickets waiting behind it',
+    `${s1.map((i) => i.t.key).join()} ${s1[0]?.behind} ${/10 tickets wait behind it/.test(s1[0]?.need ?? '')}`, 'S-1 10 true');
+
+  // AC4: the head is a PR running its checks, which merges without Ben: nothing is listed for the chain.
+  put('ds716d', { port: 4719, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'S-1': { state: 'done', lane: 'A', result: { pr: 716 }, pr_status: { pr: 716, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'in_progress', conclusion: null, startedAt: minsAgo(5) }] } },
+    'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716d', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC4 a chain whose head is a PR running CI lists nothing', keysIn('ds716d').join(), '');
+
+  // AC5: a fork to two heads that both need Ben, both put off: both are listed, in the same order each run.
+  put('ds716e', { port: 4720, beat: 1, supervised: true, tickets: { 'S-2': parked('A', 60, 'Which copy?'), 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-2|S-1'), ...nine('C-1') } });
+  for (const k of ['C-1', 'S-1', 'S-2']) N.record({ word: 'ds716e', ticket: k, action: 'not-now' });
+  const runs = [keysIn('ds716e').join(), keysIn('ds716e').join()];
+  t('DS-716 AC5 both heads are listed, and the put-off park is not', runs[0], 'S-1,S-2');
+  t('DS-716 AC5 in the same order every run', runs[1], runs[0]);
+
+  // AC7: lane C parks held in a chain, and a held ticket behind two of them: each is counted once.
+  put('ds716f', { port: 4721, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), 'C-2': laneC('S-1|C-1'),
+    'H-1': behind('H-1', 'C-1|C-2'), 'H-2': behind('H-2', 'C-2') } });
+  N.record({ word: 'ds716f', ticket: 'S-1', action: 'not-now' });
+  const f = N.collect({ word: 'ds716f' }).items;
+  t('DS-716 AC7 the count behind the head counts each ticket once, and neither lane C park is listed',
+    `${f.map((i) => i.t.key).join()} ${f[0]?.behind} ${/4 tickets wait behind it/.test(f[0]?.need ?? '')}`, 'S-1 4 true');
+}
+
 // ---- DS-580: a park on a step only a person or another account takes recommends nothing, and its resume
 // reads the PR on GitHub (stubbed here) and requeues only once it changed since the park.
 {
