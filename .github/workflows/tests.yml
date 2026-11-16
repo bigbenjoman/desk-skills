@@ -129,6 +129,7 @@ jobs:
           name: shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/result/
           if-no-files-found: ignore
+          overwrite: true
           retention-days: 3
 
   # The check branch protection and auto-release read. It runs whatever happened above, so a failed,
