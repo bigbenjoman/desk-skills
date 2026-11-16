@@ -9,8 +9,8 @@
 // left part done by the cap (exit 8) keeps its place; any other end is a result, which the pass of
 // the queue that added it takes and records on its ticket. A job belongs to its ticket's
 // round (`round`, the ticket's upload_round when it was added): a spawn of the ticket's next round
-// waits while an upload of it is running (inFlight), then drops it (dropJob), and the pass records only
-// results of the ticket's current round.
+// waits while an upload of it is running, or else drops it, in one step (claimForSpawn), a pump starts
+// only a job still queued, and the pass records only results of the ticket's current round.
 //
 //   { jobs:    [{ queue, repo, root, key, round, pr, dir, approved, at }]   queue: that batch's queue.json
 //     results: [{ ...job, code, out, until?, done_at }]   until: on a stall, when its back-off ends
@@ -63,12 +63,16 @@ export function enqueue(job, { file = uploadQueueFile(), now = Date.now } = {}) 
 export const isQueued = (q, queue, key) => q.jobs.some((j) => j.queue === queue && j.key === key);
 // The job of `queue`'s ticket `key` an upload is running now, or null; a pump that has exited is not running it.
 export const inFlight = (q, queue, key) => (q.running && q.running.id === jobId({ queue, key }) && alive(q.running.pid) ? q.running : null);
-// Drops the job `queue`'s ticket `key` added, as its next round starts: that round adds its own.
-export function dropJob(queue, key, { file = uploadQueueFile() } = {}) {
+// As `queue`'s ticket `key` is about to spawn its next round, in one step under the queue's lock: the
+// running upload of its last round's job, which the spawn waits for, or else null with that job
+// dropped (the new round adds its own), so no pump can start it beside the new worker (a pump starts
+// only a job still queued).
+export function claimForSpawn(queue, key, { file = uploadQueueFile() } = {}) {
   return withQueue(file, (q) => {
-    const before = q.jobs.length;
+    const up = inFlight(q, queue, key);
+    if (up) return up;
     q.jobs = q.jobs.filter((j) => !(j.queue === queue && j.key === key));
-    return before - q.jobs.length;
+    return null;
   });
 }
 
@@ -120,7 +124,14 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       const p = pace(uploadLog(), new Date(t));
       if (p.allow <= 0) { stop = `the upload pace is spent: ${p.why}`; break; }
       tried.add(jobId(job));
-      withQueue(file, (w) => { w.served[job.repo] = iso(t); w.running = { id: jobId(job), pr: job.pr, pid: process.pid, at: iso(t) }; });
+      // Started only if it is still queued as picked: a spawn of its ticket's next round may have
+      // dropped it (claimForSpawn) since the queue was read.
+      const started = withQueue(file, (w) => {
+        if (!w.jobs.some((j) => jobId(j) === jobId(job) && String(j.pr) === String(job.pr) && j.dir === job.dir)) return false;
+        w.served[job.repo] = iso(t); w.running = { id: jobId(job), pr: job.pr, pid: process.pid, at: iso(t) };
+        return true;
+      });
+      if (!started) continue;
       let r;
       try { r = run(job, p.allow); } finally { withQueue(file, (w) => { w.running = null; }); }
       ran.push({ job, code: r.code });

@@ -2929,10 +2929,14 @@ for (const t of spawnable) {
     continue;
   }
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
-  // it) edits the PR body the next round's worker edits too: that round waits until it ends.
+  // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
+  // the job is dropped here, in the same locked step, so no pump can start it before the worker runs.
   if (!toResume(t) && !toHandoff(t) && t.location !== 'cloud') {
     let up = null;
-    try { up = UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* unread: the spawn drops its job */ }
+    try { up = DRY ? UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, t.key) : UQ.claimForSpawn(QUEUE_FILE, t.key); } catch (e) {
+      report.waiting.push(`${t.key}: the machine's upload queue could not be read to drop its last round's upload (${e.message}), so no worker was spawned. The next pass looks again`);
+      continue;
+    }
     if (up) {
       report.waiting.push(`${t.key}: its last round's upload to PR #${up.pr} is running in the machine's upload queue, so its next round's worker waits for it to end. The next pass looks again`);
       continue;
@@ -3089,12 +3093,10 @@ for (const t of spawnable) {
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
     'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null',
-    // The round the upload queue's jobs belong to: the last round's job is dropped, and a result of it
-    // that ends after this is not recorded (pumpUploads). A handoff's session is the same round.
+    // The round the upload queue's jobs belong to: the last round's job was dropped before setup
+    // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
+    // handoff's session is the same round.
     `upload_round=${sid}`);
-  if (!DRY) {
-    try { UQ.dropJob(QUEUE_FILE, t.key); } catch (e) { report.failed.push(`${t.key}: its last round's upload was not dropped from the machine's upload queue: ${e.message}; its result is not recorded`); }
-  }
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();

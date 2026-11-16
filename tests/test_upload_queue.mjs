@@ -3,7 +3,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, dropJob, inFlight } from '../desk/bin/upload-queue.mjs';
+import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, claimForSpawn, inFlight } from '../desk/bin/upload-queue.mjs';
 import { tryLock, unlock } from '../desk/bin/dir-lock.mjs';
 import { uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { UPLOAD_PACE } from '../desk/bin/desk-design.mjs';
@@ -136,12 +136,19 @@ function machine({ step = 5000 } = {}) {
   t('a ticket that moves to a new PR moves its job, taking a new place in line', `${moved.pr} ${moved.at !== at}`, '2 true');
   t('uploadsBefore counts only what the log uploaded', uploadsBefore([{ at: new Date(START).toISOString(), result: 'throttled' }], new Date(START + 1)).uploads_last_minute, 0);
   m.add('acme/a', 'a-9', 1, { round: 'r1' });
-  t('a ticket\'s next round drops the job its last round added, and only that one', `${dropJob('/q/acme/a.json', 'a-9', { file: m.file })} ${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-9')} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-1')}`, '1 false true');
-  let during = null;
+  t('a ticket\'s next round drops the job its last round added, and only that one', `${claimForSpawn('/q/acme/a.json', 'a-9', { file: m.file })} ${isQueued(readUploadQueue(m.file), '/q/acme/a.json', 'a-9')} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-1')}`, 'null false true');
+  let during = null; let claimed = null;
   m.add('acme/a', 'a-7', 1);
-  m.code['a-7'] = (job) => { during = inFlight(readUploadQueue(m.file), '/q/acme/a.json', 'a-7'); delete m.code['a-7']; return m.run(job, 1); };
+  m.code['a-7'] = (job) => { during = inFlight(readUploadQueue(m.file), '/q/acme/a.json', 'a-7'); claimed = claimForSpawn('/q/acme/a.json', 'a-7', { file: m.file }); delete m.code['a-7']; return m.run(job, 1); };
   m.clock += 120_000; m.pump();
   t('while a job\'s upload runs, the queue names it running, and no longer once it ends', `${during?.pr} ${inFlight(readUploadQueue(m.file), '/q/acme/a.json', 'a-7')}`, '1 null');
+  t('a spawn while its last round\'s upload runs is told it is running, and drops nothing', claimed?.pr, 1);
+  // A spawn drops the job after a pump has read the queue and picked it, but before the pump starts it.
+  const m2 = machine();
+  m2.add('acme/a', 'a-6', 1); m2.add('acme/b', 'b-6', 1);
+  let dropped = false;
+  m2.pump({ uploadLog: () => { if (!dropped) { dropped = true; claimForSpawn('/q/acme/a.json', 'a-6', { file: m2.file }); } return m2.log; } });
+  t('a pump never starts a job a spawn dropped after the pump picked it, and runs the next', `${m2.calls.map((c) => c.key).join(',')} ${takeResults('/q/acme/a.json', { file: m2.file }).length}`, 'b-6 0');
   t('a running job whose pump has exited is not running', inFlight({ running: { id: '/q/acme/a.json#a-7', pr: 1, pid: 999999999 } }, '/q/acme/a.json', 'a-7'), null);
   t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
 }
