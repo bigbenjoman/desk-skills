@@ -1,9 +1,9 @@
 // suite: upload queue (one machine-wide queue: order, the minute and hour pace, repo rotation, shared back-off)
 // upload-queue.mjs with a fake uploader and a fake clock: nothing here opens a browser or calls GitHub.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, claimForSpawn, inFlight } from '../desk/bin/upload-queue.mjs';
+import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, claimForSpawn, inFlight, signedIn } from '../desk/bin/upload-queue.mjs';
 import { tryLock, unlock } from '../desk/bin/dir-lock.mjs';
 import { uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { UPLOAD_PACE } from '../desk/bin/desk-design.mjs';
@@ -36,7 +36,7 @@ function machine({ step = 5000 } = {}) {
     m.left[dir] = images;
     enqueue({ queue: `/q/${repo}.json`, repo, root: `/repos/${repo}`, key, pr: 1, dir, approved: false, ...extra }, { file: m.file, now: m.now });
   };
-  m.pump = (opts = {}) => pump({ run: m.run, file: m.file, now: m.now, uploadLog: () => m.log, ...opts });
+  m.pump = (opts = {}) => pump({ run: m.run, file: m.file, now: m.now, uploadLog: () => m.log, login: () => ({ ok: true }), ...opts });
   return m;
 }
 
@@ -45,7 +45,7 @@ function machine({ step = 5000 } = {}) {
   const m = machine();
   m.add('acme/a', 'A-1', 2); m.add('acme/b', 'B-1', 2);
   let inner = null;
-  m.code['A-1'] = (job) => { inner = pump({ run: m.run, file: m.file, now: m.now, uploadLog: () => m.log }); delete m.code['A-1']; return m.run(job, 6); };
+  m.code['A-1'] = (job) => { inner = pump({ run: m.run, file: m.file, now: m.now, uploadLog: () => m.log, login: () => ({ ok: true }) }); delete m.code['A-1']; return m.run(job, 6); };
   const r = m.pump();
   t('AC1 both repos\' uploads run in one pass, one after the other', r.ran.map((x) => `${x.job.repo} ${x.code}`), ['acme/a 0', 'acme/b 0']);
   t('AC1 a pass that comes while one is uploading runs nothing', inner.ran.length, 0);
@@ -151,6 +151,44 @@ function machine({ step = 5000 } = {}) {
   t('a pump never starts a job a spawn dropped after the pump picked it, and runs the next', `${m2.calls.map((c) => c.key).join(',')} ${takeResults('/q/acme/a.json', { file: m2.file }).length}`, 'b-6 0');
   t('a running job whose pump has exited is not running', inFlight({ running: { id: '/q/acme/a.json#a-7', pr: 1, pid: 999999999 } }, '/q/acme/a.json', 'a-7'), null);
   t('a job carries the round that added it to its result', (() => { m.add('acme/a', 'a-8', 1, { round: 'r2' }); m.clock += 120_000; m.pump(); return takeResults('/q/acme/a.json', { file: m.file }).find((x) => x.key === 'a-8')?.round; })(), 'r2');
+}
+
+// ---- DS-675: the saved GitHub login not signed in pauses every repo's uploads ---------------------
+{
+  const m = machine();
+  const profile = join(ROOT, 'profile');
+  const session = `${profile}.github-session.json`;
+  const save = (expires) => writeFileSync(session, JSON.stringify({ user: 't', cookies: [{ name: 'user_session', domain: 'github.com', expires }] }));
+  const login = () => signedIn({ profile, file: m.file, now: m.clock });
+  const SIGNIN = 'node ~/.claude/desk/bin/github-signin.mjs';
+  m.add('acme/a', 'a-1', 1); m.add('acme/a', 'a-2', 1); m.add('acme/b', 'b-1', 1);
+  save(START / 1000 - 60);
+  const r = m.pump({ login });
+  t('DS-675 AC1 an expired login: no upload is attempted, from any repo', `${m.calls.length} ${r.ran.length}`, '0 0');
+  t('DS-675 AC1 every job keeps its place and spends no try', `${readUploadQueue(m.file).jobs.length} ${readUploadQueue(m.file).results.length}`, '3 0');
+  t('DS-675 AC1 the pass says why, naming the sign-in command', r.stop, `the GitHub login in ${session} expired at ${new Date(START - 60_000).toISOString()}, so no repo's screenshot upload runs until it is signed in: ${SIGNIN}`);
+  writeFileSync(session, '{}');
+  t('DS-675 no saved login at all pauses them too', m.pump({ login }).stop, `no GitHub login in ${session}, so no repo's screenshot upload runs until it is signed in: ${SIGNIN}`);
+  save(START / 1000 + 86_400);
+  m.pump({ login });
+  t('DS-675 AC2 signed in again, the next pass resumes the queue', m.calls.map((c) => c.key), ['a-1', 'b-1', 'a-2']);
+  // GitHub turns away a login whose saved file still reads unexpired: the uploader's exit 6.
+  // acme/b was served longer ago, so its job goes first.
+  m.add('acme/a', 'a-3', 1); m.add('acme/b', 'b-2', 1);
+  const results = readUploadQueue(m.file).results.length;
+  m.code['b-2'] = () => ({ code: 6, out: `[upload] the saved GitHub login has expired: GitHub no longer accepts ${session}.\n[upload] sign in with: ${SIGNIN}` });
+  m.clock += 120_000;
+  const refused = m.pump({ login });
+  t('DS-675 a login GitHub turns away stops the pass, keeps the job and tries no other repo', `${m.calls.slice(3).map((c) => c.key)} ${isQueued(readUploadQueue(m.file), '/q/acme/b.json', 'b-2')} ${readUploadQueue(m.file).results.length - results}`, 'b-2 true 0');
+  t('DS-675 and says so, naming the sign-in command', /^GitHub turned away the saved login in .* so no repo's screenshot upload runs until it is signed in: node ~\/\.claude\/desk\/bin\/github-signin\.mjs$/.test(refused.stop), true);
+  delete m.code['b-2'];
+  m.clock += 120_000;
+  t('DS-675 the next pass tries nothing while the session file is unwritten', `${m.pump({ login }).ran.length} ${login().ok}`, '0 false');
+  save(START / 1000 + 86_400);
+  utimesSync(session, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
+  m.clock += 120_000;
+  m.pump({ login });
+  t('DS-675 signed in again (the file written since), the queue resumes and the refusal is cleared', `${m.calls.slice(4).map((c) => c.key).join(',')} ${readUploadQueue(m.file).signin}`, 'a-3,b-2 null');
 }
 
 // ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------

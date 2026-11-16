@@ -16,17 +16,24 @@
 //     results: [{ ...job, code, out, until?, done_at }]   until: on a stall, when its back-off ends
 //     served:  { [repo]: <when its last job started> }
 //     backoff: { at, stalls, until, repo, pr } | null
-//     running: { id, pr, pid, at } | null }   the job an upload is running now (inFlight)
-import { readFileSync } from 'node:fs';
+//     running: { id, pr, pid, at } | null     the job an upload is running now (inFlight)
+//     signin:  { at, why, mtime } | null }    GitHub refused the saved login (the uploader's exit 6),
+//                                             until the session file is written again (signedIn)
+//
+// While the browser profile's saved GitHub login is not signed in (signedIn), no job runs, from any
+// repo: every job keeps its place and spends no try, and one health item asks for the sign-in.
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive, lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { deskHome } from './desk-env.mjs';
+import { browserProfile, deskHome } from './desk-env.mjs';
+import { loginState } from './find-playwright.mjs';
 import { UPLOAD_PACE } from './desk-design.mjs';
 import { readUploadLog, uploadsBefore } from './upload-log.mjs';
 import { EXIT_PACED, EXIT_THROTTLED, throttleMs } from './upload-batches.mjs';
 
 export const uploadQueueFile = () => join(deskHome(), 'upload-queue.json');
 export const EXIT_BUSY = 2;
+export const EXIT_SIGNIN = 6;
 const iso = (ms) => new Date(ms).toISOString();
 export const jobId = (j) => `${j.queue}#${j.key}`;
 
@@ -35,8 +42,24 @@ export function readUploadQueue(file = uploadQueueFile()) {
   try { q = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
     if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e;
   }
-  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null };
+  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null, signin: q?.signin ?? null };
 }
+
+export const SIGNIN_CMD = 'node ~/.claude/desk/bin/github-signin.mjs';
+const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return 0; } };
+// The uploader's exit 6 when GitHub turned the saved login away, as against playwright or config missing.
+const REFUSED = /GitHub no longer accepts|saved GitHub login.* expired|no saved GitHub login/;
+// Whether the browser profile's saved GitHub login can upload: { ok, file, why }. Not while it is
+// missing or past its expiry, nor while GitHub refused it (the queue's `signin`) and the session file
+// has not been written since.
+export function signedIn({ profile = browserProfile(), file = uploadQueueFile(), now = Date.now() } = {}) {
+  const s = loginState(profile, now);
+  if (s.status !== 'ok') return { ok: false, file: s.file, why: s.status === 'expired' ? `the GitHub login in ${s.file} expired at ${s.expiredAt}` : `no GitHub login in ${s.file}` };
+  const r = readUploadQueue(file).signin;
+  if (r && mtimeOf(s.file) <= r.mtime) return { ok: false, file: s.file, why: `GitHub turned away the saved login in ${s.file} at ${r.at}` };
+  return { ok: true, file: s.file };
+}
+const signinWhy = (s) => `${s.why}, so no repo's screenshot upload runs until it is signed in: ${SIGNIN_CMD}`;
 // fn(queue) changes the queue under its file lock, and the queue is saved after if it changed (so a
 // pass with nothing to upload writes nothing); returns fn's result.
 export function withQueue(file, fn, { waitMs = 10_000 } = {}) {
@@ -104,11 +127,11 @@ export function backoffAfter(prev, out, end, job) {
 }
 export const backoffWhy = (b) => `an upload for ${b.repo} #${b.pr} stalled at ${b.at}, which is GitHub's rate limit, so no repo's upload runs before ${b.until}`;
 
-// Runs the queue's jobs until it is empty, the pace is spent, an upload stalls or the profile is in
-// use, each job at most once (`tried` holds the ids already run, across one pass's pumps).
-// run(job, max) runs the uploader and returns { code, out }.
+// Runs the queue's jobs until it is empty, the pace is spent, an upload stalls, the profile is in
+// use or its login is not signed in, each job at most once (`tried` holds the ids already run, across
+// one pass's pumps). run(job, max) runs the uploader and returns { code, out }; login() is signedIn.
 // -> { ran: [{ job, code }], stop: why it stopped short, or null }.
-export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set() }) {
+export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set(), login = () => signedIn({ file, now: now() }) }) {
   const runLock = `${file}.run`;
   const holder = tryLock(runLock);
   if (holder !== true) return { ran: [], stop: `another pass is uploading from the machine's upload queue (pid ${holder ?? '?'})` };
@@ -119,6 +142,11 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       const t = now();
       const q = readUploadQueue(file);
       if (Date.parse(q.backoff?.until ?? '') > t) { stop = backoffWhy(q.backoff); break; }
+      if (!pickJob(q, tried)) break;
+      let s;
+      try { s = login(); } catch (e) { s = { ok: false, why: `the browser profile's GitHub login could not be read (${e.message})` }; }
+      if (!s.ok) { stop = signinWhy(s); break; }
+      if (q.signin) withQueue(file, (w) => { w.signin = null; });
       const job = pickJob(q, tried);
       if (!job) break;
       const p = pace(uploadLog(), new Date(t));
@@ -136,10 +164,17 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       try { r = run(job, p.allow); } finally { withQueue(file, (w) => { w.running = null; }); }
       ran.push({ job, code: r.code });
       const end = now();
+      // GitHub turning the login away keeps the job queued, as the cap does, and stops every repo's
+      // uploads till the session file is written again.
+      const refused = r.code === EXIT_SIGNIN && REFUSED.test(r.out ?? '');
       stop = withQueue(file, (w) => {
         if (r.code === EXIT_THROTTLED) w.backoff = backoffAfter(w.backoff, r.out, end, job);
         if ([0, 4, EXIT_PACED].includes(r.code)) w.backoff = null;
         if (r.code === EXIT_PACED) return null;
+        if (refused) {
+          w.signin = { at: iso(end), why: String(r.out).trim().split('\n').at(-1) ?? '', mtime: mtimeOf(s.file) };
+          return signinWhy({ why: `GitHub turned away the saved login in ${s.file} at ${iso(end)}` });
+        }
         const i = w.jobs.findIndex((j) => jobId(j) === jobId(job) && String(j.pr) === String(job.pr) && j.dir === job.dir);
         if (i >= 0) w.jobs.splice(i, 1);
         w.results.push({ ...job, code: r.code, out: r.out, ...(r.code === EXIT_THROTTLED ? { until: w.backoff.until } : {}), done_at: iso(end) });

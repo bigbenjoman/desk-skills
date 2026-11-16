@@ -14,7 +14,11 @@
 //                                                 health line's notes and pushed once per machine
 //   codex    `codex login status`                 unless config §3 codex-review is no (it catches a
 //                                                 sign-out, not a seat out of usage: only a real call does)
-//   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no
+//   browser  the browser profile's saved GitHub login (github-signin.mjs), unless §3 pr-images is no.
+//            It holds no spawn: only screenshot uploads need it, and the machine's upload queue runs
+//            none while it fails (upload-queue.mjs signedIn). It is one item for the machine, however
+//            many repos and batches find it (browserSignin): told by the first slot to find it, or one
+//            taking over from a slot whose state folder is gone, and gone once any slot finds it passing
 //   disk     free space on the worktrees disk, against config §3b "Free disk floor (GB)" (default 20)
 //   database `docker exec <container> pg_isready`  where §4 Local database is `postgres container <name>`
 //                                                 and setup-worktree.sh makes a per-ticket database in it
@@ -30,7 +34,7 @@
 // counts. The results are kept in <state>/health.json and, while every check passes, reused for 15
 // minutes, so a pass every few minutes does not run them each time; a failing run is not reused.
 //
-// A pass holds every new spawn while a required check fails. A remote check is told to the person
+// A pass holds every new spawn while a required check other than the browser fails (`holding`). A remote check is told to the person
 // (a stall line and a push) only once it has failed on two runs in a row, as a blip clears by
 // itself; the local ones (browser, disk, database) on the first. Every remote check failing together, with at
 // least one of them not reaching its host, is the network, one item (`health:<slug>:network`) with no
@@ -45,13 +49,13 @@
 // in tests.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
-import { loginState } from './find-playwright.mjs';
 import { parseDfAvailableGB } from './machine.mjs';
 import { isDir, loginEnv, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { inUse, loginKey, workLoginDirs } from './claude-logins.mjs';
 import { accountEnv } from './review-post.mjs';
+import { signedIn, SIGNIN_CMD } from './upload-queue.mjs';
 
 export const HEALTH_TTL_MS = 15 * 60 * 1000;
 export const CHECK_TIMEOUT_MS = 20 * 1000;
@@ -64,12 +68,14 @@ export const CHECKS = Object.freeze([
   { id: 'jira', name: 'Jira', cmd: ['desk-jira', 'whoami'], fix: 'renew the Jira API token with /desk-setup' },
   { id: 'claude', name: 'Claude', cmd: ['claude', 'auth', 'status'], fix: 'claude auth login' },
   { id: 'codex', name: 'Codex', cmd: ['codex', 'login', 'status'], fix: 'codex login' },
-  { id: 'browser', name: 'browser profile', fix: 'node ~/.claude/desk/bin/github-signin.mjs' },
+  { id: 'browser', name: 'browser profile', fix: `${SIGNIN_CMD}, in a terminal on this machine's screen` },
   { id: 'disk', name: 'free disk' },
   { id: 'database', name: 'local database' },
 ]);
 const byId = Object.fromEntries(CHECKS.map((c) => [c.id, c]));
 const isRemote = (id) => Boolean(byId[id]?.cmd);
+// Failing, these hold no spawn.
+const HOLDS_NO_SPAWN = new Set(['browser']);
 
 // What a failed command's output says when the host could not be reached, as against a refused sign-in.
 // It is read over the whole output: a CLI often prints the connection error above a closing hint.
@@ -176,11 +182,35 @@ function runCommand([cmd, ...args], timeoutMs, cmdEnv = undefined, keepOut = fal
 
 function browserCheck() {
   try {
-    const s = loginState(E.browserProfile());
-    if (s.status === 'ok') return { ok: true };
-    return { ok: false, why: s.status === 'expired' ? `the GitHub login in ${s.file} expired at ${s.expiredAt}` : `no GitHub login in ${s.file}` };
+    const s = signedIn();
+    return s.ok ? { ok: true } : { ok: false, why: s.why };
   } catch (e) { return { ok: false, why: e.message }; }
 }
+
+// The machine's one browser sign-in item: { at, why, state, slug }, the slot that tells it and since
+// when, or null while no slot has found the login failing since one last found it passing.
+export const SIGNIN_KEY = 'health:browser-signin';
+export const SIGNIN_STALL = /^health: browser profile failed: /;
+const signinFile = () =>join(E.HOME, '.desk-autopilot', 'health-browser-signin.json');
+export function browserSignin() {
+  try { return JSON.parse(readFileSync(signinFile(), 'utf8')); } catch { return null; }
+}
+// Whether the slot at `state` tells the sign-in item: the first to find the login failing, or one taking
+// over from a slot whose state folder is gone. A record it cannot read or write is told anyway.
+function tellsSignin(state, slug, why, now) {
+  const file = signinFile();
+  const rec = (at) => `${JSON.stringify({ at, why, state, slug })}\n`;
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, rec(new Date(now).toISOString()), { flag: 'wx' });
+    return true;
+  } catch (e) { if (e.code !== 'EEXIST') return true; }
+  const prev = browserSignin();
+  if (prev?.state && prev.state !== state && existsSync(prev.state)) return false;
+  try { if (prev?.state !== state || prev.why !== why) writeFileSync(file, rec(prev?.at ?? new Date(now).toISOString())); } catch { /* told anyway */ }
+  return true;
+}
+const clearSignin = () => { try { unlinkSync(signinFile()); } catch { /* none, or another slot took it */ } };
 
 function diskCheck(env) {
   const floor = diskFloor();
@@ -290,7 +320,7 @@ function nextStreak(prev, units) {
 // and `unconfirmed` the remote failures rechecked before they are told.
 export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = Date.now(), env = process.env } = {}) {
   if (/^off$/i.test(env.AUTOPILOT_HEALTH_CHECKS ?? '')) {
-    return { off: true, failing: [], recovered: [], unconfirmed: [], stalls: [], push: [], reviewer: null, line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
+    return { off: true, failing: [], holding: [], recovered: [], unconfirmed: [], stalls: [], push: [], reviewer: null, line: 'health: checks off (AUTOPILOT_HEALTH_CHECKS=off)' };
   }
   const reviewerWanted = (() => { try { return E.gateReviewers() != null; } catch { return true; } })();
   const skip = Object.fromEntries(CHECKS.map((c) => [c.id, notRequired(c.id)]).filter(([, why]) => why));
@@ -335,12 +365,18 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     : nextStreak({ streak: prev?.reviewer_streak ?? {} }, reviewerOut ? [{ key: 'reviewer', kind: reviewerOut.kind }] : []);
   const reviewerTold = !!reviewerOut && (reviewerOut.kind !== 'network' || reviewerStreak.reviewer?.n >= 2);
   const failing = wanted.filter((id) => !results[id].ok);
+  const holding = failing.filter((id) => !HOLDS_NO_SPAWN.has(id));
   const remote = wanted.filter(isRemote);
   const network = remote.length > 1 && remote.every((id) => !results[id].ok) && remote.some((id) => results[id].kind === 'network');
+  // The browser is told as the machine's one sign-in item, below, not as this slot's.
   const units = [
     ...(network ? [{ key: 'network', kind: 'network', ids: remote }] : []),
-    ...failing.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),
+    ...holding.filter((id) => !(network && isRemote(id))).map((id) => ({ key: id, kind: results[id].kind ?? 'auth', ids: [id] })),
   ];
+  const browserOut = wanted.includes('browser') && !results.browser.ok ? results.browser : null;
+  let tellsBrowser = false;
+  if (browserOut) tellsBrowser = tellsSignin(state, slug, browserOut.why, now);
+  else if (wanted.includes('browser')) clearSignin();
   const streak = reused ? prev.streak ?? {} : nextStreak(prev, units);
   const told = (u) => !isRemote(u.ids[0]) || (streak[u.key]?.n ?? 1) >= 2;
   const unconfirmed = units.filter((u) => !told(u)).map((u) => u.key);
@@ -366,6 +402,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   const rechecking = [...unconfirmed, ...(reviewerOut && !reviewerTold ? ['reviewer'] : [])];
   if (rechecking.length) notes.push(`rechecking before telling you: ${rechecking.join(', ')}`);
   if (reviewerTold) notes.push(`reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns`);
+  if (browserOut) notes.push(`browser failing, not holding spawns: every repo's screenshot uploads wait in the machine's upload queue${tellsBrowser ? '' : `, told once for the machine by ${browserSignin()?.slug ?? 'another slot'}'s pass`}`);
   // A repo with no Postgres container has no database to check, so it is not named as skipped.
   const skipped = Object.entries(skip).filter(([id]) => id !== 'database' || perTicketDb(env).container).map(([id, why]) => `${byId[id].name} (${why})`);
   if (skipped.length) notes.push(`not required: ${skipped.join(', ')}`);
@@ -373,9 +410,8 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   // The default is removed only once another login is the default.
   const missingFix = (l) => `${l.stored === 'default' ? 'make another login the default (desk-env logins default claude <name>) and then ' : ''}remove its row (desk-env logins remove claude ${l.name}) or sign it in (${signInCommand(l)})`;
   for (const l of missing) notes.push(`claude login ${l.name} listed at ${l.folder}, which does not exist: ${missingFix(l)}`);
-  const line = failing.length
-    ? `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — holding new spawns (${notes.join('; ')})`
-    : `health: all checks pass (${notes.join('; ')})`;
+  const line = !failing.length ? `health: all checks pass (${notes.join('; ')})`
+    : `health: ${failing.length} check(s) failing — ${failing.join(', ')}${network ? ', every remote check: the network' : ''} — ${holding.length ? 'holding new spawns' : 'not holding spawns'} (${notes.join('; ')})`;
   const shown = units.filter(told);
   const stalls = shown.map((u) => (u.key === 'network'
     ? `health: every remote check failed (${u.ids.map((id) => `${id}: ${results[id].why}`).join('; ')}) — this machine looks offline, not signed out: check its network connection; no new worker starts until they pass`
@@ -390,6 +426,10 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     stalls.push(`health: Claude login ${l.name} (${l.folder}) ${out} — ${fix}; spawns are not held for it`);
     push.push({ key: `health:${slug}:claude:${loginKey(l)}`, text: `desk ${slug}: Claude login ${l.name} ${out}. Fix: ${fix}` });
   }
+  if (tellsBrowser) {
+    stalls.push(`health: ${label('browser')} failed: ${browserOut.why} — fix: ${byId.browser.fix}; every repo's screenshot uploads wait in the machine's upload queue until it passes, and new workers still start`);
+    push.push({ key: SIGNIN_KEY, text: `desk: the browser profile's GitHub login is not signed in (${browserOut.why}), so every repo's screenshot uploads wait in the machine's upload queue; workers still start. Fix: ${byId.browser.fix}` });
+  }
   const missingDir = missingLoginsDir();
   clearFound(missingDir, missing);
   for (const l of missing.filter((m) => pushesMissing(missingDir, m, state))) {
@@ -401,7 +441,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${HELD_WORDS}`);
     push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${HELD_WORDS}. Fix: ${reviewerOut.fix}` });
   }
-  return { off: false, reused, at, results, failing, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held };
+  return { off: false, reused, at, results, failing, holding, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held };
 }
 
 const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
