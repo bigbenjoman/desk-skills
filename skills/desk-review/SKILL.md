@@ -275,8 +275,7 @@ the P2 findings carried (counted there, **not** in `p2`) and the fix range's sta
 clean; the blocking counts above do. It sits after the heading, not in the verdict line: a repo's
 committed gate copy matches that line exactly, and would read an extra field as no verdict at all
 (`tests/test_review_gate.mjs`). So does `<!-- desk-review:accepted v=1 gaps=<n> -->`, next: the gaps
-the person accepted (Phase 5), not in `gaps`. And `<!-- desk-review:post-merge v=1 gaps=<n> items=<json> -->`
-after it: the criteria only a live system can check, left for after the merge (Phase 5), not in `gaps`.
+the person accepted (Phase 5), not in `gaps`.
 
 Last, `<!-- desk-review:method v=1 fallback=<n> -->` counts the fallback seats (the heading
 names them); like the carried line, it never decides clean. `verdict.mjs --method <results>`

@@ -204,10 +204,6 @@ finders read-only, and when and how to call `codex`. Read that section before th
   body. Growth means new behaviour, not new call sites.
 - **Requirement gaps**: report in `AUTOPILOT_DONE` and the verdict's gap count, do not act (one a
   sibling ticket owns: `ask-or-take.md`). A gap keeps the PR in draft until the user decides.
-- **A criterion only a live system can check** is no gap: the review lists it in `post_merge`
-  (desk-review's `phase-5-requirements.md`, *A criterion only a live system can check*), its verdict
-  reads clean, and the pass keeps it as a follow-on step once the PR merges. Never park asking the
-  person to accept it on the PR. A high-risk one stays a `PERSON'S CALL` gap, as above.
 - **Nothing found**: say so with the count of files reviewed. It goes in the PR's Testing bullet
   per `desk-pr`, carrying the SHA and any `(same-vendor)` tag.
 

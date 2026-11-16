@@ -72,8 +72,8 @@ amends nothing, and the gap is the worker's to close.
 
 `settled_by` is `person` only when no change the ticket allows can close the gap, so all that is
 left is the person accepting it on the PR or amending the criterion: a value only the person holds,
-say, or a high-risk criterion that only a live system can check (*A criterion only a live system can
-check*, below). Doubt is `code`, and so is each of these, whatever the criterion's wording:
+say, or a high-risk criterion that can pass only on a deployed build (*A criterion only a live system
+can check*, below). Doubt is `code`, and so is each of these, whatever the criterion's wording:
 
 - a gap a worker could close by changing code, or by an engineering call of its own;
 - a gap whose own `gap:` text names the code change that closes it;
