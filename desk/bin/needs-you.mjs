@@ -82,7 +82,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, mergedTailPr, mergedTailSet, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -204,9 +204,6 @@ export const READS = {
   },
   git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
 };
-// The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
-// ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
-const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
 // Whether a key is a ticket in the repo's tracker, by its §4 Ticket key pattern.
 function trackerTicket(r, key) {
   const pattern = repoConfigValue(r.slug, 'ticket-pattern');
@@ -228,7 +225,7 @@ function shippedOf(r, t, reads) {
   return reads.ticket(r, t.key) === 'done' ? { how: `${mergedWords(pr, v)}, and ${ticketWords(t.key, 'done')}`, pr, v } : null;
 }
 // A parked item whose own PR merged and whose ticket reads not done in Jira: back to a worker for its
-// after-merge steps alone, as the pass sends one (pass.mjs tailAfterMerge). -> { pr, v }, or null.
+// after-merge steps alone (batch-state mergedTailSteps). -> { pr, v }, or null.
 function tailOf(r, t, reads) {
   const pr = mergedTailPr(t);
   if (pr == null || t.park?.clears_when?.kind === 'links-made' || linksPending(t) || !trackerTicket(r, t.key)) return null;
@@ -239,13 +236,14 @@ function tailOf(r, t, reads) {
 }
 function requeueTail(r, t, { pr, v }) {
   const how = `${mergedWords(pr, v)}, and ${ticketWords(t.key, 'indeterminate')}`;
-  if (t.handoff_stage != null) queueCmd(r, ['set', t.key, 'handoff_stage=null']);
+  const steps = mergedTailSteps(t, pr, v?.mergedAt ?? null);
+  if (steps.before) queueCmd(r, steps.before);
   const rq = queueCmd(r, ['requeue', t.key]);
   if (!rq.ok) {
-    queueCmd(r, ['set', t.key, `merged_tail=${pr}`, ...(t.handoff_stage != null ? [`handoff_stage=${t.handoff_stage}`] : [])]);
+    queueCmd(r, steps.refused);
     return `${how}, but the requeue for its after-merge steps was refused, so it stays on your list: ${rq.out}`;
   }
-  const m = queueCmd(r, mergedTailSet(t, pr, v?.mergedAt ?? null));
+  const m = queueCmd(r, steps.after);
   return m.ok ? `${how}, so it is back with a worker for its after-merge steps only, and off your list.`
     : `${how}; it is requeued, but its briefing could not be told only the after-merge steps are left: ${m.out}`;
 }

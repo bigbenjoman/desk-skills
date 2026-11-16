@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSet, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
@@ -1343,7 +1343,8 @@ function ownMergedPr(t) {
 // newest PR merged since the ticket joined the queue whose branch names its key, else { jira: true } when
 // its tracker status category is done and it records no PR of its own, else null. A title is not
 // enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
-// requeued for more work counts only PRs merged after that merge. A read that fails is null, and the
+// requeued for more work counts only PRs merged after that merge, and one requeued for its after-merge
+// steps (merged_tail) never counts that PR, whose merge is why it runs. A read that fails is null, and the
 // ticket spawns as it would have.
 function shippedElsewhere(t) {
   try {
@@ -1355,7 +1356,7 @@ function shippedElsewhere(t) {
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
     const re = new RegExp(keyPattern(t.key));
     const hit = (Array.isArray(prs) ? prs : [])
-      .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? ''))
+      .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
         && (since === -Infinity || Date.parse(p.mergedAt) >= since)
         && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(t.result?.pr))))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
@@ -1449,6 +1450,9 @@ function settleClear(t) {
     report.clears.push(`${t.key}: "${what}" holds, but whether its own PR merged could not be read (${e.message}): left parked`);
     return;
   }
+  // Its own PR merged with its ticket not done in Jira: the after-merge steps are still to run. One whose
+  // Jira could not be read is left parked, not recorded done.
+  if (own != null && own === mergedTailPr(t) && tailAfterMerge(t) !== false) return;
   if (own != null) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own} merged`, `result.pr=${own}`);
@@ -1477,7 +1481,8 @@ function settleClear(t) {
 // or one put off is never touched. The push and the take are tried once a park (park.recovery says
 // why one was not done), and a push answered with a 5xx becomes a park the clears-when check tries
 // each pass; the merged-PR check runs once per base and branch head (park.dup_checked).
-const lastLine = (s) => String(s ?? '').trim().split('\n').pop();
+// A declaration, so settleClear's tail requeue (tailAfterMerge), which runs above it, can call it.
+function lastLine(s) { return String(s ?? '').trim().split('\n').pop(); }
 const shortQ = (s) => (String(s).length > 160 ? `${String(s).slice(0, 159)}…` : String(s));
 let baseFetched = false;
 // A branch with commits of its own that adds nothing to the base, where a merged PR names the ticket.
@@ -1604,6 +1609,8 @@ function takeRecommended(t) {
 // A tracker ticket parked with its own PR merged and the ticket not done in Jira: only the steps after
 // a merge are left, so it goes back to a worker briefed to run those alone, before any check below can
 // drop its branch. A park waiting on issue links has its tail done already. A read that fails leaves it.
+// -> true when it was requeued (or the requeue refused), false when it is not such a ticket, null when
+// GitHub or Jira could not say.
 function tailAfterMerge(t) {
   const pr = mergedTailPr(t);
   const k = E.ticketKind(t.key);
@@ -1611,18 +1618,18 @@ function tailAfterMerge(t) {
   let v, status;
   try { v = clearsRead.pr(pr); if (v?.state === 'MERGED') status = clearsRead.ticket(t.key); } catch (e) {
     report.recovered.push(`${t.key}: whether its PR #${pr} merged, or its ticket is done, could not be read (${e.message}): left parked`);
-    return false;
+    return null;
   }
   if (v?.state !== 'MERGED' || status === 'done') return false;
-  // A handoff stage would start it at that stage's work rather than the tail.
-  if (t.handoff_stage != null) q('set', t.key, 'handoff_stage=null');
+  const steps = mergedTailSteps(t, pr, v.mergedAt ?? null);
+  if (steps.before) q(...steps.before);
   const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
   if (!rq.ok) {
-    q('set', t.key, `merged_tail=${pr}`, ...(t.handoff_stage != null ? [`handoff_stage=${t.handoff_stage}`] : []));
+    q(...steps.refused);
     report.recovered.push(`${t.key}: its PR #${pr} merged and it is not done in Jira, but the requeue for its after-merge steps was refused (${lastLine(rq.out)}): left parked`);
     return true;
   }
-  q(...mergedTailSet(t, pr, v.mergedAt ?? null));
+  q(...steps.after);
   report.recovered.push(`${t.key}: its PR #${pr} merged while it was parked, and it is not done in Jira: requeued for its after-merge steps only, with no push`);
   return true;
 }

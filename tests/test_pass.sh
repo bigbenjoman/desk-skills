@@ -3981,14 +3981,17 @@ check "DS-758 AC3 a metrics file that cannot be written: the pass completes and 
   'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
 
 # ---- DS-573: a parked ticket whose own PR merged before its Jira tail was done goes back to a worker
-# for its after-merge steps only. PR 701 and 703 merged, 702 is open; MT-3 is done in Jira.
+# for its after-merge steps only. PR 701, 703 and 704 merged, 702 is open; MT-3 is done in Jira. GitHub's
+# list of merged PRs holds 701 and 704 from the tickets' own branches, which the spawn's shipped-elsewhere
+# check must not read as shipped.
 export DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"; mkdir -p "$T/state-mt/logs"
 { cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `MT-[0-9]+` |\n'; } > "$T/config-mt.md"
 cat > "$T/stub/gh" <<'EOF'
 #!/bin/sh
 case "$*" in
-  "pr view 701 "*|"pr view 703 "*) echo '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-12T09:01:00Z"}' ;;
+  "pr view 701 "*|"pr view 703 "*|"pr view 704 "*) echo '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-12T09:01:00Z"}' ;;
   "pr view 702 "*) echo '{"state":"OPEN","isDraft":true,"mergedAt":null}' ;;
+  "pr list --repo "*" --state merged --search "*) echo '[{"number":701,"headRefName":"fix/MT-1","mergedAt":"2099-01-01T09:01:00Z"},{"number":704,"headRefName":"fix/MT-4","mergedAt":"2099-01-01T09:01:00Z"}]' ;;
   "pr list"*) echo '[]' ;;
 esac
 exit 0
@@ -4006,6 +4009,7 @@ MQ="MT-1: PR #701's unit tests are red: which fixture should win?"
 q add MT-1; q set MT-1 lane=A branch=fix/MT-1 draft_pr=701 handoff_stage=7; q park MT-1 "$MQ"
 q add MT-2; q set MT-2 lane=A branch=fix/MT-2 draft_pr=702; q park MT-2 "MT-2: which fixture should win?"
 q add MT-3; q set MT-3 lane=A draft_pr=703; q park MT-3 "MT-3: which fixture should win?"
+q add MT-4; q set MT-4 state=parked lane=A branch=fix/MT-4 draft_pr=704 'park={"question":"MT-4: waiting on PR #704 to merge","clears_when":{"kind":"pr-merged","pr":704}}'
 out=$(node "$B/pass.mjs" 2>&1)
 MTB="$T/state-mt/briefings/MT-1.md"
 check "DS-573 AC1 a parked ticket whose PR merged, not done in Jira, is requeued and spawned, with no question left" \
@@ -4018,6 +4022,8 @@ check "DS-573 AC3 a parked ticket whose PR is still open is left as it was" \
   '[ "$(field MT-2 state)" = "\"parked\"" ] && [ "$(field MT-2 park.question)" = "\"MT-2: which fixture should win?\"" ] && [ "$(field MT-2 merged_tail)" = null ] && ! echo "$out" | grep -q "MT-2: its PR"'
 check "DS-573 a ticket already done in Jira is not requeued for a tail" \
   '[ "$(field MT-3 state)" = "\"parked\"" ] && [ "$(field MT-3 merged_tail)" = null ]'
+check "DS-573 AC1 a park whose recorded condition holds, its PR merged and not done in Jira, is requeued for its tail, not recorded done" \
+  '[ "$(field MT-4 state)" = "\"running\"" ] && [ "$(field MT-4 merged_tail)" = 704 ] && grep -qF "A pass found PR #704 merged at 2026-11-12 09:01 UTC" "$T/state-mt/briefings/MT-4.md" && echo "$out" | grep -qF "MT-4: its PR #704 merged while it was parked"'
 # The tail worker parks in its turn: that park is the person's, never requeued again on the same PR.
 q park MT-1 "MT-1: jira-close-own-merged is ask: may I move it to Done?"
 out=$(node "$B/pass.mjs" 2>&1)

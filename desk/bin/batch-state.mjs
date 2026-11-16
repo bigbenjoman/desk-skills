@@ -47,18 +47,30 @@ export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key,
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
 
-// A parked ticket's own PR, when one merging leaves only its after-merge steps: the PR it opened, else
-// its draft, never one that merged before a requeue for more work (merged_at), and none once a worker
-// was sent back on it already (merged_tail), so a park of that worker's stays the person's.
+// The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
+// ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
+export const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
+// A parked ticket's own PR, when one merging leaves only its after-merge steps: none once a worker was
+// sent back on it already (merged_tail), so a park of that worker's stays the person's.
 export function mergedTailPr(t) {
-  const earlier = t.merged_at ? Number(t.result?.pr) : NaN;
-  const pr = [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier);
+  const pr = ownPr(t);
   return pr == null || Number(t.merged_tail) === Number(pr) ? null : Number(pr);
 }
-// The `queue.mjs set` arguments, written after the requeue, that send it back for those steps alone:
-// the briefing says so (pass.mjs writeBrief).
-export const mergedTailSet = (t, pr, mergedAt = null) => ['set', t.key, `merged_tail=${pr}`,
-  `cleared=${JSON.stringify({ what: `PR #${pr} merged${mergedAt ? ` at ${String(mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}, and ${t.key} is not done in Jira yet`, tail: { pr, merged_at: mergedAt } })}`];
+// The `queue.mjs` arguments that send it back for those steps alone, which pass.mjs and needs-you.mjs
+// both run around their own `requeue`: `before` it (null when there is nothing to clear; a handoff
+// stage would start it at that stage's work rather than the tail), on a `refused` requeue (the stage put
+// back, and the PR marked so it is not tried again), and `after` it, which the briefing reads (pass.mjs
+// writeBrief).
+export function mergedTailSteps(t, pr, mergedAt = null) {
+  const stage = t.handoff_stage != null ? [`handoff_stage=${t.handoff_stage}`] : [];
+  const at = mergedAt ? ` at ${String(mergedAt).slice(0, 16).replace('T', ' ')} UTC` : '';
+  return {
+    before: stage.length ? ['set', t.key, 'handoff_stage=null'] : null,
+    refused: ['set', t.key, `merged_tail=${pr}`, ...stage],
+    after: ['set', t.key, `merged_tail=${pr}`,
+      `cleared=${JSON.stringify({ what: `PR #${pr} merged${at}, and ${t.key} is not done in Jira yet`, tail: { pr, merged_at: mergedAt } })}`],
+  };
+}
 
 // Why a worktree holds work origin lacks, read with `git` (its arguments -> stdout, or null when the read
 // fails): uncommitted tracked changes, or commits its branch has not pushed. -> the reason; null when it
