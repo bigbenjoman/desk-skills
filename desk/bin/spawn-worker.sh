@@ -39,7 +39,7 @@ node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
 command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; exit 1; }
 
 STATE="$DESK_STATE"
-BIN="$DESK_BIN"
+BIN="$DESK_RUN_BIN"   # this script's own release, so a worker is prepared by one release's scripts
 CONTRACT="$DESK_SKILLS_DIR/desk-autopilot/references/autopilot-worker-contract.md"
 # The core rides in every turn's system prompt; each stage section is a file beside it that the
 # worker Reads when it reaches that stage (the core's stage table names them). A task worker has no

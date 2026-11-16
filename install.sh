@@ -56,19 +56,23 @@ for arg in "$@"; do
   esac
 done
 
+# refresh_pristine <from> — for each release file read from stdin (bin/<script>, templates/<path>),
+# makes its pristine copy <from>'s, so the next install reads only your own edits as edits
+refresh_pristine() {
+  local rel
+  while IFS= read -r rel; do
+    [ -f "$1/$rel" ] || continue
+    mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
+    cp "$1/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
+  done
+}
+
 # --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
-# hold the release now current, so the next install reads only your own edits as edits. Then it moves
-# what runs onto it.
+# hold the release now current. Then it moves what runs onto it.
 if [ "$ROLLBACK" = 1 ]; then
   if [ ! -f "$DESKDIR/bin/installed.mjs" ]; then echo "nothing rolled back: no desk is installed in $DESKDIR" >&2; exit 1; fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
-  if [ -f "$DESKDIR/current/release-files" ]; then
-    while IFS= read -r rel; do
-      [ -f "$DESKDIR/current/$rel" ] || continue
-      mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
-      cp "$DESKDIR/current/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
-    done < "$DESKDIR/current/release-files"
-  fi
+  if [ -f "$DESKDIR/current/release-files" ]; then refresh_pristine "$DESKDIR/current" < "$DESKDIR/current/release-files"; fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
   exit 0
 fi
@@ -309,12 +313,15 @@ same_release() {
   while IFS= read -r rel; do cmp -s "$SRC/desk/$rel" "$1/$rel" || return 1; done < <(release_files)
 }
 # release_name — the commit for a clean checkout; for a dirty one, or a commit whose release folder
-# holds other files, the commit and this install's time; for a checkout outside git, unversioned-<time>
+# holds other files or is not the current one, the commit and this install's time; for a checkout
+# outside git, unversioned-<time>. Only the current release is reused: an older one lacks the files
+# of your own the live folder has gained since, which a new release carries.
 release_name() {
   local head n
   if ! head="$(git -C "$SRC" rev-parse HEAD 2>/dev/null)"; then n="unversioned-$TS"
   elif [ -z "$(git -C "$SRC" status --porcelain --untracked-files=no 2>/dev/null)" ] \
-     && { [ ! -e "$RELEASES/$head" ] || same_release "$RELEASES/$head"; }; then
+     && { [ ! -e "$RELEASES/$head" ] || { [ "$(readlink "$DESKDIR/current" 2>/dev/null || true)" = "releases/$head" ] \
+                                           && same_release "$RELEASES/$head"; }; }; then
     echo "$head"; return
   else n="$head-$TS"
   fi
@@ -381,7 +388,7 @@ install_release() {
     case "$rel" in bin/*) count=$((count + 1)) ;; esac
   done < <(release_files)
   if [ -d "$rel_dir" ]; then
-    note "release $name already holds these files; making it current"
+    note "release $name already holds these files and is current"
   else
     STAGE="$RELEASES/.partial-$name.$$"
     mkdir -p "$STAGE/bin" "$STAGE/templates"
@@ -406,10 +413,7 @@ install_release() {
   else
     warn "could not record the installed version"; show_err "$out"
   fi
-  while IFS= read -r rel; do
-    mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
-    cp "$SRC/desk/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
-  done < <(release_files)
+  release_files | refresh_pristine "$SRC/desk"
   ok "$count scripts in release $name, now current (queue.json, workers/ and batch state are never touched)"
   wrote "scripts  ~/.claude/desk/releases/$name ($count), current; ~/.claude/desk/bin and templates link through ~/.claude/desk/current"
   if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" prune 2>&1)"; then

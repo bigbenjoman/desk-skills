@@ -34,9 +34,9 @@ mark(){ printf 'export default "%s";\n' "$1" > "$T/src/desk/bin/marker.mjs"; G a
 git init -q "$T/src"
 
 # The installer's functions, with its output helpers, as a script that installs or rolls back.
-fns="$(for f in save_edit prune_removed rename_over release_files same_release release_name carry_own go_live install_release; do
+fns="$(for f in save_edit prune_removed rename_over release_files same_release release_name carry_own go_live refresh_pristine install_release; do
   sed -n "/^$f() {\$/,/^}\$/p" "$R/install.sh"; done)"
-check "install_release and its helpers are found in install.sh" '[ "$(printf "%s\n" "$fns" | grep -c "^[a-z_]*() {$")" = 9 ]'
+check "install_release and its helpers are found in install.sh" '[ "$(printf "%s\n" "$fns" | grep -c "^[a-z_]*() {$")" = 10 ]'
 tr="$(grep '^trap .*STAGE' "$R/install.sh")"
 check "the partial-release trap is found in install.sh" '[ -n "$tr" ]'
 cat > "$T/install" <<EOF
@@ -144,5 +144,13 @@ out="$(rb)"; rc=$?
 check "AC6: with one release, the rollback says there is no earlier release" '[ $rc = 1 ] && [[ "$out" == "nothing rolled back: there is no earlier release than the current one ($H)"* ]]'
 check "AC6: and changes nothing" '[ "$(readlink "$D/current")" = "releases/$H" ] && [ "$(cat "$D/installed.json")" = "$inst" ]'
 check "AC8: still untouched" '[ "$(state)" = "$before" ]'
+
+# A clean commit whose release is kept but not current: your own files are carried, not dropped.
+I="$(mark I)"
+out="$(TS=20261116-000010 "$SH" "$T/install" 2>&1)"
+G checkout -q "$H"; echo later > "$D/bin/later-own.sh"
+out="$(TS=20261116-000011 "$SH" "$T/install" 2>&1)"; rc=$?
+check "an older release of the same commit is not reused, so a file of your own added since stays" \
+  '[ $rc = 0 ] && [ "$(readlink "$D/current")" = "releases/$H-20261116-000011" ] && [ "$(cat "$D/bin/later-own.sh")" = later ]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
