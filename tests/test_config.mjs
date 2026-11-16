@@ -293,6 +293,21 @@ t('DS-389 and drift no longer names it', drift(a.file).out, 'no drift');
   t('DS-682 AC2 each input label is read, lowercased', inputs(c), '["ben-input"]');
 }
 
+// DS-689 AC5: a config with no §4 Append-only paths row has it named MISSING, /desk-setup asks for it
+// suggesting none, and an answer of none is written as the row.
+{
+  const realEnv = (c) => driftEnv({ DESK_CONFIG: c, DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md') });
+  const c = join(T, 'append-only.md');
+  writeFileSync(c, `${P4}| Incidental paths | \`none\` |\n`);
+  let out = '';
+  try { out = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: realEnv(c), stdio: 'pipe' }); } catch (e) { out = String(e.stdout); }
+  t('DS-689 AC5 a config with no Append-only paths row has it named MISSING', out.includes('MISSING  §4 "Append-only paths"'), true);
+  const detect = readFileSync(join(ROOT, 'skills', 'desk-setup', 'references', 'step-1-detect.md'), 'utf8');
+  t('DS-689 AC5 /desk-setup asks for the row, suggesting none', /\*\*Append-only paths\.\*\* Ask [^]*?suggesting `none`/.test(detect), true);
+  const w = execFileSync('node', [BIN, 'add-row', '4', 'Append-only paths', 'none'], { encoding: 'utf8', env: realEnv(c), stdio: 'pipe' });
+  t('DS-689 AC5 an answer of none is written as the row', `${w.startsWith('ADDED §4')} ${readFileSync(c, 'utf8').includes('| Append-only paths | `none` |')}`, 'true true');
+}
+
 // The shipped template compared with itself: every row it declares is found, the ledger is not a row.
 const self = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md'), DESK_CONFIG: join(ROOT, 'desk-config.md') }) }).trim();
 t('the template has no drift against itself', self, 'no drift');

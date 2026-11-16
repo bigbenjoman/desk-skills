@@ -22,6 +22,7 @@ import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
+import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 const plan = [];
@@ -107,12 +108,13 @@ let admitted = here.filter((r) => laneOk(r) && !sizeParked(r));
 
 // Collision detection. Two tickets that touch the same file cannot run concurrently:
 // they would conflict on the file, and worse, each is blind to a helper the other just
-// added — a duplicate by this repo's own rules.
+// added — a duplicate by this repo's own rules. A file §4 Append-only paths covers is only added to,
+// so sharing it is no collision; a row that is not a list of globs reads as none and is said below.
+const appendOnly = appendOnlyFrom(() => configValues('append-only-paths'));
 const collisions = [];
 for (let i = 0; i < admitted.length; i++) {
   for (let j = i + 1; j < admitted.length; j++) {
-    const a = new Set(admitted[i].files_in_scope ?? []);
-    const shared = (admitted[j].files_in_scope ?? []).filter((f) => a.has(f));
+    const shared = sharedFiles(admitted[i].files_in_scope, admitted[j].files_in_scope, appendOnly.globs);
     if (shared.length) collisions.push({ a: admitted[i].ticket, b: admitted[j].ticket, shared });
   }
 }
@@ -558,6 +560,7 @@ if (collisions.length) {
   say(`\nCOLLISIONS — ${collisions.length}:`);
   for (const c of collisions) say(`  ${c.a} ~ ${c.b}: ${c.shared.join(', ')}`);
 }
+if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);

@@ -209,6 +209,11 @@ How to turn what you find into rows:
   `none`. Say that autopilot parks a ticket carrying one as the user's step, as a Person-step label
   does, but holds the build of a ticket it blocks until the step is Done; a ticket labelled both is
   an input.
+- **Append-only paths.** Ask which files tickets only add to, such as a locale file each ticket adds
+  its strings to, suggesting `none`, and record each glob as one span in §4 Append-only paths (e.g.
+  `` `messages/*.json` ``); with none named, write `none`. Say that autopilot does not count two
+  tickets sharing only such files as a collision, so they run side by side, and that any other
+  shared file still collides.
 - **Evidence workflow.** Look in the workflows for one that takes a PR's screenshots and writes them
   into its body (a `workflow_dispatch` with a `pr` input that replaces `_drag <file>_` cells, e.g.
   `pr-evidence.yml`). Where there is one, propose it for §4 Evidence workflow as `` `<file>.yml` ``;
