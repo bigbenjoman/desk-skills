@@ -527,14 +527,30 @@ function outsideHolds(r, t) {
   return outsideOf(t).map((b) => {
     let at;
     try { at = batchHolding(b.key, r.slug); } catch { at = { name: 'more than one batch' }; }
-    return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null };
+    return { key: b.key, category: b.category ?? 'new', batch: at ? (at.name ?? 'standing') : null, ...('assignee' in b ? { assignee: b.assignee } : {}) };
   });
 }
+// Why the person would not queue blocker `o` (one outsideHolds returns), or null when it is theirs to:
+// in To Do, in this repo's §4 Jira project (`project`), and unassigned or assigned to them (`owner`, §1
+// Jira display name, as plan-batch tests it). An assignee never read is no one's to assume.
+export function notAdmittable(o, { project, owner }) {
+  const why = [];
+  if (o.assignee === undefined) why.push('its assignee could not be read');
+  else if (o.assignee !== null && o.assignee !== owner) why.push(`it is assigned to ${o.assignee}`);
+  const p = String(o.key).replace(/-\d+$/, '');
+  if (p !== project) why.push(project ? `it is in Jira project ${p}, not ${project}` : `this repo's config names no Jira project to match ${p} against`);
+  if (o.category !== 'new') why.push(`it is ${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}`);
+  return why.length ? `${o.key}: ${why.join(', and ')}` : null;
+}
+const admitRules = (r) => ({ project: repoConfigValue(r.slug, 'jira-project'), owner: repoConfigValue(r.slug, 'jira-display-name') ?? repoConfigValue(r.slug, 'name') });
 const holdWords = (o) => `${o.key} (${(JIRA_CATEGORY[o.category] ?? o.category).toLowerCase()}, ${o.batch ? `in batch ${o.batch}` : 'in no batch'})`;
 // Every blocker a ticket names, in its batch or outside it, with its state: a put-off item's input, so a
-// blocker that moves brings it back.
+// blocker that moves brings it back. One in no batch that is the person's to queue (notAdmittable) is
+// marked `+yours`, so a blocker put off as someone else's comes back once it is unassigned or theirs.
 function blockerStates(r, t) {
-  const out = new Map(outsideHolds(r, t).map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}`]));
+  const holds = outsideHolds(r, t), rules = holds.some((o) => !o.batch) ? admitRules(r) : null;
+  const yours = (o) => (!o.batch && !notAdmittable(o, rules) ? '+yours' : '');
+  const out = new Map(holds.map((o) => [o.key, `${o.category}@${o.batch ?? 'none'}${yours(o)}`]));
   return [...new Set([...keysOf(t.held_by), ...out.keys()])].map((b) => `${b}:${r.q.tickets?.[b]?.state ?? out.get(b) ?? 'none'}`).join(',');
 }
 // An item's action names, once each: what a put-off entry records, so one it gains brings it back.
@@ -800,14 +816,24 @@ function itemOf(r, x, reads = null) {
     return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
-  // blocker no batch holds is worked by nobody, so admitting it comes first; answering says whether this
-  // one can start without them.
+  // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
+  // the person's to queue (notAdmittable); when one is not, it is its owner's or already under way, so
+  // putting the item off comes first and admit is only offered. Answering says whether this one can
+  // start without them.
   if (x.k === 'stuck') {
-    const outside = outsideHolds(r, t), free = outside.filter((o) => !o.batch).map((o) => o.key);
+    const outside = outsideHolds(r, t), freeHolds = outside.filter((o) => !o.batch), free = freeHolds.map((o) => o.key);
     const one1 = free.length === 1;
-    const admit = free.length ? [['admit', `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`]] : [];
+    const admitWhy = `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`;
+    const rules = free.length ? admitRules(r) : null;
+    const notYours = freeHolds.map((o) => notAdmittable(o, rules)).filter(Boolean);
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
-    return { kind: 'held', need: `held by ${andList(outside.map(holdWords))}, outside this batch`,
+    const need = `held by ${andList(outside.map(holdWords))}, outside this batch`;
+    if (notYours.length) {
+      return { kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
+        ['admit', null, admitWhy], ['answer', null, answerWhy]] };
+    }
+    const admit = free.length ? [['admit', admitWhy]] : [];
+    return { kind: 'held', need,
       actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
   }
   // A held ticket with a question of its own is asked that question, below.

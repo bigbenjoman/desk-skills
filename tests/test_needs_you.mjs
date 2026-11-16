@@ -66,6 +66,8 @@ function put(name, r) {
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
+    (r.project ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Jira project | \`${r.project}\` |\n` : '') +
+    (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
     (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -280,9 +282,9 @@ put('eta', { port: 3700, beat: 1, supervised: true, tickets: {
   'E-1': { state: 'failed', lane: 'A', park: { question: 'tests red', since: minsAgo(15) } },
   'E-2': { state: 'done', lane: 'A', result: { pr: 61 }, pr_status: { pr: 61, state: 'OPEN', url: null, isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'completed', conclusion: 'success' }], at: minsAgo(1) } },
 } });
-put('theta', { port: 3800, beat: 1, supervised: true, tickets: {
+put('theta', { port: 3800, beat: 1, supervised: true, project: 'X', tickets: {
   'H-1': { state: 'running', lane: 'A' },
-  'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9' }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
+  'H-2': { state: 'parked', lane: 'A', held_by: 'H-1', open_questions: 1, outside_blockers: [{ key: 'X-9', assignee: null }], park: { question: 'held by orchestrator: blocked by H-1 — starts once their PRs merge' } },
 } });
 const NN = await import('../desk/bin/not-now.mjs');
 const thetaState = join(env.HOME, '.desk-autopilot', 'acme__theta');
@@ -311,7 +313,38 @@ t('DS-401 AC4 put off as a held row, with nothing changed, it stays put off', th
 const moveBlocker = (category) => { const q = queueOf('theta'); q.tickets['H-2'].outside_blockers = [{ key: 'X-9', category }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__theta', 'queue.json'), JSON.stringify(q)); };
 moveBlocker('indeterminate');
 t('DS-401 AC2 once its outside blocker\'s state changes it is listed again, saying what changed',
-  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+  /\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers H-1:running,X-9:new@none\+yours → H-1:running,X-9:indeterminate@none; need .*\)$/.test(theta()['H-2']?.need ?? ''), true);
+// Admit is recommended only for a blocker in no batch that is the person's to queue: in To Do, in this
+// repo's Jira project, and unassigned or theirs. Otherwise not-now is, naming why, and admit is offered.
+const outsideOne = (b) => ({ state: 'triaged', lane: 'A', open_questions: 1, outside_blockers: [b] });
+put('admit599', { port: 3860, beat: 1, supervised: true, project: 'P', owner: 'Ben Example', tickets: {
+  'A-1': outsideOne({ key: 'P-1', category: 'new', assignee: 'Sam Other' }),
+  'A-2': outsideOne({ key: 'P-2', category: 'new', assignee: 'Ben Example' }),
+  'A-3': outsideOne({ key: 'P-3', category: 'indeterminate', assignee: 'Ben Example' }),
+  'A-4': outsideOne({ key: 'Q-4', category: 'new', assignee: null }),
+  'A-5': outsideOne({ key: 'P-5', category: 'new' }),
+} });
+const a599 = Object.fromEntries(N.collect({ word: 'admit599' }).items.map((i) => [i.t.key, i]));
+const lead599 = (k) => `${a599[k]?.actions.map((a) => a[0]).join()} | ${a599[k]?.actions[0][1]}`;
+const admit599 = (k) => { const a = a599[k]?.actions.find(([n]) => n === 'admit'); return a ? `${a[1]} | ${a[2] != null}` : 'none'; };
+t('DS-599 AC1 a blocker in no batch assigned to someone else recommends not-now, naming the assignee', lead599('A-1'),
+  'not-now,admit,answer | P-1: it is assigned to Sam Other. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC1 admit is still offered, without a recommendation', admit599('A-1'), 'null | true');
+t('DS-599 AC2 a blocker in no batch in To Do assigned to the person recommends admit', lead599('A-2'),
+  'admit,answer,not-now | P-2 is in no batch, so nothing works it: admitting queues it for a worker');
+t('DS-599 AC3 a blocker in progress does not recommend admit', lead599('A-3'), 'not-now,admit,answer | P-3: it is in progress. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC4 a blocker in another Jira project does not recommend admit', lead599('A-4'), 'not-now,admit,answer | Q-4: it is in Jira project Q, not P. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 AC5 a blocker whose assignee was not read does not recommend admit', lead599('A-5'), 'not-now,admit,answer | P-5: its assignee could not be read. So it is not yours to queue here; not-now puts this off until a blocker moves');
+t('DS-599 admit, offered unrecommended, still names the /desk-admit to run', /Run \/desk-admit P-1 in /.test(N.record({ word: 'admit599', ticket: 'A-1', action: 'admit' }).line ?? ''), true);
+const a599now = () => Object.fromEntries(N.collect({ word: 'admit599' }).items.map((i) => [i.t.key, i]));
+const reassign599 = (assignee) => { const q = queueOf('admit599'); q.tickets['A-1'].outside_blockers = [{ key: 'P-1', category: 'new', assignee }]; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__admit599', 'queue.json'), JSON.stringify(q)); };
+N.record({ word: 'admit599', ticket: 'A-1', action: 'not-now' });
+t('DS-599 put off as someone else\'s, it stays put off while the blocker is still theirs', a599now()['A-1'], undefined);
+reassign599('Alex Else');
+t('DS-599 a blocker passed to another person who is not you does not bring it back', a599now()['A-1'], undefined);
+reassign599(null);
+t('DS-599 once that blocker is unassigned it is listed again, recommending admit and saying what changed',
+  `${a599now()['A-1']?.actions[0][0]} | ${/\(Changed since it was put off on \d{4}-\d\d-\d\d: blockers P-1:new@none → P-1:new@none\+yours\.\)$/.test(a599now()['A-1']?.need ?? '')}`, 'admit | true');
 // DS-669: a ticket held inside its batch with a triage question of its own is asked that question.
 put('zeta', { port: 3850, beat: 1, supervised: true, tickets: {
   'Z-1': { state: 'running', lane: 'A' },
