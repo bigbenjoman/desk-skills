@@ -146,6 +146,22 @@ already in front of the person (its `FAILED` line, or its park), so what is held
 depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:
 the answer to the blocker settles it.
 
+**A Blocks link added after admission is held by the next pass that reads it.** Before it spawns, each
+pass reads the blockers of every triaged ticket that is not done again from Jira, at most once every
+intake interval. A blocker the read adds to a ticket not yet started (triaged or held, no worktree) is
+held as intake holds one: `held_by` in the batch, `held_by` and `held_outside` in no batch, the person's
+step as `merge_after`, and the report says `blocker link: <TICKET>: newly linked as blocked by <B>`. No
+hold is added for a blocker already Done and on the base, merged in the batch, failed in the batch
+(said), or waiting behind the ticket (said as a cycle). A ticket whose worker started keeps its holds, and
+the report says the link arrived after it started. A link removed lifts a hold in no batch (*outside
+holds*, above) but never one in the batch, which may be a shared file or the spine: the report says the
+link went, and the release is yours. A read that fails keeps every hold and is tried again next interval.
+What a read adds is measured against the links the pass last acted on for the ticket (`links_seen`),
+not the triage record, so a read cut off part-way is acted on by the next one. A ticket's first
+`links_seen` is its record before its first read, so a hold you released by hand is not taken for a
+new link.
+Lane, size and design parks are not read for new links here.
+
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 
 **"Add the blocker to the batch"** as an answer: fetch as at Stage 1, `triage.sh <B>`, `queue.mjs admit <B>`,

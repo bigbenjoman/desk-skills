@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -422,15 +422,9 @@ function missingHolds(q, holdsFor) {
     if (!triagePark(t) || personStepPark(t) || t.held_by) continue;
     if (!existsSync(join(stateDir(), 'triage', `${t.key}.json`))) continue;
     const h = holdsFor(readTriage(stateDir(), t.key), q.tickets, baseOf(q));
-    const behind = heldBehindOf(view, t.key);
-    const holds = []; const cycles = [];
-    for (const k of new Set([...h.held, ...h.outside])) {
-      const o = q.tickets[k];
-      if (k === t.key || (o && (o.merged_at || childDone(o)))) continue;
-      (behind.has(k) ? cycles : holds).push(k);
-    }
+    const { holds, cycles, outside } = holdsAmong(t.key, [...h.held, ...h.outside], q.tickets, heldBehindOf(view, t.key));
     if (holds.length) view.tickets[t.key].held_by = holds.join('|');
-    if (holds.length || cycles.length || h.failed.length) found.push({ key: t.key, holds, outside: holds.filter((k) => !q.tickets[k]), cycles, failed: h.failed, park: t.park.question });
+    if (holds.length || cycles.length || h.failed.length) found.push({ key: t.key, holds, outside, cycles, failed: h.failed, park: t.park.question });
   }
   return found;
 }

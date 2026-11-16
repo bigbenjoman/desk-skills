@@ -595,6 +595,18 @@ export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
 export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
+// The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
+// already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
+// `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
+export function holdsAmong(key, keys, tickets, behind) {
+  const holds = []; const cycles = [];
+  for (const k of new Set(keys)) {
+    const o = tickets[k];
+    if (k === key || (o && (o.merged_at || childDone(o)))) continue;
+    (behind.has(k) ? cycles : holds).push(k);
+  }
+  return { holds, cycles, outside: holds.filter((k) => !tickets[k]) };
+}
 // Due, so the base still has to land: every child through, at least one merged into the base since the
 // last epic PR merged (`merged_at`, or `since` on the one opened after it).
 export function epicDue(q) {
