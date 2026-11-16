@@ -3943,4 +3943,32 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view 70[4-8] " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
 
+# Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
+# gate holds every spawn.
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+export DESK_QUEUE="$T/queue-mx.json" DESK_AUTOPILOT_STATE="$T/state-mx"; mkdir -p "$T/state-mx/logs" "$T/state-mx/triage"
+printf '{"files_in_scope":["src/a.ts","src/b.ts"]}\n' > "$T/state-mx/triage/MX-1.json"
+printf '{"files_in_scope":["src/a.ts"]}\n' > "$T/state-mx/triage/MX-2.json"
+printf '{"files_in_scope":["src/c.ts"]}\n' > "$T/state-mx/triage/MX-3.json"
+q init mx
+q add MX-1; q set MX-1 state=running branch=fix/MX-1 session_id=live-1
+q add MX-2; q set MX-2 state=triaged branch=fix/MX-2 collides_with=MX-1
+q add MX-3; q set MX-3 state=triaged branch=fix/MX-3
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+ml=$(tail -n 1 "$T/state-mx/passes.jsonl" 2>/dev/null)
+check "DS-758 AC1 a pass appends one metrics line with its time, repo, batch, counts, spawns, duration and queue-write failures" \
+  '[ "$(wc -l < "$T/state-mx/passes.jsonl")" -eq 1 ] && echo "$ml" | jq -e ".at and (.repo | type == \"string\") and has(\"batch\") and .running == 1 and .eligible == 1 and .spawned == 0 and (.duration_ms | type == \"number\") and .queue_write_failures == 0 and (.held | keys) == [\"collision\",\"lock\",\"memory\",\"usage\"]" >/dev/null'
+check "DS-758 AC2 a ticket held for memory counts under memory, not collision" \
+  'echo "$ml" | jq -e ".held.memory == 1 and .held.collision == 1" >/dev/null'
+check "DS-758 the line names the held ticket, the running one holding it and the file" \
+  'echo "$ml" | jq -e ".collisions == [{\"key\":\"MX-2\",\"with\":[\"MX-1\"],\"files\":[\"src/a.ts\"]}]" >/dev/null'
+check "DS-758 the queue's pass record keeps the collision streak" \
+  'jq -e ".pass | has(\"collision_streak\") and has(\"collision_warned\")" "$DESK_QUEUE" >/dev/null'
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-758 AC1 the next pass appends a second line" '[ "$(wc -l < "$T/state-mx/passes.jsonl")" -eq 2 ]'
+rm -f "$T/state-mx/passes.jsonl"; mkdir -p "$T/state-mx/passes.jsonl"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
+check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
+  'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
