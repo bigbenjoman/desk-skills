@@ -5014,7 +5014,8 @@ if (!DRY) {
   const prevPass = (() => { try { return readQueue(QUEUE_FILE).pass ?? {}; } catch { return {}; } })();
   const runningEnd = Object.values(qEnd.tickets).filter((t) => t.state === 'running');
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
-  const holdWhy = held ? (held === PACE_HELD || (USAGE_HOLD && !MAINT.hold) ? 'usage' : null) : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
+  // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
+  const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const appendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs;
   const collisions = heldBack.map((r) => {
     const by = String(r.collides_with ?? '').split('|').filter((k) => runningKeys.has(k));
@@ -5032,7 +5033,9 @@ if (!DRY) {
     collisions,
   };
   const step = collisionStep({ streak: prevPass.collision_streak, warned: prevPass.collision_warned }, line);
-  if (step.warn) line.warning = warningText(line, step.streak);
+  // The warning carries the time it is written, not the pass's start: a check-in sent since the pass
+  // began (this pass's own, above, or another repo's) has already read past PASS_AT.
+  if (step.warn) Object.assign(line, { warning: warningText(line, step.streak), warned_at: new Date().toISOString() });
   const wrote = appendMetrics(STATE, line);
   if (!wrote.ok) lines.push(`metrics: this pass's metrics line was not written to ${metricsPath(STATE)} (${wrote.why})`);
   else if (step.warn) lines.push(`collision warning (sent to the check-in digest): ${line.warning}`);

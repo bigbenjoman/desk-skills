@@ -53,6 +53,10 @@ t('the page has a Warnings heading', page.includes('### Warnings'), true);
 t('a warning is counted in the push', /1 warning\(s\)/.test(d.push?.text ?? ''), true);
 const d2 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T08:05:00'), dir, list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
 t('AC5 the next check-in does not list it again', readFileSync(d2.page, 'utf8').includes('H-1 (behind'), false);
+// A pass that began before that check-in (08:05) and wrote its warning after it: the next one lists it.
+appendMetrics(state, { ...idle, at: '2026-11-17T08:04:00.000Z', warned_at: '2026-11-17T08:06:00.000Z', warning: warningText(idle, 10) });
+const d3 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir, list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
+t('AC4 a warning written after a check-in its pass began before is listed in the next one', readFileSync(d3.page, 'utf8').includes('H-1 (behind R-1 on src/a.ts)'), true);
 const bad = join(root, 'bad');
 mkdirSync(metricsPath(bad), { recursive: true });
 t('AC3 a metrics file that cannot be written says why, and throws nothing', appendMetrics(bad, idle).ok, false);

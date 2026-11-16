@@ -55,7 +55,8 @@ export function appendMetrics(state, line) {
   } catch (e) { return { ok: false, why: e.message }; }
 }
 
-// Every warning the batch's metrics file holds: [{at, text}]. A torn line is skipped.
+// Every warning the batch's metrics file holds: [{at, text}], `at` the time it was written. A torn
+// line is skipped.
 export function readWarnings(state) {
   const path = metricsPath(state);
   if (!existsSync(path)) return [];
@@ -64,7 +65,7 @@ export function readWarnings(state) {
   const out = [];
   for (const l of raw.split('\n')) {
     if (!l.includes('"warning"')) continue;
-    try { const e = JSON.parse(l); if (e?.at && e.warning) out.push({ at: e.at, text: e.warning }); } catch { /* a torn line */ }
+    try { const e = JSON.parse(l); const at = e?.warned_at ?? e?.at; if (at && e.warning) out.push({ at, text: e.warning }); } catch { /* a torn line */ }
   }
   return out;
 }
