@@ -2,7 +2,7 @@
 
 Date: 15 Nov 2026. Author: UX (ux-designer + ux-copywriter skills loaded).
 Inputs: `use-cases.md` (personas, J1-J12, use cases A-M, gaps G1-G14) and `desktop-feasibility.md`
-(v1 = installed Chrome PWA on `127.0.0.1:4823` served by `desk-ui`; Electron later, only if a gap hurts).
+(the window is Desk.app, a thin Electron shell on `127.0.0.1:4823` served by `desk-ui`; Ben chose Electron from the start on 2026-11-16).
 Real data read today, read-only: `desk-q --plain` home, `desk-skills` and `studia-web` queues,
 `show DS-676`, `show SV-3844`, `costs`, `decisions.jsonl`. Every sample string below is shaped from
 those outputs. Token and USD figures marked *(illustrative)* are not real; the shape is.
@@ -46,7 +46,7 @@ the Jira ticket, a live worker or a conversation in one click.
 - Skeletons from the last snapshot, never a bare spinner. Local files load in milliseconds; only
   network panels (PR, Jira) wait, and they show the cached copy with "as of" first.
 - Links follow one rule everywhere: plain click opens it in the app, Cmd-click (or the trailing
-  arrow icon) opens GitHub or Jira in Chrome.
+  arrow icon) opens GitHub or Jira in the Mac's default browser.
 
 **Inspired by:** Linear (sidebar + list/detail, Cmd+K), Superhuman (keyboard triage), air-traffic
 control flight strips (each ticket is a strip that shows what it waits on), aviation checklists
@@ -105,11 +105,15 @@ Every write runs an existing command. While it runs, the button shows its own in
 - **exit 10** nothing to do: neutral inline note, verbatim stdout.
 - **exit 11** refused: inline `Alert` under the action, verbatim stdout, typed text kept, focus returns to the field.
 Never a generic error. Never a toast for exit 11 (it needs the user's eyes where they were).
+The one exception: app-local display preferences (9.2) are saved by the app itself, with no desk command (16 Nov).
+
+### 1.9 Entry points follow their screen (new 16 Nov)
+A control and its shortcut (a sidebar item, a palette command, a button or link that opens a screen) are drawn only once that screen's route exists. Each screen's ticket adds its own entry points. Until then the control is absent, never disabled or a dead link (Ben, 16 Nov).
 
 ### 1.6 Link rule
 - Ticket keys (`DS-563`), PR numbers (`#3113`), check names (`unit (node 24)`) and SHAs (`a742f155`) are links everywhere.
 - Plain click: in-app (ticket page, PR & CI tab, check detail).
-- Cmd-click, or the 12 px `↗` icon that follows the link on hover/focus: opens externally in Chrome.
+- Cmd-click, or the 12 px `↗` icon that follows the link on hover/focus: opens externally in the Mac's default browser.
   - Ticket key: `https://{jira-site}/browse/DS-563` (from the repo's §4 Jira site). Repos without Jira open the GitHub issue.
   - PR: `https://github.com/sophos-education/studia-web/pull/3113`.
   - Check: `https://github.com/sophos-education/studia-web/actions/runs/{runId}/job/{jobId}`.
@@ -147,7 +151,7 @@ default), `ops@studia.example` (`work-2`), `ben@personal.example` (`work-3`, off
 +--------------------------------------------------------------------------------------------------+
 ```
 
-### 2.2 Title bar (PWA `window-controls-overlay`, 40 px)
+### 2.2 Title bar (Electron hidden-inset title bar, 40 px) (updated 16 Nov)
 - Left: traffic lights (system), then `Desk` wordmark 14 px semibold.
 - Centre-left: current page title (`Inbox`, `desk-skills · Queue`, `DS-676`), for Cmd-Tab and Mission Control readability.
 - Centre: search trigger, 360 px wide (Standard) / icon only (Compact). Placeholder: `Search tickets, PRs, commands`. Right inside: `⌘K` kbd.
@@ -236,7 +240,7 @@ Used only for: undo windows (not now only; drop has no undo), a background write
 - Session: `Conversation for SV-3844 ended. It recorded: answer SV-3844 "run the checks…".  View`
 
 ### 2.8 Server down / unreachable (whole window)
-The PWA's service worker keeps the shell and the last snapshot.
+The app's service worker, in Desk.app's window, keeps the shell and the last snapshot. Before any copy is cached, Desk.app shows this card itself (updated 16 Nov).
 - Layout: shell stays, sidebar dimmed (still navigable to cached pages), body replaced by a centered card 520 wide.
 - Title: `Desk can't reach its local server`
 - Body: `The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it. You're looking at the copy from 10:06.`
@@ -247,19 +251,19 @@ The PWA's service worker keeps the shell and the last snapshot.
 - Writes while down: every action button disabled with tooltip `Can't change anything until the server is back.`
 
 ### 2.9 First run / not set up (shown in body)
-- **Desk not installed:** `Desk isn't installed on this Mac yet.` body `Install it, then reopen this window.` code `git clone …desk-skills && ./install.sh` with copy. (Rare; mostly the PWA is installed by install.sh.)
+- **Desk not installed:** `Desk isn't installed on this Mac yet.` body `Install it, then reopen this window.` code `git clone …desk-skills && ./install.sh` with copy. (Rare; install.sh installs the server and Desk.app together.)
 - **Installed, 0 repos:** pre-staged first action, not an illustration. Title `Set up desk in your first repo`. List of git repos found under `~/studia/`: `desk-skills`, `studia-web`, `studia-zendesk`… each with `Set up` button that opens a `/desk-setup` conversation in that folder. Footer: `Desk only acts in repos you set up.`
 - **Notifications permission:** inline card on Inbox, once: `Get told when production breaks or something needs you.` buttons `Allow notifications` / `Not now`.
 
-### 2.10 Window not signed in to Desk (new 15 Nov)
-Shown when the server answers but the window has no valid session (cookie expired or the token was
-replaced; see `desktop-architecture.md` auth). Whole body, shell dimmed, like 2.8.
+### 2.10 Window not signed in to Desk (updated 16 Nov)
+Shown when the server answers but Desk.app could not sign in: its token file is missing, or the server refused it again after Desk.app's one automatic retry
+(see `desktop-architecture.md` §9). Whole body, shell dimmed, like 2.8.
 - Title: `This window isn't signed in to Desk`
-- Body: `Run desk ui in Terminal. It opens a signed-in window; then close this one.`
-- Code block with copy: `desk ui`.
+- Body: `Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself.`
+- Code block with copy: `cd ~/studia/desk-skills && ./install.sh` (this Mac's desk-skills checkout).
 - **Never show the token**, its file path contents or any part of it, in this card, in a URL the user
-  can copy, or in an error message. `desk ui` is part of the planned app install (not built yet).
-- Writes disabled with tooltip `Sign this window in first: run desk ui in Terminal.`
+  can copy, or in an error message. There is no `desk ui` command (dropped 16 Nov, Ben).
+- Writes disabled with tooltip `Sign in first: re-run install.sh in Terminal.`
 
 ---
 
@@ -755,7 +759,8 @@ Header tag `forked from worker` and system note `This is a copy of DS-676's work
 ### 9.1 Layout (updated 15 Nov)
 Left section nav (200): search `Search settings` · `Notifications` · `App` · `Subscriptions` · `Repos` (each repo) · `Desk install` (badge `3 updates` when skills or plugins have updates) · `About`. Right: form, 640 max-width. (updated 15 Nov)
 
-### 9.2 App-side settings (editable; these are the app's own, saved locally)
+### 9.2 App-side settings (editable; these are the app's own, saved locally) (updated 16 Nov)
+These are app-local display preferences. The app saves them in its own file, outside desk's state, and they are the one exception to the write rule (1.5): no desk command runs (Ben, 16 Nov). Subscriptions and logins are not here; they go through `desk-env` from Usage & costs (11.4).
 - **Notifications:**
   - `Tell me when` checklist (all on by default): `Production breaks` (locked on, caption `Always on: this is the one that can't wait.`) · `A check-in digest is ready (08:00, 17:00)` · `A health check fails` · `A pass is refused` · `The merge driver fails twice` · `Something new needs me` (off by default, caption `Off by default: the dock badge already shows the count.`).
   - `Quiet hours  19:00 to 08:00` (Production still notifies, caption says so).
@@ -925,9 +930,9 @@ that design). The app never reads `levers.jsonl` itself; `view.json` is derived 
 
 ---
 
-## 12. Glance (v2 Electron tray / v1 dock badge)
+## 12. Glance (Electron tray and Dock badge) (updated 16 Nov)
 
-v1 PWA has no tray (feasibility). v1 = dock badge `25` via `setAppBadge` + notifications. Draw the v2 tray popover anyway (320 x 360) so the Electron decision has a target:
+Desk.app has the tray from its shell features (Ben, 16 Nov: Electron from the start). The Dock badge shows `25` through the shell's `badge`, beside notifications. The tray popover (320 x 360) opens from the menu-bar icon or the global hotkey ⌃⌥D:
 - `◆ 25 need you · oldest 12d 14h` · `● Healthy`
 - `● 7 workers · cap 30 · 27.5 GiB free`
 - `Claude 5h 32% · 7d 88% Tue 08:00`
