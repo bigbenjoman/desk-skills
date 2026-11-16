@@ -588,6 +588,19 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-689 AC4 plan-batch with the row none lists the collision as today', planned('`none`', ['AO-1', 'AO-2']).includes('AO-1 ~ AO-2: messages/en.json'), true);
   const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
+
+  // DS-569: a ticket admitted with --hold-collisions is not held behind a ticket already held behind it,
+  // directly or through another, or each would wait on the other; any other collision still holds it.
+  aoRec('HC-1', ['src/app.ts']);
+  aoRec('HC-2', ['src/app.ts']);
+  aoRec('HC-3', ['src/app.ts']);
+  aoRec('HC-4', ['src/app.ts']);
+  const heldOn = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const env = { DESK_CONFIG: aoCfg(null), DESK_QUEUE: join(AO, 'queue-hc.json'), DESK_AUTOPILOT_STATE: AO };
+  writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: { 'HC-1': { key: 'HC-1', ...heldOn('HC-2') }, 'HC-3': { key: 'HC-3', ...heldOn('HC-1') }, 'HC-4': { key: 'HC-4', state: 'triaged' } } }));
+  const a = cli('queue.mjs', ['admit', 'HC-2', '--hold-collisions'], env);
+  const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
+  t('DS-569 --hold-collisions holds a ticket behind no ticket already waiting behind it', `${a.code} ${hc?.held_by} ${hc?.collides_with}`, '0 HC-4 HC-1|HC-3|HC-4');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

@@ -103,6 +103,18 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
+// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
+export function heldBehindOf(q, key) {
+  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && isHeld(o));
+  const behind = new Set();
+  for (let edge = new Set([key]); edge.size;) {
+    const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
+    next.forEach((k) => behind.add(k));
+    edge = new Set(next);
+  }
+  return behind;
+}
+
 // A label that holds a ticket until a calendar day, read on this machine's local date.
 const UNTIL_LABEL = /^blocked-until-(.*)$/i;
 export const localDay = (d = new Date()) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
