@@ -41,6 +41,7 @@ or the ticket itself (`check` names the folder). With no ticket named, ask for o
 | to know whether the saved copy is current | `status` | step 4 |
 | screenshots of every board | `render` | step 5 |
 | the built UI set beside each board | `compare` | step 6 |
+| how many uploads the ticket's PR needs, and how long | `estimate` | step 7 |
 
 The script is `node ~/.claude/desk/bin/desk-design.mjs <command> …`; its header lists every flag.
 
@@ -137,6 +138,17 @@ against. Build it and compare, both under the browser lock, exactly as
 `desk-ticket/references/design-canvas.md` "Comparing the build with each board" says, then remove the
 build folder. Report each pair `PASS` or `FAIL` with what differs, and each `not compared: <board>`
 with its reason.
+
+## 7. Estimate the PR's uploads
+
+```bash
+node ~/.claude/desk/bin/desk-design.mjs estimate <saved folder> --key <TICKET>
+```
+
+It prints the ticket's boards × §5 Themes (`desk-env list themes`) as an upload count, and the time
+those uploads take at desk's upload pace, as `desk-ticket/references/design-canvas.md` "The groom
+states the PR's upload count and time" describes. A `flag:` line means that time is over an hour:
+suggest splitting the ticket by board, and never split it yourself.
 
 ## Red flags — stop
 

@@ -33,10 +33,20 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 |---|---|
 | in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
-| outside the batch, not done, and triage's `blocker_needs` says the successor needs it | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
-| outside the batch, not done, and `blocker_needs` says it is not needed, under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
+| outside the batch, not done, and triage's `blocker_needs` calls it `build` (needed to build) | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
+| outside the batch, not done, and `blocker_needs` calls it `merge` (needed only to merge) | built now, its merge held: `merge_after` set, lifted by the pass once the blocker is Done and on the base (Done alone where its Jira Repository is another configured repo) |
+| outside the batch, not done, and `blocker_needs` calls it `none` (not needed), under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
 | outside the batch and not done otherwise; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
 | on a cycle | parks every ticket on it: the links need fixing |
+
+Triage gives every open blocker one of the three calls, and refuses a record missing one. A record
+written before the calls reads a boolean `needs` as `build` (true) or `none` (false). A blocker that is
+also the person's step (a §4 Person-step or Person-input label) holds as whichever of the step and the
+call holds more: a full hold over a merge-only gate, a merge-only gate over none, in the batch or out
+of it, so a step in the batch that triage calls `build` holds the build, not only the merge. Standing intake and
+`/desk-admit` act on the same call the same way (`batch-state.mjs` `blockerHold`). A ticket moved
+(`queue.mjs transfer`) into a batch holding that blocker keeps the merge-only gate while Jira reads the
+blocker Done, so the gate lifts only once the blocker's code is on the base.
 
 A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
 those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue
@@ -80,8 +90,8 @@ one `lint:` line saying the link is ignored, and `desk-jira lint` flags it. Noth
 removing the link is the person's.
 
 **A blocker in no batch that is a step only the person takes holds the merge, not the build.** A
-Task whose summary says apply, confirm or sign off, or a blocker whose summary names one of the
-ticket's triage `ben_steps`, is recorded on the ticket at admission as `merge_after`, not as a hold:
+Task whose summary says apply, confirm or sign off, or a blocker one of the ticket's triage
+`ben_steps` names by key or quotes its whole summary, is recorded on the ticket at admission as `merge_after`, not as a hold:
 the ticket is built and reviewed as any other, and the merge driver holds its PR until Jira has the
 step Done, when the pass lifts it and the PRs merge in the batch's own order. Needs you lists the
 step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
@@ -90,6 +100,14 @@ step once, as `step:<KEY>`, naming every PR and ticket waiting on it.
 parked on it (`the person's step: labelled …`) whatever its lane, so no worker spawns, and requeue
 refuses it. A blocker carrying one, in the batch or out of it, is a person's step as above: the
 ticket it blocks merges after it.
+
+**A step whose output the build reads holds the build.** A ticket carrying one of config §4
+Person-input labels (a fixture, a recorded response, a key to make) is parked as the person's step
+just the same, but a ticket it blocks is held behind it, as `held_outside` when it is in no batch,
+until it is Done. One in the batch holds it in `held_by`, never `merge_after`, a transfer included;
+dropping the step (`queue.mjs drop`, once it is Done) moves the hold to `held_outside`, which the pass
+lifts on Done. A blocker labelled both Person-step and Person-input is an input. Intake and
+plan-batch read a blocker the same way (`batch-state.mjs` `personStep`).
 
 **The person's instruction on an open PR holds its merge too.** From needs-you `resume` until the pass
 closes that fix, the merge driver leaves the PR alone, red or green, and a worker that parks or fails

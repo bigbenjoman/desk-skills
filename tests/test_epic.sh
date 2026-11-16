@@ -346,6 +346,11 @@ check "DS-568 AC2: a blockers refresh reads them again" '[ "$(jq -c ".blockers[0
 mkcfg "http://127.0.0.1:$PORT" yes
 node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
 check "DS-568 AC3: with no Person-step labels row, no blocker is read for labels" '[ "$(jq -c "[.blockers[] | has(\"labels\")]" "$T/state/triage/KAN-58.json")" = "[false,false]" ]'
+printf '| Person-input labels | `ben-input` |\n' >> "$CD/config.md"
+node "$B/ticket-facts.mjs" KAN-58 >/dev/null 2>&1
+check "DS-682 AC8: with only Person-input labels set, an open blocker's labels are read too" \
+  '[ "$(jq -c "[.blockers[] | [.key, .labels]]" "$T/state/triage/KAN-58.json")" = "[[\"KAN-59\",[\"ben-step\",\"operator-task\"]],[\"KAN-1569\",null]]" ]'
+mkcfg "http://127.0.0.1:$PORT" yes
 rec KAN-404 '{"ticket":"KAN-404","lane":"A","branch":"b"}'
 out=$(node "$B/ticket-facts.mjs" KAN-404 2>&1); rc=$?
 check "facts: a failed read is recorded, not empty blockers" '[ "$(jq -r ".facts_error|type" "$T/state/triage/KAN-404.json")" = string ] && [ "$(jq -r ".blockers|type" "$T/state/triage/KAN-404.json")" = null ]'
@@ -463,9 +468,12 @@ check "DS-568 AC3: a ticket with another label is planned as before" '[ "$(qg KA
 r KAN-455 A '[]' '"labels":["operator-task"]'
 r KAN-456 A "[$(nb KAN-455)]"
 r KAN-457 A '[]'
+r KAN-458 A "[$(nb KAN-455)]" '"blocker_needs":{"KAN-455":{"needs":"build","why":"the build reads its images"}}'
 printf '{"parent":"KAN-100","containers":{"KAN-460":{"subtasks":["KAN-457"],"blocked_by":[{"key":"KAN-455","category":"new"}]}}}' > "$T/state/expansion.json"
 node "$B/queue.mjs" init s568c >/dev/null; node "$B/queue.mjs" set-batch epic=KAN-100 >/dev/null
-out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-455 KAN-456 KAN-457 2>&1); rc=$?
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-455 KAN-456 KAN-457 KAN-458 2>&1); rc=$?
+check "DS-687 AC6: a step in the batch that triage calls needed to build is not merged after, and is asked about" \
+  '[ "$(qg KAN-458 .merge_after)" = null ] && printf "%s" "$out" | grep -q "\[KAN-458\] KAN-458 is blocked by KAN-455, which this batch will not build (your step, which triage found it needs to build: the build reads its images)"'
 check "DS-568 AC1: a lane A ticket labelled as the person's step parks on the label, and the one it blocks merges after it" \
   '[[ "$(qg KAN-455 .park.question)" == "the person'\''s step: labelled operator-task"* ]] && [ "$(qg KAN-456 .held_by)" = null ] && [ "$(qg KAN-456 .merge_after)" = KAN-455 ]'
 check "DS-568 AC2: a step inherited from a container story is asked about, never a merge hold the pass would lift" \
@@ -476,6 +484,33 @@ node "$B/queue.mjs" init s568b >/dev/null
 out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-451 KAN-452 2>&1); rc=$?
 check "DS-568 AC3: with no Person-step labels row, the labelled ticket is parked by its lane and its successor asked about, as before" \
   '[[ "$(qg KAN-451 .park.question)" == "lane C"* ]] && [ "$(qg KAN-452 .merge_after)" = null ] && [ "$(qg KAN-452 .open_questions)" = 1 ]'
+
+# plan-batch reads a blocker in no batch as intake does (personStep): a Person-input label
+# holds the build, and wins over a Person-step label; a ben_steps entry naming the blocker's key is a
+# merge gate; a step word inside a blocker's summary is not. A ticket carrying an input label parks.
+rm -f "$T/state/triage/"*.json
+printf '| Person-step labels | `ben-step` |\n| Person-input labels | `ben-input` |\n' >> "$CD/config.md"
+r KAN-461 A '[{"key":"KAN-991","category":"new","type":"Story","summary":"Record the gateway response","labels":["ben-input"]}]'
+r KAN-462 A '[{"key":"KAN-992","category":"new","type":"Task","summary":"Sign off the gateway key","labels":["ben-step","ben-input"]}]'
+r KAN-463 A '[{"key":"KAN-993","category":"new","type":"Story","summary":"Queue stack"}]' '"ben_steps":[{"step":"a cdk deploy","blocker":"KAN-993, unblocking KAN-463"}]'
+r KAN-464 A '[{"key":"KAN-994","category":"new","type":"Story","summary":"Deploy the search page"}]' '"ben_steps":[{"step":"deploy","blocker":"deploy"}]'
+r KAN-465 A '[]' '"labels":["ben-input"]'
+r KAN-466 A "[$(nb KAN-465)]"
+r KAN-467 A '[{"key":"KAN-995","category":"new","type":"Task","summary":"Apply the migration to production"}]'
+node "$B/queue.mjs" init s682 >/dev/null
+out=$(AUTOPILOT_WRITE_QUEUE=1 node "$B/plan-batch.mjs" KAN-461 KAN-462 KAN-463 KAN-464 KAN-465 KAN-466 KAN-467 2>&1); rc=$?
+check "DS-682 AC7: an input-labelled blocker in no batch holds the build, as intake holds it" \
+  '[ "$(qg KAN-461 .state)" = parked ] && [ "$(qg KAN-461 .held_outside)" = KAN-991 ] && [ "$(qg KAN-461 .merge_after)" = null ]'
+check "DS-682 AC7: labelled both, the input wins" '[ "$(qg KAN-462 .held_outside)" = KAN-992 ] && [ "$(qg KAN-462 .merge_after)" = null ]'
+check "DS-682 AC7: a ben_steps entry naming the blocker's key is a merge gate, with no question" \
+  '[ "$(qg KAN-463 .state)" = triaged ] && [ "$(qg KAN-463 .merge_after)" = KAN-993 ] && [ "$(qg KAN-463 .open_questions)" = 0 ]'
+check "DS-682 AC7: a step word inside a blocker's summary is not a merge gate" '[ "$(qg KAN-464 .merge_after)" = null ]'
+check "DS-682 AC7: a Task whose summary says apply is a merge gate, as intake reads it" '[ "$(qg KAN-467 .state)" = triaged ] && [ "$(qg KAN-467 .merge_after)" = KAN-995 ]'
+check "DS-682 AC9: plan-batch parks a ticket carrying an input label as the person's step, and lists it" \
+  '[[ "$(qg KAN-465 .park.question)" == "the person'\''s step: labelled ben-input (config §4 Person-input labels)"* ]] && printf "%s" "$out" | grep -q "^  KAN-465: labelled ben-input$"'
+check "DS-682: a ticket blocked by an input step in the batch is not merged after it, and is asked about" \
+  '[ "$(qg KAN-466 .merge_after)" = null ] && printf "%s" "$out" | grep -q "\[KAN-466\] KAN-466 is blocked by KAN-465, which this batch will not build (your input step"'
+mkcfg "http://127.0.0.1:$PORT" yes
 
 # An INCONCLUSIVE lane challenge (its code reads failed) shows the lane as unchecked and asks the user.
 rm -f "$T/state/triage/"*.json "$T/state/expansion.json"

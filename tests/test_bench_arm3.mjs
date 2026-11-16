@@ -261,7 +261,7 @@ const setCredits = (c) => writeFileSync(creditsFile, JSON.stringify(c));
 const work = join(home, '.claude-logins', 'work');
 mkdirSync(work, { recursive: true });
 const subs = join(dir, 'subs-two.md');
-writeFileSync(subs, `## Claude\n\n| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| claude | work | ~/.claude-logins/work | in rotation |\n`);
+writeFileSync(subs, `## Claude\n\n| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| claude | work | ~/.claude-logins/work | default |\n`);
 writeFileSync(join(setDir, 'over.json'), JSON.stringify({ tasks: [task('over', 'over: OVERAGE'), task('after', 'after: leave it')] }));
 const fableEnv = (name) => ({ STUB_CREDITS: creditsFile, DESK_SUBSCRIPTIONS: subs, DESK_USAGE_DIR: join(dir, `usage-${name}`) });
 

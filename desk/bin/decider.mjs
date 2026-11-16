@@ -329,12 +329,12 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
   ].join('\n');
 }
 
-// Starts the session detached, on a Claude login that is not benched (call-login.mjs), its JSON result
-// written to <state>/decider/<id>.json. Returns the record the supervisor keeps until the session
-// ends, or null, starting nothing, when every usable login is benched.
+// Starts the session detached, on the repo's subscription (call-login.mjs), its JSON result written to
+// <state>/decider/<id>.json. Returns the record the supervisor keeps until the session ends, or
+// { wait }, starting nothing, when the subscription is at its limit or no login here is signed in to it.
 export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
-  const { login, env, all } = callLogin({ env: callerEnv, now: now.getTime() });
-  if (all) return null;
+  const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
+  if (wait) return { wait };
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;

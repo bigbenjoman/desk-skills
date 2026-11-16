@@ -12,11 +12,11 @@
 // message (the plan), needs_person ({ticket, why, detail}; why is question, lint,
 // challenge_inconclusive, challenge_not_run, parked or feature_plan) and notify.
 import { readFileSync, existsSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
+import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
 import { stateDir, binDir, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
-  repoPlacement, otherRepoEnv, PER_REPO_ENV, personStepLabels } from './desk-env.mjs';
+  repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
@@ -82,10 +82,14 @@ const awayWhy = (r) => (elsewhere(r).unknown
 // or a canvas not on the base, parks. A ticket sized L or XL parks too: it is to be split, not run
 // whole. Those parks always win over a dependency hold, so a release can never send one to a
 // headless worker.
-// A ticket labelled as the person's own step (config §4 Person-step labels) parks on that whatever its
-// lane or size: no worker takes it, and a ticket it blocks merges after it instead of waiting on it.
+// A ticket labelled as the person's own step (config §4 Person-step or Person-input labels) parks on
+// that whatever its lane or size: no worker takes it. A ticket a Person-step one blocks merges after it
+// instead of waiting on it; one a Person-input step blocks waits on it, as its build reads what it makes.
 const STEP_LABELS = personStepLabels();
-const stepParked = (r) => labelPark(r, STEP_LABELS) !== null;
+const INPUT_LABELS = personInputLabels();
+const stepPark = (r) => labelPark(r, STEP_LABELS, INPUT_LABELS);
+const stepParked = (r) => stepPark(r) !== null;
+const inputStep = (r) => stepLabel(r?.labels, INPUT_LABELS) !== null;
 const stepped = here.filter(stepParked);
 const laneOk = (r) => !stepParked(r) && ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
 const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
@@ -163,21 +167,17 @@ const holdBehind = (t, p, why) => {
 const ask = (t, q) => (added[t] ??= []).push(q);
 const note = (t, n) => (notes[t] ??= []).push(n);
 let otherLinks = 0;
-// An open blocker in no batch, as triage judged it in `blocker_needs`: one the ticket needs holds it
-// as intake does (held_outside, lifted by pass.mjs once the blocker is Done and on the base); one it
-// does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
-// judgement recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
+// An open blocker in no batch, as triage called it in `blocker_needs` and as intake acts on it
+// (batch-state.mjs blockerHold): one the ticket needs to build holds it (held_outside, lifted by pass.mjs
+// once the blocker is Done and on the base); one it needs only to merge holds its merge (merge_after);
+// one it does not need starts without it, a call taken where §3 autopilot-judgement is yes. With no
+// call recorded, it is asked. So is a blocker inherited from a container story: the pass checks a
 // held_outside key against the ticket's own links, and would read an inherited one as unlinked and
 // release it while it is still open.
 const outsideHolds = {};  // ticket -> blockers in no batch it is held behind
 const mergeAfter = {};    // ticket -> the person's steps it merges after (merge_after), built meanwhile
 const taken = [];         // {ticket, decision}: calls plan-batch takes on triage's judgement
 const judgement = permission('autopilot-judgement') === 'yes';
-const blockerNeed = (r, k) => {
-  if (!r.blockers.some((b) => b?.key === k)) return null;
-  const n = r.blocker_needs?.[k];
-  return n && typeof n === 'object' && typeof n.needs === 'boolean' ? { needs: n.needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
-};
 
 for (const r of admitted) {
   const t = r.ticket;
@@ -196,6 +196,10 @@ for (const r of admitted) {
       const br = byKey[k];
       // Held on its own link only: the pass reads a held_outside key against the ticket's own links.
       const direct = handedOff(k) ? r.blockers.find((x) => x?.key === k) : null;
+      // A step in the batch that triage called needed to build holds the build as an input step does.
+      const own = r.blockers.find((x) => x?.key === k);
+      const call = own ? blockerHold(own, r, STEP_LABELS, INPUT_LABELS) : null;
+      const buildCall = call?.by === 'triage' && call.needs === 'build';
       if (br && admittedKeys.has(k)) holdBehind(t, k, 'Jira link');
       else if (direct?.category === 'done') note(t, `blocker ${k} is done (${awayWhy(br)})`);
       else if (direct) {
@@ -205,23 +209,28 @@ for (const r of admitted) {
         // Only on the ticket's own link: the pass lifts merge_after once its own links no longer list the
         // step, so one inherited from a container would be lifted at once, and is asked below instead. A
         // step whose Jira Repository this computer cannot place is asked about too.
-        b.category !== 'done' && r.blockers.some((x) => x?.key === k) && (br ? !elsewhere(br) && stepParked(br) : stepLabel(b.labels, STEP_LABELS))) {
+        br && b.category !== 'done' && r.blockers.some((x) => x?.key === k) && !elsewhere(br) && stepParked(br) && !inputStep(br) && !buildCall) {
         (mergeAfter[t] ??= []).push(k);
         note(t, `built now, merged only once ${k} (your step) is Done`);
       } else if (br) {
-        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
+        const why = !ours.includes(br) ? `assigned to ${br.assignee}` : elsewhere(br) ? awayWhy(br) : inputStep(br) ? 'your input step: the build reads what it makes' : stepParked(br) && buildCall ? `your step, which triage found it needs to build: ${call.why}` : stepParked(br) ? 'your step' : sizeParked(br) ? `parked: size ${br.size}` : `parked: lane ${br.lane}`;
         ask(t, `${t} is blocked by ${k}, which this batch will not build (${why}): finish ${k} first, or confirm ${t} can start without it`);
       } else if (b.category === 'done') note(t, `blocker ${k} is done`);
       else {
+        // In no batch, judged as intake judges it (blockerHold): the person's step and triage's call, the
+        // one that holds more winning. On its own link only, as above.
         const status = b.category === 'indeterminate' ? 'in progress' : 'not started';
-        const need = blockerNeed(r, k);
-        if (need?.needs) {
+        const hold = r.blockers.some((x) => x?.key === k) ? blockerHold(b, r, STEP_LABELS, INPUT_LABELS) : null;
+        const said = hold?.by === 'triage' ? `triage: ${hold.why}` : hold?.why;
+        if (hold?.needs === 'build') {
           (outsideHolds[t] ??= []).push(k);
-          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; triage: ${need.why}`;
-        } else if (need && judgement) {
-          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${need.why})`);
-          taken.push({ ticket: t, decision: { question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${need.why}`,
-            options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' } });
+          (holdWhy[t] ??= {})[k] = `${status}, not in this batch; ${said}`;
+        } else if (hold?.needs === 'merge') {
+          (mergeAfter[t] ??= []).push(k);
+          note(t, hold.by === 'step' ? `built now, merged only once ${k} (your step) is Done` : `built now, merged only once ${k} is Done (${said})`);
+        } else if (hold && judgement) {
+          note(t, `starts without blocker ${k} (${status}, not in this batch): triage found it is not needed (${hold.why})`);
+          taken.push({ ticket: t, decision: startWithout(t, k, status, hold.why) });
         } else ask(t, `${t} is blocked by ${k} (${status}), which is not in this batch: add ${k} to the batch, or confirm ${t} can start without it`);
       }
     }
@@ -416,27 +425,8 @@ const collidesWith = (t) => collisions.flatMap((c) => (c.a === t ? [c.b] : c.b =
 // desk-jira lint's blocking findings (ticket-facts.mjs): each is something a worker would park on.
 const lintBlocking = (r) => (r.lint ?? []).filter((f) => f.severity === 'blocking');
 
-// Admits `r` into the repo its Jira Repository names, by intake.mjs admit run in that repo's checkout
-// with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
-function handOver(r) {
-  const p = elsewhere(r);
-  const intake = join(binDir(), 'intake.mjs');
-  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${r.ticket} --by plan-batch`;
-  if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
-  const env = otherRepoEnv();
-  for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
-  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
-  const x = spawnSync(process.execPath, [intake, 'admit', r.ticket, '--by', 'plan-batch', '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
-  let out = null;
-  try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
-  const mine = (out?.lines ?? []).filter((l) => l.includes(r.ticket));
-  if (x.status === 0 && out?.admitted?.includes(r.ticket)) return { ok: true, line: mine.find((l) => /^admitted /.test(l)) ?? `admitted ${r.ticket}` };
-  // Already in one of that repo's batches (its own intake, or a person, admitted it there first).
-  const there = mine.find((l) => l.startsWith(`${r.ticket} is already in batch `));
-  if (x.status === 0 && there) return { ok: true, line: there };
-  const why = out?.error ?? mine.at(-1) ?? (x.error?.message || String(x.stderr ?? '').trim().split('\n').pop() || `intake.mjs exited ${x.status}`);
-  return { ok: false, why, cmd };
-}
+// Admits `r` into the repo its Jira Repository names (desk-env.mjs admitInRepo).
+const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' });
 
 // Config §3b "Worker location". At cloud, each admitted ticket that needs nothing on this computer
 // runs in a cloud session (cloud-worker.mjs placement), and the plan says where each runs, and why a
@@ -463,7 +453,7 @@ if (notOurs.length) {
 
 const ticketVerdict = (r) => (elsewhere(r)?.unknown ? `NOT ADMITTED (${awayWhy(r)} — where does it run?)`
   : elsewhere(r) ? `ELSEWHERE (${elsewhere(r).repository})`
-  : stepParked(r) ? `PARK (${labelPark(r, STEP_LABELS)})`
+  : stepParked(r) ? `PARK (${stepPark(r)})`
   : laneUnchecked(r) ? `PARK (lane ${r.lane}, UNCHECKED — the challenge could not read the code; confirm or re-lane)`
   : needsPersonLane(r) ? `PARK (lane ${r.lane} — ${r.lane === 'D' ? `${designGap(r)}, so ` : ''}run manually)`
   : sizeParked(r) ? `PARK (size ${String(r.size).toUpperCase()} — split it before batching)`
@@ -522,8 +512,8 @@ if (sized.length) {
   for (const r of sized) say(`  ${r.ticket}: size ${String(r.size).toUpperCase()}`);
 }
 if (stepped.length) {
-  say(`\n${'='.repeat(60)}\nYOUR STEPS (${stepped.length}) — labelled as your own step (config §4 Person-step labels), so no worker spawns on them:`);
-  for (const r of stepped) say(`  ${r.ticket}: labelled ${stepLabel(r.labels, STEP_LABELS)}`);
+  say(`\n${'='.repeat(60)}\nYOUR STEPS (${stepped.length}) — labelled as your own step (config §4 Person-step or Person-input labels), so no worker spawns on them:`);
+  for (const r of stepped) say(`  ${r.ticket}: labelled ${stepLabel(r.labels, INPUT_LABELS) ?? stepLabel(r.labels, STEP_LABELS)}`);
 }
 if (undesigned.length) {
   say(`\n${'='.repeat(60)}\nPARKED ON DESIGN (${undesigned.length}) — snapshot each artifact before any worker starts:`);
@@ -640,7 +630,7 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       `location=${placed[t].where === 'cloud' ? 'cloud' : 'null'}`,
     ];
     execFileSync('node', [QUEUE, 'set', t, ...sets], { stdio: 'ignore' });
-    const park = labelPark(r, STEP_LABELS) ?? lanePark(r)
+    const park = stepPark(r) ?? lanePark(r)
       ?? (sizeParked(r) ? `size ${String(r.size).toUpperCase()} — split it before batching`
       : designParked(r) ? designPark(r)
       : onCycle.has(t) ? `dependency cycle: ${onCycle.get(t)} — ${cycleFix(onCycle.get(t))}`

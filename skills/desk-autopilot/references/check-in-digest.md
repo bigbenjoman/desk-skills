@@ -28,11 +28,13 @@ the disk and the database on the first); it is pushed once while it stays failin
 together, one of them unable to reach its host, is the network, one `health:<slug>:network` with no
 sign-in fix (only all of them refusing a sign-in is the sign-ins), and a single check that
 cannot reach its host names the connection, not the sign-in. Signing back in is always the
-person's; the line says `recovered` on the first pass that sees it pass. Each other Claude login the
-subscriptions file puts in rotation or on standby (`desk-env logins`) gets its own `claude auth
-status` in its folder: signed
-out, it is named under `STALLED` with its sign-in command and pushed as
-`health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own.
+person's; the line says `recovered` on the first pass that sees it pass. The Claude default and the
+subscription this repo is pinned to (§3b Subscription, `desk-env subscription`), where each is a
+login in its own folder (`desk-env logins`), get their own `claude auth status` in that folder: signed
+out, one is named under `STALLED` with its sign-in command and pushed as
+`health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own. A
+subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
+own pass), so an unused one signed out raises nothing.
 
 **The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
 pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config

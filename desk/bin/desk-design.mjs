@@ -42,6 +42,9 @@
 //       Breakpoints (as render) and the board's own width, into <out> as canvas-<board>-<w>.png and
 //       built-<board>-<w>.png; a board with no story is listed as not compared. Exit 3 when there
 //       is no Storybook index there, 4 (nothing written) when a board or story fails, 6 as render
+//   node desk-design.mjs estimate <saved dir> [--key <K>]
+//       the uploads the ticket's PR needs once boards are stitched (its boards × config §5 Themes,
+//       one when unset) and the time at the upload pace; a `flag:` line when that is over an hour
 // `--boards` binds to the `--key` before it; a key with none uses every board. compare's
 // `--boards` names the boards to shoot, every board without it. A board is named by its title, which
 // may hold commas, or its file name; a name matching no board exits 2. Usage errors exit 2.
@@ -53,6 +56,7 @@ import { basename, dirname, extname, isAbsolute, join, normalize, relative, reso
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
+import { parseCapture } from './stitch-boards.mjs';
 
 const safeId = (s) => E.SAFE_ID.test(String(s ?? '')) && !String(s).includes('..');
 const fail = (msg, code = 2) => { const e = new Error(msg); e.code = code; throw e; };
@@ -1084,6 +1088,60 @@ function loadIssue(arg, keyOpt) {
   return JSON.parse(out);
 }
 
+// ---- estimate (uploads a saved canvas's PR needs, at grooming) ---------------------------------
+
+// The pace desk uploads PR images at, machine-wide.
+export const UPLOAD_PACE = Object.freeze({ perMinute: 6, perHour: 300 });
+
+// Config §5 Themes: the theme names every screen is captured in. Unset or `none` is one look.
+export function themes() {
+  let v;
+  try { v = E.configValues('themes'); } catch (e) { if (e instanceof E.DeskConfigError) throw e; v = null; }
+  return !v || E.isNone(v) ? [] : [...new Set(v.map((x) => String(x).trim()).filter(Boolean))];
+}
+
+// One stitched image per board and theme: the uploads a ticket's PR needs and the minutes they take
+// at UPLOAD_PACE (whichever of the minute and hour caps is slower). With `key`, the boards are that
+// ticket's (every board when it names none, or when source.json does not list it yet: `unlisted`).
+// Boards are counted as the stitch groups them: by the file name compare gives each (screenNames),
+// read with stitch-boards.mjs's parseCapture, so a board drawn as another's dark theme ("Order
+// summary dark") counts as that board, and its theme counts toward the themes.
+export function uploadEstimate(source, { key = null, themeCount = 1 } = {}) {
+  const all = source?.boards ?? [];
+  let files = screenNames(all);
+  const t = key ? (source?.tickets ?? []).find((x) => x.key === key) : null;
+  if (t?.boards?.length) {
+    // As compare keeps them: every board whose title the ticket names, so two boards sharing a title
+    // ("Checkout", captured as checkout and checkout-2) both count. A title no board has counts once.
+    const named = new Set(t.boards);
+    const missing = [...named].filter((n) => !all.some((b) => b.name === n));
+    files = [...files.filter((_, i) => named.has(all[i].name)), ...screenNames(missing.map((name) => ({ name })))];
+  }
+  const parsed = files.map((f) => parseCapture(`canvas-${f}-1.png`));
+  const bases = new Set(parsed.map((p) => p.screen));
+  const drawn = new Set(parsed.map((p) => p.theme));
+  const themesN = Math.max(1, themeCount, drawn.size);
+  const uploads = bases.size * themesN;
+  const minutes = Math.max(uploads / UPLOAD_PACE.perMinute, (uploads / UPLOAD_PACE.perHour) * 60);
+  return { boards: bases.size, themes: themesN, uploads, minutes, over: minutes > 60, boardsPerHour: Math.floor(UPLOAD_PACE.perHour / themesN), unlisted: !!key && !t };
+}
+
+const duration = (m) => {
+  const whole = Math.ceil(m);
+  if (whole < 60) return `${whole} minute${whole === 1 ? '' : 's'}`;
+  const h = Math.floor(whole / 60); const r = whole % 60;
+  return `${h} hour${h === 1 ? '' : 's'}${r ? ` ${r} minute${r === 1 ? '' : 's'}` : ''}`;
+};
+
+// The groom's lines for one estimate: the count and time, then a flag when it is over an hour.
+export function estimateLines(e, { key = null } = {}) {
+  if (!e.boards) return ['uploads: none: this canvas has no boards to stitch (a deck or a single page)'];
+  const out = [`uploads: ${e.uploads} (${e.boards} board${e.boards === 1 ? '' : 's'} × ${e.themes} theme${e.themes === 1 ? '' : 's'}), about ${duration(e.minutes)} at ${UPLOAD_PACE.perMinute} a minute and ${UPLOAD_PACE.perHour} an hour`];
+  if (e.unlisted) out.push(`note: ${key} is not among the tickets source.json lists yet, so every board is counted`);
+  if (e.over) out.push(`flag: over an hour to upload: split ${key ?? 'the ticket'} by board, at most ${e.boardsPerHour} board${e.boardsPerHour === 1 ? '' : 's'} per ticket`);
+  return out;
+}
+
 // ---- the command line ------------------------------------------------------------------------
 
 const isMain = (() => {
@@ -1184,8 +1242,14 @@ if (isMain) {
       }
       for (const u of r.unmatched) console.log(`not compared: ${u}: no story's id or title matches the board's name`);
       console.log(`compared: ${r.pairs.length} of ${r.pairs.length + r.unmatched.length} boards, images in ${out}`);
+    } else if (cmd === 'estimate') {
+      if (!target) fail('usage: desk-design estimate <saved dir> [--key <K>]');
+      const source = readJson(join(target, 'source.json'));
+      if (!source) fail(`no source.json in ${target}: save the canvas first (desk-design save)`);
+      const key = opt(rest, '--key') ?? null;
+      for (const l of estimateLines(uploadEstimate(source, { key, themeCount: themes().length }), { key })) console.log(l);
     } else {
-      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render|compare ... (see the top of the file)');
+      fail('usage: desk-design.mjs write|save|import|propose|status|check|snapshots|render|compare|estimate ... (see the top of the file)');
     }
   } catch (e) {
     console.error(`desk-design: ${e.message}`);

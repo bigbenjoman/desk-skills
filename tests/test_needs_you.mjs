@@ -66,6 +66,7 @@ function put(name, r) {
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
+    (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -1702,6 +1703,14 @@ const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done'
 t('DS-407 done records nothing: the pass reads the step from Jira', `${kpDone.ok} ${/next pass that reads OPS-9 from Jira lifts the hold/.test(kpDone.line)}`, 'true true');
 const kpOff = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'not-now' });
 t('DS-407 not-now puts it off, in the list and in desk-q\'s count', `${kpOff.ok} ${kp().length} ${kpCount().shown} ${kpCount().putOff}`, 'true 0 0 1');
+// DS-687: a blocker triage called needed only to merge is another ticket's code, not the person's step, so
+// it is no item; a step triage also called merge still is one.
+const gate687 = (k, b, needs = 'merge') => ({ blockers: [b], blocker_needs: { [b.key]: { needs, why: 'lands the flag it ships behind' } } });
+put('kappa687', { port: 5687, beat: 1, supervised: true, tickets: { 'K-7': { ...waitsOn(77), merge_after: 'OUT-7' }, 'K-8': { ...waitsOn(78), merge_after: 'OPS-8' }, 'K-9': { ...waitsOn(79), merge_after: 'OPS-9' } },
+  triage: { 'K-7': gate687('K-7', { key: 'OUT-7', category: 'new', type: 'Story', summary: 'Add the export endpoint' }),
+    'K-8': gate687('K-8', { key: 'OPS-8', category: 'new', type: 'Task', summary: 'Apply the billing migration' }),
+    'K-9': gate687('K-9', { key: 'OPS-9', category: 'new', type: 'Task', summary: 'Apply the search migration' }, 'build') } });
+t('DS-687 a merge-only gate triage called is no step item; a step called merge or build still is', N.collect({ word: 'kappa687' }).items.filter((i) => i.kind === 'step').map((i) => i.t.key).sort().join(), 'step:OPS-8,step:OPS-9');
 // A step two of the repo's batches wait on is still one item, naming the PRs in both.
 const kfq = join(env.DESK_HOME, 'repos', 'acme__kappa407', 'batches', 'KF', 'queue.json');
 const kfs = join(env.HOME, '.desk-autopilot', 'acme__kappa407', 'batches', 'KF');
@@ -1721,6 +1730,53 @@ const kfBatch = () => loadRepos().find((r) => r.slug === 'acme__kappa407' && r.b
 const kfOnly = () => N.needsCount(repoRow([kfBatch()]));
 t('DS-407 AC2 put off from the feature batch, it is put off in the standing batch\'s register', `${kfOff.ok} ${kfOff.line.includes(join('.desk-autopilot', 'acme__kappa407', 'not-now'))}`, 'true true');
 t('DS-407 AC2 and every count reads it put off: the repo, the feature batch alone, and the list', `${N.needsCount(kRow()).shown} ${N.needsCount(kfBatch()).putOff} ${kfOnly().shown} ${kp().filter((i) => i.kind === 'step').length}`, '0 1 0 0');
+
+// ---- DS-685: a step only the person takes that holds a ticket's build (held_outside) is a step item too
+{
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, held_outside: by, park: { question: `held by orchestrator: blocked by ${by}` } });
+  const input = { key: 'OPS-7', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  const code = { key: 'CODE-1', category: 'indeterminate', type: 'Story', summary: 'Build the gateway' };
+  put('lambda685', { port: 5685, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-1': held('OPS-7'), 'H-3': held('CODE-1') },
+    triage: { 'H-1': { blockers: [input] }, 'H-3': { blockers: [code] } } });
+  const la = () => N.collect({ word: 'lambda685' }).items;
+  t('DS-685 AC1 one step item for the input step holding a ticket\'s build, and none for the ticket itself', la().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-7 step');
+  t('DS-685 AC1 it names the ticket as waiting to start on it', la()[0]?.need,
+    'OPS-7 ("Record the webhook payload") is a step only you can take, and one ticket waits to start on it: H-1. Do it and move OPS-7 to Done in Jira; the next pass that reads it lifts the hold, and H-1 can start');
+  t('DS-685 AC3 a ticket held behind a code ticket in no batch gets no step item (nor any item: it waits on that ticket)', la().some((i) => /CODE-1|H-3/.test(`${i.t.key} ${i.need}`)), false);
+  const laCount = () => N.needsCount(loadRepos().find((r) => r.name === 'lambda685'));
+  t('DS-685 AC5 desk-q counts the step once, as needing you, and not the ticket waiting on it as a second', `${laCount().shown} ${laCount().rows.length}`, '1 0');
+  // AC4: the triage record now reads the step Done, so it holds nothing as a step and leaves the list.
+  writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__lambda685', 'triage', 'H-1.json'), JSON.stringify({ ticket: 'H-1', epic: null, blockers: [{ ...input, category: 'done' }] }));
+  t('DS-685 AC4 once the triage record reads the step Done, its item leaves needs-you', `${la().filter((i) => i.kind === 'step').length} ${laCount().shown}`, '0 0');
+  // AC2: the same step also holds a second ticket's merge.
+  put('nu685', { port: 5686, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-1': held('OPS-7'),
+    'H-2': { state: 'done', lane: 'A', result: { pr: 91 }, pr_status: { pr: 91, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-7' } },
+    triage: { 'H-1': { blockers: [input] }, 'H-2': { blockers: [input] } } });
+  const nu = N.collect({ word: 'nu685' }).items;
+  t('DS-685 AC2 one item for a step holding one ticket\'s build and another\'s merge', nu.map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-7 step');
+  t('DS-685 AC2 it names one ticket waiting to start and the other waiting to merge', nu[0]?.need,
+    'OPS-7 ("Record the webhook payload") is a step only you can take, and one ticket waits to start on it: H-1, and one waits to merge on it: PR #91 (H-2). Do it and move OPS-7 to Done in Jira; the next pass that reads it lifts the hold, and H-1 can start, and you merge them on GitHub');
+  t('DS-685 AC2 its put-off inputs name both tickets waiting on it', nu[0]?.waiting.join(), 'H-1,H-2');
+  // Held behind the step and behind a blocker that needs its own action, the ticket keeps its own item
+  // for that blocker; released from the step by hand (held_outside left behind) and held again, the
+  // step no longer holds it.
+  put('mu685', { port: 5687, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: {
+    'B-9': { state: 'done', lane: 'A', result: {} },
+    'H-4': { ...held('OPS-7'), held_by: 'OPS-7|B-9' },
+    'H-5': { ...held('OPS-7'), held_by: 'B-9', park: { question: 'held by orchestrator: blocked by B-9' } } },
+    triage: { 'H-4': { blockers: [input] }, 'H-5': { blockers: [input] } } });
+  const mu = N.collect({ word: 'mu685' }).items;
+  t('DS-685 a step never hides another blocker that needs you: the ticket keeps its own item for it', mu.some((i) => i.t.key === 'H-4' && /B-9 finished with no PR: let it start/.test(i.need)), true);
+  t('DS-685 the step item names only the ticket its held_by still holds behind it', mu.find((i) => i.kind === 'step')?.waiting.join(), 'H-4');
+  // The ticket the step holds is drawn with the step: under Needs you while the step needs the
+  // person, and under Put off once the step is put off with not-now.
+  put('xi685', { port: 5688, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'H-6': held('OPS-7') }, triage: { 'H-6': { blockers: [input] } } });
+  const xi = () => loadRepos().find((r) => r.name === 'xi685');
+  const xiGroup = () => { let g = null; for (const l of strip(repoScreen(xi())).split('\n')) { const h = l.match(/^ {2}(Needs you|Put off|Waiting|Ready|Running|Merging) · \d+$/); if (h) g = h[1]; else if (/^ +\S+ {2}H-6 /.test(l)) return g; } return null; };
+  t('DS-685 AC5 the held ticket is a step row, drawn under Needs you', `${N.needsCount(xi()).stepRows.map((x) => x.t.key).join()} ${xiGroup()}`, 'H-6 Needs you');
+  const xiOff = N.record({ word: 'xi685', ticket: 'step:OPS-7', action: 'not-now' });
+  t('DS-685 AC5 the step put off, the ticket it holds is drawn under Put off and counted nowhere', `${xiOff.ok} ${N.needsCount(xi()).stepRows.length} ${N.needsCount(xi()).shown} ${N.needsCount(xi()).putOff} ${xiGroup()}`, 'true 0 0 1 Put off');
+}
 
 // The pass undrafted a PR on the desk-review a worker posted, so nothing is left for the person.
 put('tau', { port: 4300, beat: 1, supervised: true, tickets: {

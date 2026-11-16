@@ -93,7 +93,7 @@ for it**, and only that one; the sections it names moved there word for word.
 | Step | Sections | Read |
 |---|---|---|
 | 1. Detecting this repo, then confirming each config section with the user: the scan, the rows it proposes, and what to fix before the interview | *1. Detect, then confirm* | `references/step-1-detect.md` |
-| 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, and which logins new workers rotate between | *This computer*, *Subscriptions on this computer* | `references/step-1-this-computer.md` |
+| 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, this computer's subscriptions, and which one runs this repo | *This computer*, *Subscriptions on this computer*, *This repo's subscription* | `references/step-1-this-computer.md` |
 | 1, once §4 Pre-push checks is confirmed and is not `none`: committing the hook and setting `core.hooksPath` | *The pre-push hook* | `references/step-1-pre-push-hook.md` |
 | 1, once §4 Local review command is `/desk-review`: committing the CI gate | *The desk gate workflow* | `references/step-1-desk-gate.md` |
 | 2. The permission interview: how to ask the §3 rows, the autopilot warning, the consistency checks and what is not on offer | *2. The permission interview* | `references/step-2-interview.md` |
@@ -129,7 +129,8 @@ done. Both are here, read by every run that reaches them:
 rows to an `AskUserQuestion` call, as many calls as it takes. Read the rows from the template, never
 from a list here. The Recommended option is the template's Recommended value unless a rule here
 names another. A value this repo's config already holds for a row, `off` and `none` included, is the
-first option, as it stands; the memory ceiling above is the one exception. The preferred
+first option, as it stands; the memory ceiling above is the one exception. The Subscription row is
+never in these calls: step 1 asks it once per repo (*This repo's subscription*). The preferred
 dev-server port is the one row asked out of order: it is left out of these calls and asked after
 them, once the autopilot worker concurrency answer is in (*The dev-server port is read, not
 recalled*, below). For resume a killed

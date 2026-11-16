@@ -10,8 +10,8 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loginFile, subscriptionsPath } from './desk-env.mjs';
-import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, toolLogins } from './logins.mjs';
+import { loginFile, repoSubscriptions, subscriptionsPath } from './desk-env.mjs';
+import { CHECK_TIMEOUT_MS, defaultLogin, isDir, login, loginEnv, readSubscriptions, repoSubscription, toolLogins } from './logins.mjs';
 
 // A login for a folder no subscriptions row names.
 const envLogin = (dir) => login({ tool: 'claude', name: basename(dir), folder: dir, rule: null, source: 'env' });
@@ -41,6 +41,14 @@ function runningLogins(env = process.env) {
 export const inUse = (l) => l.rule === 'in rotation' || l.rule === 'standby';
 // The logins a usage probe runs on, the default first.
 export const probeLogins = () => claudeLogins().filter(inUse);
+
+// The folders of the logins work runs on: the Claude default, and the login each subscription `of`
+// picks from the subscriptions file resolves to (repoSubscription's results), by default every
+// configured repo's from its own row. A subscription no repo runs on is not among them.   -> Set of dirs
+export function workLoginDirs(of = (subs) => repoSubscriptions({ repoSubscription }, subs)) {
+  const subs = readSubscriptions(subscriptionsPath());
+  return new Set([repoSubscription(subs, { value: 'default' }), ...of(subs)].map((r) => r.login?.dir).filter(Boolean));
+}
 
 // The login a config folder is, or a login for that folder when no reader knows it. Null or empty is
 // the default login.

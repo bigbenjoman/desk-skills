@@ -377,37 +377,85 @@ export function lanePark(r) {
     : `lane ${r.lane} — ${why.slice(0, 160)}`;
 }
 
-// The first of `labels` that §4 Person-step labels names (`stepLabels`, lowercased), or null.
+// The first of `labels` that a labels row names (`stepLabels`, lowercased), or null.
 export function stepLabel(labels, stepLabels = []) {
   const want = new Set((stepLabels ?? []).map((s) => String(s).trim().toLowerCase()).filter(Boolean));
   return want.size ? (Array.isArray(labels) ? labels : []).find((l) => want.has(String(l).trim().toLowerCase())) ?? null : null;
 }
 
-// The park for a ticket labelled as the person's own step (its triage record's `labels`), or null. It is
-// admitted parked on it, beside lanePark and designPark, so no worker spawns and Needs you lists it; a
-// ticket it blocks merges after it (merge_after) rather than waiting to build.
+// The park for a ticket labelled as the person's own step, by §4 Person-step labels (`stepLabels`) or
+// Person-input labels (`inputLabels`) on its triage record's `labels`, or null. It is admitted parked on
+// it, beside lanePark and designPark, so no worker spawns and Needs you lists it.
 const PERSON_STEP_PREFIX ="the person's step: ";
-export function labelPark(r, stepLabels = []) {
-  const l = stepLabel(r?.labels, stepLabels);
-  return l ? `${PERSON_STEP_PREFIX}labelled ${l} (config §4 Person-step labels), so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
+const INPUT_ROW = '(config §4 Person-input labels)';
+export function labelPark(r, stepLabels = [], inputLabels = []) {
+  const input = stepLabel(r?.labels, inputLabels);
+  const l = input ?? stepLabel(r?.labels, stepLabels);
+  return l ? `${PERSON_STEP_PREFIX}labelled ${l} ${input ? INPUT_ROW : '(config §4 Person-step labels)'}, so no worker can do it. Take the step, mark it Done in Jira, then drop it from the batch` : null;
 }
 export const personStepPark = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(PERSON_STEP_PREFIX);
+// A person's step parked on a Person-input label: what it makes, the build reads, so a ticket it blocks
+// is held behind it, never merged after it.
+export const personInputPark = (t) => personStepPark(t) && String(t.park.question).includes(INPUT_ROW);
 
-// Whether blocker `b` (a triage record's `blockers` entry) is a step only the person takes, such as a
-// migration applied or a sign-off: a Task whose summary says apply, confirm or sign off, or one whose
-// summary names a step the blocked ticket's triage record `rec` lists in ben_steps. Open and in no
-// batch, it holds the blocked ticket's merge, not its build (merge_after).
-// A blocker carrying one of §4 Person-step labels (`stepLabels`, desk-env.mjs personStepLabels; its
-// labels are read by ticket-facts.mjs) is one whatever its summary says.
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const squash = (s) => String(s ?? '').trim().replace(/\s+/g, ' ');
+// Whether `text` holds `phrase` whole, not as part of a longer word or key.
+const holdsWhole = (text, phrase) => !!phrase && new RegExp(`(?<![\\p{L}\\p{N}_-])${escapeRe(phrase)}(?![\\p{L}\\p{N}_]|-\\p{N})`, 'iu').test(text);
+
+// How blocker `b` (a triage record's `blockers` entry) holds the ticket whose triage record is `rec`,
+// when it is a step only the person takes: 'build' when it carries one of §4 Person-input labels
+// (`inputLabels`), as its step produces something the build reads, which wins over everything below;
+// 'merge' when it carries one of §4 Person-step labels (`stepLabels`), when one of `rec`'s ben_steps
+// names its key or holds its whole summary, or when it is a Task whose summary says apply, confirm or
+// sign off; otherwise null, an ordinary blocker. Labels come from ticket-facts.mjs.
 const STEP_WORDS = /\b(appl(?:y|ies|ied)|confirm(?:s|ed)?|sign(?:s|ed)?[- ]?off)\b/i;
-export function personStep(b, rec = null, stepLabels = []) {
-  if (stepLabel(b?.labels, stepLabels)) return true;
-  const summary = String(b?.summary ?? '').trim().toLowerCase();
-  if (!summary) return false;
+export function personStep(b, rec = null, stepLabels = [], inputLabels = []) {
+  if (stepLabel(b?.labels, inputLabels)) return 'build';
+  if (stepLabel(b?.labels, stepLabels)) return 'merge';
+  const key = squash(b?.key);
+  const summary = squash(b?.summary);
   const named = (Array.isArray(rec?.ben_steps) ? rec.ben_steps : [])
-    .some((s) => [s?.step, s?.blocker].some((x) => String(x ?? '').trim() && summary.includes(String(x).trim().toLowerCase())));
-  return named || (/^task$/i.test(String(b?.type ?? '').trim()) && STEP_WORDS.test(summary));
+    .some((s) => [s?.step, s?.blocker].some((x) => holdsWhole(squash(x), key) || holdsWhole(squash(x), summary)));
+  return named || (/^task$/i.test(squash(b?.type)) && STEP_WORDS.test(summary)) ? 'merge' : null;
 }
+
+// Triage's call on each open blocker (`blocker_needs`): the ticket needs it to build, needs it only to
+// merge, or does not need it.
+export const BLOCKER_CALLS = ['build', 'merge', 'none'];
+// Triage's call on blocker `key` in triage record `rec`: {needs, why}, or null when none is recorded. A
+// record written before the three calls holds a boolean: true is 'build', false is 'none'.
+export function blockerCall(rec, key) {
+  const n = rec?.blocker_needs?.[key];
+  if (!n || typeof n !== 'object') return null;
+  const needs = BLOCKER_CALLS.includes(n.needs) ? n.needs : n.needs === true ? 'build' : n.needs === false ? 'none' : null;
+  return needs ? { needs, why: String(n.why ?? '').trim() || 'no reason given' } : null;
+}
+// The open blockers in triage record `rec`'s `blockers` (ticket-facts.mjs) that `blocker_needs` gives no
+// call: triage.sh refuses a record with any.
+export const uncalledBlockers = (rec) => (Array.isArray(rec?.blockers) ? rec.blockers : [])
+  .filter((b) => b?.key && b.category !== 'done' && !blockerCall(rec, b.key)).map((b) => b.key);
+// How open blocker `b`, in no batch, holds the ticket whose triage record is `rec`: {needs, by, why}, or
+// null with neither a person's step (personStep) nor a triage call (blockerCall) to go on, which is
+// asked. Where the step and the call point different ways, the one that holds more wins: 'build' (a full
+// hold) over 'merge' (a merge-only gate) over 'none'. `by` is 'step' or 'triage', whichever decided it.
+export function blockerHold(b, rec, stepLabels = [], inputLabels = []) {
+  const step = personStep(b, rec, stepLabels, inputLabels);
+  const call = blockerCall(rec, b?.key);
+  if (call && BLOCKER_CALLS.indexOf(call.needs) < BLOCKER_CALLS.indexOf(step ?? 'none')) return { needs: call.needs, by: 'triage', why: call.why };
+  if (step) return { needs: step, by: 'step', why: step === 'build' ? 'your input step: the build reads what it makes' : 'your step' };
+  return call ? { needs: call.needs, by: 'triage', why: call.why } : null;
+}
+// Whether blocker `b` holds rec's ticket's merge on triage's call alone (blockerHold 'merge' by
+// 'triage'): another ticket's code, no step of the person's, so it is lifted once Done and landed.
+export const triageGate = (b, rec, stepLabels = [], inputLabels = []) => {
+  const hold = b ? blockerHold(b, rec, stepLabels, inputLabels) : null;
+  return hold?.needs === 'merge' && hold.by === 'triage';
+};
+// The call taken where triage found ticket `t` does not need blocker `k` (`status` in Jira, in no batch),
+// logged as plan-batch and intake both log it.
+export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked by ${k} (${status}), which is not in this batch: start without it? Triage: ${why}`,
+  options: [`start without ${k}`, `wait for ${k}`], chose: `start without ${k}`, category: 'engineering' });
 
 // Where a held ticket's hold leads: the parked or failed tickets it waits on, an empty list when every
 // predecessor is progressing (running, waiting to spawn, done with a PR that is open, itself held
