@@ -148,7 +148,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
 // (desk-env leverStates), read from the row itself rather than any DESK_LEVERS the caller carries.
 //   -> { pin, assigned: bool, warning: text | null }
 export function assignPin(key, {
-  size = null, slug = repoSlug(), states = leverStates({}).states, frozen = leversFrozen(), random = systemRandom,
+  size = null, slug, states = leverStates({}).states, frozen, random = systemRandom,
   now = new Date(), registry = REGISTRY, values = null,
 } = {}) {
   const rowPin = () => pinAtAdmission({ on: Object.keys(states).filter((n) => states[n] === 'pinned') }, now);
@@ -156,6 +156,8 @@ export function assignPin(key, {
   let result = null;
   let unreadable = null;
   try {
+    slug ??= repoSlug();
+    if (frozen === undefined) frozen = leversFrozen();
     appendWith(slug, () => {
       let log;
       try { log = read(slug); } catch (e) { unreadable = e.message; }
