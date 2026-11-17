@@ -1016,8 +1016,9 @@ sw=$!; sleep 0.5
 node "$B/queue.mjs" stop S-1 >/dev/null 2>&1
 wait "$sw" 2>/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-742 AC2 a stopped ticket gets no worker from the next pass" '! spawned_for S-1 && [ "$(field S-1 state)" = "\"parked\"" ] && [ "$(field S-1 held_by)" = null ]'
-eval "$(node -e 'import(process.argv[1]).then((E) => console.log(E.releaseCommand("S-1", `node ${process.argv[2]}`).replace(", then ", "; ")))' "$B/desk-env.mjs" "$B/queue.mjs")" >/dev/null 2>&1
+check "DS-742 AC2 a stopped ticket gets no worker from the next pass" '! spawned_for S-1 && [ "$(field S-1 state)" = "\"parked\"" ] && [ "$(field S-1 held_by)" = null ] && echo "$out" | grep -q "S-1: STOPPED — its worker was stopped by queue.mjs stop"'
+# needs-you's start runs desk-env's releaseCommand: these two writes.
+q set S-1 state=triaged park=null held_by=null; q front S-1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-742 AC3 let start, it gets a worker in its worktree on its branch, at the stage it was stopped in" 'spawned_for S-1 | grep -q "^S-1 [0-9a-f-]* stage=5 branch=fix/S-1 " && brief S-1 | grep -qF "## Last round: this session resumes at Stage 5" && brief S-1 | grep -qF "work in progress when queue.mjs stop ended its worker"'
 q set S-1 state=done
