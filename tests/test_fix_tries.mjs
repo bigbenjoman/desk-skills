@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
@@ -685,6 +685,11 @@ t('DS-419 AC5 a finished try that moved the head has its threads resolved', reso
 t('DS-419 not while the head is still the try\'s', resolvable(tk({ state: 'done', fix: worked }), HEAD).length, 0);
 t('DS-419 not while its worker runs or parked', [resolvable(tk({ state: 'done', fix: fb1.fix }), 'd'.repeat(40)).length, resolvable(tk({ state: 'parked', fix: worked }), 'd'.repeat(40)).length].join(), '0,0');
 t('DS-419 not one already resolved', resolvable(tk({ state: 'done', fix: { ...worked, resolved: ['PRRT_1'] } }), 'd'.repeat(40)).length, 0);
+t('DS-605 not one the pass ended before any worker ran it, its head moved', resolvable(tk({ state: 'done', fix: { ...worked, no_worker: true } }), 'd'.repeat(40)).length, 0);
+// A try no worker ran said nothing: an earlier worker's summary is not quoted as its own.
+const unrunSync = tk({ fix: { kind: 'sync', try: 1, of: 2, base: 'main', finished: 'x', no_worker: true }, result: { summary: 'an earlier worker' } });
+t('DS-605 a sync try no worker ran is not quoted as having said anything', syncSaid(unrunSync), '');
+t('DS-605 a sync try its worker finished is quoted', syncSaid({ ...unrunSync, fix: { ...unrunSync.fix, no_worker: undefined } }).includes('which said: an earlier worker'), true);
 t('DS-419 the reply names the try and the head', feedbackReply(fb1.fix, 'd'.repeat(40)).startsWith(`Worked by desk's fix try 1 of ${FIX_TRIES_MAX} at dddddddddddd`), true);
 // AC2: a ready PR's review fix says it is out of draft, and leaves it there.
 const rfReady = { ...reviewFix(tk(), { pr: 2289, head: HEAD, verdict: { p0: '1', p1: '0' }, body: '### P0 (1)\n- src/clerk.ts:12 signature changed on main' }).fix, ready: true };
