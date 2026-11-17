@@ -2063,14 +2063,35 @@ const runningKeys = new Set(running.map((r) => r.key));
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeFiles = (rec) => {
+  const files = rec?.files_in_scope;
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
+};
 const scopeOf = new Map();
 const budgetFiles = (key) => {
-  if (!scopeOf.has(key)) {
-    const files = triageRec(key)?.files_in_scope;
-    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
-  }
+  if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
+// its batch's queue and triage record. A queue that does not read counts nothing, and is named in the report.
+const elsewhereRunning = [];
+const budgetUnread = [];
+{
+  let slug = null;
+  try { slug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
+  for (const o of slug == null ? [] : otherQueues({ self: QUEUE_FILE })) {
+    if (o.slug !== slug) continue;
+    if (o.error) { budgetUnread.push(o.error); continue; }
+    const triageDir = join(E.batchPaths(slug, o.batch).state, 'triage');
+    for (const t of Object.values(o.q.tickets ?? {})) {
+      if (t?.state !== 'running' || !t.key) continue;
+      let rec = null;
+      try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
+    }
+  }
+}
+const batchLabel = (b) => (b ? `batch ${b}` : 'the standing batch');
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
 const lineCounts = new Map();
 const linesOnBase = (f) => {
@@ -2105,14 +2126,16 @@ const placesFor = (f) => {
   const k = configuredPlaces(f);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
 };
-// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
+// them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
 const budgetHolds = (r) => {
   const holds = [];
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
-    if (!by.length) continue;
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
+    if (!by.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length >= k) holds.push({ file: f, k, by });
+    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
   }
   return holds;
 };
@@ -3864,6 +3887,7 @@ if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  $
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
 if (FILE_BUDGET.bad) out.push(`collisions: ${FILE_BUDGET.bad} — read as 1 for every file, so no two tickets naming one file run at once`);
+for (const why of budgetUnread) out.push(`collisions: ${why} — that batch's running tickets were not counted toward the per-file budget`);
 if (conflictRecord.bad) out.push(`collisions: the conflict record was not read (${conflictRecord.bad}), so every file runs at its configured budget`);
 for (const [f, times] of conflictsBy) {
   const k = configuredPlaces(f), now = placesFor(f);
@@ -5322,7 +5346,7 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(SHOWN_BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
-const budgetText = (h) => `${h.file} has ${h.by.length} running of its ${h.k}: ${h.by.join(', ')}`;
+const budgetText = (h) => `${h.file} has ${h.by.length + h.elsewhere.length} running of its ${h.k}: ${[...h.by, ...h.elsewhere.map((o) => `${o.key} in ${batchLabel(o.batch)}`)].join(', ')}`;
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => `${x.key} (${budgetHolds(x).map(budgetText).join('; ')})`).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
@@ -5451,7 +5475,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
