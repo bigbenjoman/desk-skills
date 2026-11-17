@@ -34,8 +34,8 @@ import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 import { read as readLeverLog, appendWith as appendLeverLog } from './lever-log.mjs';
-import { changeLine, overrideEvent } from './lever-changes.mjs';
-import { leversDir } from './levers-view.mjs';
+import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
+import { leversDir, build as buildLeversView, render as renderLeversView } from './levers-view.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -230,14 +230,26 @@ const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queu
 // The Levers page the digest's Levers section links.
 export const leversPageUrl = (dir = leversDir()) => `file://${join(dir, 'index.html')}`;
 
-// The lever changes in the window, every repo's, oldest first: one line per adopt, revert, settle, trip
-// or override in a repo's lever log (lever-changes.mjs changeLine), each adopt or revert with its
-// decision's id and override. `events(slug)` reads a repo's lever log; one that cannot be read gives none.
-export function leverChanges({ list, inWindow, events = (slug) => readLeverLog(slug).events, cmd = 'digest.mjs' }) {
+// How late a lever event may land in its log after the time it carries: an evaluation stamps its
+// transitions when it starts, so one a digest built meanwhile has not seen is listed by the next.
+export const LEVER_GRACE_MS = 3_600_000;
+
+// The lever changes since the last digest, every repo's, oldest first: one per adopt, revert, settle,
+// trip or override in a repo's lever log (lever-changes.mjs changeLine), each adopt or revert with its
+// decision's id and override, `open` while it can still be overridden. `seen` is the ids the last digest
+// read inside the grace: an event carrying an earlier time than `since` is listed when it is not among
+// them. An adopt or revert whose decision was never written is recorded in the repo's standing log here.
+// A repo whose lever log cannot be read gives none. -> { changes: [{slug, line, open}], seen: [id] }
+export function leverChanges({ list, since = null, now = new Date(), seen = null, cmd = 'digest.mjs' }) {
+  const to = now.getTime();
+  // A digest before the ids were kept has none, so its own watermark holds.
+  const from = since == null ? null : Date.parse(since) - (Array.isArray(seen) ? LEVER_GRACE_MS : 0);
+  const listed = new Set(seen ?? []);
   const out = [];
+  const recent = [];
   for (const slug of [...new Set(list.map((r) => r.slug))]) {
     let evs = [];
-    try { evs = events(slug); } catch { continue; }
+    try { evs = readLeverLog(slug).events; } catch { continue; }
     const taken = [];
     const overridden = new Set();
     for (const r of list.filter((x) => x.slug === slug)) {
@@ -245,14 +257,27 @@ export function leverChanges({ list, inWindow, events = (slug) => readLeverLog(s
       taken.push(...d.taken.filter((x) => x.lever));
       for (const o of d.overrides) overridden.add(o.override_of);
     }
-    for (const e of evs.filter((x) => x.at && inWindow(x))) {
-      const decision = taken.find((d) => d.lever_event === e.id) ?? null;
-      const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !!decision && overridden.has(decision.id), cmd });
-      if (line) out.push({ at: e.at, line });
+    const standing = list.find((x) => x.slug === slug && !x.batch);
+    for (const e of evs) {
+      const t = Date.parse(e.at);
+      if (!(t <= to) || (from != null && t <= from)) continue;
+      if (t > to - LEVER_GRACE_MS) recent.push(e.id);
+      if (listed.has(e.id)) continue;
+      let decision = taken.find((d) => d.lever_event === e.id) ?? null;
+      if (!decision && standing && isDecided(e)) decision = recordLeverDecision([e], { slug, state: standing.state })[0] ?? null;
+      const open = !!decision && !overridden.has(decision.id);
+      const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !open, cmd });
+      if (line) out.push({ at: e.at, slug, line, open });
     }
   }
-  return out.sort((a, b) => a.at.localeCompare(b.at)).map((x) => x.line);
+  const changes = out.sort((a, b) => a.at.localeCompare(b.at)).map(({ at, ...c }) => c);
+  return { changes, seen: recent };
 }
+
+// Rebuilds the Levers page the digest links. -> null, or why it could not be.
+const buildLeversPage = () => {
+  try { buildLeversView(); renderLeversView(); return null; } catch (e) { return e.message; }
+};
 
 // The page: every repo with something to answer or something taken, questions first.
 // The weekly maintenance window's notes are the computer's, not a repo's, so they head the page, and so
@@ -274,11 +299,12 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
   const nl = levers.length;
+  const nlc = levers.filter((l) => l.slug).length;
   if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nl ? `; ${nl} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nlc ? `; ${nlc} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
@@ -286,7 +312,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   }
   if (nl) {
     lines.push('## Levers', '');
-    for (const l of levers) lines.push(`- ${l}`);
+    for (const l of levers) lines.push(`- ${l.open ? '[ ] ' : ''}${l.line}`);
     lines.push('', `open: ${leversPage}`, '');
   }
   for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
@@ -356,7 +382,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // (nothing merged since it) or {range, prs, page}. Tests pass their own.
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
 
-export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks, leverEvents, leversPage = leversPageUrl() } = {}) {
+export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
   const slot = latestSlot(times, now);
   if (!slot) return { status: 'not_due', push: null };
   mkdirSync(dir, { recursive: true });
@@ -407,9 +433,13 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       };
     });
     const maintenance = digestNotes().filter(inWindow);
-    const levers = leverChanges({ list, inWindow, cmd: join(bin, 'digest.mjs'), ...(leverEvents ? { events: leverEvents } : {}) });
+    const { changes: levers, seen: leverSeen } = leverChanges({ list, since, now, seen: last?.lever_seen ?? null, cmd: join(bin, 'digest.mjs') });
+    if (levers.length) {
+      const why = buildLeversPage();
+      if (why) levers.push({ slug: null, line: `the Levers page could not be rebuilt, so it may be out of date: ${why}`, open: false });
+    }
     const page = join(dir, `${name}.md`);
-    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance, levers, leversPage }));
+    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance, levers }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
@@ -418,13 +448,16 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug)).size;
+    const repoCount = new Set([
+      ...groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug),
+      ...levers.filter((l) => l.slug).map((l) => l.slug),
+    ]).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
-    const nl = levers.length;
+    const nl = levers.filter((l) => l.slug).length;
     const push = nd || nm || nw || nl || fresh.length
       ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
-    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
+    writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, lever_seen: leverSeen, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
   } finally { lock.release(); }
 }
@@ -434,14 +467,15 @@ export const urgentParks = (parked, slug) => parked
   .filter((p) => PRODUCTION_BROKEN.test(p.question ?? ''))
   .map((p) => ({ key: `urgent:${slug}:${p.key}`, text: `${p.key}: ${p.question}` }));
 
-// Marks a line of the latest page: the question or decision named by `match`, with `note`.
-function markPage(dir, match, note) {
+// Marks a line of the latest page: the question or decision named by `match`, with `note`, after `trim`
+// takes off what no longer applies.
+function markPage(dir, match, note, trim = (l) => l) {
   const page = readJson(lastFile(dir), null)?.page;
   if (!page || !existsSync(page)) return false;
   const lines = readFileSync(page, 'utf8').split('\n');
   const at = lines.findIndex((l) => l.startsWith('- [ ] ') && match(l));
   if (at < 0) return false;
-  lines[at] = `${lines[at].replace('- [ ] ', '- [x] ')} — ${note}`;
+  lines[at] = `${trim(lines[at]).replace('- [ ] ', '- [x] ')} — ${note}`;
   writeFileSync(page, lines.join('\n'));
   return true;
 }
@@ -486,7 +520,7 @@ function pageRepo(dir, line, slug) {
 // A lever's adopt or revert takes `on` or `off`, and is set by hand first: one `override` event in the
 // repo's lever log (lever-changes.mjs), written under its lock, so a lever whose log refuses it keeps its
 // decision unoverridden.
-export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date(), leverLog = { read: readLeverLog, appendWith: appendLeverLog } }) {
+export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
   const inRepo = list.filter((x) => x.slug === slug);
   if (!inRepo.length) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   // The batch whose log took the call, else the standing one.
@@ -500,8 +534,11 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   if (d.lever) {
     let why = null;
     try {
-      leverLog.appendWith(slug, () => {
-        const o = overrideEvent(d, choice, leverLog.read(slug).events, { at });
+      appendLeverLog(slug, () => {
+        const log = readLeverLog(slug);
+        // Admission reads a log with an unreadable line as no log at all, so an override there would never pin.
+        if (log.bad.length) { why = `${slug}'s lever log has ${log.bad.length} unreadable line(s), so admission would not read the override: repair the log first`; return null; }
+        const o = overrideEvent(d, choice, log.events, { at });
         if (o.why) { why = o.why; return null; }
         leverEvent = o.event;
         return o.event;
@@ -515,7 +552,8 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
     ...(d.lever ? { lever: d.lever } : {}),
   };
   appendFileSync(join(r.state, 'decisions.jsonl'), `${JSON.stringify(entry)}\n`);
-  const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`);
+  // A lever's line carries its override command, done with once used.
+  const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`, (l) => (d.lever ? l.replace(/ · override: `[^`]*`$/, '') : l));
   return { ok: true, entry, marked, leverEvent };
 }
 

@@ -10,14 +10,13 @@
 //   import { leverDecision, recordLeverDecision, changeLine, overrideEvent, summaryLine } from './lever-changes.mjs'
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
-import { leverStatesIn, trialId } from './levers-auto.mjs';
+import { leverStatesIn, trialId, inHoldback } from './levers-auto.mjs';
 
 export const CATEGORY = 'engineering';
 // The states an adopt or a revert leaves a lever in, as the evaluation and the trips write them.
 export const DECIDED = Object.freeze(['adopted', 'reverted', 'frozen']);
 export const VALUES = Object.freeze(['on', 'off']);
 const BY_HAND = 'ben';
-const WEEK_MS = 7 * 24 * 3_600_000;
 
 // A repo's short name from its slug: `bigbenjoman__desk-skills` is `desk-skills`.
 export const repoName = (slug) => String(slug ?? '').split('__').pop();
@@ -42,12 +41,16 @@ export function leverDecision(e, { slug = e?.repo, repo = null } = {}) {
 
 // Appends the decision for each adopt or revert in `events` to the decision log in `state` (the repo's
 // own state folder), once each. Never throws: a decision log that cannot be written never undoes the
-// change. -> the entries appended.
+// change. The refusal goes to stderr, and the digest records a missing decision again when it lists the
+// change (digest.mjs leverChanges). -> the entries appended.
 export function recordLeverDecision(events, { slug, repo = null, state }) {
   try {
     const entries = (events ?? []).map((e) => leverDecision(e, { slug, repo })).filter(Boolean);
     return entries.length ? appendDecisions(entries, state) : [];
-  } catch { return []; }
+  } catch (err) {
+    process.stderr.write(`lever-changes: ${slug}'s decision log in ${state} refused a lever decision: ${err.message}\n`);
+    return [];
+  }
 }
 
 // ---- the digest's line ---------------------------------------------------------------------------------
@@ -133,7 +136,7 @@ export function summaryLine({ slug, states, events, registry = REGISTRY, minPerA
     const id = trialId(slug, name, s);
     if (s.state === 'trial') {
       parts.push(`${name} trial ${Math.min(drew(name, id, 'on'), drew(name, id, 'off'))}/${minPerArm[l.layer]}`);
-    } else if (s.state === 'adopted' && s.at && now < Date.parse(s.at) + l.ramp.holdback_weeks * WEEK_MS) {
+    } else if (inHoldback(s, l, now)) {
       parts.push(`${name} adopted (holdback ${drew(name, id, 'holdback')})`);
     } else if (s.state === 'overridden') {
       parts.push(`${name} overridden ${s.value ?? '?'}`);

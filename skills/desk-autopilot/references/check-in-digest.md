@@ -141,11 +141,15 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   machine-wide like `Maintenance` and left out when no lever changed state since the last digest,
   has one line per change in any repo's lever log: the lever, the repo, the mechanism metric's change
   and the cost per ticket's with their 90% intervals, the tickets per arm and the guardrails, or for
-  a trip the trip and its ticket. Each adopt or revert ends on its decision id and its override
-  (`digest.mjs override <slug> <id> off` or `on`), which writes one `override` event, actor `ben`, in
-  the repo's lever log: the lever then reads `overridden`, every ticket admitted after it is pinned
-  to that value, and the evaluation and the trips leave it alone. No ticket waits on it, so it is
-  not listed under `WAITING ON YOU`. The section ends on `open:` and the Levers page's `file://` URL.
+  a trip the trip and its ticket. Each adopt or revert is a `- [ ]` item ending on its decision id
+  and its override (`digest.mjs override <slug> <id> off` or `on`), which writes one `override`
+  event, actor `ben`, in the repo's lever log (refused while that log has an unreadable line, which
+  admission would not read past) and ticks the item: the lever then reads `overridden`, every ticket
+  admitted after it is pinned to that value, and the evaluation and the trips leave it alone. No
+  ticket waits on it, so it is not listed under `WAITING ON YOU`. An adopt or revert whose decision
+  was never written is recorded when the digest lists it, and an event that lands up to an hour after
+  the time it carries is listed by the next digest. The digest rebuilds the Levers page, and the
+  section ends on `open:` and its `file://` URL.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
   and on its own (the worker contract says when a worker may use it).
 - **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).

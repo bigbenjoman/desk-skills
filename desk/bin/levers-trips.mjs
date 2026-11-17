@@ -325,13 +325,13 @@ export function applyTrips({ slug, name = slug, repo = null, decisionsState = ba
 
 // The trips as a pass runs them, for its batch state folder and queue. -> { events, line }, `line`
 // null when nothing tripped.
-export function runTrips({ slug, name = slug, repo = null, decisionsState, state, queue, states, now = Date.now(), registry = REGISTRY }) {
+export function runTrips({ slug, name = slug, repo = null, state, queue, states, now = Date.now(), registry = REGISTRY }) {
   if (!Object.values(states ?? {}).includes('auto')) return { events: [], line: null };
   const log = read(slug);
   // A log that does not parse is the assignment's to report; nothing is reverted on a partial read.
   if (log.bad.length) return { events: [], line: null };
   const trips = findTrips({ slug, state, queue, states, events: log.events, now, registry });
-  const events = applyTrips({ slug, name, repo, ...(decisionsState ? { decisionsState } : {}), trips, registry, now });
+  const events = applyTrips({ slug, name, repo, trips, registry, now });
   const changed = events.filter((e) => e.kind === 'trip');
   return { events, line: changed.length ? `levers trips: ${changed.map((e) => `${e.lever} ${e.from} → ${e.to} (${e.trip} on ${e.ticket})`).join(', ')}` : null };
 }

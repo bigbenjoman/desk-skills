@@ -300,7 +300,7 @@ export function evaluate({
 }) {
   const today = dayOf(now, tz);
   const at = new Date(now).toISOString();
-  const written = { day: today, rows: [], events: [], pooled: [], decisions: [] };
+  const written = { day: today, rows: [], events: [], pooled: [] };
   const levers = Object.keys(registry).filter((l) => registry[l].layer === 'low-risk' && registry[l].trialled && MECHANISMS[l]);
 
   // Each repo's log, lever states and outcome-filled rows, read once.
@@ -423,7 +423,7 @@ export function evaluate({
           written.events.push(e);
           to = d.to;
           // An adopt or a revert is a call taken without asking: the digest lists it, to be overridden.
-          written.decisions.push(...recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state }));
+          recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state });
           if (d.to === 'frozen') {
             append({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'frozen_second_revert', at, ...evidence,
               reason: frozenText(lever, r.name, d.reason) });
