@@ -590,9 +590,8 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
 
   // DS-755 AC8: a ticket admitted sharing a file with unfinished tickets is held behind none of them,
-  // even with the --hold-collisions an older intake or batch move passes (on main it held HC-2 behind
-  // HC-4, the one not already waiting behind it): the collision is recorded for the plan and desk-q,
-  // and the pass's per-file budget decides at spawn time.
+  // even when admit is passed the retired --hold-collisions flag: the collision is recorded for the
+  // plan and desk-q, and the pass's per-file budget decides at spawn time.
   aoRec('HC-1', ['src/app.ts']);
   aoRec('HC-2', ['src/app.ts']);
   aoRec('HC-3', ['src/app.ts']);
