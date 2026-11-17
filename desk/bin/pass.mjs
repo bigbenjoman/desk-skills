@@ -31,7 +31,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
-import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
+import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -55,7 +55,7 @@ import { childRenames } from './migration-renames.mjs';
 import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
-import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
@@ -2365,14 +2365,25 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
-// Ends base_fix's last try with `outcome`: the record drops its session and port, and the try's merge
-// is dropped from base worktree `path`, where there is one.
-function endTry(outcome, path) {
-  bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+// The ref a merge try's unpushed commits are kept on, by its place in base_fix's tries.
+const keptRef = (n) => `refs/desk/base-fix/${BASE_FIX_KEY}/${n}`;
+// Ends base_fix's last try with `outcome` (and `extra` on its record): the record drops its session
+// and port, and the try's merge is dropped from base worktree `path`, where there is one, once what it
+// committed is kept on keptRef and named on the try as `kept`.
+function endTry(outcome, path, extra = {}) {
+  const n = bf.tries.length;
+  const last = bf.tries[n - 1];
+  const kept = !DRY && path && last.kind !== 'review' ? keepUnpushed({ path, base: BASE, ref: keptRef(n) }) : null;
+  bf = { tries: bf.tries.map((x, i) => (i === n - 1 ? { ...x, outcome, ...extra, ...(kept ? { kept } : {}) } : x)), running: null, port: null };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-  if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+  if (path) dropTryMerge(path, bf.tries[n - 1]);
 }
+// The last try's number, which a try that waited only on the test lock leaves for the next one too.
+const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
+// What endTry kept of the last try, for its report line.
+const keptNote = (x) => (!x?.kept ? '' : x.kept.ref ? `; its unpushed ${String(x.kept.sha).slice(0, 12)} is kept on ${x.kept.ref}`
+  : `; its unpushed ${String(x.kept.sha).slice(0, 12)} could not be kept on a ref (${x.kept.error})`);
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -2471,8 +2482,10 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
-      endTry(outcome, wt.ok ? wt.path : null);
-      baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
+      const lockWait = said && lockWaitPark(markers);
+      endTry(outcome, wt.ok ? wt.path : null, lockWait ? { lock_wait: true } : {});
+      const ended = bf.tries[bf.tries.length - 1];
+      baseLines.push(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
     } else {
       baseFixLive = true;
       if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
@@ -2533,7 +2546,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     metConflict = true;
     const last = bf.tries[bf.tries.length - 1];
     const line = last?.kind === 'review' ? `epic PR review try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
-      : `${tryWhat(last)} try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
+      : `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     heldForFix(line);
     gateConflict = { worker: true, line };
   } else if (wantSync) {
@@ -2543,7 +2556,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     // PR's review tries are kept: they count per head, and a sync is no new review.
     const conflictTries = (bf?.tries ?? []).filter((x) => x.kind !== 'review');
     if (s.ok && !s.dry && conflictTries.length && !DRY) {
-      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.length)}`);
+      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter((x) => !x.lock_wait).length)}`);
+      for (const x of conflictTries) if (x.kept?.ref) sh('git', ['-C', MAIN, 'update-ref', '-d', x.kept.ref], quiet);
       const kept = bf.tries.filter((x) => x.kind === 'review');
       bf = kept.length ? { tries: kept, running: null, port: null } : null;
       q('set-batch', `base_fix=${bf ? JSON.stringify(bf) : 'null'}`);
@@ -2583,7 +2597,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   if (wt.ok && !metConflict && !gateBusy && g?.state === 'failed' && Array.isArray(g.conflict)) {
     sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], { tolerant: true });
     if (baseFixLive) {
-      gateConflict = { worker: true, line: `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
+      gateConflict = { worker: true, line: `conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
     } else if (g.sha && g.sha === originSha(BASE)) {
       let person = null;
       const line = conflicted(g.conflict, (why) => { person = why; }, g.tree_check ?? null);
@@ -3166,21 +3180,43 @@ async function spawnHandoff(t, pick) {
 // A base conflict fix try: a task worker in the base worktree, on the base, under BASE_FIX_KEY, which
 // reads its ticket file. The try is recorded however the spawn goes, so a try that could not start
 // counts as one made at this head, and the next pass at the same head puts it to the person.
-async function spawnBaseFix({ wt, fix }) {
+async function spawnBaseFix({ wt, fix: asked }) {
+  let fix = asked;
   const review = fix.kind === 'review';
-  const ctx = { base: BASE, source: SOURCE, epic: fresh.epic, fix };
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
   if (!pick) return;
   const key = BASE_FIX_KEY;
+  // The last merge try's kept merge is where this one starts, while origin's base and source are still
+  // what it holds; otherwise it starts from the base, and the try says why the kept merge was not used.
+  const prev = review ? null : [...(bf?.tries ?? [])].reverse().find((x) => x.kind !== 'review');
+  let start = {};
+  if (prev?.kept?.sha) {
+    const where = `${prev.kept.ref ?? 'no ref'} at ${String(prev.kept.sha).slice(0, 12)}`;
+    const stale = startFromKept({ path: wt, base: BASE, branch: SOURCE, kept: prev.kept });
+    if (stale) {
+      start = { kept_stale: `${where}: ${stale}` };
+      baseLines.push(`base ${tryWhat(fix)}: try ${prev.try}'s kept merge (${where}) is stale, since ${stale}, so try ${fix.try} starts from ${BASE}`);
+    } else {
+      fix = { ...fix, from: { try: prev.try, ref: prev.kept.ref ?? null, sha: prev.kept.sha } };
+      start = { from: fix.from };
+      baseLines.push(`base ${tryWhat(fix)}: try ${fix.try} starts from try ${prev.try}'s kept merge (${where}), not resolving it again`);
+    }
+  }
+  // A try that does not start leaves the worktree at origin's base for the next sync, and one that
+  // started from a kept merge passes it on.
+  const unstart = () => { if (fix.from) dropUnpushed({ path: wt, base: BASE }); };
+  const ctx = { base: BASE, source: SOURCE, epic: fresh.epic, fix };
   mkdirSync(join(STATE, 'tickets'), { recursive: true });
   writeFileSync(join(STATE, 'tickets', `${key}.md`), (review ? epicReviewTicket : baseFixTicket)({ key, ...ctx }));
   const made = [...(bf?.tries ?? []), review ? { kind: 'review', try: fix.try, head: fix.head, pr: fix.pr, at: PASS_AT }
-    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, at: PASS_AT }];
+    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, ...start, at: PASS_AT }];
   const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
   const failed = (outcome, line) => {
     made[made.length - 1].outcome = outcome;
+    if (fix.from) made[made.length - 1].kept = { ref: fix.from.ref, sha: fix.from.sha };
+    unstart();
     record({});
     report.failed.push(`${key}: ${line}`);
   };
@@ -3190,7 +3226,7 @@ async function spawnBaseFix({ wt, fix }) {
   const briefPath = writeBrief({ key }, wt, (review ? epicReviewBrief : baseFixBrief)(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
-  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return; }
+  if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   const sid = E.uuid();
   const port = await freePort();
@@ -3252,7 +3288,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   flushQueue();
-  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
