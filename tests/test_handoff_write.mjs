@@ -18,7 +18,8 @@ const write = (...args) => spawnSync('node', [HANDOFF, 'write', ...args], { enco
 
 // AC3: a criterion holding a tab and a double quote is written as JSON and read back unchanged.
 const crit = 'AC1: the "widget"\tsaves';
-const w = write('W-1', '--stage', '7', '--criterion', crit, '--criterion', '- AC2: a leading dash', '--lane', 'A', '--verification', 'tests/run.sh\tpass');
+const w = write('W-1', '--stage', '7', '--criterion', crit, '--criterion', '- AC2: a leading dash', '--lane', 'A', '--verification', 'tests/run.sh\tpass',
+  '--verification', 'git diff origin/main...HEAD: shows "Loading..."');
 const path = handoffPath(state, 'W-1');
 t('AC3 the write command exits 0', w.status, 0);
 let parsed = null;
@@ -27,6 +28,7 @@ t('AC3 the file it writes parses as JSON', parsed !== null, true);
 t('AC3 and holds the criterion unchanged', parsed?.criteria?.[0], crit);
 t('AC3 a value starting with a dash is taken as the value', parsed?.criteria?.[1], '- AC2: a leading dash');
 t('AC3 the stage, lane and verification are recorded', `${parsed?.stage} ${parsed?.lane} ${parsed?.verification?.[0]}`, '7 A tests/run.sh\tpass');
+t('AC3 a value holding .. is kept as written', parsed?.verification?.[1], 'git diff origin/main...HEAD: shows "Loading..."');
 t('AC3 the pass reads it as a handoff briefing', readHandoff(state, 'W-1').data?.criteria?.[0], crit);
 
 // AC4: no criterion exits non-zero, writes no file and says a criterion is required.

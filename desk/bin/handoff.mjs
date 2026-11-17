@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // A worker's handoff to a fresh session: at the end of Stage 4 it hands off to Stage 4b, and at the
 // end of Stage 6 to Stage 7, so self-review and the PR stage each start on a short briefing rather
 // than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json

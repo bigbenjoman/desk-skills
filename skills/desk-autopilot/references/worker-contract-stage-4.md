@@ -261,14 +261,11 @@ To hand off:
    orchestrator adds the branch and its commits:
 
    ```bash
-   node ~/.claude/desk/bin/handoff.mjs write <TICKET> --stage <4b|7> --lane '<lane>' \
-     --criterion '<each acceptance criterion, verbatim>' \
-     --verification '<each check you ran: command, scope and reason, result>' \
-     --review '<each self-review finding so far: severity, file:line, outcome and commit; round and SHA>' \
-     --evidence '<the absolute path of each screenshot or log captured>'
+   ~/.claude/desk/bin/handoff.mjs write <TICKET> --stage <4b|7> --lane '<lane>' --criterion '<each acceptance criterion, verbatim>' --verification '<each check you ran: command, scope and reason, result>' --review '<each self-review finding so far: severity, file:line, outcome and commit; round and SHA>' --evidence '<the absolute path of each screenshot or log captured>'
    ```
 
-   One flag per item; no `--review` or `--evidence` when there is nothing yet.
+   One line, one flag per item, no `node` (it is refused with a `..`); no `--review` or `--evidence`
+   when there is nothing yet.
 3. **Update your resume file** (`$DESK_STATE/resume/<TICKET>.json`), then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.
