@@ -32,7 +32,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, trialId, ACTOR } from './levers-auto.mjs';
+import { leverStatesIn, trialId, holdbackEnd, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
@@ -249,10 +249,10 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
     if (incomplete.length) return hold('evidence_incomplete', `outcome files missing: ${incomplete.join(', ')}`, 'the missing outcome files');
     // A breach on too small a holdback arm to revert on neither reverts nor lets the lever settle.
     if (breached.length) return hold('holdback_running', `${breached.map((g) => g.name).join(', ')} breached at ${sample}, below the ${R.revert_min_per_arm} per arm a revert needs, so it does not settle`, `${R.revert_min_per_arm - smaller} more tickets in the smaller arm`);
-    if (changedAt != null && now >= changedAt + holdbackWeeks * WEEK_MS) {
+    if (changedAt != null && now >= holdbackEnd(changedAt, holdbackWeeks)) {
       return { decision: 'settle', to: 'settled', reason_code: 'holdback_ended', reason: `the ${holdbackWeeks}-week holdback ended with no guardrail breached (${sample})`, next: next(null) };
     }
-    return hold('holdback_running', `adopted; the holdback runs to ${changedAt == null ? '?' : day(changedAt + holdbackWeeks * WEEK_MS)}`, 'the holdback to end');
+    return hold('holdback_running', `adopted; the holdback runs to ${changedAt == null ? '?' : day(holdbackEnd(changedAt, holdbackWeeks))}`, 'the holdback to end');
   }
   if (incomplete.length) return hold('evidence_incomplete', `outcome files missing, so nothing adopts: ${incomplete.join(', ')}`, 'the missing outcome files');
   if (smaller < minN) return hold('below_min_sample', `${smaller} of ${minN} tickets in the smaller arm`, `${minN - smaller} more tickets in the smaller arm`);
@@ -409,7 +409,7 @@ export function evaluate({
 
       let to = null;
       if (d.to) {
-        const holdback = d.to === 'adopted' ? { share: reg.ramp.holdback, until: day(now + reg.ramp.holdback_weeks * WEEK_MS) } : undefined;
+        const holdback = d.to === 'adopted' ? { share: reg.ramp.holdback, until: day(holdbackEnd(now, reg.ramp.holdback_weeks)) } : undefined;
         const e = appendWith(r.slug, () => {
           // Written only while the lever is still in the state this evaluation read.
           const nowState = leverStatesIn(read(r.slug).events, registry)[lever];

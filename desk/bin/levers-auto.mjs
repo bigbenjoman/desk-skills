@@ -90,9 +90,12 @@ function blockedArm(lever, members, random) {
 // The trial a ticket draws a lever's arm under: one per state the lever enters in the repo.
 export const trialId = (slug, lever, s) => `${slug}/${lever}/${s.id ?? 'initial'}`;
 
+// When the holdback of a lever adopted at `adoptedAt` (ms) ends, in ms: the evaluation settles it then.
+export const holdbackEnd = (adoptedAt, weeks) => adoptedAt + weeks * WEEK_MS;
+
 // Whether an adopted lever is still in its holdback at `now` (ms): admission draws a holdback arm for it,
 // and desk-env levers counts those tickets.
-export const inHoldback = (s, l, now) => s.state === 'adopted' && !!s.at && now < Date.parse(s.at) + l.ramp.holdback_weeks * WEEK_MS;
+export const inHoldback = (s, l, now) => s.state === 'adopted' && !!s.at && now < holdbackEnd(Date.parse(s.at), l.ramp.holdback_weeks);
 
 // The draw for ticket `key` from the repo's log events: the pin and the assign event recording it.
 function draw({ slug, key, size, events, states, frozen, values, random, now, registry }) {
