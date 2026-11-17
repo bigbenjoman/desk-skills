@@ -224,7 +224,7 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 # A worker count the user set is theirs. A fresh queue and state under a §3b default of 3, cap 6.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `3 / 6` |\n'; } > "$T/config2.md"
 export DESK_CONFIG="$T/config2.md" DESK_QUEUE="$T/queue2.json" DESK_AUTOPILOT_STATE="$T/state2"; mkdir -p "$T/state2/logs"
-bfield(){ node -e 'console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) ?? null))' "$DESK_QUEUE" "$1"; }
+bfield(){ jq -c --arg p "$1" "$JQ_AT"' at($p)' "$DESK_QUEUE"; }
 q init c
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 AC2 a count nobody set reports the §3b default" 'echo "$out" | grep -qx "workers: concurrency 3, the §3b default"'

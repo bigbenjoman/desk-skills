@@ -87,7 +87,7 @@ chmod +x "$T/stub0/gh"
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
-all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
+all_done(){ jq -c '.tickets |= map_values(.state = "done" | if .result.pr != null then .merged_at //= "2026-10-23T10:00:00Z" | .pr_status = { pr: .result.pr, state: "MERGED", merged_at: .merged_at, checks: [] } else . end)' "$DESK_QUEUE" > "$DESK_QUEUE.all-done" && mv "$DESK_QUEUE.all-done" "$DESK_QUEUE"; }
 
 # A signed-in browser profile, as the upload queue runs no upload without one.
 printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
@@ -96,7 +96,9 @@ export PATH="$T/stub0:$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/de
   DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+# shellcheck source=jq_at.sh
+. "$S/jq_at.sh"
+field(){ jq -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
 # One assistant turn of a worker's stream-json log, carrying the given marker lines.
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 # The end of a worker's session in its log.

@@ -255,7 +255,7 @@ esac
 EOF
 chmod +x "$T/stub/desk-jira" "$T/stub/gh"
 blocked(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-9","fields":{"status":{"statusCategory":{"key":"%s"}}}}},{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"J-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$1" > "$T/jira/J-1.json"; }
-pass_rec(){ node -e 'const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).pass ?? {}; console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], p) ?? null))' "$DESK_QUEUE" "$1"; }
+pass_rec(){ jq -c --arg p "$1" "$JQ_AT"' .pass | at($p)' "$DESK_QUEUE"; }
 q init j
 q add J-1; q set J-1 state=triaged open_questions=1
 q add J-2; q set J-2 state=triaged open_questions=1
