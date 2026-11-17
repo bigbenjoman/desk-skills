@@ -69,6 +69,21 @@ mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
 cmp "$T/shabase" "$T/shahead"
 check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
+# A suite that makes the same empty commit in two clones, a second apart on the head tree only, and a
+# pass that prints both SHAs: one SHA on a tree that made them in the same second, two on one that did not.
+mkdir -p "$T/commits/desk/bin" "$T/commits/tests"
+echo "console.log('heads ' + process.env.C1 + ' ' + process.env.C2);" > "$T/commits/desk/bin/pass.mjs"
+cat > "$T/commits/tests/test_pass.sh" <<'EOF'
+#!/usr/bin/env bash
+SRC="$(cd "$(dirname "$0")/.." && pwd)"; D="$(mktemp -d)"
+c(){ git init -q "$D/$1" && git -C "$D/$1" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m same && git -C "$D/$1" rev-parse HEAD; }
+C1=$(c one); case "$SRC" in */head) sleep 1 ;; esac; C2=$(c two)
+C1=$C1 C2=$C2 node "$SRC/desk/bin/pass.mjs" >/dev/null; echo "ok   the commits"
+rm -rf "$D"
+EOF
+cmp "$T/commits" "$T/commits"
+check "DS-763 AC4 the same commit made in different seconds on the two trees has one SHA on both" '[ $rc = 0 ] && [ "$out" = "compare_pass: 1 pass run(s) compared, 0 differ, 0 not compared" ]'
+
 cmp "$T/base" "$T/crash"
 check "DS-763 AC5 a pass that fails to run on one tree is reported not compared, and the run exits non-zero" '[ $rc = 2 ] && echo "$out" | grep -qF "test_pass.sh run 1 (before: the first pass): not compared: the pass failed to run on the head: Error [ERR_MODULE_NOT_FOUND]" && echo "$out" | grep -qE "^compare_pass: 0 pass run\(s\) compared, [0-9]+ differ, 2 not compared$"'
 cmp "$T/crash" "$T/base"

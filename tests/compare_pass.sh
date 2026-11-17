@@ -58,6 +58,11 @@ chmod +x "$W/shim/node"
 # shellcheck source=suite_env.sh
 . "$S/suite_env.sh"
 export PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
+# Every commit a suite makes is dated when the comparison started, on both trees. Otherwise a commit's
+# SHA depends on the second it was made in: two identical commits share one when made in the same
+# second, so one tree could show a single SHA where the other shows two.
+GIT_AUTHOR_DATE="$(date +%s) +0000"; GIT_COMMITTER_DATE=$GIT_AUTHOR_DATE
+export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 # The two trees run one after the other, each suite in its own scratch HOME: side by side, one tree's
 # queue.mjs stop ends the other's stand-in worker, which it finds by session id across the machine.
 side(){ mkdir -p "$W/rec/$1"
