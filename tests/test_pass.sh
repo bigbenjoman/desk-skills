@@ -3557,6 +3557,7 @@ cloud_ticket CW-2; : > "$T/cloud-fail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
+check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
 # Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
 rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
 q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
@@ -3585,6 +3586,7 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const a = process.argv.slice(2);
 if (a[0] === 'set' && a.includes('state=running') && existsSync('$T/refuse-running-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
+if (a[0] === 'set' && a.some((x) => x.startsWith('cloud={"session"')) && existsSync('$T/refuse-cloud-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
 process.exit(spawnSync(process.execPath, ['$B/queue.mjs', ...a], { stdio: 'inherit' }).status ?? 1);
 EOF
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -3630,6 +3632,29 @@ check "DS-752 AC5 a cloud ticket whose state=running write is refused starts no 
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 AC6 with the write recorded, the cloud session starts and is recorded running" \
   '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session: https://claude.ai/code/"'
+q set RR-4 state=done
+# The running write is recorded but the session's, after it started, is refused: the ticket keeps the
+# time it started, so later passes still watch for its PR rather than skip a running ticket with no log.
+q add RR-6; q set RR-6 state=triaged lane=A branch=feat/RR-6 location=cloud
+printf '# RR-6\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' > "$T/state-rr/tickets/RR-6.md"
+touch "$T/refuse-cloud-RR-6"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-cloud-RR-6"
+check "DS-752 a cloud session whose details are refused after it started stays running with its start time" \
+  '[ "$(field RR-6 state)" = "\"running\"" ] && [ "$(field RR-6 cloud.started)" != null ] && [ "$(field RR-6 cloud.session)" = null ] && echo "$out" | grep -q "RR-6: queue write refused, not recorded — set cloud="'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 and the next pass watches it for its PR, saying its URL was not recorded" \
+  '[ "$(field RR-6 state)" = "\"running\"" ] && echo "$out" | grep -qF "RR-6: cloud session (its session URL was not recorded), no PR yet"'
+q set RR-6 state=done
+# A round ruled out of resuming by a resume file on another branch keeps that file while its spawn is
+# refused, so the next pass still starts it at Stage 0 rather than resuming the round.
+git -C "$T/repo" worktree add -q -b fix/RR-5 "$T/wt/RR-5"
+q add RR-5; q set RR-5 state=triaged lane=A branch=fix/RR-5 "worktree=$T/wt/RR-5" 'last_round={"stage":"4/9","question":"which border?"}'
+mkdir -p "$T/state-rr/resume"; printf '{"ticket":"RR-5","branch":"fix/RR-5-old"}' > "$T/state-rr/resume/RR-5.json"
+refused_pass RR-5
+check "DS-752 a refused spawn keeps the resume file that rules out resuming the round" \
+  '[ "$(spawns_of RR-5)" = 0 ] && [ -f "$T/state-rr/resume/RR-5.json" ] && [ ! -e "$T/state-rr/resume/RR-5.json.old" ] && [ "$(field RR-5 last_round.stage)" = "\"4/9\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 and the next pass starts it at Stage 0, moving the file aside then" \
+  'grep -qx "RR-5 resume= stage=" "$T/rr-spawns" && [ "$(spawns_of RR-5)" = 1 ] && [ -f "$T/state-rr/resume/RR-5.json.old" ]'
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
