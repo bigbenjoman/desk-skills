@@ -11,7 +11,7 @@
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
+import { stateDir, runBin, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
 import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
@@ -21,7 +21,7 @@ import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
 
 crashShowsPerson();
-const QUEUE = join(binDir(), 'queue.mjs');
+const QUEUE = join(runBin(), 'queue.mjs');
 
 const argv = process.argv.slice(2);
 // --taken, before the ticket, is the decider taking the option a worker's park recommended

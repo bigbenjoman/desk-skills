@@ -653,8 +653,8 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
 // Admits `key` into the other configured repo `p` (repoPlacement's answer) by intake.mjs admit, run in
 // that repo's checkout with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
 export function admitInRepo(p, key, { by }) {
-  const intake = join(binDir(), 'intake.mjs');
-  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${key} --by ${by}`;
+  const intake = join(runBin(), 'intake.mjs');
+  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${join(binDir(), 'intake.mjs')} admit ${key} --by ${by}`;
   if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
   const env = otherRepoEnv();
   for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
@@ -1233,6 +1233,15 @@ export const defaultBranch = () => {
 };
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
+// The bin a running script starts desk's other scripts from: the release folder it was loaded from
+// (node loads a script by its real path), so an install mid-run never mixes two releases. Paths shown
+// to a person or written into settings stay binDir(), which follows the current release.
+export function runBin() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  let releases;
+  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
+  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+}
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
 // them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never
@@ -1934,12 +1943,12 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
-const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
 // The subcommands that write the machine profile, the cost sources, the login rules, the subscription
 // or the lever freeze: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
@@ -2298,7 +2307,7 @@ if (isMain) {
         const prefix = commandPrefix();
         let pass = true;
         for (const { dir, cmd } of list) {
-          const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: lockFor(row), prefix });
+          const run = B.runItem({ bin: runBin(), root: top, dir, cmd, lock: lockFor(row), prefix });
           if (!a.on) {
             if (run.out.trim()) console.log(run.out.trimEnd());
             console.log(`${run.code === 0 ? 'PASS' : 'FAIL'} ${dir === '.' ? '' : `${dir}: `}${cmd} (exit ${run.code})`);

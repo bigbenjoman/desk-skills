@@ -50,7 +50,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
@@ -100,7 +100,9 @@ let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
 // DESK_DEFAULT_BRANCH here, and setup-worktree, spawn-worker and the worker all inherit it.
 try { E.applyBatchBase(); MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { refuse(e.message); }
-const BIN = E.binDir();
+// Scripts this pass starts come from its own release; commands it shows a person name the live bin.
+const BIN = E.runBin();
+const SHOWN_BIN = E.binDir();
 const STATE = E.stateDir();
 const QUEUE_FILE = E.queueFile();
 const GH_REPO = E.ghRepo();
@@ -118,7 +120,7 @@ if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor 
 const PASS_AT = new Date().toISOString();
 
 if (!existsSync(QUEUE_FILE)) {
-  refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
+  refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
 // A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
 try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
@@ -974,7 +976,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     } else if (!t.images_reported) {
       q('set', t.key, 'images_reported=true');
       report.waiting.push(`${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${E.permissionKey('pr-images')} is "${uploadPerm}". ` +
-        `Ask, then: DESK_UPLOAD_APPROVED=1 node ${join(BIN, 'upload-images.mjs')} ${prNo} ${imgDir}`);
+        `Ask, then: DESK_UPLOAD_APPROVED=1 node ${join(SHOWN_BIN, 'upload-images.mjs')} ${prNo} ${imgDir}`);
     }
   }
 
@@ -1959,7 +1961,7 @@ if (!maySpawn && eligible.length) {
 // Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
 if (blockedByDone.length) {
   personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
-    `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
+    `if the re-run is deliberate: node ${join(SHOWN_BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
 // ---- slots, and borrowing ----------------------------------------------------
@@ -2670,7 +2672,7 @@ async function resumeKilled(t) {
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
   logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []),
+  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
@@ -2828,7 +2830,7 @@ function spawnCloud(t) {
   const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
   if (s.error) { park(s.error); return; }
   q('set', t.key, 'state=running', `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, 'stage=cloud',
-    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null');
+    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null', ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
   runningKeys.add(t.key);
@@ -2862,7 +2864,7 @@ async function spawnHandoff(t, pick) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null');
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t));
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -3007,6 +3009,67 @@ function recordWorkerHead(t) {
   if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
 }
 
+// A fix try is queued against its PR as it was then, and may wait passes for a slot: just before it
+// spawns, its PR is read again. Merged, closed, or at a head past the one the try was made for, the try
+// ends with no worker and the ticket is done on its PR again, so the PR's own reading records the merge
+// or the close, and drafts a try for the new head if one is still needed. No worker ran it, so it is
+// marked `no_worker`, which every reader of a finished try's work refuses (fix-tries.mjs
+// workerFinished): its threads are not replied on as worked, nor an earlier worker's summary quoted as
+// its own. It is taken out of fix_tries too, so it counts against none of the PR's tries. A PR that
+// cannot be read holds it this pass. Only a merge or a close ends a try whose worker started (resumed,
+// handed off, or requeued after it parked), which is its own try's and may have moved the head itself, and a person's call (their answer on the
+// gaps, their instruction, a review they sent back), which is theirs and is never drafted again from
+// the PR: its worker carries it out at the new head. -> true when it must not spawn.
+function fixTryStale(t) {
+  const f = t.fix;
+  if (!f || f.finished || f.pr == null) return false;
+  // Sent back for its after-merge steps (tailAfterMerge): its PR merged by design, and that tail is what
+  // spawns. Its try had a worker, so, as a resumed one on a merge, it is finished and stays a try made,
+  // which keeps the fix brief and task off the tail worker's spawn.
+  if (t.cleared?.tail) {
+    if (!DRY) q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=PR #${f.pr} merged: ${t.key} went back for its after-merge steps`);
+    f.finished = PASS_AT;
+    return false;
+  }
+  const resumed = toResume(t) || toHandoff(t);
+  // A try whose worker started already (fix.started), and parked or stopped and was requeued since, is
+  // its own try's as a resumed session is: that worker may have pushed the head past f.head itself.
+  const ran = resumed || Boolean(f.started);
+  const verb = resumed ? 'resumed' : ran ? 'spawned again' : 'spawned';
+  // A renames fix holds the merge as an instruction does (merge-driver.sh instruction_held), so a moved
+  // head does not end it either: its worker updates the migrations at the new head.
+  const headBound = Boolean(f.head) && !ran && !personCall(f) && !f.person && f.kind !== 'renames';
+  const what = `${tryLabel(f)} on PR #${f.pr}`;
+  let v = null;
+  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
+    report.waiting.push(`${t.key}: its ${what} was not ${verb}: the PR could not be read to check it is still open${headBound ? ' at the try\'s head' : ''} (${e.message}). The next pass reads it again`);
+    return true;
+  }
+  if (!v?.state || (headBound && !v.headRefOid)) {
+    report.waiting.push(`${t.key}: its ${what} was not ${verb}: gh gave no ${v?.state ? 'head' : 'state'} for the PR, so it is not known to be open${headBound ? ' at the try\'s head' : ''}. The next pass reads it again`);
+    return true;
+  }
+  const merged = v.state === 'MERGED';
+  const ended = merged ? `PR #${f.pr} merged${v.mergedAt ? ` at ${v.mergedAt}` : ''}`
+    : v.state === 'CLOSED' ? `PR #${f.pr} was closed unmerged`
+    : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
+  if (!ended) return false;
+  const line = `${t.key}: its ${what} was not ${verb}, ${ended}: the try is finished and the ticket done on its PR again`;
+  if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
+  // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
+  // done tickets' reading below.
+  const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
+  const unrun = ran ? [] : ['fix.no_worker=true', `fix_tries=${JSON.stringify(tries)}`];
+  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
+  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
+  report.done.push(merged ? `${line}, recorded merged` : line);
+  return true;
+}
+// Set on the spawn that starts a ticket's unfinished fix try, so fixTryStale tells a try whose worker ran
+// from one still waiting for its first.
+function fixStarted(t) {
+  return t.fix && !t.fix.finished && !t.fix.started ? [`fix.started=${PASS_AT}`] : [];
+}
 // A spawn from Stage 0, with no worker's session, fix try or PR in this repo behind it.
 const startsFresh = (t) => !toResume(t) && !toHandoff(t) && !t.login_move && !(t.fix && !t.fix.finished) && t.result?.pr == null && t.draft_pr == null;
 // A ticket whose triage record puts its code in another configured repo (desk-env.mjs triagePlacement)
@@ -3045,6 +3108,7 @@ for (const t of spawnable) {
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
+  if (fixTryStale(t)) continue;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
   const shipped = rerunAllowed.has(t.key) ? null : shippedElsewhere(t);
   if (shipped) {
@@ -3256,6 +3320,8 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
+  // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
+  if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
@@ -3569,7 +3635,7 @@ if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.
 if (concurrency <= 0 && eligible.length) {
   out.push(`paused: new spawns are paused by the batch's worker count (concurrency ${concurrency}); ${eligible.length} triaged ticket(s) wait. ` +
-    `Resume with node ${join(BIN, 'queue.mjs')} set-batch concurrency=<n> concurrency_by=user`);
+    `Resume with node ${join(SHOWN_BIN, 'queue.mjs')} set-batch concurrency=<n> concurrency_by=user`);
 }
 // Held tickets. Each finished blocker's PR is looked up once per pass, so a hold behind a PR that was
 // closed unmerged, or a blocker that finished with no PR, surfaces instead of waiting for ever.
@@ -4508,8 +4574,14 @@ function applyFix(t, n, head, c) {
   const quoted = f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
     : f.kind === 'protected' ? { paths: f.paths } : f.kind === 'renames' ? { renames: f.renames }
     : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {};
-  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), class: f.class, at: PASS_AT }])}`, 'stuck=null');
-  out.push(`${f.kind === 'capture' ? 'capture try' : f.extra ? `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`}: ${t.key} requeued for PR #${n} — ${f.what}`);
+  q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
+  out.push(`${tryLabel(f)}: ${t.key} requeued for PR #${n} — ${f.what}`);
+}
+// How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".
+function tryLabel(f) {
+  if (f.kind === 'capture') return 'capture try';
+  if (f.extra) return `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try`;
+  return `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`;
 }
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
@@ -4570,11 +4642,11 @@ if (onEpic.length) {
 }
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'approval')) {
   report.waiting.push(`${t.key}: SPINE APPROVAL — PR #${t.result?.pr ?? '?'} lands a strict expected-fail spec per criterion and stays draft. ` +
-    `Review them read-only first (node ${join(BIN, 'spine-review.mjs')} brief ${t.key}), then put one question per spec to the person (spine-review.mjs questions ${t.key} <reply>): approved, node ${join(BIN, 'queue.mjs')} approve ${t.key}; rejected, node ${join(BIN, 'queue.mjs')} reject ${t.key} "<their note>"`);
+    `Review them read-only first (node ${join(SHOWN_BIN, 'spine-review.mjs')} brief ${t.key}), then put one question per spec to the person (spine-review.mjs questions ${t.key} <reply>): approved, node ${join(SHOWN_BIN, 'queue.mjs')} approve ${t.key}; rejected, node ${join(SHOWN_BIN, 'queue.mjs')} reject ${t.key} "<their note>"`);
 }
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'specs')) {
   report.waiting.push(`${t.key}: SPINE SPECS — ${(t.spine_check?.problems ?? []).join('; ') || 'the check failed'}. No approval is offered: ` +
-    `send it back with what to fix, node ${join(BIN, 'queue.mjs')} reject ${t.key} "<note>"`);
+    `send it back with what to fix, node ${join(SHOWN_BIN, 'queue.mjs')} reject ${t.key} "<note>"`);
 }
 // An approved spine merges under the batch's merge rules: the merge driver where §3 grants it, else
 // the person.
@@ -4962,7 +5034,7 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
 // really means "nobody answered yet".
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
-if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(BIN, 'answer.mjs')} <TICKET> "<answer>"`);
+if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(SHOWN_BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));

@@ -80,7 +80,7 @@ mkdir -p "$STATE/triage" "$STATE/workers"
 DESIGN_READ="A Claude Design artifact's boards are saved under $STATE/designs/$TICKET/project/ when the orchestrator could read
   it, or in the repo under the Design canvases directory once a ticket has committed them
   (\`canvas.json\` lists the boards and their widths); read them there, never guess a design."
-if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_BIN/desk-design.mjs" snapshots "$TICKET" 2>/dev/null)" && [ -n "$SNAPS" ]; then
+if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_RUN_BIN/desk-design.mjs" snapshots "$TICKET" 2>/dev/null)" && [ -n "$SNAPS" ]; then
   DESIGN_READ="This ticket's Design section links these Claude Design artifacts; read each where it says, never guess a design
   (\`canvas.json\` lists the boards and their widths):"
   while IFS=$'\t' read -r url snap; do
@@ -94,7 +94,7 @@ if [ "$KIND" != issue ] && SNAPS="$(node "$DESK_BIN/desk-design.mjs" snapshots "
   done <<< "$SNAPS"
 fi
 
-node "$DESK_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
+node "$DESK_RUN_BIN/worker-settings.mjs" triage --ticket "$TICKET" --out "$SETTINGS" >/dev/null \
   || { echo "FAIL: could not generate triage settings" >&2; exit 1; }
 # Both passes are offered only the tools they use (worker-tools.mjs).
 desk_tool_args triage || { echo "FAIL: could not read the tool list (worker-tools.mjs)" >&2; exit 1; }
@@ -120,7 +120,7 @@ const calls = [
 const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
 if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
-RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_BIN" 2>/dev/null || true)"
+RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_RUN_BIN" 2>/dev/null || true)"
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
@@ -258,7 +258,7 @@ PROMPT_END
 # Both passes run on the repo's subscription (call-login.mjs), as a new worker would, at its limit too.
 # With one login and no subscriptions file they run on this shell's own, as they always have. A
 # subscription no login here is signed in to runs neither: triage never falls back to another login.
-CALL_LOGIN="$(node "$DESK_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
+CALL_LOGIN="$(node "$DESK_RUN_BIN/call-login.mjs" dir 2>/dev/null)" || CALL_LOGIN=keep
 case "$CALL_LOGIN" in
   keep|'') ;;
   none:*) echo "FAIL: $TICKET not triaged: ${CALL_LOGIN#none: }, and triage never runs on another login" >&2; exit 1 ;;
@@ -285,7 +285,7 @@ desk_timeout 600 claude -p "$PROMPT" \
 # A pass Claude refused at a usage limit is not a failed triage: usage-limit.mjs reads the log, and a
 # limit the run never resumed from is said with its reset time, for exit 3.
 at_limit() {
-  node --input-type=module - "$LOG" "$DESK_BIN" "$TICKET" <<'LIMIT_END'
+  node --input-type=module - "$LOG" "$DESK_RUN_BIN" "$TICKET" <<'LIMIT_END'
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -308,7 +308,7 @@ node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
 # Each call in blocker_needs is one of batch-state.mjs's BLOCKER_CALLS. Its readers still take a record
 # written before the three calls, with a boolean, but a fresh one must give a call.
-node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' \
+node --input-type=module - "$OUT" "$DESK_RUN_BIN" <<'CALLS_END' \
   || { echo "FAIL: $TICKET triage record is malformed" >&2; exit 1; }
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -321,7 +321,7 @@ CALLS_END
 # Only the questions the user must answer stay in `unknowns`, as strings every reader of the record
 # takes them as; each call taken on its recommendation goes to `decided`, logged when the ticket is
 # admitted. `verify_only` holds only with criteria named in `already_met`.
-node --input-type=module - "$OUT" "$DESK_BIN" <<'CALLS_END' || { echo "FAIL: $TICKET triage record's questions could not be split" >&2; exit 1; }
+node --input-type=module - "$OUT" "$DESK_RUN_BIN" <<'CALLS_END' || { echo "FAIL: $TICKET triage record's questions could not be split" >&2; exit 1; }
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -530,12 +530,12 @@ CLAUDE_DIR_END
 # Jira facts plan-batch needs (Blocks links, size, the lint findings), read deterministically rather
 # than taken from the model: a read failure is recorded as facts_error, which plan-batch turns into a
 # question.
-node "$DESK_BIN/ticket-facts.mjs" "$TICKET" \
+node "$DESK_RUN_BIN/ticket-facts.mjs" "$TICKET" \
   || { echo "FAIL: could not record $TICKET's Jira facts in $OUT" >&2; exit 1; }
 
 # Every open blocker those facts list needs a call in blocker_needs (the values were checked above). A
 # record missing one is refused, and goes, so the ticket is triaged again rather than admitted on a guess.
-if ! WHY=$(node --input-type=module - "$OUT" "$DESK_BIN" 2>&1 <<'NEEDS_END'
+if ! WHY=$(node --input-type=module - "$OUT" "$DESK_RUN_BIN" 2>&1 <<'NEEDS_END'
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
