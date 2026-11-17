@@ -2356,7 +2356,13 @@ const gateAlive = (g) => {
   if (g?.state !== 'running' || !g.pid) return false;
   try { process.kill(g.pid, 0); return true; } catch { return false; }
 };
+// Outside feature mode, a base whose sync is blocked or left to a fix try still spawns while it is at
+// most this many commits behind the default branch, and holds every spawn past it.
+// AUTOPILOT_BASE_BEHIND_MAX overrides it with a whole number.
+const BASE_BEHIND_MAX = /^\d+$/.test(process.env.AUTOPILOT_BASE_BEHIND_MAX ?? '') ? Number(process.env.AUTOPILOT_BASE_BEHIND_MAX) : 20;
 let baseHold = false;
+// Why a base outside feature mode holds, for the pass's verdict.
+let baseLag = null;
 // The base worktree's path, set below.
 let baseWt = null;
 // What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, or the epic PR's review
@@ -2422,19 +2428,31 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // ever. Read from origin as fetched now; a fetch that fails reads the refs as they were.
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], quiet);
-  const behindNow = Number(sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet)) > 0;
+  const behindBy = Number(sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet)) || 0;
+  const behindNow = behindBy > 0;
   const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN' || behindNow;
-  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
+  // A sync that does not land holds spawns in feature mode, and otherwise once the base lags too far.
+  const lag = `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
+  const lagHolds = !featureMode && behindBy > BASE_BEHIND_MAX;
+  const syncHolds = featureMode || lagHolds;
+  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass'
+    : lagHolds ? `${lag}, more than the ${BASE_BEHIND_MAX} it may lag and still spawn, so nothing spawns this pass`
+      : `spawning carries on from the base as it stands (${lag}, within the ${BASE_BEHIND_MAX} it may lag)`;
+  const holdSpawns = () => {
+    if (!syncHolds) return;
+    baseHold = true;
+    if (lagHolds) baseLag = `${lag}, more than the ${BASE_BEHIND_MAX} it may lag`;
+  };
   const blocked = (why) => {
     baseNotSynced = why;
     report.waiting.push(`base sync: ${why} — ${holdNote}`);
-    if (featureMode) baseHold = true;
+    holdSpawns();
   };
   // Held as a blocked sync is, but a worker's to clear, not the person's.
   const heldForFix = (why) => {
     baseNotSynced = why;
-    baseLines.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing else spawns this pass' : holdNote}`);
-    if (featureMode) baseHold = true;
+    baseLines.push(`base sync: ${why} — ${syncHolds ? holdNote.replace('nothing spawns', 'nothing else spawns') : holdNote}`);
+    holdSpawns();
   };
   const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
   if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
@@ -2583,7 +2601,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         if (!fresh.base_push_ask && !DRY) q('set-batch', `base_push_ask=${JSON.stringify({ since: PASS_AT, base: BASE, source: SOURCE })}`);
         baseNotSynced = why;
         baseLines.push(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${holdNote}`);
-        if (featureMode) baseHold = true;
+        holdSpawns();
       } else {
         blocked(`${why}${basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`);
       }
@@ -5573,7 +5591,7 @@ if (idle) {
 }
 // Why nothing spawned while something could have: the first hold that applied this pass.
 const heldWhy = report.spawned.length || !eligible.length ? null
-  : held ?? (baseHold ? 'the batch base sync holds every spawn'
+  : held ?? (baseHold ? `the batch base sync holds every spawn${baseLag ? `: ${baseLag}` : ''}`
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : lockQueueHeldText ?? (MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
   : repoUnlocked ? `the repo's shared cap: ${repoLine}`
