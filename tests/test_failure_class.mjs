@@ -90,10 +90,39 @@ t('AC3 and its brief names the base red check as not the worker\'s', fixBrief({ 
 // AC6: no run at the merge base: not base red, the try proceeds, and says the base state is unknown.
 const unknown = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), ctx({ baseRead: read({}) }));
 t('AC6 no run at the merge base: the try proceeds', unknown?.call, 'requeue');
-t('AC6 and says the base state is unknown', unknown?.fix.what, 'red: Lint; base state unknown for Lint (no run of it on main at the merge base)');
+t('AC6 and says the base state is unknown', unknown?.fix.what, 'red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)');
 t('AC6 no hold is kept', unknown?.base_red, null);
 const noMb = baseSplit([red('Lint')], HEAD, null, { mergeBase: () => null, atMergeBase: () => null, latestOnBase: () => null });
 t('AC6 a merge base that cannot be read is unknown too', `${noMb.unknown.length} ${noMb.red.length}`, '1 0');
+
+// DS-614: the base went red after the PR's merge base. A check that passed there, or had no run there,
+// but whose latest run on the base fails is base red too.
+const late = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'fail' }) }));
+t('DS-614 AC1 passed at the merge base, red on the base\'s latest run: held, no try', `${late?.call} ${late?.class} ${late?.fix}`, 'held base red undefined');
+t('DS-614 AC1 the hold records the check as red on the latest run', JSON.stringify(late?.base_red), JSON.stringify({ class: 'base red', head: HEAD, merge_base: MB, checks: ['Size'], cleared: [], latest: ['Size'] }));
+t('DS-614 AC1 and says why', late?.why, 'base red: Size is red on main\'s latest run of that job since the merge base bbbbbbbbbbbb, so no fix try is spent on it; it goes to a fix try once that job passes on main');
+t('DS-614 AC1 no run at the merge base, red on the latest: held too', fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({}, { Size: 'fail' }) }))?.call, 'held');
+const lateDraft = draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Size')] }, { repo: 'acme/widgets', base: 'main', baseRead: read({ Size: 'pass' }, { Size: 'fail' }) });
+t('DS-614 AC1 a draft is held the same way', `${lateDraft?.call} ${lateDraft?.base_red?.latest}`, 'held Size');
+const both = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint'), red('Size', '8')]), ctx({ baseRead: read({ Lint: 'fail', Size: 'pass' }, { Size: 'fail' }) }));
+t('DS-614 AC1 one red at the merge base and one on the latest run: each named for where', both?.why, 'base red: Lint is red on main at the merge base bbbbbbbbbbbb too, and Size is red on main\'s latest run of that job since the merge base bbbbbbbbbbbb, so no fix try is spent on it; it goes to a fix try once that job passes on main');
+const lateMixed = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size'), red('Unit', '8')]), ctx({ baseRead: read({ Size: 'pass', Unit: 'pass' }, { Size: 'fail', Unit: 'pass' }) }));
+t('DS-614 AC1 beside a check of its own, the try takes the other', `${lateMixed?.call} ${lateMixed?.fix.what} ${JSON.stringify(lateMixed?.fix.base_latest)}`, 'requeue red: Unit ["Size"]');
+t('DS-614 AC1 and its brief says where the base red check is red', fixBrief({ fix: lateMixed.fix }).includes('- Size is red too, and on main in its latest run of that job as well, so it is not yours to fix: leave it red.'), true);
+// AC2: the hold stays while the base's latest run is red, and clears once it passes.
+const lateTk = { key: 'T-1', base_red: late.base_red };
+const lateStill = fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'fail' }) }));
+t('DS-614 AC2 while the job is still red on the base, the hold stays and still says where', `${lateStill?.call} ${JSON.stringify(lateStill?.base_red?.latest)} ${/latest run of that job/.test(lateStill?.why)}`, 'held ["Size"] true');
+const lateCleared = fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'pass' }) }));
+t('DS-614 AC2 once it passes on the base, the hold clears and a fix try proceeds as today', `${lateCleared?.call} ${lateCleared?.fix.what} ${JSON.stringify(lateCleared?.base_red?.cleared)} ${'latest' in (lateCleared?.base_red ?? {})}`, 'requeue red: Size ["Size"] false');
+// AC3: green on the base's latest run and at the merge base: a fix try as today, with no unknown note.
+const mineAll = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'pass' }) }));
+t('DS-614 AC3 green on the base at the merge base and since: a fix try as today', `${mineAll?.call} ${mineAll?.fix.what} ${mineAll?.base_red}`, 'requeue red: Size null');
+const greenLater = baseSplit([red('Size')], HEAD, null, read({}, { Size: 'pass' }));
+t('DS-614 AC3 no run at the merge base but green since: the worker\'s, and not unknown', `${greenLater.mine.length} ${greenLater.unknown.length} ${greenLater.red.length}`, '1 0 0');
+// AC5: neither read: a fix try, which says the base state is unknown.
+const unread = baseSplit([red('Size')], HEAD, null, { mergeBase: () => null, atMergeBase: () => null, latestOnBase: () => null });
+t('DS-614 AC5 the base\'s runs cannot be read: the worker\'s, and unknown', `${unread.mine.length} ${unread.unknown.length} ${unread.red.length} ${unread.record}`, '1 1 0 null');
 
 // AC8: a held check clears once the job passes on the base, and stays cleared at that head.
 const tk = { key: 'T-1', base_red: held.base_red };
@@ -122,19 +151,19 @@ t('AC8 and on the stuck call after it', `${stuckCleared?.call} ${JSON.stringify(
 const draftExtra = draftChecksFix({ key: 'T-1', fix_tries: spentTries, base_red: heldRec }, { pr: 701, head: HEAD, failing: [red('Lint')], checks: [ok('tests'), quoted('Lint')] }, ctx({ baseRead: read({}, { Lint: 'pass' }) }));
 t('AC8 and on a draft\'s extra try', `${draftExtra?.fix.extra} ${draftExtra?.fix.draft} ${JSON.stringify(draftExtra?.base_red?.cleared)}`, 'true true ["Lint"]');
 const extraUnknown = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint')]), ctx({ baseRead: read({}) }));
-t('AC6 the extra try says the base state is unknown', extraUnknown?.fix.what, 'red: Lint; base state unknown for Lint (no run of it on main at the merge base)');
+t('AC6 the extra try says the base state is unknown', extraUnknown?.fix.what, 'red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)');
 t('AC6 with nothing held, it clears no record', 'base_red' in extraUnknown && extraUnknown.base_red, null);
 const extraMixed = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint'), quoted('Unit')]), ctx({ baseRead: read({ Lint: 'fail', Unit: 'pass' }) }));
 t('AC3 the extra try names a base red check once, as the numbered try does', `${JSON.stringify(extraMixed?.fix.base_red)} ${JSON.stringify(extraMixed?.fix.not_mine)}`, '["Lint"] []');
 const offExtra = fixCall({ key: 'T-1', fix_tries: spentTries }, pr([ok('tests'), quoted('Lint')]), ctx());
-t('AC7 lever off: the extra try carries no base fields', ['base_red', 'base'].some((k) => k in offExtra.fix) || 'base_red' in offExtra, false);
+t('AC7 no base read: the extra try carries no base fields', ['base_red', 'base'].some((k) => k in offExtra.fix) || 'base_red' in offExtra, false);
 
-// AC7: with the lever off (no baseRead), routing is exactly as today.
+// AC7: with no base read (no baseRead), routing is exactly as before it.
 const off = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Lint')]), ctx());
-t('AC7 lever off: requeued as today', `${off?.call} ${off?.fix.what}`, 'requeue red: Lint');
-t('AC7 lever off: no base fields on the try or the call', ['base_red', 'base'].some((k) => k in off.fix) || 'base_red' in off, false);
+t('AC7 no base read: requeued as today', `${off?.call} ${off?.fix.what}`, 'requeue red: Lint');
+t('AC7 no base read: no base fields on the try or the call', ['base_red', 'base'].some((k) => k in off.fix) || 'base_red' in off, false);
 const { checks: operator } = parseOperatorChecks(['Flows image missing: build it: ensure-flows-image.sh']);
-t('AC7 lever off: a draft as today', JSON.stringify(draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', operator })), JSON.stringify({ call: 'requeue', fix: { try: 1, of: 2, pr: 701, head: HEAD, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint', url: 'https://github.com/acme/widgets/actions/runs/9' }], not_mine: [], draft: true } }));
+t('AC7 no base read: a draft as today', JSON.stringify(draftChecksFix({ key: 'T-1' }, { pr: 701, head: HEAD, failing: [red('Lint')] }, { repo: 'acme/widgets', operator })), JSON.stringify({ call: 'requeue', fix: { try: 1, of: 2, pr: 701, head: HEAD, kind: 'checks', what: 'red: Lint', checks: [{ name: 'Lint', url: 'https://github.com/acme/widgets/actions/runs/9' }], not_mine: [], draft: true } }));
 
 // ---- a draft's red check classed runner or resource is re-run once before a fix try
 const NOSPACE = 'ENOSPC: no space left on device, write';

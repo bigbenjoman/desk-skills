@@ -4067,10 +4067,10 @@ const faultOf = (f) => {
 };
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
-// With the failure-class lever on, a red check is read against the default branch before a fix try is
-// spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
-// for a base red hold, its newest completed run among the commits the default branch has gained since
-// that merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
+// A red check is read against the default branch before a fix try is spent on it, with the
+// failure-class lever on or off (fix-tries.mjs againstBase): the job's check runs at the PR's exact
+// merge base, and its newest completed run among the commits the default branch has gained since that
+// merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
 const FAILURE_CLASS = E.leverOn('failure-class');
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
@@ -4089,7 +4089,7 @@ const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
   return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
 });
-const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
+const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
   latestOnBase: (name) => {
