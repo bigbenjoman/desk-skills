@@ -350,13 +350,13 @@ t('per-ticket AC3: CI reds on its own branch only', `${p1.ci_reds} ${JSON.string
 t('per-ticket AC3: distinct desk commits and the levers and claude version of each start',
   `${JSON.stringify(p1.desk_commits)} ${JSON.stringify(p1.start_records.map((s) => [s.session, s.levers, s.claude_version]))}`,
   '["feedface00112233"] [["ps-1",["codex"],"2.1.0 (Claude Code)"]]');
-t('per-ticket AC3: a start with no record is there with nothing filled in', JSON.stringify(rowOf('P-7').start_records), '[{"at":null,"session":"ps-7","stage":null,"desk_commit":null,"levers":null,"claude_version":null}]');
+t('per-ticket AC3: a start with no record is there with nothing filled in', JSON.stringify(rowOf('P-7').start_records), '[{"at":null,"session":"ps-7","stage":null,"desk_commit":null,"levers":null,"claude_version":null,"lever_fp":null,"system_bytes":null,"prompt_bytes":null}]');
 const p5 = rowOf('P-5');
 t('per-ticket AC4: a run with no result event leaves the cost incomplete', `${p5.cost_complete} ${p5.unknown_runs} ${p5.runs}`, 'false 1 2');
 t('per-ticket AC4: and no estimate is filled in: the recorded run alone', p5.cost.toFixed(3), (1 + 5 * 0.37 + 0.002).toFixed(3));
 t('per-ticket AC5: no triage size is null and the row is still printed', rowOf('P-2')?.size, null);
 t('per-ticket AC6: a start that recorded no claude version is null', JSON.stringify(rowOf('P-3').start_records.map((s) => [s.desk_commit, s.claude_version])), '[["feedface00112233",null]]');
-t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
+t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms, trial ids and fingerprints', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids, fp: PIN.fp }));
 t('per-ticket AC9: a ticket with no pin holds null', rowOf('P-2').pin, null);
 // P-1 is pinned to codex and memory, and its start recorded codex alone.
 t('DS-639 AC8 a ticket whose start recorded levers other than its pin carries pin_mismatch true', p1.pin_mismatch, true);

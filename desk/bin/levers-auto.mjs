@@ -22,6 +22,8 @@
 //   import { assignPin, leverStatesIn } from './levers-auto.mjs'
 //   node levers-auto.mjs assign <TICKET>   pins a queued ticket that has no pin and prints the pin;
 //                                          a ticket already pinned is left as it is
+//   node levers-auto.mjs evaluate          the daily adopt, revert or hold of each lever on trial, if
+//                                          today's has not run (levers-evaluate.mjs)
 import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -172,9 +174,18 @@ export function assignPin(key, {
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 })();
-if (isMain) {
+if (isMain && process.argv[2] === 'evaluate' && process.argv.length === 3) {
+  // Not awaited: levers-evaluate.mjs imports this module, which must finish evaluating first.
+  import('./levers-evaluate.mjs').then(({ evaluateDue }) => {
+    const r = evaluateDue();
+    console.log(r.line ?? { none: 'levers evaluate: no repo on this computer has `auto` in its levers row', busy: 'levers evaluate: another pass is evaluating now', not_due: 'levers evaluate: today\'s evaluation has run' }[r.status]);
+  }).catch((e) => {
+    console.error(`levers-auto: ${e.message ?? e}`);
+    process.exit(1);
+  });
+} else if (isMain) {
   const [cmd, key] = process.argv.slice(2);
-  if (cmd !== 'assign' || !key || !SAFE_ID.test(key) || key.includes('..')) { console.error('usage: levers-auto.mjs assign <TICKET>'); process.exit(2); }
+  if (cmd !== 'assign' || !key || !SAFE_ID.test(key) || key.includes('..')) { console.error('usage: levers-auto.mjs assign <TICKET> | evaluate'); process.exit(2); }
   try {
     const qf = queueFile();
     if (!existsSync(qf)) throw new Error(`no queue at ${qf}`);
