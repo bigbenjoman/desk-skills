@@ -6,10 +6,10 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -86,7 +86,8 @@ function load() {
 const LOCK = `${QUEUE}.lock`;
 // The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
 // number of milliseconds there is ignored rather than turning the wait into forever or nothing.
-const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
+const msEnv = (name, def) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : def);
+const LOCK_WAIT_MS = msEnv('DESK_QUEUE_LOCK_WAIT_MS', 10_000);
 // The lock itself, its stale clearing and its release on exit are dir-lock.mjs's.
 function lock(dir = LOCK) {
   takeDirLock(dir, { waitMs: LOCK_WAIT_MS, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`) });
@@ -342,11 +343,35 @@ function handback(q, key, note) {
 // queue.mjs stop: one running ticket's worker ended, what its worktree holds committed on its branch,
 // and the ticket held behind no blocker, so nothing starts it until the person lets it (needs-you's
 // start, which sets it triaged): its next worker then starts in the same worktree on the same branch, at
-// the stage this one reached. A pass running now is waited for first, outside the queue lock its writes
-// need: it may have read the ticket as running, and would record the ended worker as killed and resume it.
-const msEnv = (name, def) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : def);
-const STOP_PASS_WAIT_MS = msEnv('DESK_STOP_PASS_WAIT_MS', 120_000);
+// the stage this one reached. It holds the pass's own lock from its first read to its save, waiting for
+// a pass running now: a pass that read the ticket as running would record the ended worker as killed and
+// resume it over the hold. The wait has no limit unless DESK_STOP_PASS_WAIT_MS sets one; a dead holder
+// frees it.
+const STOP_PASS_WAIT_MS = msEnv('DESK_STOP_PASS_WAIT_MS', Infinity);
 const STOP_GRACE_MS = msEnv('DESK_STOP_GRACE_MS', 10_000);
+
+// Takes orchestrator.lock as pass.mjs claim() reads it, { pid, since }, so a pass starting meanwhile
+// refuses; released on exit while it still names this process.
+function claimPassLock(key) {
+  const file = join(stateDir(), 'orchestrator.lock');
+  mkdirSync(stateDir(), { recursive: true });
+  for (const until = Date.now() + STOP_PASS_WAIT_MS; ;) {
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, since: new Date().toISOString(), by: `queue.mjs stop ${key}` }), { flag: 'wx' });
+      process.on('exit', () => { try { if (JSON.parse(readFileSync(file, 'utf8')).pid === process.pid) unlinkSync(file); } catch { /* gone */ } });
+      return;
+    } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    let pid = null;
+    try { pid = Number(JSON.parse(readFileSync(file, 'utf8')).pid) || null; } catch { /* being written: a live holder */ }
+    if (pid === process.ppid) throw new Error(`queue.mjs stop ${key} was run by the pass holding the pass lock (pid ${pid}), which it would wait on forever: run it outside a pass. Nothing was changed`);
+    // A dead holder, or a lock unreadable for longer than a write takes, is stale, as claim() takes it.
+    let old = false;
+    try { old = Date.now() - statSync(file).mtimeMs > 5_000; } catch { continue; }
+    if (pid ? !alive(pid) : old) { try { unlinkSync(file); } catch { /* another taker cleared it */ } continue; }
+    if (Date.now() >= until) throw new Error(`a pass is running (pid ${pid ?? '?'}) and did not finish within ${STOP_PASS_WAIT_MS / 1000}s, so nothing was stopped: run queue.mjs stop ${key} again once it has`);
+    sleepSync(500);
+  }
+}
 
 // Exit 2 for a key the queue does not hold, as the command line's own mistake rather than a refusal.
 class NoTicket extends Error { exit = 2; }
@@ -372,17 +397,10 @@ function commitStopped(wt, key, branch) {
 }
 
 function stop(key) {
-  for (const until = Date.now() + STOP_PASS_WAIT_MS; ;) {
-    if (!passRunning()) {
-      lock();
-      if (!passRunning()) break;
-      unlock();
-    }
-    if (Date.now() >= until) throw new Error(`a pass is running and did not finish within ${STOP_PASS_WAIT_MS / 1000}s, so nothing was stopped: run queue.mjs stop ${key} again once it has`);
-    sleepSync(500);
-  }
-  const q = load();
-  const t = q.tickets[key];
+  claimPassLock(key);
+  // Read without the queue lock, as every reader does; it is taken only for the write, so ending the
+  // worker never keeps another writer waiting past its own wait.
+  const t = load().tickets[key];
   if (!t) throw new NoTicket(`no such ticket in the queue: ${key}. Nothing was changed`);
   if (t.state !== 'running') throw new Error(`${key} has no running worker (it is ${t.state}): nothing was changed`);
   if (!t.session_id) throw new Error(`${key} has no running worker that can be found: it records no session id. Nothing was changed`);
@@ -402,8 +420,17 @@ function stop(key) {
   const at = new Date().toISOString();
   const kept = c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`;
   const stage = lastStage(round)?.stage ?? t.stage ?? null;
-  Object.assign(t, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
-    held_by: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : t.last_round ?? null,
+  // The worker is gone and no pass can start, so the hold must land: wait for the queue lock as long as
+  // its holder lives (dir-lock clears a dead one's).
+  takeDirLock(LOCK, { waitMs: Infinity });
+  const q = load();
+  const now = q.tickets[key];
+  if (now?.state !== 'running' || now.session_id !== t.session_id) {
+    unlock();
+    throw new Error(`${key}'s worker (pid ${ended.ended.join(', ')}) ended and its work so far is ${kept}, but the queue changed meanwhile (${key} is now ${now?.state ?? 'not in the queue'}), so its record was left as it is`);
+  }
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
+    held_by: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : now.last_round ?? null,
     session_id: null, pid: null, resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
   save(q);
   if (c.error) process.exitCode = EXIT.SHOW_PERSON;
@@ -1209,7 +1236,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
-      : stuck && !t.held_by && String(t.park?.question ?? '').startsWith(STOPPED_PREFIX) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
+      : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
       : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`

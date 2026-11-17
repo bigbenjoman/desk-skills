@@ -90,20 +90,45 @@ check "AC5: recorded running with no process for its session exits 11"   '[ $rc 
 before=$(sum); q stop NOPE-1
 check "AC6: an unknown key exits 2, names it and changes nothing"         '[ $rc -eq 2 ] && [[ "$out" == *"NOPE-1"* ]] && [ "$(sum)" = "$before" ]'
 
-# AC7: another writer holds the queue lock for a moment.
+# AC7: a pass holds its lock for a moment. The releaser notes whether the worker was still alive as it
+# let go, so the check fails if stop ended the worker without waiting.
 running S-7; worker S-7
+sleep 30 & pass=$!
+printf '{"pid":%s,"since":"now"}\n' "$pass" > "$T/state/orchestrator.lock"
+( sleep 1; if kill -0 "$WPID" 2>/dev/null; then echo alive; else echo ended; fi > "$T/S-7.at-release"; rm -f "$T/state/orchestrator.lock"; kill "$pass" ) &
+releaser=$!
+q stop S-7; wait "$WPID" 2>/dev/null; wait "$releaser" 2>/dev/null
+check "AC7: it waits for the pass's lock, then stops the worker, exit 0" '[ $rc -eq 0 ] && [ "$(cat "$T/S-7.at-release")" = alive ] && gone "$WPID" && [ "$(f S-7 state)" = "\"parked\"" ]'
+# Another writer holds the queue lock as stop comes to write the hold: the write waits for it.
+running S-11; worker S-11 'trap "" TERM; '
 sleep 30 & holder=$!
 mkdir "$DESK_QUEUE.lock"; echo "$holder" > "$DESK_QUEUE.lock/pid"
-( sleep 1; rm -rf "${DESK_QUEUE:?}.lock"; kill "$holder" ) &
-q stop S-7; wait "$WPID" 2>/dev/null
-check "AC7: it waits for the queue lock, then stops the worker, exit 0"  '[ $rc -eq 0 ] && gone "$WPID" && [ "$(f S-7 state)" = "\"parked\"" ]'
+( sleep 2; date +%s > "$T/S-11.released"; rm -rf "${DESK_QUEUE:?}.lock"; kill "$holder" ) &
+releaser=$!
+q stop S-11; done_at=$(date +%s); wait "$WPID" 2>/dev/null; wait "$releaser" 2>/dev/null
+check "the hold is written once the queue lock frees, not over it"        '[ $rc -eq 0 ] && [ -s "$T/S-11.released" ] && [ "$done_at" -ge "$(cat "$T/S-11.released")" ] && [ "$(f S-11 state)" = "\"parked\"" ]'
+
+# While it stops a worker it holds the pass's lock, so no pass starts and resumes the ticket over the
+# hold; it lets go once done.
+running S-12; worker S-12 'trap "" TERM; '
+node "$B/queue.mjs" stop S-12 > "$T/S-12.out" 2>&1 & stopper=$!
+held=no; for _ in $(seq 1 30); do grep -q 'queue.mjs stop S-12' "$T/state/orchestrator.lock" 2>/dev/null && { held=yes; break; }; sleep 0.05; done
+wait "$stopper"; rc=$?; out=$(cat "$T/S-12.out"); wait "$WPID" 2>/dev/null
+check "it holds the pass lock while it stops, and frees it after"         '[ $rc -eq 0 ] && [ $held = yes ] && [ ! -e "$T/state/orchestrator.lock" ]'
+
+# A worker's descendant that left its group (a detached child, setsid) is ended too.
+running S-10
+perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'perl -MPOSIX -e "POSIX::setsid(); exec @ARGV" sleep 300 & echo $! > "$0.child"; wait' "$T/S-10" claude -p x --session-id s-S-10 &
+WPID=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do [ -s "$T/S-10.child" ] && break; sleep 0.2; done; WCHILD=$(cat "$T/S-10.child")
+q stop S-10; wait "$WPID" 2>/dev/null
+check "a descendant in its own process group is ended with the worker"   '[ $rc -eq 0 ] && gone "$WPID" && gone "$WCHILD" && [ "$(ps -o pgid= -p "$WCHILD" 2>/dev/null | tr -d " ")" != "$WPID" ]'
 
 # A pass running now is waited for, and one that does not finish refuses with nothing changed.
 running S-8; worker S-8
 sleep 30 & pass=$!
 printf '{"pid":%s,"since":"now"}\n' "$pass" > "$T/state/orchestrator.lock"
 before=$(sum); out=$(DESK_STOP_PASS_WAIT_MS=600 node "$B/queue.mjs" stop S-8 2>&1); rc=$?
-check "a pass that does not finish in the wait: exit 11, nothing changed" '[ $rc -eq 11 ] && [[ "$out" == *"a pass is running"* ]] && [ "$(sum)" = "$before" ] && kill -0 "$WPID"'
+check "a pass that does not finish in the wait: exit 11, nothing changed" '[ $rc -eq 11 ] && [[ "$out" == *"a pass is running"* ]] && [ "$(sum)" = "$before" ] && kill -0 "$WPID" && grep -q "\"pid\":$pass" "$T/state/orchestrator.lock"'
 kill "$pass"; wait "$pass" 2>/dev/null; rm -f "$T/state/orchestrator.lock"
 q stop S-8; wait "$WPID" 2>/dev/null
 check "once the pass is gone, the same stop goes ahead"                   '[ $rc -eq 0 ] && [ "$(f S-8 state)" = "\"parked\"" ]'

@@ -19,25 +19,26 @@ export function startsSession(args, sid) {
     || words.includes(`--session-id=${sid}`) || words.includes(`--resume=${sid}`);
 }
 
-// What to end for session `sid`, from `rows` (processRows): { groups, pids }. `groups` are the process
-// groups a process starting the session leads (setsid makes the wrapper a leader), signalled whole;
-// `pids` are those processes and their descendants outside such a group (no setsid: the group is the
-// spawner's). Never `self`, its ancestors, or a group any of them is in.
+// What to end for session `sid`, from `rows` (processRows): { groups, pids }. Every process starting the
+// session and every descendant of one is ended. `groups` are the process groups such a process leads
+// (setsid makes the wrapper a leader; a detached child leads its own), signalled whole, so a child that
+// outlived its parent still goes with its group; `pids` are the rest, outside any such group (no setsid:
+// the group is the spawner's). Never `self`, its ancestors, or a group any of them is in.
 export function workerProcs(sid, rows, self = process.pid) {
   const byPid = new Map(rows.map((r) => [r.pid, r]));
   const mine = new Set();
   for (let p = byPid.get(self); p && !mine.has(p.pid); p = byPid.get(p.ppid)) mine.add(p.pid);
   const myGroups = new Set([...mine].map((p) => byPid.get(p)?.pgid));
-  const starts = rows.filter((r) => !mine.has(r.pid) && startsSession(r.args, sid));
-  const groups = new Set(starts.filter((r) => r.pgid === r.pid && !myGroups.has(r.pgid)).map((r) => r.pgid));
-  const pids = new Set();
-  const add = (r) => {
-    if (mine.has(r.pid) || groups.has(r.pgid) || pids.has(r.pid)) return;
-    pids.add(r.pid);
-    for (const c of rows) if (c.ppid === r.pid) add(c);
+  const tree = new Set();
+  const walk = (r) => {
+    if (mine.has(r.pid) || tree.has(r.pid)) return;
+    tree.add(r.pid);
+    for (const c of rows) if (c.ppid === r.pid) walk(c);
   };
-  starts.forEach(add);
-  return { groups: [...groups], pids: [...pids] };
+  rows.filter((r) => startsSession(r.args, sid)).forEach(walk);
+  const procs = [...tree].map((p) => byPid.get(p));
+  const groups = new Set(procs.filter((r) => r.pgid === r.pid && !myGroups.has(r.pgid)).map((r) => r.pgid));
+  return { groups: [...groups], pids: procs.filter((r) => !groups.has(r.pgid)).map((r) => r.pid) };
 }
 
 // The pids still alive of what `target` names, read from `rows`.

@@ -125,6 +125,8 @@ export function crashShowsPerson(report = (e) => console.error(describeCrash(e))
 export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
+export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean)
+  && String(t.park?.question ?? '').startsWith(STOPPED_PREFIX);
 
 // Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).

@@ -57,7 +57,8 @@ How to resume, by what was parked:
 
 To stop one running worker without failing its ticket, run `queue.mjs stop <TICKET>`. It ends the
 worker's processes, commits what its worktree holds on its branch and holds the ticket behind no
-blocker, so no pass starts it until the person lets it (needs-you `start`). It exits 11 for a ticket
+blocker, so no pass starts it until the person lets it (needs-you `start`). It waits for a running
+pass and holds the pass lock while it works, so a pass started meanwhile refuses. It exits 11 for a ticket
 with no running worker and 2 for a key the queue does not hold. Stopping every worker is `/desk-reboot`.
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
