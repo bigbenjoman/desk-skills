@@ -2000,7 +2000,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
   t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
-    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
+    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears \(1 ticket waits behind this\)$/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
 }
 

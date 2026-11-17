@@ -770,8 +770,10 @@ function linkItems(r) {
     .flatMap((t) => {
       const seen = new Set();
       return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b))
-        // The ticket on the link waits on it, and so does every ticket held behind that one (collect).
-        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind), behind: heldBehindAll([[r, t.key]], true) })));
+        // Every ticket held behind the one on the link waits on it, and so does that one where it is held
+        // or its merge waits (a cycle's other side may hold nothing) (collect).
+        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind),
+          behind: heldBehindAll([[r, t.key]], holdsKept(t) || keysOf(t.merge_after).length > 0) })));
     });
 }
 // The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
