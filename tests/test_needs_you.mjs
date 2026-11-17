@@ -1944,6 +1944,24 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${nuList.code} ${nuList.out.split('\n')[0]} ${nuList.out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join()} ${queueOf('nu546').tickets['NU-1'].state}`,
     '0 nu546 NU-1: PR #921 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. NU-2 done');
 
+  // DS-573: a parked item whose PR merged with its ticket not done in Jira goes back to a worker for its
+  // after-merge steps, and leaves the list; one whose PR is open stays as it was.
+  put('mt573', { port: 5573, beat: 1, supervised: true, pattern: 'MT-[0-9]+', tickets: {
+    'MT-1': { ...parked('A', 60, 'Which fixture should win?'), draft_pr: 961, handoff_stage: 7 },
+    'MT-2': { ...parked('A', 50, 'Which copy?'), draft_pr: 962 },
+  } });
+  const mtPrs = { 961: 'MERGED', 962: 'OPEN' };
+  const mtReads = { pr: (_r, n) => ({ v: { state: mtPrs[n], mergedAt: mtPrs[n] === 'MERGED' ? '2026-11-12T09:01:00Z' : null, isDraft: false }, err: '' }), ticket: () => 'indeterminate', git: () => null };
+  const mtList = () => N.collect({ word: 'mt573' }).items.map((i) => i.t.key).sort().join();
+  t('DS-573 both are listed before list reads GitHub', mtList(), 'MT-1,MT-2');
+  t('DS-573 AC1 list requeues the merged one for its after-merge steps and says so',
+    N.refresh({ word: 'mt573', reads: mtReads }).join(' | '), 'mt573 MT-1: PR #961 merged at 2026-11-12 09:01 UTC, and MT-1 is not done in Jira yet, so it is back with a worker for its after-merge steps only, and off your list.');
+  const mt1 = queueOf('mt573').tickets['MT-1'];
+  t('DS-573 AC1 it is requeued with its briefing told the PR merged, from Stage 0, and is not listed',
+    `${mt1.state} ${mt1.park} ${mt1.merged_tail} ${mt1.cleared?.tail?.pr} ${mt1.handoff_stage ?? null} ${mtList()}`, 'triaged null 961 961 null MT-2');
+  t('DS-573 AC3 the one whose PR is open stays parked, its question unchanged', `${queueOf('mt573').tickets['MT-2'].state} ${queueOf('mt573').tickets['MT-2'].park?.question}`, 'parked Which copy?');
+  t('DS-573 a second list requeues nothing more', N.refresh({ word: 'mt573', reads: mtReads }).length, 0);
+
   // AC3: a worktree held for uncommitted changes is read again, and released once committed and pushed.
   const origin = join(T, 'xi546-origin.git'), wt = join(T, 'xi546-wt');
   spawnSync('git', ['init', '-q', '--bare', '-b', 'fix/X-1', origin]);

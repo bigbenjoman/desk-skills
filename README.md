@@ -245,7 +245,12 @@ PR is merged, or whose promotion PR is closed, with no ticket running and no tic
 close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
 (one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
 `batch.mjs discard <EPIC>` removes one no ticket has started in.
-`./install.sh` records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
+`./install.sh` puts desk's scripts and templates in a release folder of their own,
+`~/.claude/desk/releases/<commit>/` (`<commit>-<time>` from a dirty checkout), and makes it live in one
+step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
+`current`, so a pass started before an install finishes on the release it started with. The newest
+three releases are kept, and `./install.sh --rollback` makes the one before the current one current.
+Each repo's queue and the other state under `~/.claude/desk` never move. It records the commit it installed in `~/.claude/desk/installed.json`, rewrites and
 reloads each loaded supervisor agent with the current node, and restarts each merge driver waiting
 between loops on the new code with the same tickets (one mid-loop is left, and named). Each tick
 keeps `code` in `<state>/supervisor.json`, saying whether the agent or the running merge driver
@@ -679,6 +684,7 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
 ./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
+./install.sh --rollback     # go back to the release installed before the current one
 ```
 
 It fetches `origin/main` first and installs nothing from another branch, a detached HEAD or a `main`

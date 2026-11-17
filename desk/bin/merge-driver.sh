@@ -257,11 +257,11 @@ desk_apply_batch_base || exit 1
 desk_load_paths || exit 1
 desk_load_identity || exit 1
 # §4 Known flaky checks: what may be waived, and how a waiver's ticket is filed. Unset waives nothing.
-if ! FLAKY="$(node "$DESK_BIN/gate.mjs" flaky 2>&1)"; then
+if ! FLAKY="$(node "$DESK_RUN_BIN/gate.mjs" flaky 2>&1)"; then
   echo "FAIL: $(printf '%s' "$FLAKY" | sed 's/^gate: //') — the driver waives nothing until it does." >&2; exit 1
 fi
 # §4 State checks: the checks a rerun cannot turn green, since they read the PR's state, not its code.
-if ! STATE_CHECKS="$(node "$DESK_BIN/gate.mjs" state 2>&1)"; then
+if ! STATE_CHECKS="$(node "$DESK_RUN_BIN/gate.mjs" state 2>&1)"; then
   echo "FAIL: $(printf '%s' "$STATE_CHECKS" | sed 's/^gate: //') — the driver cannot tell which red checks a rerun could fix until it does." >&2; exit 1
 fi
 TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
@@ -288,7 +288,7 @@ done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 reopen_log
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
-node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
+node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
@@ -327,9 +327,9 @@ said(){
   printf '%s\n' "$2" >> "$f"
   return "$hit"
 }
-Q="$DESK_BIN/queue.mjs"
-GATE="$DESK_BIN/gate.mjs"
-THREADS="$DESK_BIN/review-threads.mjs"
+Q="$DESK_RUN_BIN/queue.mjs"
+GATE="$DESK_RUN_BIN/gate.mjs"
+THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
 # §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
 CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
@@ -353,7 +353,7 @@ GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
 # A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
 ticket_map(){   # ticket_map <key>...
-  node --input-type=module - "$DESK_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
+  node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [mod, qf, ...keys] = process.argv.slice(2);
@@ -683,7 +683,7 @@ close_issues(){
   local line
   while IFS= read -r line; do
     [ -n "$line" ] && log "#$1 $2 $line"
-  done < <(node "$DESK_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
+  done < <(node "$DESK_RUN_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
 }
 
 # A §4 Merge holds routine is run once per PR head, recorded in <state>/merge-driver/routine-<n>-<sha>.*:
@@ -770,7 +770,7 @@ instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge
 # person, as pass.mjs says. -> `<n>\t<epic key>\tepic` for one to try, or nothing.
 epic_pr(){
   local line n key carried st
-  line=$(node --input-type=module - "$DESK_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
+  line=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [bs, gate, qf] = process.argv.slice(2);
@@ -889,7 +889,7 @@ EOF_REPAIRS
 # A check that could not run holds the merge.
 tree_checked(){
   local r res line
-  r=$(node --input-type=module - "$DESK_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$4" "$1" "$2" <<'NODE'
+  r=$(node --input-type=module - "$DESK_RUN_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$4" "$1" "$2" <<'NODE'
 import { pathToFileURL } from 'node:url';
 const [mod, repo, cache, base, pr, head] = process.argv.slice(2);
 const { prTreeCheck } = await import(pathToFileURL(mod).href);

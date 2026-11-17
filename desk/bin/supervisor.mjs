@@ -129,9 +129,12 @@ function install(interval, reload = false) {
   // The desk version the agent was loaded at, so a tick can tell its plist predates the install.
   const version = readInstalled()?.commit;
   if (version) env.DESK_AGENT_VERSION = version;
+  // Loaded from a release folder, the agent runs through ~/.claude/desk/bin, so each tick loads the
+  // release current then and never one an install has since pruned.
+  const dir = E.runBin() === HERE ? E.binDir() : HERE;
   const job = {
     Label: label(slug),
-    ProgramArguments: [process.execPath, join(HERE, 'supervisor.mjs'), 'tick'],
+    ProgramArguments: [process.execPath, join(dir, 'supervisor.mjs'), 'tick'],
     WorkingDirectory: root,
     EnvironmentVariables: env,
     // At login, then every interval. launchd starts no second tick while one still runs.

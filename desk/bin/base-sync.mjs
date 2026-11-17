@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { baseFixKey, binDir, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
 import { runItem } from './baseline.mjs';
 
 const git = (cwd, args) => {
@@ -89,7 +89,7 @@ export function mergedTreeCheck() {
   // `stopped`: it timed out or never started, so the failure says nothing about the tree.
   const check = (root) => {
     for (const { dir, cmd } of items) {
-      const r = runItem({ bin: binDir(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });
+      const r = runItem({ bin: runBin(), root, dir, cmd, lock: 'nolock', prefix, timeout: CHECK_TIMEOUT_MS });
       if (r.code !== 0 || r.stopped) {
         return { command: dir === '.' ? cmd : `${dir}: ${cmd}`, output: r.stopped ? `it did not finish in ${CHECK_TIMEOUT_MS / 1000}s` : checkQuote(r.out) || `it exited ${r.code} and printed nothing`, ...(r.stopped ? { stopped: true } : {}) };
       }

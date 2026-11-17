@@ -400,6 +400,9 @@ if (mode === 'triage') {
     // desk-design copies the orchestrator's Claude Design snapshot into this checkout's Design
     // canvases directory, so the worker commits it on its branch. Not `write`, which takes any folder.
     ...BIN_FORMS.flatMap((b) => [' save', ' status', ' check'].flatMap((s) => [`Bash(${b}/desk-design.mjs${s}:*)`, `Bash(node ${b}/desk-design.mjs${s}:*)`])),
+    // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
+    // `node *..*` below refuses a criterion or a git range holding `..`.
+    ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),
     // `render` and `compare` open Chromium on the saved boards (and a built Storybook), so only
@@ -741,8 +744,10 @@ if (mode === 'triage') {
   const agents = join(E.HOME, '.claude', 'agents');
   if (existsSync(agents)) dirs.add(agents);
   // The installed desk templates (install.sh copies them beside bin), which a ticket may tell a worker to commit.
+  // It links through the current release, so whichever release an install makes current is readable too.
   const templates = join(E.deskHome(), 'templates');
   if (existsSync(templates)) dirs.add(templates);
+  try { if (realpathSync(templates) !== templates) allow.push(`Read(${abs(join(realpathSync(E.deskHome()), 'releases'))}/*/templates/**)`); } catch { /* not installed */ }
 
   // The repo memory the user's own sessions write: the default login's, whatever login the worker runs on.
   // With the memory lever on, the worker's auto-memory is off (it gets a digest of the index in its

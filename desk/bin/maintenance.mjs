@@ -203,7 +203,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
 // no supervisor loads until someone logs in. That one is `loginWait` as well, since the computer is
 // otherwise ready for a restart a person makes.
 export function rebootCheck({ selfQueue = null } = {}) {
-  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.binDir(), 'reboot-check.mjs')]);
+  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.runBin(), 'reboot-check.mjs')]);
   const summary = r.out.split('\n').find((l) => l.startsWith('summary: ')) ?? null;
   const field = (k) => new RegExp(`\\b${k}=(\\S+)`).exec(summary ?? '')?.[1] ?? null;
   const blockers = [];
@@ -554,8 +554,8 @@ if (isMain) {
     return stopForWindow(t, {
       live,
       kill: (pid) => spawnSync('kill', [String(pid)]),
-      setQueue: (key, fields) => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
-      setBaseFix: () => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setQueue: (key, fields) => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setBaseFix: () => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
   console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));
