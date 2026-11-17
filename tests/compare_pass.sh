@@ -16,7 +16,7 @@ suites=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) [ $# -ge 2 ] || { echo "compare_pass: --suite needs a suite name" >&2; exit 2; }; suites+=("${2##*/}"); shift 2 ;;
-    -h|--help) sed -n '2,13p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     -*) echo "compare_pass: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac

@@ -877,6 +877,12 @@ A suite that reads a directory rather than naming files says so with a `# covers
 `run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
 or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
 
+`bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
+runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
+`HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
+output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
+when nothing differs, 1 when something does, and 2 when a run was not compared.
+
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
 shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a

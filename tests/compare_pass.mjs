@@ -47,6 +47,8 @@ function record(argv) {
   child.stdout.on('data', (d) => { chunks.push(d); process.stdout.write(d); });
   child.stderr.on('data', (d) => { chunks.push(d); process.stderr.write(d); });
   child.on('error', (e) => { chunks.push(Buffer.from(`compare_pass: could not start node: ${e.message}\n`)); });
+  // A suite that stops its pass stops the pass, not just this wrapper.
+  for (const s of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(s, () => child.kill(s));
   child.on('close', (code, signal) => {
     const q = process.env.DESK_QUEUE;
     writeFileSync(join(dir, `${run}.json`), JSON.stringify({
