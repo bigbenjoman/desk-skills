@@ -6,7 +6,7 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
@@ -20,7 +20,7 @@ import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
-import { lock as takeDirLock, unlock, alive, writeJsonAtomic, sleepSync } from './dir-lock.mjs';
+import { lock as takeDirLock, unlock, alive, writeJsonAtomic, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -350,24 +350,14 @@ function handback(q, key, note) {
 const STOP_PASS_WAIT_MS = msEnv('DESK_STOP_PASS_WAIT_MS', Infinity);
 const STOP_GRACE_MS = msEnv('DESK_STOP_GRACE_MS', 10_000);
 
-// Takes orchestrator.lock as pass.mjs claim() reads it, { pid, since }, so a pass starting meanwhile
-// refuses; released on exit while it still names this process.
+// Takes orchestrator.lock the way pass.mjs claim() does (tryLockFile), so a pass starting meanwhile
+// refuses; it goes when this process exits.
 function claimPassLock(key) {
   const file = join(stateDir(), 'orchestrator.lock');
-  mkdirSync(stateDir(), { recursive: true });
   for (const until = Date.now() + STOP_PASS_WAIT_MS; ;) {
-    try {
-      writeFileSync(file, JSON.stringify({ pid: process.pid, since: new Date().toISOString(), by: `queue.mjs stop ${key}` }), { flag: 'wx' });
-      process.on('exit', () => { try { if (JSON.parse(readFileSync(file, 'utf8')).pid === process.pid) unlinkSync(file); } catch { /* gone */ } });
-      return;
-    } catch (e) { if (e.code !== 'EEXIST') throw e; }
-    let pid = null;
-    try { pid = Number(JSON.parse(readFileSync(file, 'utf8')).pid) || null; } catch { /* being written: a live holder */ }
+    const pid = tryLockFile(file, { by: `queue.mjs stop ${key}` });
+    if (pid === true) return;
     if (pid === process.ppid) throw new Error(`queue.mjs stop ${key} was run by the pass holding the pass lock (pid ${pid}), which it would wait on forever: run it outside a pass. Nothing was changed`);
-    // A dead holder, or a lock unreadable for longer than a write takes, is stale, as claim() takes it.
-    let old = false;
-    try { old = Date.now() - statSync(file).mtimeMs > 5_000; } catch { continue; }
-    if (pid ? !alive(pid) : old) { try { unlinkSync(file); } catch { /* another taker cleared it */ } continue; }
     if (Date.now() >= until) throw new Error(`a pass is running (pid ${pid ?? '?'}) and did not finish within ${STOP_PASS_WAIT_MS / 1000}s, so nothing was stopped: run queue.mjs stop ${key} again once it has`);
     sleepSync(500);
   }

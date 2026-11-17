@@ -140,6 +140,23 @@ before=$(sum); q stop S-9
 check "a worker that printed AUTOPILOT_DONE is left to the pass"          '[ $rc -eq 11 ] && [[ "$out" == *"AUTOPILOT_DONE"* ]] && [ "$(sum)" = "$before" ] && kill -0 "$WPID"'
 kill -9 -- "-$WPID" 2>/dev/null; wait "$WPID" 2>/dev/null
 
+# The pass lock is taken exclusively, by a pass and a stop alike: six takers racing over a dead holder's
+# lock leave exactly one holding it, and a pass refuses while a stop holds it.
+sleep 0.1 & dead=$!; wait "$dead"
+printf '{"pid":%s,"since":"then"}\n' "$dead" > "$T/state/orchestrator.lock"
+for i in 1 2 3 4 5 6; do
+  node --input-type=module -e "import { tryLockFile, sleepSync } from '$B/dir-lock.mjs'; const got = tryLockFile(process.argv[1]); console.log(got === true ? 'took' : 'held'); if (got === true) sleepSync(1500);" "$T/state/orchestrator.lock" > "$T/taker.$i" &
+done
+wait
+took=$(cat "$T"/taker.* | grep -c took)
+check "of six racing takers of a stale pass lock exactly one holds it"   '[ "$took" = 1 ] && [ ! -e "$T/state/orchestrator.lock" ]'
+running S-13; worker S-13 'trap "" TERM; '
+node "$B/queue.mjs" stop S-13 > /dev/null 2>&1 & stopper=$!
+for _ in $(seq 1 30); do grep -q 'queue.mjs stop S-13' "$T/state/orchestrator.lock" 2>/dev/null && break; sleep 0.05; done
+out=$(DESK_REPO_ROOT="$T/repo" node "$B/pass.mjs" 2>&1); prc=$?
+wait "$stopper"; wait "$WPID" 2>/dev/null
+check "a pass started while a stop holds the lock refuses, naming it"    '[ $prc -ne 0 ] && [[ "$out" == *"queue.mjs stop S-13"* ]] && [ "$(f S-13 state)" = "\"parked\"" ]'
+
 rm -rf "${T:?}"
 echo "queue stop: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

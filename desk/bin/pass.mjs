@@ -10,6 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
+import { tryLockFile, filePid } from './dir-lock.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
@@ -149,23 +150,17 @@ function orchestratorName() {
 
 // Two orchestrators would both spawn against the same tickets. "Claim the queue" was documented
 // and unenforced; this enforces it.
+// Taken exclusively (tryLockFile), as queue.mjs stop takes it, so a pass and a stop never both hold it;
+// a stale lock from a dead process is taken over, and the lock goes when this pass exits.
 const LOCK = join(STATE, 'orchestrator.lock');
 function claim() {
-  mkdirSync(STATE, { recursive: true });
-  if (existsSync(LOCK)) {
-    try {
-      const { pid, since } = JSON.parse(readFileSync(LOCK, 'utf8'));
-      process.kill(pid, 0);                       // throws if that process is gone
-      if (pid !== process.pid) {
-        RECORDS = false;
-        refuse(`another orchestrator holds the lock (pid ${pid}, since ${since}).\nif it is dead, remove ${LOCK}`);
-      }
-    } catch { /* stale lock from a dead process — take it */ }
-  }
-  writeFileSync(LOCK, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
+  if (tryLockFile(LOCK) === true) return;
+  let since = '?', by = '';
+  try { ({ since = '?', by = '' } = JSON.parse(readFileSync(LOCK, 'utf8'))); } catch { /* still being written */ }
+  RECORDS = false;
+  refuse(`another orchestrator holds the lock (pid ${filePid(LOCK) ?? '?'}${by ? `, ${by}` : ''}, since ${since}).\nif it is dead, remove ${LOCK}`);
 }
 claim();
-process.on('exit', () => { try { if (JSON.parse(readFileSync(LOCK, 'utf8')).pid === process.pid) unlinkSync(LOCK); } catch { /* gone */ } });
 
 // The lock only exists for the seconds a pass runs, so between passes a second batch's
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
