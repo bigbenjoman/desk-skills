@@ -258,6 +258,9 @@ t('the batch records it for needs-you', `${batchOf().subscription_off?.email} ${
 writeSubs([['login-2', 'default', 70, 70], ['login-3', 'unused', 10, 10]]);
 pass(env);
 t('once the subscription is unused, the record goes and the ticket starts on it', `${batchOf().subscription_off ?? null} ${row('Y-1').state} ${on('Y-1')}`, 'null running login-3');
+// DESK_SUBSCRIPTION naming an off one only stalls the run: the item would tell them to move a row that does not name it.
+out = pass({ ...world([['login-2', 'default', 70, 70], ['login-3', 'off', 10, 10]], fresh), DESK_SUBSCRIPTION: 'login-3@example.com' });
+t('from DESK_SUBSCRIPTION, nothing starts, the stall names it, and no item is recorded', `${row('Y-1').state} ${calls('Y-1').length} ${out.includes('DESK_SUBSCRIPTION names login-3@example.com, which is off (claude login-3)')} ${batchOf().subscription_off ?? null}`, 'triaged 0 true null');
 
 // AC12: the repo's subscription signed out.
 env = world([['b', 'default', 10, 10], ['c', 'unused', 90, 90]], fresh);

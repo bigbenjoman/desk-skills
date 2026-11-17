@@ -623,9 +623,9 @@ const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== tr
 const SUB_OFF_ITEM = 'subscription-off';
 const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
 const batchRows = (r) => [usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
-// The base-push items desk-q counts, one per batch of a repo row (each keyed in its batch, `b`): unlike
-// a usage hold it never lifts by itself, so it needs the person.
-const basePushRows = (r) => (r.batches ?? [r]).flatMap((b) => { const x = basePushRow(b); return x ? [{ ...x, b }] : []; });
+// The base-push and subscription-off items desk-q counts, one per batch of a repo row (each keyed in its
+// batch, `b`): unlike a usage hold neither lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -1099,7 +1099,7 @@ export function needsCount(r) {
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [], held = [];
   let putOff = 0, steps = 0;
-  for (const x of [...basePushRows(r), ...needsRows(r)]) {
+  for (const x of [...countedBatchRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
@@ -1127,7 +1127,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
-// A usage-limit hold is an item here, but not in desk-q's count; a base-push item is in both.
+// A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
   const { named, scope } = scopeOf(repos, word);

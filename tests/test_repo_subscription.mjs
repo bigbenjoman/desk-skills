@@ -122,7 +122,6 @@ t('a pin to an off subscription exits 4', offSet.code, 4);
 t('and the config is unchanged', readFileSync(forewatt, 'utf8'), beforeOff);
 t('its message says it is off and names the command that sets it unused', offSet.err,
   'desk-env subscription set: ben@personal.example is off (claude login-5), so desk starts no new work on it: set it unused first (desk-env logins set claude login-5 unused); bigbenjoman__forewatt\'s config is unchanged');
-t('a subscription naming an off one says so', /DESK_SUBSCRIPTION names ben@personal\.example, which is off \(claude login-5\)/.test(run(['subscription'], { DESK_CONFIG: here, DESK_SUBSCRIPTION: 'ben@personal.example' }).err), true);
 writeFileSync(`${SUBS}.bak`, 'the copy before\n');
 const offPinned = run(['logins', 'set', 'claude', 'login-4', 'off']);
 t('turning off a subscription repos are pinned to exits non-zero', offPinned.code !== 0, true);

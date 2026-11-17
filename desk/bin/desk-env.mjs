@@ -2514,7 +2514,6 @@ if (isMain) {
         }
         if (sub === undefined || (sub === '--json' && !rest.length)) {
           const r = thisRepoSubscription(L, subs);
-          if (r.off) throw new DeskConfigError(`desk-env subscription: ${r.from} names ${r.email}, which is off (claude ${r.off.name}), so this repo has none (it never falls back to the default): ${r.fix === 'the row' ? 'move it to another subscription (desk-env subscription set <slug> <default|email>)' : `change ${r.fix}`}, or set it unused (desk-env logins set claude ${r.off.name} unused)`);
           if (!r.login) {
             throw new DeskConfigError(`desk-env subscription: ${r.from} names ${r.email}, which is not one of this computer's subscriptions, so this repo has none (it never falls back to the default): sign that account in and add it in desk-q view 6 (Usage), or change ${r.fix}`);
           }

@@ -643,6 +643,7 @@ const studia = N.collect({ word: 'studia' }).items;
 t('a repo pinned to an off subscription is one item, and its queued ticket is none', studia.map((i) => `${i.t.key} ${i.kind}`).join(), 'subscription-off subscription-off');
 t('its need names the repo, the email and the command that moves it', studia[0]?.need,
   'acme__studia is pinned to ops@studia.example, which is off (claude work-2), so no new work starts for it: move it to another subscription (desk-env subscription set acme__studia <default|email>), or set work-2 unused (desk-env logins set claude work-2 unused)');
+t('and desk-q\'s NEEDS YOU count, and left, count it', `${N.needsCount(loadRepos().find((r) => r.name === 'studia')).shown} ${cli('left', 'studia').out.split('\n')[0]}`, '1 desk-q counts 1 item needing you in studia.');
 t('it offers done and not-now, and done is recorded', `${studia[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'studia', ticket: 'subscription-off', action: 'done' }).ok}`, 'done,not-now true');
 const { needText: rowText } = await import('../desk/bin/desk-q.mjs');
 const lr = loadRepos().find((r) => r.name === 'lambda');
