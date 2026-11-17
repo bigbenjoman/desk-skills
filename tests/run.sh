@@ -34,7 +34,9 @@ export AUTOPILOT_LOCK_QUEUE=off
 T="$(cd "$(dirname "$0")" && pwd)"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 pids=""
-trap 'for p in $pids; do kill "$p" 2>/dev/null; done; rm -rf "$OUT"' EXIT
+# A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
+# this waits for every job, so a lock held around run.sh is not released while a suite still runs.
+trap 'for p in $pids; do kill "$p" 2>/dev/null; done; wait; rm -rf "$OUT"' EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
 # Every bash suite runs under the bash running this script, so `/bin/bash tests/run.sh` tests 3.2.
 SH="${BASH:-bash}"
@@ -45,14 +47,21 @@ fail=0; total=0; failed=""
 n=0
 add() { lab[n]=$1; kind[n]=$2; file[n]=$3; name[n]=$4; n=$((n + 1)); }
 # Runs suite $1 into its own output file, then writes "<exit> <seconds>" to its done file, last, so a
-# done file means the output is complete.
-job() { s=$SECONDS
-  case "${kind[$1]}" in
-    hook) python3 "${file[$1]}" --self-test ;;
-    sh) "$SH" "${file[$1]}" ;;
-    *) node "${file[$1]}" ;;
-  esac >"$OUT/$1.out" 2>&1
-  echo "$? $((SECONDS - s))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
+# done file means the output is complete. The suite replaces its subshell (exec), so with -j above 1
+# the pid this job waits on and passes a TERM to is the suite's own.
+job() { s=$SECONDS; c=
+  suite() { case "${kind[$1]}" in
+      hook) exec python3 "${file[$1]}" --self-test ;;
+      sh) exec "$SH" "${file[$1]}" ;;
+      *) exec node "${file[$1]}" ;;
+    esac; }
+  if [ "$jobs" -eq 1 ]; then (suite "$1") >"$OUT/$1.out" 2>&1; rc=$?
+  else
+    trap '[ -z "$c" ] || { kill "$c" 2>/dev/null; wait "$c"; }; exit 143' TERM
+    (suite "$1") >"$OUT/$1.out" 2>&1 & c=$!
+    wait "$c"; rc=$?
+  fi
+  echo "$rc $((SECONDS - s))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
 # A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all. A failed
 # suite's whole output but its ok lines is printed, so whatever it said about the failure is in the log.
 # `took: <s> s` is the suite's own time, which tests/plan_shards.mjs --record reads.

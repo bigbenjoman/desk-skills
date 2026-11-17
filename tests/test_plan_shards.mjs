@@ -118,6 +118,14 @@ try {
   t('AC2 run.sh -j 1 runs them one after another, in the same order', [j1.log, Object.keys(j1.blocks), j1.status, /^failed suites: test_b\.sh$/m.test(j1.stdout)], [['start a', 'end a', 'start b', 'end b', 'start c', 'end c'], ['test_a.sh', 'test_b.sh', 'test_c.sh'], 1, true]);
   t('AC2 and so does no -j', runJ([], false).log, ['start a', 'end a', 'start b', 'end b', 'start c', 'end c']);
   t('-j takes -jN too, and refuses a count that is not a whole number from 1', [runJ(['-j2', 'test_c.sh'], false).status, ...['0', 'x', ''].map((n) => spawnSync('bash', [join(S, 'run.sh'), '-j', n], { encoding: 'utf8' }).status)], [0, 2, 2, 2]);
+  // A TERM to run.sh -j stops the running suites before run.sh exits: a lock held around it is never
+  // released while a suite still runs. test_slow.sh writes its pid, then runs for up to 10 s.
+  const S2 = join(T, 'stop', 'tests'); mkdirSync(S2, { recursive: true });
+  writeFileSync(join(S2, 'run.sh'), readFileSync(join(R, 'tests/run.sh')));
+  writeFileSync(join(S2, 'test_slow.sh'), 'echo $$ > "$PIDF"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; echo "ok slow"\n');
+  const pidf = join(T, 'slow.pid');
+  const stop = spawnSync('bash', ['-c', 'bash "$1" --no-hook-test -j 2 test_slow.sh >/dev/null & r=$!; i=0; while [ ! -s "$PIDF" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; kill -TERM $r; wait $r; echo "rc $?"; if kill -0 "$(cat "$PIDF")" 2>/dev/null; then echo "suite alive"; else echo "suite gone"; fi', 'stop', join(S2, 'run.sh')], { encoding: 'utf8', env: { ...process.env, PIDF: pidf } });
+  t('a TERM to run.sh -j stops its running suite before run.sh exits', stop.stdout.trim().split('\n'), ['rc 143', 'suite gone']);
 } finally { rmSync(T, { recursive: true, force: true }); }
 
 console.log(fails ? `${fails} FAILED` : 'all ok');
