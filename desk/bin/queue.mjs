@@ -6,7 +6,7 @@
 // workers never touch it — their state is derived from their own logs plus `claude agents --json`.
 // Created on first use; never shipped.
 // Exits 0, or 11 (show the person) on any refusal or error: EXIT in batch-state.mjs.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
@@ -18,10 +18,11 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { parkClass } from './failure-class.mjs';
-import { lock as takeDirLock, unlock, alive, writeJsonAtomic, sleepSync, tryLockFile } from './dir-lock.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -60,16 +61,14 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
   if (TICKET_CMDS.includes(c)) useTicketBatch(a.filter((_, i) => at < 0 || (i !== at && i !== at + 1))[0]);
 }
 const QUEUE = queueFile();
-// A new park, with its failure class (failure-class.mjs parkClass) while the failure-class lever is on.
-const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...(leverOn('failure-class') ? parkClass(question) : {}) });
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
-const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
 // orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap. A
 // count the user set carries `concurrency_by=user` (set-batch keeps their number as concurrency_user).
-const empty = () => ({ version: 1, batch: null, concurrency: concurrencyLimits().def, tickets: {} });
+// Version 0: its first save writes version 1 (queue-store.mjs).
+const empty = () => ({ version: 0, batch: null, concurrency: concurrencyLimits().def, tickets: {} });
 
 function load() {
   if (!existsSync(QUEUE)) return empty();
@@ -84,51 +83,36 @@ function load() {
 // lock: save() renames atomically, so a reader always sees one whole version. transfer also holds the
 // other batch's queue lock, taken the same way; save() releases every lock held.
 const LOCK = `${QUEUE}.lock`;
-// The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
-// number of milliseconds there is ignored rather than turning the wait into forever or nothing.
+// A positive number of milliseconds from env `name`, else `def`: anything else would turn a wait into
+// forever or nothing.
 const msEnv = (name, def) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : def);
-const LOCK_WAIT_MS = msEnv('DESK_QUEUE_LOCK_WAIT_MS', 10_000);
-// The lock itself, its stale clearing and its release on exit are dir-lock.mjs's.
+// The wait is LOCK_WAIT_MS (queue-writer.mjs). The lock itself, its stale clearing and its release on exit are dir-lock.mjs's.
 function lock(dir = LOCK) {
   takeDirLock(dir, { waitMs: LOCK_WAIT_MS, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`) });
 }
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
-// reject's briefing write, never keeps another writer waiting.
-const writeQueue = writeJsonAtomic;
+// reject's briefing write, never keeps another writer waiting. Each save is one version higher than
+// the queue it read (queue-store.mjs).
+const writeQueue = writeQueueFile;
 function save(q) {
   writeQueue(QUEUE, q);
   unlock();
 }
 
+// A live ticket, to change. An archived one is done with its PR merged or closed: nothing about it
+// changes, and admitting it again starts it over.
 function ticket(q, key) {
-  const t = q.tickets[key];
+  if (isArchived(q, key)) throw new Error(`${key} is done and archived (its PR merged or closed), so there is nothing of it to change: admit it again to start it over`);
+  const t = Object.hasOwn(q.tickets, key) ? q.tickets[key] : null;
   if (!t) throw new Error(`no such ticket in the queue: ${key}`);
   return t;
 }
-
-// Keys a ticket carries under `result`, never at the top: `set <KEY> pr=12` would write a top-level pr
-// that release and STUCK never read (they read result.pr), so set refuses it and names the right one.
-// A refusal list rather than a list of allowed keys, because pass.mjs writes many fields through set.
-const RESULT_KEYS = ['pr'];
-
-function setPath(obj, path, value) {
-  const parts = path.split('.');
-  let node = obj;
-  for (const part of parts.slice(0, -1)) {
-    if (node[part] == null || typeof node[part] !== 'object') node[part] = {};
-    node = node[part];
-  }
-  node[parts.at(-1)] = value;
-}
-
-// A value opening with { or [ is JSON: stored as a string, a later `result.pr=…` would replace it with
-// an empty object and lose the rest. Invalid JSON is an error rather than that string.
-function coerce(v) {
-  if (/^\s*[[{]/.test(v)) {
-    try { return JSON.parse(v); } catch (e) { throw new Error(`not valid JSON: ${v} (${e.message})`); }
-  }
-  return v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v;
+// A ticket to read, live or archived.
+function found(q, key) {
+  const t = q.tickets[key];
+  if (!t) throw new Error(`no such ticket in the queue: ${key}`);
+  return t;
 }
 
 // Is another orchestrator (a second batch) live right now? Its per-batch notes must survive our init.
@@ -149,25 +133,11 @@ function liveOrchestrator() {
   return null;
 }
 
-// pass.mjs spawns eligible tickets in `.tickets` key order. A ticket's place in that order is its
-// position among the unfinished tickets; done and failed ones keep their slots and are never counted.
-const FINISHED = ['done', 'failed'];
-const unfinished = (q) => Object.keys(q.tickets).filter((k) => !FINISHED.includes(q.tickets[k].state));
-const position = (q, key) => unfinished(q).indexOf(key) + 1;
-
 // Lay `order` (every unfinished key, in their new order) over the unfinished slots.
 function reorder(q, order) {
   const next = order[Symbol.iterator]();
   const keys = Object.keys(q.tickets).map((k) => (FINISHED.includes(q.tickets[k].state) ? k : next.next().value));
-  q.tickets = Object.fromEntries(keys.map((k) => [k, q.tickets[k]]));
-}
-
-// The front of the spawn order, unless the user placed the ticket (queue.mjs move): then it stays
-// where they put it, and the returned text says so.
-function toFront(q, key) {
-  if (q.tickets[key].placed) return `stays at position ${position(q, key)} of the spawn order, where the user placed it`;
-  q.tickets = { [key]: q.tickets[key], ...Object.fromEntries(Object.entries(q.tickets).filter(([k]) => k !== key)) };
-  return 'moved to the front of the spawn order';
+  q.tickets = Object.setPrototypeOf(Object.fromEntries(keys.map((k) => [k, q.tickets[k]])), Object.getPrototypeOf(q.tickets));
 }
 
 // A triaged ticket with triage questions open is never spawned (pass.mjs and borrow.mjs skip it), so
@@ -619,7 +589,7 @@ function transfer(q, key, to) {
   lock(`${dest.queue}.lock`);
   const tq = readQueue(dest.queue);
   if (finished(tq)) throw new Error(`${batchWord(dest)} finished meanwhile. Nothing was moved`);
-  if (tq.tickets?.[key]) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
+  if (tq.tickets && Object.hasOwn(tq.tickets, key)) throw new Error(`${key} is already in ${batchWord(dest)} (${tq.tickets[key].state}). Nothing was moved`);
   tq.tickets ??= {};
   // Admitted in memory first, so a refusal from either step leaves the worktree and both queues as they were.
   // Its merge holds on the person's steps go with it; a blocker in that batch is held behind there instead,
@@ -705,7 +675,8 @@ switch (cmd) {
       let cur = null;
       try { cur = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { cur = { batch: null, tickets: {} }; }
       const rows = ownRows(cur);
-      const same = cur ? String(cur.batch) === args[ifAt + 1] && rows.length > 0 && rows.every((t) => t.state === 'done') && !cur.base : args[ifAt + 1] === 'none';
+      const any = rows.length > 0 || Object.keys(archivedOf(cur)).length > 0;
+      const same = cur ? String(cur.batch) === args[ifAt + 1] && any && rows.every((t) => t.state === 'done') && !cur.base : args[ifAt + 1] === 'none';
       if (!same) throw new Error(`init --standing: the queue is batch ${cur?.batch ?? 'none'} now, not the finished ${args[ifAt + 1]}: left as it is`);
     }
     const dm = standing ? {} : sessionDefaultMode();
@@ -722,6 +693,10 @@ switch (cmd) {
     try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
     fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t))
       .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
+    fresh.version = versionOf(prev);
+    // The old batch's archive goes aside with it, so the new batch finds none of its tickets by key.
+    const archive = archivePath(QUEUE);
+    if (existsSync(archive)) renameSync(archive, `${archive}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
     save(fresh);
     // Batch notes record what workers learnt about *this* configuration. Carrying them
     // across batches propagates claims that a config change has since made false.
@@ -762,7 +737,7 @@ switch (cmd) {
     if (!key) throw new Error('usage: queue.mjs add <TICKET> [type] [lane]');
     // The key names files (logs, parks, briefings, worker settings): never a path.
     if (!SAFE_ID.test(key) || key.includes('..')) throw new Error(`'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)`);
-    if (q.tickets[key]) { console.log(`${key} already in the queue (${q.tickets[key].state}) — not re-adding`); break; }
+    if (Object.hasOwn(q.tickets, key)) { console.log(`${key} already in the queue (${q.tickets[key].state}) — not re-adding`); break; }
     const elsewhere = belongsElsewhere(key);
     if (elsewhere) throw new Error(elsewhere.why);
     q.tickets[key] = {
@@ -784,7 +759,8 @@ switch (cmd) {
     const preds = blockers.flatMap((b) => b.split(/[,|]/)).filter(Boolean);
     if (!key || !preds.length) throw new Error('usage: queue.mjs hold <TICKET> <BLOCKER> [<BLOCKER> ...]');
     const t = ticket(q, key);
-    for (const p of preds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
+    // An archived blocker is found as done, and the merge driver releases a hold on it as on any merged one.
+    for (const p of preds) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     // A triage park (lane, size, design, the person's step) keeps its park, its holds in held_by beside
     // it, so no release can send it to a worker. Any other park of its own would lose its question.
     const keeps = !isHeld(t) && triagePark(t);
@@ -821,7 +797,7 @@ switch (cmd) {
     const listArg = (flag) => (args.includes(flag) ? String(args[args.indexOf(flag) + 1] ?? '').split(/[,|]/).filter(Boolean) : []);
     const holds = listArg('--hold');
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
-    for (const p of holds) { ticket(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
+    for (const p of holds) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     const outside = listArg('--hold-outside');
     if (args.includes('--hold-outside') && !outside.length) throw new Error('admit --hold-outside wants the blockers, comma-separated');
     for (const p of outside) {
@@ -836,7 +812,7 @@ switch (cmd) {
       // One parked on a Person-input label makes what the build reads: it holds the build instead.
       if (q.tickets[p] && (!personStepPark(q.tickets[p]) || personInputPark(q.tickets[p]))) throw new Error(`${p} is in this batch: hold ${key} behind it with --hold`);
     }
-    if (q.tickets[key]) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
+    if (Object.hasOwn(q.tickets, key)) throw new Error(`${key} is already in the queue (${q.tickets[key].state})`);
     const recPath = join(stateDir(), 'triage', `${key}.json`);
     if (!existsSync(recPath)) throw new Error(`no triage record for ${key}: run triage.sh ${key} first`);
     const r = readTriage(stateDir(), key);
@@ -870,7 +846,8 @@ switch (cmd) {
       if (outside.length) t.held_outside = [...new Set([...String(t.held_outside ?? '').split('|').filter(Boolean), ...outside])].join('|');
       t.updated_at = new Date().toISOString();
     }
-    if (!dry) save(q);
+    // Every save is a new version, so a run that adds nothing writes nothing.
+    if (!dry && found.some((f) => f.holds.length)) save(q);
     console.log(lines.length ? lines.join('\n') : `no lane, size or design park is missing a hold${dry ? '' : ': nothing changed'}`);
     if (dry && found.some((f) => f.holds.length)) console.log('dry run: nothing changed. Run it again without --dry-run to add these holds');
     break;
@@ -894,17 +871,7 @@ switch (cmd) {
 
   case 'set': {
     const [key, ...pairs] = args;
-    const t = ticket(q, key);
-    for (const p of pairs) {
-      const i = p.indexOf('=');
-      if (i < 0) throw new Error(`expected key=value, got: ${p}`);
-      const k = p.slice(0, i);
-      const v = coerce(p.slice(i + 1));
-      if (k === 'state' && !STATES.includes(v)) throw new Error(`bad state "${v}" (want: ${STATES.join('|')})`);
-      if (RESULT_KEYS.includes(k.split('.')[0])) throw new Error(`no ticket carries a top-level "${k}", so nothing would read it: did you mean result.${p}? Nothing written.`);
-      setPath(t, k, v);
-    }
-    t.updated_at = new Date().toISOString();
+    applySet(ticket(q, key), pairs);
     save(q);
     console.log(`${key}: ${pairs.join(' ')}`);
     break;
@@ -1043,18 +1010,7 @@ switch (cmd) {
   }
 
   case 'set-batch': {
-    for (const pair of args) {
-      const i = pair.indexOf('=');
-      if (i < 0) throw new Error(`expected key=value, got: ${pair}`);
-      const k = pair.slice(0, i); const v = pair.slice(i + 1).trim();
-      if (k === 'base') { setBase(q, v); continue; }
-      setPath(q, k, coerce(v));
-    }
-    // A count the user set is kept as theirs: the ladder may lower `concurrency` on memory and leaves
-    // `concurrency_by` alone, so `concurrency_user` is the number it raises back to.
-    if (q.concurrency_by === 'user') {
-      if (args.some((p) => p.startsWith('concurrency_by=')) || q.concurrency_user == null) q.concurrency_user = q.concurrency;
-    } else delete q.concurrency_user;
+    applySetBatch(q, args, setBase);
     save(q);
     console.log(`batch: ${args.join(' ')}`);
     break;
@@ -1147,7 +1103,7 @@ switch (cmd) {
   }
 
   case 'get':
-    console.log(JSON.stringify(ticket(q, args[0]), null, 2));
+    console.log(JSON.stringify(found(q, args[0]), null, 2));
     break;
 
   case 'list':

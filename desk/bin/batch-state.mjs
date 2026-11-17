@@ -4,6 +4,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
+import { attachArchive } from './queue-store.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -31,9 +32,10 @@ export function readJsonOrRefuse(path, action) {
   try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
   try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
 }
-// The two every script reads: the batch queue and a ticket's triage record.
-export const readQueue = (path) => readJsonOrRefuse(path,
-  `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`);
+// The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
+// are found by key behind its live ones (queue-store.mjs attachArchive).
+export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
+  `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
 export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.

@@ -37,6 +37,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
+import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -660,7 +661,8 @@ function loadBatch(c, repoName, batch, limits, now) {
   const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
   const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
   if (existsSync(queuePath)) {
-    try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
+    // Archived tickets are found by key behind the live ones (queue-store.mjs attachArchive).
+    try { r.q = attachArchive(readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'), queuePath); } catch (e) { r.error = describeCrash(e); }
   }
   if (batch) {
     const base = typeof r.q?.base === 'string' && r.q.base.trim() ? ` (${r.q.base.trim()})` : '';

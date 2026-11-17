@@ -13,6 +13,8 @@ git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR DESK_UPLOAD_APPROVED AUTOPILOT_BATCH_BUDGET_USD \
   AUTOPILOT_START_STAGE DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR CODEX_HOME DESK_AUTOPILOT_WORKER
+# As tests/run.sh does, so a suite run on its own reads no real test lock queue; DS-662's checks turn it on.
+export AUTOPILOT_LOCK_QUEUE=off
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -86,6 +88,8 @@ chmod +x "$T/stub0/gh"
 # The process listing a pass reads for each kept worktree: what $T/lsof.out says, else nothing.
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
+# The process table the pass reads: what $T/ps.out says, else the real ps.
+printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ jq -c '.tickets |= map_values(.state = "done" | if .result.pr != null then .merged_at //= "2026-10-23T10:00:00Z" | .pr_status = { pr: .result.pr, state: "MERGED", merged_at: .merged_at, checks: [] } else . end)' "$DESK_QUEUE" > "$DESK_QUEUE.all-done" && mv "$DESK_QUEUE.all-done" "$DESK_QUEUE"; }
 
@@ -98,7 +102,11 @@ cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 # shellcheck source=jq_at.sh
 . "$S/jq_at.sh"
-field(){ jq -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
+# A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.
+field(){ local a="${DESK_QUEUE%.json}.archive.json"; [ -f "$a" ] || a=/dev/null
+  jq -cn --arg t "$1" --arg p "$2" --slurpfile live "$DESK_QUEUE" --slurpfile arc "$a" "$JQ_AT"' $live[0].tickets as $l
+  | (if $l | has($t) then $l[$t] else ($arc[0].tickets // {})[$t] end) | at($p)'; }
+bfield(){ jq -c --arg p "$1" "$JQ_AT"' at($p)' "$DESK_QUEUE"; }
 # One assistant turn of a worker's stream-json log, carrying the given marker lines.
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 # The end of a worker's session in its log.

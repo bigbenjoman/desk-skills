@@ -1289,6 +1289,9 @@ dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopil
 dated('skills24', 5030, { hours: twelveHours, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'DS-150': prAt(175, { isDraft: true }), 'DS-168': { ...heldBy('DS-150'), open_questions: 1, outside_blockers: outside(27) },
   'DS-175': heldBy('DS-150'), 'DS-180': heldBy('DS-175') } });
+// DS-757 AC8: a blocker that merged and moved to the queue's archive is still found, as merged.
+dated('holdarch', 5040, { hours: twelveHours, tickets: { 'W-AR': heldBy('B-AR') } });
+writeFileSync(join(I.env.DESK_HOME, 'repos', 'acme__holdarch', 'queue.archive.json'), JSON.stringify({ tickets: { 'B-AR': { key: 'B-AR', ...mergedAt(173), archived_at: ago194(1) } } }));
 const repos217 = Q.loadRepos(FIXED);
 const repo217 = (name) => repos217.find((r) => r.name === name);
 const queue217 = (name) => lines(Q.repoScreen(repo217(name), { now: FIXED }));
@@ -1352,6 +1355,8 @@ t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScree
 t('DS-217 AC8 (DS-279 AC6) open Jira blockers outside the batch: needs you, no start and no date, whatever its blocker does', cells217('hold', 'W-8', 4), '◆ needs you | held by 27 Jira tickets outside: start anyway? | — | no date');
 t('DS-217 AC8 once the user confirms it can start without them, outside blockers no longer block it', cells217('hold', 'W-10'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC6 every blocker merged, a supervisor but no merge grant: nothing lets it start, so it needs you', cells217('holdask', 'W-6A'), '◆ needs you | every blocker merged: let it start');
+t('DS-757 AC8 desk-q finds an archived blocker by key, as merged, not as missing from the queue', cells217('holdarch', 'W-AR'), '◆ needs you | every blocker merged: let it start');
+t('DS-757 AC8 and finds the archived ticket itself by key, as done', repo217('holdarch').q.tickets['B-AR']?.state, 'done');
 t('DS-217 two tickets held behind each other both need you, and one behind them waits saying so',
   ['C-1', 'C-2', 'C-3'].map((k) => cells217('holdask', k)).join(' / '),
   '◆ needs you | C-2 is held behind this one: let one of them start / ◆ needs you | C-1 is held behind this one: let one of them start / · waiting | behind C-1, which needs you');

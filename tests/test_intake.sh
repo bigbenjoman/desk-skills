@@ -52,7 +52,7 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs queue-store.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -380,6 +380,13 @@ rec A-7 A '"blockers":[{"key":"Z","category":"indeterminate"}]'
 rec A-8 A; search A-8 A-7; out=$(intake)
 check "AC2: a finished batch gets a new standing batch" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-8.state)" = triaged ] && [ "$(qget tickets.Z)" = undefined ]'
 check "a blocker left in the finished batch holds its ticket in the new one" '[ "$(qget tickets.A-7.held_outside)" = Z ] && grep -q "^admitted: lane A, size S, waiting for Z, outside the batch" <<< "$(handed A-7)"'
+# DS-757: a session's batch whose finished tickets all moved to the archive is finished, not one with
+# no tickets yet: the next ticket starts a new standing batch.
+printf '{"version":3,"batch":"arch","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
+printf '{"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":7},"merged_at":"2026-11-16T10:00:00.000Z"}}}\n' > "${DESK_QUEUE%.json}.archive.json"
+rec A-61 A; search A-61; out=$(intake)
+check "DS-757 a batch whose tickets are all archived is finished: a new standing batch takes the ticket" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-61.state)" = triaged ]'
+rm -f "${DESK_QUEUE%.json}.archive.json"
 # Not finished: a failed ticket waits on the person, and a batch on a base has its gate to come.
 printf '{"version":1,"batch":"f1","supervised":false,"tickets":{"Z":{"key":"Z","state":"failed"}}}\n' > "$DESK_QUEUE"
 rec A-6 A; search A-6; out=$(intake)
