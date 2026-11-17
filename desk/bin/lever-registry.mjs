@@ -51,8 +51,9 @@ const RAMPS = Object.freeze({
 // Hard trips: a condition that reverts the lever in that repo within one pass, with no statistics.
 // `step` names the lever's own command, whose non-zero exit on an on-arm start is a trip.
 const POST_MERGE_REVERT = Object.freeze({ id: 'post-merge-revert', when: 'a post-merge revert is recorded for a ticket on the lever\'s arm' });
-// A quality-risk lever's blind post-merge audit (levers-audit.mjs) finding a P0 on an on-arm PR.
-const AUDIT_P0 = Object.freeze({ id: 'audit-p0', when: 'the blind audit of a merged PR drawn on for the lever finds a P0' });
+// A quality-risk lever's blind post-merge audit finding a P0 on an on-arm PR. `by` names the module that
+// applies it, where it is not one of levers-trips.mjs's detectors.
+const AUDIT_P0 = Object.freeze({ id: 'audit-p0', by: 'levers-audit.mjs', when: 'the blind audit of a merged PR drawn on for the lever finds a P0' });
 const ownStepError = (step) => Object.freeze({ id: 'own-step-error', step, when: `a start on an on-arm ticket records ${step} exiting non-zero` });
 
 const code = (path, part) => Object.freeze(part ? { path, part } : { path });

@@ -254,7 +254,7 @@ const s9 = repo(A9);
 writeFileSync(join(s9, 'post-merge.jsonl'), jsonl([{ kind: 'revert', ticket: 'M-9', pr: 12, at: at(-10) }]));
 t('a lever the row pins is not the controller\'s to revert', run(A9, queueOf(onTicket(A9, 'M-9', 'memory')), { ...AUTO, memory: 'pinned' }).events.length, 0);
 t('a repo with no auto in its row runs no trips', run(A9, queueOf(onTicket(A9, 'M-9', 'memory')), Object.fromEntries(LEVERS.map((n) => [n, 'off']))).line, null);
-t('every registered trip has a detector', Object.values(REGISTRY).flatMap((l) => l.trips.map((x) => x.id)).filter((id) => !['skipped-preflight-failure', 'stale-wait', 'post-merge-revert', 'own-step-error'].includes(id)), []);
+t('every registered trip has a detector, or names the module that applies it', Object.values(REGISTRY).flatMap((l) => l.trips.filter((x) => !x.by).map((x) => x.id)).filter((id) => !['skipped-preflight-failure', 'stale-wait', 'post-merge-revert', 'own-step-error'].includes(id)), []);
 t('a trip event missing its record\'s line is refused', (() => { try { append(A9, { kind: 'trip', lever: 'memory', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'x', ticket: 'M-9', evidence_file: 'f' }); return 'appended'; } catch (e) { return /evidence_line/.test(e.message); } })(), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
