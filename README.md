@@ -884,6 +884,12 @@ file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a d
 suite. Every push to main runs every suite on Linux, and every suite runs nightly on macOS under
 `/bin/bash` 3.2. While either is red an issue labelled `ci-main-red` stays open.
 
+The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
+suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).
+The one check named `tests` passes only when every shard and the bash 3.2 check did, and names each
+failed shard's suites. To refresh the durations from a green run on main:
+`gh run view <run id> --log | node tests/plan_shards.mjs --record`.
+
 ## Using autopilot
 
 ```
