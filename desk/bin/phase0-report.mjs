@@ -268,8 +268,8 @@ export function totalOf(list) {
 const runGh = (args) => spawnSync('gh', args, { encoding: 'utf8' });
 
 // Failed workflow runs created since `since`, each with its failed jobs' names: { runs: [{ branch,
-// jobs }] } or { unreadable }.
-export function failedRuns({ repo, since, gh = runGh }) {
+// jobs }] } or { unreadable }. With `jobs` false, only the list is read and `jobs` is null.
+export function failedRuns({ repo, since, gh = runGh, jobs: withJobs = true }) {
   const day = new Date(since).toISOString().slice(0, 10);
   const list = gh(['run', 'list', '--repo', repo, '--status', 'failure', '--created', `>=${day}`, '--limit', '500', '--json', 'databaseId,headBranch,workflowName']);
   if (list.status !== 0) return { unreadable: `gh run list failed: ${String(list.stderr ?? '').trim().split('\n').pop() || `exit ${list.status}`}` };
@@ -277,6 +277,7 @@ export function failedRuns({ repo, since, gh = runGh }) {
   try { runs = JSON.parse(list.stdout); } catch { return { unreadable: 'gh run list printed something that is not JSON' }; }
   return {
     runs: runs.map((r) => {
+      if (!withJobs) return { branch: r.headBranch, jobs: null };
       const v = gh(['run', 'view', String(r.databaseId), '--repo', repo, '--json', 'jobs']);
       let jobs = null;
       try { jobs = JSON.parse(v.stdout).jobs.filter((j) => j.conclusion === 'failure').map((j) => j.name); } catch { /* read below */ }

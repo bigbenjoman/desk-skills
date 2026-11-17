@@ -226,7 +226,34 @@ t('AC15 every repo got its rows from that one run', ['one', 'two', 'three', 'fou
 t('AC15 its line names what it did', /^levers evaluate: 16 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
 t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, tz: 'UTC', rowsFor }).status, 'ran');
 
+// ---- review findings: each guarded -------------------------------------------------------------------------------------------------------------------
+run([repo(A10, [])], NOW + DAY);
+t('a settled lever still gets its daily row, so the board does not read it stale', [wrappersRow(A10).state, wrappersRow(A10).decision, wrappersRow(A10).reason_code], ['settled', 'hold', 'not_evaluated']);
+const A10c = 'acme__smallholdback';
+const early = append(A10c, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_v', evidence_file: 'levers-evidence/evl_v.jsonl', at: at(-29) });
+run([repo(A10c, [
+  ...Array.from({ length: 20 }, () => row(A10c, 'adopted', `${A10c}/wrappers/${early.id}`, { merged_at: null })),
+  ...Array.from({ length: 5 }, () => row(A10c, 'holdback', `${A10c}/wrappers/${early.id}`)),
+])]);
+t('a breach on a holdback arm too small to revert on does not settle the lever', [wrappersRow(A10c).decision, wrappersRow(A10c).state, wrappersRow(A10c).reason_code], ['hold', 'adopted', 'holdback_running']);
+const { costEstimate } = await import('../desk/bin/levers-evaluate.mjs');
+const mix = [
+  ...Array.from({ length: 5 }, (_, i) => ({ slug: 'a', on: true, cost: 10 * (1 + i * 0.01), size: 'S' })), ...Array.from({ length: 25 }, (_, i) => ({ slug: 'a', on: false, cost: 10 * (1 + (i % 5) * 0.01), size: 'S' })),
+  ...Array.from({ length: 25 }, (_, i) => ({ slug: 'b', on: true, cost: 100 * (1 + (i % 5) * 0.01), size: 'S' })), ...Array.from({ length: 5 }, (_, i) => ({ slug: 'b', on: false, cost: 100 * (1 + i * 0.01), size: 'S' })),
+];
+t('the pooled cost fit adjusts for the repo each row came from', Math.abs(costEstimate(mix, { seed: 'x', scope: 'pooled' }).ratio - 1) < 0.05, true);
+const A12c = 'acme__scanfailed';
+const a12c = repo(A12c, arms(A12c, initial(A12c), 30, better.on, better.off));
+writeFileSync(join(stateOf(A12c), 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: false, why: 'gh run list failed' })}\n`);
+run([a12c]);
+t('a post-merge watch whose latest scan failed adopts nothing', [wrappersRow(A12c).decision, wrappersRow(A12c).reason_code], ['hold', 'evidence_incomplete']);
+const { failedRuns } = await import('../desk/bin/phase0-report.mjs');
+let ghCalls = 0;
+const listed = failedRuns({ repo: 'acme/x', since: NOW, jobs: false, gh: () => { ghCalls += 1; return { status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'b1' }, { databaseId: 2, headBranch: 'b2' }]) }; } });
+t('red CI for the evaluation is one list call, no per-run view', [ghCalls, listed.runs.map((r) => r.branch)], [1, ['b1', 'b2']]);
+
 // ---- the rule itself ------------------------------------------------------------------------------------------------------------------------------
+t('the rule: no cost interval (a singular fit) does not adopt', decide({ ...{ state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 }, mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, p_benefit: 1 }, cost: { ratio: null, lo90: null, hi90: null }, guardrails: [{ status: 'ok' }] }).reason_code, 'adopt_conditions_unmet');
 const ok = { status: 'ok' };
 const good = { mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, lo90: -0.7, hi90: -0.5, p_benefit: 1 }, cost: { ratio: 1, lo90: 0.95, hi90: 1.02 }, guardrails: [ok, ok] };
 const base = { state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 };

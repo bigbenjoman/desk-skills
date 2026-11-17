@@ -25,6 +25,7 @@
 //   import { evaluate, evaluateDue } from './levers-evaluate.mjs'
 //   node levers-auto.mjs evaluate      runs it now if today's has not run
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -81,8 +82,9 @@ export const GUARDS = Object.freeze({
 
 // ---- outcome files -----------------------------------------------------------------------------------
 // Each row with its review P0 and P1 count (from its findings file) and its post-merge records (from
-// its batch's post-merge.jsonl). A merged ticket whose file is missing gets null, and the file is
-// named in its `outcome_missing`. -> { rows, newest: { findings, post_merge } }, the newest as ms
+// its batch's post-merge.jsonl). A merged ticket whose file is missing, or whose post-merge file's
+// latest scan did not complete, gets null, and the file is named in its `outcome_missing`.
+//   -> { rows, newest: { findings, post_merge } }, the newest as ms
 export function withOutcomes(rows, batches) {
   const stateOf = new Map(batches.map((b) => [b.name ?? null, b.state]));
   const postMerge = new Map();
@@ -103,14 +105,17 @@ export function withOutcomes(rows, batches) {
       }
     } else if (r.merged_at) { review = null; missing.push(f); }
     if (!postMerge.has(state)) {
-      const recs = existsSync(postMergePath(state)) ? readPostMerge(state) : null;
+      let recs = existsSync(postMergePath(state)) ? readPostMerge(state) : null;
+      const scans = (recs ?? []).filter((s) => s.kind === 'scan' && Number.isFinite(Date.parse(s.at)));
+      for (const s of scans) newestScan = Math.max(newestScan ?? 0, Date.parse(s.at));
+      // A watch whose latest scan could not read its sources has not seen every revert or red main.
+      if (recs && scans.at(-1)?.complete !== true) recs = { incomplete: true };
       postMerge.set(state, recs);
-      for (const s of recs ?? []) if (s.kind === 'scan' && Number.isFinite(Date.parse(s.at))) newestScan = Math.max(newestScan ?? 0, Date.parse(s.at));
     }
     const recs = postMerge.get(state);
     let pm = 0;
-    if (recs) pm = recs.filter((x) => x.ticket === r.key && (x.kind === 'revert' || x.kind === 'red_main')).length;
-    else if (r.merged_at) { pm = null; missing.push(postMergePath(state)); }
+    if (Array.isArray(recs)) pm = recs.filter((x) => x.ticket === r.key && (x.kind === 'revert' || x.kind === 'red_main')).length;
+    else if (r.merged_at) { pm = null; missing.push(recs?.incomplete ? `${postMergePath(state)} (its latest scan is incomplete)` : postMergePath(state)); }
     return { ...r, review_p0_p1: review, post_merge: pm, ...(missing.length ? { outcome_missing: missing } : {}) };
   });
   return { rows: out, newest: { findings: newestFindings, post_merge: newestScan } };
@@ -179,11 +184,12 @@ export function mechanismEstimate(rows, lever, { seed, scope }) {
 // The cost ratio on against off over `rows`, from the Student-t fit, with its interval and each arm's
 // mean dollars per ticket.
 export function costEstimate(rows, { seed, scope }) {
-  const draws = bootstrap(strata(rows), costRatio, { random: seededRandom(seedOf(seed)) });
+  const fit = (rs) => costRatio(rs.map((r) => ({ cost: r.cost, on: r.on, repo: r.slug, size: r.size })));
+  const draws = bootstrap(strata(rows), fit, { random: seededRandom(seedOf(seed)) });
   const iv = interval(draws);
   const mean = (xs) => (xs.length ? r4(xs.reduce((n, r) => n + r.cost, 0) / xs.length) : null);
   return {
-    ratio: r4(costRatio(rows)), lo90: r4(iv.lo90), hi90: r4(iv.hi90), margin: DECISION_RULE.cost_ratio_max,
+    ratio: r4(fit(rows)), lo90: r4(iv.lo90), hi90: r4(iv.hi90), margin: DECISION_RULE.cost_ratio_max,
     usd_per_admitted: { on: mean(rows.filter((r) => r.on)), off: mean(rows.filter((r) => !r.on)) }, scope,
   };
 }
@@ -232,6 +238,8 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   }
   if (state === 'adopted') {
     if (incomplete.length) return hold('evidence_incomplete', `outcome files missing: ${incomplete.join(', ')}`, 'the missing outcome files');
+    // A breach on too small a holdback arm to revert on neither reverts nor lets the lever settle.
+    if (breached.length) return hold('holdback_running', `${breached.map((g) => g.name).join(', ')} breached at ${sample}, below the ${R.revert_min_per_arm} per arm a revert needs, so it does not settle`, `${R.revert_min_per_arm - smaller} more tickets in the smaller arm`);
     if (changedAt != null && now >= changedAt + holdbackWeeks * WEEK_MS) {
       return { decision: 'settle', to: 'settled', reason_code: 'holdback_ended', reason: `the ${holdbackWeeks}-week holdback ended with no guardrail breached (${sample})`, next: next(null) };
     }
@@ -243,7 +251,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   const unmet = [];
   if (mechanism.min_benefit == null) unmet.push(`${mechanism.metric} has no registered minimum`);
   else if (!(mechanism.p_benefit >= R.probability)) unmet.push(`${mechanism.metric} ${pct(mechanism.est)} (90%: ${pct(mechanism.lo90)} to ${pct(mechanism.hi90)}) is ${pct(mechanism.min_benefit)} or better with only ${Math.round((mechanism.p_benefit ?? 0) * 100)}% probability`);
-  if (!(cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
+  if (!(Number.isFinite(cost.hi90) && cost.hi90 < R.cost_ratio_max)) unmet.push(`cost ratio ${x2(cost.ratio)} (90%: ${x2(cost.lo90)} to ${x2(cost.hi90)}) does not rule out ${x2(R.cost_ratio_max)}`);
   const notOk = guardrails.filter((g) => g.status !== 'ok');
   if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.status}`).join(', ')}`);
 
@@ -335,7 +343,11 @@ export function evaluate({
         continue;
       }
       const p = plan.find((x) => x.r === r && x.lever === lever);
-      if (!p) continue;
+      if (!p) {
+        const st = r.byLever[lever];
+        lines.push({ ...base, state: st.state, decision: 'hold', reason_code: 'not_evaluated', reason: `${lever} is ${st.state} in ${r.name}${st.at ? ` since ${st.at.slice(0, 10)}` : ''}`, next: { earliest_change: null, needs: 'a change by hand' } });
+        continue;
+      }
       const { s } = p;
       const used = p.rows.filter((x) => !x.excluded);
       const pooled = s.state === 'adopted' ? null : pooledBy[lever];
@@ -447,15 +459,21 @@ export function rowStates(items) {
   return Object.fromEntries(E.LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : r.auto && !r.invalid ? 'auto' : 'off']));
 }
 
+// gh for the evaluation's one read of failed runs, ended after GH_TIMEOUT_MS so a hung call cannot
+// hold the pass.
+const GH_TIMEOUT_MS = 60_000;
+const ghBounded = (args) => spawnSync('gh', args, { encoding: 'utf8', timeout: GH_TIMEOUT_MS });
+
 // The per-ticket rows the evaluation reads for one repo: every row admitted in the evidence window,
-// with red CI read from the earliest admission among the tickets on an evaluated arm.
-export function repoRows({ slug, ghRepo, now, batches = allBatches(slug), gh }) {
+// with red CI counted from one list of the repo's failed runs since the earliest admission among the
+// tickets on an evaluated arm.
+export function repoRows({ slug, ghRepo, now, batches = allBatches(slug), gh = ghBounded }) {
   const since = now - EVIDENCE_KEEP_DAYS * DAY_MS;
   const all = perTicket({ slug, batches, since, until: now, ci: false, repo: ghRepo });
   const armed = all.rows.filter((r) => r.pin?.arms && Object.keys(r.pin.arms).length);
   if (!armed.length) return { rows: all.rows, batches };
   const from = Math.min(...armed.map((r) => Date.parse(r.admitted_at)));
-  const ci = failedRuns({ repo: ghRepo, since: from, ...(gh ? { gh } : {}) });
+  const ci = failedRuns({ repo: ghRepo, since: from, gh, jobs: false });
   if (ci.unreadable) return { rows: all.rows, batches };
   // The rows name no branch, so red CI is matched through each batch's queue.
   const branchOf = new Map();
