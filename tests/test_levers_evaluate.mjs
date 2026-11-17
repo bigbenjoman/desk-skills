@@ -352,6 +352,28 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
     [!!late, l4?.some((l) => l.startsWith('- [ ] adopted wrappers in trips') && l.includes(`id \`${late?.id}\``))], [true, true]);
   t('DS-644 and only once', leversOf(readFileSync((await dig(108)).page, 'utf8')), null);
 
+  // An override whose run stopped after its lever log event and before its decision log entry.
+  const decFile = join(stateOf(TRIPS), 'decisions.jsonl');
+  const decBody = readFileSync(decFile, 'utf8');
+  const lost = decBody.split('\n').filter((l) => !l.includes(`"override_of":"${dt.id}"`)).join('\n');
+  writeFileSync(decFile, lost);
+  const again = override({ slug: TRIPS, id: dt.id, choice: 'on', dir, list, now: new Date(NOW + 120 * HOUR) });
+  t('DS-644 a retried override finishes its decision entry and writes no second override event',
+    [again.ok, eventsOf(TRIPS, 'override').length, again.entry?.at === eventsOf(TRIPS, 'override')[0]?.at], [true, 1, true]);
+  writeFileSync(decFile, lost);
+  const flip = override({ slug: TRIPS, id: dt.id, choice: 'off', dir, list, now: new Date(NOW + 121 * HOUR) });
+  t('DS-644 and one to the other value is refused', [flip.ok, /already overridden on/.test(flip.why ?? ''), eventsOf(TRIPS, 'override').length], [false, true, 1]);
+  writeFileSync(decFile, decBody);
+
+  // A trip stamped after the override's own time, written to the log first: the override still holds.
+  const RACE = 'acme__race';
+  mkdirSync(stateOf(RACE), { recursive: true });
+  applyTrips({ slug: RACE, trips: [{ lever: 'wrappers', trip: 'post-merge-revert', ticket: 'T-901', file: join(stateOf(RACE), 'post-merge.jsonl'), line: 1, why: 'reverted', from: 'trial' }], now: NOW + 100 * HOUR });
+  const [dr] = decisionsOf(RACE);
+  const raced = override({ slug: RACE, id: dr.id, choice: 'on', dir, list: [...list, entry(RACE)], now: new Date(NOW + 99 * HOUR) });
+  t('DS-644 an override written after a later-stamped trip is not replayed before it',
+    [raced.ok, leverStatesIn(read(RACE).events).wrappers.state, leverStatesIn(read(RACE).events).wrappers.value], [true, 'overridden', 'on']);
+
   run([repo(A1, a1rows)], NOW + 2 * DAY);
   t('DS-644 AC5 an overridden lever is not evaluated, so evidence that would adopt it leaves it overridden', [wrappersRow(A1).state, wrappersRow(A1).reason_code, transitionOf(A1).length, leverStatesIn(read(A1).events).wrappers.state], ['overridden', 'not_evaluated', 1, 'overridden']);
 }

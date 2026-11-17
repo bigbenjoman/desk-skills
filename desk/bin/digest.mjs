@@ -264,7 +264,12 @@ export function leverChanges({ list, since = null, now = new Date(), seen = null
       if (t > to - LEVER_GRACE_MS) recent.push(e.id);
       if (listed.has(e.id)) continue;
       let decision = taken.find((d) => d.lever_event === e.id) ?? null;
-      if (!decision && standing && isDecided(e)) decision = recordLeverDecision([e], { slug, state: standing.state })[0] ?? null;
+      // Its producer may write the decision between the reads above and this one, which then appends
+      // nothing: the decision is read back from the log either way.
+      if (!decision && standing && isDecided(e)) {
+        decision = recordLeverDecision([e], { slug, state: standing.state })[0]
+          ?? readDecisions(standing.state).taken.find((d) => d.lever_event === e.id) ?? null;
+      }
       const open = !!decision && !overridden.has(decision.id);
       const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !open, cmd });
       if (line) out.push({ at: e.at, slug, line, open });
@@ -529,7 +534,7 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   const d = taken.find((x) => x.id === id);
   if (!d) return { ok: false, why: `no decision ${id} in ${slug}'s log` };
   if (overrides.some((o) => o.override_of === id)) return { ok: false, why: `decision ${id} is already overridden` };
-  const at = now.toISOString();
+  let at = now.toISOString();
   let leverEvent = null;
   if (d.lever) {
     let why = null;
@@ -538,6 +543,19 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
         const log = readLeverLog(slug);
         // Admission reads a log with an unreadable line as no log at all, so an override there would never pin.
         if (log.bad.length) { why = `${slug}'s lever log has ${log.bad.length} unreadable line(s), so admission would not read the override: repair the log first`; return null; }
+        // An override this decision already has (a run that stopped before its decision log entry, or
+        // one alongside this) is finished, never written twice; one to the other value is refused.
+        const had = log.events.find((e) => e.kind === 'override' && e.decision_id === id);
+        if (had) {
+          if (had.value !== choice) { why = `decision ${id} is already overridden ${had.value} in ${slug}'s lever log`; return null; }
+          leverEvent = had;
+          at = had.at;
+          return null;
+        }
+        // The log is read in time order, so an override stamped before an event written ahead of it
+        // under this lock (a trip) would replay first and be undone: it is never earlier than the last.
+        const last = Math.max(-Infinity, ...log.events.map((e) => Date.parse(e.at)).filter(Number.isFinite));
+        if (last > Date.parse(at)) at = new Date(last).toISOString();
         const o = overrideEvent(d, choice, log.events, { at });
         if (o.why) { why = o.why; return null; }
         leverEvent = o.event;
