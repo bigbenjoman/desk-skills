@@ -110,11 +110,12 @@ for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
   const d = decide(M(f), real);
   t(`${f} runs ${suite}, not everything`, [d.scope, d.suites.includes(suite)], ['some', true]);
 }
-t('merge-driver.sh reaches the merge driver suite', decide(M('desk/bin/merge-driver.sh'), real).suites.includes('test_merge_driver.sh'), true);
+const MERGE_DRIVER_SUITES = ['loop', 'reruns', 'approval', 'holds', 'review', 'tree'].map((s) => `test_merge_driver_${s}.sh`);
+t('merge-driver.sh reaches every merge driver suite', MERGE_DRIVER_SUITES.filter((s) => !decide(M('desk/bin/merge-driver.sh'), real).suites.includes(s)), []);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');
-t('cli --files --json', [cli.status, j.scope, j.suites?.includes('test_merge_driver.sh'), j.shells?.includes('desk/bin/merge-driver.sh')], [0, 'some', true, true]);
+t('cli --files --json', [cli.status, j.scope, j.suites?.includes('test_merge_driver_loop.sh'), j.shells?.includes('desk/bin/merge-driver.sh')], [0, 'some', true, true]);
 const T = mkdtempSync(join(tmpdir(), 'desk-scope-'));
 try {
   const out = join(T, 'out');
