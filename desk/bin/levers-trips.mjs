@@ -50,6 +50,7 @@ import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs'
 import { answerEntriesSince } from './handoff.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { batchPaths } from './desk-env.mjs';
+import { everyTicket } from './queue-store.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
@@ -268,7 +269,8 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
     if (states?.[lever] !== 'auto') continue;
     const s = byLever[lever];
     if (!REVERTIBLE.includes(s.state)) continue;
-    const tickets = Object.values(queue?.tickets ?? {}).filter((t) => onArm(t, lever, s, slug, events, registry))
+    // Archived tickets too: a merged one is archived within a pass, and its revert can come days later.
+    const tickets = Object.values(everyTicket(queue)).filter((t) => onArm(t, lever, s, slug, events, registry))
       .sort((a, b) => String(a.levers?.at ?? '').localeCompare(String(b.levers?.at ?? '')));
     let hit = null;
     for (const t of tickets) {

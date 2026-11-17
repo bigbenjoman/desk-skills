@@ -41,6 +41,7 @@ import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-v
 import { findingsPath } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
+import { everyTicket, readQueueFile } from './queue-store.mjs';
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -491,7 +492,7 @@ export function repoRows({ slug, ghRepo, now, batches = allBatches(slug), gh = g
   // The rows name no branch, so red CI is matched through each batch's queue.
   const branchOf = new Map();
   for (const b of batches) {
-    try { for (const t of Object.values(JSON.parse(readFileSync(b.queue, 'utf8')).tickets ?? {})) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
+    try { for (const t of Object.values(everyTicket(readQueueFile(b.queue)))) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
   }
   const rows = all.rows.map((r) => {
     const branch = branchOf.get(`${r.batch ?? ''}|${r.key}`);

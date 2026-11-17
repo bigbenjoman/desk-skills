@@ -253,6 +253,22 @@ const { failedRuns } = await import('../desk/bin/phase0-report.mjs');
 let ghCalls = 0;
 const listed = failedRuns({ repo: 'acme/x', since: NOW, jobs: false, gh: () => { ghCalls += 1; return { status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'b1' }, { databaseId: 2, headBranch: 'b2' }]) }; } });
 t('red CI for the evaluation is one list call, no per-run view', [ghCalls, listed.runs.map((r) => r.branch)], [1, ['b1', 'b2']]);
+{
+  // A finished, merged ticket moves to the queue's archive (queue-store.mjs archiveDone): it is still evidence.
+  const { repoRows } = await import('../desk/bin/levers-evaluate.mjs');
+  const dir = join(T, 'archived-batch');
+  mkdirSync(dir, { recursive: true });
+  const queue = join(dir, 'queue.json');
+  writeFileSync(queue, JSON.stringify({ tickets: {} }));
+  const added = new Date(NOW - 3 * DAY).toISOString();
+  writeFileSync(join(dir, 'queue.archive.json'), JSON.stringify({ tickets: { 'Z-1': {
+    key: 'Z-1', state: 'done', added_at: added, merged_at: new Date(NOW - 2 * DAY).toISOString(), result: { pr: 7 }, branch: 'feat/Z-1',
+    levers: { set: ['wrappers'], arms: { wrappers: 'on' }, trial_ids: { wrappers: 'acme__arch/wrappers/initial' }, fp: {}, block: null, at: added },
+  } } }));
+  const gh = () => ({ status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'feat/Z-1' }, { databaseId: 2, headBranch: 'other' }]) });
+  const got = repoRows({ slug: 'acme__arch', ghRepo: 'acme/arch', now: NOW, batches: [{ name: 'b', queue, state: join(dir, 'state') }], gh });
+  t('an archived ticket is an evidence row, its red CI matched by its branch', got.rows.map((r) => [r.key, r.ci_reds]), [['Z-1', 1]]);
+}
 
 // ---- DS-644: each adopt or revert is a decision, listed on the digest and overridden from it ----------------------------------------------------
 {
