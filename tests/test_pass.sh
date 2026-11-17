@@ -100,7 +100,10 @@ cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 # shellcheck source=jq_at.sh
 . "$S/jq_at.sh"
-field(){ jq -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
+# A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.
+field(){ local a="${DESK_QUEUE%.json}.archive.json"; [ -f "$a" ] || a=/dev/null
+  jq -cn --arg t "$1" --arg p "$2" --slurpfile live "$DESK_QUEUE" --slurpfile arc "$a" "$JQ_AT"' $live[0].tickets as $l
+  | (if $l | has($t) then $l[$t] else ($arc[0].tickets // {})[$t] end) | at($p)'; }
 # One assistant turn of a worker's stream-json log, carrying the given marker lines.
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 
@@ -3548,6 +3551,8 @@ cat > "$T/stub/claude" <<EOF
 if [ "\$1" = --cloud ]; then
   printf '%s' "\$2" > "$T/cloud-prompt"
   [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
+  # A live process holds the queue lock from the session's start, so the pass's writes after it are refused.
+  if [ -e "$T/lock-after-cloud" ]; then sleep 5 >/dev/null 2>&1 & mkdir "\$DESK_QUEUE.lock"; echo \$! > "\$DESK_QUEUE.lock/pid"; fi
   cat "$S/fixtures/cloud/created.txt"; exit 0
 fi
 echo '[{"sessionId": "live-1"}]'
@@ -3608,7 +3613,6 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 const a = process.argv.slice(2);
 if (a[0] === 'set' && a.includes('state=running') && existsSync('$T/refuse-running-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
-if (a[0] === 'set' && a.some((x) => x.startsWith('cloud={"session"')) && existsSync('$T/refuse-cloud-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
 process.exit(spawnSync(process.execPath, ['$B/queue.mjs', ...a], { stdio: 'inherit' }).status ?? 1);
 EOF
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -3659,7 +3663,7 @@ q set RR-4 state=done
 # time it started, so later passes still watch for its PR rather than skip a running ticket with no log.
 q add RR-6; q set RR-6 state=triaged lane=A branch=feat/RR-6 location=cloud
 printf '# RR-6\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' > "$T/state-rr/tickets/RR-6.md"
-touch "$T/refuse-cloud-RR-6"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-cloud-RR-6"
+touch "$T/lock-after-cloud"; out=$(DESK_QUEUE_LOCK_WAIT_MS=200 node "$B/pass.mjs" 2>&1); rm -f "$T/lock-after-cloud"; rm -rf "$DESK_QUEUE.lock"
 check "DS-752 a cloud session whose details are refused after it started stays running with its start time" \
   '[ "$(field RR-6 state)" = "\"running\"" ] && [ "$(field RR-6 cloud.started)" != null ] && [ "$(field RR-6 cloud.session)" = null ] && echo "$out" | grep -q "RR-6: queue write refused, not recorded — set cloud="'
 out=$(node "$B/pass.mjs" 2>&1)
@@ -3678,6 +3682,26 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 and the next pass starts it at Stage 0, moving the file aside then" \
   'grep -qx "RR-5 resume= stage=" "$T/rr-spawns" && [ "$(spawns_of RR-5)" = 1 ] && [ -f "$T/state-rr/resume/RR-5.json.old" ]'
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
+
+# ---- DS-757: a pass records its queue changes in one write, one version higher; a spawn's running
+# write is in the file before its worker starts. The stub spawn-worker.sh notes what the queue says then.
+export DESK_QUEUE="$T/queue-vw.json" DESK_AUTOPILOT_STATE="$T/state-vw"; mkdir -p "$T/state-vw/logs"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 \$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]].state)' "\$DESK_QUEUE" "\$1")" >> "$T/vw-spawns"; echo "[spawn] ticket=\$1"
+EOF
+: > "$T/vw-spawns"
+q init vw
+for k in VW-1 VW-2; do q add "$k"; q set "$k" state=running lane=A "branch=fix/$k" session_id=live-1 stage=1/9; done
+say "AUTOPILOT_STAGE: 2/9 understand" > "$T/state-vw/logs/VW-1.log"; say "AUTOPILOT_STAGE: 3/9 implement" > "$T/state-vw/logs/VW-2.log"
+v=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).version)' "$DESK_QUEUE")
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-757 AC1 a pass that changes several tickets records them in one write, one version higher" \
+  '[ "$(field VW-1 stage)" = "\"2/9\"" ] && [ "$(field VW-2 stage)" = "\"3/9\"" ] && [ "$(bfield version)" = "$((v + 1))" ] && [ "$(bfield pass.at)" != null ]'
+q set VW-1 state=done session_id=null; q set VW-2 state=done session_id=null
+q add VW-3; q set VW-3 state=triaged lane=A branch=fix/VW-3
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-757 AC4 a spawn's running write is in the queue file before its worker starts" 'grep -qx "VW-3 running" "$T/vw-spawns" && echo "$out" | grep -q "spawned: VW-3"'
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree

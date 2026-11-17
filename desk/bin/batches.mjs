@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { readQueue, prStatusOf } from './batch-state.mjs';
+import { archivedOf } from './queue-store.mjs';
 
 // The named batches' folders under a standing batch's queue or state folder `dir`, sorted. A name that
 // is not a safe id, `.done` included, is not a batch.
@@ -28,8 +29,11 @@ export function listBatches(slug = E.repoSlug()) {
 
 // The batch whose queue holds `key`: its entry from listBatches, or null when none does. A key in two
 // batches is a broken invariant, and refused naming both rather than picking one.
+// A batch holding it live wins over one holding it archived (queue-store.mjs), done there before.
 export function batchHolding(key, slug = E.repoSlug()) {
-  const holding = listBatches(slug).filter((b) => existsSync(b.queue) && readQueue(b.queue).tickets?.[key]);
+  const read = listBatches(slug).filter((b) => existsSync(b.queue)).map((b) => ({ b, q: readQueue(b.queue) }));
+  const live = read.filter(({ q }) => q.tickets && Object.hasOwn(q.tickets, key));
+  const holding = (live.length ? live : read.filter(({ q }) => q.tickets?.[key])).map(({ b }) => b);
   if (holding.length > 1) {
     throw new E.DeskConfigError(`desk: ${key} is in more than one batch (${holding.map(label).join(', ')}). A ticket belongs to one batch; remove it from the others.`);
   }
@@ -132,9 +136,11 @@ export function supervisorHolder(state) {
 // other batch. A ticket carried in from an earlier batch for its follow-on (queue.mjs init) is not one of
 // this batch's.
 export const ownRows = (q) => Object.values(q?.tickets ?? {}).filter((t) => !('carried_from' in t));
+// Its archived tickets (queue-store.mjs) are done with their PRs merged or closed, so they count as rows.
 const finishedBy = (q, open) => {
   const rows = ownRows(q);
-  return !q.base && rows.length > 0 && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && open(t));
+  const any = rows.length > 0 || Object.keys(archivedOf(q)).length > 0;
+  return !q.base && any && rows.every((t) => t.state === 'done') && !rows.some((t) => t.result?.pr != null && open(t));
 };
 export const finished = (q) => finishedBy(q, (t) => prOpen(t.result.pr));
 // finished as the queue records it, asking GitHub nothing, for a caller that runs on every refresh: a PR
