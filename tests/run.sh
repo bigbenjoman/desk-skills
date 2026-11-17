@@ -36,7 +36,8 @@ OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
 # this waits for every job, so a lock held around run.sh is not released while a suite still runs.
-trap 'for p in $pids; do kill "$p" 2>/dev/null; done; wait; rm -rf "$OUT"' EXIT
+stop_jobs() { for p in $pids; do kill "$p" 2>/dev/null; done; wait; rm -rf "$OUT"; }
+trap stop_jobs EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
 # Every bash suite runs under the bash running this script, so `/bin/bash tests/run.sh` tests 3.2.
 SH="${BASH:-bash}"
