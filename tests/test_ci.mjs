@@ -213,7 +213,7 @@ t('a Dependabot branch to self-hosted fails; != and fromJSON forms pass', linted
 // This repo's own workflows: hosted labels only, so nothing to lint.
 const ownWf = (f) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../.github/workflows', f), 'utf8');
 const own = ownWf('tests.yml');
-t('own workflow classifies', placed(own), 'tests=self-hosted@24');
+t('own workflow classifies', placed(own), 'plan=self-hosted@25 bash32=self-hosted@60 shard=self-hosted@76 tests=self-hosted@137');
 t('own workflow lints clean', linted(own), '');
 t('own nightly and red-main workflows lint clean', linted(ownWf('nightly-macos.yml')) + linted(ownWf('ci-main-red.yml')), '');
 
