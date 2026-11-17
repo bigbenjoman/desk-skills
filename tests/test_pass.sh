@@ -4453,7 +4453,7 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
   'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
 # fbrow <row>: what desk-env reads the row as, "<big> <small> <serial globs joined by +> <bad>".
-fbrow(){ node --input-type=module -e 'const { fileBudget } = await import(process.argv[1]); const b = fileBudget(process.argv[2]); console.log(b.big, b.small, b.serial.join("+"), b.bad != null)' "$B/desk-env.mjs" "$1"; }
+fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \
   '[ "$(fbrow "3 over 1000 lines, else 1; serial: ,")" = "1 1  true" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial: a b")" = "1 1  true" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial:")" = "1 1  true" ]'
 check "DS-755 a serial list of globs, backticked or not, and serial: none both read" \
