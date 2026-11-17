@@ -21,7 +21,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { repoMap } from './scope_sections.mjs';
 
-// Six, not eight: test_pass.sh alone is longer than the even split at either, so both finish together.
+// The number of CI runners the suites are spread over; tests/test_plan_shards.mjs holds it to 6 to 8.
 export const SHARDS = 6;
 export const DURATIONS = join(dirname(fileURLToPath(import.meta.url)), 'suite_durations.json');
 
