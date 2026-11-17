@@ -280,7 +280,9 @@ $CHECKS"
     # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
     if [ -n "$MODEL" ]; then
       if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then LINES="$LINES$(printf '  %-6s %-8s ok' MODEL "$MODEL")"$'\n'
-      else LINES="$LINES  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"$'\n'; fail=1; breach=1; fi
+      else LINES="$LINES  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200 || true))"$'\n'; fail=1
+        [ -n "$WHY" ] || breach=1  # a session that ran no check is retried, not read as a rejected model
+      fi
     fi
     # The file in the worktree is the proof W_IN asks for: there, the reply cannot say otherwise.
     if [ -e "$WT/.preflight.tmp" ]; then LINES="$LINES$(printf '  %-6s %-8s ok' W_IN OK)"$'\n'
@@ -333,8 +335,8 @@ $CHECKS"
       echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
       exit 1
     fi
-    run_checks
     WHY="$(no_run_reason)"
+    run_checks
     [ "$fail" -eq 1 ] && [ "$attempt" -eq 1 ] && [ "$breach" -eq 0 ] && { [ -n "$WHY" ] || [ "$hard" -eq 0 ]; } || break
     RETRY_NOTE="[preflight] retry at default effort: the session ${WHY:-read BLOCKED on checks that want OK:$SOFT}"
     CALL_EFFORT_ARGS=(); attempt=2

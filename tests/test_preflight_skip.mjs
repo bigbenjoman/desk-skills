@@ -206,8 +206,7 @@ rmSync(join(T, 'cache'), { force: true });
 r = preflight({ ...off, FORCE_PROMPT_CACHING_5M: '1' });
 t('DS-649 AC4 the preflight runs with FORCE_PROMPT_CACHING_5M unset', [ran(r), readFileSync(join(T, 'cache'), 'utf8').trim().split('\n')], [RAN, ['unset']]);
 
-// #731: a session that answers without running the checks is retried once at default effort, not read
-// as BLOCKED; a false BLOCKED on a check that wants OK is retried the same way; a boundary failure never is.
+// A reply that ran no check, or missed only wanted-OK checks, is retried once; a boundary miss never is.
 const ALL_BLOCKED = GOOD.replace(/=OK/g, '=BLOCKED');
 const fresh = (first, extra = {}) => { rmSync(record, { force: true }); say('reply.first', first); return preflight(extra); };
 r = fresh(result(ALL_BLOCKED, { num_turns: 1 }));
@@ -218,6 +217,10 @@ t('#731 the cost line adds both calls', /^\[preflight\] cost=0\.2 turns=4$/m.tes
 t('#731 the retry says why', /^\[preflight\] retry at default effort: the session ran no tool \(turns=1\)$/m.test(r.out), true);
 r = fresh(result(''));
 t('#731 an empty reply is retried and passes', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result(''), { AUTOPILOT_MODEL: 'opus' });
+t('#731 with a worker model, an empty reply is retried, not read as a rejected model', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result('I will not', { num_turns: 1 }), { AUTOPILOT_MODEL: 'opus' });
+t('#731 with a worker model, a reply with no tool turn is retried', [r.calls.length, r.status, r.passed], [2, 0, true]);
 r = fresh(result(GOOD.replace('AGENTS=OK', 'AGENTS=BLOCKED')));
 t('#731 a false BLOCKED on a wanted-OK check is retried and passes', [r.calls.length, r.status, r.passed], [2, 0, true]);
 r = fresh(result(GOOD.replace('DENY=BLOCKED', 'DENY=OK')));
