@@ -873,7 +873,8 @@ It also checks every shell script's and `.mjs` file's syntax, and runs `shellche
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
 those suites, and `bash tests/related.sh` only the ones your branch's change reaches (every suite
-when that cannot be decided). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+when that cannot be decided). `bash tests/run.sh -j 3` runs up to three suites at once, each
+reported in one piece in name order (CI's shards do). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
 `run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
