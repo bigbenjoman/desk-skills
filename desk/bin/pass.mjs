@@ -4083,33 +4083,38 @@ const baseAtOf = (head) => cached(`base-at:${head}`, () => {
   return /^[0-9a-f]{40}$/.test(base_sha ?? '') && /^[0-9a-f]{40}$/.test(merge_base ?? '') ? { base_sha, merge_base } : null;
 });
 const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
-// The default branch's own commits since a merge base, newest first: its first-parent line from the
-// compare's newest commit back to the merge base, so a merged PR's branch commits, whose runs are that
-// branch's CI and not the default branch's, are never read as the base. The compare lists commits
-// oldest first, 250 a page unpaged, so every page is read first. Null unread.
+// The default branch's own commits since a merge base, newest first: its first-parent line from its
+// tip back to the merge base, so a merged PR's branch commits, whose runs are that branch's CI and not
+// the default branch's, are never read as the base. The tip is the one listed commit no other names as
+// a parent, since the compare lists by date, not by parent; with none or several, or a line that stops
+// short of the merge base, the list is unread. Every page is read. Null unread.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[] | [.sha, (.parents[0].sha // "")] | @tsv']);
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[] | [.sha, ([.parents[].sha] | join(","))] | @tsv']);
   if (!r.ok) return null;
-  const rows = r.out.split('\n').filter(Boolean).map((l) => l.split('\t')), parent = new Map(rows);
+  const rows = r.out.split('\n').filter(Boolean).map((l) => { const [c, ps = ''] = l.split('\t'); return [c, ps.split(',').filter(Boolean)]; });
+  const parents = new Map(rows), named = new Set(rows.flatMap(([, ps]) => ps));
+  const tips = rows.filter(([c]) => !named.has(c));
+  if (tips.length !== 1) return rows.length ? null : [];
   const line = [];
-  for (let s = rows.at(-1)?.[0]; s && parent.has(s) && line.length < rows.length; s = parent.get(s)) line.push(s);
-  return line;
+  let s = tips[0][0];
+  for (; parents.has(s) && line.length < rows.length; s = parents.get(s)[0]) line.push(s);
+  return s === sha ? line : null;
 });
 // The job's latest state on the base: its newest completed run among the newest BASE_WALK commits since
-// the merge base, else at the merge base itself when fewer came since. Null when a read fails (never
-// an older run read past one), or when none of BASE_WALK commits ran it: a job that does not run on
-// the base's pushes is not read commit by commit back to the merge base on every pass. A held check
-// (`held`) reads every commit since, so a job that runs only on some pushes can still clear its hold.
-const BASE_WALK = 25;
+// the merge base (HELD_WALK for a check already held, so a job that runs only on some pushes can still
+// clear its hold), else at the merge base itself when fewer came since. Null when a read fails (never
+// an older run read past one), or when none of those commits ran it: a job that does not run on the
+// base's pushes is not read commit by commit back to the merge base on every pass.
+const BASE_WALK = 25, HELD_WALK = 100;
 const latestOnBaseOf = (head, name, held = false) => {
-  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null;
+  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null, walk = held ? HELD_WALK : BASE_WALK;
   if (!commits) return null;
-  for (const sha of held ? commits : commits.slice(0, BASE_WALK)) {
+  for (const sha of commits.slice(0, walk)) {
     const runs = checkRunsAt(sha, name);
     if (runs == null) return null;
     const state = runsState(runs); if (state) return state;
   }
-  return commits.length > BASE_WALK && !held ? null : runsState(checkRunsAt(since, name));
+  return commits.length > walk ? null : runsState(checkRunsAt(since, name));
 };
 const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
