@@ -64,8 +64,8 @@ function record(argv) {
 
 // --- diff ---
 
-// An ISO time, or epoch seconds or milliseconds.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b1\d{9}(?:\d{3})?\b/g;
+// An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b/g;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
 // The machine's memory as the pass read it, a process id, and a repo slug hashed from its scratch path.
@@ -89,9 +89,10 @@ function normalizer(roots) {
   };
 }
 
-// Each tree makes its own commits, whose SHAs differ with the second they were made in, so each SHA
-// is named by the order it first appears in on its tree: the same commit at the same step reads alike.
-const SHA = /\b[0-9a-f]{40}\b/g;
+// Each tree makes its own commits, whose SHAs differ with the second they were made in, so each SHA,
+// whole or abbreviated, is named by the order it first appears in on its tree: the same commit at the
+// same step reads alike.
+const SHA = /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g;
 function renamer() {
   const seen = new Map();
   return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); });
@@ -99,7 +100,9 @@ function renamer() {
 
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
 const SLACK = 15_000;
-const ms = (t) => (/^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t));
+const ms = (t) => (/^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')));
+// A time printed to the minute is up to a minute short of the time it stands for.
+const slack = (t) => (/ UTC$/.test(t) ? SLACK + 60_000 : SLACK);
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
@@ -127,11 +130,12 @@ function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
-  if (Math.abs(ta - tb) <= SLACK) return true;
+  const within = Math.max(slack(a), slack(b));
+  if (Math.abs(ta - tb) <= within) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
     if (j > run) continue;
     const sb = cb.start(j), sh = ch.start(j);
-    if (sb != null && sh != null && Math.abs((ta - sb) - (tb - sh)) <= SLACK) return true;
+    if (sb != null && sh != null && Math.abs((ta - sb) - (tb - sh)) <= within) return true;
   }
   return false;
 }
@@ -238,7 +242,7 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
         const sb = vb ? show(vb, vh ? [vh] : []) : '(absent)', sh = vh ? show(vh, vb ? [vb] : []) : '(absent)';
         lines.push(`  queue ${k}: base ${sb}, head ${sh}`);
       }
-      const ob = norm(nb(rb.out)).split('\n').map(timed), oh = norm(nh(rh.out)).split('\n').map(timed);
+      const ob = nb(norm(rb.out)).split('\n').map(timed), oh = nh(norm(rh.out)).split('\n').map(timed);
       const d = lineDiff(ob, oh, eq);
       for (const l of d.base) lines.push(`  output base: ${show(l, d.head)}`);
       for (const l of d.head) lines.push(`  output head: ${show(l, d.base)}`);
