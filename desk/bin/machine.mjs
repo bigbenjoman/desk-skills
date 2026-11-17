@@ -26,6 +26,7 @@ const SIZING_RULES = Object.freeze({
   'memory-ceiling-gb': { ok: wholeAtLeast(1), want: 'a whole number of GB, 1 or more' },
   'test-cap': { ok: wholeAtLeast(1), want: 'a whole number of test workers, 1 or more' },
   'test-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
 });
@@ -62,7 +63,7 @@ export function benchSettingError(key, raw) {
 // profile already written.
 export const RULES = Object.freeze({
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 3, memoryPerLockSlotGB: 16,
-  efficiencyCoreWeight: 0.5, typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
+  efficiencyCoreWeight: 0.5, typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60, testLockQueueFactor: 2,
 });
 
 // ---- overrides -------------------------------------------------------------------------------
@@ -260,6 +261,8 @@ export function propose(hw, r = RULES) {
     `${coresWhy}${slots > 1 ? `, shared by ${slots} test lock slots` : ''}`);
   add('test-lock-slots', slots,
     `min(floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot), floor(${testCores} cores / ${r.minTestWorkers} test workers at least per suite)), at least 1: suites and typechecks that hold the test lock at once`);
+  add('test-lock-queue-factor', r.testLockQueueFactor,
+    'the pass starts no worker, and resumes none into Stage 4, while test-lock-slots x this many runs wait on the test lock');
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
