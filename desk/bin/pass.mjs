@@ -22,7 +22,7 @@ import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark,
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
-import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
+import { READ_REPO_REFRESH_MS, pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
@@ -170,13 +170,37 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
+// A git call that reaches a remote is bounded, never longer than the read-only repo refresh, so a hung
+// remote costs a pass that long once: after one call runs out, the pass's later remote calls fail at once.
+const REMOTE_GIT_MS = Math.min(120000, READ_REPO_REFRESH_MS);
+const REMOTE_GIT = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
+let remoteHung = null;
+const remoteGit = (cmd, args) => {
+  if (cmd !== 'git') return null;
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === '-C' || args[i] === '-c') { i += 1; continue; }
+    if (!args[i].startsWith('-')) return REMOTE_GIT.has(args[i]) ? args[i] : null;
+  }
+  return null;
+};
+const run = (cmd, args, opts) => {
+  const sub = remoteGit(cmd, args);
+  if (!sub) return execFileSync(cmd, args, opts);
+  if (remoteHung) throw Object.assign(new Error(`not tried: ${remoteHung}`), { stdout: '', stderr: '' });
+  try { return execFileSync(cmd, args, { timeout: REMOTE_GIT_MS, ...opts }); }
+  catch (e) {
+    if (e.code !== 'ETIMEDOUT') throw e;
+    remoteHung = `git ${sub} ran past its ${REMOTE_GIT_MS / 1000} seconds earlier in this pass`;
+    throw Object.assign(new Error(`git ${sub} ran past its ${REMOTE_GIT_MS / 1000} seconds`), { stdout: '', stderr: '' });
+  }
+};
 const sh = (cmd, args, opts = {}) => {
-  try { return execFileSync(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
+  try { return run(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 const shOut = (cmd, args, opts = {}) => {
-  try { return { ok: true, out: execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
+  try { return { ok: true, out: run(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as

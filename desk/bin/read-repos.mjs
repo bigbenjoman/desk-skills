@@ -8,8 +8,8 @@ import * as E from './desk-env.mjs';
 
 // The whole refresh, every repo together: well inside the supervisor's limit on a pass, so a hung remote
 // stops the spawn and does not take the pass down with it.
-const REFRESH_MS = Number(process.env.DESK_READ_REPO_REFRESH_MS) > 0 ? Number(process.env.DESK_READ_REPO_REFRESH_MS) : 300000;
-const OUT_OF_TIME = `the refresh ran past its ${REFRESH_MS / 1000} seconds`;
+export const READ_REPO_REFRESH_MS = Number(process.env.DESK_READ_REPO_REFRESH_MS) > 0 ? Number(process.env.DESK_READ_REPO_REFRESH_MS) : 300000;
+const OUT_OF_TIME = `the refresh ran past its ${READ_REPO_REFRESH_MS / 1000} seconds`;
 
 // A repo's address by the same transport and host as this repo's own origin, so an unattended clone
 // uses the credentials its fetches already use.
@@ -55,7 +55,7 @@ export function refreshReadRepos() {
   try { repos = E.readRepos(); } catch (e) { return [{ repo: '§4 Worker read-only repos', why: e.message }]; }
   if (!repos.length) return [];
   const origin = spawnSync('git', ['-C', E.repoRoot(), 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).stdout;
-  const deadline = Date.now() + REFRESH_MS;
+  const deadline = Date.now() + READ_REPO_REFRESH_MS;
   return repos.flatMap(({ repo, path }) => {
     const why = path ? refreshOne(cloneUrl(origin, repo), path, deadline) : 'it is not owner/name';
     return why ? [{ repo, why }] : [];
