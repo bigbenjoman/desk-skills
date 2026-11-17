@@ -3705,6 +3705,12 @@ lq_pass
 check "DS-662 AC4 a resume at Stage 3 and a handoff to Stage 7 start as today, while the held ones stay held" \
   'grep -qx "LQ-4 resume=yes stage=" "$T/rr-spawns" && [ "$(field LQ-4 state)" = "\"running\"" ] && grep -qx "LQ-5 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-5 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ]'
 q set LQ-4 state=done session_id=null; q set LQ-5 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/LQ-7 "$T/wt/LQ-7"
+q add LQ-7; q set LQ-7 state=triaged lane=A branch=fix/LQ-7 "worktree=$T/wt/LQ-7" 'last_round={"stage":"7/9","question":"which title?"}'
+lq_pass
+check "DS-662 AC4 a requeue resuming its last round at Stage 7 starts as today, while the held ones stay held" \
+  'grep -qx "LQ-7 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-7 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-7"'
+q set LQ-7 state=done session_id=null
 # One waiter drains: below the hold, the held resume and handoff start in the pass's two places.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 lq_pass

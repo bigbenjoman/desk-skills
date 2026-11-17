@@ -2070,9 +2070,16 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   });
 })();
 if (LOCK_QUEUE?.unread) report.stalled.push(LOCK_QUEUE.line);
-// Held by the gate: a new local session, a handoff to 4b, or a killed worker last at Stage 4 or 4b.
-const lockQueueHolds = (r) => !!LOCK_QUEUE?.deep && r.location !== 'cloud'
-  && (toResume(r) ? SUITE_STAGES.includes(roundStage(r.stage)) : toHandoff(r) ? SUITE_STAGES.includes(String(r.handoff_stage)) : true);
+// Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
+// at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
+// resumes only in a kept worktree).
+const lockQueueHolds = (r) => {
+  if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
+  if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
+  if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
+  const round = existsSync(join(WORKTREES, r.key)) ? roundStage(r.last_round?.stage) : null;
+  return !round || SUITE_STAGES.includes(round);
+};
 const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
 // The per-file budget (config §3b, desk-env fileBudget): a ticket waits while any file its triage record
