@@ -14,8 +14,9 @@
 //     entry per shard: { shard, of, suites, hook }, where hook is the shard that also runs run.sh's
 //     attribution hook self-test.
 //   gh run view <run id> --log | node tests/plan_shards.mjs --record
-//     refreshes tests/suite_durations.json from a tests run's log: a suite's seconds run from its
-//     `== <label>` line to the next line of that job that starts a suite or ends the run.
+//     refreshes tests/suite_durations.json from a tests run's log: a suite's seconds are its
+//     `took: <s> s` line, or, in a log without one, run from its `== <label>` line to the next line
+//     of that job that starts a suite or ends the run.
 import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,11 +75,13 @@ export function durationsFromLog(text, fileOf) {
     const job = f.length > 1 ? f[0] : '';
     const at = Date.parse(`${m[1]}${(m[2] ?? '').slice(0, 4)}Z`);
     const start = m[3].match(/^== (.+)$/);
+    const took = m[3].match(/^took: (\d+) s$/);
+    if (took) { const cur = open.get(job); if (cur) cur.took = Number(took[1]); continue; }
     if (!start && !/^(all passed: |FAILURES above)/.test(m[3])) continue;
     const cur = open.get(job);
     if (cur) {
       const file = fileOf(cur.label);
-      if (file) seconds[file] = Math.max(1, Math.round((at - cur.at) / 1000));
+      if (file) seconds[file] = Math.max(1, cur.took ?? Math.round((at - cur.at) / 1000));
       else unmatched.add(cur.label);
     }
     if (start) open.set(job, { label: start[1].trim(), at });

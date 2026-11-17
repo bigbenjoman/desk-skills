@@ -1,7 +1,7 @@
 // suite: CI shards (tests/plan_shards.mjs balances the suites over parallel jobs by recorded duration)
 // tests/plan_shards.mjs on fixture durations, then on this repo's suites and tests/suite_durations.json.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -59,7 +59,16 @@ const labels = new Map([['alpha (first)', 'test_alpha.sh'], ['beta', 'test_beta.
 const got = durationsFromLog(log, (l) => labels.get(l));
 t('a log gives each suite its seconds, job by job', got.seconds, { 'test_alpha.sh': 83, 'test_gamma.sh': 100, 'test_beta.mjs': 10 });
 t('a label no suite has is reported', got.unmatched, ['attribution hook self-test']);
-t('one job\'s raw log reads too', durationsFromLog('2026-11-16T05:11:24Z == beta\n2026-11-16T05:11:24.2Z all passed: 1 checks', (l) => labels.get(l)).seconds, { 'test_beta.mjs': 1 });
+const par = [
+  'shard 1/1\tRun tests\t2026-11-16T05:15:00.0000000Z == alpha (first)',
+  'shard 1/1\tRun tests\t2026-11-16T05:15:00.0000000Z ok: 4',
+  'shard 1/1\tRun tests\t2026-11-16T05:15:00.0000000Z took: 140 s',
+  'shard 1/1\tRun tests\t2026-11-16T05:15:01.0000000Z == beta',
+  'shard 1/1\tRun tests\t2026-11-16T05:15:01.0000000Z took: 0 s',
+  'shard 1/1\tRun tests\t2026-11-16T05:15:01.0000000Z all passed: 9 checks',
+].join('\n');
+t('a run.sh -j log gives each suite its own took: seconds, not the gap between reports', durationsFromLog(par, (l) => labels.get(l)).seconds, { 'test_alpha.sh': 140, 'test_beta.mjs': 1 });
+t('one job\'s raw log reads too',durationsFromLog('2026-11-16T05:11:24Z == beta\n2026-11-16T05:11:24.2Z all passed: 1 checks', (l) => labels.get(l)).seconds, { 'test_beta.mjs': 1 });
 
 // ---- this repo -----------------------------------------------------------------------------------
 const suites = repoMap(R).suites.map((s) => s.file);
@@ -84,6 +93,39 @@ try {
   // ---- tests/run.sh's flag for every shard but the first ------------------------------------------
   const run = spawnSync('bash', [join(R, 'tests/run.sh'), '--no-hook-test', 'test_review_verdict.mjs'], { encoding: 'utf8' });
   t('run.sh --no-hook-test runs the named suite without the hook self-test', [run.status, (run.stdout.match(/^== /gm) ?? []).length, /attribution hook/.test(run.stdout)], [0, 1, false]);
+
+  // ---- tests/run.sh -j: suites at once -----------------------------------------------------------
+  // A copy of run.sh with three suites that log their start and end. With MEET set, test_a.sh passes
+  // only if test_c.sh starts while it is still running; test_b.sh fails.
+  const S = join(T, 'repo', 'tests'); mkdirSync(S, { recursive: true });
+  for (const f of ['run.sh', 'suite_env.sh']) writeFileSync(join(S, f), readFileSync(join(R, 'tests', f)));
+  const log = (x, body) => writeFileSync(join(S, `test_${x}.sh`), `echo "start ${x}" >> "$LOG"\n${body}\necho "end ${x}" >> "$LOG"\n`);
+  log('a', 'echo "ok a1"\nif [ -n "${MEET:-}" ]; then i=0; while [ ! -f "$MEET/c" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done\n  if [ -f "$MEET/c" ]; then echo "ok a met c"; else echo "FAIL a ran alone"; fi; fi\necho "ok a2"');
+  log('b', 'echo "ok b1"; echo "FAIL b broke"; echo "b says why"');
+  log('c', '[ -z "${MEET:-}" ] || : > "$MEET/c"; echo "ok c1"');
+  const runJ = (args, meet) => {
+    const L = join(T, `log-${args.join('')}`); writeFileSync(L, '');
+    const env = { ...process.env, LOG: L, ...(meet ? { MEET: mkdtempSync(join(T, 'meet-')) } : {}) };
+    const r = spawnSync('bash', [join(S, 'run.sh'), '--no-hook-test', ...args], { encoding: 'utf8', env });
+    const blocks = Object.fromEntries(r.stdout.split(/\n(?=== )/).slice(1).map((b) => [b.split('\n')[0].slice(3), b]));
+    return { ...r, blocks, log: readFileSync(L, 'utf8').trim().split('\n') };
+  };
+  const j3 = runJ(['-j', '3'], true);
+  t('AC1 run.sh -j 3 runs the suites at once', [/ok: 3\n/.test(j3.blocks['test_a.sh'] ?? ''), j3.log.indexOf('start c') < j3.log.indexOf('end a')], [true, true]);
+  t('AC1 and reports each in one piece, in name order', [Object.keys(j3.blocks), /FAIL b broke\nb says why/.test(j3.blocks['test_b.sh'] ?? ''), /b says why/.test(j3.blocks['test_a.sh'] + j3.blocks['test_c.sh'])], [['test_a.sh', 'test_b.sh', 'test_c.sh'], true, false]);
+  t('AC1 a failure still fails the run and names its suite', [j3.status, /^failed suites: test_b\.sh$/m.test(j3.stdout), /^FAILURES above \(5 checks passed\)$/m.test(j3.stdout)], [1, true, true]);
+  const j1 = runJ(['-j', '1'], false);
+  t('AC2 run.sh -j 1 runs them one after another, in the same order', [j1.log, Object.keys(j1.blocks), j1.status, /^failed suites: test_b\.sh$/m.test(j1.stdout)], [['start a', 'end a', 'start b', 'end b', 'start c', 'end c'], ['test_a.sh', 'test_b.sh', 'test_c.sh'], 1, true]);
+  t('AC2 and so does no -j', runJ([], false).log, ['start a', 'end a', 'start b', 'end b', 'start c', 'end c']);
+  t('-j takes -jN too, and refuses a count that is not a whole number from 1', [runJ(['-j2', 'test_c.sh'], false).status, ...['0', 'x', ''].map((n) => spawnSync('bash', [join(S, 'run.sh'), '-j', n], { encoding: 'utf8' }).status)], [0, 2, 2, 2]);
+  // A TERM to run.sh -j stops the running suites before run.sh exits: a lock held around it is never
+  // released while a suite still runs. test_slow.sh writes its pid, then runs for up to 10 s.
+  const S2 = join(T, 'stop', 'tests'); mkdirSync(S2, { recursive: true });
+  for (const f of ['run.sh', 'suite_env.sh']) writeFileSync(join(S2, f), readFileSync(join(R, 'tests', f)));
+  writeFileSync(join(S2, 'test_slow.sh'), 'echo $$ > "$PIDF"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; echo "ok slow"\n');
+  const pidf = join(T, 'slow.pid');
+  const stop = spawnSync('bash', ['-c', 'bash "$1" --no-hook-test -j 2 test_slow.sh >/dev/null & r=$!; i=0; while [ ! -s "$PIDF" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; kill -TERM $r; wait $r; echo "rc $?"; if kill -0 "$(cat "$PIDF")" 2>/dev/null; then echo "suite alive"; else echo "suite gone"; fi', 'stop', join(S2, 'run.sh')], { encoding: 'utf8', env: { ...process.env, PIDF: pidf } });
+  t('a TERM to run.sh -j stops its running suite before run.sh exits', stop.stdout.trim().split('\n'), ['rc 143', 'suite gone']);
 } finally { rmSync(T, { recursive: true, force: true }); }
 
 console.log(fails ? `${fails} FAILED` : 'all ok');
