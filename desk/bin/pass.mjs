@@ -85,7 +85,7 @@ function recordPass(f) {
     const prev = QW.view().pass ?? {};
     const rec = { ...prev, at: PASS_AT, by: PASS_BY, ...(PASS_BY === 'session' ? { session_at: PASS_AT } : {}), ...f(prev) };
     if (!QW.apply(['set-batch', `pass=${JSON.stringify(rec)}`]).ok) return [];
-    return writeLines(QW.flush());
+    return writeLines(QW.flush({ archive: true }));
   } catch { return []; /* advisory: the verdict still goes out */ }
 }
 function verdict(status, message, fields = {}) {

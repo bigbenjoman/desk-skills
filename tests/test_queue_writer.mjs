@@ -117,7 +117,10 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   } });
   const w = queueWriter(f);
   w.apply(['set', 'A', 'stage=1/9']);
-  const r = w.flush();
+  w.flush();
+  t('a write before the pass\'s last archives nothing', 'M' in read(f).tickets, true);
+  w.apply(['set', 'A', 'stage=2/9']);
+  const r = w.flush({ archive: true });
   const q = read(f);
   const a = read(archivePath(f));
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
@@ -154,7 +157,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
 {
   const f = fixture({ version: 1, batch: 'E-1', epic: 'E-1', base: 'feat/e', tickets: { M: tk('M', { state: 'done', result: { pr: 1 }, merged_at: 'x' }), A: tk('A') } });
   const w = queueWriter(f);
-  w.apply(['set', 'A', 'stage=1/9']); w.flush();
+  w.apply(['set', 'A', 'stage=1/9']); w.flush({ archive: true });
   t('an epic batch archives nothing', `${'M' in read(f).tickets} ${existsSync(archivePath(f))}`, 'true false');
 }
 

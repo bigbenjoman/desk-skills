@@ -143,7 +143,7 @@ export function mergeQueue(base, mine, theirs) {
       continue;
     }
     if (t === undefined) {
-      for (const f of new Set([...Object.keys(b), ...Object.keys(m)])) if (!same(b[f], m[f])) conflicts.push({ ticket: key, field: f, gone: true });
+      for (const f of new Set([...Object.keys(b), ...Object.keys(m)])) if (!same(b[f], m[f]) && !LATEST.includes(f)) conflicts.push({ ticket: key, field: f, gone: true });
       continue;
     }
     mergeFields(b, m, t, result.tickets[key], key, conflicts);

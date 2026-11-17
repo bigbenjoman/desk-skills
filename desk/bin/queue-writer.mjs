@@ -98,7 +98,8 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //   apply(args)  one queue.mjs command, in memory: { ok, out } | { ok: false, why } | { direct: true }
 //                for one it does not apply here (any other command, the batch base, a claim, or a
 //                ticket not live in this queue), which the caller runs as queue.mjs
-//   flush()      writes every change applied since the last flush, under the queue lock, moving done
+//   flush({ archive })  writes every change applied since the last flush, under the queue lock, and
+//                with `archive` (a pass's last write, once it has handled every ticket) moves done
 //                tickets whose PR merged or closed to the archive:
 //                { ok: true, wrote, version, conflicts, archived, archiveError, ops }, or, when the lock
 //                is not taken within its wait, { ok: false, why, lost } with nothing written
@@ -151,7 +152,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return { ok: true, out };
   }
 
-  function flush() {
+  function flush({ archive = false } = {}) {
     if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], archived: [], archiveError: null, ops: [] };
     const dir = `${file}.lock`;
     try {
@@ -165,7 +166,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
       rebase();
       const out = structuredClone(mine);
       let archived = []; let archiveError = null;
-      try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; }
+      if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
       out.version = versionOf(base);
       const version = writeQueueFile(file, out);
       const r = { ok: true, wrote: true, version, conflicts, archived, archiveError, ops };

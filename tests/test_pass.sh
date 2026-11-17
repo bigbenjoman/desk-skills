@@ -3551,8 +3551,8 @@ cat > "$T/stub/claude" <<EOF
 if [ "\$1" = --cloud ]; then
   printf '%s' "\$2" > "$T/cloud-prompt"
   [ -e "$T/cloud-fail" ] && { cat "$S/fixtures/cloud/print-refused.txt" >&2; exit 1; }
-  # A live process holds the queue lock from the session's start, so the pass's writes after it are refused.
-  if [ -e "$T/lock-after-cloud" ]; then sleep 5 >/dev/null 2>&1 & mkdir "\$DESK_QUEUE.lock"; echo \$! > "\$DESK_QUEUE.lock/pid"; fi
+  # This test script holds the queue lock from the session's start, so the pass's writes after it are refused.
+  if [ -e "$T/lock-after-cloud" ]; then mkdir "\$DESK_QUEUE.lock"; echo $$ > "\$DESK_QUEUE.lock/pid"; fi
   cat "$S/fixtures/cloud/created.txt"; exit 0
 fi
 echo '[{"sessionId": "live-1"}]'
