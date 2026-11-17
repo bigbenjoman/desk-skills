@@ -943,6 +943,19 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-155 a handoff to a stage no session starts at parks, naming it" '[ "$(field H-5 state)" = "\"parked\"" ] && field H-5 park.question | grep -qE "5\\\\\", which no session starts at \(only Stage (4b or 7|7 or 4b)\), so no session was spawned" && ! spawned_for H-5'
 check "DS-155 a handoff with no briefing written parks, naming the file" '[ "$(field H-6 state)" = "\"parked\"" ] && field H-6 park.question | grep -qF "its handoff briefing $T/state-h/handoffs/H-6.json does not exist" && ! spawned_for H-6'
 
+# DS-593: a hand-written briefing with a raw TAB in a string, and one that is not JSON at all.
+handing H-8; printf '{"ticket":"H-8","criteria":["AC1: the widget saves"],"lane":"A","verification":["typecheck:\tpass"]}' > "$T/state-h/handoffs/H-8.json"
+hlog H-8 "AUTOPILOT_HANDOFF: 7"
+handing H-9; printf '{"ticket": "H-9", criteria: [' > "$T/state-h/handoffs/H-9.json"
+hlog H-9 "AUTOPILOT_HANDOFF: 7"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-593 AC1 a briefing with a raw tab spawns the Stage 7 session, parking nothing" 'spawned_for H-8 | grep -q "stage=7 " && [ "$(field H-8 state)" = "\"running\"" ]'
+check "DS-593 AC1 and its briefing holds the verification line" 'brief H-8 | grep -qF -- "- typecheck:$(printf "\t")pass"'
+check "DS-593 AC2 a briefing that is not JSON spawns the next stage, parking nothing" 'spawned_for H-9 | grep -q "stage=7 " && [ "$(field H-9 state)" = "\"running\"" ]'
+check "DS-593 AC2 its briefing tells the session to read the criteria from the ticket" 'brief H-9 | grep -qF "read them from H-9 at the start of Stage 7"'
+check "DS-593 AC2 the report names the unreadable file, kept aside" 'echo "$out" | grep -qF "H-9: its handoff briefing $T/state-h/handoffs/H-9.json is not JSON" && echo "$out" | grep -qF "kept as $T/state-h/handoffs/H-9.json.unreadable" && [ -f "$T/state-h/handoffs/H-9.json.unreadable" ]'
+q set H-8 state=done; q set H-9 state=done
+
 # AC5: a handoff briefing over the cap is cut to it with the note, and the answer after it survives.
 handing H-4; hfile H-4 4b "$(node -e 'process.stdout.write("v".repeat(70000))')"; echo "keep the H-4 answer" > "$T/state-h/answers/H-4.txt"
 hlog H-4 "AUTOPILOT_HANDOFF: 4b"
