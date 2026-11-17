@@ -1,5 +1,5 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
-import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
 import { epicDue } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -8,6 +8,7 @@ const H1 = '1'.repeat(40);
 const H2 = '2'.repeat(40);
 const M = 'm'.repeat(40);
 const c = (o = {}) => ({ head: H1, source: M, files: ['a.txt'], perm: 'yes', alive: false, ...o });
+const ctxOf = (fix) => ({ key: 'base-feat-x', base: 'feat/x', source: 'main', fix });
 
 // AC1: a first conflict starts try 1.
 const first = baseFixCall(null, c());
@@ -40,6 +41,21 @@ t('outcome: a done', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none jira=none']]), 
 t('outcome: neither', baseFixOutcome([]), 'ended with no marker');
 t('outcome: a park answered, then a done, is finished', baseFixOutcome([['AUTOPILOT_PARK', 'which side?'], ['AUTOPILOT_DONE', 'pr=none jira=none']]), 'finished: pr=none jira=none');
 t('outcome: a done, then a park, is parked', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none'], ['AUTOPILOT_PARK', 'push refused']]), 'parked: push refused');
+
+// A park made only on the busy test lock is said with its own marker, and spends no try.
+t('DS-663 lock wait: the marker before the last park', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy']]), true);
+t('DS-663 lock wait negative: a park with no marker', lockWaitPark([['AUTOPILOT_PARK', 'which side?']]), false);
+t('DS-663 lock wait negative: the marker before an earlier park only', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy'], ['AUTOPILOT_PARK', 'which side?']]), false);
+t('DS-663 lock wait negative: a done after it', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy'], ['AUTOPILOT_DONE', 'pr=none']]), false);
+t('DS-663 lock wait negative: another wait', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'a person'], ['AUTOPILOT_PARK', 'x']]), false);
+const waited = { tries: [{ try: 1, head: H1, lock_wait: true, outcome: 'parked: lock busy' }], running: null };
+const again = baseFixCall(waited, c());
+t('DS-663 AC4 a try that waited only on the test lock spends none: try 1 again at the same head', `${again.call} ${again.fix?.try}`, 'spawn 1');
+t('DS-663 AC4 negative: the try after it, at the same head, is spent as before', baseFixCall({ tries: [...waited.tries, { try: 1, head: H1, outcome: 'parked: x' }], running: null }, c()).call, 'stuck');
+const fromCtx = { key: 'base-feat-x', base: 'feat/x', source: 'main', fix: { ...first.fix, from: { try: 1, ref: 'refs/desk/base-fix/base-feat-x/1', sha: H2 } } };
+t('DS-663 AC2 a try from a kept merge is briefed on it', baseFixBrief(fromCtx).includes(`HEAD is already ${H2.slice(0, 12)}, the merge of origin/main into feat/x that try 1 committed and did not push, kept on refs/desk/base-fix/base-feat-x/1`), true);
+t('DS-663 AC2 and its task does not merge again', baseFixTask(fromCtx).includes('carry on from your HEAD') && !baseFixTask(fromCtx).includes('then merge origin/main'), true);
+t('DS-663 both tasks name the lock-wait marker', [baseFixTask(ctxOf(first.fix)), baseFixTask(ctxOf({ ...first.fix, check: { command: 'x', output: 'y' } }))].every((s) => s.includes('AUTOPILOT_PARK_WAIT: test-lock on the line before your AUTOPILOT_PARK')), true);
 
 // A worker that may not push the base could only park: without §3 batch-base-push no try starts.
 const noPush = baseFixCall(null, c({ push: { perm: 'ask', key: 'batch-base-push', ok: false } }));
