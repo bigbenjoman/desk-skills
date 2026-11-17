@@ -272,7 +272,7 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
 
 // ---- DS-644: each adopt or revert is a decision, listed on the digest and overridden from it ----------------------------------------------------
 {
-  const { checkin, override, DEFAULT_TIMES } = await import('../desk/bin/digest.mjs');
+  const { checkin, override, leverChanges, DEFAULT_TIMES } = await import('../desk/bin/digest.mjs');
   const { applyTrips } = await import('../desk/bin/levers-trips.mjs');
   const { leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
   const HOUR = 3_600_000;
@@ -373,6 +373,21 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
   const raced = override({ slug: RACE, id: dr.id, choice: 'on', dir, list: [...list, entry(RACE)], now: new Date(NOW + 99 * HOUR) });
   t('DS-644 an override written after a later-stamped trip is not replayed before it',
     [raced.ok, leverStatesIn(read(RACE).events).wrappers.state, leverStatesIn(read(RACE).events).wrappers.value], [true, 'overridden', 'on']);
+  t('DS-644 a first override is not superseded', raced.superseded, false);
+  // Its decision entry lost, then the lever set the other way by another decision: the retry says so.
+  const raceDec = join(stateOf(RACE), 'decisions.jsonl');
+  append(RACE, { kind: 'override', lever: 'wrappers', actor: 'ben', reason_code: 'ben_override', reason: 'set off by hand', from: 'overridden', to: 'overridden', value: 'off', decision_id: 'other', at: new Date(NOW + 101 * HOUR).toISOString() });
+  writeFileSync(raceDec, readFileSync(raceDec, 'utf8').split('\n').filter((l) => !l.includes(`"override_of":"${dr.id}"`)).join('\n'));
+  const stale = override({ slug: RACE, id: dr.id, choice: 'on', dir, list: [...list, entry(RACE)], now: new Date(NOW + 102 * HOUR) });
+  t('DS-644 a retried override another change has since replaced says it is superseded, writing no event',
+    [stale.ok, stale.superseded, eventsOf(RACE, 'override').length, leverStatesIn(read(RACE).events).wrappers.value], [true, true, 2, 'off']);
+
+  // A repo with only named batches lists no standing entry until its decision log exists.
+  const NAMED = 'acme__named';
+  append(NAMED, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', eval_id: 'named', evidence_file: 'named.json', at: new Date(NOW + 130 * HOUR).toISOString() });
+  const named = leverChanges({ list: [{ slug: NAMED, batch: 'b1', state: join(stateOf(NAMED), 'batches', 'b1'), queue: join(T, 'q', NAMED, 'queue.json') }], now: new Date(NOW + 131 * HOUR) });
+  t('DS-644 a lever change in a repo with only named batches records its decision in the repo\'s own log and lists its command',
+    [named.changes.length, /override: `node \S+ override acme__named [0-9a-f]{16} off`$/.test(named.changes[0]?.line ?? ''), decisionsOf(NAMED).length], [1, true, 1]);
 
   run([repo(A1, a1rows)], NOW + 2 * DAY);
   t('DS-644 AC5 an overridden lever is not evaluated, so evidence that would adopt it leaves it overridden', [wrappersRow(A1).state, wrappersRow(A1).reason_code, transitionOf(A1).length, leverStatesIn(read(A1).events).wrappers.state], ['overridden', 'not_evaluated', 1, 'overridden']);

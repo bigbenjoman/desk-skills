@@ -257,7 +257,9 @@ export function leverChanges({ list, since = null, now = new Date(), seen = null
       taken.push(...d.taken.filter((x) => x.lever));
       for (const o of d.overrides) overridden.add(o.override_of);
     }
-    const standing = list.find((x) => x.slug === slug && !x.batch);
+    // The repo's own decision log, where its producers write: a repo with only named batches has no
+    // standing entry in the list until that log exists.
+    const standingState = list.find((x) => x.slug === slug && !x.batch)?.state ?? join(stateRoot(), slug);
     for (const e of evs) {
       const t = Date.parse(e.at);
       if (!(t <= to) || (from != null && t <= from)) continue;
@@ -266,9 +268,9 @@ export function leverChanges({ list, since = null, now = new Date(), seen = null
       let decision = taken.find((d) => d.lever_event === e.id) ?? null;
       // Its producer may write the decision between the reads above and this one, which then appends
       // nothing: the decision is read back from the log either way.
-      if (!decision && standing && isDecided(e)) {
-        decision = recordLeverDecision([e], { slug, state: standing.state })[0]
-          ?? readDecisions(standing.state).taken.find((d) => d.lever_event === e.id) ?? null;
+      if (!decision && isDecided(e)) {
+        decision = recordLeverDecision([e], { slug, state: standingState })[0]
+          ?? readDecisions(standingState).taken.find((d) => d.lever_event === e.id) ?? null;
       }
       const open = !!decision && !overridden.has(decision.id);
       const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !open, cmd });
@@ -536,6 +538,7 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   if (overrides.some((o) => o.override_of === id)) return { ok: false, why: `decision ${id} is already overridden` };
   let at = now.toISOString();
   let leverEvent = null;
+  let superseded = false;
   if (d.lever) {
     let why = null;
     try {
@@ -550,6 +553,8 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
           if (had.value !== choice) { why = `decision ${id} is already overridden ${had.value} in ${slug}'s lever log`; return null; }
           leverEvent = had;
           at = had.at;
+          // A state change written after it (another decision's override, a trip) is what admission reads now.
+          superseded = log.events.slice(log.events.indexOf(had) + 1).some((e) => e.lever === d.lever && ['transition', 'override', 'trip'].includes(e.kind) && e.to != null);
           return null;
         }
         // The log is read in time order, so an override stamped before an event written ahead of it
@@ -572,7 +577,7 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   appendFileSync(join(r.state, 'decisions.jsonl'), `${JSON.stringify(entry)}\n`);
   // A lever's line carries its override command, done with once used.
   const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`, (l) => (d.lever ? l.replace(/ · override: `[^`]*`$/, '') : l));
-  return { ok: true, entry, marked, leverEvent };
+  return { ok: true, entry, marked, leverEvent, superseded };
 }
 
 // A "go" on a promotion question: recorded in that repo's batch notes with the range, and marked on
@@ -639,7 +644,9 @@ if (isMain) {
   } else {
     const r = override({ slug, id: target, choice: text });
     if (!r.ok) refuse(r.why);
-    console.log(r.leverEvent
+    console.log(r.leverEvent && r.superseded
+      ? `digest: decision ${target} overridden to ${r.leverEvent.value} earlier, now recorded; ${r.leverEvent.lever} has changed in ${slug} since, so admission reads its latest state (desk-env levers)`
+      : r.leverEvent
       ? `digest: decision ${target} overridden: ${r.leverEvent.lever} is ${r.leverEvent.value} in ${slug} by hand, for every ticket admitted from now on`
       : `digest: decision ${target} overridden to "${text}" by ${r.entry.by}; the next pass in ${slug} lists ${r.entry.ticket} under WAITING ON YOU`);
     if (!r.marked) console.log('digest: the latest page does not list that decision');
