@@ -924,7 +924,7 @@ NODE
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -953,7 +953,14 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
       log "#$n HELD by §4 Merge holds — a person merges it, after its step: $(printf '%s' "$holds" | paste -sd ';' -)"
       # A routine hold's step comes first in the note, so the person is never sent past it to the merge.
       if [ -n "$routines" ]; then routine_off_note "$key" "$routines" "it also touches a hold no routine clears: $(printf '%s' "$bare" | head -1)"
-      else queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)"; fi
+      else
+        # The note quotes the first hold; any others it touches are counted, so no reader takes the
+        # first one's step for the PR's last (needs-you never says only the merge is left).
+        nbare=$(printf '%s\n' "$bare" | grep -c .)
+        bare_more=""
+        if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
+        queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
+      fi
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then

@@ -439,7 +439,8 @@ function holdPlain(n, w, done = null) {
   if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
   // Otherwise the hold's reason is the step the person takes before merging, unless it reads done.
   if (done) return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Its step is done: the PR changes ${andList(done.map((f) => `\`${f}\``))}, and its checks are green. Only the merge is left: merge it on GitHub; the ticket is then done.`;
-  return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
+  const others = w.more ? `, and the step${w.more === 1 ? '' : 's'} of the ${w.more === 1 ? 'other merge hold' : `${w.more} other merge holds`} it touches (desk's log names ${w.more === 1 ? 'it' : 'them'})` : '';
+  return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first${others}, then merge it on GitHub; the ticket is then done.`;
 }
 
 // The files a hold's reason names: a backticked path, a path with a slash, or a file name with one of
@@ -448,17 +449,19 @@ const HOLD_FILE = /`([^`\s]+)`|(?<![\w/.:-])((?:[\w.-]+\/)+[\w.*-]+|[\w.-]+\.(?:
 const SCRIPT = /\.(?:sh|py|[cm]?[jt]s|rb)$/i;
 const holdFiles = (why) => [...new Set([...String(why ?? '').matchAll(HOLD_FILE)].map((m) => (m[1] ?? m[2]).replace(/[.,;:]+$/, ''))
   .filter((p) => /[/.]/.test(p) && !SCRIPT.test(p)))];
-// The glob a hold note's `where` names first (merge-driver.sh: `<glob>, <n> file(s), e.g. <file>`).
-const holdGlob = (where) => /^(.+?), \d+ file\(s\)/.exec(String(where ?? ''))?.[1] ?? null;
+// The path a hold note's `where` names first (merge-driver.sh: `<glob>, <n> file(s), e.g. <file>`),
+// without the `#<key>` of a keyed hold (gate.mjs parseHolds: `<glob>#<key>` guards one key of that file).
+const holdGlob = (where) => /^(.+?), \d+ file\(s\)/.exec(String(where ?? ''))?.[1]?.replace(/#.*$/, '') || null;
 // A person's merge hold whose step reads done on GitHub: the PR changes every file its reason names
 // (a sign-off or approval file), and its checks at its head are green. -> those files, or null when the
-// reason names none, one is unchanged, a check is not green, or the PR cannot be read. A name that is a
-// glob, or a path the hold itself guards, is not a sign-off file: the PR changes it only because it is
-// under the hold, so it says nothing of the step.
+// reason names none, one is unchanged, a check is not green, the PR touches another hold with no
+// routine (the note counts it as `more`), or the PR cannot be read. A name that is a glob, or a path the
+// hold itself guards, is not a sign-off file: the PR changes it only because it is under the hold, so it
+// says nothing of the step.
 function holdStepDone(r, t, w, reads) {
   const glob = holdGlob(w.where), guarded = glob ? globToRegExp(glob) : null;
   const named = holdFiles(w.why).filter((p) => !p.includes('*') && !(guarded && (p === glob || guarded.test(p))));
-  if (!named.length || w.routine || w.failed || !holdNeedsPerson(w.why)) return null;
+  if (!named.length || w.routine || w.failed || w.more || !holdNeedsPerson(w.why)) return null;
   const { v } = reads.pr(r, t.result.pr, ',files,statusCheckRollup');
   if (v?.state !== 'OPEN') return null;
   const changed = (v.files ?? []).map((f) => String(f?.path ?? ''));
@@ -767,7 +770,8 @@ function linkItems(r) {
     .flatMap((t) => {
       const seen = new Set();
       return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b))
-        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind) })));
+        // The ticket on the link waits on it, and so does every ticket held behind that one (collect).
+        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind), behind: heldBehindAll([[r, t.key]], true) })));
     });
 }
 // The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
@@ -1156,7 +1160,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since);
+  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }

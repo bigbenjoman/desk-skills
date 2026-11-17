@@ -1084,6 +1084,8 @@ put('hold657', { port: 5657, beat: 1, supervised: true, merge: 'yes', tickets: {
   'S-4': greenPr(184, { merge_blocked: hold657('a person runs `scripts/verify.sh` first') }),
   'S-5': greenPr(185, { merge_blocked: hold657('a person approves every change to `prompts/**`') }),
   'S-6': greenPr(186, { merge_blocked: hold657('Ben approves prompts/call.md before merge') }),
+  'S-7': greenPr(187, { merge_blocked: 'merge hold: Ben approves package.json script changes — package.json#scripts, 1 file(s), e.g. package.json' }),
+  'S-8': greenPr(188, { merge_blocked: `${hold657(why657)} (and 1 more merge hold(s))` }),
 } });
 const green657 = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: minsAgo(1) }];
 const signed657 = [{ path: 'prompts/call.md' }, { path: 'docs/signoff/call-script.md' }];
@@ -1094,6 +1096,8 @@ const gh657 = {
   184: { state: 'OPEN', files: [{ path: 'prompts/call.md' }, { path: 'scripts/verify.sh' }], statusCheckRollup: green657 },
   185: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
   186: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  187: { state: 'OPEN', files: [{ path: 'package.json' }], statusCheckRollup: green657 },
+  188: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
 };
 const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...N.READS, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
 const step657 = (pr, why = why657) => `PR #${pr} is under a merge hold, so desk never merges it itself: "${why}" (prompts/**, 1 file(s), e.g. prompts/call.md).`;
@@ -1106,6 +1110,10 @@ t('DS-657 AC6 a script the reason names is a step to run, not a file the step ch
 t('DS-657 AC6 a hold whose reason names no file is unchanged', h413['H-1']?.need.endsWith(ask657), true);
 t('DS-657 AC6 a reason naming the glob the hold guards is no sign-off file: the line is unchanged', h657['S-5']?.need, `${step657(185, 'a person approves every change to `prompts/**`')}${ask657}`);
 t('DS-657 AC6 a reason naming a file the hold guards is no sign-off file: the line is unchanged', h657['S-6']?.need, `${step657(186, 'Ben approves prompts/call.md before merge')}${ask657}`);
+t('DS-657 AC6 a keyed hold (path#key) whose reason names its own file is no sign-off file: the line is unchanged', h657['S-7']?.need,
+  `PR #187 is under a merge hold, so desk never merges it itself: "Ben approves package.json script changes" (package.json#scripts, 1 file(s), e.g. package.json).${ask657}`);
+t('DS-657 AC6 a PR under another hold with no routine never reads as only the merge left, and is told to settle that one too', h657['S-8']?.need,
+  `${step657(188)} Do what it asks first, and the step of the other merge hold it touches (desk's log names it), then merge it on GitHub; the ticket is then done.`);
 
 // ---- A live item says how many held tickets wait behind it, directly or through
 // another, and ranks by that after PRODUCTION BROKEN, ahead of one that has waited longer.
@@ -1994,6 +2002,20 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
     /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// DS-657 AC1/AC2: a link item counts the ticket on the link and every ticket held behind that one, and
+// ranks by it, as the link is the only item the held chain is listed under.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('link657', { port: 4757, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' }, 'V-2': heldOn('V-1'), 'V-3': heldOn('V-2'),
+    'V-4': parked('A', 300, 'Which endpoint?'),
+  } });
+  const items = N.collect({ word: 'link657' }).items;
+  t('DS-657 AC1 a dropped link counts the ticket on it and those held behind that one',
+    /\(3 tickets wait behind this\)$/.test(items.find((i) => i.t.key === 'link:V-1:V-9')?.need ?? ''), true);
+  t('DS-657 AC2 and ranks ahead of one that has waited longer', items.map((i) => i.t.key).join(), 'link:V-1:V-9,V-4');
 }
 
 // A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park

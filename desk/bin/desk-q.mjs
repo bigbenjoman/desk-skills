@@ -267,7 +267,7 @@ function blockerHold(q, key, b, ctx, seen) {
 }
 
 // The tickets a held ticket waits on at the end of its chain: each unmerged blocker that is not itself
-// held, followed through those that are.
+// held, followed through those that are, a triage park held behind its blockers among them (holdsKept).
 export function waitRoots(q, t) {
   const roots = new Set(), seen = new Set([t.key]);
   for (let edge = unmergedBlockers(q, t); edge.length;) {
@@ -275,7 +275,7 @@ export function waitRoots(q, t) {
     for (const b of edge.filter((k) => !seen.has(k))) {
       seen.add(b);
       const bt = q.tickets?.[b];
-      if (bt && isHeld(bt)) next.push(...unmergedBlockers(q, bt)); else roots.add(b);
+      if (bt && holdsKept(bt)) next.push(...unmergedBlockers(q, bt)); else roots.add(b);
     }
     edge = next;
   }
@@ -290,7 +290,7 @@ export function waitCause(r) {
   const roots = new Map();
   for (const x of waiting) {
     const b = x.b ?? r;
-    const each = isHeld(x.t) ? waitRoots(b.q, x.t) : new Set();
+    const each = holdsKept(x.t) ? waitRoots(b.q, x.t) : new Set();
     if (!each.size) return null;
     for (const key of each) roots.set(`${b.stateDir}\t${key}`, { b, key });
   }
@@ -344,18 +344,22 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 // names, which needs-you words for the person (prWhy).
 // A merge_blocked note the merge driver wrote for a §4 Merge hold, or null: { text (after the prefix),
 // why, where, routine (the command it names, or null), off (why it was not run, or null), failed
-// ({ sha, exit, step }, or null) }.
+// ({ sha, exit, step }, or null), more (how many other holds with no routine the PR touches, which the
+// note counts after the first: ` (and <n> more merge hold(s))`) }.
 export function parseHoldNote(note) {
   const m = /^merge hold:\s*(.*)$/s.exec(String(note ?? ''));
   if (!m) return null;
   const text = m[1];
   const r = /; routine `([^`]+)` (?:not run: (.*)|failed at (\S+) \(exit (-?\d+)\): (.*))$/s.exec(text);
-  const head = r ? text.slice(0, r.index) : text;
+  let head = r ? text.slice(0, r.index) : text;
+  const extra = r ? null : / \(and (\d+) more merge hold\(s\)\)$/.exec(head);
+  if (extra) head = head.slice(0, extra.index);
   const i = head.indexOf(' — ');
   return {
     text, why: (i < 0 ? head : head.slice(0, i)).trim(), where: i < 0 ? '' : head.slice(i + 3).trim(),
     routine: r?.[1] ?? null, off: r?.[2] ?? null,
     failed: r && r[3] ? { sha: r[3], exit: Number(r[4]), step: r[5] } : null,
+    more: extra ? Number(extra[1]) : 0,
   };
 }
 

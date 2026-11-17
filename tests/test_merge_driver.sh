@@ -638,6 +638,14 @@ q add T-52 Bug A; q set T-52 branch=fix/T-52 state=done result.pr=152
 hloop T-52; hloop T-52
 check "DS-377 AC2: a held path into the default branch is still held for a person" '[ "$(merged)" = 151 ] && echo "$out" | grep -q "#152 HELD by §4 Merge holds — a person merges it"'
 check "DS-377 AC2: the record leads with the hold'\''s reason from the row" '[ "$(qf T-52 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+# DS-657: a PR under two holds with no routine: the record quotes the first and counts the other, so
+# needs-you never reads the first one's step as the last.
+sed -e 's/| Merge holds | `none` |/| Merge holds | `infra\/**: deploys the infrastructure on merge` `src\/**: Ben signs off in docs\/signoff.md` |/' "$T/config.md" > "$T/config-holds2.md"
+q init merge-holds-two
+q add T-53 Bug A; q set T-53 branch=fix/T-52 state=done result.pr=152
+out=$(DESK_CONFIG="$T/config-holds2.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+out=$(DESK_CONFIG="$T/config-holds2.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-53 2>&1)
+check "DS-657 a PR under two holds with no routine: the record quotes the first and counts the other" '[ "$(qf T-53 .merge_blocked)" = "merge hold: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf (and 1 more merge hold(s))" ]'
 
 # ---- a code-owner hold whose every owner is the merging account holds nothing --------------------
 sed -e 's/| Merge holds | `none` |/| Merge holds | `frontend\/**: CODEOWNERS path, needs your code-owner approval` |/' "$T/config.md" > "$T/config-co.md"
