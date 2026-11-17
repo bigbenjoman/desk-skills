@@ -255,7 +255,10 @@ q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 # shellcheck source=jq_at.sh
 . "$S/jq_at.sh"
-field(){ "$JQ" -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
+# A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.
+field(){ local a="${DESK_QUEUE%.json}.archive.json"; [ -f "$a" ] || a=/dev/null
+  "$JQ" -cn --arg t "$1" --arg p "$2" --slurpfile live "$DESK_QUEUE" --slurpfile arc "$a" "$JQ_AT"' $live[0].tickets as $l
+  | (if $l | has($t) then $l[$t] else ($arc[0].tickets // {})[$t] end) | at($p)'; }
 state(){ field "$1" state | tr -d '"'; }
 # A batch-level field of the queue, as JSON.
 bfield(){ "$JQ" -c --arg p "$1" "$JQ_AT"' at($p)' "$DESK_QUEUE"; }
