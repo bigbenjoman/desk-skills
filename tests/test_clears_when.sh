@@ -424,6 +424,10 @@ check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state
 git -C "$T/repo" remote set-url origin https://127.0.0.1:1/nothing.git; out=$(node "$B/pass.mjs" 2>&1); git -C "$T/repo" remote set-url origin "$T/origin.git"
 check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
+mkdir -p "$T/hung-push"; printf '#!/bin/sh\ncase " $* " in *" push "*) exec sleep 30;; esac\nexec "%s" "$@"\n' "$(command -v git)" > "$T/hung-push/git"; chmod +x "$T/hung-push/git"
+out=$(PATH="$T/hung-push:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
+check "DS-779 a push that hangs past its limit keeps the park and its condition" \
+  '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\" (git push ran past its 1 seconds)" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
 # While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.

@@ -4,9 +4,9 @@
 // merged fix for a production breakage is asked at once (urgentPromotion). Skills never deploy
 // production: a "go" is recorded in the batch notes, and the repo's own promotion steps are the person's.
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
+import { execGit } from './remote-git.mjs';
 
 // A PR title or body line that starts this way is a fix for a live production breakage.
 export const PRODUCTION_BROKEN = /^\s*production broken\b/i;
@@ -96,7 +96,7 @@ export function renderStagingPage({ slug, ref, range, prs, loose = [], staging }
   return lines.join('\n');
 }
 
-const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+const run = (cmd, args) => execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 // One repo's promotion: {why} when it has no Promotion ref or the range cannot be read, {empty: true}
 // when nothing landed since it, else {range, prs, loose, fetched, page}. `exec` runs git and gh.
