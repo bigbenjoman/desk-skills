@@ -381,7 +381,8 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
     };
   });
   const reworkStale = rework.some((x) => x.admitted && x.age.stale);
-  const guardrails = panel(!guardRows.length && !rework.some((x) => x.admitted) ? 'empty' : scanStale.length || evalAge.stale || reworkStale ? 'stale' : 'ok',
+  const guardStale = (guardRows.length && (scanStale.length || evalAge.stale)) || reworkStale;
+  const guardrails = panel(!guardRows.length && !rework.some((x) => x.admitted) ? 'empty' : guardStale ? 'stale' : 'ok',
     { rows: guardRows, post_merge: scans.map((s) => ({ repo: s.repo, ...age(s.at, now, MAX_AGE_S.post_merge) })), rework },
     errs(repos.map((r) => r.evals), repos.map((r) => r.postMerge), rowErrors.map((error) => ({ error }))));
 

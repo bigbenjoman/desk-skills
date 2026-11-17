@@ -198,7 +198,7 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
     row('DS-4', 2, { cost: 2 }),
     // Admitted before this week.
     { ...rw('DS-5', { cost: 9, share: 0.5, rework: 4.5, causes: { conflict: 4.5 }, classes: {} }), admitted_at: iso(9 * DAY) },
-  ]) } });
+  ]) });
   const ev = join(m.root, DS, 'levers-evidence', 'evl_2026-11-15_x.jsonl');
   utimesSync(ev, new Date(NOW - 3 * HOUR), new Date(NOW - 3 * HOUR));
   const v = view(m);
