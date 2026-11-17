@@ -75,7 +75,10 @@ export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+# A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.
+field(){ node -e 'const fs = require("fs"); const [, f, key] = process.argv; const live = JSON.parse(fs.readFileSync(f, "utf8")).tickets;
+  let a = {}; try { a = JSON.parse(fs.readFileSync(f.replace(/\.json$/, "") + ".archive.json", "utf8")).tickets; } catch {}
+  const t = Object.hasOwn(live, key) ? live[key] : a[key]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 # parked <KEY> <lane> <question> [<clears-when>]
 parked(){ q add "$1" Story "$2"; q park "$1" "$3"; q set "$1" "branch=feat/$1"; [ $# -lt 4 ] || q clears-when "$1" "$4"; }
@@ -424,6 +427,10 @@ check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state
 git -C "$T/repo" remote set-url origin https://127.0.0.1:1/nothing.git; out=$(node "$B/pass.mjs" 2>&1); git -C "$T/repo" remote set-url origin "$T/origin.git"
 check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
+mkdir -p "$T/hung-push"; printf '#!/bin/sh\ncase " $* " in *" push "*) exec sleep 30;; esac\nexec "%s" "$@"\n' "$(command -v git)" > "$T/hung-push/git"; chmod +x "$T/hung-push/git"
+out=$(PATH="$T/hung-push:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
+check "DS-779 a push that hangs past its limit keeps the park and its condition" \
+  '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\" (git push ran past its 1 seconds)" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
 # While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.

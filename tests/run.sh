@@ -17,6 +17,9 @@ for v in $(compgen -e); do
   case "$v" in DESK_*) case "$keep_env" in *" $v "*) ;; *) unset "$v" ;; esac ;; esac
 done
 unset DATABASE_URL DIRECT_DATABASE_URL
+# The pass's test lock gate reads this machine's real lock queue, which a suite run from a worker is
+# itself part of: every suite's passes run without it, and the suites that test it turn it back on.
+export AUTOPILOT_LOCK_QUEUE=off
 T="$(cd "$(dirname "$0")" && pwd)"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT

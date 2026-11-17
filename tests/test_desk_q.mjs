@@ -1289,6 +1289,9 @@ dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopil
 dated('skills24', 5030, { hours: twelveHours, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'DS-150': prAt(175, { isDraft: true }), 'DS-168': { ...heldBy('DS-150'), open_questions: 1, outside_blockers: outside(27) },
   'DS-175': heldBy('DS-150'), 'DS-180': heldBy('DS-175') } });
+// DS-757 AC8: a blocker that merged and moved to the queue's archive is still found, as merged.
+dated('holdarch', 5040, { hours: twelveHours, tickets: { 'W-AR': heldBy('B-AR') } });
+writeFileSync(join(I.env.DESK_HOME, 'repos', 'acme__holdarch', 'queue.archive.json'), JSON.stringify({ tickets: { 'B-AR': { key: 'B-AR', ...mergedAt(173), archived_at: ago194(1) } } }));
 const repos217 = Q.loadRepos(FIXED);
 const repo217 = (name) => repos217.find((r) => r.name === name);
 const queue217 = (name) => lines(Q.repoScreen(repo217(name), { now: FIXED }));
@@ -1325,12 +1328,14 @@ t('DS-503 AC4 a hold an agent can check with no routine asks for a routine, not 
 t('DS-411 a merge hold note is read for its step, its routine and the step a failed routine stopped at',
   JSON.stringify(['merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql',
     'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no',
-    'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', 'review feedback: x'].map((n) => Q.parseHoldNote(n))),
+    'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', 'review feedback: x',
+    'merge hold: apply it first — db/**, 1 file(s), e.g. db/a.sql (and 2 more merge hold(s))'].map((n) => Q.parseHoldNote(n))),
   JSON.stringify([
-    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: null, off: null, failed: null },
-    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh --all', off: '§3 merge-hold-routine is no', failed: null },
-    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh', off: null, failed: { sha: '1234abcde', exit: 2, step: 'staging: P3009' } },
-    null]));
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: null, off: null, failed: null, more: 0 },
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh --all` not run: §3 merge-hold-routine is no', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh --all', off: '§3 merge-hold-routine is no', failed: null, more: 0 },
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql; routine `./apply.sh` failed at 1234abcde (exit 2): staging: P3009', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: './apply.sh', off: null, failed: { sha: '1234abcde', exit: 2, step: 'staging: P3009' }, more: 0 },
+    null,
+    { text: 'apply it first — db/**, 1 file(s), e.g. db/a.sql (and 2 more merge hold(s))', why: 'apply it first', where: 'db/**, 1 file(s), e.g. db/a.sql', routine: null, off: null, failed: null, more: 2 }]));
 t('DS-218 AC1 a PR that merges by itself moves without you', rail217('holdsup', 'B-GREEN').startsWith('Moves without you: PR #177, tests running'), true);
 const halted218 = Q.loadRepos(NOW).find((r) => r.name === 'halted');
 t('DS-218 AC1 with passes stopped a ready ticket will not move until they resume, and says how',
@@ -1350,6 +1355,8 @@ t('DS-217 AC7 its page gives the release command the pass prints', Q.ticketScree
 t('DS-217 AC8 (DS-279 AC6) open Jira blockers outside the batch: needs you, no start and no date, whatever its blocker does', cells217('hold', 'W-8', 4), '◆ needs you | held by 27 Jira tickets outside: start anyway? | — | no date');
 t('DS-217 AC8 once the user confirms it can start without them, outside blockers no longer block it', cells217('hold', 'W-10'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC6 every blocker merged, a supervisor but no merge grant: nothing lets it start, so it needs you', cells217('holdask', 'W-6A'), '◆ needs you | every blocker merged: let it start');
+t('DS-757 AC8 desk-q finds an archived blocker by key, as merged, not as missing from the queue', cells217('holdarch', 'W-AR'), '◆ needs you | every blocker merged: let it start');
+t('DS-757 AC8 and finds the archived ticket itself by key, as done', repo217('holdarch').q.tickets['B-AR']?.state, 'done');
 t('DS-217 two tickets held behind each other both need you, and one behind them waits saying so',
   ['C-1', 'C-2', 'C-3'].map((k) => cells217('holdask', k)).join(' / '),
   '◆ needs you | C-2 is held behind this one: let one of them start / ◆ needs you | C-1 is held behind this one: let one of them start / · waiting | behind C-1, which needs you');
@@ -2278,6 +2285,40 @@ const r490 = Q.loadRepos(NOW).find((r) => r.name === 'stuck490');
 r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
+
+// ---- A row whose waiting tickets all wait on one ticket, with nothing else ready or running,
+// names that ticket in a note under the table: its PR and the person's merge, or its running stage.
+const held657 = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } });
+const hold657 = 'merge hold: call-script sign-off — prompts/**, 1 file(s), e.g. prompts/call.md';
+const put657 = (name, port, tickets) => put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2, tickets } });
+put657('merge657', 5701, { 'M-1': { ...prOn(954, [okCheck('tests')]), merge_blocked: hold657 }, 'M-2': held657('M-1'), 'M-3': held657('M-2'), 'M-4': held657('M-1|M-3') });
+put657('run657', 5702, { 'R-1': { state: 'running', stage: '4/9' }, 'R-2': held657('R-1'), 'R-3': held657('R-2') });
+put657('ready657', 5703, { 'D-1': { ...prOn(955, [okCheck('tests')]), merge_blocked: hold657 }, 'D-2': held657('D-1'), 'D-3': { state: 'queued' } });
+put657('two657', 5704, { 'T-1': { state: 'running', stage: '3/9' }, 'T-2': { state: 'running', stage: '5/9' }, 'T-3': held657('T-1'), 'T-4': held657('T-2') });
+const notes657 = (name) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === name), { now: NOW, avail: 30 })).filter((l) => l.includes(`· ${name} `)).map((l) => l.replace(/^note {2}· \S+ +/, ''));
+t('DS-657 AC3 every waiting ticket behind one PR under a merge hold: the row names the ticket, its PR and your merge', notes657('merge657').join(' / '), 'all 3 wait on M-1 (PR #954, your merge).');
+t('DS-657 AC4 every waiting ticket behind one running ticket: the row names it and its stage', notes657('run657').join(' / '), 'all 2 wait on R-1 (running, stage 4/9).');
+t('DS-657 AC3 negative control: a ready ticket in the row adds no note', notes657('ready657').length, 0);
+t('DS-657 AC4 negative control: waiting tickets behind two tickets add no note', notes657('two657').length, 0);
+// A triage park held behind a running ticket waits too (holdsKept), and the chain is followed through it.
+put657('park657', 5705, { 'S-1': { state: 'running', stage: '4/9' },
+  'C-1': { state: 'parked', lane: 'C', held_by: 'S-1', park: { question: 'lane C — needs the person' } }, 'H-1': held657('C-1') });
+t('DS-657 AC4 a row waiting through a triage park held behind a running ticket names that ticket', notes657('park657').join(' / '), 'all 2 wait on S-1 (running, stage 4/9).');
+// A held blocker nothing further holds (here a queue.mjs stop hold) is a root of its own, so a ticket
+// waiting on it and on a running one waits on two tickets, and the row adds no note.
+put657('stop657', 5706, { 'P-1': { state: 'parked', park: { question: 'held by orchestrator: stopped by queue.mjs stop' } },
+  'R-1': { state: 'running', stage: '4/9' }, 'X-1': held657('P-1|R-1') });
+t('DS-657 AC4 negative control: a wait on a stopped ticket beside a running one adds no note', notes657('stop657').length, 0);
+// Layers of two tickets, each held by both of the layer before: the walk reads each key once.
+const layered = { tickets: { 'Z-0': { key: 'Z-0', state: 'running' } } };
+for (let i = 1, prev = ['Z-0']; i <= 24; i++) {
+  const keys = [`Z-${i}a`, `Z-${i}b`];
+  for (const k of keys) layered.tickets[k] = { key: k, ...held657(prev.join('|')) };
+  prev = keys;
+}
+const layeredStart = Date.now();
+const layeredRoots = [...Q.waitRoots(layered, { key: 'Z-T', held_by: 'Z-24a|Z-24b' })];
+t('DS-657 AC4 a layered hold graph walks to its one root in well under a second', `${layeredRoots.join()} ${Date.now() - layeredStart < 1000}`, 'Z-0 true');
 
 // ---- A dense hold graph: each ticket held by every one before it (as collision holds leave a batch)
 // has exponentially many paths. The walk reads each blocker once, so it stays fast.

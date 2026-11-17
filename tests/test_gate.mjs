@@ -335,4 +335,28 @@ rmSync(gtmp, { recursive: true, force: true });
     '[{"name":"Lint","runId":31},{"name":"e2e","runId":null},{"name":"run Deploy","runId":41}]');
   t('DS-647 running matches pending one for one', g.running.map((r) => r.name).join(',') === g.pending.join(','), true);
 }
+// DS-662: the test lock's queue, counted machine-wide from a faked process list.
+{
+  const { lockWaiters, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const procs = [
+    { pid: 11, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder
+    { pid: 12, ppid: 11, args: 'bash tests/run.sh' },
+    { pid: 21, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' }, // waits, polling
+    { pid: 22, ppid: 21, args: 'sleep 2' },
+    { pid: 31, ppid: 1, args: 'bash /other/repo/desk/bin/with-lock.sh test -- pnpm test' }, // another repo's, waiting
+    { pid: 41, ppid: 1, args: 'flock /tmp/desk-test.lock bash tests/run.sh' }, // a flock holder: it has a child
+    { pid: 42, ppid: 41, args: 'bash tests/run.sh' },
+    { pid: 51, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock waiter: no child yet
+    { pid: 61, ppid: 1, args: 'claude -p Run ~/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a prompt quoting it
+    { pid: 71, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh browser -- node shot.mjs' }, // another lock
+  ];
+  const holders = new Set([11, 12]);
+  t('DS-662 waiters: every unheld with-lock test|tsc wrapper and childless flock, whatever the worktree', lockWaiters({ procs, holders }), 3);
+  t('DS-662 waiters: none when ps cannot be read', lockWaiters({ procs: null, holders }), null);
+  t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
+    JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
+  t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
+  const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
+  t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');
+}
 process.exit(fails ? 1 : 0);

@@ -715,7 +715,7 @@ const behindP = { state: 'parked', lane: 'A', held_by: 'P-1', park: { question: 
 put('omicron', { port: 4555, beat: 1, supervised: true, tickets: { 'P-1': { ...parked('epic', 5, planQ), type: 'Epic' }, 'P-2': behindP, 'P-3': behindP } });
 const om = N.collect({ word: 'omicron' }).items;
 t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
-t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === planQ} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
+t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === `${planQ} (2 tickets wait behind this)`} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
 t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
 
 // ---- DS-375: a PR stuck after its fix tries is read against its checks now, names the step its run
@@ -1072,6 +1072,77 @@ t('DS-413 AC3 a hold that is not a code-owner approval quotes its reason as the 
   'PR #161 is under a merge hold, so desk never merges it itself: "legal copy sign-off" (content/legal/**, 1 file(s), e.g. content/legal/terms.md). Do what it asks first, then merge it on GitHub; the ticket is then done.');
 t('DS-413 AC3 negative control: it never says only "merge it on GitHub"', /^PR #161 [^"]*\. Merge it on GitHub/.test(h413['H-1']?.need ?? ''), false);
 t('DS-413 AC2 a code-owner hold another person owns names that owner\'s approval', /"CODEOWNERS path, needs your code-owner approval \(code-owner approval from @alice\)"/.test(h413['H-2']?.need ?? ''), true);
+
+// ---- A person's merge hold whose step reads done on GitHub (the PR changes the file its
+// reason names, and its checks are green) says only the merge is left; otherwise the line is unchanged.
+const why657 = 'call-script sign-off: Ben signs off in docs/signoff/call-script.md';
+const hold657 = (why) => `merge hold: ${why} — prompts/**, 1 file(s), e.g. prompts/call.md`;
+put('hold657', { port: 5657, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'S-1': greenPr(181, { merge_blocked: hold657(why657) }),
+  'S-2': greenPr(182, { merge_blocked: hold657(why657) }),
+  'S-3': greenPr(183, { merge_blocked: hold657(why657) }),
+  'S-4': greenPr(184, { merge_blocked: hold657('a person runs `scripts/verify.sh` first') }),
+  'S-5': greenPr(185, { merge_blocked: hold657('a person approves every change to `prompts/**`') }),
+  'S-6': greenPr(186, { merge_blocked: hold657('Ben approves prompts/call.md before merge') }),
+  'S-7': greenPr(187, { merge_blocked: 'merge hold: Ben approves package.json script changes — package.json#scripts, 1 file(s), e.g. package.json' }),
+  'S-8': greenPr(188, { merge_blocked: `${hold657(why657)} (and 1 more merge hold(s))` }),
+} });
+const green657 = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: minsAgo(1) }];
+const signed657 = [{ path: 'prompts/call.md' }, { path: 'docs/signoff/call-script.md' }];
+const gh657 = {
+  181: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
+  182: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  183: { state: 'OPEN', files: signed657, statusCheckRollup: [{ ...green657[0], status: 'IN_PROGRESS', conclusion: null }] },
+  184: { state: 'OPEN', files: [{ path: 'prompts/call.md' }, { path: 'scripts/verify.sh' }], statusCheckRollup: green657 },
+  185: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  186: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  187: { state: 'OPEN', files: [{ path: 'package.json' }], statusCheckRollup: green657 },
+  188: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
+};
+const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...N.READS, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
+const step657 = (pr, why = why657) => `PR #${pr} is under a merge hold, so desk never merges it itself: "${why}" (prompts/**, 1 file(s), e.g. prompts/call.md).`;
+const ask657 = ' Do what it asks first, then merge it on GitHub; the ticket is then done.';
+t('DS-657 AC5 a sign-off hold whose file is changed and checks are green says its step is done and only the merge is left', h657['S-1']?.need,
+  `${step657(181)} Its step is done: the PR changes \`docs/signoff/call-script.md\`, and its checks are green. Only the merge is left: merge it on GitHub; the ticket is then done.`);
+t('DS-657 AC6 the sign-off file not changed: the line is unchanged', h657['S-2']?.need, `${step657(182)}${ask657}`);
+t('DS-657 AC6 a check still running: the line is unchanged', h657['S-3']?.need, `${step657(183)}${ask657}`);
+t('DS-657 AC6 a script the reason names is a step to run, not a file the step changes: the line is unchanged', h657['S-4']?.need, `${step657(184, 'a person runs `scripts/verify.sh` first')}${ask657}`);
+t('DS-657 AC6 a hold whose reason names no file is unchanged', h413['H-1']?.need.endsWith(ask657), true);
+t('DS-657 AC6 a reason naming the glob the hold guards is no sign-off file: the line is unchanged', h657['S-5']?.need, `${step657(185, 'a person approves every change to `prompts/**`')}${ask657}`);
+t('DS-657 AC6 a reason naming a file the hold guards is no sign-off file: the line is unchanged', h657['S-6']?.need, `${step657(186, 'Ben approves prompts/call.md before merge')}${ask657}`);
+t('DS-657 AC6 a keyed hold (path#key) whose reason names its own file is no sign-off file: the line is unchanged', h657['S-7']?.need,
+  `PR #187 is under a merge hold, so desk never merges it itself: "Ben approves package.json script changes" (package.json#scripts, 1 file(s), e.g. package.json).${ask657}`);
+t('DS-657 AC6 a PR under another hold with no routine never reads as only the merge left: the line is unchanged', h657['S-8']?.need, `${step657(188)}${ask657}`);
+
+// ---- A live item says how many held tickets wait behind it, directly or through
+// another, and ranks by that after PRODUCTION BROKEN, ahead of one that has waited longer.
+const behind657 = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+put('wait657', { port: 5658, beat: 1, supervised: true, tickets: {
+  'W-1': parked('A', 30, 'Which copy?'), 'W-2': parked('A', 300, 'Which endpoint?'), 'W-3': parked('A', 5, 'PRODUCTION BROKEN: login returns 500'),
+  'W-4': behind657('W-1'), 'W-5': behind657('W-1'), 'W-6': behind657('W-4'), 'W-7': behind657('W-3'),
+} });
+const w657 = N.collect({ word: 'wait657' }).items;
+const need657 = (k) => w657.find((i) => i.t.key === k)?.need;
+t('DS-657 AC1 a live item says how many tickets wait behind it, the one behind another counted', need657('W-1'), 'Which copy? (3 tickets wait behind this)');
+t('DS-657 AC1 one with a single ticket behind it says so', need657('W-3'), 'PRODUCTION BROKEN: login returns 500 (1 ticket waits behind this)');
+t('DS-657 AC1 negative control: one with none behind it says nothing', need657('W-2'), 'Which endpoint?');
+t('DS-657 AC2 PRODUCTION BROKEN first, then most tickets behind, ahead of one that has waited longer', w657.map((i) => i.t.key).join(), 'W-3,W-1,W-2');
+// A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
+// parked tickets, a person's step by the tickets waiting on it and those held behind them.
+put('nu657', { port: 5659, beat: 1, supervised: true, tickets: {
+  'U-1': parked('A', 5, 'CONFIG_DENIED: worker-web-read (unset): needs the published rate'), 'U-2': parked('A', 300, 'Which copy?'),
+  'U-3': behind657('U-1'), 'U-4': behind657('U-3'),
+} });
+const u657 = N.collect({ word: 'nu657' }).items;
+t('DS-657 AC1 an unset row\'s item says how many tickets wait behind its parked tickets', /\(2 tickets wait behind this\)$/.test(u657.find((i) => i.kind === 'config')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', u657.map((i) => i.t.key).join(), 'unset:worker-web-read,U-2');
+put('kappa657', { port: 5660, beat: 1, supervised: true, tickets: {
+  'K-1': { state: 'done', lane: 'A', result: { pr: 76 }, pr_status: { pr: 76, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-6' },
+  'K-2': parked('A', 300, 'Which endpoint?'), 'K-3': behind657('K-1'),
+} });
+const k657 = N.collect({ word: 'kappa657' }).items;
+t('DS-657 AC1 a person\'s step says how many tickets wait behind it, those held behind its waiting tickets counted', /\(2 tickets wait behind this\)$/.test(k657.find((i) => i.kind === 'step')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', k657.map((i) => i.t.key).join(), 'step:OPS-6,K-2');
 
 // ---- DS-415: drafts whose evidence run failed wait on one fix ticket: no PR item each, and the fix's
 // park, naming a setting only the person holds, is the one item.
@@ -1928,8 +1999,26 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
   t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
-    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
+    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears \(1 ticket waits behind this\)$/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// DS-657 AC1/AC2: a link item counts the ticket on the link and every ticket held behind that one, and
+// ranks by it, as the link is the only item the held chain is listed under.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('link657', { port: 4757, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' }, 'V-2': heldOn('V-1'), 'V-3': heldOn('V-2'),
+    'V-4': parked('A', 300, 'Which endpoint?'),
+    // Held behind V-4, so it waits on V-4, not on its Won't Do link to X-9.
+    'V-5': { ...heldOn('V-4'), wont_do_link: 'X-9' },
+  }, triage: { 'V-5': { blockers: [{ key: 'X-9', category: 'done', resolution: "Won't Do" }] } } });
+  const items = N.collect({ word: 'link657' }).items;
+  t('DS-657 AC1 a dropped link counts the ticket on it and those held behind that one',
+    /\(3 tickets wait behind this\)$/.test(items.find((i) => i.t.key === 'link:V-1:V-9')?.need ?? ''), true);
+  t('DS-657 AC1 a link on a ticket held on another blocker counts nothing: nothing waits on that link',
+    /wait(s)? behind this/.test(items.find((i) => i.t.key === 'link:V-5:X-9')?.need ?? 'missing wait behind this'), false);
+  t('DS-657 AC2 and ranks ahead of one that has waited longer', items.map((i) => i.t.key).join(), 'link:V-1:V-9,V-4,link:V-5:X-9');
 }
 
 // A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park

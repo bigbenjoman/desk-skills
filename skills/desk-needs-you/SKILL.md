@@ -29,8 +29,8 @@ Otherwise it prints:
 
 - `@ <repo>: …` lines, one per repo with items, saying who runs that repo's batch: the supervisor,
   a live session, or nothing because passes stopped.
-- One line per item, already in the order to ask (a `PRODUCTION BROKEN` park first, then the
-  longest waiting):
+- One line per item, already in the order to ask (`PRODUCTION BROKEN` first, then most held
+  behind it, then oldest):
 
 ```
 <repo> <TICKET> <kind> <waited> | <what is needed> | 1. <action> (recommended: <why>) | 2. <action> | …
