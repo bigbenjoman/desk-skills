@@ -3750,9 +3750,10 @@ const epicMerged = (qO, key) => {
 }
 
 // ---- base drift ----------------------------------------------------------
+// Only tickets still being worked: a done ticket's worktree falls behind and nothing rebases it.
 const drift = [];
 for (const t of Object.values(queue().tickets)) {
-  if (!t.worktree || !existsSync(t.worktree)) continue;
+  if (t.state === 'done' || !t.worktree || !existsSync(t.worktree)) continue;
   const behind = sh('git', ['-C', t.worktree, 'rev-list', '--count', `HEAD..origin/${DEFAULT_BRANCH}`], { tolerant: true });
   if (/^\d+$/.test(behind) && Number(behind) > 0) drift.push(`${t.key} is ${behind} behind ${DEFAULT_BRANCH}`);
 }
