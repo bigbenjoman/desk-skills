@@ -699,11 +699,18 @@ HD='{"state":"parked","park":{"question":"held by orchestrator: b c"},"held_by":
 womk(){ node --input-type=module -e "import {waitingOnMerge} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); console.log(waitingOnMerge(q, q.tickets[process.argv[2]]) ? 'waiting' : 'stuck')" "$1" "$2"; }
 q='{"tickets":{"Z":{"state":"running"},"A":'"$HZ"',"B":'"$HA"',"C":'"$HA"',"D":'"$HD"'}}'
 check "a diamond of holds (Z <- A <- B,C <- D) is waiting, not stuck" '[ "$(womk "$q" D)" = waiting ]'
+LC='{"state":"parked","park":{"question":"lane C — spans layers, run manually"},"held_by":"Z"}'
+q='{"tickets":{"Z":{"state":"done","result":{"pr":7}},"S":'"$LC"'}}'
+check "a lane C park held behind a sibling whose PR is open waits on that merge, so the batch is not settled" '[ "$(wom "$q")" = waiting ] && [ "$(settled "$q" '"'"'{"7":"OPEN"}'"'"')" = moving ]'
+q='{"tickets":{"Z":{"state":"done","result":{"pr":7}},"S":{"state":"parked","park":{"question":"lane C — spans layers, run manually"}}}}'
+check "a lane C park with no holds is settled, as before" '[ "$(settled "$q" '"'"'{"7":"OPEN"}'"'"')" = settled ]'
 q='{"tickets":{"A":{"state":"queued"},"S":'"$H"'}}'
 check "held behind a queued blocker (never spawns by itself): stuck, not waiting" '[ "$(wom "$q")" = stuck ]'
 wop(){ node --input-type=module -e "import {waitingOnPark} from '$B/batch-state.mjs'; const q=JSON.parse(process.argv[1]); const st=JSON.parse(process.argv[3] ?? '{}'); console.log((waitingOnPark(q, q.tickets[process.argv[2]], (n)=>st[n]??null) ?? ['none']).join(','))" "$@"; }
 q='{"tickets":{"A":{"state":"parked","park":{"question":"which helper?"}},"S":'"$H"'}}'
 check "DS-332: held behind a parked blocker waits on its park" '[ "$(wop "$q" S)" = A ] && [ "$(wom "$q")" = stuck ]'
+q='{"tickets":{"Z":{"state":"running"},"L":'"$LC"',"S":{"state":"parked","park":{"question":"held by orchestrator: l"},"held_by":"L"}}}'
+check "held behind a lane C park that is itself held waits on that park's answer" '[ "$(wop "$q" S)" = L ]'
 q='{"tickets":{"Z":{"state":"failed"},"A":'"$HZ"',"B":'"$HA"',"C":'"$HA"',"D":'"$HD"'}}'
 check "DS-332: a diamond behind one failed ticket waits on it, once" '[ "$(wop "$q" D)" = Z ] && [ "$(wop "$q" A)" = Z ]'
 q='{"tickets":{"Z":{"state":"failed"},"B":{"state":"done","result":{"pr":7}},"S":{"state":"parked","park":{"question":"held by orchestrator: z b"},"held_by":"Z|B"}}}'
@@ -861,7 +868,7 @@ printf '%s\n' feat/KAN-701 feat/KAN-702 > "$T/merged"; md
 check "driver: released once every predecessor merged; held_by cleared; moved to front" \
   '[ "$(qg KAN-703 .state)" = triaged ] && [ "$(qg KAN-703 .held_by)" = null ] && [ "$(qg KAN-703 .park)" = null ] && [ "$(jq -r ".tickets|keys_unsorted|.[0]" "$DESK_QUEUE")" != KAN-701 ]'
 check "driver: a queue-held ticket is released from held_by alone" '[ "$(qg KAN-704 .state)" = triaged ]'
-# DS-718: a ticket freed by hand from a --deps predecessor (freed_from) waits on its other blockers only.
+# A ticket freed by hand from a --deps predecessor (freed_from) waits on its other blockers only.
 node "$B/queue.mjs" add KAN-705 Task A >/dev/null; node "$B/queue.mjs" add KAN-706 Task A >/dev/null
 node "$B/queue.mjs" set KAN-705 branch=feat/KAN-705 held_by=KAN-701 freed_from=KAN-706 >/dev/null; node "$B/queue.mjs" park KAN-705 "held by orchestrator: blocked by KAN-701 (Jira link)" >/dev/null
 out=$(PATH="$T/fakebin:$PATH" FAKE_MERGED="$T/merged" MERGE_DRIVER_RELEASE_ONLY=1 bash "$B/merge-driver.sh" --tickets "KAN-701 KAN-705" --deps "KAN-705:KAN-701,KAN-706" 2>&1); rc=$?

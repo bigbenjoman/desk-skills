@@ -128,10 +128,14 @@ export const HELD_PREFIX = 'held by orchestrator';
 // the one sanctioned manual release once every predecessor's PR has merged).
 export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ?? '').startsWith(HELD_PREFIX);
 
-// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it. A
-// ticket parked for its own reason (triagePark) that keeps holds in held_by waits behind them too.
+// Waiting behind the blockers in its held_by: held by the orchestrator, or parked at triage for its own
+// reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
+// this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
+export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
+
+// The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
 export function heldBehindOf(q, key) {
-  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && (isHeld(o) || triagePark(o)));
+  const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
   const behind = new Set();
   for (let edge = new Set([key]); edge.size;) {
     const next = held.filter((o) => !behind.has(o.key) && String(o.held_by ?? '').split('|').some((k) => edge.has(k))).map((o) => o.key);
@@ -524,7 +528,7 @@ export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked
 function holdLeadsTo(q, t, prState, seen) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
-  if (!isHeld(t) || seen.has(t)) return null;
+  if (!holdsKept(t) || seen.has(t)) return null;
   // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
   // the batch is not settled while either waits.
   if (dateHeld(t)) return [];
@@ -558,7 +562,7 @@ export function waitingOnPark(q, t, prState = () => null) {
 // The held tickets from `from` to `to` along held_by, both ends included, or null when `from` is not
 // held behind `to`, directly or through other held tickets. Depth first, the first path found.
 function holdPath(q, from, to, seen = new Set()) {
-  if (!isHeld(from) || seen.has(from.key)) return null;
+  if (!holdsKept(from) || seen.has(from.key)) return null;
   seen.add(from.key);
   const preds = String(from.held_by ?? '').split('|').filter(Boolean);
   if (preds.includes(to)) return [from.key, to];

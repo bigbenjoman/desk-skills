@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -1939,7 +1939,7 @@ const linkLines = [];
   const qR = queue();
   for (const t of Object.values(qR.tickets)) {
     const was = keysOf(t.dropped_link);
-    const gone = isHeld(t) || triagePark(t) ? keysOf(t.held_by).filter((k) => !qR.tickets[k] && !keysOf(t.held_outside).includes(k)) : [];
+    const gone = holdsKept(t) ? keysOf(t.held_by).filter((k) => !qR.tickets[k] && !keysOf(t.held_outside).includes(k)) : [];
     if (gone.join('|') !== was.join('|')) {
       const fresh = gone.filter((k) => !was.includes(k));
       if (fresh.length) linkLines.push(`triage: ${t.key} is held behind ${fresh.join(', ')}, no longer in this batch, so nothing releases it: is the link still right? Raised once, in needs-you`);
@@ -3675,7 +3675,7 @@ const epicMerged = (qO, key) => {
 {
   const qO = queue();
   const landed = new Map();
-  for (const t of Object.values(qO.tickets).filter((x) => (isHeld(x) || triagePark(x)) && x.held_outside)) {
+  for (const t of Object.values(qO.tickets).filter((x) => holdsKept(x) && x.held_outside)) {
     const outside = keysOf(t.held_outside);
     const rec = triageRec(t.key);
     const ownEpic = outside.filter((p) => !qO.tickets[p] && ownEpicOf(rec).includes(p));

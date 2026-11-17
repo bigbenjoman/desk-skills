@@ -601,7 +601,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const a = cli('queue.mjs', ['admit', 'HC-2', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
   t('DS-569 --hold-collisions holds a ticket behind no ticket already waiting behind it', `${a.code} ${hc?.held_by} ${hc?.collides_with}`, '0 HC-4 HC-1|HC-3|HC-4');
-  // DS-714: a lane park that keeps its holds in held_by beside it waits behind them too, so a ticket it
+  // A lane park that keeps its holds in held_by beside it waits behind them too, so a ticket it
   // waits on, directly or through a ticket held behind it, is not held behind it in turn.
   aoRec('HC-5', ['src/app.ts']);
   aoRec('HC-6', ['src/app.ts']);

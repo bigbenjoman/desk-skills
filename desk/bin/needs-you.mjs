@@ -82,7 +82,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -640,7 +640,7 @@ const STEP = 'step:';
 const standingDir = (b) => (b.batch == null ? b.stateDir : resolve(b.stateDir, '..', '..'));
 // The steps in no batch of `q` that hold held ticket `t`'s build, or a triage park's, by `stepOf`
 // (personStepOf). Only those still in its held_by: a person's release leaves held_outside behind (queue.mjs).
-const startSteps = (q, t, stepOf) => (isHeld(t) || parkedAtTriage(t) ? keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
+const startSteps = (q, t, stepOf) => (holdsKept(t) ?keysOf(t.held_outside).filter((k) => keysOf(t.held_by).includes(k) && !q?.tickets?.[k] && stepOf?.(t.key, k)) : []);
 // A needs row whose hold needs nothing but such a step: the step's item lists it, so it is not one of its own.
 const stepHeld = (b, x) => !heldAsks(x.t) && holdShown(b.q, x.t, b.ctx)?.step != null;
 // Every ticket in any of the repo's batches waiting on the step, read from the queues on disk, so a

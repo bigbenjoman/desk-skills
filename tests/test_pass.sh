@@ -1452,7 +1452,7 @@ check "DS-541 AC2 in the standing batch, a ticket linked as blocked by its Jira 
 check "DS-541 AC3 a ticket blocked by an open ticket outside the batch that is not its epic is still held behind it" \
   '[ "$(field J-11 state)" = "\"parked\"" ] && [ "$(field J-11 held_outside)" = "\"X-11\"" ] && [ "$(field J-11 outside_blockers | jq -c "[.[].key]")" = "[\"X-11\"]" ] && ! echo "$out" | grep -q "J-11 is linked as blocked by its own epic"'
 q drop J-10; q drop J-11
-# DS-717: a blocker in no batch closed as Won't Do never lands, so its link is raised once as a triage
+# A blocker in no batch closed as Won't Do never lands, so its link is raised once as a triage
 # item (wont_do_link) rather than held in silence; removing the link lifts the hold and clears it.
 # links <KEY> <BLOCKER> <category> <status> [<BLOCKER2> ...] writes the ticket's links; none with no blocker.
 links(){ k=$1; shift; s=''; while [ $# -ge 3 ]; do s="$s${s:+,}{\"type\":{\"inward\":\"is blocked by\"},\"inwardIssue\":{\"key\":\"$1\",\"fields\":{\"status\":{\"name\":\"$3\",\"statusCategory\":{\"key\":\"$2\"}}}}}"; shift 3; done
@@ -1506,7 +1506,7 @@ resolved X-16 "Won't Do"; links J-16 X-16 'done' "Won't Do"; out=$(node "$B/pass
 check "DS-717 a blocker read Done before its resolution was is read again, raised once, and the hold stays" \
   '[ "$(echo "$out" | grep -c "triage: J-16 is blocked by X-16, closed without landing")" = 1 ] && [ "$(field J-16 held_outside)" = "\"X-16\"" ] && [ "$(jq -c ".blockers[0].resolution" "$T/state-j/triage/J-16.json")" = "\"Won'"'"'t Do\"" ]'
 q drop J-16
-# DS-656: a Blocks link added in Jira after a ticket was admitted is read by the next pass, before it
+# A Blocks link added in Jira after a ticket was admitted is read by the next pass, before it
 # spawns, and held as intake would have held it; a started ticket only has the late link said.
 no_links(){ printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/$1.json"; }
 q add J-61; q set J-61 state=parked 'park={"question":"which colour should it be?"}' outside_blockers_read=2099-01-01T00:00:00.000Z
@@ -1563,7 +1563,7 @@ out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-656 AC7 a blockers read that fails leaves held_by as it was and says when it is tried again" \
   '[ "$(field J-68 held_by)" = null ] && [ "$(field J-68 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker links: J-68 not read, holds kept as they were and tried again in [0-9]* minutes"'
 rm -f "$T/jira-down"; q drop J-68; q drop J-61
-# DS-718: every due ticket's links are read in one Jira search, a lane C park gains a hold beside its
+# Every due ticket's links are read in one Jira search, a lane C park gains a hold beside its
 # park, and a link no hold settles (a dropped sibling, one closed as Won't Do, a cycle) is raised once.
 batch718="J-100 J-101 J-102 J-103 J-104 J-105 J-106 J-107 J-108 J-109 J-110 J-111 J-112 J-113"
 for k in $batch718; do q add "$k"; q set "$k" state=triaged; no_links "$k"; links "$k"; done

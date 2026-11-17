@@ -1872,7 +1872,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
-// DS-717: a link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
+// A link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
 // item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
 {
   const held = { state: 'parked', lane: 'A', held_by: 'X-1', held_outside: 'X-1', wont_do_link: 'X-1', park: { question: 'held by orchestrator: blocked by X-1 — starts once X-1 is Done and on the base', since: minsAgo(30) } };
@@ -1902,7 +1902,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
 }
 
-// DS-718: a hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
+// A hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
 // Won't Do with its PR unmerged (wont_do_link) and two tickets linked as blocking each other (cycle_link)
 // are each one triage item, and the ticket held behind the dropped one is not listed again.
 {
@@ -1955,7 +1955,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
 }
 
-// DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+// A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
 {
   put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
     'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
@@ -2120,7 +2120,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
-// A ticket held behind `by`, and the keys needs-you lists for batch `name`: the DS-600 and DS-716 blocks'.
+// A ticket held behind `by`, and the keys needs-you lists for batch `name`, for the blocks below.
 const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
 const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
 
@@ -2154,7 +2154,7 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
 }
 
-// ---- DS-716: a park whose own blockers are open is not listed, put off or not; the put-off override
+// ---- A park whose own blockers are open is not listed, put off or not; the put-off override
 // moves to the ticket first in its chain, and a count behind a ticket counts each ticket once.
 {
   const nine = (by) => Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`H-${i + 1}`, behind(`H-${i + 1}`, by)]));

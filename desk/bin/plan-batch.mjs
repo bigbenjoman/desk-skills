@@ -93,7 +93,7 @@ const stepParked = (r) => stepPark(r) !== null;
 const inputStep = (r) => stepLabel(r?.labels, INPUT_LABELS) !== null;
 const stepped = here.filter(stepParked);
 const laneOk = (r) => !stepParked(r) && ['A', 'B', 'D', 'E'].includes(r.lane) && !needsPersonLane(r);
-const sizeParked = (r) => laneOk(r) && ['L', 'XL'].includes(String(r.size ?? '').toUpperCase());
+const sizeParked = (r) => laneOk(r) && sizePark(r.size) !== null;
 const parked = here.filter((r) => !stepParked(r) && needsPersonLane(r));
 // A C or D whose challenge could not read the code is shown as unchecked and asked about.
 const unchecked = parked.filter(laneUnchecked);

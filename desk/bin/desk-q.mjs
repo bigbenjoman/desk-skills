@@ -36,7 +36,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark } from './batch-state.mjs';
+import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
@@ -489,7 +489,7 @@ function draftWhy(u) {
 function holdsReach(q, from, key, seen = new Set()) {
   if (from === key) return true;
   const ft = q.tickets?.[from];
-  if (seen.has(from) || !ft || !(isHeld(ft) || triagePark(ft))) return false;
+  if (seen.has(from) || !ft || !holdsKept(ft)) return false;
   seen.add(from);
   return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
 }
