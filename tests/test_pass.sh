@@ -4487,4 +4487,65 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
   'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
 
+# ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
+# with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
+# the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.
+git init -q --bare -b main "$T/cf-origin.git"
+git init -q -b main "$T/cf"; git -C "$T/cf" remote add origin "$T/cf-origin.git"
+seq 1 1200 > "$T/cf/big.ts"; echo base > "$T/cf/b.txt"; echo base > "$T/cf/c.txt"
+git -C "$T/cf" add -A; git -C "$T/cf" commit -q -m init
+git -C "$T/cf" checkout -q -b fix/CF-1; { echo pr; seq 2 1200; } > "$T/cf/big.ts"; echo pr > "$T/cf/b.txt"; echo pr > "$T/cf/c.txt"
+git -C "$T/cf" commit -q -am pr; CFH=$(git -C "$T/cf" rev-parse HEAD)
+git -C "$T/cf" checkout -q main; { echo main; seq 2 1200; } > "$T/cf/big.ts"; echo main > "$T/cf/b.txt"
+git -C "$T/cf" commit -q -am main; git -C "$T/cf" push -q origin main fix/CF-1
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+{ sed "s#$T/repo#$T/cf#" "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; } > "$T/config-cf.md"
+# cfq <name>: a fresh queue and state on the clone. iso <days ago>: that time. cfrec <days ago> <head>: a recorded conflict on big.ts.
+cfq(){ export DESK_CONFIG="$T/config-cf.md" DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1"; mkdir -p "$T/state-$1/logs" "$T/state-$1/triage"; : > "$T/fb-spawns"; q init "$1"; q set-batch concurrency=8 concurrency_by=user; }
+iso(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 864e5).toISOString())' "$1"; }
+cfrec(){ printf '{"file":"big.ts","ticket":"CF-9","pr":909,"head":"%s","at":"%s"}\n' "$2" "$(iso "$1")" >> "$DESK_AUTOPILOT_STATE/conflicts.jsonl"; }
+cfn(){ jq -c "$1" "$T/state-cfa/conflicts.jsonl" 2>/dev/null; }
+
+cfq cfa
+q add CF-1; q set CF-1 state=done lane=A branch=fix/CF-1 result.pr=901; fx 901 "$CFH" CONFLICTING tests:SUCCESS
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC1 a ready PR in conflict with its base records one entry per conflicting file, naming the file, ticket, PR and time" \
+  '[ "$(jq -sc "map(.file) | sort" "$T/state-cfa/conflicts.jsonl")" = "[\"b.txt\",\"big.ts\"]" ] && [ "$(jq -sc "map([.ticket, .pr, .head]) | unique" "$T/state-cfa/conflicts.jsonl")" = "[[\"CF-1\",901,\"$CFH\"]]" ] && [ "$(cfn ".at" | grep -cE "^\"20[0-9]{2}-[0-9]{2}-[0-9]{2}T")" = 2 ]'
+check "DS-756 AC1 the conflict still goes to its fix try with the same files" \
+  '[ "$(field CF-1 fix.kind)" = "\"conflict\"" ] && [ "$(field CF-1 fix.files | jq -c "sort")" = "[\"b.txt\",\"big.ts\"]" ]'
+q set CF-1 state=done fix=null fix_tries=null
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-756 AC1 the same conflict at the same head, met on a later pass, is not recorded again" '[ "$(grep -c . "$T/state-cfa/conflicts.jsonl")" = 2 ]'
+
+cfq cfb
+cfrec 3 h1; cfrec 2 h2; cfrec 1 h3
+fbt CF-11 triaged big.ts; fbt CF-12 triaged big.ts; fbt CF-13 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC2 a file with 3 conflicts in the last 7 days runs one place fewer than configured" \
+  'spawned CF-11 && spawned CF-12 && ! spawned CF-13 && echo "$out" | grep -qF "CF-13 (big.ts has 2 running of its 2: CF-11, CF-12)"'
+check "DS-756 AC2 the report names the file and its conflict count" \
+  'echo "$out" | grep -qF "collisions: big.ts runs 2 of its configured 3, after 3 merge-time conflict(s) in the last 7 days"'
+
+cfq cfc
+cfrec 10 h1; cfrec 9 h2; cfrec 8 h3
+fbt CF-21 triaged big.ts; fbt CF-22 triaged big.ts; fbt CF-23 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC3 lowered, then 7 days with no conflict: back up by one to its configured k" \
+  'spawned CF-21 && spawned CF-22 && spawned CF-23 && ! echo "$out" | grep -qF "collisions: big.ts runs"'
+
+cfq cfd
+cfrec 3 h1; cfrec 2 h2; cfrec 1 h3; echo 'not json' >> "$DESK_AUTOPILOT_STATE/conflicts.jsonl"
+fbt CF-31 triaged big.ts; fbt CF-32 triaged big.ts; fbt CF-33 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC5 a record the pass cannot read leaves every file at its configured k, and the report says so" \
+  'spawned CF-31 && spawned CF-32 && spawned CF-33 && echo "$out" | grep -qF "collisions: the conflict record was not read ($T/state-cfd/conflicts.jsonl line 4 is not a conflict entry), so every file runs at its configured budget"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
