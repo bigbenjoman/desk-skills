@@ -25,7 +25,9 @@
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
 //                                             row; with <lever>, on or off. A row unlike the last one the
-//                                             repo's lever log recorded is logged as a row_change
+//                                             repo's lever log recorded is logged as a row_change. With
+//                                             `auto` in the row, a last `levers: …` line gives each managed
+//                                             lever's state in this repo (lever-changes.mjs summaryLine)
 //   node desk-env.mjs levers freeze|thaw [reason]  set or clear the machine-wide freeze
 //                                             (~/.desk-autopilot/levers.freeze), logged in every repo's log
 //   node desk-env.mjs lines <file> <A>[,<B>]  with the wrappers lever on, print what `sed -n A,Bp <file>`
@@ -2129,6 +2131,14 @@ if (isMain) {
         const f = leversFrozen();
         if (f) console.log(`frozen: every trial in every repo is stopped, since ${f.at}${f.reason ? ` (${f.reason})` : ''}; desk-env levers thaw ends it`);
         if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (${row} names levers desk does not know; each is read as off; ${known})`);
+        // With `auto`, one line of each managed lever's state in this repo, from its lever log.
+        if (Object.values(s.states).includes('auto')) {
+          Promise.all([import('./lever-log.mjs'), import('./lever-changes.mjs')]).then(([LL, LC]) => {
+            const slug = repoSlug();
+            const line = LC.summaryLine({ slug, states: s.states, events: LL.read(slug).events });
+            if (line) console.log(line);
+          }).catch((e) => { console.error(`desk-env levers: the summary line: ${e.message}`); process.exitCode = 1; });
+        }
         break;
       }
       case 'lines': {

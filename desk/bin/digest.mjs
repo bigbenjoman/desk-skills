@@ -7,7 +7,9 @@
 //
 //   digest.mjs checkin                                    this repo's check-in now, as JSON (the supervisor's idle ticks)
 //   digest.mjs answer <slug> <TICKET> "<answer>"          record it through that repo's answer.mjs
-//   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log
+//   digest.mjs override <slug> <decision-id> "<choice>"   record an override in that repo's decision log;
+//                                                         a lever's adopt or revert takes on or off, and
+//                                                         sets the lever by hand in its lever log too
 //   digest.mjs ask-again <slug> <TICKET>                  take its put-off question out of the not-now register
 //
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
@@ -31,6 +33,9 @@ import { readWarnings } from './pass-metrics.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
+import { read as readLeverLog, appendWith as appendLeverLog } from './lever-log.mjs';
+import { changeLine, overrideEvent } from './lever-changes.mjs';
+import { leversDir } from './levers-view.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -222,9 +227,37 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
 // One repo's Merging PRs with no change for desk-q's STALL_MS, as desk-q words them.
 const stalledPrs = (r, now) => stalledOf({ slug: r.slug, stateDir: r.state, queuePath: r.queue, q: readJson(r.queue, null), now: now.getTime() });
 
+// The Levers page the digest's Levers section links.
+export const leversPageUrl = (dir = leversDir()) => `file://${join(dir, 'index.html')}`;
+
+// The lever changes in the window, every repo's, oldest first: one line per adopt, revert, settle, trip
+// or override in a repo's lever log (lever-changes.mjs changeLine), each adopt or revert with its
+// decision's id and override. `events(slug)` reads a repo's lever log; one that cannot be read gives none.
+export function leverChanges({ list, inWindow, events = (slug) => readLeverLog(slug).events, cmd = 'digest.mjs' }) {
+  const out = [];
+  for (const slug of [...new Set(list.map((r) => r.slug))]) {
+    let evs = [];
+    try { evs = events(slug); } catch { continue; }
+    const taken = [];
+    const overridden = new Set();
+    for (const r of list.filter((x) => x.slug === slug)) {
+      const d = readDecisions(r.state);
+      taken.push(...d.taken.filter((x) => x.lever));
+      for (const o of d.overrides) overridden.add(o.override_of);
+    }
+    for (const e of evs.filter((x) => x.at && inWindow(x))) {
+      const decision = taken.find((d) => d.lever_event === e.id) ?? null;
+      const line = changeLine({ ...e, repo: e.repo ?? slug }, { decision: decision && { ...decision, slug }, overridden: !!decision && overridden.has(decision.id), cmd });
+      if (line) out.push({ at: e.at, line });
+    }
+  }
+  return out.sort((a, b) => a.at.localeCompare(b.at)).map((x) => x.line);
+}
+
 // The page: every repo with something to answer or something taken, questions first.
-// The weekly maintenance window's notes are the computer's, not a repo's, so they head the page.
-export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [] }) {
+// The weekly maintenance window's notes are the computer's, not a repo's, so they head the page, and so
+// do the lever changes, which end on the Levers page's link.
+export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance = [], levers = [], leversPage = leversPageUrl() }) {
   const nq = groups.reduce((n, g) => n + g.questions.length, 0);
   const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
   const nc = groups.reduce((n, g) => n + (g.checks?.length ?? 0), 0);
@@ -240,15 +273,21 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   // A repo the promotion window skipped says why, last, whatever else the page holds.
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw) {
+  const nl = levers.length;
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw && !nl) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${nl ? `; ${nl} lever change(s)` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
+  }
+  if (nl) {
+    lines.push('## Levers', '');
+    for (const l of levers) lines.push(`- ${l}`);
+    lines.push('', `open: ${leversPage}`, '');
   }
   for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
@@ -317,7 +356,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
 // (nothing merged since it) or {range, prs, page}. Tests pass their own.
 const readPromotion = (r) => promotionFor(promotionInputs(r.slug));
 
-export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks } = {}) {
+export async function checkin({ times, now = new Date(), dir = digestDir(), list = repos(), bin = E.binDir(), self = null, pid = process.pid, promote = readPromotion, checkJira = doneParks, leverEvents, leversPage = leversPageUrl() } = {}) {
   const slot = latestSlot(times, now);
   if (!slot) return { status: 'not_due', push: null };
   mkdirSync(dir, { recursive: true });
@@ -357,7 +396,8 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         slug: r.slug,
         batch: r.batch ?? null,
         questions: openQuestions(r, answered, register).filter((q) => !(q.kind === 'parked' && done.has(q.ticket))),
-        decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id)),
+        // A lever's adopt or revert is listed with its evidence under Levers instead.
+        decisions: taken.filter((d) => inWindow(d) && !overridden.has(d.id) && !d.lever),
         checks: checks.filter(inWindow),
         putOff: putOffQuestions(r, register).map((p) => ({ ...p, tickets: p.tickets.filter((k) => !done.has(k)) })).filter((p) => p.tickets.length),
         promotion: promotionOf(r),
@@ -367,8 +407,9 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
       };
     });
     const maintenance = digestNotes().filter(inWindow);
+    const levers = leverChanges({ list, inWindow, cmd: join(bin, 'digest.mjs'), ...(leverEvents ? { events: leverEvents } : {}) });
     const page = join(dir, `${name}.md`);
-    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance }));
+    writeFileSync(page, renderPage({ slot: slot.id, since, groups, bin, maintenance, levers, leversPage }));
     const nq = groups.reduce((n, g) => n + g.questions.length, 0);
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
@@ -379,8 +420,9 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
     const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug)).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
-    const push = nd || nm || nw || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
+    const nl = levers.length;
+    const push = nd || nm || nw || nl || fresh.length
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nl ? `, ${nl} lever change(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
@@ -441,7 +483,10 @@ function pageRepo(dir, line, slug) {
 
 // Records an override of a taken call in its repo's decision log, with who and when. The next pass
 // in that repo lists the ticket under WAITING ON YOU (pass.mjs).
-export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date() }) {
+// A lever's adopt or revert takes `on` or `off`, and is set by hand first: one `override` event in the
+// repo's lever log (lever-changes.mjs), written under its lock, so a lever whose log refuses it keeps its
+// decision unoverridden.
+export function override({ slug, id, choice, dir = digestDir(), list = repos(), by = who(), now = new Date(), leverLog = { read: readLeverLog, appendWith: appendLeverLog } }) {
   const inRepo = list.filter((x) => x.slug === slug);
   if (!inRepo.length) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   // The batch whose log took the call, else the standing one.
@@ -451,13 +496,27 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   if (!d) return { ok: false, why: `no decision ${id} in ${slug}'s log` };
   if (overrides.some((o) => o.override_of === id)) return { ok: false, why: `decision ${id} is already overridden` };
   const at = now.toISOString();
+  let leverEvent = null;
+  if (d.lever) {
+    let why = null;
+    try {
+      leverLog.appendWith(slug, () => {
+        const o = overrideEvent(d, choice, leverLog.read(slug).events, { at });
+        if (o.why) { why = o.why; return null; }
+        leverEvent = o.event;
+        return o.event;
+      });
+    } catch (e) { why = `${slug}'s lever log refused it: ${e.message}`; }
+    if (why) return { ok: false, why };
+  }
   const entry = {
     id: createHash('sha256').update(['override', id, choice, at].join('\0')).digest('hex').slice(0, 16),
     override_of: id, at, repo: d.repo, ticket: d.ticket, question: d.question, was: d.chose, chose: choice, by,
+    ...(d.lever ? { lever: d.lever } : {}),
   };
   appendFileSync(join(r.state, 'decisions.jsonl'), `${JSON.stringify(entry)}\n`);
   const marked = markPage(dir, (l) => l.includes(`id \`${id}\``), `overridden to **${choice}** by ${by} at ${at}`);
-  return { ok: true, entry, marked };
+  return { ok: true, entry, marked, leverEvent };
 }
 
 // A "go" on a promotion question: recorded in that repo's batch notes with the range, and marked on
@@ -524,7 +583,9 @@ if (isMain) {
   } else {
     const r = override({ slug, id: target, choice: text });
     if (!r.ok) refuse(r.why);
-    console.log(`digest: decision ${target} overridden to "${text}" by ${r.entry.by}; the next pass in ${slug} lists ${r.entry.ticket} under WAITING ON YOU`);
+    console.log(r.leverEvent
+      ? `digest: decision ${target} overridden: ${r.leverEvent.lever} is ${r.leverEvent.value} in ${slug} by hand, for every ticket admitted from now on`
+      : `digest: decision ${target} overridden to "${text}" by ${r.entry.by}; the next pass in ${slug} lists ${r.entry.ticket} under WAITING ON YOU`);
     if (!r.marked) console.log('digest: the latest page does not list that decision');
   }
 }

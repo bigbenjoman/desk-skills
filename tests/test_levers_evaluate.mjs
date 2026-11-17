@@ -1,5 +1,5 @@
 // suite: levers evaluate (the daily adopt, revert, settle or hold of each lever on trial, per repo)
-// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
+// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -253,6 +253,68 @@ const { failedRuns } = await import('../desk/bin/phase0-report.mjs');
 let ghCalls = 0;
 const listed = failedRuns({ repo: 'acme/x', since: NOW, jobs: false, gh: () => { ghCalls += 1; return { status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'b1' }, { databaseId: 2, headBranch: 'b2' }]) }; } });
 t('red CI for the evaluation is one list call, no per-run view', [ghCalls, listed.runs.map((r) => r.branch)], [1, ['b1', 'b2']]);
+
+// ---- DS-644: each adopt or revert is a decision, listed on the digest and overridden from it ----------------------------------------------------
+{
+  const { checkin, override, DEFAULT_TIMES } = await import('../desk/bin/digest.mjs');
+  const { applyTrips } = await import('../desk/bin/levers-trips.mjs');
+  const { leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+  const HOUR = 3_600_000;
+  const BIN = new URL('../desk/bin', import.meta.url).pathname;
+  const decisionsOf = (slug) => jsonl(join(stateOf(slug), 'decisions.jsonl')).filter((d) => d.lever && !d.override_of);
+  const entry = (slug) => {
+    const queue = join(T, 'q', slug, 'queue.json');
+    mkdirSync(join(T, 'q', slug), { recursive: true });
+    writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: {} }));
+    return { slug, batch: null, state: stateOf(slug), queue };
+  };
+  const TRIPS = 'acme__trips';
+  mkdirSync(stateOf(TRIPS), { recursive: true });
+  const list = [entry(A1), entry(A2), entry(TRIPS)];
+  const dir = join(T, 'digest');
+  const dig = (h) => checkin({ times: DEFAULT_TIMES, now: new Date(NOW + h * HOUR), dir, list, bin: BIN, self: A1, promote: () => null, checkJira: () => null });
+  const leversOf = (page) => { const s = page.indexOf('## Levers\n'); return s < 0 ? null : page.slice(s, page.indexOf('\n## ', s + 1) < 0 ? undefined : page.indexOf('\n## ', s + 1)).trim().split('\n'); };
+
+  const [d1] = decisionsOf(A1);
+  t('DS-644 AC3 the adopt is one engineering decision in the repo\'s decisions log', decisionsOf(A1).map((d) => [d.lever, d.category, d.chose, d.lever_event]), [['wrappers', 'engineering', 'on', a1t[0].id]]);
+  const [d2] = decisionsOf(A2);
+  t('DS-644 AC3 a revert is one too, with off chosen', decisionsOf(A2).map((d) => [d.lever, d.category, d.chose]), [['wrappers', 'engineering', 'off']]);
+
+  const p1 = readFileSync((await dig(12)).page, 'utf8');
+  const l1 = leversOf(p1);
+  const adoptLine = l1?.find((l) => l.startsWith('- adopted wrappers in adopts'));
+  t('DS-644 AC1 the Levers line names the lever, the repo, the mechanism and cost changes with their intervals, the tickets per arm and the guardrails',
+    /^- adopted wrappers in adopts: permission denials per start -\d+% \(90%: -\d+% to -\d+%\), cost per ticket [+-]?\d+% \([+-]?\d+% to [+-]?\d+%\), 30 vs 30 tickets, no guardrail moved · id `[0-9a-f]{16}` · override: `node \S+digest\.mjs override acme__adopts [0-9a-f]{16} off`$/.test(adoptLine ?? ''), true);
+  t('DS-644 AC1 it carries the decision\'s id', adoptLine?.includes(`id \`${d1.id}\``), true);
+  t('DS-644 AC1 and raises no needs-you item', [eventsOf(A1, 'needs_you').length, p1.includes('### Questions'), p1.includes('### Decisions taken')], [0, false, false]);
+  t('DS-644 AC11 the section\'s last line opens the Levers page', l1?.at(-1), `open: file://${join(T, 'home', '.desk-autopilot', 'levers', 'index.html')}`);
+  t('DS-644 the revert is listed with its reason', l1?.some((l) => l.startsWith('- reverted wrappers in breach (fix tries and parks per ticket rose past their margin): ')), true);
+
+  t('DS-644 AC2 no lever change since the last digest, no Levers section', leversOf(readFileSync((await dig(36)).page, 'utf8')), null);
+
+  // A hard trip in another repo, and the adopt overridden off and the revert on.
+  applyTrips({ slug: TRIPS, trips: [{ lever: 'wrappers', trip: 'post-merge-revert', ticket: 'T-900', file: join(stateOf(TRIPS), 'post-merge.jsonl'), line: 3, why: 'its PR #9 was reverted after merging', from: 'trial' }], now: NOW + 40 * HOUR });
+  t('DS-644 AC3 a trip is a decision too, naming its ticket', decisionsOf(TRIPS).map((d) => [d.lever, d.category, d.chose, d.ticket]), [['wrappers', 'engineering', 'off', 'T-900']]);
+  t('DS-644 an override takes only on or off', [override({ slug: A1, id: d1.id, choice: 'maybe', dir, list }).ok, eventsOf(A1, 'override').length], [false, 0]);
+  const o1 = override({ slug: A1, id: d1.id, choice: 'off', dir, list, now: new Date(NOW + 41 * HOUR) });
+  t('DS-644 AC12 overriding the adopt off appends one override event, actor ben, with the decision id', [o1.ok, eventsOf(A1, 'override').map((e) => [e.actor, e.decision_id, e.to, e.value])], [true, [['ben', d1.id, 'overridden', 'off']]]);
+  t('DS-644 AC4 the lever\'s state reads overridden', leverStatesIn(read(A1).events).wrappers.state, 'overridden');
+  const values = { 'worker-location': 'local' };
+  const n1 = assignPin('NEXT-1', { slug: A1, size: 'S', states: AUTO, frozen: false, random: seededRandom(1), now: new Date(NOW + 42 * HOUR), values });
+  t('DS-644 AC4 the next ticket admitted there has it pinned off, with no arm', [n1.assigned, n1.pin.set.includes('wrappers'), Object.hasOwn(n1.pin.arms, 'wrappers')], [true, false, false]);
+  t('DS-644 the same decision cannot be overridden twice', override({ slug: A1, id: d1.id, choice: 'on', dir, list }).ok, false);
+  t('DS-644 AC8 overriding the revert on', override({ slug: A2, id: d2.id, choice: 'on', dir, list, now: new Date(NOW + 41 * HOUR) }).ok, true);
+  const n2 = assignPin('NEXT-2', { slug: A2, size: 'S', states: AUTO, frozen: false, random: seededRandom(2), now: new Date(NOW + 42 * HOUR), values });
+  t('DS-644 AC8 the next ticket admitted there has it pinned on and its state reads overridden', [n2.pin.set.includes('wrappers'), Object.hasOwn(n2.pin.arms, 'wrappers'), leverStatesIn(read(A2).events).wrappers.state], [true, false, 'overridden']);
+
+  const l3 = leversOf(readFileSync((await dig(60)).page, 'utf8'));
+  t('DS-644 AC9 a hard-trip revert names the trip and the ticket',
+    l3?.find((l) => l.includes('in trips')), `- reverted wrappers in trips on a hard trip, post-merge-revert on T-900: its PR #9 was reverted after merging (${join(stateOf(TRIPS), 'post-merge.jsonl')}:3) · id \`${decisionsOf(TRIPS)[0].id}\` · override: \`node ${join(BIN, 'digest.mjs')} override ${TRIPS} ${decisionsOf(TRIPS)[0].id} on\``);
+  t('DS-644 each override is listed too', l3?.filter((l) => l.startsWith('- overridden ')), [`- overridden wrappers off in adopts by ben (decision \`${d1.id}\`)`, `- overridden wrappers on in breach by ben (decision \`${d2.id}\`)`]);
+
+  run([repo(A1, a1rows)], NOW + 2 * DAY);
+  t('DS-644 AC5 an overridden lever is not evaluated, so evidence that would adopt it leaves it overridden', [wrappersRow(A1).state, wrappersRow(A1).reason_code, transitionOf(A1).length, leverStatesIn(read(A1).events).wrappers.state], ['overridden', 'not_evaluated', 1, 'overridden']);
+}
 
 // ---- the rule itself ------------------------------------------------------------------------------------------------------------------------------
 t('the rule: no cost interval (a singular fit) does not adopt', decide({ ...{ state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 }, mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, p_benefit: 1 }, cost: { ratio: null, lo90: null, hi90: null }, guardrails: [{ status: 'ok' }] }).reason_code, 'adopt_conditions_unmet');

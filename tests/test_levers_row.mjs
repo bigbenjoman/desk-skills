@@ -1,9 +1,9 @@
 // suite: desk-env levers (the levers row's auto, pins and none; the machine-wide freeze; the row's changes logged)
-// covers: desk/bin/desk-env.mjs desk/bin/lever-log.mjs desk/bin/lever-pin.mjs desk/bin/queue.mjs desk-config.md
+// covers: desk/bin/desk-env.mjs desk/bin/lever-log.mjs desk/bin/lever-pin.mjs desk/bin/lever-changes.mjs desk/bin/queue.mjs desk-config.md
 // `desk-env levers` says where each lever's state comes from, refuses `none` beside another name,
 // sets and clears ~/.desk-autopilot/levers.freeze and logs it in every repo's lever log, and logs a
 // changed row; `queue.mjs add` pins the row's named levers. Scratch HOME, config root and queue only.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
@@ -183,6 +183,36 @@ t('AC6 desk-env levers no longer prints frozen', lines(run([])).some((l) => l.st
 const thawed = ['acme__widgets', 'acme__gadgets'].map((s) => log(s).filter((e) => e.kind === 'thaw'));
 t('AC10 one thaw event with repo * in every repo\'s lever log', thawed.map((ev) => ev.map((e) => e.repo)), [['*'], ['*']]);
 t('a thaw with no freeze changes nothing', [run(['thaw']).status, log('acme__widgets').filter((e) => e.kind === 'thaw').length], [0, 1]);
+
+// ---- DS-644 AC6, AC7, AC10: the summary line of each managed lever's state ----------------------------
+// preflight pinned; wrappers adopted yesterday with 23 holdback tickets so far; memory on trial with 31
+// tickets in its smaller arm; failure-class set off by hand, so it is not on the line.
+rmSync(join(HOME, '.desk-autopilot', 'acme__widgets'), { recursive: true, force: true });
+mkdirSync(join(HOME, '.desk-autopilot', 'acme__widgets'), { recursive: true });
+const ago = (h) => new Date(Date.now() - h * 3_600_000).toISOString();
+const ev = (o) => ({ v: 1, repo: 'acme__widgets', ...o });
+const assign = (lever, arm, trial, i) => ev({ id: `as-${lever}-${arm}-${i}`, at: ago(20), kind: 'assign', actor: 'levers-auto', reason_code: 'assigned_at_admission', reason: 'drew', ticket: `S-${lever}-${arm}-${i}`, arms: { [lever]: arm }, trial_ids: { [lever]: trial } });
+const fixture = [
+  ev({ id: 'fc-off', at: ago(30), kind: 'transition', lever: 'failure-class', from: 'trial', to: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'off by hand' }),
+  ev({ id: 'w-adopt', at: ago(24), kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_w', evidence_file: 'levers-evidence/evl_w.jsonl' }),
+  ...Array.from({ length: 23 }, (_, i) => assign('wrappers', 'holdback', 'acme__widgets/wrappers/w-adopt', i)),
+  ...Array.from({ length: 40 }, (_, i) => assign('wrappers', 'adopted', 'acme__widgets/wrappers/w-adopt', i)),
+  ...Array.from({ length: 31 }, (_, i) => assign('memory', 'on', 'acme__widgets/memory/initial', i)),
+  ...Array.from({ length: 33 }, (_, i) => assign('memory', 'off', 'acme__widgets/memory/initial', i)),
+  // A ticket drawn under an earlier trial id counts for none of these.
+  assign('memory', 'on', 'acme__widgets/memory/older', 0),
+];
+writeFileSync(join(HOME, '.desk-autopilot', 'acme__widgets', 'levers.jsonl'), fixture.map((e) => `${JSON.stringify(e)}\n`).join(''));
+setRow('`preflight auto`');
+r = run([]);
+const summary = (x) => lines(x).filter((l) => l.startsWith('levers: '));
+t('DS-644 AC6 the summary line reads each managed lever\'s state', summary(r), ['levers: preflight pinned · wrappers adopted (holdback 23) · memory trial 31/30']);
+t('DS-644 AC6 and is the last line', [lines(r).at(-1), r.status], ['levers: preflight pinned · wrappers adopted (holdback 23) · memory trial 31/30', 0]);
+appendFileSync(join(HOME, '.desk-autopilot', 'acme__widgets', 'levers.jsonl'), `${JSON.stringify(ev({ id: 'w-over', at: ago(1), kind: 'override', lever: 'wrappers', from: 'adopted', to: 'overridden', value: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'off by hand', decision_id: 'd1' }))}\n`);
+t('DS-644 AC10 an overridden lever shows its state and value', summary(run([])), ['levers: preflight pinned · wrappers overridden off · memory trial 31/30']);
+setRow('`preflight`');
+t('DS-644 AC7 a row with no auto prints no summary line', summary(run([])), []);
+setRow('`Preflight, auto`');
 
 // ---- the row's documentation ----------------------------------------------------------------------------
 const doc = readFileSync(join(root, 'desk-config.md'), 'utf8').split('\n').find((l) => l.startsWith('| Phase 0 levers |')) ?? '';

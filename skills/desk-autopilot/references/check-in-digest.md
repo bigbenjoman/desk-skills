@@ -135,6 +135,17 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   An override is recorded in that repo's decision log with who and when, and the next pass there
   lists the ticket under `WAITING ON YOU` as `decision overridden`: redo the work to the new
   choice, or put it back to the person if it cannot be.
+- **Lever changes.** Each adopt or revert the levers controller makes (the daily evaluation, or a
+  hard trip) is a call taken in category `engineering`, logged in the repo's own decision log
+  (`~/.desk-autopilot/<slug>/decisions.jsonl`), and asks nothing. The page's `Levers` section,
+  machine-wide like `Maintenance` and left out when no lever changed state since the last digest,
+  has one line per change in any repo's lever log: the lever, the repo, the mechanism metric's change
+  and the cost per ticket's with their 90% intervals, the tickets per arm and the guardrails, or for
+  a trip the trip and its ticket. Each adopt or revert ends on its decision id and its override
+  (`digest.mjs override <slug> <id> off` or `on`), which writes one `override` event, actor `ben`, in
+  the repo's lever log: the lever then reads `overridden`, every ticket admitted after it is pinned
+  to that value, and the evaluation and the trips leave it alone. No ticket waits on it, so it is
+  not listed under `WAITING ON YOU`. The section ends on `open:` and the Levers page's `file://` URL.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
   and on its own (the worker contract says when a worker may use it).
 - **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).

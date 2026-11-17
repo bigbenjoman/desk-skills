@@ -19,7 +19,8 @@
 // It writes, under ~/.desk-autopilot/<slug>/: one lever-evals.jsonl row per lever evaluated, whatever
 // the decision; the rows each evaluation used in levers-evidence/<eval_id>.jsonl (kept 180 days), whose
 // sha256 the row holds; and transition, fp_reset, evidence_incomplete and needs_you events in the lever
-// log. The pooled estimates go once a day to ~/.desk-autopilot/levers/pooled-evals.jsonl, by whichever
+// log, with each adopt and revert logged as a taken call in decisions.jsonl (lever-changes.mjs). An
+// overridden lever is not evaluated. The pooled estimates go once a day to ~/.desk-autopilot/levers/pooled-evals.jsonl, by whichever
 // repo's pass takes the machine-wide lock first; that pass evaluates every `auto` repo.
 //
 //   import { evaluate, evaluateDue } from './levers-evaluate.mjs'
@@ -32,6 +33,7 @@ import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
 import { leverStatesIn, trialId, ACTOR } from './levers-auto.mjs';
+import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
@@ -298,7 +300,7 @@ export function evaluate({
 }) {
   const today = dayOf(now, tz);
   const at = new Date(now).toISOString();
-  const written = { day: today, rows: [], events: [], pooled: [] };
+  const written = { day: today, rows: [], events: [], pooled: [], decisions: [] };
   const levers = Object.keys(registry).filter((l) => registry[l].layer === 'low-risk' && registry[l].trialled && MECHANISMS[l]);
 
   // Each repo's log, lever states and outcome-filled rows, read once.
@@ -420,6 +422,8 @@ export function evaluate({
         if (e) {
           written.events.push(e);
           to = d.to;
+          // An adopt or a revert is a call taken without asking: the digest lists it, to be overridden.
+          written.decisions.push(...recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state }));
           if (d.to === 'frozen') {
             append({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'frozen_second_revert', at, ...evidence,
               reason: frozenText(lever, r.name, d.reason) });
@@ -515,7 +519,7 @@ export function evaluateDue({ now = Date.now(), root = autopilotRoot(), configRo
     const full = repos.map((c) => {
       const state = join(root, c.slug);
       const { rows, batches } = rowsFor({ slug: c.slug, ghRepo: c.ghRepo, now });
-      return { slug: c.slug, name: (c.ghRepo ?? c.slug).split('/').pop(), state, states: c.states, rows, batches };
+      return { slug: c.slug, ghRepo: c.ghRepo ?? null, name: (c.ghRepo ?? c.slug).split('/').pop(), state, states: c.states, rows, batches };
     });
     const w = evaluate({ repos: full, now, tz, root });
     const changes = w.events.filter((e) => e.kind === 'transition').map((e) => `${e.lever} ${e.from} → ${e.to} in ${e.repo}`);

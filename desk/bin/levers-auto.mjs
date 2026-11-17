@@ -6,10 +6,10 @@
 // size has each lever on for exactly two of them. A ticket with no triage size is a block of its own.
 //
 // A lever's state in a repo is the `to` of its latest transition, override or trip in the repo's lever log
-// (lever-log.mjs): off, trial, adopted, settled, reverted or frozen. With none recorded, a low-risk lever
+// (lever-log.mjs): off, trial, adopted, settled, reverted, frozen or overridden. With none recorded, a low-risk lever
 // the registry has trialled is on trial. An adopted lever stays off for its layer's holdback share of
 // tickets for its holdback weeks, recorded as the `holdback` arm, then is on for every ticket; a settled
-// one is on; any other state is off. The quality-risk layer is never drawn here. While the machine-wide
+// one is on; an overridden one is its value; any other state is off. The quality-risk layer is never drawn here. While the machine-wide
 // freeze stands, a ticket gets the repo's kept levers and no arm. A lever the row names is on whatever
 // its state, and a lever whose repo preconditions fail is off.
 //
@@ -35,7 +35,7 @@ import { readQueue } from './batch-state.mjs';
 import { SIZES, sizeOf } from './desk-q-eta.mjs';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
-export const STATES = Object.freeze(['off', 'trial', 'adopted', 'settled', 'reverted', 'frozen']);
+export const STATES = Object.freeze(['off', 'trial', 'adopted', 'settled', 'reverted', 'frozen', 'overridden']);
 export const BLOCK_SIZE = 4;
 export const ACTOR = 'levers-auto';
 const WEEK_MS = 7 * 24 * 3_600_000;
@@ -44,7 +44,8 @@ const WEEK_MS = 7 * 24 * 3_600_000;
 const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
-//   -> { <lever>: { state, at, id } }, `at` and `id` those of the event that set it, null with none.
+//   -> { <lever>: { state, at, id, value? } }, `at` and `id` those of the event that set it, null with
+//   none. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to.
 export function leverStatesIn(events, registry = REGISTRY) {
   const out = {};
   for (const [name, l] of Object.entries(registry)) {
@@ -52,7 +53,8 @@ export function leverStatesIn(events, registry = REGISTRY) {
   }
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
-    out[e.lever] = { state: STATES.includes(e.to) ? e.to : 'off', at: e.at, id: e.id ?? null };
+    const state = STATES.includes(e.to) ? e.to : 'off';
+    out[e.lever] = { state, at: e.at, id: e.id ?? null, ...(state === 'overridden' ? { value: e.value === 'on' ? 'on' : 'off' } : {}) };
   }
   return out;
 }
@@ -101,6 +103,11 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
     if (row !== 'auto' || !preconditions(name, values, registry).eligible) continue;
     const l = registry[name];
     const s = byLever[name];
+    // Set by hand: pinned to its value, with no arm, whatever the freeze or the layer.
+    if (s.state === 'overridden') {
+      if (s.value === 'on') set.push(name);
+      continue;
+    }
     if (l.layer !== 'low-risk') {
       if (l.trialled && KEPT_STATES.includes(s.state)) set.push(name);
       continue;

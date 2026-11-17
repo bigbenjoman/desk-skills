@@ -138,7 +138,7 @@ export const REASON_CODES = Object.freeze({
   change_cooldown: 'the lever changed state in this repo less than 7 days ago',
   holdback_ended: 'the holdback ended with no guardrail breached',
   holdback_running: 'the lever is adopted and its holdback is still running',
-  not_evaluated: 'the lever is settled, frozen or off here, so it is not weighed',
+  not_evaluated: 'the lever is settled, frozen, overridden or off here, so it is not weighed',
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
   evidence_incomplete: 'an outcome file the evaluation reads is missing',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',

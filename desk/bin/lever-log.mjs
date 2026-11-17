@@ -52,6 +52,11 @@ function check(event) {
     need('to');
     if (event.actor !== BY_HAND) { need('eval_id'); need('evidence_file'); }
   }
+  // An override sets the lever by hand to `value`, on or off (lever-changes.mjs).
+  if (kind === 'override') {
+    need('to');
+    if (event.to === 'overridden' && !['on', 'off'].includes(event.value)) throw new LeverLogError('lever-log: an override to overridden needs "value", on or off');
+  }
   // A trip is a revert with no evaluation behind it: the ticket and the record that tripped it stand in.
   if (kind === 'trip') {
     for (const key of ['from', 'to', 'ticket', 'evidence_file']) need(key);

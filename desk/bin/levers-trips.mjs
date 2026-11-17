@@ -48,6 +48,8 @@ import { WAITING_CLASSES } from './failure-class.mjs';
 import { toolOutcomes } from './log-tool-calls.mjs';
 import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
 import { answerEntriesSince } from './handoff.mjs';
+import { recordLeverDecision } from './lever-changes.mjs';
+import { batchPaths } from './desk-env.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
@@ -287,7 +289,8 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
 
 // Reverts each lever a trip found, under the lever log's lock, while the lever is still in the state
 // the trip was read in. -> the events written.
-export function applyTrips({ slug, name = slug, trips, registry = REGISTRY, now = Date.now() }) {
+// Each trip is logged as a taken call in the repo's own decision log (`decisionsState`), for the digest.
+export function applyTrips({ slug, name = slug, repo = null, decisionsState = batchPaths(slug).state, trips, registry = REGISTRY, now = Date.now() }) {
   const written = [];
   const at = new Date(now).toISOString();
   for (const x of trips) {
@@ -304,6 +307,7 @@ export function applyTrips({ slug, name = slug, trips, registry = REGISTRY, now 
     });
     if (!e) continue;
     written.push(e);
+    recordLeverDecision([e], { slug, repo, state: decisionsState });
     const frozen = e.to === 'frozen';
     if (frozen || x.error) {
       const n = appendWith(slug, () => ({
@@ -321,13 +325,13 @@ export function applyTrips({ slug, name = slug, trips, registry = REGISTRY, now 
 
 // The trips as a pass runs them, for its batch state folder and queue. -> { events, line }, `line`
 // null when nothing tripped.
-export function runTrips({ slug, name = slug, state, queue, states, now = Date.now(), registry = REGISTRY }) {
+export function runTrips({ slug, name = slug, repo = null, decisionsState, state, queue, states, now = Date.now(), registry = REGISTRY }) {
   if (!Object.values(states ?? {}).includes('auto')) return { events: [], line: null };
   const log = read(slug);
   // A log that does not parse is the assignment's to report; nothing is reverted on a partial read.
   if (log.bad.length) return { events: [], line: null };
   const trips = findTrips({ slug, state, queue, states, events: log.events, now, registry });
-  const events = applyTrips({ slug, name, trips, registry, now });
+  const events = applyTrips({ slug, name, repo, ...(decisionsState ? { decisionsState } : {}), trips, registry, now });
   const changed = events.filter((e) => e.kind === 'trip');
   return { events, line: changed.length ? `levers trips: ${changed.map((e) => `${e.lever} ${e.from} → ${e.to} (${e.trip} on ${e.ticket})`).join(', ')}` : null };
 }
