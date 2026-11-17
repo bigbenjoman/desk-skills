@@ -618,10 +618,14 @@ const usageRow = (r) => (usageHoldOf(r) ? { t: { key: USAGE_ITEM }, usage: true 
 // `approved.base_push` to every later pass of the batch.
 const BASE_PUSH_ITEM = 'base-push';
 const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== true ? { t: { key: BASE_PUSH_ITEM }, basePush: true } : null);
-const batchRows = (r) => [usageRow(r), basePushRow(r)].filter(Boolean);
-// The base-push items desk-q counts, one per batch of a repo row (each keyed in its batch, `b`): unlike
-// a usage hold it never lifts by itself, so it needs the person.
-const basePushRows = (r) => (r.batches ?? [r]).flatMap((b) => { const x = basePushRow(b); return x ? [{ ...x, b }] : []; });
+// A batch whose repo is pinned to a subscription set off (pass.mjs subscription_off) is one item, named
+// by this: no new work of the repo starts until the person moves the pin or sets the subscription unused.
+const SUB_OFF_ITEM = 'subscription-off';
+const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
+const batchRows = (r) => [usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-push and subscription-off items desk-q counts, one per batch of a repo row (each keyed in its
+// batch, `b`): unlike a usage hold neither lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -868,6 +872,11 @@ function signinItems(batches, only = null) {
 function itemOf(r, x, reads = null) {
   const t = x.t;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
+  if (x.subOff) {
+    const s = r.q.subscription_off;
+    return { kind: 'subscription-off', need: `${r.slug} is pinned to ${s.email}, which is off${s.login ? ` (claude ${s.login})` : ''}, so no new work starts for it: move it to another subscription (desk-env subscription set ${r.slug} <default|email>)${s.login ? `, or set ${s.login} unused (desk-env logins set claude ${s.login} unused)` : ''}`,
+      actions: [['done', 'once it is moved, or the subscription is unused, the next pass starts its work and drops this item'], ['not-now']] };
+  }
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
@@ -1090,7 +1099,7 @@ export function needsCount(r) {
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [], held = [];
   let putOff = 0, steps = 0;
-  for (const x of [...basePushRows(r), ...needsRows(r)]) {
+  for (const x of [...countedBatchRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
@@ -1118,7 +1127,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 
 // Every item desk-q counts as needing the person, in the batches `word` names (all when null), less
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
-// A usage-limit hold is an item here, but not in desk-q's count; a base-push item is in both.
+// A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
 export function collect({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
   const { named, scope } = scopeOf(repos, word);
@@ -1145,7 +1154,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
       if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -1507,6 +1516,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+      if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
       if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
       return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
     }

@@ -1949,7 +1949,8 @@ export function thisRepoSubscription(L, subs, env = process.env) {
 }
 
 // Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
-// signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
+// signed in to (stored lowercase). An unknown email or repo, or an email whose login is set off, is
+// refused with the config unchanged.
 //   -> { slug, was, now }
 export async function setRepoSubscription(slug, value, root = deskConfigRoot()) {
   const L = await import('./logins.mjs');
@@ -1958,7 +1959,10 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
   if (!/^[\w.-]+$/.test(String(slug)) || !existsSync(config)) throw new DeskConfigError(`desk-env subscription set: no repo config for "${slug}" under ${join(root, 'repos')}`);
   const now = String(value ?? '').trim().toLowerCase();
   if (!now || now.includes('`') || /\s/.test(now)) throw new DeskConfigError('desk-env subscription set: the value is `default` or an account email');
-  if (now !== 'default' && !L.subscriptionLogin(L.readSubscriptions(subscriptionsPath()), now)) {
+  const subs = now === 'default' ? null : L.readSubscriptions(subscriptionsPath());
+  const off = subs && L.offSubscriptionLogin(subs, now);
+  if (off) throw new DeskConfigError(`desk-env subscription set: ${now} is off (claude ${off.name}), so desk starts no new work on it: set it unused first (desk-env logins set claude ${off.name} unused); ${slug}'s config is unchanged`);
+  if (subs && !L.subscriptionLogin(subs, now)) {
     throw new DeskConfigError(`desk-env subscription set: ${now} is not one of this computer's subscriptions: sign it in and add it in desk-q view 6 (Usage) first; ${slug}'s config is unchanged`);
   }
   const was = repoConfigValue(slug, 'subscription', root)?.toLowerCase() ?? 'default';
