@@ -55,11 +55,9 @@ exec "$PASS_CMP_NODE" "$@"
 EOF
 chmod +x "$W/shim/node"
 
-# Each suite runs as tests/run.sh runs it: no DESK_* from the caller, and no machine-wide lock queue.
-for v in $(compgen -e); do case "$v" in DESK_*) unset "$v" ;; esac; done
-unset DATABASE_URL DIRECT_DATABASE_URL
-export AUTOPILOT_LOCK_QUEUE=off PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
-SH="${BASH:-bash}"
+# shellcheck source=suite_env.sh
+. "$S/suite_env.sh"
+export PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
 # The two trees run one after the other, each suite in its own scratch HOME: side by side, one tree's
 # queue.mjs stop ends the other's stand-in worker, which it finds by session id across the machine.
 side(){ mkdir -p "$W/rec/$1"

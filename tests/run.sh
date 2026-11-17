@@ -9,22 +9,11 @@
 set -u
 hook=1
 [ "${1:-}" = --no-hook-test ] && { hook=0; shift; }
-# A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
-# some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
-# the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck.
-keep_env=" DESK_REQUIRE_SHELLCHECK "
-for v in $(compgen -e); do
-  case "$v" in DESK_*) case "$keep_env" in *" $v "*) ;; *) unset "$v" ;; esac ;; esac
-done
-unset DATABASE_URL DIRECT_DATABASE_URL
-# The pass's test lock gate reads this machine's real lock queue, which a suite run from a worker is
-# itself part of: every suite's passes run without it, and the suites that test it turn it back on.
-export AUTOPILOT_LOCK_QUEUE=off
 T="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=suite_env.sh
+. "$T/suite_env.sh"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT
-# Every bash suite runs under the bash running this script, so `/bin/bash tests/run.sh` tests 3.2.
-SH="${BASH:-bash}"
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
 fail=0; total=0; failed=""
 # A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all. A failed
