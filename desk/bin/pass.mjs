@@ -4687,8 +4687,8 @@ function settleWorked(t, n, head, worked) {
   return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
-// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`. With the
-// failure-class lever on, `held` (base red) waits with no try, a requeue records its try's class
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, and `held` (base
+// red) waits with no try. With the failure-class lever on, a requeue records its try's class
 // (failure-class.mjs fixClass) before the worker spawns, one classed missing decision or dependency
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
 // runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
