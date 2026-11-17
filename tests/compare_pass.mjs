@@ -96,7 +96,9 @@ function normalizer(roots) {
 // A SHA needs a letter and a digit, as a number or a word has not both, except at the lengths the
 // pass abbreviates to (9 and 12) and a whole one: one in about 70 nine-character abbreviations is all
 // digits, and no time the pass prints has 9, 12 or 40 digits.
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9})\b/g;
+// The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
+// `fix-<id>.md`) is named the same way, digits or not: each tree's pass started at a different time.
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b/g;
 function renamer() {
   const seen = new Map();
   return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); });
@@ -149,11 +151,15 @@ const same = (x, y, run, cb, ch) => x.shape === y.shape && x.times.every((t, i) 
 const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : x.shape);
 
 // "T-1 state" for a ticket's field, "archive T-1 state" in the archive, "queue <path>" otherwise.
-function flatten(rec, norm) {
+// Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
+// by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
+// the names.
+function flatten(rec, norm, rn) {
   const out = new Map();
+  const key = (k) => rn(norm(k));
   const walk = (v, path) => {
     if (v && typeof v === 'object' && Object.keys(v).length) {
-      for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${k}` : k);
+      for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
     } else out.set(path, norm(JSON.stringify(v)));
   };
   const top = (doc, prefix) => {
@@ -161,10 +167,10 @@ function flatten(rec, norm) {
     for (const [k, v] of Object.entries(doc)) {
       if (k === 'tickets' && v && typeof v === 'object') {
         for (const [t, x] of Object.entries(v)) {
-          if (x && typeof x === 'object') for (const [f, y] of Object.entries(x)) walk(y, `${prefix}${t} ${f}`);
-          else out.set(`${prefix}${t}`, norm(JSON.stringify(x)));
+          if (x && typeof x === 'object') for (const [f, y] of Object.entries(x)) walk(y, `${prefix}${key(t)} ${key(f)}`);
+          else out.set(`${prefix}${key(t)}`, norm(JSON.stringify(x)));
         }
-      } else walk(v, `${prefix || 'queue '}${k}`);
+      } else walk(v, `${prefix || 'queue '}${key(k)}`);
     }
   };
   top(rec.queue, '');
@@ -238,7 +244,7 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
       compared++;
       const lines = [], nb = renamer(), nh = renamer();
       if (rb.exit !== rh.exit || rb.signal !== rh.signal) lines.push(`  exit: base ${rb.signal || rb.exit}, head ${rh.signal || rh.exit}`);
-      const qb = flatten(rb, norm), qh = flatten(rh, norm);
+      const qb = flatten(rb, norm, nb), qh = flatten(rh, norm, nh);
       const eq = (x, y) => same(x, y, n, cb, ch);
       for (const k of [...new Set([...qb.keys(), ...qh.keys()])].sort()) {
         const vb = qb.has(k) ? timed(nb(qb.get(k))) : null, vh = qh.has(k) ? timed(nh(qh.get(k))) : null;

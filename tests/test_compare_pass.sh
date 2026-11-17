@@ -69,6 +69,27 @@ mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
 cmp "$T/shabase" "$T/shahead"
 check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
+# An evidence fix keyed by the id each tree's pass hashed from its own start time, one of them all
+# digits, filed between two tickets so the key sorts differently on each tree, and its key printed.
+fixtree(){ mkdir -p "$T/$1/desk/bin" "$T/$1/tests"; cp "$T/base/tests/test_pass.sh" "$T/$1/tests/"
+  cat > "$T/$1/desk/bin/pass.mjs" <<EOF
+import { readFileSync, writeFileSync } from 'node:fs';
+const f = process.env.DESK_QUEUE, q = JSON.parse(readFileSync(f, 'utf8'));
+q.tickets['A-1'] = { ...q.tickets['A-1'], state: 'running' };
+q.tickets['evidence-fix-$2'] = { state: '${3:-queued}', file: 'fix-$2.md' };
+q.tickets['Z-1'] = { state: 'queued' };
+writeFileSync(f, JSON.stringify(q));
+console.log('filed evidence-fix-$2');
+EOF
+}
+fixtree fixbase 12345678
+fixtree fixhead f0a1b2c3
+cmp "$T/fixbase" "$T/fixhead"
+check "DS-763 AC4 an evidence fix keyed by an id hashed from the pass's start time is the same ticket on both trees" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+fixtree fixother f0a1b2c3 parked
+cmp "$T/fixbase" "$T/fixother"
+check "DS-763 AC2 a field of that evidence fix written differently is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue evidence-fix-<SHA1> state: base \"queued\", head \"parked\""'
+
 # A suite that makes the same empty commit in two clones, a second apart on the head tree only, and a
 # pass that prints both SHAs: one SHA on a tree that made them in the same second, two on one that did not.
 mkdir -p "$T/commits/desk/bin" "$T/commits/tests"
