@@ -219,6 +219,20 @@ pj
 check "DS-397 AC4: every blocker merged and no driver running, the pass releases it, not the person" '[ "$(qf T-6 .state)" = triaged ] && [ "$(qf T-6 .held_by)" = null ] && [ "$(js ".release_due | length")" = 0 ] && ! js ".waiting[]" | grep -q "RELEASE DUE" && js .message | grep -q "^released: T-6, every blocker merged (T-2) and no merge driver is running; "'
 check "DS-397 AC4: and moves it to the front of the spawn order"   '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-6 ]'
 
+# ---- a lane C park held behind siblings loses each hold once that sibling's PR merges, and keeps its park ----
+for k in L-1 L-2 L-3; do q add "$k" Task C; q set "$k" state=parked "branch=feat/$k" 'park={"question":"lane C — spans layers"}'; done
+q set L-1 held_by=T-1; q set L-2 'held_by=T-1|T-4'; q set L-3 held_by=T-4
+pj
+check "DS-715 AC1: a lane C park held behind a merged sibling loses the hold and keeps its park, and the pass names the lift" \
+  '[ "$(qf L-1 .held_by)" = null ] && [ "$(qf L-1 .state)" = parked ] && [ "$(qf L-1 .park.question)" = "lane C — spans layers" ] && js .message | grep -q "^hold lifted: L-1: T-1 merged, and it stays parked: lane C — spans layers"'
+check "DS-715 AC3: held behind two siblings with one merged, held_by lists only the unmerged one" \
+  '[ "$(qf L-2 .held_by)" = T-4 ] && [ "$(qf L-2 .state)" = parked ] && js .message | grep -q "^hold lifted: L-2: T-1 merged; still held behind T-4"'
+check "DS-715 AC4: a sibling done but whose PR has not merged keeps the hold" '[ "$(qf L-3 .held_by)" = T-4 ] && ! js .message | grep -q "hold lifted: L-3"'
+loop
+check "DS-715 AC5: the merge driver sends no lifted lane C park to a worker" \
+  '[ "$(qf L-1 .state)" = parked ] && [ "$(qf L-1 .park.question)" = "lane C — spans layers" ] && [ "$(qf L-2 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED L-"'
+for k in L-1 L-2 L-3; do q drop "$k"; done
+
 q drop T-6
 q add T-9 Task A; q set T-9 state=triaged branch=fix/T-9; q hold T-9 T-2; q set T-9 open_questions=1
 loop
@@ -244,6 +258,12 @@ q set T-15 held_label=null
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
 check "DS-555 the same hold with no blocked-until label is released by those blockers" '[ "$(qf T-15 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-15"'
 q set T-15 state=done
+# A lane C park held behind a blocker that has merged keeps its own park: no release sends it to a worker.
+q add T-16 Task C; q set T-16 state=triaged branch=fix/T-16; q park T-16 "lane C — needs a plan"; q hold T-16 T-11
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-16:T-11" 2>&1)
+check "DS-714 AC5: a lane C park held behind a merged blocker is not released to a worker" \
+  '[ "$(qf T-16 .state)" = parked ] && [[ "$(qf T-16 .park.question)" == "lane C"* ]] && [ "$(qf T-16 .held_by)" = T-11 ] && ! echo "$out" | grep -q "RELEASED T-16"'
+q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'

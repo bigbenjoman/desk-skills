@@ -1265,6 +1265,7 @@ const outside = (n, category = 'new') => Array.from({ length: n }, (_, i) => ({ 
 const twelveHours = [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8];
 dated('hold', 5000, { hours: twelveHours, tickets: {
   'B-RUN': { state: 'running', stage: '4/9' }, 'W-1': heldBy('B-RUN'),
+  'W-LC': { state: 'parked', lane: 'C', held_by: 'B-RUN', park: { question: 'lane C — spans layers' } },
   'B-DRAFT': prAt(175, { isDraft: true }), 'W-3': heldBy('B-DRAFT'),
   'B-READY': prAt(176), 'W-4': heldBy('B-READY'),
   'B-PARK': { state: 'parked', park: { question: 'which copy?' } }, 'W-5P': heldBy('B-PARK'),
@@ -1296,6 +1297,7 @@ const cells217 = (name, key, n = 2) => {
   return [l.slice(18, 31), l.slice(31, 83), l.slice(83, 96), l.slice(96, 110)].slice(0, n).map((s) => s.trim()).join(' | ');
 };
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
+t('DS-716 AC1 a lane C park held behind a running sibling: waiting, behind it', cells217('hold', 'W-LC'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');

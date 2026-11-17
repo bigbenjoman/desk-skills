@@ -314,6 +314,12 @@ export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
     summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
 
+// Whether a blocker record is Done in Jira under a resolution that ships nothing (Won't Do, Duplicate,
+// Cannot Reproduce): its code never lands, so a hold waiting for it to land waits for ever. A Done one
+// with no resolution read, or none set, is an ordinary Done blocker.
+const LANDS = /^(done|fixed)$/i;
+export const closedUnlanded = (b) => b?.category === 'done' && typeof b.resolution === 'string' && !!b.resolution.trim() && !LANDS.test(b.resolution.trim());
+
 // A ticket's blockers split from those that are its own epic: its Jira parent epic (`epicKey`) or the
 // epic its batch runs (`batchEpic`). An epic is Done only once its children are, so a link to it would
 // hold the ticket for ever: it is ignored, and reported. -> {blockers, own: [key]}

@@ -426,8 +426,8 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   mkdirSync(state, { recursive: true });
   writeFileSync(planPath, `# The plan for ${key}\n\n${[].concat(v.message ?? []).join('\n')}\n${ask ? `\nBefore it can start, ${ask}.\n` : ''}`);
   const q = queueIn(env);
-  // A child parked for its own reason (a lane C or D park, a size) cannot be held as well: it waits on that.
-  const admit = (c) => (q(['admit', c, '--by', by, '--hold', key]) && q(['admit', c, '--by', by]));
+  // A child parked for its own reason (a lane C or D park, a size) keeps that park, its hold beside it.
+  const admit = (c) => q(['admit', c, '--by', by, '--hold', key]);
   const why = q(['add', key, 'Epic', EPIC_LANE])
     ?? q(['park', key, planQuestion(key, children.length, planPath, wantsPlan, ask)])
     ?? children.reduce((w, c) => w ?? admit(c), null)

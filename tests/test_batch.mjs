@@ -443,7 +443,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
     'T-1': { key: 'T-1', ...held('B-1|OUT-1'), held_outside: 'OUT-1' },
     'T-2': { key: 'T-2', state: 'triaged' },
     'T-3': { key: 'T-3', ...held('S-2') },
-    'T-4': { key: 'T-4', ...held('B-1') },
+    'T-4': { key: 'T-4', state: 'parked', lane: 'C', held_by: 'B-1', park: { question: 'lane C — r', since: MERGED_AT } },
     'T-5': { key: 'T-5', ...held('B-1') },
     'T-6': { key: 'T-6', ...held('B-1'), collides_with: 'B-1' },
     'M-1': { key: 'M-1', state: 'done', merged_at: MERGED_AT, result: { pr: 7 } },
@@ -462,7 +462,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const yState = (...p) => join(namedS('Y-1'), ...p);
   mkdirSync(yState('triage'), { recursive: true });
   const onB1 = [{ key: 'B-1', category: 'indeterminate' }];
-  const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, size: 'XL' }, 'T-8': { blockers: onB1 }, 'T-9': { blockers: [{ key: 'B-2', category: 'done' }] },
+  const recs = { 'T-1': { blockers: onB1 }, 'T-4': { blockers: onB1, lane: 'C' }, 'T-8': { blockers: onB1 }, 'T-9': { blockers: [{ key: 'B-2', category: 'done' }] },
     'T-12': { blockers: [{ key: 'S-4', category: 'done' }] }, 'T-13': { blockers: [{ key: 'S-4', category: 'indeterminate' }] },
     'T-14': { blockers: [{ key: 'S-5', category: 'indeterminate' }] },
     'T-15': { blockers: [{ key: 'S-6', category: 'done' }], blocker_needs: { 'S-6': { needs: 'merge', why: 'the rollout flag must land first' } } },
@@ -501,12 +501,10 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const b3 = readFileSync(join(standingS, 'briefings', 'T-3.md'), 'utf8');
   t('DS-665 AC3 a briefing already in the destination keeps its answers and gains the moved ones', b3.includes('the copy is final') && b3.includes('ship it on Friday'), true);
 
-  const files = () => [standingQ, namedQ('Y-1'), join(standingS, 'triage', 'T-4.json'), join(standingS, 'briefings', 'T-4.md'), yState('triage', 'T-4.json'), yState('briefings', 'T-4.md')]
-    .map((f) => (existsSync(f) ? readFileSync(f, 'utf8') : '(none)')).join('\n--\n');
-  const before = files();
   r = moveTo('T-4');
-  t('DS-665 AC5 a move the destination refuses fails, naming why', r.code !== 0 && r.out.includes('cannot be held as well'), true);
-  t('DS-665 AC5 and neither batch\'s queue, triage record or briefing changed', files(), before);
+  const t4 = sq()['T-4'] ?? {};
+  t('DS-714 AC8 a lane C park with holds moves, its park and held_by both with it', `${r.code} ${t4.state} ${String(t4.park?.question).startsWith('lane C')} ${t4.held_by} ${t4.held_outside} ${'T-4' in readQ('Y-1').tickets}`, '0 parked true B-1 B-1 false');
+  t('DS-714 AC8 the output says it stays parked, then held', r.out.includes('then held behind B-1'), true);
 
   // A hold the person set, on a ticket that is no Jira blocker, would be lifted by the next pass there.
   const before5 = `${readFileSync(standingQ, 'utf8')}\n${readFileSync(namedQ('Y-1'), 'utf8')}`;
@@ -603,6 +601,15 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const a = cli('queue.mjs', ['admit', 'HC-2', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
   t('DS-569 --hold-collisions holds a ticket behind no ticket already waiting behind it', `${a.code} ${hc?.held_by} ${hc?.collides_with}`, '0 HC-4 HC-1|HC-3|HC-4');
+  // A lane park that keeps its holds in held_by beside it waits behind them too, so a ticket it
+  // waits on, directly or through a ticket held behind it, is not held behind it in turn.
+  aoRec('HC-5', ['src/app.ts']);
+  aoRec('HC-6', ['src/app.ts']);
+  aoRec('HC-7', ['src/app.ts']);
+  writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: { 'HC-5': { key: 'HC-5', state: 'parked', held_by: 'HC-6', held_outside: 'HC-6', park: { question: 'lane C — needs a person' } }, 'HC-7': { key: 'HC-7', ...heldOn('HC-5') } } }));
+  const l = cli('queue.mjs', ['admit', 'HC-6', '--hold-collisions'], env);
+  const lc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-6'];
+  t('DS-714 --hold-collisions holds a ticket behind no lane park waiting behind it', `${l.code} ${lc?.held_by} ${lc?.collides_with}`, '0 null HC-5|HC-7');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.
