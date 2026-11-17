@@ -80,11 +80,20 @@ export function lockHolders(dir) {
 const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 
+// 'hold' when the process holds the test lock, 'wait' when it waits for it, else null: a pid a holder
+// file names holds; flock(1) runs its command as a child, so a single-slot flock with a child holds and
+// one with none waits; a with-lock.sh test|tsc wrapper no holder file names waits (a flock slot's
+// wrapper has exec'd into its command by the time it holds).
+function lockRole(p, { procs, holders }) {
+  if (holders.has(p.pid)) return 'hold';
+  if (FLOCK.test(p.args)) return procs.some((c) => c.ppid === p.pid) ? 'hold' : 'wait';
+  return WRAPPER.test(p.args) ? 'wait' : null;
+}
+
 // 'suite' when a process working in the worktree holds the test lock, 'lock' when one waits for it,
-// else null. flock(1) runs its command as a child, so a single-slot flock with a child holds the lock.
-// A holder file's pid counts only for a process still working in the worktree, so a stale file whose
-// pid has been reused elsewhere names nothing here. 'unknown' when ps cannot be read: no list is not
-// an empty one, so the pass holds the worker as it would a suite, up to the same ceiling.
+// else null. A holder file's pid counts only for a process still working in the worktree, so a stale
+// file whose pid has been reused elsewhere names nothing here. 'unknown' when ps cannot be read: no
+// list is not an empty one, so the pass holds the worker as it would a suite, up to the same ceiling.
 export function suiteWait(worktree, { procs, cwds, holders }) {
   if (!worktree || !cwds) return null;
   if (!procs) return 'unknown';
@@ -92,26 +101,17 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
   let waiting = false;
   for (const p of procs) {
     if (!here.has(p.pid)) continue;
-    if (holders.has(p.pid)) return 'suite';
-    if (FLOCK.test(p.args)) {
-      if (procs.some((c) => c.ppid === p.pid)) return 'suite';
-      waiting = true;
-    } else if (WRAPPER.test(p.args)) waiting = true;
+    const role = lockRole(p, { procs, holders });
+    if (role === 'hold') return 'suite';
+    if (role === 'wait') waiting = true;
   }
   return waiting ? 'lock' : null;
 }
 
-// How many runs wait on the test lock machine-wide, any worktree or session: a with-lock.sh test|tsc
-// wrapper no holder file names (a flock slot's wrapper has exec'd into its command by the time it
-// holds), and a single-slot flock with no child yet. Null when ps cannot be read.
+// How many runs wait on the test lock machine-wide, any worktree or session. Null when ps cannot be read.
 export function lockWaiters({ procs, holders }) {
   if (!procs) return null;
-  let n = 0;
-  for (const p of procs) {
-    if (holders.has(p.pid)) continue;
-    if (WRAPPER.test(p.args) || (FLOCK.test(p.args) && !procs.some((c) => c.ppid === p.pid))) n++;
-  }
-  return n;
+  return procs.filter((p) => lockRole(p, { procs, holders }) === 'wait').length;
 }
 
 // Whether the test lock's queue is deep enough to hold new work: `waiting` runs at or over `slots` x
