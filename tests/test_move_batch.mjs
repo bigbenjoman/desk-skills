@@ -224,7 +224,9 @@ const after = JSON.parse(read(namedQ('E-1')));
 t('AC2 an images_dir under the old folder points at the moved one', after.tickets['K-1'].images_dir, join(namedS('E-1'), 'images', 'K-1'));
 t('AC2 and the screenshot is there', existsSync(join(after.tickets['K-1'].images_dir, 'shot.png')), true);
 t('AC2 an images_dir elsewhere is left alone', after.tickets['K-3'].images_dir, '/elsewhere/K-3');
-t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null }), JSON.stringify({ ...withImages, tickets: null }));
+// Rewritten with its images_dir moved, the queue is one version higher (queue-store.mjs).
+t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null, version: null }), JSON.stringify({ ...withImages, tickets: null, version: null }));
+t('AC2 the rewrite is one version higher', after.version, (withImages.version ?? 0) + 1);
 t('AC2 with screenshots: the standing slot has no queue', existsSync(standingQ), false);
 
 // A batch whose tickets span several epics names no epic: it moves to a slot named after its branch.

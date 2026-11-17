@@ -147,10 +147,9 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   const s = qm('set', 'M', 'lane=B');
   t('an archived ticket is not changed', s.status !== 0 && s.stderr.includes('M is done and archived'), true);
   const h = qm('hold', 'A', 'M');
-  t('a hold behind only an archived ticket is refused, saying it is done', h.status !== 0 && h.stderr.includes('nothing to wait for'), true);
-  qm('add', 'M');
+  t('AC8 a hold behind an archived ticket finds it, and is kept for the merge driver to release', `${h.status} ${read(f).tickets.A.held_by}`, '0 M');  qm('add', 'M');
   t('admitting an archived ticket again starts it over', read(f).tickets.M?.state, 'queued');
-  t('queue.mjs saves one version higher, and refused commands save nothing', read(f).version, versionOf(q) + 1);
+  t('queue.mjs saves one version higher each time, and a refused command saves nothing', read(f).version, versionOf(q) + 2);
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

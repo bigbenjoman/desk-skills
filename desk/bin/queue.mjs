@@ -756,15 +756,11 @@ switch (cmd) {
   // pass.mjs keeps the batch alive and the merge driver releases it once every blocker has merged.
   case 'hold': {
     const [key, ...blockers] = args;
-    const named = blockers.flatMap((b) => b.split(/[,|]/)).filter(Boolean);
-    if (!key || !named.length) throw new Error('usage: queue.mjs hold <TICKET> <BLOCKER> [<BLOCKER> ...]');
+    const preds = blockers.flatMap((b) => b.split(/[,|]/)).filter(Boolean);
+    if (!key || !preds.length) throw new Error('usage: queue.mjs hold <TICKET> <BLOCKER> [<BLOCKER> ...]');
     const t = ticket(q, key);
-    for (const p of named) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
-    // An archived blocker is done with its PR merged or closed: there is nothing to wait for.
-    const gone = named.filter((p) => isArchived(q, p));
-    const preds = named.filter((p) => !gone.includes(p));
-    if (!preds.length) throw new Error(`${key} is not held: ${gone.join(', ')} ${gone.length === 1 ? 'is' : 'are'} done and archived (PR merged or closed), so there is nothing to wait for`);
-    if (gone.length) console.log(`not held behind ${gone.join(', ')}: done and archived (PR merged or closed)`);
+    // An archived blocker is found as done, and the merge driver releases a hold on it as on any merged one.
+    for (const p of preds) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     // A triage park (lane, size, design, the person's step) keeps its park, its holds in held_by beside
     // it, so no release can send it to a worker. Any other park of its own would lose its question.
     const keeps = !isHeld(t) && triagePark(t);
@@ -799,11 +795,9 @@ switch (cmd) {
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
     if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-merge <STEP>[,<STEP>...]] [--hold-spine]   (after triage.sh <TICKET>)');
     const listArg = (flag) => (args.includes(flag) ? String(args[args.indexOf(flag) + 1] ?? '').split(/[,|]/).filter(Boolean) : []);
-    const named = listArg('--hold');
-    if (args.includes('--hold') && !named.length) throw new Error('admit --hold wants the blockers, comma-separated');
-    for (const p of named) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
-    // An archived blocker is done with its PR merged or closed: there is nothing to wait for.
-    const holds = named.filter((p) => !isArchived(q, p));
+    const holds = listArg('--hold');
+    if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
+    for (const p of holds) { found(q, p); if (p === key) throw new Error(`${key} cannot be held behind itself`); }
     const outside = listArg('--hold-outside');
     if (args.includes('--hold-outside') && !outside.length) throw new Error('admit --hold-outside wants the blockers, comma-separated');
     for (const p of outside) {
