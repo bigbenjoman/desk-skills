@@ -25,7 +25,7 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor } from './batches.mjs';
-import { lockPid, releaseDirLock, alive, writeJsonAtomic } from './dir-lock.mjs';
+import { lockPid, releaseDirLock, alive, writeJsonAtomic, tryLockFile } from './dir-lock.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -65,13 +65,13 @@ if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a re
 mkdirSync(from.state, { recursive: true });
 const passLock = join(from.state, 'orchestrator.lock');
 const queueLock = `${from.queue}.lock`;
-const busy = holder(passLock) ?? holder(join(from.state, 'supervisor.lock'));
+// The pass lock is taken exclusively, as pass.mjs claim() and queue.mjs stop take it (tryLockFile), so
+// this never writes over one they hold; it goes when this process exits. A supervisor tick is looked
+// for once it is held.
+const passHolder = tryLockFile(passLock, { by: 'move-batch.mjs' });
+const busy = passHolder === true ? holder(join(from.state, 'supervisor.lock')) : (passHolder ?? '?');
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
-writeFileSync(passLock, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
-process.on('exit', () => {
-  releaseDirLock(queueLock);
-  try { if (JSON.parse(readFileSync(passLock, 'utf8')).pid === process.pid) unlinkSync(passLock); } catch { /* gone */ }
-});
+process.on('exit', () => releaseDirLock(queueLock));
 
 // queue.mjs's lock (dir-lock.mjs), taken with the same mkdir but refused at once rather than waited
 // for, and never over a lock that is there. A lock a dead writer left is cleared by queue.mjs's next

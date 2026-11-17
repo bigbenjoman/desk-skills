@@ -77,6 +77,7 @@ import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as re
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
+import { tryLockFile, unlockFile } from './dir-lock.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const INTAKE_EVERY_MS = 15 * 60 * 1000;
@@ -252,18 +253,17 @@ export function runIntake({ state = E.stateDir(), force = false, now = new Date(
   mkdirSync(state, { recursive: true });
   const reg = readIntake(state);
   if (!force && reg.last_run && now - Date.parse(reg.last_run) < INTAKE_EVERY_MS) return { ran: false, lines: [] };
-  return withLock(state, now, () => intake({ state, query, reg, now }));
+  return withLock(state, () => intake({ state, query, reg, now }));
 }
 
-// One intake at a time, by hand or not: two would triage, and admit, the same ticket twice.
-async function withLock(state, now, fn) {
+// One intake at a time, by hand or not: two would triage, and admit, the same ticket twice. Taken
+// exclusively (dir-lock.mjs tryLockFile), so of two intakes starting together only one runs.
+async function withLock(state, fn) {
   const lockFile = join(state, 'intake.lock');
-  const holder = readJson(lockFile, null)?.pid;
-  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
-  if (holder && holder !== process.pid && alive(holder)) return { ran: false, lines: [`intake: skipped, another intake is running (pid ${holder})`] };
-  writeFileSync(lockFile, JSON.stringify({ pid: process.pid, since: now.toISOString() }));
+  const got = tryLockFile(lockFile);
+  if (got !== true) return { ran: false, lines: [`intake: skipped, another intake is running (pid ${got ?? '?'})`] };
   try { return await fn(); }
-  finally { try { if (readJson(lockFile, null)?.pid === process.pid) rmSync(lockFile); } catch { /* gone */ } }
+  finally { unlockFile(lockFile); }
 }
 
 // Blockers first: each round takes the tickets none of the rest still blocks (a cycle goes last, as found).
@@ -645,7 +645,7 @@ async function intake({ state, query, reg, now }) {
 // its record would place it, and the standing batch's state does not matter.
 export async function admitByHand(keys, { state = E.stateDir(), by = 'hand', front = false, into = null, now = new Date(), onLine = () => {} } = {}) {
   mkdirSync(state, { recursive: true });
-  return withLock(state, now, () => byHand([...new Set(keys)], { state, by, front, into, now, onLine }));
+  return withLock(state, () => byHand([...new Set(keys)], { state, by, front, into, now, onLine }));
 }
 
 // Admit a ticket into the live named batch `epic` (its epic's feature batch, or the batch whose base has

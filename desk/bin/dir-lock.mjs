@@ -10,6 +10,7 @@
 //   takeDirLock(dir, { waitMs, pollMs, timeoutError })   -> returns once held, or throws timeoutError(pid)
 //   releaseDirLock(dir)                                  -> removes it only while this process holds it
 //   withDirLock(dir, fn, opts)                           -> fn()'s result, the lock held around it
+//   tryLockFile(file, fields) / unlockFile(file?)        -> the same, for a lock that is a {pid} JSON file
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -20,9 +21,9 @@ export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch
 
 // One with no pid yet is between its mkdir and its write, unless it has sat that way for a minute
 // (with-lock.sh's rule).
-function stale(dir) {
-  const pid = lockPid(dir);
-  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > 60_000; } catch { return false; } // already gone
+function stale(dir, pidOf = lockPid, unwrittenMs = 60_000) {
+  const pid = pidOf(dir);
+  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > unwrittenMs; } catch { return false; } // already gone
 }
 
 // Clear a stale lock. Takers that all saw the same stale lock must not each remove "the lock", or a
@@ -30,14 +31,14 @@ function stale(dir) {
 // looks again under it: only a clearer can remove the lock while it exists, so a lock still stale
 // under the clearing lock is the one that was seen. A clearing lock older than 5 seconds is a clearer
 // that died mid-clear (clearing takes microseconds), and is removed for the next attempt.
-function clearStale(dir) {
+function clearStale(dir, isStale = () => stale(dir)) {
   const clearing = `${dir}.clearing`;
   try { mkdirSync(clearing); } catch (e) {
     if (e.code !== 'EEXIST') throw e;
     try { if (Date.now() - statSync(clearing).mtimeMs > 5_000) rmSync(clearing, { recursive: true, force: true }); } catch { /* gone */ }
     return false;
   }
-  try { if (stale(dir)) rmSync(dir, { recursive: true, force: true }); }
+  try { if (isStale()) rmSync(dir, { recursive: true, force: true }); }
   finally { rmSync(clearing, { recursive: true, force: true }); }
   return true;
 }
@@ -97,6 +98,33 @@ export function withDirLock(dir, fn, opts) {
   try { return fn(); }
   finally { releaseDirLock(dir); }
 }
+
+// A lock that is a file of JSON { pid, since, ... }: pass.mjs's orchestrator.lock, which queue.mjs stop
+// takes too. Created exclusively, so of two takers only one holds it, and a stale one (a dead holder,
+// or unreadable for longer than its write takes) is cleared as a stale directory lock is. -> true once
+// taken, else the holder's pid (null while unreadable). Let go on exit while it still names this process.
+const heldFiles = new Set();
+export const filePid = (file) => { try { return Number(JSON.parse(readFileSync(file, 'utf8')).pid) || null; } catch { return null; } };
+export function tryLockFile(file, fields = {}) {
+  mkdirSync(dirname(file), { recursive: true });
+  for (;;) {
+    try {
+      writeFileSync(file, JSON.stringify({ pid: process.pid, since: new Date().toISOString(), ...fields }), { flag: 'wx' });
+      heldFiles.add(file);
+      return true;
+    } catch (e) { if (e.code !== 'EEXIST') throw e; }
+    const isStale = () => stale(file, filePid, 5_000);
+    if (!(isStale() && clearStale(file, isStale))) return filePid(file);
+  }
+}
+// Lets go of `file`, or with none every file lock this process holds; never one another process holds.
+export function unlockFile(file) {
+  for (const f of file ? [file] : [...heldFiles]) {
+    try { if (filePid(f) === process.pid) rmSync(f, { force: true }); } catch { /* gone */ }
+    heldFiles.delete(f);
+  }
+}
+process.on('exit', () => unlockFile());
 
 // Writes `obj` as JSON to `file` through a temporary file and a rename, so a reader that takes no
 // lock always sees one whole version.

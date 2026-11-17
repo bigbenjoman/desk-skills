@@ -55,6 +55,12 @@ How to resume, by what was parked:
 | a take call parked with `AUTOPILOT_PARK_RECOMMENDS` | nothing: the next pass answers it with the recommended option, requeues it and logs the decision (*Ask or take*); the same park again after that answer is the person's |
 | a ticket an interactive session works | park it with the session's id, never in free text: `queue.mjs park <TICKET> --claimed-by <session id>` (the `<id>.jsonl` under `~/.claude/projects`). Once that transcript has been still past §3b "Release idle claims after (hours)" (unset 12, `0` never) and the ticket's worktree is clean, a pass requeues it with its branch kept and pushes one notification; with uncommitted changes it stays claimed, and its park names the files once. A ticket already parked keeps its park's question under the claim, so a lane C, a lane D parked on its design, or a size or dependency-cycle park is never released to a worker; a held ticket or a spine cannot be claimed |
 
+To stop one running worker without failing its ticket, run `queue.mjs stop <TICKET>`. It ends the
+worker's processes, commits what its worktree holds on its branch and holds the ticket behind no
+blocker, so no pass starts it until the person lets it (needs-you `start`). It waits for a running
+pass and holds the pass lock while it works, so a pass started meanwhile refuses. It exits 11 for a ticket
+with no running worker and 2 for a key the queue does not hold. Stopping every worker is `/desk-reboot`.
+
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
 you go idle, which is the one wait that works.

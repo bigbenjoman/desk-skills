@@ -2409,6 +2409,19 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
   t('DS-639 AC6 a row reading failure-class lists a ticket pinned without it as with the lever off', lineOf('pinon'), lineOf('pinoff'));
 }
 
+// ---- DS-742: a ticket queue.mjs stop held is listed held, and start lets the next pass start it.
+put('ds742', { port: 5742, beat: 1, tickets: {
+  'P-1': { state: 'parked', lane: 'A', held_by: null, branch: 'fix/P-1', last_round: { stage: '5/9', question: 'stopped', at: minsAgo(5) },
+    park: { question: 'held by orchestrator: stopped by queue.mjs stop at 2026-11-17T10:00:00.000Z; its work so far is committed as 0123456789ab on fix/P-1. Starts again only once you let it', since: minsAgo(5) } },
+} });
+{
+  const it = N.collect({ word: 'ds742' }).items.find((i) => i.t.key === 'P-1');
+  t('DS-742 AC2 a stopped ticket is listed held, with start recommended', `${it?.kind} ${it?.need} ${it?.actions.map((a) => a[0]).join()}`, 'held its worker was stopped: let it start start,not-now');
+  const st = N.record({ word: 'ds742', ticket: 'P-1', action: 'start' });
+  const p1 = queueOf('ds742').tickets['P-1'];
+  t('DS-742 AC3 start makes it triaged with its branch and stage kept, so the next pass starts it there', `${st.ok} ${p1.state} ${p1.park} ${p1.branch} ${p1.last_round?.stage}`, 'true triaged null fix/P-1 5/9');
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
