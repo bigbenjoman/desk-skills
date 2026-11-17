@@ -68,6 +68,7 @@ import { listBatches, lastPromotion, prState as batchPrState } from './batches.m
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
+import { queueWriter } from './queue-writer.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -80,17 +81,23 @@ const CODES = { go_on: EXIT.GO_ON, nothing_yet: EXIT.NOTHING_YET, show_person: E
 // longer held counts it released, and one newly merged counts it merged). `session_at` is the last
 // pass a session ran, kept through the supervisor's, so a session beside the supervisor shows. It is
 // written once the queue reads, and never by a pass another orchestrator's lock refused.
+// It goes in the pass's last queue write, with every change not yet written: -> the report lines of
+// that write's refusals and of fields another writer had changed, which the verdict adds.
 let RECORDS = false;
 function recordPass(f) {
-  if (!RECORDS) return;
+  if (!RECORDS) return [];
   try {
-    const prev = readQueue(QUEUE_FILE).pass ?? {};
+    const prev = QW.view().pass ?? {};
     const rec = { ...prev, at: PASS_AT, by: PASS_BY, ...(PASS_BY === 'session' ? { session_at: PASS_AT } : {}), ...f(prev) };
-    execFileSync('node', [join(BIN, 'queue.mjs'), 'set-batch', `pass=${JSON.stringify(rec)}`], { stdio: 'ignore' });
-  } catch { /* advisory: the verdict still goes out */ }
+    if (!QW.apply(['set-batch', `pass=${JSON.stringify(rec)}`]).ok) return [];
+    return writeLines(QW.flush({ archive: true }));
+  } catch { return []; /* advisory: the verdict still goes out */ }
 }
 function verdict(status, message, fields = {}) {
-  if (status === 'error') recordPass((prev) => ({ errors: (Number(prev.errors) || 0) + 1, error: String(message).trim().split('\n')[0] }));
+  if (status === 'error') {
+    const late = recordPass((prev) => ({ errors: (Number(prev.errors) || 0) + 1, error: String(message).trim().split('\n')[0] }));
+    if (late.length) message = `${message}\n${late.join('\n')}`;
+  }
   const code = CODES[status];
   if (AS_JSON) {
     console.log(JSON.stringify({ status, code, message, waiting: [], parked: [], notify: code === EXIT.SHOW_PERSON, push: [], release_due: [], stuck: [], on_park: [], ...fields }));
@@ -128,7 +135,9 @@ if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
 // A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
-try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
+// The pass's queue changes are applied to its own copy and written together (queue-writer.mjs).
+let QW;
+try { readQueue(QUEUE_FILE); QW = queueWriter(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
 RECORDS = true;
 
 // Headless workers cannot ask, so spawning needs the grant up front. Harvesting what is already
@@ -187,22 +196,58 @@ const shOut = (cmd, args, opts = {}) => {
   try { return { ok: true, out: execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
+function refusedLine(args, refused, why) {
+  const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
+  return `${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${String(why).split('\n').pop()}`;
+}
+// The report lines of one queue-writer.mjs flush: each change a refused write did not record, or each
+// field another writer had changed meanwhile, whose value stays; and done tickets left unarchived.
+function writeLines(r) {
+  if (!r.ok) return r.lost.map((args) => refusedLine(args, 'not recorded', r.why));
+  return [
+    ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
+    ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
+  ];
+}
+// A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it
+// are written, so it reads them.
+const qRun = (args) => { flushQueue(); return shOut('node', [join(BIN, 'queue.mjs'), ...args]); };
+// One queue command, in the pass's write where queue-writer.mjs applies it, else as queue.mjs, without
+// reporting a refusal: -> { ok, out }, out being the refusal when not ok.
+const qTry = (args) => {
+  const a = QW.apply(args);
+  return a.direct ? qRun(args) : a.ok ? a : { ok: false, out: a.why };
+};
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
 // would hide a ticket whose recorded state is now wrong. Returns '' when refused.
 const qWrite = (args, refused = 'not recorded') => {
-  const r = shOut('node', [join(BIN, 'queue.mjs'), ...args]);
+  const r = qTry(args);
   if (r.ok) return r.out;
-  const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
-  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
+  report.failed.push(refusedLine(args, refused, r.out));
   return '';
 };
 const q = (...args) => qWrite(args);
-// The one exception: a spawn's state=running write. Refused, nothing may start, since the queue would
-// still read the ticket as waiting and the next pass would start a second worker on it.
-const recordRunning = (key, pairs, what = 'no worker was started') =>
-  Boolean(qWrite(['set', key, 'state=running', ...pairs], `not recorded, so ${what}`));
-const queue = () => readQueue(QUEUE_FILE);
+// Writes every change applied since the last write, in one locked write. A change another writer
+// made to the same field since is kept, and the report names the ticket and field; when the lock is
+// not taken in time, nothing is written and the report names each change.
+function flushQueue() {
+  const r = QW.flush();
+  report.failed.push(...writeLines(r));
+  return r;
+}
+// The one exception: a spawn's state=running write, made by queue.mjs against the file as it stands,
+// before the worker starts. Refused, nothing may start, since the queue would still read the ticket as
+// waiting and the next pass would start a second worker on it.
+const recordRunning = (key, pairs, what = 'no worker was started') => {
+  const args = ['set', key, 'state=running', ...pairs];
+  const r = qRun(args);
+  if (r.ok) return true;
+  report.failed.push(refusedLine(args, `not recorded, so ${what}`, r.out));
+  return false;
+};
+const queue = () => QW.view();
+process.on('exit', () => { try { if (RECORDS && QW.pending()) QW.flush(); } catch { /* nothing more to report to */ } });
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
 // this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
 const markFailed = (key, why, { sets = [], tail = '' } = {}) => {
@@ -527,7 +572,7 @@ function refuseUnnamedLease(t, question) {
     q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
     return left('it asks for a force-push naming no lease SHA, for the second time, so no answer can grant it: a requeue tells its next worker to name one');
   }
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) return left(`it asks for a force-push naming no lease SHA, and the requeue to name one was refused (${rq.out.split('\n').pop()})`);
   q('set', t.key, `lease_refused=${JSON.stringify({ question })}`);
   report.advanced.push(`${t.key}: its park asked for a force-push naming no lease SHA: refused back to a worker, no grant recorded. The park: ${question}`);
@@ -1225,6 +1270,9 @@ if (notes.length) appendNotes(notes, STATE);
 // left parked. A running one is its worker's until it ends. With its PR recorded, the merge is read
 // below as any other. The note goes once the queue has the change; a note written for another queue
 // file is left for it, and one older than the ticket's place in this queue is stale and goes unread.
+// A note whose change this pass records goes only once that change is in the file: a write that is
+// refused, or that another writer's change to the ticket overrides, leaves it for the next pass.
+const closedOut = [];
 for (const c of readCloseouts(STATE)) {
   if (c.queue && c.queue !== QUEUE_FILE) continue;
   const t = queue().tickets[c.ticket];
@@ -1235,9 +1283,18 @@ for (const c of readCloseouts(STATE)) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
     if (report.failed.length !== before) continue;
-    report.done.push(`${t.key}: ${how}`);
+    closedOut.push({ c, line: `${t.key}: ${how}` });
+    continue;
   }
   try { unlinkSync(c.file); } catch { /* gone */ }
+}
+if (closedOut.length) {
+  const r = flushQueue();
+  for (const { c, line } of closedOut) {
+    if (!r.ok || r.conflicts.some((x) => x.ticket === c.ticket)) continue;
+    report.done.push(line);
+    try { unlinkSync(c.file); } catch { /* gone */ }
+  }
 }
 
 // ---- live reads ---------------------------------------------------------------------
@@ -1296,7 +1353,7 @@ for (const t of Object.values(queue().tickets)) {
   let saved;
   try { saved = reads.map(({ name, rec }) => saveFixture(FIXTURES, t.key, name, rec.out)); } catch (e) { toPerson(`its live reads ran at ${at}, but their output could not be saved under ${FIXTURES}: ${e.message}`); continue; }
   const ran = `live read ${reads.map((x) => x.name).join(', ')} ran from the pass's clean checkout of ${at}, and what it printed is in ${saved.join(', ')}`;
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) { toPerson(`${ran}, but the requeue was refused (${rq.out.split('\n').pop()})`); continue; }
   // The next worker's briefing says what cleared the park (writeBrief), so it reads the fixture, and
   // reads it as data: it is whatever a live API returned.
@@ -1492,7 +1549,7 @@ function settleClear(t) {
     if (report.failed.length === before) report.clears.push(`${t.key}: "${what}" holds and its PR #${own} merged: recorded done`);
   } else {
     const wasPutOff = putOff(t);
-    const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+    const rq = qRun(['requeue', t.key]);
     // The next worker's briefing says what cleared the park (writeBrief), so it acts on the result.
     if (rq.ok) q('set', t.key, `cleared=${JSON.stringify({ what })}`);
     // A park put off with not-now that clears is no longer put off: the same question parked again is
@@ -1629,10 +1686,11 @@ function takeRecommended(t) {
     report.recovered.push(`${t.key}: its park recommends "${d.decision.chose}" on a ${d.decision.category} call, but ${why}: left parked`);
     return true;
   };
+  flushQueue();
   const ans = shOut('node', [join(BIN, 'answer.mjs'), t.key, recommendedAnswer(d.decision)]);
   if (!ans.ok) return left(`answer.mjs refused it (${lastLine(ans.out)})`);
   const question = t.park.question;
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) return left(`the requeue was refused (${lastLine(rq.out)})`);
   q('set', t.key, `auto_answered=${JSON.stringify({ question, chose: d.decision.chose, at: new Date().toISOString() })}`);
   appendDecisions([decisionEntry({ decision: d.decision, ticket: t.key, run: t.session_id ?? null, repo: GH_REPO, pr: null, source: 'pass' })], STATE);
@@ -1656,7 +1714,7 @@ function tailAfterMerge(t) {
   if (v?.state !== 'MERGED' || status === 'done') return false;
   const steps = mergedTailSteps(t, pr, v.mergedAt ?? null);
   if (steps.before) q(...steps.before);
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) {
     q(...steps.refused);
     report.recovered.push(`${t.key}: its PR #${pr} merged and it is not done in Jira, but the requeue for its after-merge steps was refused (${lastLine(rq.out)}): left parked`);
@@ -1722,7 +1780,7 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
     report.parked.push(`${t.key}: ${why}`);
     continue;
   }
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) { report.clears.push(`${t.key}: ${idle}, but the requeue was refused (${rq.out.split('\n').pop()}): left claimed`); continue; }
   report.clears.push(`${t.key}: ${idle}, and its worktree is clean: back to the workers, branch ${t.branch ?? 'none recorded'} kept`);
   claimPush.push({ key: `claim:${E.repoSlug()}:${t.key}:${c.at}`, text: `desk ${E.repoSlug()}: ${t.key} went back to the workers, since session ${c.session}, which claimed it, has been idle past ${CLAIMS.hours}h` });
@@ -3177,6 +3235,8 @@ async function spawnBaseFix({ wt, fix }) {
   if (refused) { failed('could not be spawned', refused); return; }
   made[made.length - 1].session = sid;
   record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
+  // In the file now, as a ticket's running write is, so a pass that ends early never loses the session.
+  flushQueue();
   report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${tryWhat(fix)} try ${fix.try} of ${fix.of} on ${BASE}${review ? `, PR #${fix.pr}` : ''}); ${preflightNote(pre.cost)}`);
 }
 const spawnedBefore = report.spawned.length;
@@ -3220,6 +3280,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (refused) return fail(refused);
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  flushQueue();
   report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
@@ -3782,6 +3843,7 @@ for (const t of onTracker) {
     // tries again.
     const spent = [];
     for (const k of now) {
+      flushQueue();
       const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', k, '--by', 'pass', '--json', ...(into ? ['--into', into] : [])]);
       let res = null;
       try { res = JSON.parse(r.out.split('\n').filter((line) => line.startsWith('{')).pop() ?? ''); } catch { /* said below as its output */ }
@@ -4622,6 +4684,7 @@ function fileEvidenceFix(g) {
   return a.ok ? { fix } : { fix, why: a.why };
 }
 function admitFix(key) {
+  flushQueue();
   const r = shOut('node', [join(BIN, 'intake.mjs'), 'admit', key, '--by', 'evidence']);
   return r.ok ? { ok: true } : { ok: false, why: r.out.split('\n').filter((line) => !isProgress(line)).pop() };
 }
@@ -4904,7 +4967,7 @@ function applyFix(t, n, head, c) {
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
-  const rq = shOut('node', [join(BIN, 'queue.mjs'), 'requeue', t.key]);
+  const rq = qRun(['requeue', t.key]);
   if (!rq.ok) {
     q('set', t.key, 'fix=null');
     report.waiting.push(`${t.key}: STUCK — PR #${n} ${f.what}, and its fix try could not be requeued (${rq.out.split('\n').pop()})`);
@@ -5048,8 +5111,8 @@ for (const t of releaseDue) {
   else if (DRY) out.push(`release due (dry run): ${t.key} would be released, every blocker merged (${predsOf(t).join(', ')})`);
   else {
     const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-    const set = shOut('node', [join(BIN, 'queue.mjs'), ...setArgs]);
-    const front = set.ok ? shOut('node', [join(BIN, 'queue.mjs'), ...frontArgs]) : null;
+    const set = qTry(setArgs);
+    const front = set.ok ? qTry(frontArgs) : null;
     if (set.ok) {
       releasedNow.push(t);
       out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
@@ -5199,12 +5262,20 @@ function baseGate(qx) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
     const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
     q('set-batch', `gate=${JSON.stringify({ state: 'running', pid: null, started: new Date().toISOString(), sha: head, slice })}`);
+    // base-gate.mjs reads the gate's sha from the file as it starts, so the gate is in the file first;
+    // refused, no gate starts, and the next pass tries again.
+    const gateWrite = flushQueue();
+    if (!gateWrite.ok || gateWrite.conflicts.some((c) => c.ticket == null && c.field === 'gate')) {
+      out.push(`BASE GATE: not started on ${BASE}: its record could not be written to the queue (see the failures above); the next pass tries again`);
+      return true;
+    }
     mkdirSync(join(STATE, 'logs'), { recursive: true });
     const fd = openSync(GATE_LOG, 'a');
     const child = spawn(process.execPath, [join(BIN, 'base-gate.mjs')], { cwd: MAIN, detached: true, stdio: ['ignore', fd, fd], env: process.env });
     child.unref();
     closeSync(fd);
     q('set-batch', `gate.pid=${child.pid}`);
+    flushQueue();
     const why = complete ? '' : milestones.length ? `, since milestone ${milestones.map((t) => t.key).join(', ')} merged` : `, since ${uncovered.length} children merged since the last ${g ? 'gate' : 'promotion'}`;
     out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} for ${sliceLabel(slice)}${why} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}${g?.redrafted ? `. Promotion PR #${g.pr} is back in draft until it passes` : ''}`);
     outside();
@@ -5499,7 +5570,8 @@ if (repoLine) lines.push(repoLine);
 if (BORROW.bad) lines.push(`borrowing: ${BORROW.bad}`);
 if (borrowLine) lines.push(borrowLine);
 lines.push('');
-lines.push(sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true }));
+// The status table, filled in once this pass's last queue write has been made.
+const tableAt = lines.push('') - 1;
 if (idle) {
   lines.push('\nIDLE — every ticket is done, parked, or failed, none is held waiting on a merge, and every done ticket\'s PR is merged or closed (or it finished with no PR). Nothing left to spawn or merge.');
   const sc = batchScopeTotals(Object.values(qEnd.tickets));
@@ -5555,7 +5627,7 @@ if (!DRY) {
   // A warning whose line was not written was not given: the next pass gives it.
   collisionRec = { collision_streak: step.streak, collision_warned: step.warn && !wrote.ok ? false : step.warned };
 }
-recordPass((prev) => {
+const late = recordPass((prev) => {
   const released = (prev.held_tickets ?? []).some((k) => qEnd.tickets[k] && !heldEnd.includes(k));
   // A merge is progress once, in the pass that first finds it merged, whoever recorded it: a merge
   // time later than the previous pass's start would count again a merge that pass already recorded.
@@ -5563,8 +5635,14 @@ recordPass((prev) => {
   const moved = report.spawned.length > 0 || merged || released;
   return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, ...collisionRec };
 });
+lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
+// The last write's refusals, and fields another writer had changed, are the person's too.
+if (late.length) {
+  waiting.push(...late);
+  lines.push(`queue write:\n  ${late.join('\n  ')}`);
+}
 // exitCode, not exit(): a long report to a pipe must flush before the process ends.
-process.exitCode = verdict(status, lines.join('\n'), {
+process.exitCode = verdict(late.length && status !== 'idle' ? 'show_person' : status, lines.join('\n'), {
   waiting, parked, push, release_due: releaseDue.filter((t) => !releasedNow.includes(t)).map((t) => t.key), stuck: stuck.map((t) => t.key),
   on_park: onPark.map((t) => t.key),
 });

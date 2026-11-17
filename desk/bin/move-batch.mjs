@@ -25,7 +25,8 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor } from './batches.mjs';
-import { lockPid, releaseDirLock, alive, writeJsonAtomic, tryLockFile } from './dir-lock.mjs';
+import { lockPid, releaseDirLock, alive, tryLockFile } from './dir-lock.mjs';
+import { writeQueueFile, archivePath } from './queue-store.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -88,7 +89,7 @@ const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
 const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
-const writeQueue = writeJsonAtomic;
+const writeQueue = writeQueueFile;
 if (running.length) {
   // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
   // included. The count it replaces is kept, unless this batch is already draining: a count the
@@ -150,6 +151,7 @@ try {
     writeQueue(to.queue, cur);
     unlinkSync(from.queue);
   } else renameSync(from.queue, to.queue);
+  if (existsSync(archivePath(from.queue))) renameSync(archivePath(from.queue), archivePath(to.queue));
 } catch (e) {
   if (existsSync(from.queue)) rmSync(to.queue, { force: true });
   const stuck = moved.reverse().filter((f) => { try { renameSync(join(to.state, f), join(from.state, f)); return false; } catch { return true; } });
