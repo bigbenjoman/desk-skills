@@ -25,6 +25,7 @@ import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
+import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -2078,9 +2079,27 @@ const linesOnBase = (f) => {
   }
   return lineCounts.get(f);
 };
-const placesFor = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
+const configuredPlaces = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
   : FILE_BUDGET.big === FILE_BUDGET.small ? FILE_BUDGET.small
   : linesOnBase(f) > FILE_BUDGET.lines ? FILE_BUDGET.big : FILE_BUDGET.small);
+// A file whose merge-time conflicts rise runs fewer places than configured (conflict-record.mjs),
+// from the record every batch of this repo shares. A record that does not read lowers nothing.
+const CONFLICTS_FILE = conflictsPath(STATE);
+const conflictRecord = readConflicts(CONFLICTS_FILE);
+const conflictsBy = conflictRecord.bad ? new Map() : conflictTimes(conflictRecord.entries);
+const PASS_MS = Date.parse(PASS_AT);
+// Records a merge-time conflict's files for `what` (a PR, or a base sync) -> a line for the report
+// when nothing could be recorded, else null. A dry run records nothing.
+function noteConflict(what, { files, ...entry }) {
+  if (DRY) return null;
+  if (!files?.length) return `conflicts: ${what} is in conflict, but its files could not be worked out, so none went on the conflict record`;
+  const r = recordConflicts(CONFLICTS_FILE, { files, ...entry, at: PASS_AT });
+  return r.error ? `conflicts: ${what}'s conflicting files did not go on the conflict record: ${r.error}` : null;
+}
+const placesFor = (f) => {
+  const k = configuredPlaces(f);
+  return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
+};
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
@@ -2444,6 +2463,10 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
     else if (s.reason === 'conflict' || s.reason === 'check') {
       metConflict = true;
+      if (s.reason === 'conflict') {
+        const noted = noteConflict(`the base ${BASE}`, { files: s.files, ticket: BASE_FIX_KEY, pr: null, head: originSha(BASE), source: originSha(SOURCE) });
+        if (noted) baseLines.push(noted);
+      }
       let person = null;
       const line = conflicted(s.files, (why) => { person = why; blocked(why); }, s.check ?? null);
       if (line) heldForFix(line);
@@ -3814,6 +3837,11 @@ if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  $
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
 if (FILE_BUDGET.bad) out.push(`collisions: ${FILE_BUDGET.bad} — read as 1 for every file, so no two tickets naming one file run at once`);
+if (conflictRecord.bad) out.push(`collisions: the conflict record was not read (${conflictRecord.bad}), so every file runs at its configured budget`);
+for (const [f, times] of conflictsBy) {
+  const k = configuredPlaces(f), now = placesFor(f);
+  if (now < k) out.push(`collisions: ${f} runs ${now} of its configured ${k}, after ${recentCount(times, PASS_MS)} merge-time conflict(s) in the last 7 days`);
+}
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
@@ -4618,6 +4646,10 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
+  // Each file a ready PR conflicts on goes on the conflict record, whoever then resolves it.
+  const dirtyFiles = dirty ? conflictFiles(t.branch) : null;
+  const noted = dirty ? noteConflict(`PR #${n} (${t.key})`, { files: dirtyFiles, ticket: t.key, pr: n, head: s.head }) : null;
+  if (noted) out.push(noted);
   // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
   // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
   // only on the gate, so it still goes to its own fix below.
@@ -4646,7 +4678,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
       const files = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
       return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
     },
-    conflictFiles: () => conflictFiles(t.branch),
+    conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
   };
