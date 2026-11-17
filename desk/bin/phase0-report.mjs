@@ -268,8 +268,8 @@ export function totalOf(list) {
 const runGh = (args) => spawnSync('gh', args, { encoding: 'utf8' });
 
 // Failed workflow runs created since `since`, each with its failed jobs' names: { runs: [{ branch,
-// jobs }] } or { unreadable }.
-export function failedRuns({ repo, since, gh = runGh }) {
+// jobs }] } or { unreadable }. With `jobs` false, only the list is read and `jobs` is null.
+export function failedRuns({ repo, since, gh = runGh, jobs: withJobs = true }) {
   const day = new Date(since).toISOString().slice(0, 10);
   const list = gh(['run', 'list', '--repo', repo, '--status', 'failure', '--created', `>=${day}`, '--limit', '500', '--json', 'databaseId,headBranch,workflowName']);
   if (list.status !== 0) return { unreadable: `gh run list failed: ${String(list.stderr ?? '').trim().split('\n').pop() || `exit ${list.status}`}` };
@@ -277,6 +277,7 @@ export function failedRuns({ repo, since, gh = runGh }) {
   try { runs = JSON.parse(list.stdout); } catch { return { unreadable: 'gh run list printed something that is not JSON' }; }
   return {
     runs: runs.map((r) => {
+      if (!withJobs) return { branch: r.headBranch, jobs: null };
       const v = gh(['run', 'view', String(r.databaseId), '--repo', repo, '--json', 'jobs']);
       let jobs = null;
       try { jobs = JSON.parse(v.stdout).jobs.filter((j) => j.conclusion === 'failure').map((j) => j.name); } catch { /* read below */ }
@@ -298,10 +299,10 @@ function readCi({ ci, repo, since, gh }) {
 const repoOrNull = () => { try { return E.ghRepo(); } catch { return null; } };
 
 // ---- one row per admitted ticket -----------------------------------------------------------------
-// The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial and
-// trial ids; null for a ticket admitted with no pin.
+// The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial,
+// trial ids and the lever code fingerprints at admission; null for a ticket admitted with no pin.
 const pinOf = (l) => (l && typeof l === 'object' && !Array.isArray(l)
-  ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null } : null);
+  ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null, fp: l.fp ?? null } : null);
 
 // One row per ticket in a batch whose `added_at` falls in [since, until) (epoch ms), with every run
 // it made since, runs after `until` included: a row is the ticket's whole outcome. `cost` is what its
@@ -335,6 +336,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     const starts = x.starts.map(({ sid, record: s }) => ({
       at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
       levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
+      lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
     }));
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,
