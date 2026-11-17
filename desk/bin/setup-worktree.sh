@@ -23,6 +23,7 @@
 #   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
 #   §4 Database migrate        run against the per-ticket database only
 #
+# DESK_GIT_FETCH_TIMEOUT_S (seconds, default 120) limits the fetch from origin, so a hung remote fails setup.
 # DESK_PSQL_TIMEOUT (seconds, default 30) limits each psql call, so a wedged container fails setup.
 # DESK_PSQL_RETRY_S (seconds, default 120) is how long the first psql call is retried, with backoff,
 # before setup fails; a container docker reports missing fails at once. A failed §4 Install runs a
@@ -331,6 +332,8 @@ EOF_FILES
   printf 'postgres'
 }
 # Every psql call runs under this limit: a stopped or wedged container must fail setup, not hang it.
+FETCH_LIMIT="${DESK_GIT_FETCH_TIMEOUT_S:-120}"
+case "$FETCH_LIMIT" in ''|*[!0-9]*|0) fail "DESK_GIT_FETCH_TIMEOUT_S='$FETCH_LIMIT' is not a positive number of seconds" ;; esac
 PSQL_LIMIT="${DESK_PSQL_TIMEOUT:-30}"
 case "$PSQL_LIMIT" in ''|*[!0-9]*|0) fail "DESK_PSQL_TIMEOUT='$PSQL_LIMIT' is not a positive number of seconds" ;; esac
 # How long the first psql call keeps being retried (backoff 5, 10, 20, 40s) before setup fails: a
@@ -534,7 +537,12 @@ elif [ -n "$FROZEN" ]; then
   git -C "$WT" checkout -q -B "$BRANCH" FETCH_HEAD
   rm -f "$WT/.git/FETCH_HEAD"
 else
-  git -C "$MAIN" fetch origin --quiet
+  rc=0; desk_timeout "$FETCH_LIMIT" git -C "$MAIN" fetch origin --quiet || rc=$?
+  case "$rc" in
+    0) ;;
+    124|137) fail "git fetch origin did not answer within ${FETCH_LIMIT}s" ;;
+    *) fail "git fetch origin exited $rc" ;;
+  esac
   if git -C "$MAIN" show-ref --verify --quiet "refs/heads/$BRANCH"; then
     say "branch $BRANCH already exists — checking it out into the worktree"
     free_branch
