@@ -90,8 +90,9 @@ function normalizer(roots) {
 }
 
 // Each tree makes its own commits, whose SHAs differ with the second they were made in, so each SHA,
-// whole or abbreviated, is named by the order it first appears in on its tree: the same commit at the
-// same step reads alike.
+// whole or abbreviated, is named by the order it first appears in within one run: the same commit at
+// the same step reads alike. Per run, not per suite: two commits a tree made in the same second can
+// share a SHA there and not on the other tree, which would shift every later run's names.
 const SHA = /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g;
 function renamer() {
   const seen = new Map();
@@ -211,7 +212,7 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
   const say = (s) => console.log(s);
   for (const suite of suites) {
     const b = runs(join(baseDir, suite)), h = runs(join(headDir, suite));
-    const cb = clock(b), ch = clock(h), nb = renamer(), nh = renamer();
+    const cb = clock(b), ch = clock(h);
     const label = labeller(join(baseDir, `${suite}.log`));
     // A check of the base's that fails on one tree only: the suite's own verdict on the difference.
     const fails = (d) => { try { return readFileSync(join(d, `${suite}.log`), 'utf8').split('\n').filter((l) => /^FAIL /.test(l)).map((l) => l.replace(/^FAIL +/, '')); } catch { return []; } };
@@ -232,7 +233,7 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
         continue;
       }
       compared++;
-      const lines = [];
+      const lines = [], nb = renamer(), nh = renamer();
       if (rb.exit !== rh.exit || rb.signal !== rh.signal) lines.push(`  exit: base ${rb.signal || rb.exit}, head ${rh.signal || rh.exit}`);
       const qb = flatten(rb, norm), qh = flatten(rh, norm);
       const eq = (x, y) => same(x, y, n, cb, ch);
