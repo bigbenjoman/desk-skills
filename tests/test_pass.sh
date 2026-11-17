@@ -1043,6 +1043,8 @@ chmod +x "$T/stub/desk-jira"
 export JIRA_CALLS="$T/jira-calls"; : > "$JIRA_CALLS"
 for k in T-50 T-51 T-52 T-53 T-54; do q add $k; done
 q set T-52 state=done; q set T-50 state=triaged; q set T-51 state=triaged; q set T-53 state=triaged; q set T-54 state=triaged
+# Their blocker links count as read, so only the epic lookup reaches Jira here.
+for k in T-50 T-51 T-53 T-54; do q set $k outside_blockers_read=2099-01-01T00:00:00.000Z; done
 TR="$DESK_AUTOPILOT_STATE/triage"; mkdir -p "$TR"
 printf '{"ticket":"T-50","lane":"A","size":"S"}' > "$TR/T-50.json"
 printf '{"ticket":"T-51","lane":"A"}' > "$TR/T-51.json"
@@ -1276,11 +1278,22 @@ EOF
 export DESK_CONFIG="$T/config-j.md" DESK_QUEUE="$T/queue-j.json" DESK_AUTOPILOT_STATE="$T/state-j"
 mkdir -p "$T/state-j/logs" "$T/state-j/triage" "$T/jira"
 ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
+# A search answers `key in (...)` with each key's $T/jira/<KEY>.json that exists, as Jira leaves out an
+# issue it does not show.
+cat > "$T/jira-search.mjs" <<'EOF'
+import { existsSync, readFileSync } from 'node:fs';
+const [dir, jql] = process.argv.slice(2);
+const keys = (/key in \(([^)]*)\)/.exec(jql)?.[1] ?? '').split(',').map((k) => k.trim()).filter(Boolean);
+const issues = keys.filter((k) => existsSync(`${dir}/${k}.json`)).map((k) => ({ key: k, ...JSON.parse(readFileSync(`${dir}/${k}.json`, 'utf8')) }));
+console.log(JSON.stringify({ issues }));
+EOF
 cat > "$T/stub/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira-calls"
 [ -f "$T/jira-down" ] && { echo "jira: 503 Service Unavailable" >&2; exit 1; }
+[ -f "$T/jira-blockers-down" ] && case "\$*" in *--fields=resolution*) echo "jira: 503 Service Unavailable" >&2; exit 1 ;; esac
 [ "\$1" = get ] && cat "$T/jira/\$2.json"
+[ "\$1" = search ] && exec node "$T/jira-search.mjs" "$T/jira" "\$2"
 EOF
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
@@ -1302,12 +1315,13 @@ printf '%s\n' '{"epic":null,"blockers":[{"key":"X-9","category":"new"},{"key":"J
 printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/J-2.json"
 blocked indeterminate
 printf '%s\n' '{"fields":{"assignee":null}}' > "$T/jira/X-9.json"
+printf '%s\n' '{"fields":{"issuelinks":[]}}' > "$T/jira/J-2.json"
 : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC1 a draft PR records isDraft, reviewDecision and mergeable as GitHub reports them" \
   '[ "$(field J-4 pr_status | jq -c "[.isDraft, .reviewDecision, .mergeable]")" = "[true,\"REVIEW_REQUIRED\",\"MERGEABLE\"]" ]'
 check "DS-221 AC2 (DS-599) an open blocker outside the batch is recorded with its status category and assignee, read again from Jira; one inside the batch is not" \
-  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "get J-1 --json\nget X-9 --json\nget J-2 --json")" ]'
-check "DS-221 a ticket with no outside blockers records none and is not read from Jira" '[ "$(field J-2 outside_blockers)" = "[]" ]'
+  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "search key in (J-1, J-2) 2 --fields=issuelinks,parent --json\nsearch key in (X-9, J-2) 2 --fields=resolution --json")" ] || { echo "     calls: $(tr "\n" "," < "$T/jira-calls")"; false; }'
+check "DS-221 a ticket with no outside blockers records none" '[ "$(field J-2 outside_blockers)" = "[]" ]'
 check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
 STATUS_AT=$(field J-4 pr_status.at); SESSION_AT=$(pass_rec at)
 check "DS-219 a pass a session ran records its time as the last session pass" '[ "$(pass_rec session_at)" = "$SESSION_AT" ]'
@@ -1320,12 +1334,12 @@ rm -f "$T/gh-down"
 blocked "done"; touch "$T/jira-down"; q set J-1 outside_blockers_read=null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC8 a Jira read that fails keeps the outside blockers as they were, and says so" \
-  '[ "$(field J-1 outside_blockers | jq -c "[.[].key]")" = "[\"X-9\"]" ] && echo "$out" | grep -q "outside blockers: not read, kept as they were"'
+  '[ "$(field J-1 outside_blockers | jq -c "[.[].key]")" = "[\"X-9\"]" ] && echo "$out" | grep -q "blocker links: J-1 not read, holds kept as they were"'
 rm -f "$T/jira-down"; q set J-1 outside_blockers_read=null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-221 AC3 a blocker now Done is no longer among the outside blockers" '[ "$(field J-1 outside_blockers)" = "[]" ]'
 : > "$T/jira-calls"; q set J-1 outside_blockers_read=null; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-221 a ticket left with no outside blockers is not read from Jira again" '[ ! -s "$T/jira-calls" ]'
+check "DS-656 a queued ticket left with no outside blockers is still read from Jira, for links added since" 'grep -q "^search key in (.*J-1[,)]" "$T/jira-calls"'
 # AC5 and AC6: a ticket that could spawn, held by memory, then spawned.
 q add J-5; q set J-5 state=triaged
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
@@ -1438,6 +1452,179 @@ check "DS-541 AC2 in the standing batch, a ticket linked as blocked by its Jira 
 check "DS-541 AC3 a ticket blocked by an open ticket outside the batch that is not its epic is still held behind it" \
   '[ "$(field J-11 state)" = "\"parked\"" ] && [ "$(field J-11 held_outside)" = "\"X-11\"" ] && [ "$(field J-11 outside_blockers | jq -c "[.[].key]")" = "[\"X-11\"]" ] && ! echo "$out" | grep -q "J-11 is linked as blocked by its own epic"'
 q drop J-10; q drop J-11
+# A blocker in no batch closed as Won't Do never lands, so its link is raised once as a triage
+# item (wont_do_link) rather than held in silence; removing the link lifts the hold and clears it.
+# links <KEY> <BLOCKER> <category> <status> [<BLOCKER2> ...] writes the ticket's links; none with no blocker.
+links(){ k=$1; shift; s=''; while [ $# -ge 3 ]; do s="$s${s:+,}{\"type\":{\"inward\":\"is blocked by\"},\"inwardIssue\":{\"key\":\"$1\",\"fields\":{\"status\":{\"name\":\"$3\",\"statusCategory\":{\"key\":\"$2\"}}}}}"; shift 3; done
+  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null; }
+resolved(){ printf '{"fields":{"assignee":null,"resolution":{"name":"%s"}}}\n' "$2" > "$T/jira/$1.json"; }
+q add J-13; q set J-13 state=parked held_by=X-13 held_outside=X-13 'park={"question":"held by orchestrator: blocked by X-13 — starts once X-13 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-13","category":"indeterminate"}]}' > "$T/state-j/triage/J-13.json"
+resolved X-13 "Won't Do"; links J-13 X-13 'done' "Won't Do"
+: > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC1 a blocker in no batch closed as Won't Do is raised once as a triage item naming both tickets, and the hold stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-13 is blocked by X-13, closed without landing (Won'"'"'t Do): is the link still right?")" = 1 ] && [ "$(field J-13 wont_do_link)" = "\"X-13\"" ] && [ "$(field J-13 held_outside)" = "\"X-13\"" ] && [ "$(field J-13 state)" = "\"parked\"" ]'
+check "DS-717 AC1 the blocker record keeps the resolution read from it" \
+  '[ "$(jq -c ".blockers[0].resolution" "$T/state-j/triage/J-13.json")" = "\"Won'"'"'t Do\"" ] && grep -q "^search key in (.*X-13[,)].* --fields=resolution" "$T/jira-calls"'
+links J-13 X-13 'done' "Won't Do"; : > "$T/jira-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC2 the next pass raises no second item for that link, and does not read the resolution again" \
+  '! echo "$out" | grep -q "triage: J-13" && [ "$(field J-13 wont_do_link)" = "\"X-13\"" ] && grep -q "^search key in (.*J-13[,)]" "$T/jira-calls" && ! grep -q "X-13" "$T/jira-calls"'
+links J-13; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC3 once the blockers no longer list it, the hold lifts and the item clears" \
+  '[ "$(field J-13 state)" = "\"triaged\"" ] && [ "$(field J-13 held_outside)" = null ] && [ "$(field J-13 wont_do_link)" = null ] && echo "$out" | grep -q "outside hold: J-13: X-13 no longer linked as a blocker; RELEASED"'
+q drop J-13
+q add J-7; q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once X-7 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"indeterminate"}]}' > "$T/state-j/triage/J-7.json"
+resolved X-7 Done; x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC4 a blocker in no batch Done as Done and on the base lifts the hold as before, and raises no item" \
+  '[ "$(field J-7 state)" = "\"triaged\"" ] && [ "$(field J-7 wont_do_link)" = null ] && echo "$out" | grep -q "outside hold: J-7: X-7 Done and on main; RELEASED" && ! echo "$out" | grep -q "triage: J-7"'
+q drop J-7
+# A lane C park held behind a blocker in no batch loses only the hold once it is Done and on the base.
+q add J-715; q set J-715 state=parked lane=C held_by=X-7 held_outside=X-7 'park={"question":"lane C — the plan needs agreeing"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"done","resolution":"Done"}]}' > "$T/state-j/triage/J-715.json"
+links J-715 X-7 'done' Done; x7 'done' OPEN; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-715 AC4 a lane C park behind a blocker in no batch Done whose PR has not merged keeps the hold" \
+  '[ "$(field J-715 held_by)" = "\"X-7\"" ] && [ "$(field J-715 held_outside)" = "\"X-7\"" ] && [ "$(field J-715 state)" = "\"parked\"" ] && ! echo "$out" | grep -q "outside hold: J-715"'
+links J-715 X-7 'done' Done; x7 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-715 AC6 once that blocker is Done and on the base, the hold leaves held_by and held_outside and the lane C park stays" \
+  '[ "$(field J-715 held_by)" = null ] && [ "$(field J-715 held_outside)" = null ] && [ "$(field J-715 state)" = "\"parked\"" ] && [ "$(field J-715 park.question)" = "\"lane C — the plan needs agreeing\"" ] && echo "$out" | grep -q "outside hold: J-715: X-7 Done and on main; hold lifted, and it stays parked: lane C — the plan needs agreeing" || { echo "     J-715: $(field J-715 held_by) $(field J-715 held_outside) $(field J-715 state); $(echo "$out" | grep "J-715")"; false; }'
+check "DS-715 AC6 and the ticket is not sent to a worker" '! echo "$out" | grep -q "J-715 port=" && ! echo "$out" | grep -q "J-715.*RELEASED"'
+q drop J-715; rm -f "$T/jira/X-7.json"
+q add J-15; q set J-15 state=parked lane=C 'park={"question":"lane C: the plan needs agreeing"}' 'outside_blockers=[{"key":"X-15","category":"indeterminate"}]'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-15","category":"indeterminate"}]}' > "$T/state-j/triage/J-15.json"
+resolved X-15 Duplicate; links J-15 X-15 'done' Closed; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC5 a lane C park blocked by a ticket in no batch closed as Duplicate raises one item, and the park stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-15 is blocked by X-15, closed without landing (Duplicate)")" = 1 ] && [ "$(field J-15 wont_do_link)" = "\"X-15\"" ] && [ "$(field J-15 state)" = "\"parked\"" ] && [ "$(field J-15 park.question)" = "\"lane C: the plan needs agreeing\"" ]'
+links J-15 X-15 'done' Closed; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 AC5 with no outside blocker left open, it is still read while the link stands, and not raised again" \
+  '[ "$(field J-15 outside_blockers)" = "[]" ] && [ "$(field J-15 outside_blockers_read)" != null ] && ! echo "$out" | grep -q "triage: J-15"'
+q drop J-15
+# A record that read its blocker Done before resolutions were read has none: it is read again once.
+q add J-16; q set J-16 state=parked held_by=X-16 held_outside=X-16 'outside_blockers=[]' 'park={"question":"held by orchestrator: blocked by X-16 — starts once X-16 is Done and on the base"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"X-16","category":"done"}]}' > "$T/state-j/triage/J-16.json"
+resolved X-16 "Won't Do"; links J-16 X-16 'done' "Won't Do"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 a blocker read Done before its resolution was is read again, raised once, and the hold stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-16 is blocked by X-16, closed without landing")" = 1 ] && [ "$(field J-16 held_outside)" = "\"X-16\"" ] && [ "$(jq -c ".blockers[0].resolution" "$T/state-j/triage/J-16.json")" = "\"Won'"'"'t Do\"" ]'
+q drop J-16
+# A Blocks link added in Jira after a ticket was admitted is read by the next pass, before it
+# spawns, and held as intake would have held it; a started ticket only has the late link said.
+no_links(){ printf '%s\n' '{"epic":null,"blockers":[]}' > "$T/state-j/triage/$1.json"; }
+q add J-61; q set J-61 state=parked 'park={"question":"which colour should it be?"}' outside_blockers_read=2099-01-01T00:00:00.000Z
+q add J-60; q set J-60 state=triaged; no_links J-60; links J-60 J-61 new Open
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-656 AC1 a link to an open ticket in the batch added after admission holds the queued ticket behind it, and it is not spawned" \
+  '[ "$(field J-60 held_by)" = "\"J-61\"" ] && [ "$(field J-60 state)" = "\"parked\"" ] && [ "$(field J-60 held_outside)" = null ] && echo "$out" | grep -q "blocker link: J-60: newly linked as blocked by J-61: HELD behind J-61" || { echo "     J-60: $(field J-60 state) $(field J-60 held_by); $(echo "$out" | grep "J-60")"; false; }'
+q drop J-60
+q add J-62; q set J-62 state=triaged; no_links J-62; links J-62 X-62 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC2 a link to an open ticket in no batch holds it in held_by and held_outside, and the report names the hold" \
+  '[ "$(field J-62 held_by)" = "\"X-62\"" ] && [ "$(field J-62 held_outside)" = "\"X-62\"" ] && echo "$out" | grep -q "blocker link: J-62: newly linked as blocked by X-62 (X-62 in no batch, lifted once Done and on main): HELD behind X-62"'
+q drop J-62
+q add J-63; q set J-63 state=parked worktree="$T/wt-j63" 'park={"question":"which size should it be?"}'; no_links J-63; links J-63 J-61 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC3 a link added once the worker started leaves held_by as it was and says it arrived late" \
+  '[ "$(field J-63 held_by)" = null ] && [ "$(field J-63 park.question)" = "\"which size should it be?\"" ] && echo "$out" | grep -q "blocker link: J-63: linked as blocked by J-61 after its worker started: no hold added"'
+q drop J-63
+q add J-64; q set J-64 state=triaged; no_links J-64; links J-64 X-64 'done' Done; resolved X-64 Done
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC4 a link to a blocker already Done and on the base adds no hold" \
+  '[ "$(field J-64 held_by)" = null ] && [ "$(field J-64 state)" = "\"triaged\"" ] && ! echo "$out" | grep -q "blocker link: J-64"'
+q drop J-64; rm -f "$T/jira/X-64.json"
+q add J-65; q set J-65 state=triaged; no_links J-65
+q add J-66; q set J-66 state=parked held_by=J-65 'park={"question":"held by orchestrator: blocked by J-65 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-65","category":"new"}]}' > "$T/state-j/triage/J-66.json"
+links J-66 J-65 new Open; links J-65 J-66 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC5 a link that would hold a ticket behind one already held behind it adds no hold, and the report names the cycle" \
+  '[ "$(field J-65 held_by)" = null ] && [ "$(field J-65 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker link: J-65: linked as blocked by J-66, which waits behind it: not held, as that is a cycle"'
+check "DS-656 AC5 the ticket already held keeps its hold, its link unchanged" '[ "$(field J-66 held_by)" = "\"J-65\"" ] && ! echo "$out" | grep -q "blocker link: J-66"'
+q drop J-65; q drop J-66
+q add J-67; q set J-67 state=parked held_by=J-61 'park={"question":"held by orchestrator: blocked by J-61 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-67.json"
+links J-67
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC6 a link removed from an in-batch hold keeps the hold and says the link went" \
+  '[ "$(field J-67 held_by)" = "\"J-61\"" ] && [ "$(field J-67 state)" = "\"parked\"" ] && echo "$out" | grep -q "blocker link: J-67: no longer linked as blocked by J-61, and still held behind it"'
+q drop J-67
+q add J-69; q set J-69 state=triaged 'links_seen=[]'; links J-69 J-61 new Open
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-69.json"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 a link a cut-off read already wrote into the triage record still holds the queued ticket, and is recorded as seen" \
+  '[ "$(field J-69 held_by)" = "\"J-61\"" ] && [ "$(field J-69 links_seen | jq -c .)" = "[\"J-61\"]" ] && echo "$out" | grep -q "blocker link: J-69: newly linked as blocked by J-61: HELD behind J-61"'
+q drop J-69
+q add J-70; q set J-70 state=triaged; links J-70 J-61 new Open
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-61","category":"new"}]}' > "$T/state-j/triage/J-70.json"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 a ticket released by hand from a hold its record still links is not held again on its first read" \
+  '[ "$(field J-70 held_by)" = null ] && [ "$(field J-70 links_seen | jq -c .)" = "[\"J-61\"]" ] && ! echo "$out" | grep -q "blocker link: J-70"'
+q drop J-70
+q add J-68; q set J-68 state=triaged; no_links J-68; links J-68 J-61 new Open; touch "$T/jira-down"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-656 AC7 a blockers read that fails leaves held_by as it was and says when it is tried again" \
+  '[ "$(field J-68 held_by)" = null ] && [ "$(field J-68 state)" = "\"triaged\"" ] && echo "$out" | grep -q "blocker links: J-68 not read, holds kept as they were and tried again in [0-9]* minutes"'
+rm -f "$T/jira-down"; q drop J-68; q drop J-61
+# Every due ticket's links are read in one Jira search, a lane C park gains a hold beside its
+# park, and a link no hold settles (a dropped sibling, one closed as Won't Do, a cycle) is raised once.
+batch718="J-100 J-101 J-102 J-103 J-104 J-105 J-106 J-107 J-108 J-109 J-110 J-111 J-112 J-113"
+for k in $batch718; do q add "$k"; q set "$k" state=triaged; no_links "$k"; links "$k"; done
+: > "$T/jira-calls"; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC1 a pass reads the links of 14 queued tickets in one Jira search" \
+  '[ "$(grep -c -- "--fields=issuelinks" "$T/jira-calls")" = 1 ] && ! grep -q "^get " "$T/jira-calls" && [ "$(for k in $batch718; do grep -q "^search key in (.*$k[,)].*--fields=issuelinks" "$T/jira-calls" || echo "$k"; done)" = "" ] || { echo "     calls: $(tr "\n" "," < "$T/jira-calls")"; false; }'
+for k in $batch718; do q drop "$k"; done
+q add J-81; q set J-81 state=triaged outside_blockers_read=2099-01-01T00:00:00.000Z
+q add J-80; q set J-80 state=parked lane=C 'park={"question":"lane C — the plan needs agreeing"}'; no_links J-80; links J-80 J-81 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC2 a lane C park with no holds newly linked as blocked by an open sibling is held behind it, its park unchanged" \
+  '[ "$(field J-80 held_by)" = "\"J-81\"" ] && [ "$(field J-80 state)" = "\"parked\"" ] && [ "$(field J-80 park.question)" = "\"lane C — the plan needs agreeing\"" ] && echo "$out" | grep -q "blocker link: J-80: newly linked as blocked by J-81: held behind J-81, and it stays parked: lane C" || { echo "     J-80: $(field J-80 state) $(field J-80 held_by); $(echo "$out" | grep "J-80")"; false; }'
+q drop J-80
+q add J-82; q set J-82 state=parked held_by=J-83 'park={"question":"held by orchestrator: blocked by J-83 — starts once their PRs merge"}' outside_blockers_read=2099-01-01T00:00:00.000Z
+q add J-83; q drop J-83
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-718 AC3 a ticket held behind a sibling dropped from the batch raises one triage item asking whether the link is still right" \
+  '[ "$(echo "$out" | grep -c "triage: J-82 is held behind J-83, no longer in this batch, so nothing releases it: is the link still right?")" = 1 ] && [ "$(field J-82 dropped_link)" = "\"J-83\"" ] && [ "$(field J-82 state)" = "\"parked\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-718 AC4 the next pass raises no second item for that link" '! echo "$out" | grep -q "triage: J-82" && [ "$(field J-82 dropped_link)" = "\"J-83\"" ]'
+q set J-82 held_by=null state=triaged park=null; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-718 once nothing holds it behind the dropped sibling, the marker clears" '[ "$(field J-82 dropped_link)" = null ]'
+q drop J-82
+q add J-85; q set J-85 state=triaged outside_blockers_read=2099-01-01T00:00:00.000Z
+q add J-84; q set J-84 state=parked held_by=J-85 'park={"question":"held by orchestrator: blocked by J-85 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-85","category":"new"}]}' > "$T/state-j/triage/J-84.json"
+resolved J-85 "Won't Do"; links J-84 J-85 'done' "Won't Do"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC5 a sibling in the batch closed as Won't Do with its PR unmerged raises one triage item, and the hold stays" \
+  '[ "$(echo "$out" | grep -c "triage: J-84 is blocked by J-85, closed without landing (Won'"'"'t Do): is the link still right?")" = 1 ] && [ "$(field J-84 wont_do_link)" = "\"J-85\"" ] && [ "$(field J-84 held_by)" = "\"J-85\"" ] || { echo "     J-84: $(field J-84 held_by) $(field J-84 wont_do_link); $(echo "$out" | grep "J-84")"; false; }'
+links J-84 J-85 'done' "Won't Do"; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC5 the next pass raises it no second time" '! echo "$out" | grep -q "triage: J-84" && [ "$(field J-84 wont_do_link)" = "\"J-85\"" ]'
+q drop J-84; q drop J-85; rm -f "$T/jira/J-85.json"
+q add J-86; q set J-86 state=triaged; no_links J-86
+q add J-87; q set J-87 state=triaged; no_links J-87
+links J-86 J-87 new Open; links J-87 J-86 new Open
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC6 two queued tickets now linked as blocking each other keep DS-656's line and raise one triage item naming the cycle" \
+  '[ "$(echo "$out" | grep -c "blocker link: J-87: linked as blocked by J-86, which waits behind it: not held, as that is a cycle")" = 1 ] && [ "$(echo "$out" | grep -c "^triage: .*J-8[67] ↔ J-8[67] block each other in Jira, so neither is released")" = 1 ] && [ "$(field J-87 cycle_link)" = "\"J-86\"" ] && [ "$(field J-86 cycle_link)" = null ] || { echo "     $(echo "$out" | grep "J-8[67]")"; false; }'
+check "DS-718 AC6 neither ticket is released: the one held stays held, the other is not held" \
+  '[ "$(field J-86 held_by)" = "\"J-87\"" ] && [ "$(field J-86 state)" = "\"parked\"" ] && [ "$(field J-87 held_by)" = null ]'
+check "DS-718 AC6 neither ticket is released: the one not held does not spawn while the cycle stands" \
+  'echo "$out" | grep -q "not spawning J-87 (linked in Jira as blocked by J-86, which is held behind it): which comes first is asked in needs-you"'
+# links_seen emptied, so the next read sees J-86 as newly linked again and only cycle_link stops a second item.
+links J-86 J-87 new Open; links J-87 J-86 new Open; q set J-87 'links_seen=[]'; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC6 the next pass raises no second item for the cycle" 'echo "$out" | grep -q "blocker link: J-87: linked as blocked by J-86, which waits behind it" && ! echo "$out" | grep -q "block each other" && [ "$(field J-87 cycle_link)" = "\"J-86\"" ]'
+links J-87; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC6 once the link is gone the cycle clears" '[ "$(field J-87 cycle_link)" = null ]'
+q drop J-86; q drop J-87
+q add J-88; q set J-88 state=parked held_by=J-81 'park={"question":"held by orchestrator: blocked by J-81 — starts once their PRs merge"}'
+printf '%s\n' '{"epic":null,"blockers":[{"key":"J-81","category":"new"}]}' > "$T/state-j/triage/J-88.json"
+q add J-89; q set J-89 state=parked lane=D 'park={"question":"lane D — the design needs a canvas"}'; no_links J-89
+links J-88; links J-89 J-81 new Open; touch "$T/jira-down"
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC7 a search that fails keeps every hold and says when it is tried again" \
+  '[ "$(field J-88 held_by)" = "\"J-81\"" ] && [ "$(field J-88 state)" = "\"parked\"" ] && [ "$(field J-89 held_by)" = null ] && echo "$out" | grep -q "blocker links: .*J-88.* not read, holds kept as they were and tried again in [0-9]* minutes" && echo "$out" | grep -q "blocker links: .*J-89.* not read"'
+rm -f "$T/jira-down"; touch "$T/jira-blockers-down"; q set J-88 outside_blockers_read=null; q set J-89 outside_blockers_read=null
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC7 the blockers' search failing keeps every hold the same way" \
+  '[ "$(field J-89 held_by)" = null ] && echo "$out" | grep -q "blocker links: .*J-89.* not read, holds kept as they were and tried again in [0-9]* minutes: .*blockers. search failed" || { echo "     $(echo "$out" | grep "J-89")"; false; }'
+rm -f "$T/jira-blockers-down"; q drop J-88; q drop J-89; q drop J-81
 # A done ticket whose PR waits on the person's step (merge_after) is read from Jira again, and the step
 # is lifted once Jira has it Done.
 ops1(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"OPS-1","fields":{"summary":"Apply the migration","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-8.json"
@@ -1469,7 +1656,14 @@ check "DS-687 one that joined the batch since still holds the merge until its PR
 q drop X-7
 x7gate 'done' MERGED; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-687 once it is Done and its PR merged to the base, the pass lifts the gate" '[ "$(field J-12 merge_after)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 Done; free to merge"'
-q drop J-12
+# A merge gate closed as Won't Do with no PR never lands: it holds, raised once, until its link goes.
+q set J-12 merge_after=X-7; resolved X-7 "Won't Do"; x7gate 'done' OPEN; printf '[]\n' > "$T/prs-x7.json"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 a triage merge gate closed as Won't Do with no PR still holds the merge, and is raised once" \
+  '[ "$(field J-12 merge_after)" = "\"X-7\"" ] && ! echo "$out" | grep -q "merge hold: J-12" && [ "$(echo "$out" | grep -c "triage: J-12 is blocked by X-7, closed without landing")" = 1 ]'
+links J-12; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-717 once its link is removed, the gate lifts and the item clears" \
+  '[ "$(field J-12 merge_after)" = null ] && [ "$(field J-12 wont_do_link)" = null ] && echo "$out" | grep -q "merge hold: J-12: X-7 no longer linked as a blocker; free to merge"'
+q drop J-12; rm -f "$T/jira/X-7.json"
 # DS-683: every pass reads a full hold on a blocker in no batch again. J-13 is the KAN-529 shape:
 # admitted fully held on OPS-3 on triage's 'build' call, a step no row named yet, then the label row set.
 # The step decides, so the call does not keep it held.
@@ -3924,6 +4118,17 @@ check "DS-689 AC6 a malformed Append-only paths row is named in the pass report,
   'echo "$out" | grep -qF "collisions: config §4 \"Append-only paths\" is not a list of path globs (messages and the locales) — read as none"'
 out=$(DESK_CONFIG="$T/config-ao.md" node "$B/pass.mjs" 2>&1)
 check "DS-689 AC6 a row of globs is not named" '! echo "$out" | grep -qF "Append-only paths"'
+
+# DS-759: base drift names the tickets still being worked whose worktree is behind main, not done ones.
+export DESK_QUEUE="$T/queue-bd.json" DESK_AUTOPILOT_STATE="$T/state-bd"; mkdir -p "$T/state-bd/logs"
+q init bd
+for k in D-1 D-2; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k" refs/remotes/origin/main; done
+git -C "$T/repo" update-ref refs/remotes/origin/main "$(git -C "$T/repo" commit-tree -p refs/remotes/origin/main -m ahead 'refs/remotes/origin/main^{tree}')"
+q add D-1; q set D-1 state=done lane=A branch=fix/D-1 "worktree=$T/wt/D-1" result.pr=901
+q add D-2; q set D-2 state=running lane=A branch=fix/D-2 "worktree=$T/wt/D-2" session_id=live-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-759 AC8 a running ticket whose worktree is behind main is listed as base drift" 'echo "$out" | grep "^base drift: " | grep -qE "D-2 is [1-9][0-9]* behind main"'
+check "DS-759 AC7 a done ticket whose worktree is behind main is not" '! echo "$out" | grep "^base drift: " | grep -qF "D-1"'
 
 # DS-570 AC2: once a PR merges, each criterion its last desk-review (by the §1 handle) left for after the
 # merge is a follow-on step on the ticket, which needs-you lists; the steps it had are kept, a review by

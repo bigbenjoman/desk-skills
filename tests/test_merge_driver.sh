@@ -219,6 +219,20 @@ pj
 check "DS-397 AC4: every blocker merged and no driver running, the pass releases it, not the person" '[ "$(qf T-6 .state)" = triaged ] && [ "$(qf T-6 .held_by)" = null ] && [ "$(js ".release_due | length")" = 0 ] && ! js ".waiting[]" | grep -q "RELEASE DUE" && js .message | grep -q "^released: T-6, every blocker merged (T-2) and no merge driver is running; "'
 check "DS-397 AC4: and moves it to the front of the spawn order"   '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-6 ]'
 
+# ---- a lane C park held behind siblings loses each hold once that sibling's PR merges, and keeps its park ----
+for k in L-1 L-2 L-3; do q add "$k" Task C; q set "$k" state=parked "branch=feat/$k" 'park={"question":"lane C — spans layers"}'; done
+q set L-1 held_by=T-1; q set L-2 'held_by=T-1|T-4'; q set L-3 held_by=T-4
+pj
+check "DS-715 AC1: a lane C park held behind a merged sibling loses the hold and keeps its park, and the pass names the lift" \
+  '[ "$(qf L-1 .held_by)" = null ] && [ "$(qf L-1 .state)" = parked ] && [ "$(qf L-1 .park.question)" = "lane C — spans layers" ] && js .message | grep -q "^hold lifted: L-1: T-1 merged, and it stays parked: lane C — spans layers"'
+check "DS-715 AC3: held behind two siblings with one merged, held_by lists only the unmerged one" \
+  '[ "$(qf L-2 .held_by)" = T-4 ] && [ "$(qf L-2 .state)" = parked ] && js .message | grep -q "^hold lifted: L-2: T-1 merged; still held behind T-4"'
+check "DS-715 AC4: a sibling done but whose PR has not merged keeps the hold" '[ "$(qf L-3 .held_by)" = T-4 ] && ! js .message | grep -q "hold lifted: L-3"'
+loop
+check "DS-715 AC5: the merge driver sends no lifted lane C park to a worker" \
+  '[ "$(qf L-1 .state)" = parked ] && [ "$(qf L-1 .park.question)" = "lane C — spans layers" ] && [ "$(qf L-2 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED L-"'
+for k in L-1 L-2 L-3; do q drop "$k"; done
+
 q drop T-6
 q add T-9 Task A; q set T-9 state=triaged branch=fix/T-9; q hold T-9 T-2; q set T-9 open_questions=1
 loop
@@ -244,6 +258,12 @@ q set T-15 held_label=null
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
 check "DS-555 the same hold with no blocked-until label is released by those blockers" '[ "$(qf T-15 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-15"'
 q set T-15 state=done
+# A lane C park held behind a blocker that has merged keeps its own park: no release sends it to a worker.
+q add T-16 Task C; q set T-16 state=triaged branch=fix/T-16; q park T-16 "lane C — needs a plan"; q hold T-16 T-11
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-16:T-11" 2>&1)
+check "DS-714 AC5: a lane C park held behind a merged blocker is not released to a worker" \
+  '[ "$(qf T-16 .state)" = parked ] && [[ "$(qf T-16 .park.question)" == "lane C"* ]] && [ "$(qf T-16 .held_by)" = T-11 ] && ! echo "$out" | grep -q "RELEASED T-16"'
+q drop T-16
 q drop T-11; q drop T-12; q drop T-13; q drop T-14
 check "AC3: the red PR is never merged"                              '! grep -q "^104 " "$T/merges.log" && echo "$out" | grep -q "#104 red"'
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
@@ -306,6 +326,58 @@ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh
 check "--log: nothing on the terminal, the loop appended to <state>/merge-driver.log" '[ $rc -eq 0 ] && [ -z "$out" ] && [ "$(head -n 1 "$T/state/merge-driver.log")" = "earlier run" ] && grep -q "merge driver up" "$T/state/merge-driver.log" && grep -q "no ready batch PRs" "$T/state/merge-driver.log"'
 out=$(bash "$B/merge-driver.sh" --tickets "T-1" --log "$T/elsewhere.log" 2>&1); rc=$?
 check "--log takes no path: one is a usage error on the terminal, and nothing is written there" '[ $rc -eq 2 ] && echo "$out" | grep -q "\[--log\]" && [ ! -e "$T/elsewhere.log" ]'
+
+# ---- DS-759: a driver running several loops logs a PR's state only when it changes, and rotates --
+# This sleep lets the driver loop on: after loop <n> it runs $T/between.<n> where there is one, and it
+# stops the driver after loop $FAKE_LOOPS.
+mkdir -p "$T/loopstub"
+cat > "$T/loopstub/sleep" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >> "$FAKE_SLEEPS"
+n=$(wc -l < "$FAKE_SLEEPS" | tr -d ' ')
+if [ -x "$FAKE_BETWEEN.$n" ]; then "$FAKE_BETWEEN.$n"; fi
+if [ "$n" -ge "$FAKE_LOOPS" ]; then kill -TERM "$PPID"; fi
+EOF
+chmod +x "$T/loopstub/sleep"
+loops(){ rm -f "$T/sleeps"; out=$(PATH="$T/loopstub:$PATH" FAKE_LOOPS="$1" FAKE_BETWEEN="$T/between" MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-2 T-4" "${@:2}" 2>&1); rc=$?; }
+prs759(){ cat > "$T/prs.json" <<EOF
+{
+  "102": { "head": "fix/T-2", "base": "main", "sha": "$SHA2", "state": "open", "draft": true,  "checks": [["test", "SUCCESS"]] },
+  "104": { "head": "fix/T-4", "base": "main", "sha": "$SHA4", "state": "open", "draft": false, "checks": [["test", "SUCCESS"], ["lint", "$1"]] }
+}
+EOF
+}
+prs759 SUCCESS; mv "$T/prs.json" "$T/prs-green.json"
+prs759 FAILURE
+printf '#!/bin/sh\ncp "%s/prs-green.json" "%s/prs.json"\n' "$T" "$T" > "$T/between.2"
+chmod +x "$T/between.2"
+loops 3
+check "DS-759 AC5: a PR whose state is unchanged is logged once over two loops" '[ $rc -eq 143 ] && [ "$(grep -c "#104 red at 444444444: \"lint\" failure" <<< "$out")" = 1 ] && [ "$(grep -c "draft (still reviewing): #102" <<< "$out")" = 1 ]'
+check "DS-759 AC6: once its state changes, the PR gets one line for the new state" '[ "$(grep -c "#104 green at 444444444" <<< "$out")" = 1 ] && [ "$(grep -n "#104 green" <<< "$out" | cut -d: -f1)" -gt "$(grep -n "#104 red" <<< "$out" | tail -1 | cut -d: -f1)" ]'
+check "DS-759: the run'\''s record of what it logged goes with it" '[ -z "$(find "$T/state/merge-driver" -name "said.*" 2>/dev/null)" ]'
+rm -f "$T/between.2"
+prs759 FAILURE
+# Limits sized so the first loop's lines take the log over and the second's do not.
+{ echo "earlier run"; printf 'old line %s\n' $(seq 1 60); } > "$T/state/merge-driver.log"; rm -f "$T/state/merge-driver.log".[1-4]
+DESK_LOG_ROTATE_BYTES=1000 loops 2 --log
+check "DS-759 AC3: a log that passes the limit mid-run is kept as merge-driver.log.1, and the next loop writes a new one" '[ $rc -eq 143 ] && [ -z "$out" ] && [ "$(head -n 1 "$T/state/merge-driver.log.1")" = "earlier run" ] && grep -q "merge driver up" "$T/state/merge-driver.log.1" && ! grep -q "merge driver up" "$T/state/merge-driver.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log"'
+printf 'old line %s\n' $(seq 1 200) > "$T/state/merge-driver.log"; echo copy1 > "$T/state/merge-driver.log.1"; echo copy2 > "$T/state/merge-driver.log.2"; echo copy3 > "$T/state/merge-driver.log.3"
+MERGE_DRIVER_ONE_LOOP=1 DESK_LOG_ROTATE_BYTES=2000 bash "$B/merge-driver.sh" --tickets "T-2 T-4" --log >/dev/null 2>&1
+check "DS-759 AC2: a driver starting on a full log rotates it first, dropping the oldest of three copies" '[ "$(cat "$T/state/merge-driver.log.3")" = copy2 ] && [ "$(cat "$T/state/merge-driver.log.2")" = copy1 ] && grep -q "old line" "$T/state/merge-driver.log.1" && [ ! -e "$T/state/merge-driver.log.4" ] && grep -q "merge driver up" "$T/state/merge-driver.log"'
+rm -f "$T/state/merge-driver.log".[1-4] "$T/sleeps"
+# A second start while a driver holds the lock leaves the running driver's full log where it is.
+printf 'old line %s\n' $(seq 1 200) > "$T/state/merge-driver.log"
+/bin/sleep 60 & holder=$!
+mkdir "$T/state/merge-driver.lock.d"; echo "$holder" > "$T/state/merge-driver.lock.d/pid"
+MERGE_DRIVER_ONE_LOOP=1 DESK_LOG_ROTATE_BYTES=2000 bash "$B/merge-driver.sh" --tickets "T-2 T-4" --log >/dev/null 2>&1; rc=$?
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$T/state/merge-driver.lock.d"
+check "DS-759: a start that loses the lock does not rotate the running driver's log" '[ $rc -eq 1 ] && [ ! -e "$T/state/merge-driver.log.1" ] && grep -q "old line 200" "$T/state/merge-driver.log" && grep -q "another merge driver is running" "$T/state/merge-driver.log"'
+# A driver whose log something else moved writes its next loop to a new merge-driver.log.
+rm -f "$T/state/merge-driver.log"
+printf '#!/bin/sh\nmv "%s/state/merge-driver.log" "%s/state/moved.log"\n' "$T" "$T" > "$T/between.1"; chmod +x "$T/between.1"
+loops 2 --log
+check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
+rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
 
 # ---- DS-141: the written waiver for §4 Known flaky checks -----------------------------------------
 # A config that reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky.

@@ -73,7 +73,7 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -130,8 +130,7 @@ export function intakeReasons(r) {
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
-  const size = String(r.size ?? '').toUpperCase();
-  if (['L', 'XL'].includes(size)) out.push(`size ${size}: it needs splitting before a worker takes it`);
+  if (sizePark(r.size)) out.push(`size ${String(r.size).toUpperCase()}: it needs splitting before a worker takes it`);
   return out;
 }
 
@@ -171,7 +170,7 @@ export function landedOn(key, base) {
 // why}, a start-without-it call logged on admit) where §3 autopilot-judgement is yes, else in `ask`, a
 // reason it stays out. One with neither a step nor a call is held in `outside`: triage.sh refuses a
 // record missing a call for an open blocker, so only a record written before calls were asked for has one.
-function holdsFor(rec, tickets, base) {
+export function holdsFor(rec, tickets, base) {
   const out = { held: [], outside: [], failed: [], merge: [], gates: [], free: [], ask: [] };
   const stepLabels = E.personStepLabels();
   const inputLabels = E.personInputLabels();

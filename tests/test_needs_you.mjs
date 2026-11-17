@@ -1872,6 +1872,99 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// A link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
+// item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
+{
+  const held = { state: 'parked', lane: 'A', held_by: 'X-1', held_outside: 'X-1', wont_do_link: 'X-1', park: { question: 'held by orchestrator: blocked by X-1 — starts once X-1 is Done and on the base', since: minsAgo(30) } };
+  put('phi717', { port: 4717, beat: 1, supervised: true, pattern: 'W-[0-9]+', tickets: {
+    'W-1': held,
+    'W-2': { ...parked('C', 20, 'lane C: the plan needs agreeing'), wont_do_link: 'X-2' },
+  }, triage: {
+    'W-1': { blockers: [{ key: 'X-1', category: 'done', status: "Won't Do", resolution: "Won't Do", summary: 'Ship the old flag' }] },
+    'W-2': { blockers: [{ key: 'X-2', category: 'done', status: 'Closed', resolution: 'Duplicate' }] },
+  } });
+  const li = () => N.collect({ word: 'phi717' }).items.filter((i) => i.blocker);
+  const l1 = li();
+  t('DS-717 AC1/AC5 each link is one triage item, the held ticket and the lane C park alike', l1.map((i) => `${i.t.key} ${i.kind}`).join(), 'link:W-1:X-1 triage,link:W-2:X-2 triage');
+  t('DS-717 AC1 the item names both tickets, the resolution, and asks whether the link is still right',
+    /^W-1 is blocked by X-1 \("Ship the old flag"\), which is in no batch and was closed as Won't Do without landing, so W-1 is held behind it.*Is the link still right\?/.test(l1[0]?.need ?? ''), true);
+  t('DS-717 AC5 the lane C park is still listed as its own item', N.collect({ word: 'phi717' }).items.some((i) => i.t.key === 'W-2' && i.kind === 'session'), true);
+  const rec717 = N.record({ word: 'phi717', ticket: 'link:W-1:X-1', action: 'done' });
+  t('DS-717 done records nothing: the pass clears it once the link goes', `${rec717.ok} ${li().length}`, 'true 2');
+  const q717 = queueOf('phi717'); delete q717.tickets['W-1'].wont_do_link;
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q717));
+  t('DS-717 AC3 once the pass clears the marker the item leaves the list', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+  // The pass reads a done ticket waiting on no step no more, so it would never clear the marker.
+  const q2 = queueOf('phi717'); q2.tickets['W-2'] = { ...q2.tickets['W-2'], state: 'done', park: null, result: {} };
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
+  q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
+  t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+}
+
+// A hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
+// Won't Do with its PR unmerged (wont_do_link) and two tickets linked as blocking each other (cycle_link)
+// are each one triage item, and the ticket held behind the dropped one is not listed again.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('psi718', { port: 4718, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' },
+    'V-2': { ...heldOn('V-3'), wont_do_link: 'V-3' },
+    'V-3': { state: 'triaged', lane: 'A' },
+    'V-4': { state: 'triaged', lane: 'A', cycle_link: 'V-5' },
+    'V-5': heldOn('V-4'),
+  }, triage: {
+    'V-2': { blockers: [{ key: 'V-3', category: 'done', resolution: "Won't Do" }] },
+    'V-4': { blockers: [{ key: 'V-5', category: 'new' }] },
+  } });
+  const items = N.collect({ word: 'psi718' }).items;
+  const link = (k) => items.find((i) => i.t.key === k);
+  t('DS-718 AC3/AC5/AC6 each link is one triage item', items.filter((i) => i.blocker).map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'link:V-1:V-9 triage,link:V-2:V-3 triage,link:V-4:V-5 triage');
+  t('DS-718 AC3 the dropped one asks whether the link is still right',
+    /^V-1 is held behind V-9, which is no longer in this batch, so nothing releases it\. Is the link still right\?/.test(link('link:V-1:V-9')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says so',
+    /^V-2 is blocked by V-3, which is in this batch with its PR unmerged and was closed as Won't Do without landing, so V-2 is held behind it/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says its hold outlives the link, so the ticket is released by hand',
+    /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
+    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park
+// and send it to a worker.
+{
+  put('psi718c', { port: 4719, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-6': { state: 'parked', lane: 'C', held_by: 'V-8', dropped_link: 'V-8', park: { question: 'lane C — needs the person', since: minsAgo(30) } },
+  } });
+  const need = N.collect({ word: 'psi718c' }).items.find((i) => i.t.key === 'link:V-6:V-8')?.need ?? '';
+  t('DS-718 AC3 a lane C park held behind a dropped ticket is freed from that hold and keeps its park',
+    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null freed_from=V-8)') && !need.includes('park=null'), true);
+}
+
+// A ticket held behind several blockers, freed from a dropped one: the rest of held_by is quoted, as a
+// shell reads `|` as a pipe, and freed_from names the dropped one so the merge driver's --deps skip it.
+{
+  put('psi718m', { port: 4720, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-10': { state: 'parked', lane: 'A', held_by: 'V-9|V-11|V-12', dropped_link: 'V-9', park: { question: 'held by orchestrator: blocked by V-9, V-11, V-12 — starts once their PRs merge', since: minsAgo(30) } },
+    'V-11': { state: 'triaged', lane: 'A' }, 'V-12': { state: 'triaged', lane: 'A' },
+  } });
+  const need = N.collect({ word: 'psi718m' }).items.find((i) => i.t.key === 'link:V-10:V-9')?.need ?? '';
+  t('DS-718 AC3 freeing one of several holds quotes the rest and records the freed one',
+    need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
+}
+
+// A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
+{
+  put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {
+    'L-1': { ...parked('C', 20, 'lane C — spans layers'), held_by: null, held_outside: null },
+    'L-0': { state: 'done', lane: 'A', result: { pr: 70 }, merged_at: minsAgo(30), pr_status: { pr: 70, state: 'MERGED' } },
+  } });
+  const it = N.collect({ word: 'chi715' }).items.find((i) => i.t.key === 'L-1');
+  t('DS-715 AC2 a lane C park whose hold lifted is a session item recommending open', `${it?.kind} ${it?.actions[0][0]}`, 'session open');
+}
+
 // ---- DS-546: list settles what finished outside desk, reading GitHub, Jira and git again (stubbed here),
 // and done on a session item reads its PR and ticket.
 {
@@ -2027,10 +2120,12 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
+// A ticket held behind `by`, and the keys needs-you lists for batch `name`, for the blocks below.
+const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
+const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
+
 // ---- A put-off item with 3 or more held tickets behind it, directly or through another, is listed first.
 {
-  const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
-  const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
   put('ds600a', { port: 4650, beat: 1, supervised: true, tickets: { 'O-1': parked('A', 300, 'Older question?'), 'P-1': parked('A', 60, 'Which price?'),
     'H-1': behind('H-1', 'P-1'), 'H-2': behind('H-2', 'P-1'), 'H-3': behind('H-3', 'P-1') } });
   const off1 = N.record({ word: 'ds600a', ticket: 'P-1', action: 'not-now' });
@@ -2057,6 +2152,81 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     tickets: { 'V-1': gateStuck(121, protectedLine), 'H-1': behind('H-1', 'V-1'), 'H-2': behind('H-2', 'V-1'), 'H-3': behind('H-3', 'V-1') } });
   const wait = N.record({ word: 'ds600d', ticket: 'V-1', action: 'waiting' });
   t('DS-600 AC4 waiting on a PR with 3 held behind it says it stays listed, and it is', `${wait.ok} ${wait.line.includes('It is still listed while 3 or more tickets wait behind it (3 do now).')} ${keysIn('ds600d')[0]}`, 'true true V-1');
+}
+
+// ---- A park whose own blockers are open is not listed, put off or not; the put-off override
+// moves to the ticket first in its chain, and a count behind a ticket counts each ticket once.
+{
+  const nine = (by) => Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`H-${i + 1}`, behind(`H-${i + 1}`, by)]));
+  const laneC = (by) => ({ ...parked('C', 90, 'lane C — spans layers'), held_by: by });
+  const qPath = (name) => join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json');
+  const edit = (name, f) => { const q = queueOf(name); f(q.tickets); writeFileSync(qPath(name), JSON.stringify(q)); };
+
+  // AC6 first: with no open blockers, put off with nine behind it, it is listed with the count, as today.
+  put('ds716a', { port: 4716, beat: 1, supervised: true, tickets: { 'S-1': { state: 'running', lane: 'A' }, 'C-1': laneC(null), ...nine('C-1') } });
+  const off = N.record({ word: 'ds716a', ticket: 'C-1', action: 'not-now' });
+  const c1 = N.collect({ word: 'ds716a' }).items.find((i) => i.t.key === 'C-1');
+  t('DS-716 AC6 a lane C park with no open blockers, put off with 9 behind it, is listed with the count',
+    `${off.ok} ${c1?.kind} ${c1?.behind} ${/9 tickets wait behind it/.test(c1?.need ?? '')}`, 'true session 9 true');
+  // AC1 and AC2: held behind its unmerged sibling, it is not listed, and desk-q shows it waiting behind it.
+  edit('ds716a', (ts) => { ts['C-1'].held_by = 'S-1'; });
+  const a = N.collect({ word: 'ds716a' });
+  t('DS-716 AC1/AC2 put off with 9 behind it and held behind an unmerged sibling, it is not listed', a.items.some((i) => i.t.key === 'C-1'), false);
+  const ra = loadRepos().find((r) => r.name === 'ds716a');
+  t('DS-716 AC1 desk-q shows it waiting, not needing you', ra.rows.find((x) => x.t.key === 'C-1')?.k, 'waiting');
+  t('DS-716 AC1 its page says it moves without you, behind the sibling', ticketScreen(ra, 'C-1', { width: 200 }).includes('Moves without you: behind S-1 (running, stage'), true);
+  t('DS-716 AC1 desk-q counts nothing for it', N.needsCount(ra).shown, 0);
+  // Never put off, it is not listed either.
+  put('ds716b', { port: 4726, beat: 1, supervised: true, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'C-1': laneC('S-1') } });
+  t('DS-716 AC1 a lane C park behind a sibling waiting to spawn is not listed', keysIn('ds716b').join(), '');
+
+  // AC3: the ticket first in its chain parks on a question only the person answers: it is listed, and put off it is
+  // still listed, with every ticket waiting behind it counted (the put-off park and its nine).
+  put('ds716c', { port: 4718, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716c', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC3 the chain head is listed in place of the put-off park', keysIn('ds716c').join(), 'S-1');
+  N.record({ word: 'ds716c', ticket: 'S-1', action: 'not-now' });
+  const s1 = N.collect({ word: 'ds716c' }).items;
+  t('DS-716 AC3 put off too, the head is still listed with the count of tickets waiting behind it',
+    `${s1.map((i) => i.t.key).join()} ${s1[0]?.behind} ${/10 tickets wait behind it/.test(s1[0]?.need ?? '')}`, 'S-1 10 true');
+
+  // AC4: the head is a PR running its checks, which merges without the person: nothing is listed for the chain.
+  put('ds716d', { port: 4719, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'S-1': { state: 'done', lane: 'A', result: { pr: 716 }, pr_status: { pr: 716, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', checks: [{ name: 'build', status: 'in_progress', conclusion: null, startedAt: minsAgo(5) }] } },
+    'C-1': laneC('S-1'), ...nine('C-1') } });
+  N.record({ word: 'ds716d', ticket: 'C-1', action: 'not-now' });
+  t('DS-716 AC4 a chain whose head is a PR running CI lists nothing', keysIn('ds716d').join(), '');
+
+  // AC5: a fork to two heads that both need the person, both put off: both are listed, in build order
+  // (S-2 is queued first, so not key order), the same every run.
+  put('ds716e', { port: 4720, beat: 1, supervised: true, tickets: { 'S-2': parked('A', 60, 'Which copy?'), 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-2|S-1'), ...nine('C-1') } });
+  for (const k of ['C-1', 'S-1', 'S-2']) N.record({ word: 'ds716e', ticket: k, action: 'not-now' });
+  const runs = [keysIn('ds716e').join(), keysIn('ds716e').join()];
+  t('DS-716 AC5 both heads are listed in build order, and the put-off park is not', runs[0], 'S-2,S-1');
+  t('DS-716 AC5 in the same order every run', runs[1], runs[0]);
+
+  // A lane C park held only behind a step only the person takes, in no batch: the step is listed, with
+  // the park waiting on it, and the park is not listed as well, put off or not.
+  const input = { key: 'OPS-7', category: 'new', type: 'Task', summary: 'Record the webhook payload', labels: ['ben-input'] };
+  put('ds716g', { port: 4722, beat: 1, supervised: true, inputLabels: 'ben-input', tickets: { 'C-1': { ...laneC('OPS-7'), held_outside: 'OPS-7' }, ...nine('C-1') },
+    triage: { 'C-1': { blockers: [input] } } });
+  N.record({ word: 'ds716g', ticket: 'C-1', action: 'not-now' });
+  const g = N.collect({ word: 'ds716g' }).items;
+  t('DS-716 a lane C park behind a person\'s step is listed once, as the step, which names it waiting',
+    `${g.map((i) => i.t.key).join()} ${g[0]?.waiting.join()}`, 'step:OPS-7 C-1');
+  t('DS-716 desk-q counts the step once and not the park behind it', N.needsCount(loadRepos().find((r) => r.name === 'ds716g')).shown, 1);
+
+  // Two lane C parks held behind each other: a cycle nothing releases, so both are listed for their questions.
+  put('ds716h', { port: 4723, beat: 1, supervised: true, tickets: { 'C-1': laneC('C-2'), 'C-2': laneC('C-1') } });
+  t('DS-716 two lane C parks held behind each other are both listed, not both waiting', keysIn('ds716h').join(), 'C-1,C-2');
+
+  // AC7: lane C parks held in a chain, and a held ticket behind two of them: each is counted once.
+  put('ds716f', { port: 4721, beat: 1, supervised: true, tickets: { 'S-1': parked('A', 60, 'Which price?'), 'C-1': laneC('S-1'), 'C-2': laneC('S-1|C-1'),
+    'H-1': behind('H-1', 'C-1|C-2'), 'H-2': behind('H-2', 'C-2') } });
+  N.record({ word: 'ds716f', ticket: 'S-1', action: 'not-now' });
+  const f = N.collect({ word: 'ds716f' }).items;
+  t('DS-716 AC7 the count behind the head counts each ticket once, and neither lane C park is listed',
+    `${f.map((i) => i.t.key).join()} ${f[0]?.behind} ${/4 tickets wait behind it/.test(f[0]?.need ?? '')}`, 'S-1 4 true');
 }
 
 // ---- DS-580: a park on a step only a person or another account takes recommends nothing, and its resume
