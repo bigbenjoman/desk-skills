@@ -190,4 +190,81 @@ fx(){
     const checks = cs.map((c) => { const [name, conclusion, run] = c.split(":"); return { __typename: "CheckRun", name, status: "COMPLETED", conclusion, detailsUrl: run ? `https://github.com/acme/widgets/actions/runs/${run}/job/1` : "" }; });
     require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: false, mergeable, mergeStateStatus: mergeable === "CONFLICTING" ? "DIRTY" : "BLOCKED", headRefOid: head, statusCheckRollup: checks, commits: [{ oid: "0000000000000000000000000000000000000000", committedDate: "2025-10-01T09:00:00Z" }, { oid: head, committedDate: "2025-10-20T09:00:00Z" }] }))' "$T/fx" "$@"
 }
+H0=0000000000000000000000000000000000000000; H1=1111111111111111111111111111111111111111; H2=2222222222222222222222222222222222222222; H3=3333333333333333333333333333333333333333
+
+# The fake gh for drafts under review: it answers each PR from $T/fr/<n>.json, a green draft with one
+# review by ben, and records pr ready and pr comment. The review's inline comments (gh api graphql, by
+# its id PRR_<n>) are $T/fr/<n>.comments, a JSON list, or the error gh prints when it holds ERROR.
+fr_gh(){
+mkdir -p "$T/fr"
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
+const f = '$T/fr/' + a[2] + '.json';
+if (a[0] === 'api' && a[1] === 'graphql') {
+  const id = a.find((x) => x.startsWith('id=PRR_'));
+  let c = '[]';
+  try { c = fs.readFileSync('$T/fr/' + (id ? id.slice(7) : 'none') + '.comments', 'utf8'); } catch {}
+  if (c.startsWith('ERROR')) { process.stderr.write(c); process.exit(1); }
+  // As gh does, the whole response unless --jq picks the list out of it.
+  const jq = a[a.indexOf('--jq') + 1];
+  process.stdout.write(a.includes('--jq') && jq === '.data.node.comments.nodes' ? c : JSON.stringify({ data: { node: { comments: { nodes: JSON.parse(c) } } } }));
+}
+else if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync(f, 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'ready') fs.writeFileSync(f, JSON.stringify({ ...JSON.parse(fs.readFileSync(f, 'utf8')), isDraft: false }));
+else if (a[0] === 'pr' && a[1] === 'comment') { /* recorded in gh-calls */ }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
+else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
+else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
+else if (a[0] === 'api' && /check-runs\/\d+\/annotations$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+}
+# frx <n> <head> <reviewed sha> <counts> [inline]: PR #n for fr_gh, its review's verdict at <reviewed sha>.
+# A P1 count lists one P1 finding in the body, or none with inline.
+frx(){
+  node -e 'const [dir, n, head, sha, counts, inline] = process.argv.slice(1);
+    const p1 = /p1=[1-9]/.test(counts) && !inline ?["", "P1 (1)", " src/money.ts:12         second currency formatter", "", "P2 (1)", " src/pager.ts:1   no consumer"] : [];
+    const body = ["<!-- desk-review:local -->", `<!-- desk-review:verdict v=1 sha=${sha} ${counts} deferred=0 gaps=0 unrefuted=0 partial=0 vendor=codex round=1 -->`, "**desk-review, round 1**", ...p1].join("\n");
+    require("fs").writeFileSync(`${dir}/${n}.json`, JSON.stringify({ state: "OPEN", url: `https://github.com/acme/widgets/pull/${n}`, isDraft: true, mergeable: "MERGEABLE", mergeStateStatus: "BLOCKED", headRefOid: head, body: "## Summary",
+      reviews: [{ id: `PRR_${n}`, author: { login: "ben" }, body }], statusCheckRollup: [{ __typename: "CheckRun", name: "tests", status: "COMPLETED", conclusion: "SUCCESS" }] }))' "$T/fr" "$@"
+}
+# A repo config whose §3 lets the pass undraft and whose §4 names desk-review's clean verdict.
+config_r(){
+cat > "$T/config-r.md" <<EOF
+## 0. Repo
+| Field | Value |
+|---|---|
+| GitHub repo | \`acme/widgets\` |
+| Default branch | \`main\` |
+
+## 1. Identity
+| Field | Value |
+|---|---|
+| GitHub handle | \`ben\` |
+
+## 2. Paths
+| Field | Value |
+|---|---|
+| Primary repo root | \`$T/repo\` |
+| Worktrees directory | \`$T/wt\` |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
+| \`pr-ready\` | Undraft PRs | \`yes\` | \`yes\` |
+
+## 4. Checks
+| Field | Value |
+|---|---|
+| Required checks | \`tests\` |
+| Local review command | \`/desk-review\` |
+| Clean review verdict | \`p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0\` |
+EOF
+}
 
