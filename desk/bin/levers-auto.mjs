@@ -5,7 +5,7 @@
 // randomisation blocked within the repo and the ticket's triage size: every block of four tickets of one
 // size has each lever on for exactly two of them. A ticket with no triage size is a block of its own.
 //
-// A lever's state in a repo is the `to` of its latest transition or override in the repo's lever log
+// A lever's state in a repo is the `to` of its latest transition, override or trip in the repo's lever log
 // (lever-log.mjs): off, trial, adopted, settled, reverted or frozen. With none recorded, a low-risk lever
 // the registry has trialled is on trial. An adopted lever stays off for its layer's holdback share of
 // tickets for its holdback weeks, recorded as the `holdback` arm, then is on for every ticket; a settled
@@ -51,7 +51,7 @@ export function leverStatesIn(events, registry = REGISTRY) {
     out[name] = { state: l.layer === 'low-risk' && l.trialled ? 'trial' : 'off', at: null, id: null };
   }
   for (const e of events) {
-    if (!['transition', 'override'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
+    if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
     out[e.lever] = { state: STATES.includes(e.to) ? e.to : 'off', at: e.at, id: e.id ?? null };
   }
   return out;
@@ -85,7 +85,8 @@ function blockedArm(lever, members, random) {
   return random() < (on + off ? on / (on + off) : 0.5) ? 'on' : 'off';
 }
 
-const trialId = (slug, lever, s) => `${slug}/${lever}/${s.id ?? 'initial'}`;
+// The trial a ticket draws a lever's arm under: one per state the lever enters in the repo.
+export const trialId = (slug, lever, s) => `${slug}/${lever}/${s.id ?? 'initial'}`;
 
 // The draw for ticket `key` from the repo's log events: the pin and the assign event recording it.
 function draw({ slug, key, size, events, states, frozen, values, random, now, registry }) {

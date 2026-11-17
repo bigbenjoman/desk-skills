@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, ACTOR } from './levers-auto.mjs';
+import { leverStatesIn, trialId, ACTOR } from './levers-auto.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
@@ -122,7 +122,6 @@ export function withOutcomes(rows, batches) {
 }
 
 // ---- which rows a lever's evaluation reads -------------------------------------------------------------
-const trialId = (slug, lever, s) => `${slug}/${lever}/${s.id ?? 'initial'}`;
 const ARMS = { trial: ['on', 'off'], reverted: ['on', 'off'], adopted: ['adopted', 'holdback'] };
 const outcomeIn = (r) => !!r.merged_at || OUTCOME_STATES.includes(r.state);
 
@@ -215,6 +214,14 @@ const pct = (v) => (v == null ? '?' : `${v > 0 ? '+' : ''}${Math.round(v * 100)}
 const x2 = (v) => (v == null ? '?' : `${v.toFixed(2)}×`);
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
+// How many times repo log `events` have reverted `lever` (an evaluation's transition or a trip), and the
+// state its next revert goes to: a lever already reverted once is frozen instead.
+export const priorRevertsOf = (events, lever) => (events ?? [])
+  .filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever && ['reverted', 'frozen'].includes(e.to)).length;
+export const revertTarget = (priorReverts) => (priorReverts >= 1 ? 'frozen' : 'reverted');
+// The needs-you item a freeze raises, for `lever` in repo `name`, `why` being what reverted it.
+export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} after its second revert (${why}): it stays off there until you set it by hand`;
+
 // What the evaluation does with one lever in one repo. `n` is the repo's arms, `priorReverts` how many
 // times the repo's log has reverted it before, `changedAt` when it last changed state there (ms or
 // null). -> { decision, to, reason_code, reason, next }
@@ -225,7 +232,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   const cooling = now < earliest;
   const next = (needs) => ({ earliest_change: day(Math.max(earliest, now)), needs });
   const hold = (code, reason, needs) => ({ decision: 'hold', to: null, reason_code: code, reason, next: next(needs) });
-  const revertTo = priorReverts >= 1 ? 'frozen' : 'reverted';
+  const revertTo = revertTarget(priorReverts);
   const sample = `${n.on} vs ${n.off} tickets`;
   if (frozen) return hold('freeze', 'trials are frozen on this computer', 'the freeze lifted (desk-env levers thaw)');
 
@@ -360,8 +367,7 @@ export function evaluate({
       const guardrails = guardrailEstimates(used, { seed, minN });
       const n = { ...counts(used), pooled_on: (pooled?.n ?? counts(used)).on, pooled_off: (pooled?.n ?? counts(used)).off, excluded: excludedCounts(p.rows) };
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
-      const transitions = (r.log.events ?? []).filter((e) => e.kind === 'transition' && e.lever === lever);
-      const priorReverts = transitions.filter((e) => ['reverted', 'frozen'].includes(e.to)).length;
+      const priorReverts = priorRevertsOf(r.log.events, lever);
       const changedAt = s.at ? Date.parse(s.at) : null;
       const d = decide({ state: s.state, n, minN, maxN: DECISION_RULE.max_per_arm, mechanism, cost, guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks });
 
@@ -416,7 +422,7 @@ export function evaluate({
           to = d.to;
           if (d.to === 'frozen') {
             append({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'frozen_second_revert', at, ...evidence,
-              reason: `${lever} is frozen in ${r.name} after its second revert (${d.reason}): it stays off there until you set it by hand` });
+              reason: frozenText(lever, r.name, d.reason) });
           }
         }
       }

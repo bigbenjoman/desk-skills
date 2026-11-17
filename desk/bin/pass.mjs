@@ -67,6 +67,7 @@ import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, mac
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
+import { runTrips, recordWait } from './levers-trips.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -4893,7 +4894,12 @@ function applyFix(t, n, head, c) {
     return;
   }
   const fc = fixClass(c.fix, t);
-  if (leverFor('failure-class', t) && WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`); return; }
+  if (leverFor('failure-class', t) && WAITING_CLASSES.includes(fc.class)) {
+    report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`);
+    // The wait goes in the run record, where the stale-wait trip reads it (levers-trips.mjs).
+    if (!DRY) recordWait(STATE, t.key, { class: fc.class, waiting: fc.waiting, blockers: [...new Set(String(t.held_by ?? '').split('|').filter(Boolean))], pr: n, head }, PASS_AT);
+    return;
+  }
   const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
@@ -4925,6 +4931,13 @@ if (!DRY && readHistory(STATE) === null) {
 }
 // Merged PRs are watched for reverts and a red default branch, once a day (post-merge.mjs).
 if (!DRY) { const pm = postMergeWatch({ state: STATE, queue: queue(), repo: GH_REPO, branch: DEFAULT_BRANCH, cwd: MAIN }); if (pm) out.push(pm); }
+// A lever that did visible harm on one of this batch's tickets is reverted in this repo every pass.
+if (!DRY) {
+  try {
+    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), state: STATE, queue: queue(), states: E.leverStates({}).states });
+    if (tr.line) out.push(tr.line);
+  } catch (e) { out.push(`levers trips: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+}
 // The levers are evaluated once a day across every repo, by the first pass to take its lock.
 if (!DRY) {
   try { const ev = evaluateDue(); if (ev.line) out.push(ev.line); } catch (e) { out.push(`levers evaluate: not run (${String(e?.message ?? e).split('\n')[0]})`); }

@@ -52,6 +52,11 @@ function check(event) {
     need('to');
     if (event.actor !== BY_HAND) { need('eval_id'); need('evidence_file'); }
   }
+  // A trip is a revert with no evaluation behind it: the ticket and the record that tripped it stand in.
+  if (kind === 'trip') {
+    for (const key of ['from', 'to', 'ticket', 'evidence_file']) need(key);
+    if (!Number.isInteger(event.evidence_line) || event.evidence_line < 1) throw new LeverLogError('lever-log: a trip event needs "evidence_line", the triggering record\'s 1-based line');
+  }
   if (event.at != null && Number.isNaN(Date.parse(event.at))) throw new LeverLogError(`lever-log: at "${event.at}" is not a date`);
 }
 
