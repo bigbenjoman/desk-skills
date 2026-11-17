@@ -2980,6 +2980,46 @@ function recordWorkerHead(t) {
   if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
 }
 
+// A fix try ends once its worker has finished, or once the pass finds it has nothing left to fix. The
+// merge driver holds PRs sharing a file behind a conflict repair, timed from when it ended.
+function finishFix(t, ...extra) {
+  q('set', t.key, `fix.finished=${PASS_AT}`, ...extra); t.fix.finished = PASS_AT;
+  if (t.fix.kind === 'conflict') {
+    t.fix_tries = (t.fix_tries ?? []).map((x) => (x.kind === 'conflict' && x.at === t.fix.at && !x.finished ? { ...x, finished: PASS_AT } : x));
+    q('set', t.key, `fix_tries=${JSON.stringify(t.fix_tries)}`);
+  }
+}
+// A fix try is queued against its PR as it was then, and may wait passes for a slot: just before it
+// spawns, its PR is read again. Merged, closed, or at a head past the one the try was made for, the try
+// ends with no worker and the ticket is done on its PR again, so the PR's own reading records the merge
+// or the close, and drafts a try for the new head if one is still needed. A PR that cannot be read
+// holds it this pass. A resumed or handed-off session is its own try's, and may have moved the head
+// itself. -> true when it must not spawn.
+function fixTryStale(t) {
+  const f = t.fix;
+  if (!f || f.finished || f.pr == null || toResume(t) || toHandoff(t)) return false;
+  const what = `${f.kind === 'capture' ? 'capture try' : f.kind === 'rereview' ? 'review try' : 'fix try'} ${f.try} of ${f.of} on PR #${f.pr}`;
+  let v = null;
+  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
+    report.waiting.push(`${t.key}: its ${what} was not spawned: the PR could not be read to check it is still open at the try's head (${e.message}). The next pass reads it again`);
+    return true;
+  }
+  if (!v?.state || (f.head && !v.headRefOid)) {
+    report.waiting.push(`${t.key}: its ${what} was not spawned: gh gave no ${v?.state ? 'head' : 'state'} for the PR, so it is not known to be open at the try's head. The next pass reads it again`);
+    return true;
+  }
+  const merged = v.state === 'MERGED';
+  const ended = merged ? `PR #${f.pr} merged${v.mergedAt ? ` at ${v.mergedAt}` : ''}`
+    : v.state === 'CLOSED' ? `PR #${f.pr} was closed unmerged`
+    : f.head && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
+  if (!ended) return false;
+  const line = `${t.key}: its ${what} was not spawned, ${ended}: the try is finished and the ticket done on its PR again`;
+  if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
+  finishFix(t, `fix.ended=${ended}`, 'state=done', 'handoff=null', 'worktree_busy=null');
+  if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
+  report.done.push(merged ? `${line}, recorded merged` : line);
+  return true;
+}
 // A spawn from Stage 0, with no worker's session, fix try or PR in this repo behind it.
 const startsFresh = (t) => !toResume(t) && !toHandoff(t) && !t.login_move && !(t.fix && !t.fix.finished) && t.result?.pr == null && t.draft_pr == null;
 // A ticket whose triage record puts its code in another configured repo (desk-env.mjs triagePlacement)
@@ -3018,6 +3058,7 @@ for (const t of spawnable) {
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
   // A ticket spawned earlier in this pass is running too: two that collide never start together.
   if (collidesWithRunning(t)) continue;
+  if (fixTryStale(t)) continue;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
   const shipped = rerunAllowed.has(t.key) ? null : shippedElsewhere(t);
   if (shipped) {
@@ -3660,14 +3701,7 @@ const undrafted = [];
 const reopens = [];
 for (const t of Object.values(qNow.tickets)) {
   // A fix try is over once its worker has finished: later spawns are no longer that try's.
-  if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) {
-    q('set', t.key, `fix.finished=${PASS_AT}`); t.fix.finished = PASS_AT;
-    // The merge driver holds PRs sharing a file behind a repair, timed from when its worker finished.
-    if (t.fix.kind === 'conflict') {
-      t.fix_tries = (t.fix_tries ?? []).map((x) => (x.kind === 'conflict' && x.at === t.fix.at && !x.finished ? { ...x, finished: PASS_AT } : x));
-      q('set', t.key, `fix_tries=${JSON.stringify(t.fix_tries)}`);
-    }
-  }
+  if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) finishFix(t);
   const n = t.state === 'done' ? t.result?.pr : null;
   if (n == null) continue;
   let s = null;

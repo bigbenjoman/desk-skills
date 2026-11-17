@@ -70,6 +70,21 @@ if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket
 EOF
 printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}]'" > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+# In front of whichever gh stub a case writes: a fix try's last read of its PR before it spawns gets
+# that stub's answer, or, where it prints nothing, the PR open at the head "x".
+mkdir -p "$T/stub0"
+cat > "$T/stub0/gh" <<EOF
+#!/bin/sh
+case "\$*" in
+  "pr view "*" --json state,headRefOid,mergedAt")
+    o=\$("$T/stub/gh" "\$@"); c=\$?
+    [ "\$c" -ne 0 ] && { printf '%s\n' "\$o"; exit "\$c"; }
+    [ -n "\$o" ] && { printf '%s\n' "\$o"; exit 0; }
+    echo '{"state":"OPEN","headRefOid":"x"}'; exit 0 ;;
+esac
+exec "$T/stub/gh" "\$@"
+EOF
+chmod +x "$T/stub0/gh"
 # The process listing a pass reads for each kept worktree: what $T/lsof.out says, else nothing.
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
@@ -78,7 +93,7 @@ all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").rea
 
 # A signed-in browser profile, as the upload queue runs no upload without one.
 printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
-export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
+export PATH="$T/stub0:$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" \
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test \
   DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
@@ -2062,6 +2077,8 @@ export DESK_QUEUE="$T/queue-p.json" DESK_AUTOPILOT_STATE="$T/state-p"
 mkdir -p "$T/state-p/logs"
 node -e 'console.log(JSON.stringify({ type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1, rateLimitType: "five_hour", unifiedWindows: { five_hour: { utilization: 0.1, resetsAt: 1 }, seven_day: { utilization: 0.99, resetsAt: Math.round(Date.now() / 1000) + 6 * 86400 } } } }))' > "$T/state-p/logs/OLD-1.log"
 q init p; q set-batch concurrency=2
+# Their PRs are open at the tries' head, read again before each spawns.
+for n in 800 801; do printf '{"state":"OPEN","headRefOid":"x"}\n' > "$T/fx/$n.json"; done
 q add P-1; q set P-1 state=triaged lane=A branch=fix/P-1 'fix={"try":1,"of":2,"pr":800,"head":"x","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}]}'
 q add P-2; q set P-2 state=triaged lane=A branch=fix/P-2
 q add P-3; q set P-3 state=triaged lane=A branch=fix/P-3 'fix={"try":1,"of":2,"pr":801,"head":"x","kind":"conflict","what":"conflicts with main","base":"main"}'
@@ -4045,5 +4062,42 @@ q park MT-1 "MT-1: jira-close-own-merged is ask: may I move it to Done?"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-573 a park of the tail worker's own stays parked for the person, its branch kept, not recorded done as a duplicate" \
   '[ "$(field MT-1 state)" = "\"parked\"" ] && [ "$(field MT-1 park.question)" = "\"MT-1: jira-close-own-merged is ask: may I move it to Done?\"" ] && [ -e "$T/wt/MT-1-tail" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/MT-1 >/dev/null && ! echo "$out" | grep -qF "MT-1: its PR #701 merged" && ! echo "$out" | grep -qF "MT-1: its branch fix/MT-1 adds nothing"'
+
+# A fix try queued against its PR is spawned only once the PR is read again and is still open at the
+# try's head. FT-1's PR merged since, FT-2's was closed, FT-3's head moved, FT-4's is as it was, and
+# FT-5's cannot be read.
+export DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue-ft.json" DESK_AUTOPILOT_STATE="$T/state-ft"; mkdir -p "$T/state-ft/logs"; : > "$T/ft-spawns"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1" >> "$T/ft-spawns"; echo "[spawn] ticket=\$1"
+EOF
+cat > "$T/stub/gh" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "pr view 901 "*) echo '{"state":"MERGED","mergedAt":"2026-11-12T15:38:26Z","headRefOid":"h1","statusCheckRollup":[]}' ;;
+  "pr view 902 "*) echo '{"state":"CLOSED","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
+  "pr view 903 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
+  "pr view 904 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
+  "pr view 905 "*) echo 'HTTP 502: Bad Gateway' >&2; exit 1 ;;
+  "pr list "*) echo '[]' ;;
+esac
+exit 0
+EOF
+q init ft; q set-batch concurrency=5
+for k in 1 2 3 4 5; do
+  q add "FT-$k"; q set "FT-$k" state=triaged lane=A "branch=fix/FT-$k" "result.pr=90$k" \
+    'fix={"try":2,"of":2,"pr":90'"$k"',"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z"}'
+done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-605 AC1 a fix try whose PR merged since spawns no worker, is finished, and the ticket is recorded merged" \
+  '! grep -qx FT-1 "$T/ft-spawns" && [ "$(field FT-1 state)" = "\"done\"" ] && [ "$(field FT-1 fix.finished)" != null ] && [ "$(field FT-1 merged_at)" = "\"2026-11-12T15:38:26.000Z\"" ] && echo "$out" | grep -qF "FT-1: its fix try 2 of 2 on PR #901 was not spawned, PR #901 merged at 2026-11-12T15:38:26Z: the try is finished and the ticket done on its PR again, recorded merged"'
+check "DS-605 AC2 a fix try whose PR was closed unmerged spawns no worker and is finished" \
+  '! grep -qx FT-2 "$T/ft-spawns" && [ "$(field FT-2 state)" = "\"done\"" ] && [ "$(field FT-2 fix.finished)" != null ] && [ "$(field FT-2 fix.ended)" = "\"PR #902 was closed unmerged\"" ] && [ "$(field FT-2 merged_at)" = null ]'
+check "DS-605 AC3 a fix try whose PR head moved past the try's spawns no worker and is finished with head moved" \
+  '! grep -qx FT-3 "$T/ft-spawns" && [ "$(field FT-3 state)" = "\"done\"" ] && [ "$(field FT-3 fix.finished)" != null ] && field FT-3 fix.ended | grep -q "^\"head moved: PR #903 is at h2, past h1"'
+check "DS-605 AC4 a fix try whose PR is open at the try's head spawns, as before" \
+  'grep -qx FT-4 "$T/ft-spawns" && [ "$(field FT-4 state)" = "\"running\"" ] && [ "$(field FT-4 fix.finished)" = null ]'
+check "DS-605 AC5 a fix try whose PR cannot be read is not spawned this pass, and the report says why" \
+  '! grep -qx FT-5 "$T/ft-spawns" && [ "$(field FT-5 state)" = "\"triaged\"" ] && [ "$(field FT-5 fix.finished)" = null ] && echo "$out" | grep -qF "FT-5: its fix try 2 of 2 on PR #905 was not spawned: the PR could not be read"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
