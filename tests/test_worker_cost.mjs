@@ -3,7 +3,7 @@
 // again after its turn ended, a requeued one whose rounds add up, one with no result event, a round
 // left by an earlier batch, and a ticket no worker ran; and per-stage tokens from logs with
 // stage markers, tokens before the first marker, two rounds and no usage; and preflights beside the
-// runs, with a round moved aside compressed. The idle pass that prints the table runs in test_pass.sh.
+// runs, with a round moved aside compressed. The idle pass that prints the table runs in the test_pass_*.sh suites.
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

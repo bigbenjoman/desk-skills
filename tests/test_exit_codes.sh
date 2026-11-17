@@ -2,7 +2,7 @@
 # suite: exit codes (pass, plan-batch, queue and answer: 0 go on, 10 nothing yet, 11 show the person)
 # The four orchestration scripts share one exit-code contract (EXIT in desk/bin/batch-state.mjs), and
 # pass.mjs --json prints one object carrying the same verdict. Runs the real scripts with stub claude,
-# gh, setup-worktree and spawn-worker, as tests/test_pass.sh does. Scratch HOME only.
+# gh, setup-worktree and spawn-worker, as tests/pass_setup.sh does for the pass suites. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
