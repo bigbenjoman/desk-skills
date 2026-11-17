@@ -4161,5 +4161,17 @@ check "DS-605 a started try whose PR was closed since ends, kept as a try made, 
   '! grep -q "^FT-12 " "$T/ft-spawns" && [ "$(field FT-12 state)" = "\"done\"" ] && [ "$(field FT-12 fix.no_worker)" = null ] && [ "$(field FT-12 fix_tries | jq length)" = 1 ] && echo "$out" | grep -qF "FT-12: its fix try 1 of 2 on PR #902 was not spawned again, PR #902 was closed unmerged"'
 check "DS-605 the spawn that starts a fix try marks it started" \
   '[ "$(DESK_QUEUE="$T/queue-ft.json" field FT-4 fix.started)" != null ] && [ "$(DESK_QUEUE="$T/queue-ft.json" field FT-1 fix.started)" = null ]'
+# FT-13's spawn is refused by spawn-worker.sh: no worker ran, so its try is not marked started.
+export DESK_QUEUE="$T/queue-ft13.json" DESK_AUTOPILOT_STATE="$T/state-ft13"; mkdir -p "$T/state-ft13/logs"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "[spawn-worker] refused: a stage file is missing"; exit 1
+EOF
+q init ft13; q set-batch concurrency=1
+q add FT-13; q set FT-13 state=triaged lane=A branch=fix/FT-13 result.pr=904 \
+  'fix={"try":1,"of":2,"pr":904,"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-605 a fix try whose spawn was refused is not marked started, so it is still a try no worker ran" \
+  '[ "$(field FT-13 state)" = "\"failed\"" ] && [ "$(field FT-13 spawn_failed)" = true ] && [ "$(field FT-13 fix.started)" = null ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

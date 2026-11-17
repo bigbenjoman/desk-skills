@@ -3261,7 +3261,7 @@ for (const t of spawnable) {
   // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
   if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
   q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
-    `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0', ...fixStarted(t),
+    `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
@@ -3291,6 +3291,8 @@ for (const t of spawnable) {
   }
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
+  // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
+  if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
