@@ -7,7 +7,7 @@
 #      substitution"; `{1..9..2}` stays literal). A false hit can be rewritten, or its line ended with
 #      `# bash32: ok <reason>`.
 #   2. `bash -n` in one container of the official bash:3.2 image, pinned by digest. Needs Docker.
-#   tests/bash32_check.sh desk/bin/merge-driver.sh tests/test_pass.sh
+#   tests/bash32_check.sh desk/bin/merge-driver.sh tests/test_pass_workers.sh
 #   tests/bash32_check.sh --scan-only <files>     step 1 only, no Docker
 set -u
 IMAGE='bash:3.2@sha256:b6252c62fc86114f93f02104a486c71e6569371d95950ea7479a2ffd6b47f16a'
