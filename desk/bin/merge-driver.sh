@@ -461,11 +461,13 @@ NODE
 # parked "held by orchestrator" is ever released.
 release_chain(){
   local plan succ preds got n pred all
-  plan=$(node - "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
-const fs = require('fs');
-const [qf, ...pairs] = process.argv.slice(2);
+  plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [mod, qf, ...pairs] = process.argv.slice(2);
+const { stoppedHold } = await import(pathToFileURL(mod).href);
 let q = {}; let spine = null;
-try { const all = JSON.parse(fs.readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
+try { const all = JSON.parse(readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
 const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
@@ -480,7 +482,9 @@ const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
 // So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
 const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// A ticket queue.mjs stop held starts only when the person lets it, even where --deps still names it
+// as a successor whose predecessors have merged.
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !stoppedHold(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0

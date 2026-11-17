@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -20,7 +20,8 @@ import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
-import { lock as takeDirLock, unlock, alive, writeJsonAtomic } from './dir-lock.mjs';
+import { lock as takeDirLock, unlock, alive, writeJsonAtomic, sleepSync, tryLockFile } from './dir-lock.mjs';
+import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -52,7 +53,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -85,7 +86,8 @@ function load() {
 const LOCK = `${QUEUE}.lock`;
 // The wait is 10 seconds; DESK_QUEUE_LOCK_WAIT_MS shortens it for tests, and anything but a positive
 // number of milliseconds there is ignored rather than turning the wait into forever or nothing.
-const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
+const msEnv = (name, def) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : def);
+const LOCK_WAIT_MS = msEnv('DESK_QUEUE_LOCK_WAIT_MS', 10_000);
 // The lock itself, its stale clearing and its release on exit are dir-lock.mjs's.
 function lock(dir = LOCK) {
   takeDirLock(dir, { waitMs: LOCK_WAIT_MS, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${LOCK_WAIT_MS / 1000}s wait: nothing was changed. Run this again once that process finishes; if it is stuck, stop it and the next write clears its lock (${dir})`) });
@@ -336,6 +338,94 @@ function handback(q, key, note) {
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+}
+
+// queue.mjs stop: one running ticket's worker ended, what its worktree holds committed on its branch,
+// and the ticket held behind no blocker, so nothing starts it until the person lets it (needs-you's
+// start, which sets it triaged): its next worker then starts in the same worktree on the same branch, at
+// the stage this one reached. It holds the pass's own lock from its first read to its save, waiting for
+// a pass running now: a pass that read the ticket as running would record the ended worker as killed and
+// resume it over the hold. The wait has no limit unless DESK_STOP_PASS_WAIT_MS sets one; a dead holder
+// frees it.
+const STOP_PASS_WAIT_MS = msEnv('DESK_STOP_PASS_WAIT_MS', Infinity);
+const STOP_GRACE_MS = msEnv('DESK_STOP_GRACE_MS', 10_000);
+
+// Takes orchestrator.lock the way pass.mjs claim() does (tryLockFile), so a pass starting meanwhile
+// refuses; it goes when this process exits.
+function claimPassLock(key) {
+  const file = join(stateDir(), 'orchestrator.lock');
+  for (const until = Date.now() + STOP_PASS_WAIT_MS; ;) {
+    const pid = tryLockFile(file, { by: `queue.mjs stop ${key}` });
+    if (pid === true) return;
+    if (pid === process.ppid) throw new Error(`queue.mjs stop ${key} was run by the pass holding the pass lock (pid ${pid}), which it would wait on forever: run it outside a pass. Nothing was changed`);
+    if (Date.now() >= until) throw new Error(`a pass is running (pid ${pid ?? '?'}) and did not finish within ${STOP_PASS_WAIT_MS / 1000}s, so nothing was stopped: run queue.mjs stop ${key} again once it has`);
+    sleepSync(500);
+  }
+}
+
+// Exit 2 for a key the queue does not hold, as the command line's own mistake rather than a refusal.
+class NoTicket extends Error { exit = 2; }
+
+// Commit everything in worktree `wt` but desk's own `.claude/` files (setup-worktree.sh leaves agent links
+// and a disabled settings file there); ignored files stay out, as git add leaves them.
+// -> { sha } | { nothing: why } | { error: why }
+function commitStopped(wt, key, branch) {
+  if (!wt || !existsSync(wt)) return { nothing: `it has no worktree${wt ? ` at ${wt}` : ''}` };
+  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    const status = git('status', '--porcelain');
+    if (!status) return { nothing: 'its worktree was clean' };
+    const mid = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].find((p) => existsSync(resolve(wt, git('rev-parse', '--git-path', p))));
+    if (mid || /^(DD|AU|UD|UA|DU|AA|UU) /m.test(status)) return { error: `its worktree ${wt} is mid ${mid ? mid.replace(/_HEAD$|-.*$/, '').toLowerCase() : 'merge'} with conflicts or an operation in progress, so nothing was committed: its changes are left in place` };
+    git('add', '-A', '--', '.', ':(exclude).claude');
+    try { git('diff', '--cached', '--quiet'); return { nothing: 'its worktree held only desk\'s own .claude files' }; } catch { /* staged changes to commit */ }
+    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when queue.mjs stop ended its worker`);
+    return { sha: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD') || branch };
+  } catch (e) {
+    return { error: `committing in ${wt} failed (${String(e.stderr || e.message).trim().split('\n').pop()}): its changes are left in place` };
+  }
+}
+
+function stop(key) {
+  claimPassLock(key);
+  // Read without the queue lock, as every reader does; it is taken only for the write, so ending the
+  // worker never keeps another writer waiting past its own wait.
+  const t = load().tickets[key];
+  if (!t) throw new NoTicket(`no such ticket in the queue: ${key}. Nothing was changed`);
+  if (t.state !== 'running') throw new Error(`${key} has no running worker (it is ${t.state}): nothing was changed`);
+  if (!t.session_id) throw new Error(`${key} has no running worker that can be found: it records no session id. Nothing was changed`);
+  const target = workerProcs(t.session_id, processRows());
+  if (!target.groups.length && !target.pids.length) throw new Error(`${key} has no running worker: no process runs its session ${t.session_id}, so the next pass records how it ended. Nothing was changed`);
+  const log = join(stateDir(), 'logs', `${key}.log`);
+  let round = '';
+  try {
+    const lines = readFileSync(log, 'utf8').split('\n');
+    round = lines.slice(lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"')) + 1).join('\n');
+  } catch { /* no log: the stage recorded on the ticket */ }
+  if (workerMarkers(round).some(([k]) => k === 'AUTOPILOT_DONE')) throw new Error(`${key}'s worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`);
+  const ended = endProcs(target, { graceMs: STOP_GRACE_MS });
+  if (ended.left.length) throw new Error(`${key}'s worker did not end: pid ${ended.left.join(', ')} still alive after SIGTERM and SIGKILL. Nothing in the queue was changed`);
+  const wt = t.worktree ?? join(worktreesDir(), key);
+  const c = commitStopped(wt, key, t.branch);
+  const at = new Date().toISOString();
+  const kept = c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`;
+  const stage = lastStage(round)?.stage ?? t.stage ?? null;
+  // The worker is gone and no pass can start, so the hold must land: wait for the queue lock as long as
+  // its holder lives (dir-lock clears a dead one's).
+  takeDirLock(LOCK, { waitMs: Infinity });
+  const q = load();
+  const now = q.tickets[key];
+  if (now?.state !== 'running' || now.session_id !== t.session_id) {
+    unlock();
+    throw new Error(`${key}'s worker (pid ${ended.ended.join(', ')}) ended and its work so far is ${kept}, but the queue changed meanwhile (${key} is now ${now?.state ?? 'not in the queue'}), so its record was left as it is`);
+  }
+  Object.assign(now, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
+    // held_outside a release left behind would let pass.mjs's outside-hold lift release the stop.
+    held_by: null, held_outside: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : now.last_round ?? null,
+    session_id: null, pid: null, resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
+  save(q);
+  if (c.error) process.exitCode = EXIT.SHOW_PERSON;
+  return `${key} stopped: its worker (pid ${ended.ended.join(', ')}) ended; ${kept}; ${key} is held, and starts again only once you let it (needs-you: start)`;
 }
 
 // A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
@@ -869,6 +959,13 @@ switch (cmd) {
     break;
   }
 
+  case 'stop': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs stop <TICKET>');
+    console.log(stop(key));
+    break;
+  }
+
   case 'handback': {
     const [key, ...rest] = args;
     const note = rest.join(' ').trim();
@@ -1109,11 +1206,11 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
-  process.exit(EXIT.SHOW_PERSON);
+  process.exit(e.exit ?? EXIT.SHOW_PERSON);
 }
 
 // The status table, as one string.
@@ -1174,6 +1271,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
+      : stuck && stoppedHold(t) ? 'its worker was stopped (queue.mjs stop): it starts once you let it (needs-you: start)'
       : stuck ? `held behind ${String(t.held_by ?? '?').split('|').join(', ')}, which will not merge on its own (no PR, a closed PR, or not in the batch): decide what happens to it`
       : parks ? `waiting on the answer to ${parks.join(', ')} (failed or parked), then until ${String(t.held_by).split('|').join(', ')} merge`
       : isHeld(t) && spines.length ? `waiting on approval of spine ${spines.join(', ')}, then until ${String(t.held_by).split('|').join(', ')} merge`

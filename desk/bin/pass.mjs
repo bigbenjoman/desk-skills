@@ -10,7 +10,8 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
+import { tryLockFile, filePid } from './dir-lock.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -150,23 +151,17 @@ function orchestratorName() {
 
 // Two orchestrators would both spawn against the same tickets. "Claim the queue" was documented
 // and unenforced; this enforces it.
+// Taken exclusively (tryLockFile), as queue.mjs stop takes it, so a pass and a stop never both hold it;
+// a stale lock from a dead process is taken over, and the lock goes when this pass exits.
 const LOCK = join(STATE, 'orchestrator.lock');
 function claim() {
-  mkdirSync(STATE, { recursive: true });
-  if (existsSync(LOCK)) {
-    try {
-      const { pid, since } = JSON.parse(readFileSync(LOCK, 'utf8'));
-      process.kill(pid, 0);                       // throws if that process is gone
-      if (pid !== process.pid) {
-        RECORDS = false;
-        refuse(`another orchestrator holds the lock (pid ${pid}, since ${since}).\nif it is dead, remove ${LOCK}`);
-      }
-    } catch { /* stale lock from a dead process — take it */ }
-  }
-  writeFileSync(LOCK, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
+  if (tryLockFile(LOCK) === true) return;
+  let since = '?', by = '';
+  try { ({ since = '?', by = '' } = JSON.parse(readFileSync(LOCK, 'utf8'))); } catch { /* still being written */ }
+  RECORDS = false;
+  refuse(`another orchestrator holds the lock (pid ${filePid(LOCK) ?? '?'}${by ? `, ${by}` : ''}, since ${since}).\nif it is dead, remove ${LOCK}`);
 }
 claim();
-process.on('exit', () => { try { if (JSON.parse(readFileSync(LOCK, 'utf8')).pid === process.pid) unlinkSync(LOCK); } catch { /* gone */ } });
 
 // The lock only exists for the seconds a pass runs, so between passes a second batch's
 // `queue.mjs init` could not see this orchestrator and reset the batch notes its workers still read.
@@ -3759,7 +3754,7 @@ const epicMerged = (qO, key) => {
 {
   const qO = queue();
   const landed = new Map();
-  for (const t of Object.values(qO.tickets).filter((x) => holdsKept(x) && x.held_outside)) {
+  for (const t of Object.values(qO.tickets).filter((x) => holdsKept(x) && x.held_outside && !stoppedHold(x))) {
     const outside = keysOf(t.held_outside);
     const rec = triageRec(t.key);
     const ownEpic = outside.filter((p) => !qO.tickets[p] && ownEpicOf(rec).includes(p));
@@ -4978,7 +4973,9 @@ for (const t of parkHeld) {
   q('set', t.key, `held_by=${by.join('|') || 'null'}`, ...(t.held_outside ? [`held_outside=${outside.join('|') || 'null'}`] : []));
   out.push(`hold lifted: ${t.key}: ${merged.join(', ')} merged${rest || `, and it stays parked: ${String(t.park.question).slice(0, 80)}`}`);
 }
-for (const t of stuck) report.waiting.push(`${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
+for (const t of stuck) report.waiting.push(stoppedHold(t)
+  ? `${t.key}: STOPPED — its worker was stopped by queue.mjs stop, its work kept in its worktree: it starts once you let it (needs-you: start)`
+  : `${t.key}: STUCK — held behind ${predsOf(t).join(', ') || 'no recorded blocker'}, which cannot merge on its own (no PR, a closed PR, or not in the batch): decide whether it waits, is released, or is dropped`);
 // A park waiting on "pr <n> merged" whose PR's ticket is held behind it, directly or through other
 // holds, waits on itself: one line names the cycle. The PR is read for its merge state, which the done
 // tickets' reads above never cover for a held ticket's PR, so a conflict is said there, or on the park's
