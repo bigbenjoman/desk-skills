@@ -98,7 +98,7 @@ try {
   // A copy of run.sh with three suites that log their start and end. With MEET set, test_a.sh passes
   // only if test_c.sh starts while it is still running; test_b.sh fails.
   const S = join(T, 'repo', 'tests'); mkdirSync(S, { recursive: true });
-  writeFileSync(join(S, 'run.sh'), readFileSync(join(R, 'tests/run.sh')));
+  for (const f of ['run.sh', 'suite_env.sh']) writeFileSync(join(S, f), readFileSync(join(R, 'tests', f)));
   const log = (x, body) => writeFileSync(join(S, `test_${x}.sh`), `echo "start ${x}" >> "$LOG"\n${body}\necho "end ${x}" >> "$LOG"\n`);
   log('a', 'echo "ok a1"\nif [ -n "${MEET:-}" ]; then i=0; while [ ! -f "$MEET/c" ] && [ $i -lt 150 ]; do sleep 0.1; i=$((i + 1)); done\n  if [ -f "$MEET/c" ]; then echo "ok a met c"; else echo "FAIL a ran alone"; fi; fi\necho "ok a2"');
   log('b', 'echo "ok b1"; echo "FAIL b broke"; echo "b says why"');
@@ -121,7 +121,7 @@ try {
   // A TERM to run.sh -j stops the running suites before run.sh exits: a lock held around it is never
   // released while a suite still runs. test_slow.sh writes its pid, then runs for up to 10 s.
   const S2 = join(T, 'stop', 'tests'); mkdirSync(S2, { recursive: true });
-  writeFileSync(join(S2, 'run.sh'), readFileSync(join(R, 'tests/run.sh')));
+  for (const f of ['run.sh', 'suite_env.sh']) writeFileSync(join(S2, f), readFileSync(join(R, 'tests', f)));
   writeFileSync(join(S2, 'test_slow.sh'), 'echo $$ > "$PIDF"; i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; echo "ok slow"\n');
   const pidf = join(T, 'slow.pid');
   const stop = spawnSync('bash', ['-c', 'bash "$1" --no-hook-test -j 2 test_slow.sh >/dev/null & r=$!; i=0; while [ ! -s "$PIDF" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; kill -TERM $r; wait $r; echo "rc $?"; if kill -0 "$(cat "$PIDF")" 2>/dev/null; then echo "suite alive"; else echo "suite gone"; fi', 'stop', join(S2, 'run.sh')], { encoding: 'utf8', env: { ...process.env, PIDF: pidf } });
