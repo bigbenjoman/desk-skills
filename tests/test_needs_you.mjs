@@ -2214,7 +2214,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('pinon', { port: 3911, beat: 1, tickets: { 'P-1': pinOff } });
   const cfg = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__pinon', 'config.md');
   writeFileSync(cfg, readFileSync(cfg, 'utf8').replace('| Batches run by |', '| Phase 0 levers | `none` | `failure-class` |\n| Batches run by |'));
-  const lineOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith(`${word} P-1 `))?.split(word).join('<repo>');
+  // One clock for both reads, so a slow run cannot put a minute between the two ages.
+  const now = Date.now();
+  const lineOf = (word) => N.listText(N.collect({ word, now }), now).split('\n').find((l) => l.startsWith(`${word} P-1 `))?.split(word).join('<repo>');
   t('DS-639 AC6 the park is listed', !!lineOf('pinon'), true);
   t('DS-639 AC6 a row reading failure-class lists a ticket pinned without it as with the lever off', lineOf('pinon'), lineOf('pinoff'));
 }
