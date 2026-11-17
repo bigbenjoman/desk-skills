@@ -229,6 +229,8 @@ t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, t
 // ---- review findings: each guarded -------------------------------------------------------------------------------------------------------------------
 run([repo(A10, [])], NOW + DAY);
 t('a settled lever still gets its daily row, so the board does not read it stale', [wrappersRow(A10).state, wrappersRow(A10).decision, wrappersRow(A10).reason_code], ['settled', 'hold', 'not_evaluated']);
+const settledRows = evalsOf(A10).filter((x) => x.lever === 'wrappers');
+t('that row keeps the evidence the lever was last weighed on', [wrappersRow(A10).n, wrappersRow(A10).cost, wrappersRow(A10).evidence_from], [settledRows.at(-2).n, settledRows.at(-2).cost, settledRows.at(-2).eval_id]);
 const A10c = 'acme__smallholdback';
 const early = append(A10c, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_v', evidence_file: 'levers-evidence/evl_v.jsonl', at: at(-29) });
 run([repo(A10c, [

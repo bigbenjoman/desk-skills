@@ -344,8 +344,11 @@ export function evaluate({
       }
       const p = plan.find((x) => x.r === r && x.lever === lever);
       if (!p) {
+        // The lever's last weighed evidence stays on its row, so the board keeps its figures.
         const st = r.byLever[lever];
-        lines.push({ ...base, state: st.state, decision: 'hold', reason_code: 'not_evaluated', reason: `${lever} is ${st.state} in ${r.name}${st.at ? ` since ${st.at.slice(0, 10)}` : ''}`, next: { earliest_change: null, needs: 'a change by hand' } });
+        const last = r.prior.filter((x) => x.lever === lever && x.n).at(-1);
+        const kept = last ? { n: last.n, mechanism: last.mechanism, cost: last.cost, guardrails: last.guardrails, evidence_from: last.eval_id, evidence_file: last.evidence_file, evidence_sha256: last.evidence_sha256 } : {};
+        lines.push({ ...base, ...kept, state: st.state, decision: 'hold', reason_code: 'not_evaluated', reason: `${lever} is ${st.state} in ${r.name}${st.at ? ` since ${st.at.slice(0, 10)}` : ''}`, next: { earliest_change: null, needs: 'a change by hand' } });
         continue;
       }
       const { s } = p;
