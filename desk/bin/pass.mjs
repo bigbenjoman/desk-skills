@@ -322,6 +322,14 @@ const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
 // before the subscription changed, holds that worker alone.
 const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
 const onRepoLogin = (login) => !!REPO_LOGIN && !!login && login.dir === REPO_LOGIN.dir;
+// A repo's row pinned to a subscription set off is one item for the person (needs-you subscription-off)
+// while it stands: the queue's subscription_off, dropped by the first pass that finds the pin resolving
+// again. DESK_SUBSCRIPTION naming one only stalls the run: the row is what the item tells them to move.
+{
+  const was = queue().subscription_off ?? null;
+  const off = REPO_SUB.off && REPO_SUB.fix === 'the row' ? { email: REPO_SUB.email, login: REPO_SUB.off.name } : null;
+  if (!DRY && (off ? was?.email !== off.email || was?.login !== off.login : was)) q('set-batch', `subscription_off=${off ? JSON.stringify({ since: PASS_AT, ...off }) : 'null'}`);
+}
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
 const probeOnce = (login = OWN_LOGIN) => {
@@ -2886,13 +2894,19 @@ async function freePort(own = null) {
 const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
 // The login a new session starts on, the repo's subscription, as { login, vars, row, line }: the
 // variables its spawn takes, its queue field and its report text. Null, with the stall said once, when
-// the subscription names no login here or its login is signed out: nothing falls back to another.
+// the subscription names no login here, or one set off, or its login is signed out: nothing falls back
+// to another.
 // A login that could not be checked goes on to its preflight, which says what is wrong with it.
 let REPO_CHECK = null;
 let noLoginWhy = null;
 function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
   const login = REPO_SUB.login;
+  if (!login && REPO_SUB.off) {
+    const slug = E.repoSlug();
+    noLogin(`${slug}: ${REPO_SUB.from} names ${REPO_SUB.email}, which is off (claude ${REPO_SUB.off.name}), so nothing new starts for ${slug}; it never falls back to another. ${REPO_SUB.fix === 'the row' ? `Move ${slug} to another subscription with desk-env subscription set <slug> <default|email>` : `Change ${REPO_SUB.fix}`}, or set ${REPO_SUB.off.name} unused (desk-env logins set claude ${REPO_SUB.off.name} unused)`);
+    return null;
+  }
   if (!login) {
     noLogin(`${REPO_SUB.from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${REPO_SUB.fix}`);
     return null;
@@ -5057,7 +5071,7 @@ if (!DRY) { const pm = postMergeWatch({ state: STATE, queue: queue(), repo: GH_R
 // A lever that did visible harm on one of this batch's tickets is reverted in this repo every pass.
 if (!DRY) {
   try {
-    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), state: STATE, queue: queue(), states: E.leverStates({}).states });
+    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? null, state: STATE, queue: queue(), states: E.leverStates({}).states });
     if (tr.line) out.push(tr.line);
   } catch (e) { out.push(`levers trips: not run (${String(e?.message ?? e).split('\n')[0]})`); }
 }
@@ -5563,7 +5577,8 @@ function reportOverrides() {
   try { seen = JSON.parse(readFileSync(seenFile, 'utf8')); } catch { /* none reported yet */ }
   const fresh = [];
   for (const e of readDecisions(STATE).overrides) {
-    if (seen.includes(e.id)) continue;
+    // A lever's override is applied by the override itself (lever-changes.mjs): no ticket waits on it.
+    if (seen.includes(e.id) || e.lever) continue;
     fresh.push(e.id);
     report.waiting.push(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`);
   }

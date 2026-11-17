@@ -499,7 +499,7 @@ const { attachArchive, everyTicket } = await import(process.argv[3]);
 const q = { tickets: {} };
 try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-for (const [k, t] of everyTicket(attachArchive(q, process.argv[2]))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh

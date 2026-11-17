@@ -86,5 +86,17 @@ t('a scan is not due within a day of the last', postMergeDue({ state, queue, now
 t('a scan is due a day after the last', postMergeDue({ state, queue, now: NOW + 50 * H }), true);
 t('a scan is not due once every merge is past the watch', postMergeDue({ state, queue, now: mergedA + 17 * 24 * H }), false);
 
+// A merged ticket is archived within a pass of its merge (queue-store.mjs archiveDone): it is still watched.
+const { attachArchive, archiveDone } = await import('../desk/bin/queue-store.mjs');
+const qf = join(tmp, 'queue.json');
+const live = { tickets: { 'T-A': { key: 'T-A', state: 'done', merged_at: iso(mergedA), result: { pr: 1 } } } };
+const movedA = archiveDone(qf, live);
+writeFileSync(qf, JSON.stringify(live));
+const archivedQueue = attachArchive(JSON.parse(readFileSync(qf, 'utf8')), qf);
+t('the ticket was archived, out of the live tickets', `${movedA} ${Object.keys(archivedQueue.tickets).length}`, 'T-A 0');
+t('a scan is due for an archived merge', postMergeDue({ state: join(tmp, 'state9'), queue: archivedQueue, now: NOW }), true);
+postMergeScan({ state: join(tmp, 'state9'), queue: archivedQueue, log, runs: () => [], now: NOW });
+t('an archived ticket\'s revert inside the watch is recorded', readPostMerge(join(tmp, 'state9')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-A');
+
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

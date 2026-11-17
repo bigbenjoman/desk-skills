@@ -147,7 +147,7 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
     let q;
     try { q = readQueue(b.queue); } catch { continue; }
     // Archived tickets too: a pass archives every done ticket whose PR merged (queue-store.mjs archiveDone).
-    for (const [key, v] of everyTicket(q)) {
+    for (const [key, v] of Object.entries(everyTicket(q))) {
       const t = { ...v, key: v?.key ?? key };
       const m = Date.parse(t?.merged_at);
       if (!Number.isFinite(m) || m < now - 28 * DAY_MS || m > now) continue;
@@ -162,7 +162,7 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
 // Every queue ticket of the repo's batches, archived ones included (a merged ticket is archived), for the sample.
 export function repoTickets(slug, batches = allBatches(slug)) {
   return batches.flatMap((b) => {
-    try { return everyTicket(readQueue(b.queue)).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
+    try { return Object.entries(everyTicket(readQueue(b.queue))).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
   });
 }
 
@@ -227,7 +227,7 @@ const preflightUsd = (item, from = -Infinity) => (item.preflights ?? []).filter(
 // The audit row for an ended item, and its line in audit.jsonl once written. Each write is skipped
 // where an earlier, interrupted recording of the same session already made it, so recording again
 // finishes the job rather than repeating it.
-function recordAudit({ slug, name, item, ended, text, states, now, registry }) {
+function recordAudit({ slug, name, repo = null, item, ended, text, states, now, registry }) {
   const { findings: f, usd: workerUsd, p0s } = readAudit(text, item.sha);
   const pre = preflightUsd(item);
   const usd = workerUsd == null && !pre ? null : Math.round(((workerUsd ?? 0) + pre) * 10000) / 10000;
@@ -261,7 +261,7 @@ function recordAudit({ slug, name, item, ended, text, states, now, registry }) {
     .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
     .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
-  events.push(...applyTrips({ slug, name, trips, registry, now: Date.parse(at) }));
+  events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));
   return { row: written?.rec ?? row, events };
 }
 
@@ -299,7 +299,7 @@ export async function runAudits({
   for (const { item, e } of ending) {
     // One audit's failure to record leaves it for a later pass, never the others.
     try {
-      const r = recordAudit({ slug, name, item, ended: e, text: log(item), states, now, registry });
+      const r = recordAudit({ slug, name, repo, item, ended: e, text: log(item), states, now, registry });
       out.recorded.push(r.row);
       out.events.push(...r.events);
     } catch (err) {

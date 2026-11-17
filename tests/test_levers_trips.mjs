@@ -215,6 +215,18 @@ t('AC3 a ticket drawn on under the trial its lever was adopted from still trips 
   run(A, queueOf(onTicket(A, 'M-3', 'memory', { state: 'done', merged_at: at(-40) })));
   return [stateIn(A, 'memory'), eventsOf(A, 'trip').map((e) => [e.from, e.to])];
 })(), ['reverted', [['adopted', 'reverted']]]);
+t('AC3 a revert of a ticket the queue has archived still trips its lever', await (async () => {
+  const { attachArchive, archiveDone } = await import('../desk/bin/queue-store.mjs');
+  const A = 'acme__archived';
+  const s = repo(A);
+  writeFileSync(join(s, 'post-merge.jsonl'), jsonl([{ kind: 'revert', ticket: 'M-4', pr: 14, at: at(-10) }]));
+  const qf = join(s, 'queue.json');
+  const q = queueOf(onTicket(A, 'M-4', 'memory', { state: 'done', merged_at: at(-40), result: { pr: 14 } }));
+  const moved = archiveDone(qf, q);
+  writeFileSync(qf, JSON.stringify(q));
+  run(A, attachArchive(JSON.parse(readFileSync(qf, 'utf8')), qf));
+  return [moved, Object.keys(q.tickets), stateIn(A, 'memory'), eventsOf(A, 'trip').map((e) => e.ticket)];
+})(), [['M-4'], [], 'reverted', ['M-4']]);
 
 // ---- AC4: the lever's own step exited non-zero on an on-arm start ------------------------------------------
 const A4 = 'acme__steperror';

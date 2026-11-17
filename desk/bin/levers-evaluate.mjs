@@ -19,7 +19,8 @@
 // It writes, under ~/.desk-autopilot/<slug>/: one lever-evals.jsonl row per lever evaluated, whatever
 // the decision; the rows each evaluation used in levers-evidence/<eval_id>.jsonl (kept 180 days), whose
 // sha256 the row holds; and transition, fp_reset, evidence_incomplete and needs_you events in the lever
-// log. The pooled estimates go once a day to ~/.desk-autopilot/levers/pooled-evals.jsonl, by whichever
+// log, with each adopt and revert logged as a taken call in decisions.jsonl (lever-changes.mjs). An
+// overridden lever is not evaluated. The pooled estimates go once a day to ~/.desk-autopilot/levers/pooled-evals.jsonl, by whichever
 // repo's pass takes the machine-wide lock first; that pass evaluates every `auto` repo.
 //
 //   import { evaluate, evaluateDue } from './levers-evaluate.mjs'
@@ -31,7 +32,8 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, trialId, ACTOR } from './levers-auto.mjs';
+import { leverStatesIn, trialId, holdbackEnd, ACTOR } from './levers-auto.mjs';
+import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
@@ -39,6 +41,7 @@ import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-v
 import { findingsPath } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
+import { everyTicket, readQueueFile } from './queue-store.mjs';
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -247,10 +250,10 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
     if (incomplete.length) return hold('evidence_incomplete', `outcome files missing: ${incomplete.join(', ')}`, 'the missing outcome files');
     // A breach on too small a holdback arm to revert on neither reverts nor lets the lever settle.
     if (breached.length) return hold('holdback_running', `${breached.map((g) => g.name).join(', ')} breached at ${sample}, below the ${R.revert_min_per_arm} per arm a revert needs, so it does not settle`, `${R.revert_min_per_arm - smaller} more tickets in the smaller arm`);
-    if (changedAt != null && now >= changedAt + holdbackWeeks * WEEK_MS) {
+    if (changedAt != null && now >= holdbackEnd(changedAt, holdbackWeeks)) {
       return { decision: 'settle', to: 'settled', reason_code: 'holdback_ended', reason: `the ${holdbackWeeks}-week holdback ended with no guardrail breached (${sample})`, next: next(null) };
     }
-    return hold('holdback_running', `adopted; the holdback runs to ${changedAt == null ? '?' : day(changedAt + holdbackWeeks * WEEK_MS)}`, 'the holdback to end');
+    return hold('holdback_running', `adopted; the holdback runs to ${changedAt == null ? '?' : day(holdbackEnd(changedAt, holdbackWeeks))}`, 'the holdback to end');
   }
   if (incomplete.length) return hold('evidence_incomplete', `outcome files missing, so nothing adopts: ${incomplete.join(', ')}`, 'the missing outcome files');
   if (smaller < minN) return hold('below_min_sample', `${smaller} of ${minN} tickets in the smaller arm`, `${minN - smaller} more tickets in the smaller arm`);
@@ -407,7 +410,7 @@ export function evaluate({
 
       let to = null;
       if (d.to) {
-        const holdback = d.to === 'adopted' ? { share: reg.ramp.holdback, until: day(now + reg.ramp.holdback_weeks * WEEK_MS) } : undefined;
+        const holdback = d.to === 'adopted' ? { share: reg.ramp.holdback, until: day(holdbackEnd(now, reg.ramp.holdback_weeks)) } : undefined;
         const e = appendWith(r.slug, () => {
           // Written only while the lever is still in the state this evaluation read.
           const nowState = leverStatesIn(read(r.slug).events, registry)[lever];
@@ -420,6 +423,8 @@ export function evaluate({
         if (e) {
           written.events.push(e);
           to = d.to;
+          // An adopt or a revert is a call taken without asking: the digest lists it, to be overridden.
+          recordLeverDecision([e], { slug: r.slug, repo: r.ghRepo ?? null, state: r.state });
           if (d.to === 'frozen') {
             append({ kind: 'needs_you', lever, actor: ACTOR, reason_code: 'frozen_second_revert', at, ...evidence,
               reason: frozenText(lever, r.name, d.reason) });
@@ -487,7 +492,7 @@ export function repoRows({ slug, ghRepo, now, batches = allBatches(slug), gh = g
   // The rows name no branch, so red CI is matched through each batch's queue.
   const branchOf = new Map();
   for (const b of batches) {
-    try { for (const t of Object.values(JSON.parse(readFileSync(b.queue, 'utf8')).tickets ?? {})) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
+    try { for (const t of Object.values(everyTicket(readQueueFile(b.queue)))) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
   }
   const rows = all.rows.map((r) => {
     const branch = branchOf.get(`${r.batch ?? ''}|${r.key}`);
@@ -515,7 +520,7 @@ export function evaluateDue({ now = Date.now(), root = autopilotRoot(), configRo
     const full = repos.map((c) => {
       const state = join(root, c.slug);
       const { rows, batches } = rowsFor({ slug: c.slug, ghRepo: c.ghRepo, now });
-      return { slug: c.slug, name: (c.ghRepo ?? c.slug).split('/').pop(), state, states: c.states, rows, batches };
+      return { slug: c.slug, ghRepo: c.ghRepo ?? null, name: (c.ghRepo ?? c.slug).split('/').pop(), state, states: c.states, rows, batches };
     });
     const w = evaluate({ repos: full, now, tz, root });
     const changes = w.events.filter((e) => e.kind === 'transition').map((e) => `${e.lever} ${e.from} → ${e.to} in ${e.repo}`);

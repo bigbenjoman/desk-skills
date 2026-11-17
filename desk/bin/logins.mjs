@@ -411,19 +411,25 @@ function signedInTo(subs, email) {
 export function subscriptionLogin(subs, email) {
   return signedInTo(subs, email).find((l) => l.rule !== 'off') ?? null;
 }
+// The login set off that is signed in to `email`, where no login not set off is: what a pin to it is
+// refused for. null otherwise.
+export function offSubscriptionLogin(subs, email) {
+  const on = signedInTo(subs, email);
+  return on.some((l) => l.rule !== 'off') ? null : on[0] ?? null;
+}
 // What a repo's subscription resolves to. `value` is `default` or an account email, read from `source`
 // (DESK_SUBSCRIPTION or the repo's row); unset or `default` is this computer's Claude default, and no
 // login while that default is off. An email no login here is signed in to, or only an off one,
-// resolves to no login, never to the default.
-//   -> { email, login, source: source | 'default' | 'unknown email' }
+// resolves to no login, never to the default; `off` is the login set off it names, else null.
+//   -> { email, login, source: source | 'default' | 'unknown email', off }
 export function repoSubscription(subs, { value, source }) {
   const v = String(value ?? '').trim().toLowerCase();
   if (!v || v === 'default') {
     const l = toolDefault(subs, 'claude');
-    return { email: claudeAccount(l).email?.toLowerCase() ?? null, login: l?.rule === 'off' ? null : l, source: 'default' };
+    return { email: claudeAccount(l).email?.toLowerCase() ?? null, login: l?.rule === 'off' ? null : l, source: 'default', off: null };
   }
   const l = subscriptionLogin(subs, v);
-  return { email: v, login: l, source: l ? source : 'unknown email' };
+  return { email: v, login: l, source: l ? source : 'unknown email', off: l ? null : offSubscriptionLogin(subs, v) };
 }
 
 // A tool's default is changed by naming another, never by taking it off, on standby or out.

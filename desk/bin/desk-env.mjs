@@ -25,7 +25,9 @@
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
 //                                             row; with <lever>, on or off. A row unlike the last one the
-//                                             repo's lever log recorded is logged as a row_change
+//                                             repo's lever log recorded is logged as a row_change. With
+//                                             `auto` in the row, a last `levers: …` line gives each managed
+//                                             lever's state in this repo (lever-changes.mjs summaryLine)
 //   node desk-env.mjs levers freeze|thaw [reason]  set or clear the machine-wide freeze
 //                                             (~/.desk-autopilot/levers.freeze), logged in every repo's log
 //   node desk-env.mjs lines <file> <A>[,<B>]  with the wrappers lever on, print what `sed -n A,Bp <file>`
@@ -1954,7 +1956,8 @@ export function thisRepoSubscription(L, subs, env = process.env) {
 }
 
 // Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
-// signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
+// signed in to (stored lowercase). An unknown email or repo, or an email whose login is set off, is
+// refused with the config unchanged.
 //   -> { slug, was, now }
 export async function setRepoSubscription(slug, value, root = deskConfigRoot()) {
   const L = await import('./logins.mjs');
@@ -1963,7 +1966,10 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
   if (!/^[\w.-]+$/.test(String(slug)) || !existsSync(config)) throw new DeskConfigError(`desk-env subscription set: no repo config for "${slug}" under ${join(root, 'repos')}`);
   const now = String(value ?? '').trim().toLowerCase();
   if (!now || now.includes('`') || /\s/.test(now)) throw new DeskConfigError('desk-env subscription set: the value is `default` or an account email');
-  if (now !== 'default' && !L.subscriptionLogin(L.readSubscriptions(subscriptionsPath()), now)) {
+  const subs = now === 'default' ? null : L.readSubscriptions(subscriptionsPath());
+  const off = subs && L.offSubscriptionLogin(subs, now);
+  if (off) throw new DeskConfigError(`desk-env subscription set: ${now} is off (claude ${off.name}), so desk starts no new work on it: set it unused first (desk-env logins set claude ${off.name} unused); ${slug}'s config is unchanged`);
+  if (subs && !L.subscriptionLogin(subs, now)) {
     throw new DeskConfigError(`desk-env subscription set: ${now} is not one of this computer's subscriptions: sign it in and add it in desk-q view 6 (Usage) first; ${slug}'s config is unchanged`);
   }
   const was = repoConfigValue(slug, 'subscription', root)?.toLowerCase() ?? 'default';
@@ -2134,6 +2140,14 @@ if (isMain) {
         const f = leversFrozen();
         if (f) console.log(`frozen: every trial in every repo is stopped, since ${f.at}${f.reason ? ` (${f.reason})` : ''}; desk-env levers thaw ends it`);
         if (l.unknown.length) console.log(`unknown: ${l.unknown.join(' ')} (${row} names levers desk does not know; each is read as off; ${known})`);
+        // With `auto`, one line of each managed lever's state in this repo, from its lever log.
+        if (Object.values(s.states).includes('auto')) {
+          Promise.all([import('./lever-log.mjs'), import('./lever-changes.mjs')]).then(([LL, LC]) => {
+            const slug = repoSlug();
+            const line = LC.summaryLine({ slug, states: s.states, events: LL.read(slug).events });
+            if (line) console.log(line);
+          }).catch((e) => { console.error(`desk-env levers: the summary line: ${e.message}`); process.exitCode = 1; });
+        }
         break;
       }
       case 'lines': {

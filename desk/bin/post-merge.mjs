@@ -9,6 +9,7 @@
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { everyTicket } from './queue-store.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -40,10 +41,11 @@ export function revertedPr(subject) {
   return n ? Number(n[1]) : null;
 }
 
-// Every ticket in the queue with a merged PR: [{ticket, pr, merged_at}].
+// Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
+// within a pass of its merge): [{ticket, pr, merged_at}].
 export function mergedTickets(queue) {
   const out = [];
-  for (const [ticket, t] of Object.entries(queue?.tickets ?? {})) {
+  for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
     if (Number.isInteger(pr) && pr > 0 && Number.isFinite(Date.parse(t?.merged_at))) out.push({ ticket, pr, merged_at: t.merged_at });
   }

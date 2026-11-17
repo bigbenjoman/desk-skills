@@ -178,6 +178,17 @@ await S.press('u');
 t('and u has nothing to undo', S.frame().includes('Nothing to undo.'), true);
 S.done();
 
+// ---- a pick of an off subscription: Not saved, saying it is off, the row unchanged
+writeFileSync(env.DESK_SUBSCRIPTIONS, readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8').replace('| `~/.claude-logins/spare` | `unused` |', '| `~/.claude-logins/spare` | `off` |'));
+before = configText();
+S = await usage();
+await S.press('\r', '4');
+f = await S.until(saved);
+// The footer is cut to the screen's width; desk-env's whole message is checked in test_repo_subscription.
+t('picking an off subscription is not saved, saying it is off', f.find((l) => l.startsWith('Not saved:'))?.startsWith('Not saved: spare@example.test is off (claude spare), so desk starts no new work on it'), true);
+t('and forewatt\'s row is unchanged', `${configText() === before} | ${subRow()} | ${setOf(f)}`, 'true | default | ○ default');
+S.done();
+
 rmSync(T, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all desk-q Usage pin checks passed');
 process.exit(fails ? 1 : 0);

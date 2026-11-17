@@ -148,6 +148,8 @@ const argv = (log, n) => {
 };
 const toolsOf = (a) => (a && a.includes('--tools') ? a[a.indexOf('--tools') + 1] : undefined);
 const LIST = WORKER_TOOLS.join(',');
+// The finder model check's call: it follows the preflight's one or two (a reply that ran no check is retried).
+const finderCall = (log) => [1, 2].map((n) => argv(log, n)).find((c) => c?.includes('Reply with exactly one word: MODEL_OK')) ?? null;
 
 // AC1: the worker's own claude -p call, in a dry run.
 let r = spawnWorker(SID, 'run', { AUTOPILOT_DRY_RUN: '1' });
@@ -161,7 +163,7 @@ r = spawnWorker('preflight', 'pre', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER
 const pre = argv('pre', 0);
 t('AC3 the preflight runs', !!pre && pre.includes('-p') && pre.includes('--settings'), true);
 t('AC3 the preflight offers the same list as the worker', toolsOf(pre), LIST);
-t('the finder model check is offered no tool', toolsOf(argv('pre', 1)), '');
+t('the finder model check is offered no tool', toolsOf(finderCall('pre')), '');
 
 // AC6: the off switch gives every call Claude Code's default list.
 r = spawnWorker(SID, 'off', { AUTOPILOT_DRY_RUN: '1', AUTOPILOT_DEFAULT_TOOLS: '1' });
@@ -169,7 +171,7 @@ a = argv('off', 0);
 t('AC6 off switch: the worker still launches', !!a && a.includes('-p'), true);
 t('AC6 off switch: no --tools, so the default list', toolsOf(a), undefined);
 r = spawnWorker('preflight', 'preoff', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER_MODEL: 'opus', AUTOPILOT_DEFAULT_TOOLS: '1' });
-t('AC6 off switch: the preflight passes no --tools', [toolsOf(argv('preoff', 0)), toolsOf(argv('preoff', 1))], [undefined, undefined]);
+t('AC6 off switch: the preflight passes no --tools', [!!finderCall('preoff'), toolsOf(argv('preoff', 0)), toolsOf(finderCall('preoff'))], [true, undefined, undefined]);
 
 // A batch's ticket workers share one system prompt: dry-run spawns of two tickets, each with its own
 // briefing, compared by the system prompt and the first message each sends.
