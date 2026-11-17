@@ -1016,12 +1016,13 @@ function judged(r, x, register, reads = null) {
   const item = itemOf(r, x, reads);
   const l = lookup(register, putOffKey(r, x.t, item));
   const behind = heldBehind(r, x.t.key);
-  // A live item says how many held tickets wait behind it, and ranks by that (collect).
-  if (l.status !== 'put_off') return { item: behind > 0 ? { ...item, need: `${item.need} (${behindWords(behind)})`, behind } : item, l };
+  // A listed item says how many held tickets wait behind it, and ranks by that (collect).
+  const counted = behind > 0 ? { ...item, need: `${item.need} (${behindWords(behind)})`, behind } : item;
+  if (l.status !== 'put_off') return { item: counted, l };
   const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
   if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };
-  return { item: shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
+  return { item: shown === item ? counted : shown, l: { status: 'changed', entry: l.entry, line: changedLine(l.entry, [`actions ${was ? was.join(', ') : '(not recorded)'} → ${now.join(', ')}`]) } };
 }
 
 // Whether ticket `t`, held by open tickets outside its batch (desk-q's stuck), is put off with not-now
