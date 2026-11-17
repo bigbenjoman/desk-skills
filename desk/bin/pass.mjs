@@ -32,7 +32,7 @@ import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
-import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed } from './base-sync.mjs';
+import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
@@ -57,7 +57,7 @@ import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, 
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
-import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
+import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
@@ -2374,7 +2374,13 @@ const gateAlive = (g) => {
   if (g?.state !== 'running' || !g.pid) return false;
   try { process.kill(g.pid, 0); return true; } catch { return false; }
 };
+// Outside feature mode, a base whose sync is blocked or left to a fix try still spawns while it is at
+// most this many commits behind the default branch, and holds every spawn past it.
+// AUTOPILOT_BASE_BEHIND_MAX overrides it with a whole number.
+const BASE_BEHIND_MAX = /^\d+$/.test(process.env.AUTOPILOT_BASE_BEHIND_MAX ?? '') ? Number(process.env.AUTOPILOT_BASE_BEHIND_MAX) : 20;
 let baseHold = false;
+// Why a base outside feature mode holds, for the pass's verdict.
+let baseLag = null;
 // The base worktree's path, set below.
 let baseWt = null;
 // What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, or the epic PR's review
@@ -2383,14 +2389,20 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.check ? 'me
 // A merge try that parks or dies can leave its merge in the base worktree, and the next sync, which
 // refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (last.kind !== 'review') dropUnpushed({ path, base: BASE }); };
-// Ends base_fix's last try with `outcome`: its review rounds are recorded, the record drops its session
-// and port, and the try's merge is dropped from base worktree `path`, where there is one.
-function endTry(outcome, path) {
+// The ref a merge try's unpushed commits are kept on, by its place in base_fix's tries.
+const keptRef = (n) => `refs/desk/base-fix/${BASE_FIX_KEY}/${n}`;
+// Ends base_fix's last try with `outcome` (and `extra` on its record): its review rounds are recorded,
+// the record drops its session and port, and the try's merge is dropped from base worktree `path`,
+// where there is one, once what it committed is kept on keptRef and named on the try as `kept`.
+function endTry(outcome, path, extra = {}) {
   recordEpicFindings(join(STATE, 'logs', `${BASE_FIX_KEY}.log`));
-  bf = { tries: bf.tries.map((x, i) => (i === bf.tries.length - 1 ? { ...x, outcome } : x)), running: null, port: null };
+  const n = bf.tries.length;
+  const last = bf.tries[n - 1];
+  const kept = !DRY && path && last.kind !== 'review' ? keepUnpushed({ path, base: BASE, ref: keptRef(n) }) : null;
+  bf = { tries: bf.tries.map((x, i) => (i === n - 1 ? { ...x, outcome, ...extra, ...(kept ? { kept } : {}) } : x)), running: null, port: null };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-  if (path) dropTryMerge(path, bf.tries[bf.tries.length - 1]);
+  if (path) dropTryMerge(path, bf.tries[n - 1]);
 }
 // An epic PR review try runs Stage 4b and posts the epic PR's review, so its log's review rounds go to
 // the findings file as a ticket worker's do (findings.mjs), keyed by the epic: read as its try ends.
@@ -2400,6 +2412,11 @@ function recordEpicFindings(log) {
   if (DRY || last?.kind !== 'review' || !fresh.epic) return;
   recordFindings(STATE, fresh.epic, log, bf.running ?? null);
 }
+// The last try's number, which a try that waited only on the test lock leaves for the next one too.
+const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
+// What endTry kept of the last try, for its report line.
+const keptNote = (x) => (!x?.kept ? '' : x.kept.ref ? `; its unpushed ${String(x.kept.sha).slice(0, 12)} is kept on ${x.kept.ref}`
+  : `; its unpushed ${String(x.kept.sha).slice(0, 12)} could not be kept on a ref (${x.kept.error})`);
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -2438,19 +2455,34 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // ever. Read from origin as fetched now; a fetch that fails reads the refs as they were.
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], quiet);
-  const behindNow = Number(sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet)) > 0;
+  // null when the count cannot be read (a ref never fetched): unknown, never reported as 0.
+  const behindRaw = sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet);
+  const behindBy = /^\d+$/.test(behindRaw) ? Number(behindRaw) : null;
+  const behindNow = behindBy > 0;
   const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN' || behindNow;
-  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass' : 'spawning carries on from the base as it stands';
+  // A sync that does not land holds spawns in feature mode, and otherwise once the base lags too far.
+  // A lag that cannot be read holds nothing outside feature mode, and the note says it was not read.
+  const lag = behindBy === null ? `how far ${BASE} is behind ${SOURCE} could not be read` : `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
+  const lagHolds = !featureMode && behindBy !== null && behindBy > BASE_BEHIND_MAX;
+  const syncHolds = featureMode || lagHolds;
+  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass'
+    : lagHolds ? `${lag}, more than the ${BASE_BEHIND_MAX} it may lag and still spawn, so nothing spawns this pass`
+      : `spawning carries on from the base as it stands (${lag}${behindBy === null ? '' : `, within the ${BASE_BEHIND_MAX} it may lag`})`;
+  const holdSpawns = () => {
+    if (!syncHolds) return;
+    baseHold = true;
+    if (lagHolds) baseLag = `${lag}, more than the ${BASE_BEHIND_MAX} it may lag`;
+  };
   const blocked = (why) => {
     baseNotSynced = why;
     report.waiting.push(`base sync: ${why} — ${holdNote}`);
-    if (featureMode) baseHold = true;
+    holdSpawns();
   };
   // Held as a blocked sync is, but a worker's to clear, not the person's.
   const heldForFix = (why) => {
     baseNotSynced = why;
-    baseLines.push(`base sync: ${why} — ${featureMode ? 'feature mode, so nothing else spawns this pass' : holdNote}`);
-    if (featureMode) baseHold = true;
+    baseLines.push(`base sync: ${why} — ${syncHolds ? holdNote.replace('nothing spawns', 'nothing else spawns') : holdNote}`);
+    holdSpawns();
   };
   const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
   if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
@@ -2498,8 +2530,10 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     if (outcome) {
       const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
       if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
-      endTry(outcome, wt.ok ? wt.path : null);
-      baseLines.push(`base ${tryWhat(bf.tries[bf.tries.length - 1])}: try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}`);
+      const lockWait = said && lockWaitPark(markers);
+      endTry(outcome, wt.ok ? wt.path : null, lockWait ? { lock_wait: true } : {});
+      const ended = bf.tries[bf.tries.length - 1];
+      baseLines.push(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
     } else {
       baseFixLive = true;
       if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
@@ -2560,7 +2594,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     metConflict = true;
     const last = bf.tries[bf.tries.length - 1];
     const line = last?.kind === 'review' ? `epic PR review try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
-      : `${tryWhat(last)} try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
+      : `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     heldForFix(line);
     gateConflict = { worker: true, line };
   } else if (wantSync) {
@@ -2570,7 +2604,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     // PR's review tries are kept: they count per head, and a sync is no new review.
     const conflictTries = (bf?.tries ?? []).filter((x) => x.kind !== 'review');
     if (s.ok && !s.dry && conflictTries.length && !DRY) {
-      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.length)}`);
+      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter((x) => !x.lock_wait).length)}`);
+      for (const x of conflictTries) if (x.kept?.ref) sh('git', ['-C', MAIN, 'update-ref', '-d', x.kept.ref], quiet);
       const kept = bf.tries.filter((x) => x.kind === 'review');
       bf = kept.length ? { tries: kept, running: null, port: null } : null;
       q('set-batch', `base_fix=${bf ? JSON.stringify(bf) : 'null'}`);
@@ -2596,7 +2631,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
         if (!fresh.base_push_ask && !DRY) q('set-batch', `base_push_ask=${JSON.stringify({ since: PASS_AT, base: BASE, source: SOURCE })}`);
         baseNotSynced = why;
         baseLines.push(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${holdNote}`);
-        if (featureMode) baseHold = true;
+        holdSpawns();
       } else {
         blocked(`${why}${basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`);
       }
@@ -2610,7 +2645,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   if (wt.ok && !metConflict && !gateBusy && g?.state === 'failed' && Array.isArray(g.conflict)) {
     sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], { tolerant: true });
     if (baseFixLive) {
-      gateConflict = { worker: true, line: `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
+      gateConflict = { worker: true, line: `conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
     } else if (g.sha && g.sha === originSha(BASE)) {
       let person = null;
       const line = conflicted(g.conflict, (why) => { person = why; }, g.tree_check ?? null);
@@ -3195,21 +3230,43 @@ async function spawnHandoff(t, pick) {
 // A base conflict fix try: a task worker in the base worktree, on the base, under BASE_FIX_KEY, which
 // reads its ticket file. The try is recorded however the spawn goes, so a try that could not start
 // counts as one made at this head, and the next pass at the same head puts it to the person.
-async function spawnBaseFix({ wt, fix }) {
+async function spawnBaseFix({ wt, fix: asked }) {
+  let fix = asked;
   const review = fix.kind === 'review';
-  const ctx = { base: BASE, source: SOURCE, epic: fresh.epic, fix };
   if (DRY) { out.push(`base ${tryWhat(fix)} (dry run): would start try ${fix.try} of ${fix.of} on ${BASE} in ${wt}`); return; }
   // No login to start on: no try is spent, and the next pass looks again.
   const pick = repoLogin();
   if (!pick) return;
   const key = BASE_FIX_KEY;
+  // The last merge try's kept merge is where this one starts, while origin's base and source are still
+  // what it holds; otherwise it starts from the base, and the try says why the kept merge was not used.
+  const prev = review ? null : [...(bf?.tries ?? [])].reverse().find((x) => x.kind !== 'review');
+  let start = {};
+  if (prev?.kept?.sha) {
+    const where = `${prev.kept.ref ?? 'no ref'} at ${String(prev.kept.sha).slice(0, 12)}`;
+    const stale = startFromKept({ path: wt, base: BASE, branch: SOURCE, kept: prev.kept });
+    if (stale) {
+      start = { kept_stale: `${where}: ${stale}` };
+      baseLines.push(`base ${tryWhat(fix)}: try ${prev.try}'s kept merge (${where}) is stale, since ${stale}, so try ${fix.try} starts from ${BASE}`);
+    } else {
+      fix = { ...fix, from: { try: prev.try, ref: prev.kept.ref ?? null, sha: prev.kept.sha } };
+      start = { from: fix.from };
+      baseLines.push(`base ${tryWhat(fix)}: try ${fix.try} starts from try ${prev.try}'s kept merge (${where}), not resolving it again`);
+    }
+  }
+  // A try that does not start leaves the worktree at origin's base for the next sync, and one that
+  // started from a kept merge passes it on.
+  const unstart = () => { if (fix.from) dropUnpushed({ path: wt, base: BASE }); };
+  const ctx = { base: BASE, source: SOURCE, epic: fresh.epic, fix };
   mkdirSync(join(STATE, 'tickets'), { recursive: true });
   writeFileSync(join(STATE, 'tickets', `${key}.md`), (review ? epicReviewTicket : baseFixTicket)({ key, ...ctx }));
   const made = [...(bf?.tries ?? []), review ? { kind: 'review', try: fix.try, head: fix.head, pr: fix.pr, at: PASS_AT }
-    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, at: PASS_AT }];
+    : { try: fix.try, head: fix.head, source: fix.source, files: fix.files, check: fix.check, ...start, at: PASS_AT }];
   const record = (rest) => q('set-batch', `base_fix=${JSON.stringify({ tries: made, running: null, port: null, ...rest })}`);
   const failed = (outcome, line) => {
     made[made.length - 1].outcome = outcome;
+    if (fix.from) made[made.length - 1].kept = { ref: fix.from.ref, sha: fix.from.sha };
+    unstart();
     record({});
     report.failed.push(`${key}: ${line}`);
   };
@@ -3219,7 +3276,7 @@ async function spawnBaseFix({ wt, fix }) {
   const briefPath = writeBrief({ key }, wt, (review ? epicReviewBrief : baseFixBrief)(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
-  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return; }
+  if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
   if (pre.failure) { logPreflight(key, pre.cost); failed('failed its preflight', `preflight failed, not spawned —\n${pre.failure}`); return; }
   const sid = E.uuid();
   const port = await freePort();
@@ -3281,7 +3338,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   flushQueue();
-  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 
@@ -5583,7 +5640,7 @@ if (idle) {
 }
 // Why nothing spawned while something could have: the first hold that applied this pass.
 const heldWhy = report.spawned.length || !eligible.length ? null
-  : held ?? (baseHold ? 'the batch base sync holds every spawn'
+  : held ?? (baseHold ? `the batch base sync holds every spawn${baseLag ? `: ${baseLag}` : ''}`
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
   : lockQueueHeldText ?? (MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
   : repoUnlocked ? `the repo's shared cap: ${repoLine}`

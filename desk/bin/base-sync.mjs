@@ -134,10 +134,34 @@ export function prTreeCheck({ repo, cache, dir, base, pr, head, check = mergedTr
   return r;
 }
 
-// Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged.
+// Puts the base worktree back at origin's base, for a fix try that ended without pushing what it merged
+// (keepUnpushed first keeps what it committed).
 export function dropUnpushed({ path, base }) {
   git(path, ['reset', '-q', '--hard', `origin/${base}`]);
   git(path, ['clean', '-fdq']);
+}
+
+// What a fix try committed in the base worktree and did not push, kept on <ref> before dropUnpushed
+// puts the worktree back: { ref, sha }, { sha, error } when the ref could not be written, or null
+// when HEAD holds nothing beyond origin's base.
+export function keepUnpushed({ path, base, ref }) {
+  const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
+  if (!ahead.ok || ahead.out === '0') return null;
+  const sha = git(path, ['rev-parse', 'HEAD']).out;
+  const u = git(path, ['update-ref', ref, sha]);
+  return u.ok ? { ref, sha } : { sha, error: firstLine(u.out) };
+}
+
+// Brings the base worktree, at origin's base, to a merge an earlier try kept: null once it is there,
+// else why it is stale. It is current only while it holds origin's <base> and <branch> as they are now.
+export function startFromKept({ path, base, branch, kept }) {
+  const sha = kept?.sha;
+  if (!sha || !git(path, ['cat-file', '-e', `${sha}^{commit}`]).ok) return 'its commit is gone';
+  for (const b of [base, branch]) {
+    if (!git(path, ['merge-base', '--is-ancestor', `origin/${b}`, sha]).ok) return `origin/${b} has moved since it was kept`;
+  }
+  const ff = git(path, ['merge', '-q', '--ff-only', sha]);
+  return ff.ok ? null : `the base worktree could not move to it: ${firstLine(ff.out)}`;
 }
 
 // `check` is a mergedTreeCheck function, run on each clean merge before its push; one it fails is

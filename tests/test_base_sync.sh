@@ -17,7 +17,8 @@ git config --global init.defaultBranch main
 # An autopilot worker inherits spawn-worker's exports, which would point this suite at the real repo.
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
   CLAUDE_CODE_SESSION_ID AUTOPILOT_DRY_RUN AUTOPILOT_RERUN AUTOPILOT_PORT_FLOOR AUTOPILOT_BATCH_BUDGET_USD \
-  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS
+  AUTOPILOT_USER_APPROVED AUTOPILOT_BASE_PUSH_APPROVED DESK_GH_REPO DESK_GITHUB_HANDLE CLAUDE_CONFIG_DIR DESK_SUBSCRIPTIONS \
+  AUTOPILOT_BASE_BEHIND_MAX
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
@@ -172,6 +173,27 @@ check "DS-320 AC2 the next pass finds the base current and clears the tries" \
   '[[ "$out" == *"try 1 of 2 on feat/x finished: pr=none jira=none"* ]] && [[ "$out" == *"feat/x is current with main again, after 1 fix try"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
 
+# Outside feature mode, a blocked sync holds every spawn once the base is more than
+# AUTOPILOT_BASE_BEHIND_MAX commits behind main. The conflict leaves feat/x 3 behind.
+fresh lagheld; conflict; AUTOPILOT_BASE_BEHIND_MAX=2 pass
+check "DS-668 AC1 a blocked sync on a base past the threshold spawns nothing" '[[ "$out" != *"spawned:"* ]] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt"* ]]'
+check "DS-668 AC1 and says how far behind the base is" '[[ "$out" == *"feat/x is 3 commit(s) behind main, more than the 2 it may lag and still spawn, so nothing spawns this pass"* ]]'
+AUTOPILOT_BASE_BEHIND_MAX=3 pass
+check "DS-668 AC2 a base at the threshold spawns as before" '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"spawning carries on from the base as it stands (feat/x is 3 commit(s) behind main, within the 3 it may lag)"* ]]'
+fresh laghold2; conflict; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "DS-668 AC4 any lag holds at a threshold of 0" '[[ "$out" != *"spawned:"* ]] && [[ "$out" == *"more than the 0 it may lag"* ]]'
+resolve; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "DS-668 AC4 a held batch spawns once its base syncs" '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"feat/x already has everything on main"* ]] && [[ "$out" != *"nothing spawns"* ]]'
+fresh lagclean; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "DS-668 AC3 a sync that lands spawns whatever the threshold" '[[ "$out" == *"spawned: T-1"* ]] && origin_has_main'
+fresh lagfeature; feature; conflict; AUTOPILOT_BASE_BEHIND_MAX=100 pass
+check "DS-668 AC5 feature mode holds whatever the threshold" '[[ "$out" != *"spawned:"* ]] && [[ "$out" == *"feature mode, so nothing spawns this pass"* ]]'
+# A base origin no longer has, and was never fetched: its lag cannot be counted, so it is not read as 0.
+fresh lagunread; git -C "$C/origin.git" branch -q -D feat/x; git -C "$C/repo" update-ref -d refs/remotes/origin/feat/x; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "a lag that cannot be counted is said so, never as 0, and holds nothing" '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"spawning carries on from the base as it stands (how far feat/x is behind main could not be read)"* ]] && [[ "$out" != *"0 commit(s) behind"* ]]'
+rm -f "$T/agents.json"; : > "$T/spawns"; fresh lagfix; fixrow yes; conflict; AUTOPILOT_BASE_BEHIND_MAX=2 pass
+check "DS-668 a sync left to a fix try holds too, past the threshold" '[[ "$out" == *"Conflict fix try 1 of 2 starts this pass"* ]] && [[ "$out" == *"more than the 2 it may lag and still spawn, so nothing else spawns this pass"* ]] && [ "$(grep -c "^T-1 " "$T/spawns")" = 0 ]'
+
 # A live base conflict fix holds one worker, counted once. holding <case> <concurrency row> <batch's
 # number> [machine cap] [another running ticket's session]: not feature mode, one ready ticket, the
 # fix's session live, borrowing on.
@@ -217,6 +239,41 @@ ended "AUTOPILOT_PARK: both sides rewrite a.txt and neither can be kept"; pass
 check "DS-320 AC4 a try that left the base where it was: put to the person" \
   '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt. Still in conflict after 1 fix try; the last try parked: both sides rewrite a.txt and neither can be kept: resolve it by hand in $C/wt/base-feat-x and push"* ]]'
 check "DS-320 AC4 and no second try starts" '[ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ] && [ "$(jq -r .base_fix.running "$DESK_QUEUE")" = null ]'
+check "DS-663 AC5 a try that committed no merge keeps nothing, and the worktree is reset" \
+  "[ \"\$(jq -r '.base_fix.tries[0].kept' \"\$DESK_QUEUE\")\" = null ] && [ -z \"\$(git -C \"\$C/repo\" for-each-ref refs/desk)\" ] && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$(origin_tip)\" ]"
+
+# A try that commits its merge in the base worktree and parks before pushing. keepmerge: what
+# that worker does there; lockpark: its park, only on the busy test lock.
+keepmerge(){
+  git -C "$C/wt/base-feat-x" merge -q --no-edit origin/main >/dev/null 2>&1; printf 'ours\ntheirs\n' > "$C/wt/base-feat-x/a.txt"
+  git -C "$C/wt/base-feat-x" add a.txt; git -C "$C/wt/base-feat-x" commit -q --no-edit; git -C "$C/wt/base-feat-x" rev-parse HEAD
+}
+lockpark(){ ended "$(printf 'AUTOPILOT_PARK_WAIT: test-lock\nAUTOPILOT_PARK: merge committed, but the test lock is busy')"; }
+: > "$T/spawns"; fresh bkeep; feature; fixrow yes; conflict; tip=$(origin_tip); pass
+kept=$(keepmerge); lockpark; pass
+check "DS-663 AC1 the merge the try committed is kept on a named ref, which its record names" \
+  '[ "$(jq -r ".base_fix.tries[0].kept.ref" "$DESK_QUEUE")" = refs/desk/base-fix/base-feat-x/1 ] && [ "$(git -C "$C/repo" rev-parse refs/desk/base-fix/base-feat-x/1)" = "$kept" ] && [ "$(jq -r ".base_fix.tries[0].kept.sha" "$DESK_QUEUE")" = "$kept" ]'
+check "DS-663 AC1 the report names the ref" '[[ "$out" == *"try 1 of 2 on feat/x parked: merge committed, but the test lock is busy; its unpushed ${kept:0:12} is kept on refs/desk/base-fix/base-feat-x/1"* ]]'
+check "DS-663 AC4 a try that parked only on the busy test lock spends no try" \
+  '[ "$(jq -r ".base_fix.tries[0].lock_wait" "$DESK_QUEUE")" = true ] && [[ "$out" == *"spends no try"* ]] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 2 ] && [ "$(jq -r ".base_fix.tries[1].try" "$DESK_QUEUE")" = 1 ] && [[ "$out" != *"by hand"* ]]'
+check "DS-663 AC2 the next try starts from the kept merge, in the base worktree" \
+  "[ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$kept\" ] && [ \"\$(jq -r '.base_fix.tries[1].from.sha' \"\$DESK_QUEUE\")\" = \"\$kept\" ] && [[ \"\$out\" == *\"try 1 starts from try 1's kept merge\"* ]]"
+check "DS-663 AC2 and is told not to resolve the conflict again" \
+  'tail -n 1 "$T/spawns" | grep -q "carry on from your HEAD, which already holds try 1.s merge of origin/main into feat/x" && grep -q "do not merge or resolve the conflicts again" "$C/state/briefings/base-feat-x.md"'
+live; pass; rm -f "$T/agents.json"
+check "DS-663 AC4 while it runs it is still try 1 of 2" '[[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]] && [[ "$out" != *"try 2 of 2"* ]]'
+git -C "$C/wt/base-feat-x" push -q origin HEAD:refs/heads/feat/x; ended "AUTOPILOT_DONE: pr=none jira=none"; pass
+check "DS-663 once the base is current, the kept ref goes with the tries" \
+  '[ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && [ -z "$(git -C "$C/repo" for-each-ref refs/desk)" ] && origin_has_main'
+check "DS-663 AC4 and the lock wait is not counted among the tries it took" '[[ "$out" == *"current with main again, after 1 fix try"* ]]'
+
+: > "$T/spawns"; fresh bkeepstale; feature; fixrow yes; conflict; pass
+kept=$(keepmerge); lockpark
+git -C "$C/repo" commit -q --allow-empty -m three; git -C "$C/repo" push -q origin main; pass
+check "DS-663 AC3 a kept merge main has moved past: the next try starts from the base" \
+  "[ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$(origin_tip)\" ] && [ \"\$(jq -r '.base_fix.tries[1].from' \"\$DESK_QUEUE\")\" = null ] && ! tail -n 1 \"\$T/spawns\" | grep -q 'carry on from your HEAD'"
+check "DS-663 AC3 and its record says the kept merge was stale" \
+  '[[ "$(jq -r ".base_fix.tries[1].kept_stale" "$DESK_QUEUE")" == "refs/desk/base-fix/base-feat-x/1 at ${kept:0:12}: origin/main has moved since it was kept" ]] && [[ "$out" == *"kept merge (refs/desk/base-fix/base-feat-x/1 at ${kept:0:12}) is stale"* ]]'
 
 # A worker that may not push the base could only park, so without §3 batch-base-push none starts.
 : > "$T/spawns"; fresh bnopush no; feature; fixrow yes; conflict; pass
