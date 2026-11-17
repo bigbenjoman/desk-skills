@@ -2030,6 +2030,11 @@ for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB
 q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
 q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
 q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
+# The pass reads the lever from each ticket's pin. FB-1 to FB-3 are pinned with it; FB-10 is
+# FB-3's case, pinned without it, in the same pass.
+for k in 1 2 3; do q set "FB-$k" 'levers={"set":["failure-class"],"at":"2026-11-14T00:00:00Z"}'; done
+q add FB-10; q set FB-10 state=done lane=A branch=fix/FB-10 result.pr=820 held_by=X-9 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
+fx 820 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:920; fbran 820 "$H3" Lint
 # The base has gained twelve commits since FB-1's merge base, listed oldest first as the compare pages
 # them. Lint ran red on the oldest, MO, then on MT, and on none of the newest ten: MT's run is read only
 # by reading past the newest ten, and before MO's.
@@ -2050,6 +2055,8 @@ check "DS-446 AC2 the try records its class before its worker spawns" \
   '[ "$(field FB-2 fix.class)" = "\"application defect\"" ] && [ "$(field FB-2 fix_tries | jq -r ".[0].class")" = "application defect" ] && ! grep -q "^FB-2" "$T/spawns"'
 check "DS-446 AC4 a try classed dependency wait does not spawn, and the item says what it waits for" \
   '[ "$(field FB-3 state)" = "\"done\"" ] && [ "$(field FB-3 fix)" = null ] && [ "$(field FB-3 fix_tries)" = null ] && echo "$out" | grep -qF "FB-3: WAITING — PR #812: no fix try for red: Lint; base state unknown for Lint (no run of it on main at the merge base), classed dependency wait: waiting for X-9 to merge"'
+check "DS-639 AC2 in the same pass, the ticket pinned without the lever gets its fix try, its base unread" \
+  '[ "$(field FB-10 state)" = "\"triaged\"" ] && [ "$(field FB-10 fix | jq -c "[.what, .class]")" = "[\"red: Lint\",\"dependency wait\"]" ] && ! echo "$out" | grep -q "FB-10: WAITING"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
 runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
@@ -2600,6 +2607,27 @@ check "DS-448 AC8 lever on, a clean merge over a recorded file sends the head to
   '! grep -q "^pr ready 762" "$T/gh-calls" && [ "$(field R-2 fix.kind)" = "\"rereview\"" ] && [ "$(field R-2 undraft.carried_from)" = null ]'
 check "DS-449 AC1 that review try reads only the recorded file the base changed, and the PR code that names it" \
   '[ "$(field R-2 fix.targeted | jq -c "[.from, .files, .users]")" = "[\"$CA\",[\"c.txt\"],[]]" ]'
+# The pass reads the lever from each ticket's pin, with the row (review-reuse) only for a ticket
+# with no pin. fix/C-3 is C-1's reviewed commit CA rebased onto main (CR), past the base's c.txt: off,
+# a rebase never carries, and on it carries while the review rests on none of the files the base moved.
+# R-3 and R-4 rest on b.txt, R-5 and R-6 on c.txt; R-3 and R-5 are pinned with the lever, R-4 and R-6
+# without it, and R-7, resting on b.txt, has no pin.
+git -C "$T/carry" fetch -q origin; git -C "$T/carry" checkout -q -b fix/C-3 origin/main
+git -C "$T/carry" cherry-pick "$CA" >/dev/null; CR=$(git -C "$T/carry" rev-parse HEAD)
+git -C "$T/carry" checkout -q main; git -C "$T/carry" push -q origin fix/C-3
+q set-batch concurrency=12
+PIN_ON='levers={"set":["review-reuse"],"at":"2026-11-14T00:00:00Z"}'; PIN_OFF='levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
+for k in 3 4 5 6 7; do q add "R-$k"; q set "R-$k" state=done lane=A branch=fix/C-3 "result.pr=639$k"; done
+q set R-3 "$PIN_ON"; q set R-4 "$PIN_OFF"; q set R-5 "$PIN_ON"; q set R-6 "$PIN_OFF"; q set R-7 levers=null
+for k in 3 4 7; do frx "639$k" "$CR" "$CA" 'p0=0 p1=0 p2=0'; restsfile "639$k" b.txt; done
+for k in 5 6; do frx "639$k" "$CR" "$CA" 'p0=0 p1=0 p2=0'; restsfile "639$k" c.txt; done
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-639 AC1 of two tickets with their reviewed files unchanged, only the one pinned with the lever carries its verdict" \
+  'grep -q "^pr ready 6393 --repo acme/widgets" "$T/gh-calls" && [ "$(field R-3 undraft.carried_from)" = "\"$CA\"" ] && ! grep -q "^pr ready 6394" "$T/gh-calls" && [ "$(field R-4 undraft.carried_from)" = null ] && [ "$(field R-4 fix.kind)" = "\"rereview\"" ]'
+check "DS-639 AC3 a ticket with no pin reads the row, and carries its verdict as today" \
+  'grep -q "^pr ready 6397 --repo acme/widgets" "$T/gh-calls" && [ "$(field R-7 undraft.carried_from)" = "\"$CA\"" ]'
+check "DS-639 AC4 of two needing a re-review after the base changed their files, only the one pinned with the lever gets the narrowed one" \
+  '[ "$(field R-5 fix.kind)" = "\"rereview\"" ] && [ "$(field R-5 fix.targeted | jq -c ".files")" = "[\"c.txt\"]" ] && [ "$(field R-6 fix.kind)" = "\"rereview\"" ] && [ "$(field R-6 fix.targeted)" = null ]'
 export DESK_CONFIG="$T/config-c.md"
 
 # ---- a review whose P0s and P1s are posted inline goes to a fix worker too
@@ -3328,12 +3356,13 @@ check "DS-124 and names the session to resume, never a local requeue" 'field CW-
 check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
+# Placed before pins too, so the pass reads the row for it.
 effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
-effort_cfg 0=low; cloud_ticket CW-4
+effort_cfg 0=low; cloud_ticket CW-4; q set CW-4 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC1 with the effort lever on, a cloud ticket parks and says why" '[ "$(field CW-4 state)" = "\"parked\"" ] && field CW-4 park.question | grep -q "the effort lever is on, and a cloud session cannot be given an effort"'
 check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-4" ] && ! echo "$out" | grep -q "CW-4 port="'
-effort_cfg 0=turbo; cloud_ticket CW-5
+effort_cfg 0=turbo; cloud_ticket CW-5; q set CW-5 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
 

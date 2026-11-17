@@ -29,6 +29,20 @@ export function pinnedSet(t) {
   return l.set;
 }
 
+// Whether lever `name` is on for ticket `t`, as the supervisor reads it: from the ticket's pin where it
+// has one, else from `row` (levers() as the row gives it), so a ticket with no pin reads as before
+// pins. Throws on a mangled pin, as pinnedSet does.
+export const leverOnFor = (name, t, row = levers()) => (pinnedSet(t) ?? row.on).includes(name);
+
+// Whether a start's recorded levers differ from the pin's set, as sets: false with no pin or no
+// recorded levers.
+export function pinDisagrees(set, started) {
+  if (!Array.isArray(set) || !Array.isArray(started)) return false;
+  const pin = new Set(set);
+  const ran = new Set(started);
+  return pin.size !== ran.size || [...ran].some((x) => !pin.has(x));
+}
+
 export const envValue = (set) => (set.length ? set.join(' ') : 'none');
 
 const isMain = (() => {

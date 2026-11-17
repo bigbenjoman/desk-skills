@@ -85,6 +85,13 @@ node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(DESK_CONFIG="$T/config-lev
 check "DS-450 AC1 the plan puts no ticket in the cloud with the effort lever on" '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 0 of 1 admitted"'
 check "DS-450 AC1 and says why on its runs line"                            'echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: local — the effort lever is on, and a cloud session cannot be given an effort"'
 check "DS-450 AC1 and the queue runs it here"                               '[ "$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[\"KAN-2\"].location ?? \"local\")" "$DESK_QUEUE")" = local ]'
+# A ticket already in the queue is planned on its pin, not the row: pinned without the effort
+# lever, it is planned as with the lever off, and goes to the cloud.
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; node "$B/queue.mjs" add KAN-2 Task A >/dev/null
+node "$B/queue.mjs" set KAN-2 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}' >/dev/null
+out=$(DESK_CONFIG="$T/config-lever.md" node "$B/plan-batch.mjs" KAN-2 2>&1); rc=$?
+check "DS-639 AC5 with the row reading effort, a ticket pinned without it is planned as with the lever off" \
+  '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 1 of 1 admitted" && echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: cloud"'
 
 config local; plan
 check "local reads as local"                                                 '[ "$rc" = 0 ] && echo "$out" | grep -qx "workers: local"'

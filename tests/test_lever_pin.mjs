@@ -9,7 +9,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { pinAtAdmission, pinnedSet, envValue } from '../desk/bin/lever-pin.mjs';
+import { pinAtAdmission, pinnedSet, envValue, leverOnFor, pinDisagrees } from '../desk/bin/lever-pin.mjs';
 import { levers } from '../desk/bin/desk-env.mjs';
 
 let fails = 0;
@@ -30,6 +30,20 @@ const now = new Date('2026-11-14T10:00:00Z');
 t('the admission pin is the row\'s set and the time', pinAtAdmission({ on: ['preflight'], unknown: ['turbo'] }, now), { set: ['preflight'], at: '2026-11-14T10:00:00.000Z' });
 t('levers() reads DESK_LEVERS before the row', levers({ DESK_LEVERS: 'Memory, preflight' }).on, ['memory', 'preflight']);
 t('levers() reads DESK_LEVERS=none as every lever off', levers({ DESK_LEVERS: 'none' }), { on: [], unknown: [] });
+
+// The supervisor reads a lever per ticket, from its pin, and from the row only with no pin.
+const row = { on: ['review-reuse', 'failure-class'], unknown: [] };
+t('DS-639 a ticket pinned with the lever reads it on', leverOnFor('review-reuse', { key: 'A-1', levers: { set: ['review-reuse'] } }, { on: [], unknown: [] }), true);
+t('DS-639 a ticket pinned without it reads it off whatever the row', leverOnFor('review-reuse', { key: 'A-2', levers: { set: [] } }, row), false);
+t('DS-639 a ticket with no pin reads the row', leverOnFor('failure-class', { key: 'A-3' }, row), true);
+t('DS-639 no ticket at all reads the row', leverOnFor('failure-class', null, row), true);
+threw = '';
+try { leverOnFor('review-reuse', { key: 'A-4', levers: ['review-reuse'] }, row); } catch (e) { threw = e.message; }
+t('DS-639 a mangled pin throws rather than reading the row', /^A-4's levers pin is not/.test(threw), true);
+t('DS-639 a start with the pin\'s set, in any order, agrees', pinDisagrees(['memory', 'preflight'], ['preflight', 'memory']), false);
+t('DS-639 a start with a lever the pin lacks disagrees', pinDisagrees(['memory'], ['memory', 'codex']), true);
+t('DS-639 a start missing a pinned lever disagrees', pinDisagrees(['memory', 'codex'], ['memory']), true);
+t('DS-639 no pin, or no recorded levers, never disagrees', [pinDisagrees(null, ['memory']), pinDisagrees(['memory'], null)], [false, false]);
 
 // ---- scratch repo, config, queue and stub claude --------------------------------------------------
 const T = mkdtempSync(join(tmpdir(), 'desk-pin-'));

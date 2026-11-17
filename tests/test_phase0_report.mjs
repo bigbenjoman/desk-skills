@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS, perTicket, ticketRows, batchFigures } from '../desk/bin/phase0-report.mjs';
+import { logFacts, commandKey, report, spawnLine, spawnRecords, archivedBatches, claudeVersion, DAY_MS, perTicket, ticketRows, batchFigures, pinMismatches } from '../desk/bin/phase0-report.mjs';
 import { preflightLine } from '../desk/bin/worker-cost.mjs';
 import { parseLevers, LEVERS, HOME } from '../desk/bin/desk-env.mjs';
 import { REGISTRY, leverFingerprints, installedPath } from '../desk/bin/lever-registry.mjs';
@@ -336,7 +336,7 @@ utimesSync(old1, (NOW - 12 * DAY_MS) / 1000, (NOW - 12 * DAY_MS) / 1000);
 const p1 = rowOf('P-1');
 const FIELDS = ['slug', 'batch', 'key', 'type', 'lane', 'size', 'admitted_at', 'merged_at', 'state', 'cost', 'cost_complete', 'input', 'output',
   'preflight_cost', 'runs', 'unknown_runs', 'starts', 'fix_tries', 'parks', 'parks_by_class', 'review_rounds', 'denials', 'denials_by_command',
-  'ci_reds', 'ci_reds_by_job', 'desk_commits', 'start_records', 'login', 'pin'];
+  'ci_reds', 'ci_reds_by_job', 'desk_commits', 'start_records', 'login', 'pin', 'pin_mismatch'];
 t('per-ticket AC3: every row holds every field', pt.rows.every((r) => FIELDS.every((k) => k in r)), true);
 t('per-ticket AC3: identity, type, lane, size, admitted and login', `${p1.slug} ${p1.key} ${p1.type} ${p1.lane} ${p1.size} ${p1.admitted_at === tickets[liveQ]['P-1'].added_at} ${p1.login}`, 'o__r P-1 Story A M true work');
 t('per-ticket AC3: a size recorded in lower case reads as its size', rowOf('P-4').size, 'S');
@@ -358,6 +358,20 @@ t('per-ticket AC5: no triage size is null and the row is still printed', rowOf('
 t('per-ticket AC6: a start that recorded no claude version is null', JSON.stringify(rowOf('P-3').start_records.map((s) => [s.desk_commit, s.claude_version])), '[["feedface00112233",null]]');
 t('per-ticket AC8: a pinned ticket holds the pin\'s set, arms and trial ids', JSON.stringify(p1.pin), JSON.stringify({ set: PIN.set, arms: PIN.arms, trial_ids: PIN.trial_ids }));
 t('per-ticket AC9: a ticket with no pin holds null', rowOf('P-2').pin, null);
+// P-1 is pinned to codex and memory, and its start recorded codex alone.
+t('DS-639 AC8 a ticket whose start recorded levers other than its pin carries pin_mismatch true', p1.pin_mismatch, true);
+t('DS-639 AC8 a ticket with no pin never mismatches', `${rowOf('P-3').pin_mismatch} ${rowOf('P-2').pin_mismatch}`, 'false false');
+const ptReport = report({ ...base, batches: ptBatches, ci: false });
+const pm = ptReport.findIndex((l) => l.startsWith('pin mismatch'));
+t('DS-639 AC7 the report lists the ticket under "pin mismatch", with what it started on and its pin',
+  ptReport.slice(pm, pm + 2).map((l) => l.replace(/started [^,]+, session [^,]+/, 'started <at>')).join('\n'),
+  'pin mismatch: starts whose levers differ from their ticket\'s pin\n  P-1 (batch E-7): started <at>, with codex; pinned codex, memory');
+t('DS-639 AC7 and no other ticket is listed', ptReport.slice(pm + 1).filter((l) => /^ {2}\S+ \(batch /.test(l)).length, 1);
+const agreeQ = join(PR_ROOT, 'agree-queue.json');
+writeFileSync(agreeQ, JSON.stringify({ tickets: { 'P-1': { key: 'P-1', added_at: iso(DAY_MS), levers: { set: ['codex'], at: iso(DAY_MS) } } } }));
+t('DS-639 AC7 a start that ran its pin is not listed', pinMismatches({ queue: agreeQ, state: liveS, since: SINCE }).length, 0);
+t('DS-639 AC7 nothing to list says so', report({ ...base, batches: [{ name: 'E-7', queue: agreeQ, state: liveS }], ci: false }).find((l) => l.startsWith('pin mismatch')),
+  'pin mismatch: none (every start recorded its ticket\'s pinned levers)');
 t('per-ticket: a ticket no worker ran has a row, costing nothing, complete', `${rowOf('P-36')?.cost} ${rowOf('P-36')?.starts} ${rowOf('P-36')?.cost_complete}`, '0 0 true');
 // A cloud worker writes no log here: its row is one run of unrecorded spend, never a complete zero.
 const cloudQ = join(PR_ROOT, 'cloud-queue.json');
