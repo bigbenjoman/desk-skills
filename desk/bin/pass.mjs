@@ -69,6 +69,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
+import { runAudits, endedFromExit } from './levers-audit.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -5057,6 +5058,52 @@ if (!DRY) {
     const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), state: STATE, queue: queue(), states: E.leverStates({}).states });
     if (tr.line) out.push(tr.line);
   } catch (e) { out.push(`levers trips: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+}
+// A sample of each quality-risk trial's merged PRs is reviewed again, blind, one at a time per repo:
+// as worker audit.<TICKET> in a worktree detached at the merge commit, with every lever off.
+async function spawnAudit({ key, item, sha, model, task, brief }) {
+  const pick = repoLogin();
+  if (!pick) return { error: 'no login to start on' };
+  const wt = join(WORKTREES, key);
+  if (!existsSync(wt)) {
+    if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], { tolerant: true });
+    const add = shOut('git', ['-C', MAIN, 'worktree', 'add', '--detach', wt, sha]);
+    if (!add.ok) return { error: `git worktree add at ${sha.slice(0, 12)} failed: ${add.out.split('\n').pop()}` };
+  }
+  const workerEnv = { AUTOPILOT_BRANCH: '', AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model === 'default' ? '' : model, ...pick.vars };
+  // Its own briefing, with no sibling notes or triage: nothing in it may name the lever or the arm.
+  mkdirSync(join(STATE, 'briefings'), { recursive: true });
+  const briefPath = join(STATE, 'briefings', `${key}.md`);
+  writeFileSync(briefPath, brief);
+  const pre = preflight(key, wt, workerEnv);
+  if (pre.failure) { logPreflight(key, pre.cost); return { error: pre.limit ? 'its preflight was refused at the usage limit' : `preflight failed — ${pre.failure.split('\n')[0]}` }; }
+  const sid = E.uuid();
+  const port = await freePort();
+  E.rotateRound(key);
+  logPreflight(key, pre.cost);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: task },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return { error: refused };
+  report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
+  return { session: sid, worktree: wt, state: STATE };
+}
+if (!DRY) {
+  try {
+    const au = await runAudits({
+      slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? E.repoSlug(), states: E.leverStates({}).states,
+      spawn: spawnAudit,
+      mergeCommit: (item) => sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null,
+      // Ended once its exit is recorded, or once the registry, read cleanly, no longer lists its session.
+      ended: (item) => endedFromExit(item) ?? (registryOk && !liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
+      cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
+      pace: () => PACE,
+      room: () => (lowMemory || usageStop || MAINT.hold || MACHINE.room <= 0 || REPO.room <= 0 || repoUnlocked ? 'no room' : null),
+    });
+    if (au.line) out.push(au.line);
+  } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
 }
 // The levers are evaluated once a day across every repo, by the first pass to take its lock.
 if (!DRY) {

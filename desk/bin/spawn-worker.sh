@@ -35,7 +35,7 @@ BRIEFING="${4:-}"
 
 desk_load_paths || exit 1
 desk_require_headless || exit 1
-node "$DESK_ENV_MJS" ticket-kind "$TICKET" >/dev/null || exit 2
+KIND="$(node "$DESK_ENV_MJS" ticket-kind "$TICKET")" || exit 2
 command -v claude >/dev/null 2>&1 || { echo "FAIL: claude CLI not on PATH" >&2; exit 1; }
 
 STATE="$DESK_STATE"
@@ -62,7 +62,10 @@ mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/
 
 # The ticket's levers pin (lever-pin.mjs) is every lever read from here on: this script's, the spawn
 # line's and the worker's own, its subagents and hooks included. A ticket with no pin reads the row.
-if PIN="$(node "$BIN/lever-pin.mjs" env "$TICKET" </dev/null)"; then
+# A blind audit (levers-audit.mjs) runs with every lever off.
+if [ "$KIND" = audit ]; then
+  export DESK_LEVERS=none
+elif PIN="$(node "$BIN/lever-pin.mjs" env "$TICKET" </dev/null)"; then
   export DESK_LEVERS="$PIN"
 elif [ $? -eq 3 ]; then
   unset DESK_LEVERS

@@ -51,6 +51,8 @@ const RAMPS = Object.freeze({
 // Hard trips: a condition that reverts the lever in that repo within one pass, with no statistics.
 // `step` names the lever's own command, whose non-zero exit on an on-arm start is a trip.
 const POST_MERGE_REVERT = Object.freeze({ id: 'post-merge-revert', when: 'a post-merge revert is recorded for a ticket on the lever\'s arm' });
+// A quality-risk lever's blind post-merge audit (levers-audit.mjs) finding a P0 on an on-arm PR.
+const AUDIT_P0 = Object.freeze({ id: 'audit-p0', when: 'the blind audit of a merged PR drawn on for the lever finds a P0' });
 const ownStepError = (step) => Object.freeze({ id: 'own-step-error', step, when: `a start on an on-arm ticket records ${step} exiting non-zero` });
 
 const code = (path, part) => Object.freeze(part ? { path, part } : { path });
@@ -90,21 +92,21 @@ export const ENTRIES = Object.freeze({
   codex: {
     layer: 'quality-risk', trialled: false,
     mechanism: metric('codex seats died per review', null),
-    trips: [POST_MERGE_REVERT, ownStepError('desk-codex')],
+    trips: [POST_MERGE_REVERT, ownStepError('desk-codex'), AUDIT_P0],
     code: [code('desk/bin/desk-codex.mjs')],
     preconditions: [],
   },
   'review-reuse': {
     layer: 'quality-risk', trialled: false,
     mechanism: metric('review runs per ticket', null),
-    trips: [POST_MERGE_REVERT, ownStepError('undraft.mjs')],
+    trips: [POST_MERGE_REVERT, ownStepError('undraft.mjs'), AUDIT_P0],
     code: [code('desk/bin/undraft.mjs'), code('desk/bin/review-threads.mjs')],
     preconditions: [],
   },
   effort: {
     layer: 'quality-risk', trialled: false,
     mechanism: metric('dollars per start', null),
-    trips: [POST_MERGE_REVERT, ownStepError('desk-env effort')],
+    trips: [POST_MERGE_REVERT, ownStepError('desk-env effort'), AUDIT_P0],
     code: [code('desk/bin/desk-env.mjs', 'effort')],
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
@@ -116,8 +118,8 @@ export const ENTRIES = Object.freeze({
 export const REASON_CODES = Object.freeze({
   adopt_all_conditions: 'every adopt condition held',
   below_min_sample: 'too few tickets on an arm to decide',
-  window_tight: 'the evidence window was too short to decide',
-  weekly_cap: 'the weekly cap on lever changes was reached',
+  window_tight: 'the usage window was tight, so the audit waited',
+  weekly_cap: 'this week\'s audit budget was spent, so the audit waits for next week',
   skipped_preflight_failure: 'a worker that skipped its preflight failed on something the preflight checks',
   stale_wait: 'a ticket waited more than 48 hours after its blocker settled',
   post_merge_revert: 'a ticket on the lever\'s arm was reverted after merging',
@@ -142,6 +144,8 @@ export const REASON_CODES = Object.freeze({
   fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
   evidence_incomplete: 'an outcome file the evaluation reads is missing',
   frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
+  audit_recorded: 'a blind audit of a merged PR was recorded',
+  audit_p0: 'a blind audit found a P0 in a merged PR drawn on for the lever',
   state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',
 });
 
