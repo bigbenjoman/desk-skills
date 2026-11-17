@@ -137,7 +137,7 @@ check "the install after a rollback reads none of the rolled-back release's file
 check "AC8: no queue, worker or handoff file moved or changed through the installs and rollbacks" '[ "$(state)" = "$before" ]'
 
 # A desk with only one release.
-rm -rf "$D/releases" "$D/current" "$D/bin" "$D/templates"
+rm -rf "${D:?}/releases" "${D:?}/current" "${D:?}/bin" "${D:?}/templates"
 out="$(TS=20261116-000009 "$SH" "$T/install" 2>&1)"
 inst="$(cat "$D/installed.json")"
 out="$(rb)"; rc=$?
