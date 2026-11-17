@@ -31,7 +31,7 @@ import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, ACTOR } from './levers-auto.mjs';
+import { leverStatesIn, trialId, ACTOR } from './levers-auto.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
@@ -122,7 +122,6 @@ export function withOutcomes(rows, batches) {
 }
 
 // ---- which rows a lever's evaluation reads -------------------------------------------------------------
-const trialId = (slug, lever, s) => `${slug}/${lever}/${s.id ?? 'initial'}`;
 const ARMS = { trial: ['on', 'off'], reverted: ['on', 'off'], adopted: ['adopted', 'holdback'] };
 const outcomeIn = (r) => !!r.merged_at || OUTCOME_STATES.includes(r.state);
 
@@ -360,7 +359,7 @@ export function evaluate({
       const guardrails = guardrailEstimates(used, { seed, minN });
       const n = { ...counts(used), pooled_on: (pooled?.n ?? counts(used)).on, pooled_off: (pooled?.n ?? counts(used)).off, excluded: excludedCounts(p.rows) };
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
-      const transitions = (r.log.events ?? []).filter((e) => e.kind === 'transition' && e.lever === lever);
+      const transitions = (r.log.events ?? []).filter((e) => ['transition', 'trip'].includes(e.kind) && e.lever === lever);
       const priorReverts = transitions.filter((e) => ['reverted', 'frozen'].includes(e.to)).length;
       const changedAt = s.at ? Date.parse(s.at) : null;
       const d = decide({ state: s.state, n, minN, maxN: DECISION_RULE.max_per_arm, mechanism, cost, guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks });
