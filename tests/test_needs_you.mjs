@@ -1925,11 +1925,22 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-718 AC5 the one in this batch says so',
     /^V-2 is blocked by V-3, which is in this batch with its PR unmerged and was closed as Won't Do without landing, so V-2 is held behind it/.test(link('link:V-2:V-3')?.need ?? ''), true);
   t('DS-718 AC5 the one in this batch says its hold outlives the link, so the ticket is released by hand',
-    /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\) if nothing else holds it, as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
+    /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
   t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
     /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
   t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park
+// and send it to a worker.
+{
+  put('psi718c', { port: 4719, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-6': { state: 'parked', lane: 'C', held_by: 'V-8', dropped_link: 'V-8', park: { question: 'lane C — needs the person', since: minsAgo(30) } },
+  } });
+  const need = N.collect({ word: 'psi718c' }).items.find((i) => i.t.key === 'link:V-6:V-8')?.need ?? '';
+  t('DS-718 AC3 a lane C park held behind a dropped ticket is freed from that hold and keeps its park',
+    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null)') && !need.includes('park=null'), true);
 }
 
 // DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.

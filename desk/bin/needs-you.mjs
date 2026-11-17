@@ -738,15 +738,21 @@ function linkItems(r) {
         .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind) })));
     });
 }
+// The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
+// (lane, size, design, the person's step), stay, as a release would send that park to a worker.
+const freeCommand = (x, b) => {
+  const rest = keysOf(x.held_by).filter((k) => k !== b);
+  return rest.length || parkedAtTriage(x) ? `queue.mjs set ${x.key} held_by=${rest.join('|') || 'null'}` : releaseCommand(x.key);
+};
 function linkItem(r, t, b, kind = 'wontDo') {
   const rec = (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b);
   const about = `${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}`;
   const fixed = 'If not, remove it in Jira; the next pass that reads it lifts any hold and clears this';
   let need;
   if (kind === 'dropped') {
-    need = `${t.key} is held behind ${about}, which is no longer in this batch, so nothing releases it. Is the link still right? If not, release ${t.key} (${releaseCommand(t.key)}); if ${t.key} still needs that work, admit ${b} again (/desk-admit ${b}), and this clears`;
+    need = `${t.key} is held behind ${about}, which is no longer in this batch, so nothing releases it. Is the link still right? If not, release ${t.key} from it (${freeCommand(t, b)}); if ${t.key} still needs that work, admit ${b} again (/desk-admit ${b}), and this clears`;
   } else if (kind === 'cycle') {
-    need = `${t.key} and ${about} are linked in Jira as blocking each other, so neither can wait for the other: ${b} is held behind ${t.key}, and ${t.key} does not start until this is settled. Which comes first? If ${t.key}, remove its "is blocked by ${b}" link in Jira; the next pass that reads its blockers clears this. If ${b}, removing ${b}'s link leaves its hold, so release ${b} (${releaseCommand(b)}), then hold ${t.key} behind it (queue.mjs hold ${t.key} ${b}), and this clears`;
+    need = `${t.key} and ${about} are linked in Jira as blocking each other, so neither can wait for the other: ${b} is held behind ${t.key}, and ${t.key} does not start until this is settled. Which comes first? If ${t.key}, remove its "is blocked by ${b}" link in Jira; the next pass that reads its blockers clears this. If ${b}, removing ${b}'s link leaves its hold, so release ${b} (${freeCommand(r.q?.tickets?.[b] ?? { key: b }, t.key)}), then hold ${t.key} behind it (queue.mjs hold ${t.key} ${b}), and this clears`;
   } else {
     const closed = rec?.resolution ? `closed as ${rec.resolution}` : 'closed';
     const inBatch = !!r.q?.tickets?.[b];
@@ -754,7 +760,7 @@ function linkItem(r, t, b, kind = 'wontDo') {
     const held = keysOf(t.held_by).includes(b);
     // A hold on a ticket in this batch outlives its link, so removing the link alone leaves it held.
     const waits = !held ? 'still links it as a blocker' : inBatch ? 'is held behind it, and nothing releases it' : 'is held behind it, and stays held until the link goes';
-    const settle = held && inBatch ? `If not, remove it in Jira, then release ${t.key} (${releaseCommand(t.key)}) if nothing else holds it, as its hold outlives the link; the next pass that reads it clears this` : fixed;
+    const settle = held && inBatch ? `If not, remove it in Jira, then release ${t.key} from it (${freeCommand(t, b)}), as its hold outlives the link; the next pass that reads it clears this` : fixed;
     need = `${t.key} is blocked by ${about}, which ${where} and was ${closed} without landing, so ${t.key} ${waits}. Is the link still right? ${settle}. If ${t.key} still needs that work, link the ticket that does it instead`;
   }
   return { kind: 'triage', ticket: t.key, blocker: b, need,
