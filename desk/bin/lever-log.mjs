@@ -15,10 +15,11 @@ import { withDirLock } from './dir-lock.mjs';
 import { REGISTRY, REASON_CODES } from './lever-registry.mjs';
 
 export const VERSION = 1;
-export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you']);
+export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you', 'pair']);
 // Kinds that may name no lever: those acting on every lever in the repo or on the machine, a ticket's
-// assignment across every lever, and an item about the whole repo.
-const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change', 'assign', 'needs_you']);
+// assignment across every lever, an item about the whole repo, and a pair trial's state change (its
+// `levers` names the two).
+const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change', 'assign', 'needs_you', 'pair']);
 // Kinds that act on the machine rather than one repo: their `repo` is `*` in whichever log holds them.
 const MACHINE_WIDE = Object.freeze(['freeze', 'thaw']);
 // A transition by hand is Ben's own call, with no evaluation or evidence file behind it.
@@ -43,7 +44,14 @@ function check(event) {
   const need = (key) => { if (!text(event[key])) throw new LeverLogError(`lever-log: a ${kind} event needs "${key}"`); };
   need('actor');
   need('reason');
-  if (!NO_LEVER.includes(kind) || event.lever != null) {
+  // A pair trial's own events name the pair's two levers in `levers`: a `pair` state change, and a
+  // ramp that carries `pair` (its key) in place of `lever`.
+  const pairOf = kind === 'pair' || (kind === 'ramp' && event.pair != null && event.lever == null);
+  if (pairOf) {
+    const ls = event.levers;
+    if (!Array.isArray(ls) || ls.length !== 2 || ls[0] === ls[1] || ls.some((l) => !Object.hasOwn(REGISTRY, l))) throw new LeverLogError(`lever-log: a ${kind} event for a pair needs "levers", two different registry levers`);
+    if (kind === 'pair') { need('from'); need('to'); }
+  } else if (!NO_LEVER.includes(kind) || event.lever != null) {
     need('lever');
     if (!Object.hasOwn(REGISTRY, event.lever)) throw new LeverLogError(`lever-log: lever "${event.lever}" is not declared in the lever registry`);
   }

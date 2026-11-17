@@ -2,7 +2,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions } from '../desk/bin/lever-registry.mjs';
+import { ENTRIES, REGISTRY, GUARDRAILS, DECISION_RULE, LeverRegistryError, loadRegistry, lever, trialable, preconditions, REASON_CODES } from '../desk/bin/lever-registry.mjs';
 import { LEVERS, parseLevers } from '../desk/bin/desk-env.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -17,7 +17,7 @@ t('AC1 quality-risk layer', byLayer('quality-risk'), 'codex effort review-reuse'
 const dropCodex = Object.fromEntries(Object.entries(ENTRIES).filter(([n]) => n !== 'codex'));
 t('AC1 a lever desk-env knows with no entry fails loading, by name', loadError(dropCodex), 'lever-registry: no entry for "codex", which desk-env knows as a lever');
 t('AC1 an entry desk-env does not know fails loading, by name', loadError({ ...ENTRIES, turbo: ENTRIES.memory }), 'lever-registry: entry "turbo" is not a lever desk-env knows (add it to LEVERS in desk-env.mjs)');
-t('AC1 the quality-risk layer is declared but not yet trialled', Object.values(REGISTRY).filter((l) => l.layer === 'quality-risk').every((l) => l.trialled === false), true);
+t('AC1 the quality-risk layer is trialled (DS-646)', Object.values(REGISTRY).filter((l) => l.layer === 'quality-risk').every((l) => l.trialled === true), true);
 t('AC1 the low-risk layer is trialled', Object.values(REGISTRY).filter((l) => l.layer === 'low-risk').every((l) => l.trialled === true), true);
 t('AC1 the loaded registry is frozen', Object.isFrozen(REGISTRY) && Object.isFrozen(REGISTRY.preflight) && Object.isFrozen(REGISTRY.preflight.code), true);
 
@@ -72,6 +72,10 @@ t('preflight trips on a skipped preflight failing', lever('preflight').trips.som
 t('failure-class trips after 48 hours waiting', lever('failure-class').trips.find((x) => x.id === 'stale-wait')?.hours, 48);
 t('low-risk ramp: a factorial at one half', `${lever('memory').ramp.on_share} ${lever('memory').ramp.exclusive}`, '0.5 false');
 t('quality-risk ramp: 10, 25, 50, capped at 30%, exclusive', `${lever('codex').ramp.ramp.join(',')} ${lever('codex').ramp.cap} ${lever('codex').ramp.exclusive}`, '0.1,0.25,0.5 0.3 true');
+t('quality-risk ramp steps after 15 clean tickets', lever('review-reuse').ramp.step_after, 15);
+const dead = lever('codex').trips.find((x) => x.id === 'codex-dead-seats');
+t('codex trips on dead seats (exit 124 or 75) above 20% of its last 10 calls', JSON.stringify([dead?.exits, dead?.calls, dead?.rate]), '[[124,75],10,0.2]');
+t('every reason code a DS-646 event or row carries is in the list', ['codex_dead_seats', 'ramp_clean', 'audit_missing', 'audits_pending'].every((c) => c in REASON_CODES), true);
 t('every lever holds back 10% for 4 weeks after an adopt', Object.values(REGISTRY).every((l) => l.ramp.holdback === 0.1 && l.ramp.holdback_weeks === 4), true);
 
 if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
