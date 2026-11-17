@@ -72,7 +72,8 @@ const HEAD = 'a'.repeat(40), MB = 'b'.repeat(40);
 const red = (name, runId = '9') => ({ name, status: 'completed', conclusion: 'failure', runId });
 const ok = (name) => ({ name, status: 'completed', conclusion: 'success', runId: '1' });
 const pr = (checks) => ({ pr: 700, state: 'OPEN', isDraft: false, mergeable: 'MERGEABLE', mergeState: 'BLOCKED', head: HEAD, checks });
-const read = (atMb, latest = {}) => ({ mergeBase: () => MB, atMergeBase: (n) => atMb[n] ?? null, latestOnBase: (n) => latest[n] ?? null });
+// As the pass reads it, the latest state on the base is the merge base's when no run came since.
+const read = (atMb, latest = {}) => ({ mergeBase: () => MB, atMergeBase: (n) => atMb[n] ?? null, latestOnBase: (n) => (n in latest ? latest[n] : atMb[n] ?? null) });
 const ctx = (o = {}) => ({ repo: 'acme/widgets', base: 'main', required: ['tests'], advisory: [], operator: [], reruns: () => 2, cooledDown: true, waived: () => false, ...o });
 
 // AC3: red on the base at the merge base too: base red, held, no try.
@@ -123,6 +124,8 @@ t('DS-614 AC3 no run at the merge base but green since: the worker\'s, and not u
 // AC5: neither read: a fix try, which says the base state is unknown.
 const unread = baseSplit([red('Size')], HEAD, null, { mergeBase: () => null, atMergeBase: () => null, latestOnBase: () => null });
 t('DS-614 AC5 the base\'s runs cannot be read: the worker\'s, and unknown', `${unread.mine.length} ${unread.unknown.length} ${unread.red.length} ${unread.record}`, '1 1 0 null');
+const unreadLatest = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: null }) }));
+t('DS-614 AC5 green at the merge base, but its latest run on the base unread: a fix try that says the base state is unknown', `${unreadLatest?.call} ${unreadLatest?.fix.what}`, 'requeue red: Size; base state unknown for Size (no run of it read on main at the merge base or since)');
 
 // AC8: a held check clears once the job passes on the base, and stays cleared at that head.
 const tk = { key: 'T-1', base_red: held.base_red };

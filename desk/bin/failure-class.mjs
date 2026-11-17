@@ -76,13 +76,15 @@ export function runsState(runs) {
 
 // A PR's red checks a worker would fix, against its base. A check red on the default branch at the
 // PR's exact merge base too is base red, and so is one whose latest completed run on the default
-// branch since that merge base fails (`latest`: the base went red after the PR branched). One with no
-// completed run read at either has its base state unknown and goes on to its fix as before. A base
+// branch at or since that merge base fails (`latest`: the base went red after the PR branched). One
+// whose latest state on the base cannot be read has its base state unknown and goes on to its fix as
+// before. A base
 // red hold ({ head, merge_base, checks, cleared, and `latest`, the held checks of the second kind,
 // where there are any }, kept on the ticket as `base_red`) is read again only for its own head: a
 // held check clears once the job's latest completed run on the default branch passes, and stays
 // cleared at that head.
-// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name) -> 'fail' | 'pass' | null }
+// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name) -> 'fail' | 'pass' | null
+//         (its newest completed run at or since the merge base; null unread or with none) }
 // -> { red, latest (those of red that are not red at the merge base), unknown, mine (the checks a fix
 //      try takes), record (the hold to keep, or null) }
 export function baseSplit(failing, head, held, read) {
@@ -99,7 +101,7 @@ export function baseSplit(failing, head, held, read) {
     if (state === 'fail') { red.push(f); continue; }
     const now = read.latestOnBase(f.name);
     if (now === 'fail') { red.push(f); latest.push(f); continue; }
-    if (state == null && now == null) unknown.push(f);
+    if (now == null) unknown.push(f);
     mine.push(f);
   }
   const checks = [...new Set([...(at?.checks ?? []).filter((x) => !cleared.includes(x)), ...red.map((f) => f.name)])];

@@ -2264,6 +2264,7 @@ $MT
 $(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)"
 runs "$MO" Lint '[{"status":"completed","conclusion":"failure"}]'
 runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
+for i in 0 1 2 3 4 5 6 7 8 9; do runs "$(printf 'f%039d' "$i")" Lint '[]'; done
 export DESK_CONFIG="$T/config-fl.md"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC3 red on the base at its merge base too: base red, and no fix worker" \

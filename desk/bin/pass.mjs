@@ -4084,19 +4084,30 @@ const baseAtOf = (head) => cached(`base-at:${head}`, () => {
 });
 const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
 // The default branch's commits since a merge base, newest first. The compare lists them oldest first and
-// holds 250 a page unpaged, so every page is read before the list is turned round.
+// holds 250 a page unpaged, so every page is read before the list is turned round. Null unread.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
-  return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
+  return r.ok ? r.out.split('\n').filter(Boolean).reverse() : null;
 });
+// The job's latest state on the base: its newest completed run among the newest BASE_WALK commits since
+// the merge base, else at the merge base itself when fewer came since. Null when a read fails (never
+// an older run read past one), or when none of BASE_WALK commits ran it: a job that does not run on
+// the base's pushes is not read commit by commit back to the merge base on every pass.
+const BASE_WALK = 25;
+const latestOnBaseOf = (head, name) => {
+  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null;
+  if (!commits) return null;
+  for (const sha of commits.slice(0, BASE_WALK)) {
+    const runs = checkRunsAt(sha, name);
+    if (runs == null) return null;
+    const state = runsState(runs); if (state) return state;
+  }
+  return commits.length > BASE_WALK ? null : runsState(checkRunsAt(since, name));
+};
 const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
-  latestOnBase: (name) => {
-    const since = mergeBaseOf(head);
-    for (const sha of since ? baseCommitsSince(since) : []) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
-    return null;
-  },
+  latestOnBase: (name) => latestOnBaseOf(head, name),
 } } : {});
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
