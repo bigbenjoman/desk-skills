@@ -852,7 +852,8 @@ switch (cmd) {
       if (outside.length) t.held_outside = [...new Set([...String(t.held_outside ?? '').split('|').filter(Boolean), ...outside])].join('|');
       t.updated_at = new Date().toISOString();
     }
-    if (!dry) save(q);
+    // Every save is a new version, so a run that adds nothing writes nothing.
+    if (!dry && found.some((f) => f.holds.length)) save(q);
     console.log(lines.length ? lines.join('\n') : `no lane, size or design park is missing a hold${dry ? '' : ': nothing changed'}`);
     if (dry && found.some((f) => f.holds.length)) console.log('dry run: nothing changed. Run it again without --dry-run to add these holds');
     break;
