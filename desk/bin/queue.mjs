@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, heldBehindOf, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
@@ -20,7 +20,8 @@ import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, leverOn, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
-import { lock as takeDirLock, unlock, alive, writeJsonAtomic } from './dir-lock.mjs';
+import { lock as takeDirLock, unlock, alive, writeJsonAtomic, sleepSync } from './dir-lock.mjs';
+import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -52,7 +53,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -336,6 +337,77 @@ function handback(q, key, note) {
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
   return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+}
+
+// queue.mjs stop: one running ticket's worker ended, what its worktree holds committed on its branch,
+// and the ticket held behind no blocker, so nothing starts it until the person lets it (needs-you's
+// start, which sets it triaged): its next worker then starts in the same worktree on the same branch, at
+// the stage this one reached. A pass running now is waited for first, outside the queue lock its writes
+// need: it may have read the ticket as running, and would record the ended worker as killed and resume it.
+const msEnv = (name, def) => (Number(process.env[name]) > 0 ? Number(process.env[name]) : def);
+const STOP_PASS_WAIT_MS = msEnv('DESK_STOP_PASS_WAIT_MS', 120_000);
+const STOP_GRACE_MS = msEnv('DESK_STOP_GRACE_MS', 10_000);
+
+// Exit 2 for a key the queue does not hold, as the command line's own mistake rather than a refusal.
+class NoTicket extends Error { exit = 2; }
+
+// Commit everything in worktree `wt` but desk's own `.claude/` files (setup-worktree.sh leaves agent links
+// and a disabled settings file there); ignored files stay out, as git add leaves them.
+// -> { sha } | { nothing: why } | { error: why }
+function commitStopped(wt, key, branch) {
+  if (!wt || !existsSync(wt)) return { nothing: `it has no worktree${wt ? ` at ${wt}` : ''}` };
+  const git = (...a) => execFileSync('git', ['-C', wt, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  try {
+    const status = git('status', '--porcelain');
+    if (!status) return { nothing: 'its worktree was clean' };
+    const mid = ['MERGE_HEAD', 'rebase-merge', 'rebase-apply', 'CHERRY_PICK_HEAD', 'REVERT_HEAD'].find((p) => existsSync(resolve(wt, git('rev-parse', '--git-path', p))));
+    if (mid || /^(DD|AU|UD|UA|DU|AA|UU) /m.test(status)) return { error: `its worktree ${wt} is mid ${mid ? mid.replace(/_HEAD$|-.*$/, '').toLowerCase() : 'merge'} with conflicts or an operation in progress, so nothing was committed: its changes are left in place` };
+    git('add', '-A', '--', '.', ':(exclude).claude');
+    try { git('diff', '--cached', '--quiet'); return { nothing: 'its worktree held only desk\'s own .claude files' }; } catch { /* staged changes to commit */ }
+    git('commit', '--no-verify', '-q', '-m', `wip(${key}): work in progress when queue.mjs stop ended its worker`);
+    return { sha: git('rev-parse', 'HEAD'), branch: git('rev-parse', '--abbrev-ref', 'HEAD') || branch };
+  } catch (e) {
+    return { error: `committing in ${wt} failed (${String(e.stderr || e.message).trim().split('\n').pop()}): its changes are left in place` };
+  }
+}
+
+function stop(key) {
+  for (const until = Date.now() + STOP_PASS_WAIT_MS; ;) {
+    if (!passRunning()) {
+      lock();
+      if (!passRunning()) break;
+      unlock();
+    }
+    if (Date.now() >= until) throw new Error(`a pass is running and did not finish within ${STOP_PASS_WAIT_MS / 1000}s, so nothing was stopped: run queue.mjs stop ${key} again once it has`);
+    sleepSync(500);
+  }
+  const q = load();
+  const t = q.tickets[key];
+  if (!t) throw new NoTicket(`no such ticket in the queue: ${key}. Nothing was changed`);
+  if (t.state !== 'running') throw new Error(`${key} has no running worker (it is ${t.state}): nothing was changed`);
+  if (!t.session_id) throw new Error(`${key} has no running worker that can be found: it records no session id. Nothing was changed`);
+  const target = workerProcs(t.session_id, processRows());
+  if (!target.groups.length && !target.pids.length) throw new Error(`${key} has no running worker: no process runs its session ${t.session_id}, so the next pass records how it ended. Nothing was changed`);
+  const log = join(stateDir(), 'logs', `${key}.log`);
+  let round = '';
+  try {
+    const lines = readFileSync(log, 'utf8').split('\n');
+    round = lines.slice(lines.findLastIndex((l) => l.startsWith('{"type":"desk_spawn"')) + 1).join('\n');
+  } catch { /* no log: the stage recorded on the ticket */ }
+  if (workerMarkers(round).some(([k]) => k === 'AUTOPILOT_DONE')) throw new Error(`${key}'s worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`);
+  const ended = endProcs(target, { graceMs: STOP_GRACE_MS });
+  if (ended.left.length) throw new Error(`${key}'s worker did not end: pid ${ended.left.join(', ')} still alive after SIGTERM and SIGKILL. Nothing in the queue was changed`);
+  const wt = t.worktree ?? join(worktreesDir(), key);
+  const c = commitStopped(wt, key, t.branch);
+  const at = new Date().toISOString();
+  const kept = c.sha ? `committed as ${c.sha.slice(0, 12)} on ${c.branch}` : c.nothing ? `nothing to commit (${c.nothing})` : `not committed: ${c.error}`;
+  const stage = lastStage(round)?.stage ?? t.stage ?? null;
+  Object.assign(t, { state: 'parked', park: newPark(`${STOPPED_PREFIX} at ${at}; its work so far is ${kept}. Starts again only once you let it`, at),
+    held_by: null, last_round: stage ? { stage, question: `stopped by queue.mjs stop; its work so far is ${kept}`, at } : t.last_round ?? null,
+    session_id: null, pid: null, resume: null, resume_why: null, usage_paused: null, idle_passes: 0, updated_at: at });
+  save(q);
+  if (c.error) process.exitCode = EXIT.SHOW_PERSON;
+  return `${key} stopped: its worker (pid ${ended.ended.join(', ')}) ended; ${kept}; ${key} is held, and starts again only once you let it (needs-you: start)`;
 }
 
 // A step the person approved that no worker can run (park.session_step, answer.mjs), done by them:
@@ -825,6 +897,13 @@ switch (cmd) {
     break;
   }
 
+  case 'stop': {
+    const [key] = args;
+    if (!key) throw new Error('usage: queue.mjs stop <TICKET>');
+    console.log(stop(key));
+    break;
+  }
+
   case 'handback': {
     const [key, ...rest] = args;
     const note = rest.join(' ').trim();
@@ -1065,11 +1144,11 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|set|set-batch|park|clears-when|requeue|stop|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
-  process.exit(EXIT.SHOW_PERSON);
+  process.exit(e.exit ?? EXIT.SHOW_PERSON);
 }
 
 // The status table, as one string.
