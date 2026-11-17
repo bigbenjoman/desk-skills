@@ -1902,6 +1902,32 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
 }
 
+// DS-718: a hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
+// Won't Do with its PR unmerged (wont_do_link) and two tickets linked as blocking each other (cycle_link)
+// are each one triage item, and the ticket held behind the dropped one is not listed again.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('psi718', { port: 4718, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' },
+    'V-2': { ...heldOn('V-3'), wont_do_link: 'V-3' },
+    'V-3': { state: 'triaged', lane: 'A' },
+    'V-4': { state: 'triaged', lane: 'A', cycle_link: 'V-5' },
+    'V-5': heldOn('V-4'),
+  }, triage: {
+    'V-2': { blockers: [{ key: 'V-3', category: 'done', resolution: "Won't Do" }] },
+    'V-4': { blockers: [{ key: 'V-5', category: 'new' }] },
+  } });
+  const items = N.collect({ word: 'psi718' }).items;
+  const link = (k) => items.find((i) => i.t.key === k);
+  t('DS-718 AC3/AC5/AC6 each link is one triage item', items.filter((i) => i.blocker).map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'link:V-1:V-9 triage,link:V-2:V-3 triage,link:V-4:V-5 triage');
+  t('DS-718 AC3 the dropped one asks whether the link is still right',
+    /^V-1 is held behind V-9, which is no longer in this batch, so nothing releases it\. Is the link still right\?/.test(link('link:V-1:V-9')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says so',
+    /^V-2 is blocked by V-3, which is in this batch with its PR unmerged and was closed as Won't Do without landing, so V-2 is held behind it/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
 // DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
 {
   put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {

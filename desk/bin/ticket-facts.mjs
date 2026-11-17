@@ -5,8 +5,9 @@
 //
 //   ticket-facts.mjs <KEY>
 //   ticket-facts.mjs --epic <KEY>...   fill in `epic` alone, for records written before it existed
-//   ticket-facts.mjs --blockers <KEY>...   read `blockers` again, alone; a key that cannot be read
-//                                          is left as it was and named on stderr with exit 1
+//   ticket-facts.mjs --blockers <KEY>...   read `blockers` again, alone, for every key in one Jira
+//                                          search (and their blockers in one more); a key that cannot
+//                                          be read is left as it was and named on stderr with exit 1
 //
 // --epic touches nothing but `epic` and `epic_error`, so a record keeps the rest of its triage. A
 // key whose issue cannot be read is left as it was, its record still without `epic`, and named on
@@ -53,20 +54,26 @@ const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'],
 // A Done blocker is read once for its resolution (name, or null when none is set), which the link
 // does not carry, so a pass can tell one closed without landing (closedUnlanded); the record's last
 // read is kept while it stays Done, and one that cannot be read has no `resolution` key.
-function setBlockers(rec, issue) {
+// `fieldsOf(key)` reads a blocker's fields, or undefined when it cannot be read.
+const getFields = (key) => { try { return jira(['get', key]).fields; } catch { return undefined; } };
+// The blockers in `issue`'s links that setBlockers reads fields for, given its record `rec`.
+const blockersToRead = (rec, issue) => {
+  const was = new Map((Array.isArray(rec.blockers) ? rec.blockers : []).map((b) => [b?.key, b]));
+  return blockersFact(issue).filter((b) => b.category !== 'done' || !(was.get(b.key)?.category === 'done' && 'resolution' in was.get(b.key))).map((b) => b.key);
+};
+function setBlockers(rec, issue, fieldsOf = getFields) {
   const { blockers, own } = splitOwnEpic(blockersFact(issue), epicFact(issue, null)?.key, queueEpic(queueFile()));
   const labelled = personStepLabels().length > 0 || personInputLabels().length > 0;
   const was = new Map((Array.isArray(rec.blockers) ? rec.blockers : []).map((b) => [b?.key, b]));
   for (const b of blockers.filter((x) => x.category === 'done')) {
     const p = was.get(b.key);
     if (p?.category === 'done' && 'resolution' in p) { b.resolution = p.resolution; continue; }
-    let f;
-    try { f = jira(['get', b.key]).fields; } catch { continue; /* its resolution unknown: an ordinary Done blocker */ }
+    const f = fieldsOf(b.key); // unread: its resolution unknown, an ordinary Done blocker
     if (f && typeof f === 'object') b.resolution = f.resolution?.name ?? null;
   }
   for (const b of blockers.filter((x) => x.category !== 'done')) {
-    let f;
-    try { f = jira(['get', b.key]).fields; } catch { continue; /* its assignee unknown, and unlabelled */ }
+    const f = fieldsOf(b.key);
+    if (f === undefined) continue; // its assignee unknown, and unlabelled
     const who = !f || typeof f !== 'object' ? undefined : f.assignee == null ? null : f.assignee.displayName;
     if (who === null || typeof who === 'string') b.assignee = who;
     if (labelled && Array.isArray(f?.labels)) b.labels = f.labels.map(String);
@@ -94,15 +101,44 @@ function epicOf(issue, kids = new Map()) {
   return out;
 }
 
+// Keys per search: Jira's largest page for a search returning fields.
+const SEARCH_CHUNK = 100;
+// `keys`' issues, by key, from one `key in (...)` search per SEARCH_CHUNK keys asking for `fields` too.
+// A search that fails throws; a key it does not return is absent.
+function searchIssues(keys, fields) {
+  const out = new Map();
+  for (let i = 0; i < keys.length; i += SEARCH_CHUNK) {
+    const chunk = keys.slice(i, i + SEARCH_CHUNK);
+    const res = jira(['search', `key in (${chunk.join(', ')})`, String(chunk.length), `--fields=${fields.join(',')}`]);
+    if (!Array.isArray(res?.issues)) throw new Error('desk-jira search returned no issue list');
+    for (const issue of res.issues) if (chunk.includes(issue?.key)) out.set(issue.key, issue);
+  }
+  return out;
+}
+
 if (process.argv[2] === '--blockers') {
   let failed = 0;
+  const recs = new Map();
   for (const key of process.argv.slice(3)) {
     const path = join(stateDir(), 'triage', `${key}.json`);
-    let rec;
-    try { rec = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); continue; }
-    let issue;
-    try { issue = jira(['get', key]); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${lastLine(e) || 'desk-jira get failed'}`); continue; }
-    setBlockers(rec, issue);
+    try { recs.set(key, { path, rec: JSON.parse(readFileSync(path, 'utf8')) }); } catch (e) { failed++; console.error(`[facts] ${key}  blockers NOT READ: no readable triage record at ${path}`); }
+  }
+  // Every key's links in one search, then every blocker that needs reading in one more, never a read
+  // per ticket. A search that fails leaves every record it covers as it was.
+  let issues;
+  try { issues = recs.size ? searchIssues([...recs.keys()], ['issuelinks', 'parent']) : new Map(); }
+  catch (e) {
+    const why = lastLine(e) || 'desk-jira search failed';
+    for (const key of recs.keys()) { failed++; console.error(`[facts] ${key}  blockers NOT READ: ${why}`); }
+    process.exit(1);
+  }
+  const wanted = [...new Set([...recs].flatMap(([key, { rec }]) => (issues.has(key) ? blockersToRead(rec, issues.get(key)) : [])))];
+  let details = new Map();
+  try { if (wanted.length) details = searchIssues(wanted, ['resolution']); } catch { /* each blocker unread, as one that cannot be read */ }
+  for (const [key, { path, rec }] of recs) {
+    const issue = issues.get(key);
+    if (!issue) { failed++; console.error(`[facts] ${key}  blockers NOT READ: not returned by the Jira search`); continue; }
+    setBlockers(rec, issue, (k) => details.get(k)?.fields);
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(`[facts] ${key}  blocked by ${rec.blockers.map((b) => `${b.key} (${b.category})`).join(', ') || 'nothing'}${ownEpicNote(rec)}`);
   }
