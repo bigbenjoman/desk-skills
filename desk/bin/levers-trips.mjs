@@ -225,6 +225,11 @@ export const DETECTORS = Object.freeze({
     // A fix try made after the wait was recorded ended it.
     if ((t.fix_tries ?? []).some((f) => Date.parse(f.at) > since)) return [];
     const w = last.rec.fix_wait;
+    // Only while the PR it was held on is still the ticket's and not closed: a PR closed unmerged
+    // leaves the ticket done (pass.mjs), and a closed PR owed its reopen still counts as open.
+    if (w.pr == null || String(w.pr) !== String(t.result?.pr)) return [];
+    const closed = String(t.pr_status?.pr) === String(w.pr) && t.pr_status?.state === 'CLOSED';
+    if (closed && String(t.reopening ?? '') !== String(w.pr)) return [];
     let settled = null;
     let what = null;
     if (w.class === 'dependency wait') {

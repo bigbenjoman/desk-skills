@@ -151,7 +151,7 @@ t('a missing decision settles when the person answers', (() => {
   // With no worker waiting, the answer is saved to the briefing alone (answer.mjs).
   mkdirSync(join(s, 'briefings'), { recursive: true });
   writeFileSync(join(s, 'briefings', 'F-3.md'), `# Briefing for F-3\n\n## Answer from the user (${at(-50)})\n\nuse the first option\n`);
-  run(A, queueOf(onTicket(A, 'F-3', 'failure-class', waiting())));
+  run(A, queueOf(onTicket(A, 'F-3', 'failure-class', waiting({ result: { pr: 6 } }))));
   return eventsOf(A, 'trip').map((e) => e.reason_code);
 })(), ['stale_wait']);
 t('an answer the person wrote 30 hours ago is not yet a trip', (() => {
@@ -161,13 +161,31 @@ t('an answer the person wrote 30 hours ago is not yet a trip', (() => {
   mkdirSync(join(s, 'answers'), { recursive: true });
   writeFileSync(join(s, 'answers', 'F-5.txt'), 'use the first option');
   utimesSync(join(s, 'answers', 'F-5.txt'), new Date(NOW - 30 * HOUR), new Date(NOW - 30 * HOUR));
-  return run(A, queueOf(onTicket(A, 'F-5', 'failure-class', waiting()))).events.length;
+  return run(A, queueOf(onTicket(A, 'F-5', 'failure-class', waiting({ result: { pr: 7 } })))).events.length;
 })(), 0);
 t('a waiting ticket whose PR merged waits no more', (() => {
   const A = 'acme__mergedwait';
   const s = repo(A);
   recordWait(s, 'F-6', wait, at(-80));
   return run(A, queueOf(onTicket(A, 'F-6', 'failure-class', waiting({ held_by: 'B-1', merged_at: at(-1) })), blocker(-70))).events.length;
+})(), 0);
+t('a waiting ticket whose PR closed unmerged waits no more', (() => {
+  const A = 'acme__closedwait';
+  const s = repo(A);
+  recordWait(s, 'F-7', wait, at(-80));
+  return run(A, queueOf(onTicket(A, 'F-7', 'failure-class', waiting({ held_by: 'B-1', pr_status: { pr: 5, state: 'CLOSED' } })), blocker(-70))).events.length;
+})(), 0);
+t('a closed PR still owed its reopen keeps its wait', (() => {
+  const A = 'acme__reopenwait';
+  const s = repo(A);
+  recordWait(s, 'F-8', wait, at(-80));
+  return run(A, queueOf(onTicket(A, 'F-8', 'failure-class', waiting({ held_by: 'B-1', reopening: 5, pr_status: { pr: 5, state: 'CLOSED' } })), blocker(-70))).events.length;
+})(), 1);
+t('a wait held on an earlier PR ends when the ticket has another', (() => {
+  const A = 'acme__newpr';
+  const s = repo(A);
+  recordWait(s, 'F-9', wait, at(-80));
+  return run(A, queueOf(onTicket(A, 'F-9', 'failure-class', waiting({ held_by: 'B-1', result: { pr: 9 } })), blocker(-70))).events.length;
 })(), 0);
 
 // ---- AC3: a post-merge revert on the lever's arm ----------------------------------------------------------
