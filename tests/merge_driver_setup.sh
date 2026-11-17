@@ -177,16 +177,6 @@ merged(){ cut -d' ' -f1 "$T/merges.log" 2>/dev/null | paste -sd' ' -; }
 # The driver's own state: its reruns, cooldowns and green confirmations.
 SD="$T/state/merge-driver"
 
-# config-flaky.md reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky;
-# config-bad.md's Known flaky checks row does not parse.
-write_flaky_configs(){
-  sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
-    | awk '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `yes` |" }' > "$T/config-flaky.md"
-  cp "$T/config-flaky.md" "$T/config-bad.md"
-  echo '| Known flaky checks | `e2e: e2e/** playwright.config.ts` `test: src/**` `smoke: smoke/**` |' >> "$T/config-flaky.md"
-  echo '| Known flaky checks | `e2e: e2e/**` `lint` |' >> "$T/config-bad.md"
-}
-
 # The fake desk-jira that moves tickets: each ticket's status in jira-status/<key>, In Progress until a
 # transition moves it; its web links in jira-links/<key> (none without one). A search finds no other ticket.
 stub_jira_close(){

@@ -12,7 +12,12 @@ S="$(cd "$(dirname "$0")" && pwd)"
 
 # ---- DS-141: the written waiver for §4 Known flaky checks -----------------------------------------
 q init merge-flaky
-write_flaky_configs
+# A config that reruns, files tickets in Jira, and names `e2e` (and the required `test`) as flaky.
+sed -e 's/| `ci-rerun` | Rerun CI | `yes` | `no` |/| `ci-rerun` | Rerun CI | `yes` | `yes` |/' -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
+  | awk '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `yes` |" }' > "$T/config-flaky.md"
+cp "$T/config-flaky.md" "$T/config-bad.md"
+echo '| Known flaky checks | `e2e: e2e/** playwright.config.ts` `test: src/**` `smoke: smoke/**` |' >> "$T/config-flaky.md"
+echo '| Known flaky checks | `e2e: e2e/**` `lint` |' >> "$T/config-bad.md"
 cat > "$T/stub/desk-jira" <<EOF
 #!/usr/bin/env bash
 printf '%s\n' "\$*" >> "$T/jira.log"; cp "\$4" "$T/jira-body.md"; echo "created DS-999  https://example.atlassian.net/browse/DS-999"
