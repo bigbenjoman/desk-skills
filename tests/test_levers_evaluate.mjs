@@ -1,0 +1,241 @@
+// suite: levers evaluate (the daily adopt, revert, settle or hold of each lever on trial, per repo)
+// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
+// evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
+// with a fixed clock, so its seeded bootstrap draws the same numbers every run.
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+let fails = 0;
+const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
+const T = mkdtempSync(join(tmpdir(), 'levers-evaluate-'));
+for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
+Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
+mkdirSync(join(T, 'home'), { recursive: true });
+
+const { evaluate, evaluateDue, decide } = await import('../desk/bin/levers-evaluate.mjs');
+const { append, read } = await import('../desk/bin/lever-log.mjs');
+const { assignPin } = await import('../desk/bin/levers-auto.mjs');
+const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registry.mjs');
+const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
+const { LEVERS } = await import('../desk/bin/desk-env.mjs');
+const { tFit, costRatio } = await import('../desk/bin/lever-stats.mjs');
+
+const DAY = 86_400_000;
+const NOW = Date.parse('2026-12-02T08:00:00.000Z');
+const at = (days, from = NOW) => new Date(from + days * DAY).toISOString();
+const AUTO = Object.fromEntries(LEVERS.map((n) => [n, 'auto']));
+const FP = { preflight: 'fpP', wrappers: 'fpW', memory: 'fpM', 'failure-class': 'fpF', codex: null, 'review-reuse': null, effort: null };
+const stateOf = (slug) => join(T, 'home', '.desk-autopilot', slug);
+const jsonl = (file) => (existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+const evalsOf = (slug) => jsonl(join(stateOf(slug), 'lever-evals.jsonl'));
+const eventsOf = (slug, kind) => read(slug).events.filter((e) => !kind || e.kind === kind);
+
+// One ticket's per-ticket row (phase0-report perTicket) on `arm` of the wrappers trial `tid`.
+let seq = 0;
+const jitter = seededRandom(7);
+function row(slug, arm, tid, o = {}) {
+  seq += 1;
+  return {
+    slug, batch: null, key: `T-${seq}`, type: 'Story', size: seq % 2 ? 'S' : 'M', admitted_at: at(-20), merged_at: at(-10), state: 'done',
+    cost: 10 * (1 + 0.04 * (jitter() - 0.5)), cost_complete: true, preflight_cost: 0.1, starts: 1, fix_tries: 0, parks: 0, parks_by_class: {},
+    denials: 1, ci_reds: 0, start_records: [{ at: at(-19), desk_commit: `${seq % 2 ? 'a' : 'b'}`.repeat(40), claude_version: '2.4.1', lever_fp: null, system_bytes: 1000, prompt_bytes: 100 }],
+    pin: { set: arm === 'on' || arm === 'adopted' ? ['wrappers'] : [], arms: { wrappers: arm }, trial_ids: { wrappers: tid }, fp: null }, pin_mismatch: false, ...o,
+  };
+}
+// `n` rows per arm; `on(i)` and `off(i)` give each row's overrides.
+const arms = (slug, tid, n, on = () => ({}), off = () => ({}), names = ['on', 'off']) => [
+  ...Array.from({ length: n }, (_, i) => row(slug, names[0], tid, on(i))),
+  ...Array.from({ length: n }, (_, i) => row(slug, names[1], tid, off(i))),
+];
+// Denials per start down 60% on the lever's arm, everything else equal.
+const better = { on: (i) => ({ denials: i % 5 < 2 ? 1 : 0 }), off: () => ({ denials: 1 }) };
+
+// A repo's state folder with a findings file for every merged row (bar `noFindings`) and a scanned
+// post-merge.jsonl, as evaluate() is handed it.
+function repo(slug, rows, { noFindings = [], postMerge = true } = {}) {
+  const state = stateOf(slug);
+  mkdirSync(join(state, 'workers'), { recursive: true });
+  for (const r of rows) {
+    if (r.merged_at && !noFindings.includes(r.key)) writeFileSync(join(state, 'workers', `${r.key}.findings.jsonl`), `${JSON.stringify({ ticket: r.key, round: 1, reviewer: 'self', p0: 0, p1: 0, p2: 0, fixed: 0 })}\n`);
+  }
+  if (postMerge) writeFileSync(join(state, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
+  return { slug, name: slug.split('__')[1], state, states: AUTO, rows, batches: [{ name: null, state }] };
+}
+const run = (repos, now = NOW, fingerprints = FP) => evaluate({ repos, now, tz: 'UTC', root: join(T, `pooled-${seq}`), frozen: false, fingerprints });
+const wrappersRow = (slug) => evalsOf(slug).filter((e) => e.lever === 'wrappers').at(-1);
+const initial = (slug) => `${slug}/wrappers/initial`;
+const transitionOf = (slug, lever = 'wrappers') => eventsOf(slug, 'transition').filter((e) => e.lever === lever);
+
+// ---- the fit itself ----------------------------------------------------------------------------------
+const xs = [...Array(20).keys()];
+const fit = tFit(xs.map((x) => (x === 19 ? 400 : x + ((x % 3) - 1) * 0.2)), xs.map((x) => [1, x]));
+t('the Student-t fit is not dragged by one runaway value (slope near 1)', Math.abs(fit[1] - 1) < 0.5, true);
+const doubled = [...Array(20)].map((_, i) => ({ on: i % 2 === 0, cost: (i % 2 === 0 ? 20 : 10) * (1 + (i % 3) * 0.01), repo: 'a', size: 'S' }));
+t('the cost ratio reads the arm\'s coefficient on log cost', Math.abs(costRatio(doubled) - 2) < 0.05, true);
+
+// ---- AC1, AC8, AC11, AC13, AC14, AC16: an adopt -----------------------------------------------------------
+const A1 = 'acme__adopts';
+const a1rows = [
+  ...arms(A1, initial(A1), 30, better.on, better.off),
+  row(A1, 'on', initial(A1), { pin_mismatch: true }),
+  row(A1, 'off', initial(A1), { cost_complete: false }),
+  row(A1, 'on', initial(A1), { cost_complete: false }),
+];
+run([repo(A1, a1rows)]);
+const a1 = wrappersRow(A1);
+t('AC1 wrappers is adopted', [a1.decision, a1.state, a1.reason_code], ['adopt', 'adopted', 'adopt_all_conditions']);
+t('AC1 the mechanism is down about 60% with its interval clear of 25%', [Math.round(a1.mechanism.est * 100), a1.mechanism.hi90 < -0.25, a1.mechanism.p_benefit >= 0.9], [-60, true, true]);
+t('AC1 the cost ratio\'s upper bound is under 1.05', a1.cost.hi90 < 1.05, true);
+t('AC1 every guardrail is within its margin', a1.guardrails.map((g) => g.status), ['ok', 'ok', 'ok', 'ok', 'ok']);
+const a1t = transitionOf(A1);
+t('AC1 one transition line, trial to adopted, with a 10% holdback', a1t.map((e) => [e.from, e.to, e.holdback?.share]), [['trial', 'adopted', 0.1]]);
+t('AC16 it is a transition event with its reason code', [a1t[0].kind, a1t[0].reason_code, a1t[0].actor], ['transition', 'adopt_all_conditions', 'levers-auto']);
+t('AC8 the pin mismatch and incomplete costs are left out and counted', [a1t[0].n.on, a1t[0].n.off, a1t[0].n.excluded], [30, 30, { pin_mismatch: 1, cost_incomplete: 2, fp_reset: 0 }]);
+const e = a1t[0];
+t('AC11 the line holds n per arm, both estimates with 90% intervals, each guardrail, the commit range, the fingerprint and the reason',
+  [e.n.on != null && e.n.off != null, ['est', 'lo90', 'hi90'].every((k) => Number.isFinite(e.mechanism[k])), ['ratio', 'lo90', 'hi90'].every((k) => Number.isFinite(e.cost[k])),
+    e.guardrails.map((g) => g.name), e.desk_commit_range, e.lever_fp, typeof e.reason === 'string' && e.reason.length > 20],
+  [true, true, true, ['acceptance', 'fix-tries-parks', 'ci-reds', 'review-p0-p1', 'post-merge'], ['a'.repeat(12), 'b'.repeat(12)], 'fpW', true]);
+const ev = jsonl(join(stateOf(A1), a1.evidence_file));
+t('AC14 the evidence file holds every row the evaluation read, with the excluded ones marked', [ev.length, ev.filter((x) => x.excluded).map((x) => x.excluded).sort()], [63, ['cost_incomplete', 'cost_incomplete', 'pin_mismatch']]);
+t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHash('sha256').update(readFileSync(join(stateOf(A1), a1.evidence_file))).digest('hex'));
+t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
+const a1all = evalsOf(A1);
+t('AC13 every trialled low-risk lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['failure-class', 'memory', 'preflight', 'wrappers']);
+const pre = a1all.find((x) => x.lever === 'preflight');
+t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);
+t('AC13 the row is in the view\'s schema', ['v', 'eval_id', 'at', 'repo', 'lever', 'layer', 'state', 'arm_share_7d', 'n', 'min_n', 'max_n', 'mechanism', 'cost', 'guardrails', 'decision', 'reason_code', 'next', 'evidence_file', 'evidence_sha256', 'lever_fp', 'claude_versions', 'inputs_age_s'].filter((k) => !(k in a1)), []);
+run([repo(A1, a1rows)]);
+t('a second evaluation the same day writes nothing more', evalsOf(A1).length, a1all.length);
+
+// ---- AC2: a guardrail breach reverts before the minimum sample ---------------------------------------------------
+const A2 = 'acme__breach';
+run([repo(A2, arms(A2, initial(A2), 12, (i) => ({ ...better.on(i), parks: 4, parks_by_class: { 'agent mistake': 3 + (i % 3) } }), (i) => ({ denials: 1, parks: 1, parks_by_class: { 'agent mistake': i % 3 } })))]);
+const a2 = wrappersRow(A2);
+t('AC2 the parks guardrail is breached at 12 per arm', a2.guardrails.find((g) => g.name === 'fix-tries-parks').status, 'breached');
+t('AC2 the lever reverts before the minimum sample', [a2.decision, a2.state, a2.reason_code, transitionOf(A2).map((x) => x.to)], ['revert', 'reverted', 'guardrail_fix_tries_parks', ['reverted']]);
+const A2q = 'acme__quota';
+run([repo(A2q, arms(A2q, initial(A2q), 12, (i) => ({ ...better.on(i), parks_by_class: { quota: 4 } }), () => ({ denials: 1 })))]);
+t('AC2 parks for quota do not count against the guardrail', wrappersRow(A2q).decision, 'hold');
+
+// ---- AC3: at most one change every 7 days ----------------------------------------------------------------------
+const A3 = 'acme__cooldown';
+append(A3, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'an earlier revert', eval_id: 'evl_x', evidence_file: 'levers-evidence/evl_x.jsonl', at: at(-3) });
+const a3repo = repo(A3, arms(A3, initial(A3), 30, better.on, better.off));
+run([a3repo]);
+t('AC3 three days after a revert, evidence that meets every adopt condition changes nothing', [wrappersRow(A3).decision, wrappersRow(A3).reason_code, wrappersRow(A3).state, wrappersRow(A3).next.earliest_change], ['hold', 'change_cooldown', 'reverted', '2026-12-06']);
+run([a3repo], NOW + 3 * DAY);
+t('AC3 six days after, still nothing', wrappersRow(A3).reason_code, 'change_cooldown');
+run([a3repo], NOW + 4 * DAY);
+t('AC3 the first evaluation 7 days after the revert adopts it', [wrappersRow(A3).decision, transitionOf(A3).map((x) => `${x.from}>${x.to}`)], ['adopt', ['trial>reverted', 'reverted>adopted']]);
+
+// ---- AC4: the minimum sample -------------------------------------------------------------------------------------------
+const A4 = 'acme__twentynine';
+run([repo(A4, arms(A4, initial(A4), 29, better.on, better.off))]);
+t('AC4 29 tickets per arm stay on trial', [wrappersRow(A4).decision, wrappersRow(A4).state, wrappersRow(A4).reason_code, transitionOf(A4).length], ['hold', 'trial', 'below_min_sample', 0]);
+
+// ---- AC5: the maximum sample -------------------------------------------------------------------------------------------
+const A5 = 'acme__maximum';
+run([repo(A5, arms(A5, initial(A5), 150, () => ({ denials: 1 }), () => ({ denials: 1 })))]);
+t('AC5 150 per arm with no benefit reverts', [wrappersRow(A5).decision, wrappersRow(A5).reason_code, reasonWording(wrappersRow(A5).reason_code)], ['revert', 'no_benefit_max_sample', 'no benefit at maximum sample']);
+
+// ---- AC6: estimates pool, guardrails are per repo ------------------------------------------------------------------------------
+const A6a = 'acme__pooled';
+const A6b = 'acme__harmed';
+run([
+  repo(A6a, arms(A6a, initial(A6a), 30, better.on, better.off)),
+  repo(A6b, arms(A6b, initial(A6b), 30, (i) => ({ ...better.on(i), ...(i % 2 ? { merged_at: null } : {}) }), better.off)),
+]);
+t('AC6 the pooled mechanism counts both repos', wrappersRow(A6a).n.pooled_on, 60);
+t('AC6 the other repo adopts', wrappersRow(A6a).decision, 'adopt');
+t('AC6 the repo whose acceptance drops in the lever arm reverts', [wrappersRow(A6b).decision, wrappersRow(A6b).reason_code], ['revert', 'guardrail_acceptance']);
+
+// ---- AC7: a second revert freezes ---------------------------------------------------------------------------------------------
+const A7 = 'acme__twice';
+append(A7, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'the first revert', eval_id: 'evl_y', evidence_file: 'levers-evidence/evl_y.jsonl', at: at(-40) });
+const back = append(A7, { kind: 'override', lever: 'wrappers', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'put back on trial', at: at(-20) });
+run([repo(A7, arms(A7, `${A7}/wrappers/${back.id}`, 12, () => ({ parks_by_class: { 'agent mistake': 4 } }), (i) => ({ parks_by_class: { 'agent mistake': i % 2 } })))]);
+t('AC7 the second revert freezes the lever in that repo', [wrappersRow(A7).state, transitionOf(A7).map((x) => x.to)], ['frozen', ['reverted', 'frozen']]);
+const ny = eventsOf(A7, 'needs_you');
+t('AC7 one needs-you item names the lever and the repo', [ny.length, ny[0]?.lever, /wrappers is frozen in twice/.test(ny[0]?.reason ?? '')], [1, 'wrappers', true]);
+
+// ---- AC9: a change to the lever's own code restarts the count ----------------------------------------------------------------------
+const A9 = 'acme__fingerprint';
+const withFp = (fp) => (o) => ({ ...o, start_records: [{ at: at(-19), desk_commit: 'c'.repeat(40), claude_version: '2.4.1', lever_fp: { wrappers: fp } }] });
+const a9rows = [
+  ...arms(A9, initial(A9), 30, (i) => withFp('old')(better.on(i)), () => withFp('old')(better.off())),
+  ...arms(A9, initial(A9), 5, (i) => withFp('new')(better.on(i)), () => withFp('new')(better.off())),
+];
+mkdirSync(stateOf(A9), { recursive: true });
+writeFileSync(join(stateOf(A9), 'lever-evals.jsonl'), `${JSON.stringify({ v: 1, eval_id: 'evl_old', at: at(-1), repo: A9, lever: 'wrappers', lever_fp: 'old', decision: 'hold' })}\n`);
+run([repo(A9, a9rows)], NOW, { ...FP, wrappers: 'new' });
+const a9 = wrappersRow(A9);
+t('AC9 evidence from before the change is dropped and the count restarts', [a9.n.on, a9.n.off, a9.n.excluded.fp_reset, a9.decision, a9.reason_code], [5, 5, 60, 'hold', 'below_min_sample']);
+const fpr = eventsOf(A9, 'fp_reset');
+t('AC16 the fingerprint reset is one fp_reset event with its reason code', [fpr.length, fpr[0]?.reason_code, fpr[0]?.from_fp, fpr[0]?.to_fp], [1, 'fp_reset', 'old', 'new']);
+
+// ---- AC10: the holdback ends -----------------------------------------------------------------------------------------------------------
+const A10 = 'acme__settles';
+const adopted = append(A10, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_z', evidence_file: 'levers-evidence/evl_z.jsonl', at: at(-29) });
+run([repo(A10, arms(A10, `${A10}/wrappers/${adopted.id}`, 12, () => ({}), () => ({}), ['adopted', 'holdback']))]);
+t('AC10 four weeks into its holdback with no breach, it settles', [wrappersRow(A10).decision, wrappersRow(A10).state, wrappersRow(A10).reason_code], ['settle', 'settled', 'holdback_ended']);
+const pin = assignPin('NEW-1', { size: 'S', slug: A10, states: AUTO, frozen: false, random: seededRandom(3), now: new Date(NOW), values: { 'worker-location': 'local' } }).pin;
+t('AC10 a new ticket gets wrappers on with no holdback arm', [pin.set.includes('wrappers'), pin.arms.wrappers ?? null], [true, null]);
+const A10b = 'acme__holding';
+const recent = append(A10b, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_w', evidence_file: 'levers-evidence/evl_w.jsonl', at: at(-10) });
+run([repo(A10b, arms(A10b, `${A10b}/wrappers/${recent.id}`, 12, () => ({}), () => ({}), ['adopted', 'holdback']))]);
+t('AC13 a held-back lever gets its row, held while the holdback runs', [wrappersRow(A10b).state, wrappersRow(A10b).decision, wrappersRow(A10b).reason_code], ['adopted', 'hold', 'holdback_running']);
+
+// ---- AC12: a missing outcome file adopts nothing --------------------------------------------------------------------------------------------
+const A12 = 'acme__incomplete';
+const a12rows = arms(A12, initial(A12), 30, better.on, better.off);
+const a12 = repo(A12, a12rows, { noFindings: [a12rows[0].key] });
+run([a12]);
+t('AC12 a missing findings file adopts nothing and says why', [wrappersRow(A12).decision, wrappersRow(A12).reason_code, wrappersRow(A12).missing], ['hold', 'evidence_incomplete', [join(stateOf(A12), 'workers', `${a12rows[0].key}.findings.jsonl`)]]);
+t('AC16 it is recorded as one evidence_incomplete event', eventsOf(A12, 'evidence_incomplete').filter((x) => x.lever === 'wrappers').map((x) => [x.reason_code, x.missing.length]), [['evidence_incomplete', 1]]);
+run([a12], NOW + DAY);
+t('AC16 the same missing file is not recorded again the next day', eventsOf(A12, 'evidence_incomplete').filter((x) => x.lever === 'wrappers').length, 1);
+const A12b = 'acme__nopostmerge';
+run([repo(A12b, arms(A12b, initial(A12b), 30, better.on, better.off), { postMerge: false })]);
+t('AC12 a missing post-merge.jsonl adopts nothing', [wrappersRow(A12b).decision, wrappersRow(A12b).missing], ['hold', [join(stateOf(A12b), 'post-merge.jsonl')]]);
+
+// ---- AC15: once a day across every repo, under the machine-wide lock --------------------------------------------------------------------
+const configRoot = join(T, 'config');
+const conf = (slug, gh) => {
+  mkdirSync(join(configRoot, 'repos', slug), { recursive: true });
+  writeFileSync(join(configRoot, 'repos', slug, 'config.md'), `## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | \`${gh}\` |\n| Default branch | \`main\` |\n\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | \`none\` | \`auto\` |\n`);
+};
+['one', 'two', 'three', 'four'].forEach((n) => conf(`acme__${n}`, `acme/${n}`));
+const fixtures = {};
+for (const n of ['one', 'two', 'three', 'four']) { const s = `acme__${n}`; fixtures[s] = repo(s, arms(s, initial(s), 8, better.on, better.off)); }
+let reads = 0;
+const rowsFor = ({ slug }) => { reads += 1; return { rows: fixtures[slug].rows, batches: fixtures[slug].batches }; };
+const lockDir = join(T, 'home', '.desk-autopilot', 'levers', 'evaluate.lock.d');
+mkdirSync(lockDir, { recursive: true });
+writeFileSync(join(lockDir, 'pid'), `${process.ppid}\n`);
+t('AC15 a pass that finds the lock held does nothing', [evaluateDue({ now: NOW, configRoot, tz: 'UTC', rowsFor }).status, reads], ['busy', 0]);
+rmSync(lockDir, { recursive: true, force: true });
+const first = evaluateDue({ now: NOW, configRoot, tz: 'UTC', rowsFor });
+const passes = [first.status, ...[1, 2, 3].map(() => evaluateDue({ now: NOW + 60_000, configRoot, tz: 'UTC', rowsFor }).status)];
+t('AC15 the first of four passes evaluates; the rest find today done', passes, ['ran', 'not_due', 'not_due', 'not_due']);
+const pooled = jsonl(join(T, 'home', '.desk-autopilot', 'levers', 'pooled-evals.jsonl'));
+t('AC15 the pooled estimates are written once that day, across the four repos', [pooled.filter((p) => p.lever === 'wrappers').length, pooled.find((p) => p.lever === 'wrappers')?.n, pooled.find((p) => p.lever === null)?.repos.length], [1, { on: 32, off: 32 }, 4]);
+t('AC15 every repo got its rows from that one run', ['one', 'two', 'three', 'four'].map((n) => evalsOf(`acme__${n}`).filter((x) => x.lever === 'wrappers').length), [1, 1, 1, 1]);
+t('AC15 its line names what it did', /^levers evaluate: 16 lever row\(s\) across 4 repo\(s\); no change$/.test(first.line), true);
+t('AC15 the next day it runs again', evaluateDue({ now: NOW + DAY, configRoot, tz: 'UTC', rowsFor }).status, 'ran');
+
+// ---- the rule itself ------------------------------------------------------------------------------------------------------------------------------
+const ok = { status: 'ok' };
+const good = { mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, lo90: -0.7, hi90: -0.5, p_benefit: 1 }, cost: { ratio: 1, lo90: 0.95, hi90: 1.02 }, guardrails: [ok, ok] };
+const base = { state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 };
+t('the rule: a cost interval reaching 1.05 does not adopt', decide({ ...base, ...good, cost: { ratio: 1, lo90: 0.9, hi90: 1.05 } }).reason_code, 'adopt_conditions_unmet');
+t('the rule: a guardrail only watching does not adopt', decide({ ...base, ...good, guardrails: [ok, { status: 'watching' }] }).reason_code, 'adopt_conditions_unmet');
+t('the rule: a lever with no registered minimum never adopts', decide({ ...base, ...good, mechanism: { ...good.mechanism, min_benefit: null, p_benefit: null } }).reason_code, 'adopt_conditions_unmet');
+t('the rule: a breach below the revert floor holds', decide({ ...base, ...good, n: { on: DECISION_RULE.revert_min_per_arm - 1, off: 20 }, guardrails: [{ name: 'acceptance', status: 'breached', p_worse: 1 }] }).reason_code, 'below_min_sample');
+t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).reason_code, 'freeze');
+
+rmSync(T, { recursive: true, force: true });
+if (fails) { console.log(`${fails} FAILED`); process.exit(1); }
+console.log('all checks passed');

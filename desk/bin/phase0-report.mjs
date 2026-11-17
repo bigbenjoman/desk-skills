@@ -298,10 +298,10 @@ function readCi({ ci, repo, since, gh }) {
 const repoOrNull = () => { try { return E.ghRepo(); } catch { return null; } };
 
 // ---- one row per admitted ticket -----------------------------------------------------------------
-// The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial and
-// trial ids; null for a ticket admitted with no pin.
+// The levers pin a ticket was admitted with (its queue `levers` object), as the set, arm per trial,
+// trial ids and the lever code fingerprints at admission; null for a ticket admitted with no pin.
 const pinOf = (l) => (l && typeof l === 'object' && !Array.isArray(l)
-  ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null } : null);
+  ? { set: l.set ?? null, arms: l.arms ?? null, trial_ids: l.trial_ids ?? null, fp: l.fp ?? null } : null);
 
 // One row per ticket in a batch whose `added_at` falls in [since, until) (epoch ms), with every run
 // it made since, runs after `until` included: a row is the ticket's whole outcome. `cost` is what its
@@ -335,6 +335,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     const starts = x.starts.map(({ sid, record: s }) => ({
       at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
       levers: Array.isArray(s?.levers) ? s.levers : null, claude_version: s?.claude_version ?? null,
+      lever_fp: s?.lever_fp ?? null, system_bytes: s?.system_bytes ?? null, prompt_bytes: s?.prompt_bytes ?? null,
     }));
     rows.push({
       slug, batch, key: t.key, type: t.type ?? null, lane: t.lane ?? null, size: size === 'unknown' ? null : size,

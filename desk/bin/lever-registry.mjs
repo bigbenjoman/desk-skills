@@ -19,12 +19,15 @@ export const KEPT_STATES = Object.freeze(['adopted', 'settled']);
 // The epic's decision rule, shared by every lever: an adopt needs the mechanism metric better by at
 // least the lever's minimum with this probability, the cost ratio's upper bound below `cost_ratio_max`,
 // and every guardrail within its margin, on at least the layer's `min_per_arm` tickets per arm and at
-// most `max_per_arm`.
+// most `max_per_arm`. A lever changes state at most once per repo every `cooldown_days`, and a revert
+// on a guardrail may come before the minimum sample but not below `revert_min_per_arm`.
 export const DECISION_RULE = Object.freeze({
   probability: 0.9,
   cost_ratio_max: 1.05,
   min_per_arm: Object.freeze({ 'low-risk': 30, 'quality-risk': 40 }),
   max_per_arm: 150,
+  cooldown_days: 7,
+  revert_min_per_arm: 10,
 });
 
 // Guardrails, judged per repo. A rate-ratio margin is the lever arm's rate over the off arm's.
@@ -129,6 +132,15 @@ export const REASON_CODES = Object.freeze({
   thaw: 'trials were thawed',
   row_change: 'the repo\'s levers row changed',
   assigned_at_admission: 'the ticket was given its arms when it was admitted',
+  adopt_conditions_unmet: 'not every adopt condition holds yet',
+  no_benefit_max_sample: 'no benefit at maximum sample',
+  max_sample_no_adopt: 'the maximum sample was reached without every adopt condition holding',
+  change_cooldown: 'the lever changed state in this repo less than 7 days ago',
+  holdback_ended: 'the holdback ended with no guardrail breached',
+  holdback_running: 'the lever is adopted and its holdback is still running',
+  fp_reset: 'the lever\'s own code changed, so evidence from before the change was dropped',
+  evidence_incomplete: 'an outcome file the evaluation reads is missing',
+  frozen_second_revert: 'the lever was reverted a second time in this repo, so it is frozen there',
   state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',
 });
 
