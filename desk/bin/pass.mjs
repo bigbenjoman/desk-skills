@@ -26,6 +26,7 @@ import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
+import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -189,14 +190,19 @@ const shOut = (cmd, args, opts = {}) => {
 };
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
-// would hide a ticket whose recorded state is now wrong.
-const q = (...args) => {
+// would hide a ticket whose recorded state is now wrong. Returns '' when refused.
+const qWrite = (args, refused = 'not recorded') => {
   const r = shOut('node', [join(BIN, 'queue.mjs'), ...args]);
   if (r.ok) return r.out;
   const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
-  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, not recorded — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
+  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
   return '';
 };
+const q = (...args) => qWrite(args);
+// The one exception: a spawn's state=running write. Refused, nothing may start, since the queue would
+// still read the ticket as waiting and the next pass would start a second worker on it.
+const recordRunning = (key, pairs, what = 'no worker was started') =>
+  Boolean(qWrite(['set', key, 'state=running', ...pairs], `not recorded, so ${what}`));
 const queue = () => readQueue(QUEUE_FILE);
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
 // this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
@@ -749,19 +755,21 @@ const resumeRefusal = (t, why) => {
 // tracker access, and the report says so.
 function advanceCloud(t) {
   const c = t.cloud ?? {};
+  // A session whose details were not recorded after it started has only `started` (spawnCloud).
+  const where = c.url ?? c.session ?? '(its session URL was not recorded)';
   const read = (args) => {
     try { return JSON.parse(sh('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'all', ...args, '--json', 'number,title,url,headRefName,createdAt'], { tolerant: true }) || '[]'); } catch { return []; }
   };
   const pr = findCloudPr([...read(['--head', t.branch ?? '']), ...read(['--search', `${t.key} in:title`])], { key: t.key, branch: t.branch, since: c.started });
   if (!pr) {
-    report.quiet.push(`${t.key}: cloud session ${c.url ?? c.session}, no PR yet (${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started)`);
+    report.quiet.push(`${t.key}: cloud session ${where}, no PR yet (${wallTime(Math.max(0, Date.now() - Date.parse(c.started)) || 0)} since it started)`);
     return;
   }
   const cloud = { ...c, pr_at: pr.createdAt };
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
     `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${c.url} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -2095,9 +2103,27 @@ const linesOnBase = (f) => {
   }
   return lineCounts.get(f);
 };
-const placesFor = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
+const configuredPlaces = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
   : FILE_BUDGET.big === FILE_BUDGET.small ? FILE_BUDGET.small
   : linesOnBase(f) > FILE_BUDGET.lines ? FILE_BUDGET.big : FILE_BUDGET.small);
+// A file whose merge-time conflicts rise runs fewer places than configured (conflict-record.mjs),
+// from the record every batch of this repo shares. A record that does not read lowers nothing.
+const CONFLICTS_FILE = conflictsPath(STATE);
+const conflictRecord = readConflicts(CONFLICTS_FILE);
+const conflictsBy = conflictRecord.bad ? new Map() : conflictTimes(conflictRecord.entries);
+const PASS_MS = Date.parse(PASS_AT);
+// Records a merge-time conflict's files for `what` (a PR, or a base sync) -> a line for the report
+// when nothing could be recorded, else null. A dry run records nothing.
+function noteConflict(what, { files, ...entry }) {
+  if (DRY) return null;
+  if (!files?.length) return `conflicts: ${what} is in conflict, but its files could not be worked out, so none went on the conflict record`;
+  const r = recordConflicts(CONFLICTS_FILE, { files, ...entry, at: PASS_AT });
+  return r.error ? `conflicts: ${what}'s conflicting files did not go on the conflict record: ${r.error}` : null;
+}
+const placesFor = (f) => {
+  const k = configuredPlaces(f);
+  return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
+};
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
@@ -2470,6 +2496,10 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
     else if (s.reason === 'conflict' || s.reason === 'check') {
       metConflict = true;
+      if (s.reason === 'conflict') {
+        const noted = noteConflict(`the base ${BASE}`, { files: s.files, ticket: BASE_FIX_KEY, pr: null, head: originSha(BASE), source: originSha(SOURCE) });
+        if (noted) baseLines.push(noted);
+      }
       let person = null;
       const line = conflicted(s.files, (why) => { person = why; blocked(why); }, s.check ?? null);
       if (line) heldForFix(line);
@@ -2865,8 +2895,8 @@ async function resumeKilled(t) {
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
   logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
-    `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
+  if (!recordRunning(t.key, ['resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
+    `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -3020,10 +3050,18 @@ function spawnCloud(t) {
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
   const tests = E.configValues('test-cmd') ?? [];
   const started = new Date().toISOString();
+  // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
+  // which moves it off running. `cloud` holds `started` from here, so a refused write of the session
+  // below still leaves a running ticket the pass watches for its PR (advanceCloud) rather than skips.
+  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null'],
+    'no cloud session was started')) return;
   const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
-  if (s.error) { park(s.error); return; }
-  q('set', t.key, 'state=running', `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, 'stage=cloud',
-    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null', ...fixStarted(t));
+  if (s.error) {
+    q('set', t.key, `cloud=${t.cloud ? JSON.stringify(t.cloud) : 'null'}`);
+    park(s.error);
+    return;
+  }
+  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
   runningKeys.add(t.key);
@@ -3056,8 +3094,9 @@ async function spawnHandoff(t, pick) {
   const port = await freePort(t);
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t));
+  if (!recordRunning(t.key, [`session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
+  `no Stage ${stage} session was started; the handoff waits for the next pass`)) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -3478,11 +3517,7 @@ for (const t of spawnable) {
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
-  // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
-  if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
-  // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
-  if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
+  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
@@ -3493,7 +3528,14 @@ for (const t of spawnable) {
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
-    `upload_round=${sid}`);
+    `upload_round=${sid}`]);
+  if (!recorded) continue;
+  // Only once the round is recorded: a refused write leaves last_round, and a resume file kept beside
+  // it is what still rules out resuming that round on the next pass (resumeCheck).
+  // A worker starting at Stage 0 writes its own handoff briefing; an earlier round's must not stand in for it.
+  if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
+  // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
+  if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();
@@ -3842,6 +3884,11 @@ if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  $
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
 if (FILE_BUDGET.bad) out.push(`collisions: ${FILE_BUDGET.bad} — read as 1 for every file, so no two tickets naming one file run at once`);
+if (conflictRecord.bad) out.push(`collisions: the conflict record was not read (${conflictRecord.bad}), so every file runs at its configured budget`);
+for (const [f, times] of conflictsBy) {
+  const k = configuredPlaces(f), now = placesFor(f);
+  if (now < k) out.push(`collisions: ${f} runs ${now} of its configured ${k}, after ${recentCount(times, PASS_MS)} merge-time conflict(s) in the last 7 days`);
+}
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
@@ -4647,6 +4694,10 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
   // head the merge driver held for failing §4 Merged-tree check merged into the base.
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
+  // Each file a ready PR conflicts on goes on the conflict record, whoever then resolves it.
+  const dirtyFiles = dirty ? conflictFiles(t.branch) : null;
+  const noted = dirty ? noteConflict(`PR #${n} (${t.key})`, { files: dirtyFiles, ticket: t.key, pr: n, head: s.head }) : null;
+  if (noted) out.push(noted);
   // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
   // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
   // only on the gate, so it still goes to its own fix below.
@@ -4675,7 +4726,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
       const files = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
       return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
     },
-    conflictFiles: () => conflictFiles(t.branch),
+    conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
   };

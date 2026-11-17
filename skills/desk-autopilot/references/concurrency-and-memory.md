@@ -90,6 +90,15 @@ file at its budget waits, in queue order. The report's `held back by a collision
 such file and the running tickets filling it. A row that does not read is 1 for every file, and the
 report says so.
 
+**A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
+ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
+conflicting file (the file, the ticket, the PR and the time) in `conflicts.jsonl` in the repo's
+state folder (`desk-env paths` prints `DESK_STATE`), which every batch shares. Three conflicts on a
+file within 7 days run it one place fewer than its configured budget, and each 7 days with none
+gives one back, never above the configured budget nor below 1. The report's `collisions:` lines
+name each lowered file and its conflicts in the last 7 days. A record that does not read lowers
+nothing: every file runs at its configured budget, and the report says the record was not read.
+
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
 memory line (`vmmem=`, `avail=`) at start, then again only when a ticket's state or question

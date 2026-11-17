@@ -3595,6 +3595,7 @@ cloud_ticket CW-2; : > "$T/cloud-fail"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
+check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
 # Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
 rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
 q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
@@ -3613,6 +3614,87 @@ check "DS-450 AC1 and no session starts for it, here or in the cloud" '[ ! -e "$
 effort_cfg 0=turbo; cloud_ticket CW-5; q set CW-5 levers=null
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
+
+# ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
+# queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked
+# past its wait does; every other write goes through. Each path runs alone: refused, then writable.
+export DESK_QUEUE="$T/queue-rr.json" DESK_AUTOPILOT_STATE="$T/state-rr"; mkdir -p "$T/state-rr/logs" "$T/state-rr/tickets" "$T/state-rr/handoffs"
+rm "$T/desk/bin/queue.mjs"
+cat > "$T/desk/bin/queue.mjs" <<EOF
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const a = process.argv.slice(2);
+if (a[0] === 'set' && a.includes('state=running') && existsSync('$T/refuse-running-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
+if (a[0] === 'set' && a.some((x) => x.startsWith('cloud={"session"')) && existsSync('$T/refuse-cloud-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
+process.exit(spawnSync(process.execPath, ['$B/queue.mjs', ...a], { stdio: 'inherit' }).status ?? 1);
+EOF
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 resume=\${AUTOPILOT_RESUME:+yes} stage=\${AUTOPILOT_START_STAGE:-}" >> "$T/rr-spawns"; echo "[spawn] ticket=\$1"
+EOF
+: > "$T/rr-spawns"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
+spawns_of(){ grep -c "^$1 " "$T/rr-spawns"; }
+refused_pass(){ touch "$T/refuse-running-$1"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-running-$1"; }
+q init rr
+q add RR-1; q set RR-1 state=triaged lane=A branch=fix/RR-1
+refused_pass RR-1
+check "DS-752 AC1 a refused state=running write starts no worker, and the failed line names the ticket and says so" \
+  '[ "$(spawns_of RR-1)" = 0 ] && [ "$(field RR-1 state)" = "\"triaged\"" ] && [ "$(field RR-1 session_id)" = null ] && [ "$(field RR-1 spawn_failed)" = null ] && echo "$out" | grep -q "RR-1: queue write refused, not recorded, so no worker was started — set state=running" && ! echo "$out" | grep -q "spawned: RR-1"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC2 with the queue writable again, the next pass starts exactly one worker" '[ "$(spawns_of RR-1)" = 1 ] && [ "$(field RR-1 state)" = "\"running\"" ]'
+check "DS-752 AC6 a recorded write spawns, and the report reads as before" 'echo "$out" | grep -q "spawned: RR-1 port=[0-9]* db=none" && ! echo "$out" | grep -q "queue write refused"'
+q set RR-1 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/RR-2 "$T/wt/RR-2"
+q add RR-2; q set RR-2 state=triaged lane=A branch=fix/RR-2 "worktree=$T/wt/RR-2" session_id=sess-rr2 resume=pending resume_why=x
+refused_pass RR-2
+check "DS-752 AC3 a killed worker whose state=running write is refused is not resumed, and still waits to resume" \
+  '[ "$(spawns_of RR-2)" = 0 ] && [ "$(field RR-2 state)" = "\"triaged\"" ] && [ "$(field RR-2 resume)" = "\"pending\"" ] && [ "$(field RR-2 resumes)" = null ] && echo "$out" | grep -q "RR-2: queue write refused, not recorded, so no worker was resumed"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC3 the next pass resumes it once" 'grep -qx "RR-2 resume=yes stage=" "$T/rr-spawns" && [ "$(spawns_of RR-2)" = 1 ] && [ "$(field RR-2 state)" = "\"running\"" ]'
+q set RR-2 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/RR-3 "$T/wt/RR-3"
+q add RR-3; q set RR-3 state=triaged lane=A branch=fix/RR-3 "worktree=$T/wt/RR-3" handoff=pending handoff_stage=4b; hfile RR-3 4b "typecheck: pass"
+refused_pass RR-3
+check "DS-752 AC4 a handoff whose state=running write is refused starts no session, and the handoff is still pending" \
+  '[ "$(spawns_of RR-3)" = 0 ] && [ "$(field RR-3 state)" = "\"triaged\"" ] && [ "$(field RR-3 handoff)" = "\"pending\"" ] && [ "$(field RR-3 spawn_failed)" = null ] && echo "$out" | grep -q "RR-3: queue write refused, not recorded, so no Stage 4b session was started"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC4 the next pass starts its Stage 4b session once" 'grep -qx "RR-3 resume= stage=4b" "$T/rr-spawns" && [ "$(spawns_of RR-3)" = 1 ] && [ "$(field RR-3 state)" = "\"running\"" ]'
+q set RR-3 state=done session_id=null
+q add RR-4; q set RR-4 state=triaged lane=A branch=feat/RR-4 location=cloud
+printf '# RR-4\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' > "$T/state-rr/tickets/RR-4.md"
+refused_pass RR-4
+check "DS-752 AC5 a cloud ticket whose state=running write is refused starts no cloud session" \
+  '[ ! -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"triaged\"" ] && [ "$(field RR-4 cloud)" = null ] && echo "$out" | grep -q "RR-4: queue write refused, not recorded, so no cloud session was started"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC6 with the write recorded, the cloud session starts and is recorded running" \
+  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session: https://claude.ai/code/"'
+q set RR-4 state=done
+# The running write is recorded but the session's, after it started, is refused: the ticket keeps the
+# time it started, so later passes still watch for its PR rather than skip a running ticket with no log.
+q add RR-6; q set RR-6 state=triaged lane=A branch=feat/RR-6 location=cloud
+printf '# RR-6\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' > "$T/state-rr/tickets/RR-6.md"
+touch "$T/refuse-cloud-RR-6"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-cloud-RR-6"
+check "DS-752 a cloud session whose details are refused after it started stays running with its start time" \
+  '[ "$(field RR-6 state)" = "\"running\"" ] && [ "$(field RR-6 cloud.started)" != null ] && [ "$(field RR-6 cloud.session)" = null ] && echo "$out" | grep -q "RR-6: queue write refused, not recorded — set cloud="'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 and the next pass watches it for its PR, saying its URL was not recorded" \
+  '[ "$(field RR-6 state)" = "\"running\"" ] && echo "$out" | grep -qF "RR-6: cloud session (its session URL was not recorded), no PR yet"'
+q set RR-6 state=done
+# A round ruled out of resuming by a resume file on another branch keeps that file while its spawn is
+# refused, so the next pass still starts it at Stage 0 rather than resuming the round.
+git -C "$T/repo" worktree add -q -b fix/RR-5 "$T/wt/RR-5"
+q add RR-5; q set RR-5 state=triaged lane=A branch=fix/RR-5 "worktree=$T/wt/RR-5" 'last_round={"stage":"4/9","question":"which border?"}'
+mkdir -p "$T/state-rr/resume"; printf '{"ticket":"RR-5","branch":"fix/RR-5-old"}' > "$T/state-rr/resume/RR-5.json"
+refused_pass RR-5
+check "DS-752 a refused spawn keeps the resume file that rules out resuming the round" \
+  '[ "$(spawns_of RR-5)" = 0 ] && [ -f "$T/state-rr/resume/RR-5.json" ] && [ ! -e "$T/state-rr/resume/RR-5.json.old" ] && [ "$(field RR-5 last_round.stage)" = "\"4/9\"" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 and the next pass starts it at Stage 0, moving the file aside then" \
+  'grep -qx "RR-5 resume= stage=" "$T/rr-spawns" && [ "$(spawns_of RR-5)" = 1 ] && [ -f "$T/state-rr/resume/RR-5.json.old" ]'
+rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
@@ -4525,5 +4607,66 @@ fbt FB-51 triaged src/big.ts; fbt FB-52 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
   'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
+
+# ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
+# with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
+# the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.
+git init -q --bare -b main "$T/cf-origin.git"
+git init -q -b main "$T/cf"; git -C "$T/cf" remote add origin "$T/cf-origin.git"
+seq 1 1200 > "$T/cf/big.ts"; echo base > "$T/cf/b.txt"; echo base > "$T/cf/c.txt"
+git -C "$T/cf" add -A; git -C "$T/cf" commit -q -m init
+git -C "$T/cf" checkout -q -b fix/CF-1; { echo pr; seq 2 1200; } > "$T/cf/big.ts"; echo pr > "$T/cf/b.txt"; echo pr > "$T/cf/c.txt"
+git -C "$T/cf" commit -q -am pr; CFH=$(git -C "$T/cf" rev-parse HEAD)
+git -C "$T/cf" checkout -q main; { echo main; seq 2 1200; } > "$T/cf/big.ts"; echo main > "$T/cf/b.txt"
+git -C "$T/cf" commit -q -am main; git -C "$T/cf" push -q origin main fix/CF-1
+cat > "$T/stub/gh" <<EOF
+#!$NODE
+const fs = require('fs');
+const a = process.argv.slice(2);
+if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
+else process.exit(1);
+EOF
+chmod +x "$T/stub/gh"
+{ sed "s#$T/repo#$T/cf#" "$T/config-f.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; } > "$T/config-cf.md"
+# cfq <name>: a fresh queue and state on the clone. iso <days ago>: that time. cfrec <days ago> <head>: a recorded conflict on big.ts.
+cfq(){ export DESK_CONFIG="$T/config-cf.md" DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1"; mkdir -p "$T/state-$1/logs" "$T/state-$1/triage"; : > "$T/fb-spawns"; q init "$1"; q set-batch concurrency=8 concurrency_by=user; }
+iso(){ node -e 'console.log(new Date(Date.now() - Number(process.argv[1]) * 864e5).toISOString())' "$1"; }
+cfrec(){ printf '{"file":"big.ts","ticket":"CF-9","pr":909,"head":"%s","at":"%s"}\n' "$2" "$(iso "$1")" >> "$DESK_AUTOPILOT_STATE/conflicts.jsonl"; }
+cfn(){ jq -c "$1" "$T/state-cfa/conflicts.jsonl" 2>/dev/null; }
+
+cfq cfa
+q add CF-1; q set CF-1 state=done lane=A branch=fix/CF-1 result.pr=901; fx 901 "$CFH" CONFLICTING tests:SUCCESS
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC1 a ready PR in conflict with its base records one entry per conflicting file, naming the file, ticket, PR and time" \
+  '[ "$(jq -sc "map(.file) | sort" "$T/state-cfa/conflicts.jsonl")" = "[\"b.txt\",\"big.ts\"]" ] && [ "$(jq -sc "map([.ticket, .pr, .head]) | unique" "$T/state-cfa/conflicts.jsonl")" = "[[\"CF-1\",901,\"$CFH\"]]" ] && [ "$(cfn ".at" | grep -cE "^\"20[0-9]{2}-[0-9]{2}-[0-9]{2}T")" = 2 ]'
+check "DS-756 AC1 the conflict still goes to its fix try with the same files" \
+  '[ "$(field CF-1 fix.kind)" = "\"conflict\"" ] && [ "$(field CF-1 fix.files | jq -c "sort")" = "[\"b.txt\",\"big.ts\"]" ]'
+q set CF-1 state=done fix=null fix_tries=null
+node "$B/pass.mjs" >/dev/null 2>&1
+check "DS-756 AC1 the same conflict at the same head, met on a later pass, is not recorded again" '[ "$(grep -c . "$T/state-cfa/conflicts.jsonl")" = 2 ]'
+
+cfq cfb
+cfrec 3 h1; cfrec 2 h2; cfrec 1 h3
+fbt CF-11 triaged big.ts; fbt CF-12 triaged big.ts; fbt CF-13 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC2 a file with 3 conflicts in the last 7 days runs one place fewer than configured" \
+  'spawned CF-11 && spawned CF-12 && ! spawned CF-13 && echo "$out" | grep -qF "CF-13 (big.ts has 2 running of its 2: CF-11, CF-12)"'
+check "DS-756 AC2 the report names the file and its conflict count" \
+  'echo "$out" | grep -qF "collisions: big.ts runs 2 of its configured 3, after 3 merge-time conflict(s) in the last 7 days"'
+
+cfq cfc
+cfrec 10 h1; cfrec 9 h2; cfrec 8 h3
+fbt CF-21 triaged big.ts; fbt CF-22 triaged big.ts; fbt CF-23 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC3 lowered, then 7 days with no conflict: back up by one to its configured k" \
+  'spawned CF-21 && spawned CF-22 && spawned CF-23 && ! echo "$out" | grep -qF "collisions: big.ts runs"'
+
+cfq cfd
+cfrec 3 h1; cfrec 2 h2; cfrec 1 h3; echo 'not json' >> "$DESK_AUTOPILOT_STATE/conflicts.jsonl"
+fbt CF-31 triaged big.ts; fbt CF-32 triaged big.ts; fbt CF-33 triaged big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-756 AC5 a record the pass cannot read leaves every file at its configured k, and the report says so" \
+  'spawned CF-31 && spawned CF-32 && spawned CF-33 && echo "$out" | grep -qF "collisions: the conflict record was not read ($T/state-cfd/conflicts.jsonl line 4 is not a conflict entry), so every file runs at its configured budget"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
