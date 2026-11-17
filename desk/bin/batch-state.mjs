@@ -123,6 +123,10 @@ export function crashShowsPerson(report = (e) => console.error(describeCrash(e))
 }
 
 export const HELD_PREFIX = 'held by orchestrator';
+// A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
+export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
+export const stoppedHold = (t) => t?.state === 'parked' && !String(t.held_by ?? '').split('|').some(Boolean)
+  && String(t.park?.question ?? '').startsWith(STOPPED_PREFIX);
 
 // Parked "held by orchestrator" (a dependency chain, released by merge-driver.sh release_chain or by
 // the one sanctioned manual release once every predecessor's PR has merged).
@@ -166,8 +170,9 @@ export function dateHoldOf(labels) {
 }
 // A ticket pass.mjs holds on its blocked-until label (held_label), as dateHoldOf reads it, or null. A
 // ticket held behind blockers too waits on them first (queue.mjs hold clears held_label), and the pass
-// reads its label again once they release it.
-export const dateHeld = (t) => (isHeld(t) && t.held_label && !String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
+// reads its label again once they release it. A stopped ticket is held on no date: the held_label a
+// release left behind stays, so its start is not held again on that label, but never starts it.
+export const dateHeld = (t) => (isHeld(t) && !stoppedHold(t) && t.held_label &&!String(t.held_by ?? '').split('|').some(Boolean) ? dateHoldOf([t.held_label]) : null);
 // What the person is told about a blocked-until label whose date cannot be read.
 export const badLabelText = (label) => `its label ${label} names no date desk can read (blocked-until-YYYY-MM-DD): fix the label and re-run triage.sh, or let it start`;
 

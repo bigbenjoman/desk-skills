@@ -1279,7 +1279,8 @@ dated('holdsup', 5010, { hours: twelveHours, supervised: true, perms: { 'autopil
   'B-CONF': prAt(178, { mergeable: 'CONFLICTING' }), 'W-2C': heldBy('B-CONF'),
   'B-HOLD': { ...prAt(180), merge_blocked: 'merge hold: build and push the Lambda images first — backend/**, 1 file(s), e.g. backend/handler.ts' }, 'W-2H': heldBy('B-HOLD'),
   'B-DRY': { ...prAt(181), merge_blocked: 'merge hold: skim the Confluence Sync dry-run comment first — frontend/e2e/**, 1 file(s), e.g. frontend/e2e/auth.spec.ts' },
-  'W-0': { ...heldBy(''), park: { question: 'held by orchestrator' } } } });
+  'W-0': { ...heldBy(''), park: { question: 'held by orchestrator' } },
+  'W-0S': { ...heldBy(''), park: { question: 'held by orchestrator: stopped by queue.mjs stop at 2026-11-17T10:00:00.000Z; its work so far is committed as 0123456789ab on fix/W-0S. Starts again only once you let it' } } } });
 dated('holdask', 5020, { hours: twelveHours, supervised: true, perms: { 'autopilot-merge': 'ask', 'pr-merge-green': 'ask' }, tickets: {
   'B-ASK': prAt(179), 'W-4A': heldBy('B-ASK'), 'B-MERGED': mergedAt(172), 'W-6A': heldBy('B-MERGED'),
   'C-1': heldBy('C-2'), 'C-2': heldBy('C-1'), 'C-3': heldBy('C-1') } });
@@ -1302,6 +1303,7 @@ t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and ST
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
 t('DS-217 (DS-279 AC16) a hold that names no blocker: needs you, since nothing lets it start', cells217('holdsup', 'W-0'), '◆ needs you | held behind no recorded blocker: let it start');
+t('DS-742 AC2 a ticket queue.mjs stop held: needs you, to let it start', cells217('holdsup', 'W-0S'), '◆ needs you | its worker was stopped: let it start');
 // The page's rail, its wrapped lines joined.
 const railText = (page) => lines(page).filter((l) => l.startsWith('▌ ')).map((l) => l.slice(2)).join(' ');
 const w0 = Q.ticketScreen(repo217('holdsup'), 'W-0', { now: FIXED });
@@ -2297,6 +2299,18 @@ t('DS-657 AC4 negative control: waiting tickets behind two tickets add no note',
 put657('park657', 5705, { 'S-1': { state: 'running', stage: '4/9' },
   'C-1': { state: 'parked', lane: 'C', held_by: 'S-1', park: { question: 'lane C — needs the person' } }, 'H-1': held657('C-1') });
 t('DS-657 AC4 a row waiting through a triage park held behind a running ticket names that ticket', notes657('park657').join(' / '), 'all 2 wait on S-1 (running, stage 4/9).');
+
+// ---- A dense hold graph: each ticket held by every one before it (as collision holds leave a batch)
+// has exponentially many paths. The walk reads each blocker once, so it stays fast.
+const dense = { tickets: { 'D-0': { key: 'D-0', state: 'running', stage: '3/9' } } };
+for (let i = 1; i <= 30; i++) {
+  const by = Array.from({ length: i }, (_, j) => `D-${j}`).join('|');
+  dense.tickets[`D-${i}`] = { key: `D-${i}`, state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } };
+}
+const denseStart = Date.now();
+const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
+t('a 30-ticket transitively held chain reads every state in well under a second', Date.now() - denseStart < 1000, true);
+t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

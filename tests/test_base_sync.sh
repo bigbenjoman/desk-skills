@@ -131,6 +131,10 @@ check "it lists the files under WAITING ON YOU"      '[[ "${out#*WAITING ON YOU}
 check "it leaves the base worktree clean"            "[ -z \"\$(git -C $BWT status --porcelain)\" ] && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"$tip\" ]"
 check "not feature mode: spawning carries on"        '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"spawning carries on"* ]]'
 check "a conflict needs the person"                  '[ $rc -eq 11 ]'
+check "DS-756 AC6 the base sync's conflicting files go on the conflict record, with no PR" \
+  '[ "$(jq -c "[.file, .ticket, .pr, .head, .source]" "$C/state/conflicts.jsonl")" = "[\"a.txt\",\"base-feat-x\",null,\"$tip\",\"$(git -C "$C/repo" rev-parse origin/main)\"]" ]'
+pass
+check "DS-756 AC6 the same conflict met again on a later pass is not recorded twice" '[ "$(grep -c . "$C/state/conflicts.jsonl")" = 1 ]'
 
 # AC6: in feature mode a conflict spawns nothing.
 fresh fconflict; feature; conflict; pass

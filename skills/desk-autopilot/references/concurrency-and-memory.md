@@ -80,6 +80,25 @@ profile, the lock held past two minutes), the batch starts up to its own number 
 off, and the line says why. Borrowed workers are not a reason to lower the count: the ladder leaves
 the batch's own number as it is.
 
+**Tickets that name one file share it up to a per-file budget**, config §3b "Per-file collision
+budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; serial: none`: up to
+three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
+once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
+bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
+records of the tickets running then, so a finished ticket holds nothing, and a ready ticket with any
+file at its budget waits, in queue order. The report's `held back by a collision:` line names each
+such file and the running tickets filling it. A row that does not read is 1 for every file, and the
+report says so.
+
+**A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
+ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
+conflicting file (the file, the ticket, the PR and the time) in `conflicts.jsonl` in the repo's
+state folder (`desk-env paths` prints `DESK_STATE`), which every batch shares. Three conflicts on a
+file within 7 days run it one place fewer than its configured budget, and each 7 days with none
+gives one back, never above the configured budget nor below 1. The report's `collisions:` lines
+name each lowered file and its conflicts in the last 7 days. A record that does not read lowers
+nothing: every file runs at its configured budget, and the report says the record was not read.
+
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
 memory line (`vmmem=`, `avail=`) at start, then again only when a ticket's state or question
