@@ -25,7 +25,7 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutO
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
-import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -44,7 +44,7 @@ import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded,
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -2066,7 +2066,49 @@ if (lowMemory) {
       `(${running.length} running; a worker mid-suite will drain)`);
 }
 const runningKeys = new Set(running.map((r) => r.key));
-const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
+// The per-file budget (config §3b, desk-env fileBudget): a ticket waits while any file its triage record
+// names is already named by as many running tickets as that file's places. Worked out now, from the
+// triage records of the tickets running now, so a ticket that has finished holds nothing. A file
+// §4 Append-only paths covers is only added to, and has no limit.
+const FILE_BUDGET = E.fileBudget();
+const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
+const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeOf = new Map();
+const budgetFiles = (key) => {
+  if (!scopeOf.has(key)) {
+    const files = triageRec(key)?.files_in_scope;
+    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
+  }
+  return scopeOf.get(key);
+};
+// A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
+const lineCounts = new Map();
+const linesOnBase = (f) => {
+  if (!lineCounts.has(f)) {
+    const base = E.batchBase() ?? DEFAULT_BRANCH;
+    let n = 0;
+    for (const ref of [`origin/${base}`, base]) {
+      try { n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', `${ref}:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\n').length - 1; break; } catch { /* not on that ref */ }
+    }
+    lineCounts.set(f, n);
+  }
+  return lineCounts.get(f);
+};
+const placesFor = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
+  : FILE_BUDGET.big === FILE_BUDGET.small ? FILE_BUDGET.small
+  : linesOnBase(f) > FILE_BUDGET.lines ? FILE_BUDGET.big : FILE_BUDGET.small);
+// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+const budgetHolds = (r) => {
+  const holds = [];
+  for (const f of budgetFiles(r.key)) {
+    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
+    if (!by.length) continue;
+    const k = placesFor(f);
+    if (by.length >= k) holds.push({ file: f, k, by });
+  }
+  return holds;
+};
+const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
@@ -3256,7 +3298,7 @@ let dbDown = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it.
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
-  // A ticket spawned earlier in this pass is running too: two that collide never start together.
+  // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (collidesWithRunning(t)) continue;
   if (fixTryStale(t)) continue;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
@@ -3798,6 +3840,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
+if (FILE_BUDGET.bad) out.push(`collisions: ${FILE_BUDGET.bad} — read as 1 for every file, so no two tickets naming one file run at once`);
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
@@ -4095,11 +4138,11 @@ const faultOf = (f) => {
 };
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
-// With the failure-class lever on, a red check is read against the default branch before a fix try is
-// spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
-// for a base red hold, its newest completed run among the commits the default branch has gained since
-// that merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
-// The lever is read per ticket (leverFor).
+// A red check is read against the default branch before a fix try is spent on it, with the
+// failure-class lever on or off (fix-tries.mjs againstBase): the job's check runs at the PR's exact
+// merge base, and its newest completed run among the newest commits the default branch has gained
+// since that merge base (latestOnBaseOf says how many). Each read once per pass; one gh cannot read is
+// unknown.
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
   try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
@@ -4111,20 +4154,43 @@ const baseAtOf = (head) => cached(`base-at:${head}`, () => {
   return /^[0-9a-f]{40}$/.test(base_sha ?? '') && /^[0-9a-f]{40}$/.test(merge_base ?? '') ? { base_sha, merge_base } : null;
 });
 const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
-// The default branch's commits since a merge base, newest first. The compare lists them oldest first and
-// holds 250 a page unpaged, so every page is read before the list is turned round.
+// The default branch's own commits since a merge base, newest first: its first-parent line from its
+// tip back to the merge base, so a merged PR's branch commits, whose runs are that branch's CI and not
+// the default branch's, are never read as the base. The tip is the one listed commit no other names as
+// a parent, since the compare lists by date, not by parent; with none or several, or a line that stops
+// short of the merge base, the list is unread. Every page is read. Null unread.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
-  return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[] | [.sha, ([.parents[].sha] | join(","))] | @tsv']);
+  if (!r.ok) return null;
+  const rows = r.out.split('\n').filter(Boolean).map((l) => { const [c, ps = ''] = l.split('\t'); return [c, ps.split(',').filter(Boolean)]; });
+  const parents = new Map(rows), named = new Set(rows.flatMap(([, ps]) => ps));
+  const tips = rows.filter(([c]) => !named.has(c));
+  if (tips.length !== 1) return rows.length ? null : [];
+  const line = [];
+  let s = tips[0][0];
+  for (; parents.has(s) && line.length < rows.length; s = parents.get(s)[0]) line.push(s);
+  return s === sha ? line : null;
 });
-const baseReads = (t, head) => (leverFor('failure-class', t) && head ? { baseRead: {
+// The job's latest state on the base: its newest completed run among the newest BASE_WALK commits since
+// the merge base (HELD_WALK for a check already held, so a job that runs only on some pushes can still
+// clear its hold), else at the merge base itself when fewer came since. Null when a read fails (never
+// an older run read past one), or when none of those commits ran it: a job that does not run on the
+// base's pushes is not read commit by commit back to the merge base on every pass.
+const BASE_WALK = 25, HELD_WALK = 100;
+const latestOnBaseOf = (head, name, held = false) => {
+  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null, walk = held ? HELD_WALK : BASE_WALK;
+  if (!commits) return null;
+  for (const sha of commits.slice(0, walk)) {
+    const runs = checkRunsAt(sha, name);
+    if (runs == null) return null;
+    const state = runsState(runs); if (state) return state;
+  }
+  return commits.length > walk ? null : runsState(checkRunsAt(since, name));
+};
+const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
-  latestOnBase: (name) => {
-    const since = mergeBaseOf(head);
-    for (const sha of since ? baseCommitsSince(since) : []) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
-    return null;
-  },
+  latestOnBase: (name, o) => latestOnBaseOf(head, name, o?.held === true),
 } } : {});
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
@@ -4220,7 +4286,7 @@ if (drafts.length) {
     markGateHold(t, s, gated);
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(t, v.headRefOid), ...(leverFor('failure-class', t) ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), ...(leverFor('failure-class', t) ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })
             // A check build that failed behind the base goes to a worker that merges it.
@@ -4610,7 +4676,7 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     },
     conflictFiles: () => conflictFiles(t.branch),
     baseAt: () => baseAtOf(s.head),
-    ...baseReads(t, s.head),
+    ...baseReads(s.head),
   };
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
@@ -4706,10 +4772,11 @@ function settleWorked(t, n, head, worked) {
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
 // `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, with its class
-// (failure-class.mjs fixClass) recorded before the worker spawns. With the failure-class lever on,
-// `held` (base red) waits with no try, one classed missing decision or dependency wait is not
-// requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed runner or
-// resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
+// (failure-class.mjs fixClass) recorded before the worker spawns, and `held` (base red) waits with no
+// try. With the failure-class lever on (read per ticket, leverFor), one classed missing decision or
+// dependency wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's
+// checks classed runner or resource instead of spawning a fix worker, `wait` holding that rerun for
+// the run to finish.
 function applyFix(t, n, head, c) {
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
@@ -5222,7 +5289,8 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(SHOWN_BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
-if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
+const budgetText = (h) => `${h.file} has ${h.by.length} running of its ${h.k}: ${h.by.join(', ')}`;
+if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => `${x.key} (${budgetHolds(x).map(budgetText).join('; ')})`).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
 const bootWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && r.resume === 'reboot' && rebootReady(r).wait);
@@ -5348,11 +5416,9 @@ if (!DRY) {
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
   // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
-  const appendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs;
   const collisions = heldBack.map((r) => {
-    const by = String(r.collides_with ?? '').split('|').filter((k) => runningKeys.has(k));
-    const mine = triageRec(r.key)?.files_in_scope ?? [];
-    return { key: r.key, with: by, files: [...new Set(by.flatMap((k) => sharedFiles(mine, triageRec(k)?.files_in_scope ?? [], appendOnly)))] };
+    const holds = budgetHolds(r);
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }

@@ -60,8 +60,8 @@
 // drafted headless and left for the person in needs-you (epic-plan.mjs); without config §3
 // autopilot-workers `yes` it is reported as one to plan in a session (the /desk-autopilot epic flow).
 // Either way it is refused while its own feature batch is already live. A child of an epic whose feature
-// batch is live is admitted into that batch, held behind its blockers there and the unfinished
-// children it collides with. The person naming it is the approval. The open blockers in no batch of
+// batch is live is admitted into that batch, held behind its blockers there. The person naming it is
+// the approval. The open blockers in no batch of
 // what it admits are printed as `admit next: <KEY>...`, for /desk-admit to admit with no question.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -670,7 +670,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
   const reasons = reasonsAgainst(t.rec, holds);
   if (reasons.length) return { why: reasons.join('; ') };
   // queue.mjs adds the spine and an epic still waiting on its drafted plan (--hold-spine).
-  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', '--hold-collisions', ...holdArgs(holds)]);
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', ...holdArgs(holds)]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }

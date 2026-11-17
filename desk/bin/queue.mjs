@@ -368,23 +368,23 @@ const spineHolds = (q, key) => [
 
 // Put triaged ticket `key` into queue `q` from its triage record `r`, the way plan-batch seeds one, and
 // say how it stands. `state` holds the triage records of q's tickets. `holds` (its blockers in q) gains
-// q's spine and plan holds when `holdSpine` is set, and every unfinished ticket it collides with when
-// `holdCollisions` is. `outside`, its blockers in no batch, are held too and recorded as held_outside:
-// pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
+// q's spine and plan holds when `holdSpine` is set. `outside`, its blockers in no batch, are held too
+// and recorded as held_outside: pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
 // batch, hold nothing until its PR is ready: recorded as merge_after, they hold only its merge.
 // `pin` is its levers pin (lever-pin.mjs), drawn as it is admitted (levers-auto.mjs) unless it carries
 // one already.
-function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false, pin }) {
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, pin }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
   const stepPark = labelPark(r, personStepLabels(), personInputLabels());
   const park = stepPark ?? lanePark(r) ?? designPark(r) ?? sizePark(size);
   const unknowns = (r.unknowns ?? []).length + (r.facts_error ? 1 : 0);
-  // The collision check plan-batch makes, against every ticket still to finish: two tickets that
-  // touch one file never run at once. The person's step runs on no worker, so it collides with nothing:
-  // a hold behind it would wait on a merge that never comes. A file §4 Append-only paths covers is
-  // only added to, so sharing it is no collision.
+  // The collision check plan-batch makes, against every ticket still to finish, recorded both ways for
+  // the plan and desk-q. It holds nothing: pass.mjs works out the per-file budget at spawn time from
+  // the triage records of the tickets running then. The person's step runs on no worker, so it
+  // collides with nothing. A file §4 Append-only paths covers is only added to, so sharing it is no
+  // collision.
   const mine = stepPark ? [] : r.files_in_scope ?? [];
   const { globs: appendOnly } = appendOnlyFrom(() => configValues('append-only-paths'));
   const collides = [];
@@ -397,9 +397,6 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
       other.collides_with = [...new Set([...String(other.collides_with ?? '').split('|').filter(Boolean), key])].join('|');
     }
   }
-  // A ticket already waiting behind this one is not held against: each would wait on the other.
-  const behind = heldBehindOf(q, key);
-  if (holdCollisions) for (const k of collides) if (!holds.includes(k) && !behind.has(k)) holds.push(k);
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
@@ -583,7 +580,7 @@ function transfer(q, key, to) {
     else (local.has(p) ? stays : theirs).push(p);
   }
   if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')}, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
-  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, holdCollisions: true, pin: t.levers ?? null });
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, pin: t.levers ?? null });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
   mkdirSync(join(dest.state, 'triage'), { recursive: true });
@@ -735,15 +732,14 @@ switch (cmd) {
   case 'admit': {
     // --by names who admitted it, where that is not the orchestrator: `intake` for standing intake.
     // --hold holds it behind blockers in this batch in the same write, so no pass sees it runnable first.
-    // --hold-collisions holds it behind every unfinished ticket it collides with too, so it waits for
-    // their PRs to merge rather than only for them to stop running. --hold-spine holds it behind this
-    // feature batch's spine until done, and its epic while that waits on its plan. --hold-outside holds
+    // Sharing a file holds nothing here: pass.mjs's per-file budget decides at spawn time.
+    // --hold-spine holds it behind this feature batch's spine until done, and its epic while that waits on its plan. --hold-outside holds
     // it behind blockers in no batch, which pass.mjs lifts once each is Done and on the batch's base.
     // --hold-merge records blockers in no batch that are the person's steps as merge_after: it is built
     // as any other ticket, and the merge driver holds its PR until pass.mjs reads each step Done.
     const [key] = args;
     const by = args.includes('--by') ? args[args.indexOf('--by') + 1] : null;
-    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-merge <STEP>[,<STEP>...]] [--hold-spine] [--hold-collisions]   (after triage.sh <TICKET>)');
+    if (!key || !SAFE_ID.test(key) || key.includes('..') || (args.includes('--by') && !SAFE_ID.test(by ?? ''))) throw new Error('usage: queue.mjs admit <TICKET> [--by <who>] [--hold <BLOCKER>[,<BLOCKER>...]] [--hold-outside <BLOCKER>[,<BLOCKER>...]] [--hold-merge <STEP>[,<STEP>...]] [--hold-spine]   (after triage.sh <TICKET>)');
     const listArg = (flag) => (args.includes(flag) ? String(args[args.indexOf(flag) + 1] ?? '').split(/[,|]/).filter(Boolean) : []);
     const holds = listArg('--hold');
     if (args.includes('--hold') && !holds.length) throw new Error('admit --hold wants the blockers, comma-separated');
@@ -769,7 +765,7 @@ switch (cmd) {
     const elsewhere = belongsElsewhere(key, r, QUEUE);
     if (elsewhere) throw new Error(elsewhere.why);
     const asked = holds.length + outside.length + mergeAfter.length;
-    const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, mergeAfter, holdSpine: args.includes('--hold-spine'), holdCollisions: args.includes('--hold-collisions') });
+    const said = admitInto(q, key, r, { state: stateDir(), by, holds, outside, mergeAfter, holdSpine: args.includes('--hold-spine') });
     save(q);
     console.log(`admitted ${key}${by ? ` by ${by}` : ''}: ${said}${r.blockers?.length && !asked ? ` — its own Jira blockers (${r.blockers.map((b) => b.key).join(', ')}) are not applied: hold it with queue.mjs hold if they are in this batch` : ''}`);
     break;

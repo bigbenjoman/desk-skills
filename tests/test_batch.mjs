@@ -589,8 +589,9 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
 
-  // DS-569: a ticket admitted with --hold-collisions is not held behind a ticket already held behind it,
-  // directly or through another, or each would wait on the other; any other collision still holds it.
+  // DS-755 AC8: a ticket admitted sharing a file with unfinished tickets is held behind none of them,
+  // even when admit is passed the retired --hold-collisions flag: the collision is recorded for the
+  // plan and desk-q, and the pass's per-file budget decides at spawn time.
   aoRec('HC-1', ['src/app.ts']);
   aoRec('HC-2', ['src/app.ts']);
   aoRec('HC-3', ['src/app.ts']);
@@ -598,18 +599,9 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const heldOn = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
   const env = { DESK_CONFIG: aoCfg(null), DESK_QUEUE: join(AO, 'queue-hc.json'), DESK_AUTOPILOT_STATE: AO };
   writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: { 'HC-1': { key: 'HC-1', ...heldOn('HC-2') }, 'HC-3': { key: 'HC-3', ...heldOn('HC-1') }, 'HC-4': { key: 'HC-4', state: 'triaged' } } }));
-  const a = cli('queue.mjs', ['admit', 'HC-2', '--hold-collisions'], env);
+  const a = cli('queue.mjs', ['admit', 'HC-2', '--by', 'intake', '--hold-spine', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
-  t('DS-569 --hold-collisions holds a ticket behind no ticket already waiting behind it', `${a.code} ${hc?.held_by} ${hc?.collides_with}`, '0 HC-4 HC-1|HC-3|HC-4');
-  // A lane park that keeps its holds in held_by beside it waits behind them too, so a ticket it
-  // waits on, directly or through a ticket held behind it, is not held behind it in turn.
-  aoRec('HC-5', ['src/app.ts']);
-  aoRec('HC-6', ['src/app.ts']);
-  aoRec('HC-7', ['src/app.ts']);
-  writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: { 'HC-5': { key: 'HC-5', state: 'parked', held_by: 'HC-6', held_outside: 'HC-6', park: { question: 'lane C — needs a person' } }, 'HC-7': { key: 'HC-7', ...heldOn('HC-5') } } }));
-  const l = cli('queue.mjs', ['admit', 'HC-6', '--hold-collisions'], env);
-  const lc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-6'];
-  t('DS-714 --hold-collisions holds a ticket behind no lane park waiting behind it', `${l.code} ${lc?.held_by} ${lc?.collides_with}`, '0 null HC-5|HC-7');
+  t('DS-755 AC8 a ticket admitted sharing a file with unfinished tickets is held behind none of them', `${a.code} ${hc?.state} ${hc?.held_by} ${hc?.collides_with}`, '0 triaged null HC-1|HC-3|HC-4');
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

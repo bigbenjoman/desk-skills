@@ -262,7 +262,12 @@ function blockerHold(q, key, b, ctx, seen) {
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
   if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
-  const bk = groupOf(stateOf(q, bt, ctx, seen));
+  // A blocker's group is the same by whichever path the walk reaches it (a cycle through it is caught
+  // above, before this line), so it is read once per walk: a dense held_by graph (each ticket naming
+  // every one before it) has exponentially many paths.
+  const memo = (seen.memo ??= new Map());
+  if (!memo.has(b)) memo.set(b, groupOf(stateOf(q, bt, ctx, seen)));
+  const bk = memo.get(b);
   return { k: 'waiting', name: b, text: bk === 'needs' ? `behind ${b}, which needs you` : `behind ${b}` };
 }
 
