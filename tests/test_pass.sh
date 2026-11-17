@@ -4079,7 +4079,7 @@ case "$*" in
   "pr view 903 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr view 904 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 905 "*) echo 'HTTP 502: Bad Gateway' >&2; exit 1 ;;
-  "pr view 906 "*|"pr view 907 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
+  "pr view 906 "*|"pr view 907 "*|"pr view 909 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr view 908 "*) echo '{"state":"CLOSED","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr list "*) echo '[]' ;;
 esac
@@ -4098,7 +4098,8 @@ q add FT-6; q set FT-6 state=triaged lane=A branch=fix/FT-6 result.pr=906 \
   'fix_tries=[{"try":1,"head":"h1","kind":"feedback","what":"review feedback: 1 unresolved thread","at":"2026-11-12T15:28:05Z"}]'
 q add FT-7; q set FT-7 state=triaged lane=A branch=fix/FT-7 result.pr=907 \
   'fix={"try":1,"of":1,"pr":907,"head":"h1","kind":"instruction","ready":true,"what":"your instruction","answer":"rename the flag"}'
-q add FT-8; q set FT-8 state=triaged lane=A branch=fix/FT-8 result.pr=908 resume=pending \
+# Its spawn cleared result, so FT-8 has no result.pr of its own.
+q add FT-8; q set FT-8 state=triaged lane=A branch=fix/FT-8 resume=pending \
   'fix={"try":1,"of":2,"pr":908,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
   'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 out=$(node "$B/pass.mjs" 2>&1)
@@ -4119,6 +4120,14 @@ check "DS-605 a try ended before any worker ran it is marked so, and its threads
 check "DS-605 the person's instruction is not ended by a moved head: its worker carries it out at the new head" \
   'grep -qx FT-7 "$T/ft-spawns" && [ "$(field FT-7 fix.finished)" = null ]'
 check "DS-605 a session waiting to resume on a PR closed since is not resumed, and keeps its try as made" \
-  '! grep -qx FT-8 "$T/ft-spawns" && [ "$(field FT-8 state)" = "\"done\"" ] && [ "$(field FT-8 resume)" = null ] && [ "$(field FT-8 fix.no_worker)" = null ] && [ "$(field FT-8 fix_tries | jq length)" = 1 ] && echo "$out" | grep -qF "FT-8: its fix try 1 of 2 on PR #908 was not resumed, PR #908 was closed unmerged"'
+  '! grep -qx FT-8 "$T/ft-spawns" && [ "$(field FT-8 state)" = "\"done\"" ] && [ "$(field FT-8 resume)" = null ] && [ "$(field FT-8 fix.no_worker)" = null ] && [ "$(field FT-8 fix_tries | jq length)" = 1 ] && [ "$(field FT-8 result.pr)" = 908 ] && echo "$out" | grep -qF "FT-8: its fix try 1 of 2 on PR #908 was not resumed, PR #908 was closed unmerged"'
+# FT-9's migration renames try holds the merge as an instruction does; a pass of its own, so it has a slot.
+export DESK_QUEUE="$T/queue-ft9.json" DESK_AUTOPILOT_STATE="$T/state-ft9"; mkdir -p "$T/state-ft9/logs"
+q init ft9; q set-batch concurrency=1
+q add FT-9; q set FT-9 state=triaged lane=A branch=fix/FT-9 result.pr=909 \
+  'fix={"try":1,"of":2,"extra":true,"pr":909,"head":"h1","kind":"renames","base":"main","renames":[{"from":"a","to":"b","old":"001_a","new":"002_a","files":["src/a.test.ts"]}],"what":"its files name a migration main renamed"}'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-605 a migration renames try, which holds the merge, is not ended by a moved head either" \
+  'grep -qx FT-9 "$T/ft-spawns" && [ "$(field FT-9 fix.finished)" = null ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

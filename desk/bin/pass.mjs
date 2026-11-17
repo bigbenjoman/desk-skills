@@ -2995,7 +2995,9 @@ function fixTryStale(t) {
   const f = t.fix;
   if (!f || f.finished || f.pr == null) return false;
   const resumed = toResume(t) || toHandoff(t);
-  const headBound = Boolean(f.head) && !resumed && !personCall(f) && !f.person;
+  // A renames fix holds the merge as an instruction does (merge-driver.sh instruction_held), so a moved
+  // head does not end it either: its worker updates the migrations at the new head.
+  const headBound = Boolean(f.head) && !resumed && !personCall(f) && !f.person && f.kind !== 'renames';
   const what = `${f.kind === 'capture' ? 'capture try' : f.kind === 'rereview' ? 'review try' : 'fix try'} ${f.try} of ${f.of} on PR #${f.pr}`;
   let v = null;
   try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
@@ -3013,10 +3015,11 @@ function fixTryStale(t) {
   if (!ended) return false;
   const line = `${t.key}: its ${what} was not ${resumed ? 'resumed' : 'spawned'}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
-  // A resumed session's try had its worker, so it stays a try made.
+  // A resumed session's try had its worker, so it stays a try made. Its spawn cleared result, so the PR
+  // is put back for the done tickets' reading below.
   const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
   const unrun = resumed ? [] : ['fix.no_worker=true', `fix_tries=${JSON.stringify(tries)}`];
-  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
+  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
   if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
   report.done.push(merged ? `${line}, recorded merged` : line);
   return true;
