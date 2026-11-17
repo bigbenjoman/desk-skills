@@ -2060,10 +2060,16 @@ const alreadyFinished = (r) => {
   try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
 };
 
+// A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which
+// comes first, so neither of the two starts while the triage item asks.
+const inCycle = (r) => keysOf(r.cycle_link).length > 0;
 const eligibleBase = all.filter((r) =>
   r.state === 'triaged' &&
   (r.open_questions ?? 0) === 0 &&
+  !inCycle(r) &&
   !collidesWithRunning(r));
+const cycleWaits = all.filter((r) => r.state === 'triaged' && inCycle(r));
+if (cycleWaits.length) report.stalled.push(`not spawning ${cycleWaits.map((r) => `${r.key} (linked in Jira as blocked by ${keysOf(r.cycle_link).join(', ')}, which ${keysOf(r.cycle_link).length === 1 ? 'is' : 'are'} held behind it)`).join(', ')}: which comes first is asked in needs-you`);
 const blockedByDone = eligibleBase.filter(alreadyFinished);
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
 // new ticket.

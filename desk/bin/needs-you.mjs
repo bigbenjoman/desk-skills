@@ -746,7 +746,7 @@ function linkItem(r, t, b, kind = 'wontDo') {
   if (kind === 'dropped') {
     need = `${t.key} is held behind ${about}, which is no longer in this batch, so nothing releases it. Is the link still right? If not, release ${t.key} (${releaseCommand(t.key)}); if ${t.key} still needs that work, admit ${b} again (/desk-admit ${b}), and this clears`;
   } else if (kind === 'cycle') {
-    need = `${t.key} and ${about} are linked in Jira as blocking each other, so neither can wait for the other: ${b} is held behind ${t.key}, and ${t.key} is not held behind ${b}. Which comes first? Remove the wrong link in Jira; the next pass that reads ${t.key}'s blockers clears this`;
+    need = `${t.key} and ${about} are linked in Jira as blocking each other, so neither can wait for the other: ${b} is held behind ${t.key}, and ${t.key} does not start until this is settled. Which comes first? Remove the wrong link in Jira; the next pass that reads ${t.key}'s blockers clears this`;
   } else {
     const closed = rec?.resolution ? `closed as ${rec.resolution}` : 'closed';
     const where = r.q?.tickets?.[b] ? 'is in this batch with its PR unmerged' : 'is in no batch';

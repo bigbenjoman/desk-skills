@@ -1263,6 +1263,7 @@ cat > "$T/stub/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira-calls"
 [ -f "$T/jira-down" ] && { echo "jira: 503 Service Unavailable" >&2; exit 1; }
+[ -f "$T/jira-blockers-down" ] && case "\$*" in *--fields=resolution*) echo "jira: 503 Service Unavailable" >&2; exit 1 ;; esac
 [ "\$1" = get ] && cat "$T/jira/\$2.json"
 [ "\$1" = search ] && exec node "$T/jira-search.mjs" "$T/jira" "\$2"
 EOF
@@ -1576,8 +1577,11 @@ check "DS-718 AC6 two queued tickets now linked as blocking each other keep DS-6
   '[ "$(echo "$out" | grep -c "blocker link: J-87: linked as blocked by J-86, which waits behind it: not held, as that is a cycle")" = 1 ] && [ "$(echo "$out" | grep -c "^triage: .*J-8[67] ↔ J-8[67] block each other in Jira, so neither is released")" = 1 ] && [ "$(field J-87 cycle_link)" = "\"J-86\"" ] && [ "$(field J-86 cycle_link)" = null ] || { echo "     $(echo "$out" | grep "J-8[67]")"; false; }'
 check "DS-718 AC6 neither ticket is released: the one held stays held, the other is not held" \
   '[ "$(field J-86 held_by)" = "\"J-87\"" ] && [ "$(field J-86 state)" = "\"parked\"" ] && [ "$(field J-87 held_by)" = null ]'
-links J-86 J-87 new Open; links J-87 J-86 new Open; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
-check "DS-718 AC6 the next pass raises no second item for the cycle" '! echo "$out" | grep -q "block each other" && [ "$(field J-87 cycle_link)" = "\"J-86\"" ]'
+check "DS-718 AC6 neither ticket is released: the one not held does not spawn while the cycle stands" \
+  'echo "$out" | grep -q "not spawning J-87 (linked in Jira as blocked by J-86, which is held behind it): which comes first is asked in needs-you"'
+# links_seen emptied, so the next read sees J-86 as newly linked again and only cycle_link stops a second item.
+links J-86 J-87 new Open; links J-87 J-86 new Open; q set J-87 'links_seen=[]'; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC6 the next pass raises no second item for the cycle" 'echo "$out" | grep -q "blocker link: J-87: linked as blocked by J-86, which waits behind it" && ! echo "$out" | grep -q "block each other" && [ "$(field J-87 cycle_link)" = "\"J-86\"" ]'
 links J-87; out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-718 AC6 once the link is gone the cycle clears" '[ "$(field J-87 cycle_link)" = null ]'
 q drop J-86; q drop J-87
@@ -1588,7 +1592,11 @@ links J-88; links J-89 J-81 new Open; touch "$T/jira-down"
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
 check "DS-718 AC7 a search that fails keeps every hold and says when it is tried again" \
   '[ "$(field J-88 held_by)" = "\"J-81\"" ] && [ "$(field J-88 state)" = "\"parked\"" ] && [ "$(field J-89 held_by)" = null ] && echo "$out" | grep -q "blocker links: .*J-88.* not read, holds kept as they were and tried again in [0-9]* minutes" && echo "$out" | grep -q "blocker links: .*J-89.* not read"'
-rm -f "$T/jira-down"; q drop J-88; q drop J-89; q drop J-81
+rm -f "$T/jira-down"; touch "$T/jira-blockers-down"; q set J-88 outside_blockers_read=null; q set J-89 outside_blockers_read=null
+out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1)
+check "DS-718 AC7 the blockers' search failing keeps every hold the same way" \
+  '[ "$(field J-89 held_by)" = null ] && echo "$out" | grep -q "blocker links: .*J-89.* not read, holds kept as they were and tried again in [0-9]* minutes: .*blockers. search failed" || { echo "     $(echo "$out" | grep "J-89")"; false; }'
+rm -f "$T/jira-blockers-down"; q drop J-88; q drop J-89; q drop J-81
 # A done ticket whose PR waits on the person's step (merge_after) is read from Jira again, and the step
 # is lifted once Jira has it Done.
 ops1(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"OPS-1","fields":{"summary":"Apply the migration","issuetype":{"name":"Task"},"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-8.json"

@@ -156,12 +156,14 @@ step as `merge_after`, and the report says `blocker link: <TICKET>: newly linked
 lane, size or design park keeps its park, its holds beside it. No
 hold is added for a blocker already Done and on the base, merged in the batch, failed in the batch
 (said), or waiting behind the ticket (said as a cycle, and raised once as a needs-you `triage` item
-naming both tickets, `cycle_link`). A hold on a ticket dropped from the batch (`dropped_link`), and a
+naming both tickets, `cycle_link`; the ticket does not start while it stands, so neither of the two
+does). A hold on a ticket dropped from the batch (`dropped_link`), and a
 blocker in the batch closed as Won't Do with its PR unmerged (`wont_do_link`, as for one in no batch),
 are each raised once the same way. A ticket whose worker started keeps its holds, and
 the report says the link arrived after it started. A link removed lifts a hold in no batch (*outside
 holds*, above) but never one in the batch, which may be a shared file or the spine: the report says the
-link went, and the release is yours. A read that fails keeps every hold and is tried again next interval.
+link went, and the release is yours. A read that fails, either search, keeps every hold and is tried
+again next interval.
 What a read adds is measured against the links the pass last acted on for the ticket (`links_seen`),
 not the triage record, so a read cut off part-way is acted on by the next one. A ticket's first
 `links_seen` is its record before its first read, so a hold you released by hand is not taken for a
