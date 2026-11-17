@@ -39,6 +39,7 @@ import { readLog, readLogFile } from './harvest.mjs';
 import { logUsage, ticketCost } from './worker-cost.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readQueue } from './batch-state.mjs';
+import { everyTicket } from './queue-store.mjs';
 import { allBatches } from './phase0-report.mjs';
 import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 
@@ -145,7 +146,9 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
   for (const b of batches) {
     let q;
     try { q = readQueue(b.queue); } catch { continue; }
-    for (const t of Object.values(q?.tickets ?? {})) {
+    // Archived tickets too: a pass archives every done ticket whose PR merged (queue-store.mjs archiveDone).
+    for (const [key, v] of everyTicket(q)) {
+      const t = { ...v, key: v?.key ?? key };
       const m = Date.parse(t?.merged_at);
       if (!Number.isFinite(m) || m < now - 28 * DAY_MS || m > now) continue;
       let c = null;
@@ -156,10 +159,10 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
   return usd / 4;
 }
 
-// Every queue ticket of the repo's batches, for the sample.
+// Every queue ticket of the repo's batches, archived ones included (a merged ticket is archived), for the sample.
 export function repoTickets(slug, batches = allBatches(slug)) {
   return batches.flatMap((b) => {
-    try { return Object.entries(readQueue(b.queue)?.tickets ?? {}).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
+    try { return everyTicket(readQueue(b.queue)).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
   });
 }
 

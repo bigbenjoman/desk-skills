@@ -97,6 +97,23 @@ t('AC1 balanced: an arm with 12 merges holds the other to its 2', ['on', 'off'].
 t('AC1 a lever the row does not leave to auto is not sampled', A.sampleAudits({ slug: S1, events: read(S1).events, tickets: all1, states: { ...AUTO, codex: 'off' } }).length, 0);
 t('AC1 a ticket drawn under another trial is not sampled', A.sampleAudits({ slug: S1, events: read(S1).events, tickets: tickets(`${S1}/codex/old`, 20, 20, 'X'), states: AUTO }).length, 0);
 
+// A pass archives every done ticket whose PR merged (queue-store.mjs archiveDone): the sample and the
+// weekly spend read those archived tickets as well as the live ones.
+{
+  const bdir = join(T, 'archived-batch');
+  mkdirSync(join(bdir, 'logs'), { recursive: true });
+  const [live, ...rest] = tickets(tid1, 5, 5, 'R');
+  writeFileSync(join(bdir, 'queue.json'), JSON.stringify({ batch: 'B', tickets: { [live.key]: live } }));
+  const recent = rest.at(-1);
+  recent.merged_at = iso(NOW - DAY);
+  writeFileSync(join(bdir, 'queue.archive.json'), JSON.stringify({ tickets: Object.fromEntries(rest.map((x) => [x.key, x])) }));
+  writeFileSync(join(bdir, 'logs', `${recent.key}.log`), workerLog({ head: 'abc', usd: 8 }));
+  const batches = [{ queue: join(bdir, 'queue.json'), state: bdir }];
+  const got = A.repoTickets(S1, batches);
+  t('AC1 archived merged tickets are sampled with the live ones', [got.length, A.sampleAudits({ slug: S1, events: read(S1).events, tickets: got, states: AUTO }).map((s) => s.ticket)], [10, ['R-on5', 'R-off5']]);
+  t('AC6 an archived merged ticket counts in the weekly spend', A.weeklySpend({ slug: S1, now: NOW, batches }), 2);
+}
+
 // ---- AC2, AC3, AC4, AC9: one audit, start to record ----------------------------------------------
 const S2 = 'acme__record';
 const tid2 = repo(S2);
