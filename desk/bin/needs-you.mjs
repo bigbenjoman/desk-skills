@@ -8,7 +8,8 @@
 //       line starts. Before listing it reads GitHub, Jira and git again: a parked or session item whose
 //       own PR merged, with its ticket done (or in no tracker), is recorded done, and a worktree held for
 //       changes since committed and pushed is released, each with a line saying so. A draft whose
-//       review left requirement gaps quotes each gap from that review on GitHub
+//       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
+//       person's merge hold reads its files and checks there, to say once the hold's step is done
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -66,9 +67,10 @@
 // (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
-// first, then any put off with three or more held tickets behind it, then the longest waiting, less any
-// other put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
-// offered, that offers none it did not offer then. Exits 0, or 11
+// first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
+// less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
+// offered, that offers none it did not offer then; one put off is listed anyway while three or more
+// held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -77,7 +79,7 @@ import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
-import { approvalFiles, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
+import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
@@ -423,7 +425,7 @@ function draftPlain(r, n, u, gapLines = null) {
 
 // A PR into the default branch under a §4 Merge hold (desk-q parseHoldNote): the hold's step comes
 // first, so the need names it, or the routine desk ran and the step it failed at.
-function holdPlain(n, w) {
+function holdPlain(n, w, done = null) {
   const files = w.where ? ` (${one(w.where)})` : '';
   if (w.failed) {
     return `${n} touches files under a merge hold${files}, and desk ran its routine, \`${w.routine}\`, at ${w.failed.sha}: it failed (exit ${w.failed.exit}) at "${one(w.failed.step)}". Settle that step and finish the routine by hand, then merge it on GitHub; the ticket is then done.`;
@@ -435,8 +437,29 @@ function holdPlain(n, w) {
   if (w.routine) return `${step} desk can run its routine, \`${w.routine}\`, but ${w.off ?? 'it was not run'}. Run it and take that step yourself, then merge it on GitHub; the ticket is then done.`;
   // With no routine, a step an agent can check is a gap in the config, not the person's to take.
   if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
-  // Otherwise the hold's reason is the step the person takes before merging.
+  // Otherwise the hold's reason is the step the person takes before merging, unless it reads done.
+  if (done) return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Its step is done: the PR changes ${andList(done.map((f) => `\`${f}\``))}, and its checks are green. Only the merge is left: merge it on GitHub; the ticket is then done.`;
   return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
+}
+
+// The files a hold's reason names: a backticked path, a path with a slash, or a file name with one of
+// these extensions. A script is a step to run, not a file the step changes, so it is left out.
+const HOLD_FILE = /`([^`\s]+)`|(?<![\w/.:-])((?:[\w.-]+\/)+[\w.*-]+|[\w.-]+\.(?:md|json|ya?ml|txt|toml|csv))(?![\w/-])/gi;
+const SCRIPT = /\.(?:sh|py|[cm]?[jt]s|rb)$/i;
+const holdFiles = (why) => [...new Set([...String(why ?? '').matchAll(HOLD_FILE)].map((m) => (m[1] ?? m[2]).replace(/[.,;:]+$/, ''))
+  .filter((p) => /[/.]/.test(p) && !SCRIPT.test(p)))];
+// A person's merge hold whose step reads done on GitHub: the PR changes every file its reason names
+// (a sign-off or approval file), and its checks at its head are green. -> those files, or null when the
+// reason names none, one is unchanged, a check is not green, or the PR cannot be read.
+function holdStepDone(r, t, w, reads) {
+  const named = holdFiles(w.why);
+  if (!named.length || w.routine || w.failed || !holdNeedsPerson(w.why)) return null;
+  const { v } = reads.pr(r, t.result.pr, ',files,statusCheckRollup');
+  if (v?.state !== 'OPEN') return null;
+  const changed = (v.files ?? []).map((f) => String(f?.path ?? ''));
+  if (!named.every((p) => changed.some((f) => f === p || globToRegExp(p).test(f)))) return null;
+  const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup));
+  return evaluateGate(checks, { required: r.ctx?.required ?? [], advisory: r.ctx?.advisory ?? [] }).state === 'pass' ? named : null;
 }
 
 // ---- A red check that wants a person's approval, as its error line says: a review gate on protected
@@ -477,7 +500,8 @@ function approvalAsk(t, w) {
 }
 
 // An unmerged PR's need, from the reason desk-q has it need the person (prWhy).
-function prPlain(r, t, gapLines = null) {
+// `reads` (READS) lets a merge hold's need read whether its step is done; without it none is read.
+function prPlain(r, t, gapLines = null, reads = null) {
   const n = `PR #${t.result.pr}`;
   const w = prWhy(r, t) ?? {};
   const ask = approvalAsk(t, w);
@@ -491,7 +515,7 @@ function prPlain(r, t, gapLines = null) {
     case 'spine': return `${n} is the feature spine, still a draft. Approve its acceptance specs; desk then takes it out of draft.`;
     case 'skipped': return `${n} is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; ${thenMerge(r)}.`;
     case 'draft': return draftPlain(r, n, w.undraft, gapLines);
-    case 'hold': return holdPlain(n, w);
+    case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
     case 'conflict': return conflictPlain(r, t, n, w.base);
@@ -844,7 +868,7 @@ function itemOf(r, x, reads = null) {
   // takes their call on them, which a worker on the PR carries out.
   if (x.pr) {
     const stuck = stuckOf(t, r.ctx);
-    const need = prPlain(r, t, reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
+    const need = prPlain(r, t, reads && draftHasGaps(t) ? draftGapsOf(r, t, reads) : null, reads), note = [captureNote(stuck), doneNote(t)].filter(Boolean).join(' ');
     // Closed unmerged: nothing merges it, so the ticket leaves the batch, or goes back for a new PR.
     if (t.pr_status?.state === 'CLOSED') return { kind: 'pr', need, note, actions: [['drop', 'its PR was closed without merging, so nothing will merge it; drop takes the ticket out of the batch and removes its clean worktree'], ['requeue'], ['not-now']] };
     const openPr = (...actions) => ({ kind: 'pr', need, note, actions: [...actions, SEND_BACK, ['not-now']] });
@@ -982,6 +1006,7 @@ export const HOLDS_BACK = 3;
 // How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
 export const heldBehind = (r, key) => heldBehindOf(r.q, key).size;
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
+const behindWords = (n) => (n === 1 ? '1 ticket waits behind this' : `${n} tickets wait behind this`);
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
 function stillListed(r, key) {
   const n = heldBehind(r, key);
@@ -990,8 +1015,9 @@ function stillListed(r, key) {
 function judged(r, x, register, reads = null) {
   const item = itemOf(r, x, reads);
   const l = lookup(register, putOffKey(r, x.t, item));
-  if (l.status !== 'put_off') return { item, l };
   const behind = heldBehind(r, x.t.key);
+  // A live item says how many held tickets wait behind it, and ranks by that (collect).
+  if (l.status !== 'put_off') return { item: behind > 0 ? { ...item, need: `${item.need} (${behindWords(behind)})`, behind } : item, l };
   const shown = behind >= HOLDS_BACK ? { ...item, need: `${item.need} (${holdingWords(behind)})`, behind } : item;
   const was = Array.isArray(l.entry.actions) ? l.entry.actions : null, now = verbsOf(item);
   if (was ? now.every((a) => was.includes(a)) : !recordedBefore(l.entry)) return shown === item ? { item, l } : { item: shown, l: { status: 'holding', entry: l.entry } };

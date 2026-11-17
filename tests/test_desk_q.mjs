@@ -2277,5 +2277,20 @@ r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
 
+// ---- A row whose waiting tickets all wait on one ticket, with nothing else ready or running,
+// names that ticket in a note under the table: its PR and the person's merge, or its running stage.
+const held657 = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } });
+const hold657 = 'merge hold: call-script sign-off — prompts/**, 1 file(s), e.g. prompts/call.md';
+const put657 = (name, port, tickets) => put(I.T, I.env, name, { port, conc: '2 / 3', beat: 1, queue: { batch: name, concurrency: 2, tickets } });
+put657('merge657', 5701, { 'M-1': { ...prOn(954, [okCheck('tests')]), merge_blocked: hold657 }, 'M-2': held657('M-1'), 'M-3': held657('M-2'), 'M-4': held657('M-1|M-3') });
+put657('run657', 5702, { 'R-1': { state: 'running', stage: '4/9' }, 'R-2': held657('R-1'), 'R-3': held657('R-2') });
+put657('ready657', 5703, { 'D-1': { ...prOn(955, [okCheck('tests')]), merge_blocked: hold657 }, 'D-2': held657('D-1'), 'D-3': { state: 'queued' } });
+put657('two657', 5704, { 'T-1': { state: 'running', stage: '3/9' }, 'T-2': { state: 'running', stage: '5/9' }, 'T-3': held657('T-1'), 'T-4': held657('T-2') });
+const notes657 = (name) => lines(Q.overview(Q.loadRepos(NOW).filter((r) => r.name === name), { now: NOW, avail: 30 })).filter((l) => l.includes(`· ${name} `)).map((l) => l.replace(/^note {2}· \S+ +/, ''));
+t('DS-657 AC3 every waiting ticket behind one PR under a merge hold: the row names the ticket, its PR and your merge', notes657('merge657').join(' / '), 'all 3 wait on M-1 (PR #954, your merge).');
+t('DS-657 AC4 every waiting ticket behind one running ticket: the row names it and its stage', notes657('run657').join(' / '), 'all 2 wait on R-1 (running, stage 4/9).');
+t('DS-657 AC3 negative control: a ready ticket in the row adds no note', notes657('ready657').length, 0);
+t('DS-657 AC4 negative control: waiting tickets behind two tickets add no note', notes657('two657').length, 0);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
