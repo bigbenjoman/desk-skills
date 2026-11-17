@@ -248,8 +248,11 @@ export const conflictTriesMade = (done, now) => {
 const repairsCapped = (done) => conflictTries(done).length >= CONFLICT_REPAIRS_MAX;
 const conflictSpent = (done, head, now) => repairsCapped(done) || conflictTriesMade(done, now) >= FIX_TRIES_MAX || conflictTries(done).some((x) => x.head === head);
 const nextConflictTry = (done, pr, head, fix, now) => ({ call: 'requeue', fix: { try: conflictTriesMade(done, now) + 1, of: FIX_TRIES_MAX, pr, head, ...fix } });
+// A try a worker finished, not one the pass ended before any worker ran it (pass.mjs fixTryStale,
+// `no_worker`): only a worker's try has a summary of its own or pushed past its head.
+export const workerFinished = (f) => Boolean(f?.finished && !f.no_worker);
 // What the ticket's last try of that kind reported, once its worker has finished; else null.
-export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && t.fix.finished && t.result?.summary) || null;
+export const lastTrySaid = (t, kind = 'conflict') => (t?.fix?.kind === kind && workerFinished(t.fix) && t.result?.summary) || null;
 const lastSaid = (t, kind = 'conflict') => (lastTrySaid(t, kind) ? `; the last try said: ${lastTrySaid(t, kind)}` : '');
 // At the overall limit the reason always names the files (`capFiles`), which the person resolves by hand.
 // A merged-tree failure (`check`) names the check and its last line instead.
@@ -623,7 +626,7 @@ export function feedbackFix(t, { pr, head, decision, threads }) {
 // finished, did not park, and pushed past the try's head. [] otherwise.
 export function resolvable(t, head) {
   const f = t.fix;
-  if (f?.kind !== 'feedback' || !f.finished || t.state !== 'done' || !head || head === f.head) return [];
+  if (f?.kind !== 'feedback' || !workerFinished(f) || t.state !== 'done' || !head || head === f.head) return [];
   return (f.threads ?? []).filter((x) => x.id && !(f.resolved ?? []).includes(x.id));
 }
 // The reply the pass posts on a thread a feedback try worked, before resolving it.
@@ -829,7 +832,7 @@ export function syncFix(t, { pr, head, base, why, draft = true }) {
 }
 // What the last sync try said, once its worker finished: for a check build that still fails at the
 // head it left.
-export const syncSaid = (t) => (t.fix?.kind === 'sync' && t.fix.finished
+export const syncSaid = (t) => (t.fix?.kind === 'sync' && workerFinished(t.fix)
   ? `, after sync try ${t.fix.try} of ${t.fix.of} merged ${t.fix.base}${t.result?.summary ? `, which said: ${t.result.summary}` : ''}` : '');
 
 // A child whose own files name a migration its base has renumbered (migration-renames.mjs) goes to a
@@ -857,7 +860,7 @@ export function captureTry(t, { pr, head, files }) {
   const done = t.fix_tries ?? [];
   if (done.some((x) => x.kind === 'capture')) {
     const summary = String(t.result?.summary ?? '');
-    const last = t.fix?.kind === 'capture' && t.fix.finished ? String(t.result?.done?.said ||/\bsaid=(.*)$/.exec(summary)?.[1]?.trim() || summary) : '';
+    const last = t.fix?.kind === 'capture' && workerFinished(t.fix) ? String(t.result?.done?.said ||/\bsaid=(.*)$/.exec(summary)?.[1]?.trim() || summary) : '';
     const said = last ? `; the capture try said: ${last}` : '';
     return { call: 'stuck', why: `${files.length} screenshot(s) still not taken after a capture try: ${files.join(', ')}${said}` };
   }

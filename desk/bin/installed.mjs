@@ -1,16 +1,19 @@
 #!/usr/bin/env node
 // The installed desk version, and moving what still runs onto it. install.sh runs both at the end:
-//   node installed.mjs record <checkout>   write <DESK_HOME>/installed.json: the commit installed from
+//   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
+//                                          installed from (and the release's own release.json)
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
+//   node installed.mjs prune               delete all but the newest three releases, never the current one
+//   node installed.mjs rollback            make the release before the current one current (exit 1: none)
 //
-// install.sh replaces scripts by rename, so a running merge driver keeps its old copy until it is
+// install.sh puts each install in a release folder of its own, so a running merge driver keeps its old copy until it is
 // started again. A driver is restarted only while it waits between loops (its one child is `sleep`):
 // one mid-loop may be merging, so it is left, and a supervisor tick restarts it the same way once it
 // waits between loops (supervisor.mjs moveDriver). Each one is
 // started again with the tickets and deps it was given, from its repo's §2 Primary repo root.
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, openSync, closeSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, readdirSync, mkdirSync, openSync, closeSync, realpathSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,16 +37,75 @@ export const oldCode = (version, installed = readInstalled()) => Boolean(install
 // A source that is not a git checkout has no commit, so it gets one of its own for this install: the
 // version before it must not stay recorded, or what started on older code would read as current.
 // `dirty` means a tracked file differs from the commit; untracked files are not installed code.
-function record(src) {
+// With a release folder, the same record is written into it as release.json, which rollback reads.
+function record(src, release = null) {
   const git = (...a) => spawnSync('git', ['-C', src, ...a], { encoding: 'utf8' });
   const head = git('rev-parse', 'HEAD');
   const at = new Date().toISOString();
   const v = head.status === 0
     ? { commit: head.stdout.trim(), dirty: Boolean(git('status', '--porcelain', '--untracked-files=no').stdout.trim()), at, from: src }
     : { commit: `unversioned-${at}`, dirty: null, at, from: src };
+  if (release) {
+    v.release = basename(release);
+    writeFileSync(join(release, RELEASE_FILE), `${JSON.stringify(v, null, 2)}\n`);
+  }
   mkdirSync(E.deskHome(), { recursive: true });
   writeFileSync(installedFile(), `${JSON.stringify(v, null, 2)}\n`);
   return v;
+}
+
+// ---- releases --------------------------------------------------------------------------------
+// install.sh puts desk's scripts and templates in <DESK_HOME>/releases/<name>/{bin,templates};
+// `current` is a relative link to the live one, and <DESK_HOME>/bin and /templates link through it.
+// A release's order is its release.json `at` (when it last went live), else its folder's mtime.
+export const KEEP_RELEASES = 3;
+const RELEASE_FILE = 'release.json';
+export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
+export function currentRelease(home = E.deskHome()) {
+  try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
+}
+export function releases(home = E.deskHome()) {
+  const dir = releasesDir(home);
+  const out = [];
+  for (const name of existsSync(dir) ? readdirSync(dir) : []) {
+    if (name.startsWith('.') || !statSync(join(dir, name)).isDirectory()) continue;
+    let info = null;
+    try { info = JSON.parse(readFileSync(join(dir, name, RELEASE_FILE), 'utf8')); } catch { /* none written */ }
+    const t = Date.parse(info?.at ?? '');
+    out.push({ name, info, at: Number.isNaN(t) ? statSync(join(dir, name)).mtimeMs : t });
+  }
+  return out.sort((a, b) => a.at - b.at || a.name.localeCompare(b.name));
+}
+// Points `current` at releases/<name> in one rename, so no reader ever finds it missing.
+export function makeCurrent(name, home = E.deskHome()) {
+  const tmp = join(home, `.current.${process.pid}`);
+  rmSync(tmp, { force: true });
+  symlinkSync(join('releases', name), tmp);
+  renameSync(tmp, join(home, 'current'));
+}
+// Deletes all but the newest `keep` releases, never the current one. One line per release deleted.
+export function pruneReleases(keep = KEEP_RELEASES, home = E.deskHome()) {
+  const cur = currentRelease(home);
+  const list = releases(home);
+  return list.slice(0, Math.max(0, list.length - keep)).filter((r) => r.name !== cur).map((r) => {
+    rmSync(join(releasesDir(home), r.name), { recursive: true, force: true });
+    return `removed release ${r.name} (only the newest ${keep} are kept)`;
+  });
+}
+// Makes the release before the current one current, and records its commit as installed.
+// {ok, line}; with no earlier release, nothing changes.
+export function rollback(home = E.deskHome()) {
+  const cur = currentRelease(home);
+  const list = releases(home);
+  const at = list.findIndex((r) => r.name === cur);
+  if (at < 1) {
+    return { ok: false, line: `nothing rolled back: there is no earlier release than ${cur ? `the current one (${cur})` : 'what is installed'} in ${releasesDir(home)}` };
+  }
+  const prev = list[at - 1];
+  makeCurrent(prev.name, home);
+  const v = { commit: prev.info?.commit ?? `release-${prev.name}`, dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
+  return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
 }
 
 // ---- merge drivers ---------------------------------------------------------------------------
@@ -191,11 +253,13 @@ const isMain = () => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 };
 if (isMain()) {
-  const [cmd, arg] = process.argv.slice(2);
+  const [cmd, arg, rel] = process.argv.slice(2);
   try {
-    if (cmd === 'record' && arg) { const v = record(arg); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
+    if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);
-    else { console.error('usage: installed.mjs record <checkout> | version | restart'); process.exit(2); }
+    else if (cmd === 'prune') for (const l of pruneReleases()) console.log(l);
+    else if (cmd === 'rollback') { const r = rollback(); console.log(r.line); if (!r.ok) process.exit(1); }
+    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | restart | prune | rollback'); process.exit(2); }
   } catch (e) { console.error(`installed: ${e.message}`); process.exit(1); }
 }

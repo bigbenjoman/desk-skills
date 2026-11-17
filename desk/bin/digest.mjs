@@ -410,7 +410,7 @@ const who = () => {
 };
 
 // Records an answer through the named repo's answer.mjs, as an answer given there would be.
-export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.binDir(), now = new Date() }) {
+export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.runBin(), now = new Date() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
