@@ -378,6 +378,17 @@ const cloudQ = join(PR_ROOT, 'cloud-queue.json');
 writeFileSync(cloudQ, JSON.stringify({ tickets: { 'C-1': { key: 'C-1', added_at: iso(DAY_MS), location: 'cloud', cloud: { url: 'https://claude.ai/code/s1', started_at: iso(DAY_MS) } } } }));
 const cloudRow = ticketRows({ queue: cloudQ, state: liveS, slug: 'o__r', since: SINCE }).rows[0];
 t('per-ticket AC4: a cloud worker\'s row is incomplete, not a complete zero', `${cloudRow.key} ${cloudRow.cost_complete} ${cloudRow.runs} ${cloudRow.cost}`, 'C-1 false 1 0');
+// A done, merged ticket moves to the queue's archive file (queue-store.mjs archiveDone): it still has a row.
+const archivedQ = join(PR_ROOT, 'archived-queue.json');
+writeFileSync(archivedQ, JSON.stringify({ tickets: { 'L-1': { key: 'L-1', added_at: iso(DAY_MS), state: 'parked' } } }));
+writeFileSync(join(PR_ROOT, 'archived-queue.archive.json'), JSON.stringify({ tickets: {
+  'A-1': { key: 'A-1', added_at: iso(2 * DAY_MS), state: 'done', merged_at: iso(DAY_MS), result: { pr: 1 } },
+  'L-1': { key: 'L-1', added_at: iso(2 * DAY_MS), state: 'done', merged_at: iso(DAY_MS), result: { pr: 2 } },
+} }));
+const archRows = ticketRows({ queue: archivedQ, state: liveS, slug: 'o__r', since: SINCE }).rows;
+t('levers: an archived ticket has a per-ticket row, and a ticket in both is the live copy once',
+  archRows.map((r) => `${r.key} ${r.state}`).sort().join(', '), 'A-1 done, L-1 parked');
+t('levers: an archived ticket counts in the batch figures', batchFigures({ queue: archivedQ, state: liveS, slug: 'o__r', since: SINCE }).accepted, 1);
 t('per-ticket: red CI not read is null, never zero', perTicket({ slug: 'o__r', batches: ptBatches, since: SINCE, until: NOW, ci: false }).rows[0].ci_reds, null);
 const nineIso = new Date(NOW - 5 * DAY_MS).toISOString();
 const twoIso = new Date(NOW - 2 * DAY_MS).toISOString();

@@ -5068,7 +5068,7 @@ if (!DRY) { const pm = postMergeWatch({ state: STATE, queue: queue(), repo: GH_R
 // A lever that did visible harm on one of this batch's tickets is reverted in this repo every pass.
 if (!DRY) {
   try {
-    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), state: STATE, queue: queue(), states: E.leverStates({}).states });
+    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? null, state: STATE, queue: queue(), states: E.leverStates({}).states });
     if (tr.line) out.push(tr.line);
   } catch (e) { out.push(`levers trips: not run (${String(e?.message ?? e).split('\n')[0]})`); }
 }
@@ -5516,7 +5516,8 @@ function reportOverrides() {
   try { seen = JSON.parse(readFileSync(seenFile, 'utf8')); } catch { /* none reported yet */ }
   const fresh = [];
   for (const e of readDecisions(STATE).overrides) {
-    if (seen.includes(e.id)) continue;
+    // A lever's override is applied by the override itself (lever-changes.mjs): no ticket waits on it.
+    if (seen.includes(e.id) || e.lever) continue;
     fresh.push(e.id);
     report.waiting.push(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`);
   }

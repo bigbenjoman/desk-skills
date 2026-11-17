@@ -1,5 +1,5 @@
 // suite: levers evaluate (the daily adopt, revert, settle or hold of each lever on trial, per repo)
-// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
+// covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -15,7 +15,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome
 mkdirSync(join(T, 'home'), { recursive: true });
 
 const { evaluate, evaluateDue, decide } = await import('../desk/bin/levers-evaluate.mjs');
-const { append, read } = await import('../desk/bin/lever-log.mjs');
+const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { assignPin } = await import('../desk/bin/levers-auto.mjs');
 const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registry.mjs');
 const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
@@ -253,6 +253,145 @@ const { failedRuns } = await import('../desk/bin/phase0-report.mjs');
 let ghCalls = 0;
 const listed = failedRuns({ repo: 'acme/x', since: NOW, jobs: false, gh: () => { ghCalls += 1; return { status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'b1' }, { databaseId: 2, headBranch: 'b2' }]) }; } });
 t('red CI for the evaluation is one list call, no per-run view', [ghCalls, listed.runs.map((r) => r.branch)], [1, ['b1', 'b2']]);
+{
+  // A finished, merged ticket moves to the queue's archive (queue-store.mjs archiveDone): it is still evidence.
+  const { repoRows } = await import('../desk/bin/levers-evaluate.mjs');
+  const dir = join(T, 'archived-batch');
+  mkdirSync(dir, { recursive: true });
+  const queue = join(dir, 'queue.json');
+  writeFileSync(queue, JSON.stringify({ tickets: {} }));
+  const added = new Date(NOW - 3 * DAY).toISOString();
+  writeFileSync(join(dir, 'queue.archive.json'), JSON.stringify({ tickets: { 'Z-1': {
+    key: 'Z-1', state: 'done', added_at: added, merged_at: new Date(NOW - 2 * DAY).toISOString(), result: { pr: 7 }, branch: 'feat/Z-1',
+    levers: { set: ['wrappers'], arms: { wrappers: 'on' }, trial_ids: { wrappers: 'acme__arch/wrappers/initial' }, fp: {}, block: null, at: added },
+  } } }));
+  const gh = () => ({ status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'feat/Z-1' }, { databaseId: 2, headBranch: 'other' }]) });
+  const got = repoRows({ slug: 'acme__arch', ghRepo: 'acme/arch', now: NOW, batches: [{ name: 'b', queue, state: join(dir, 'state') }], gh });
+  t('an archived ticket is an evidence row, its red CI matched by its branch', got.rows.map((r) => [r.key, r.ci_reds]), [['Z-1', 1]]);
+}
+
+// ---- DS-644: each adopt or revert is a decision, listed on the digest and overridden from it ----------------------------------------------------
+{
+  const { checkin, override, leverChanges, DEFAULT_TIMES } = await import('../desk/bin/digest.mjs');
+  const { applyTrips } = await import('../desk/bin/levers-trips.mjs');
+  const { leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+  const HOUR = 3_600_000;
+  const BIN = new URL('../desk/bin', import.meta.url).pathname;
+  const decisionsOf = (slug) => jsonl(join(stateOf(slug), 'decisions.jsonl')).filter((d) => d.lever && !d.override_of);
+  const entry = (slug) => {
+    const queue = join(T, 'q', slug, 'queue.json');
+    mkdirSync(join(T, 'q', slug), { recursive: true });
+    writeFileSync(queue, JSON.stringify({ batch: 'b', tickets: {} }));
+    return { slug, batch: null, state: stateOf(slug), queue };
+  };
+  const TRIPS = 'acme__trips';
+  mkdirSync(stateOf(TRIPS), { recursive: true });
+  const list = [entry(A1), entry(A2), entry(TRIPS)];
+  const dir = join(T, 'digest');
+  const dig = (h) => checkin({ times: DEFAULT_TIMES, now: new Date(NOW + h * HOUR), dir, list, bin: BIN, self: A1, promote: () => null, checkJira: () => null });
+  const leversOf = (page) => { const s = page.indexOf('## Levers\n'); return s < 0 ? null : page.slice(s, page.indexOf('\n## ', s + 1) < 0 ? undefined : page.indexOf('\n## ', s + 1)).trim().split('\n'); };
+
+  const [d1] = decisionsOf(A1);
+  t('DS-644 AC3 the adopt is one engineering decision in the repo\'s decisions log', decisionsOf(A1).map((d) => [d.lever, d.category, d.chose, d.lever_event]), [['wrappers', 'engineering', 'on', a1t[0].id]]);
+  const [d2] = decisionsOf(A2);
+  t('DS-644 AC3 a revert is one too, with off chosen', decisionsOf(A2).map((d) => [d.lever, d.category, d.chose]), [['wrappers', 'engineering', 'off']]);
+
+  const r1 = await dig(12);
+  const p1 = readFileSync(r1.page, 'utf8');
+  const l1 = leversOf(p1);
+  const adoptLine = l1?.find((l) => l.startsWith('- [ ] adopted wrappers in adopts'));
+  t('DS-644 AC1 the Levers line names the lever, the repo, the mechanism and cost changes with their intervals, the tickets per arm and the guardrails',
+    /^- \[ \] adopted wrappers in adopts: permission denials per start -\d+% \(90%: -\d+% to -\d+%\), cost per ticket [+-]?\d+% \([+-]?\d+% to [+-]?\d+%\), 30 vs 30 tickets, no guardrail moved · id `[0-9a-f]{16}` · override: `node \S+digest\.mjs override acme__adopts [0-9a-f]{16} off`$/.test(adoptLine ?? ''), true);
+  t('DS-644 AC1 it carries the decision\'s id', adoptLine?.includes(`id \`${d1.id}\``), true);
+  t('DS-644 AC1 and raises no needs-you item', [eventsOf(A1, 'needs_you').length, p1.includes('### Questions'), p1.includes('### Decisions taken')], [0, false, false]);
+  t('DS-644 AC11 the section\'s last line opens the Levers page', l1?.at(-1), `open: file://${join(T, 'home', '.desk-autopilot', 'levers', 'index.html')}`);
+  t('DS-644 AC11 and the digest builds the page it links', existsSync(join(T, 'home', '.desk-autopilot', 'levers', 'index.html')), true);
+  t('DS-644 a push for lever changes alone counts their repos', /lever change\(s\) across 2 repo\(s\)/.test(r1.push?.text ?? ''), true);
+  t('DS-644 the revert is listed with its reason', l1?.some((l) => l.startsWith('- [ ] reverted wrappers in breach (fix tries and parks per ticket rose past their margin): ')), true);
+
+  t('DS-644 AC2 no lever change since the last digest, no Levers section', leversOf(readFileSync((await dig(36)).page, 'utf8')), null);
+
+  // A hard trip in another repo, and the adopt overridden off and the revert on.
+  applyTrips({ slug: TRIPS, trips: [{ lever: 'wrappers', trip: 'post-merge-revert', ticket: 'T-900', file: join(stateOf(TRIPS), 'post-merge.jsonl'), line: 3, why: 'its PR #9 was reverted after merging', from: 'trial' }], now: NOW + 40 * HOUR });
+  t('DS-644 AC3 a trip is a decision too, naming its ticket', decisionsOf(TRIPS).map((d) => [d.lever, d.category, d.chose, d.ticket]), [['wrappers', 'engineering', 'off', 'T-900']]);
+  t('DS-644 an override takes only on or off', [override({ slug: A1, id: d1.id, choice: 'maybe', dir, list }).ok, eventsOf(A1, 'override').length], [false, 0]);
+  const o1 = override({ slug: A1, id: d1.id, choice: 'off', dir, list, now: new Date(NOW + 41 * HOUR) });
+  t('DS-644 AC12 overriding the adopt off appends one override event, actor ben, with the decision id', [o1.ok, eventsOf(A1, 'override').map((e) => [e.actor, e.decision_id, e.to, e.value])], [true, [['ben', d1.id, 'overridden', 'off']]]);
+  t('DS-644 AC4 the lever\'s state reads overridden', leverStatesIn(read(A1).events).wrappers.state, 'overridden');
+  const values = { 'worker-location': 'local' };
+  const n1 = assignPin('NEXT-1', { slug: A1, size: 'S', states: AUTO, frozen: false, random: seededRandom(1), now: new Date(NOW + 42 * HOUR), values });
+  t('DS-644 AC4 the next ticket admitted there has it pinned off, with no arm', [n1.assigned, n1.pin.set.includes('wrappers'), Object.hasOwn(n1.pin.arms, 'wrappers')], [true, false, false]);
+  t('DS-644 the same decision cannot be overridden twice', override({ slug: A1, id: d1.id, choice: 'on', dir, list }).ok, false);
+  t('DS-644 AC8 overriding the revert on', override({ slug: A2, id: d2.id, choice: 'on', dir, list, now: new Date(NOW + 41 * HOUR) }).ok, true);
+  const n2 = assignPin('NEXT-2', { slug: A2, size: 'S', states: AUTO, frozen: false, random: seededRandom(2), now: new Date(NOW + 42 * HOUR), values });
+  t('DS-644 AC8 the next ticket admitted there has it pinned on and its state reads overridden', [n2.pin.set.includes('wrappers'), Object.hasOwn(n2.pin.arms, 'wrappers'), leverStatesIn(read(A2).events).wrappers.state], [true, false, 'overridden']);
+
+  const page3 = (await dig(60)).page;
+  const l3 = leversOf(readFileSync(page3, 'utf8'));
+  t('DS-644 AC9 a hard-trip revert names the trip and the ticket',
+    l3?.find((l) => l.includes('in trips')), `- [ ] reverted wrappers in trips on a hard trip, post-merge-revert on T-900: its PR #9 was reverted after merging (${join(stateOf(TRIPS), 'post-merge.jsonl')}:3) · id \`${decisionsOf(TRIPS)[0].id}\` · override: \`node ${join(BIN, 'digest.mjs')} override ${TRIPS} ${decisionsOf(TRIPS)[0].id} on\``);
+  t('DS-644 each override is listed too', l3?.filter((l) => l.startsWith('- overridden ')), [`- overridden wrappers off in adopts by ben (decision \`${d1.id}\`)`, `- overridden wrappers on in breach by ben (decision \`${d2.id}\`)`]);
+
+  // A lever log with an unreadable line is one admission would not read, so it takes no override.
+  const tripLog = logFile(TRIPS);
+  const tripBody = readFileSync(tripLog, 'utf8');
+  writeFileSync(tripLog, `${tripBody}not an event\n`);
+  const [dt] = decisionsOf(TRIPS);
+  const refused = override({ slug: TRIPS, id: dt.id, choice: 'on', dir, list, now: new Date(NOW + 61 * HOUR) });
+  t('DS-644 an override is refused while the lever log has an unreadable line', [refused.ok, /unreadable line/.test(refused.why ?? ''), eventsOf(TRIPS, 'override').length], [false, true, 0]);
+  writeFileSync(tripLog, tripBody);
+  const o3 = override({ slug: TRIPS, id: dt.id, choice: 'on', dir, list, now: new Date(NOW + 61 * HOUR) });
+  const p3 = readFileSync(page3, 'utf8');
+  t('DS-644 the override ticks the lever\'s line on the latest digest and takes its command off', [o3.ok, o3.marked, leversOf(p3)?.some((l) => l.startsWith('- [x] reverted wrappers in trips') && !l.includes('override: ') && l.includes('overridden to **on**'))], [true, true, true]);
+
+  // An adopt that lands in the log after a digest passed its time, with no decision written for it.
+  append(TRIPS, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', eval_id: 'late', evidence_file: 'late.json', at: new Date(NOW + 59.5 * HOUR).toISOString() });
+  const l4 = leversOf(readFileSync((await dig(84)).page, 'utf8'));
+  const late = decisionsOf(TRIPS).find((d) => d.chose === 'on');
+  t('DS-644 an event that landed after the last digest passed its time is listed by the next, with its decision recorded then',
+    [!!late, l4?.some((l) => l.startsWith('- [ ] adopted wrappers in trips') && l.includes(`id \`${late?.id}\``))], [true, true]);
+  t('DS-644 and only once', leversOf(readFileSync((await dig(108)).page, 'utf8')), null);
+
+  // An override whose run stopped after its lever log event and before its decision log entry.
+  const decFile = join(stateOf(TRIPS), 'decisions.jsonl');
+  const decBody = readFileSync(decFile, 'utf8');
+  const lost = decBody.split('\n').filter((l) => !l.includes(`"override_of":"${dt.id}"`)).join('\n');
+  writeFileSync(decFile, lost);
+  const again = override({ slug: TRIPS, id: dt.id, choice: 'on', dir, list, now: new Date(NOW + 120 * HOUR) });
+  t('DS-644 a retried override finishes its decision entry and writes no second override event',
+    [again.ok, eventsOf(TRIPS, 'override').length, again.entry?.at === eventsOf(TRIPS, 'override')[0]?.at], [true, 1, true]);
+  writeFileSync(decFile, lost);
+  const flip = override({ slug: TRIPS, id: dt.id, choice: 'off', dir, list, now: new Date(NOW + 121 * HOUR) });
+  t('DS-644 and one to the other value is refused', [flip.ok, /already overridden on/.test(flip.why ?? ''), eventsOf(TRIPS, 'override').length], [false, true, 1]);
+  writeFileSync(decFile, decBody);
+
+  // A trip stamped after the override's own time, written to the log first: the override still holds.
+  const RACE = 'acme__race';
+  mkdirSync(stateOf(RACE), { recursive: true });
+  applyTrips({ slug: RACE, trips: [{ lever: 'wrappers', trip: 'post-merge-revert', ticket: 'T-901', file: join(stateOf(RACE), 'post-merge.jsonl'), line: 1, why: 'reverted', from: 'trial' }], now: NOW + 100 * HOUR });
+  const [dr] = decisionsOf(RACE);
+  const raced = override({ slug: RACE, id: dr.id, choice: 'on', dir, list: [...list, entry(RACE)], now: new Date(NOW + 99 * HOUR) });
+  t('DS-644 an override written after a later-stamped trip is not replayed before it',
+    [raced.ok, leverStatesIn(read(RACE).events).wrappers.state, leverStatesIn(read(RACE).events).wrappers.value], [true, 'overridden', 'on']);
+  t('DS-644 a first override is not superseded', raced.superseded, false);
+  // Its decision entry lost, then the lever set the other way by another decision: the retry says so.
+  const raceDec = join(stateOf(RACE), 'decisions.jsonl');
+  append(RACE, { kind: 'override', lever: 'wrappers', actor: 'ben', reason_code: 'ben_override', reason: 'set off by hand', from: 'overridden', to: 'overridden', value: 'off', decision_id: 'other', at: new Date(NOW + 101 * HOUR).toISOString() });
+  writeFileSync(raceDec, readFileSync(raceDec, 'utf8').split('\n').filter((l) => !l.includes(`"override_of":"${dr.id}"`)).join('\n'));
+  const stale = override({ slug: RACE, id: dr.id, choice: 'on', dir, list: [...list, entry(RACE)], now: new Date(NOW + 102 * HOUR) });
+  t('DS-644 a retried override another change has since replaced says it is superseded, writing no event',
+    [stale.ok, stale.superseded, eventsOf(RACE, 'override').length, leverStatesIn(read(RACE).events).wrappers.value], [true, true, 2, 'off']);
+
+  // A repo with only named batches lists no standing entry until its decision log exists.
+  const NAMED = 'acme__named';
+  append(NAMED, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', eval_id: 'named', evidence_file: 'named.json', at: new Date(NOW + 130 * HOUR).toISOString() });
+  const named = leverChanges({ list: [{ slug: NAMED, batch: 'b1', state: join(stateOf(NAMED), 'batches', 'b1'), queue: join(T, 'q', NAMED, 'queue.json') }], now: new Date(NOW + 131 * HOUR) });
+  t('DS-644 a lever change in a repo with only named batches records its decision in the repo\'s own log and lists its command',
+    [named.changes.length, /override: `node \S+ override acme__named [0-9a-f]{16} off`$/.test(named.changes[0]?.line ?? ''), decisionsOf(NAMED).length], [1, true, 1]);
+
+  run([repo(A1, a1rows)], NOW + 2 * DAY);
+  t('DS-644 AC5 an overridden lever is not evaluated, so evidence that would adopt it leaves it overridden', [wrappersRow(A1).state, wrappersRow(A1).reason_code, transitionOf(A1).length, leverStatesIn(read(A1).events).wrappers.state], ['overridden', 'not_evaluated', 1, 'overridden']);
+}
 
 // ---- the rule itself ------------------------------------------------------------------------------------------------------------------------------
 t('the rule: no cost interval (a singular fit) does not adopt', decide({ ...{ state: 'trial', n: { on: 40, off: 40 }, minN: 30, maxN: 150, now: NOW, holdbackWeeks: 4 }, mechanism: { metric: 'm', min_benefit: -0.25, est: -0.6, p_benefit: 1 }, cost: { ratio: null, lo90: null, hi90: null }, guardrails: [{ status: 'ok' }] }).reason_code, 'adopt_conditions_unmet');

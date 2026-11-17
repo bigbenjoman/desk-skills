@@ -37,6 +37,7 @@ import { sizeOf } from './desk-q-eta.mjs';
 import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
 import { toolOutcomes } from './log-tool-calls.mjs';
+import { everyTicket, readQueueFile } from './queue-store.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -190,13 +191,14 @@ function ticketFacts(state, t, from, records) {
 // record ({ "<slug>/<ticket>/<hash>": ISO time }). A queue that cannot be read is { unreadable }.
 export function batchFigures({ queue, state, slug, since, answered = {} }) {
   let q;
-  try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch (e) { return { unreadable: e.message }; }
+  try { q = readQueueFile(queue); } catch (e) { return { unreadable: e.message }; }
   const f = emptyFigures();
   const sinceIso = new Date(since).toISOString();
   const inWindow = (at) => at != null && Date.parse(at) >= since;
   const keys = new Set();
   const records = spawnRecords(state);
-  for (const t of Object.values(q.tickets ?? {})) {
+  // Archived tickets too (queue-store.mjs): every merged ticket is archived within a pass of its merge.
+  for (const t of Object.values(everyTicket(q))) {
     const from = t.added_at && Date.parse(t.added_at) > since ? t.added_at : sinceIso;
     const merged = inWindow(t.merged_at);
     const x = ticketFacts(state, t, from, records);
@@ -302,12 +304,13 @@ const pinOf = (l) => (l && typeof l === 'object' && !Array.isArray(l)
 // ending now. A queue that cannot be read is { unreadable }.
 export function ticketRows({ queue, state, slug, batch = null, since, until = Infinity, ciRuns = null }) {
   let q;
-  try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch (e) { return { unreadable: e.message }; }
+  try { q = readQueueFile(queue); } catch (e) { return { unreadable: e.message }; }
   const records = spawnRecords(state);
   const rows = [];
   const carriedIn = [];
   const sinceIso = new Date(since).toISOString();
-  for (const t of Object.values(q.tickets ?? {})) {
+  // Archived tickets too (queue-store.mjs): every merged ticket is archived within a pass of its merge.
+  for (const t of Object.values(everyTicket(q))) {
     const at = Date.parse(t.added_at);
     if (!(at >= since)) {
       const x = ticketFacts(state, t, sinceIso, records);
@@ -351,7 +354,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
 // queue that cannot be read give none.
 export function pinMismatches({ queue, state, since }) {
   let q;
-  try { q = JSON.parse(readFileSync(queue, 'utf8')); } catch { return []; }
+  try { q = readQueueFile(queue); } catch { return []; }
   return spawnRecords(state)
     .filter((r) => Date.parse(r.at) >= since && pinDisagrees(q.tickets?.[r.ticket]?.levers?.set, r.levers))
     .map((r) => ({ key: r.ticket, session: r.session, at: r.at, pin: q.tickets[r.ticket].levers.set, levers: r.levers }))
