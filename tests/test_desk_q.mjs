@@ -2277,5 +2277,17 @@ r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
 
+// ---- A dense hold graph: each ticket held by every one before it (as collision holds leave a batch
+// like DS-631) has exponentially many paths. The walk reads each blocker once, so it stays fast.
+const dense = { tickets: { 'D-0': { key: 'D-0', state: 'running', stage: '3/9' } } };
+for (let i = 1; i <= 30; i++) {
+  const by = Array.from({ length: i }, (_, j) => `D-${j}`).join('|');
+  dense.tickets[`D-${i}`] = { key: `D-${i}`, state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } };
+}
+const denseStart = Date.now();
+const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
+t('a 30-ticket transitively held chain reads every state in well under a second', Date.now() - denseStart < 1000, true);
+t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
