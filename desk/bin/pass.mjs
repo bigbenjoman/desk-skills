@@ -22,7 +22,8 @@ import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark,
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
-import { READ_REPO_REFRESH_MS, pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
+import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
+import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
@@ -170,38 +171,16 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
-// A git call that reaches a remote is bounded, never longer than the read-only repo refresh, so a hung
-// remote costs a pass that long once: after one call runs out, the pass's later remote calls fail at once.
-const REMOTE_GIT_MS = Math.min(120000, READ_REPO_REFRESH_MS);
-const REMOTE_GIT = new Set(['fetch', 'push', 'pull', 'ls-remote', 'clone']);
-let remoteHung = null;
-const remoteGit = (cmd, args) => {
-  if (cmd !== 'git') return null;
-  for (let i = 0; i < args.length; i += 1) {
-    if (args[i] === '-C' || args[i] === '-c') { i += 1; continue; }
-    if (!args[i].startsWith('-')) return REMOTE_GIT.has(args[i]) ? args[i] : null;
-  }
-  return null;
-};
-const run = (cmd, args, opts) => {
-  const sub = remoteGit(cmd, args);
-  if (!sub) return execFileSync(cmd, args, opts);
-  if (remoteHung) throw Object.assign(new Error(`not tried: ${remoteHung}`), { stdout: '', stderr: '' });
-  try { return execFileSync(cmd, args, { timeout: REMOTE_GIT_MS, ...opts }); }
-  catch (e) {
-    if (e.code !== 'ETIMEDOUT') throw e;
-    remoteHung = `git ${sub} ran past its ${REMOTE_GIT_MS / 1000} seconds earlier in this pass`;
-    throw Object.assign(new Error(`git ${sub} ran past its ${REMOTE_GIT_MS / 1000} seconds`), { stdout: '', stderr: '' });
-  }
-};
+// A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
 const sh = (cmd, args, opts = {}) => {
-  try { return run(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
+  try { return execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
+// `unreached`: a remote call that got no answer in time, or was not tried after one did not.
 const shOut = (cmd, args, opts = {}) => {
-  try { return { ok: true, out: run(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
-  catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
+  try { return { ok: true, out: execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
+  catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
@@ -1426,7 +1405,7 @@ function pushParked(t, c) {
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
   if (push.ok) return { holds: true };
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
-  if (unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
+  if (push.unreached || unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
   return stop(`git refused it: ${push.out.split('\n').pop()}`);
 }
 // A claimed ticket is released only by the claims loop below, once its session is idle and its
@@ -1603,9 +1582,9 @@ function finishPush(t) {
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
-  if (!push.ok && transientPush(push.out)) {
+  if (!push.ok && (push.unreached || transientPush(push.out))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but GitHub still answers 5xx: left parked, and each pass tries the push until it can requeue it`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
@@ -3428,7 +3407,11 @@ for (const t of spawnable) {
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
   // worktree it could not finish, and a half-built one must not get a worker.
-  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN });
+  const fetchLimit = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
+  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: fetchLimit } });
+  // A remote that did not answer is the machine's, not the ticket's: it stays queued for the next pass.
+  const remoteDown = (why) => { report.waiting.push(`${t.key}: held, origin did not answer (${why}); it spawns on a pass origin answers`); };
+  if (remoteHung()) { remoteDown(remoteHung()); continue; }
   const whyOf = (out) => out.split('\n').filter((l) => /FAIL|WARNING|failed|cannot lock ref/.test(l)).slice(-3).join(' ') || out.slice(-200);
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
   let setupRun = runSetup();
@@ -3443,6 +3426,12 @@ for (const t of spawnable) {
     if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
   }
   const setup = setupRun.out;
+  const fetchHung = !setUp(setupRun) && /FAIL: git fetch origin did not answer within \d+s/.exec(setup)?.[0];
+  if (fetchHung) {
+    markRemoteHung(`git fetch ran past its ${fetchLimit} seconds earlier in this run`);
+    remoteDown(fetchHung.replace(/^FAIL: /, ''));
+    continue;
+  }
   if (!setUp(setupRun)) {
     const why = `${retried}${whyOf(setup)}`;
     // The local database not answering is the machine's, not the ticket's: it stays queued, and the
