@@ -36,6 +36,7 @@ import { parkClass } from './failure-class.mjs';
 import { sizeOf } from './desk-q-eta.mjs';
 import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
+import { toolOutcomes } from './log-tool-calls.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -96,23 +97,17 @@ export function commandKey(tool, input) {
   return sub ? `${prog} ${sub.replace(/^.*\//, '')}` : prog;
 }
 
-const DENIED = /Permission to use \S+.*\bdenied\b/;
-const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
-
 // What one worker log shows: parks it printed, Stage 4b entries, permission denials by command, its
 // usage readings and the rate_limit_event lines that could not be read as one, the session of each
 // start it holds (one init event per `claude -p` start, a resume's under the same session), and
 // whether anything but preflights ran in it at all.
 export function logFacts(text) {
   const out = { parks: 0, parkClasses: {}, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false };
-  const tools = new Map();
-  const denied = new Set();
-  const deny = (id, tool) => {
-    if (id && denied.has(id)) return;
-    if (id) denied.add(id);
-    const k = commandKey(tool ?? tools.get(id)?.name, tools.get(id)?.input);
+  for (const o of toolOutcomes(text)) {
+    if (!o.denied) continue;
+    const k = commandKey(o.tool, o.input);
     out.denials[k] = (out.denials[k] ?? 0) + 1;
-  };
+  }
   let events = 0;
   for (const line of text.split('\n')) {
     if (line.startsWith('{"type":"rate_limit_event"')) events += 1;
@@ -122,7 +117,6 @@ export function logFacts(text) {
     if (d?.type === 'system' && d.subtype === 'init') out.starts.push(d.session_id ?? null);
     if (d?.type === 'assistant') {
       for (const c of d.message?.content ?? []) {
-        if (c?.type === 'tool_use') tools.set(c.id, { name: c.name, input: c.input });
         const said = saidIn(c);
         if (said == null) continue;
         for (const [k, v] of markersIn([said])) {
@@ -133,12 +127,6 @@ export function logFacts(text) {
           }
           if (k === 'AUTOPILOT_STAGE' && /^4b\b/i.test(v.trim())) out.reviewRounds += 1;
         }
-      }
-    } else if (d?.type === 'system' && d.subtype === 'permission_denied') {
-      deny(d.tool_use_id, d.tool_name);
-    } else if (d?.type === 'user') {
-      for (const c of d.message?.content ?? []) {
-        if (c?.type === 'tool_result' && c.is_error && DENIED.test(textOf(c.content))) deny(c.tool_use_id, null);
       }
     }
   }

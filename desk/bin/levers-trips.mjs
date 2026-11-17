@@ -5,17 +5,21 @@
 //
 //   skipped-preflight-failure  a start that skipped its preflight on a matching fingerprint was refused
 //                              a tool or permission the preflight checks (a write in its own worktree,
-//                              a toolchain probe's command, desk-jira or codex where the preflight wants
-//                              them OK, or a subagent)
+//                              a toolchain probe's command as written, desk-jira or `codex --version`
+//                              where the preflight wants them OK, or a subagent), or could not find a
+//                              probed binary at all
 //   stale-wait                 a fix try the failure-class lever held as waiting is still waiting more
 //                              than the trip's hours after what it waited for settled: every blocker in
-//                              the batch merged, or the person's answer written
+//                              the batch merged, or the person's answer saved. A blocker outside the
+//                              batch is lifted from the hold by the pass that reads it settled (Done
+//                              and landed), so a ticket still held behind one is not waiting past it
 //   post-merge-revert          post-merge.jsonl records a revert of the ticket's PR
 //   own-step-error             the lever's own step exited non-zero: a `lever_step` line in the ticket's
 //                              run record, or the worker's own call of that command in its log
 //
 // A trip counts only for a ticket on the lever's arm in its current state: drawn `on` under the trial
-// running now, or, for an adopted or settled lever, admitted with it in its set since it was kept. Only a
+// running now, or, for an adopted or settled lever, admitted with it in its set since the trial it was
+// kept from began (the latest unbroken run of trial, adopted and settled). Only a
 // lever on trial, adopted or settled is reverted. A trip is one `trip` event in the repo's lever log
 // (lever-log.mjs), actor `trip`, naming the ticket and the triggering record's file and 1-based line;
 // a lever already reverted once in the repo is frozen instead, and that, or a step's own error, raises
@@ -41,18 +45,19 @@ import { postMergePath } from './post-merge.mjs';
 import { readLogFile } from './harvest.mjs';
 import { workerLogs } from './worker-cost.mjs';
 import { WAITING_CLASSES } from './failure-class.mjs';
+import { toolOutcomes } from './log-tool-calls.mjs';
+import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
+import { ANSWER_HEAD } from './briefing.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
 export const REVERTIBLE = Object.freeze(['trial', 'adopted', 'settled']);
 const HOUR_MS = 3_600_000;
-const DENIED = /Permission to use \S+.*\bdenied\b/;
-const EXIT = /^Exit code (\d+)/;
+// The exit a shell gives a command it cannot find.
+const NOT_FOUND = 127;
 const WRITE_TOOLS = Object.freeze(['Write', 'Edit', 'MultiEdit', 'NotebookEdit']);
 const AGENT_TOOLS = Object.freeze(['Agent', 'Task']);
 const snake = (k) => k.replace(/-/g, '_');
-const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
-const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
 // ---- the run record ---------------------------------------------------------------------------------
 // Each line of a jsonl file that parses, with its 1-based line number: [{ line, rec }].
@@ -87,67 +92,34 @@ export function recordWait(state, key, wait, at) {
 }
 
 // ---- which tickets a lever's trips read ---------------------------------------------------------------
-// When a kept lever (adopted or settled) became kept: the first of its latest unbroken run of kept states.
-function keptSince(events, lever) {
+// When `lever`'s latest unbroken run of revertible states (trial, adopted, settled) began, so the trial
+// an adopted lever was kept from counts with it: null when that run is the registry's initial trial.
+function liveSince(events, lever, registry) {
+  const l = registry[lever];
+  let live = l?.layer === 'low-risk' && !!l.trialled;
   let since = null;
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
-    if (KEPT_STATES.includes(e.to)) since ??= e.at;
-    else since = null;
+    if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
+    else { live = false; since = null; }
   }
   return since;
 }
 
 // Whether queue ticket `t` is on `lever`'s arm in its state `s` in repo `slug`.
-export function onArm(t, lever, s, slug, events) {
+export function onArm(t, lever, s, slug, events, registry = REGISTRY) {
   const pin = t?.levers;
   if (!pin || typeof pin !== 'object' || Array.isArray(pin)) return false;
   if (s.state === 'trial') return pin.arms?.[lever] === 'on' && pin.trial_ids?.[lever] === trialId(slug, lever, s);
   if (KEPT_STATES.includes(s.state)) {
     if (!(pin.set ?? []).includes(lever)) return false;
-    const since = keptSince(events, lever);
+    const since = liveSince(events, lever, registry);
     return since == null || Date.parse(pin.at) >= Date.parse(since);
   }
   return false;
 }
 
 // ---- reading a worker log ---------------------------------------------------------------------------
-// Each tool call a log's lines show refused or ending in error, in order, with the line its result is on:
-// [{ line, session, tool, input, denied, exit, text }]. `session` is that of the start the line is in.
-function toolOutcomes(text) {
-  const out = [];
-  const calls = new Map();
-  const seen = new Set();
-  let session = null;
-  text.split('\n').forEach((raw, i) => {
-    let d;
-    try { d = JSON.parse(raw); } catch { return; }
-    if (d?.type === 'system' && d.subtype === 'init') { session = d.session_id ?? null; return; }
-    const push = (id, tool, o) => {
-      if (id && seen.has(id)) return;
-      if (id) seen.add(id);
-      const c = calls.get(id);
-      out.push({ line: i + 1, session, tool: tool ?? c?.name ?? null, input: c?.input ?? null, ...o });
-    };
-    if (d?.type === 'assistant') {
-      for (const c of d.message?.content ?? []) if (c?.type === 'tool_use') calls.set(c.id, { name: c.name, input: c.input });
-    } else if (d?.type === 'system' && d.subtype === 'permission_denied') {
-      push(d.tool_use_id, d.tool_name, { denied: true, exit: null, text: null });
-    } else if (d?.type === 'user') {
-      for (const c of d.message?.content ?? []) {
-        if (c?.type !== 'tool_result' || !c.is_error) continue;
-        const body = textOf(c.content);
-        if (DENIED.test(body)) push(c.tool_use_id, null, { denied: true, exit: null, text: firstLine(body) });
-        else {
-          const m = EXIT.exec(body.trim());
-          if (m && Number(m[1]) !== 0) push(c.tool_use_id, null, { denied: false, exit: Number(m[1]), text: firstLine(body.trim().split('\n').slice(1).join('\n')) });
-        }
-      }
-    }
-  });
-  return out;
-}
-
 // Each of ticket `key`'s worker logs written since `since`, with what toolOutcomes reads from it; read
 // once per `cache`, a Map one run of the trips shares.
 function logOutcomes(state, key, since, cache = new Map()) {
@@ -162,24 +134,28 @@ function logOutcomes(state, key, since, cache = new Map()) {
   return cache.get(k);
 }
 
-// A Bash command with any leading `cd <dir> &&` dropped.
-const bare = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '');
-// The command a `<bin> --version` probe proves executes: the probe with its `--version` dropped.
-const probeStem = (probe) => String(probe ?? '').trim().replace(/\s+--version$/, '');
+// A Bash command with any leading `cd <dir> &&` dropped and its spaces collapsed.
+const bare = (cmd) => String(cmd ?? '').trim().replace(/^cd\s+\S+\s*&&\s*/, '').replace(/\s+/g, ' ');
+// The binary a probe proves executes: its first word.
+const binOf = (probe) => bare(probe).split(' ')[0];
 const startsWithCommand = (cmd, stem) => !!stem && (cmd === stem || cmd.startsWith(`${stem} `));
 
-// Whether a refused call is one the preflight `rec` (a skip record) checks.
+// Whether a refused or failed call `o` is one the preflight `rec` (a skip record) checks. The preflight
+// proves a write in the worktree, the Agent tool, each probe command as written (`pnpm --version`, never
+// `pnpm dlx …`, which the settings refuse on purpose), `desk-jira` and `codex --version`: so a refusal of
+// one of those, or a probed binary the shell cannot find at all.
 export function preflightChecks(o, rec) {
   if (WRITE_TOOLS.includes(o.tool)) {
     const path = o.input?.file_path ?? o.input?.notebook_path;
-    return typeof path === 'string' && !!rec.worktree && (path === rec.worktree || path.startsWith(`${rec.worktree}/`));
+    return !!o.denied && typeof path === 'string' && !!rec.worktree && (path === rec.worktree || path.startsWith(`${rec.worktree}/`));
   }
-  if (AGENT_TOOLS.includes(o.tool)) return true;
+  if (AGENT_TOOLS.includes(o.tool)) return !!o.denied;
   if (o.tool !== 'Bash') return false;
   const cmd = bare(o.input?.command);
-  if ((rec.probes ?? []).some((p) => startsWithCommand(cmd, probeStem(p)))) return true;
-  if (rec.jira && startsWithCommand(cmd, 'desk-jira')) return true;
-  return !!rec.codex && startsWithCommand(cmd, 'codex');
+  const probes = [...(rec.probes ?? []), ...(rec.codex ? ['codex --version'] : [])].map(bare).filter(Boolean);
+  if (o.denied) return probes.includes(cmd) || (!!rec.jira && startsWithCommand(cmd, 'desk-jira'));
+  if (o.exit !== NOT_FOUND) return false;
+  return [...probes.map(binOf), ...(rec.jira ? ['desk-jira'] : [])].some((b) => startsWithCommand(cmd, b));
 }
 
 // The pattern of a lever's own step as a worker calls it, or null for a step no worker runs: the
@@ -226,10 +202,10 @@ export const DETECTORS = Object.freeze({
     });
     if (!skipped.length) return [];
     return logOutcomes(state, t.key, t.levers?.at, cache).flatMap((o) => {
-      const skip = o.denied && skipped.find((s) => s.session === o.session);
+      const skip = skipped.find((s) => s.session === o.session);
       if (!skip || !preflightChecks(o, skip.rec)) return [];
       const what = o.tool === 'Bash' ? `\`${bare(o.input?.command).slice(0, 120)}\`` : o.tool;
-      return [{ file: o.file, line: o.line, why: `its start skipped the preflight and was refused ${what}, which the preflight checks` }];
+      return [{ file: o.file, line: o.line, why: `its start skipped the preflight and ${o.denied ? 'was refused' : 'could not find the binary of'} ${what}, which the preflight checks` }];
     });
   },
 
@@ -250,8 +226,14 @@ export const DETECTORS = Object.freeze({
       const merged = (w.blockers ?? []).map((k) => queue?.tickets?.[k]?.merged_at ?? null);
       if (merged.length && merged.every(Boolean) && (w.blockers ?? []).some((k) => held.includes(k))) { settled = Math.max(...merged.map((m) => Date.parse(m))); what = `${w.blockers.join(', ')} merged`; }
     } else {
-      const answer = join(state, 'answers', `${t.key}.txt`);
-      try { const m = statSync(answer).mtimeMs; if (m > since) { settled = m; what = 'the person answered'; } } catch { /* no answer */ }
+      // The person's answer: the first one saved to the ticket's briefing since the wait (answer.mjs
+      // saveAnswer), or the mailbox, written only while a worker waits.
+      let brief = '';
+      try { brief = readFileSync(join(state, 'briefings', `${t.key}.md`), 'utf8'); } catch { /* no briefing */ }
+      const stamps = [...brief.matchAll(new RegExp(`^${ANSWER_HEAD} \\(([^)]+)\\)`, 'gm'))].map((m) => Date.parse(m[1]));
+      try { stamps.push(statSync(join(state, 'answers', `${t.key}.txt`)).mtimeMs); } catch { /* no mailbox */ }
+      const after = stamps.filter((m) => Number.isFinite(m) && m > since);
+      if (after.length) { settled = Math.min(...after); what = 'the person answered'; }
     }
     if (settled == null || !(now - settled > trip.hours * HOUR_MS)) return [];
     return [{ file, line: last.line, why: `it has waited (${w.class}: ${w.waiting}) more than ${trip.hours} hours since ${what} on ${new Date(settled).toISOString().slice(0, 16)}Z` }];
@@ -264,14 +246,15 @@ export const DETECTORS = Object.freeze({
 // settled, has none; nor does a record a trip event already cites.
 export function findTrips({ slug, state, queue, states, events, now = Date.now(), registry = REGISTRY }) {
   const byLever = leverStatesIn(events, registry);
-  const cited = new Set(events.filter((e) => e.kind === 'trip').map((e) => `${e.evidence_file}|${e.evidence_line}`));
+  // One record can trip each lever its ticket was on, so a citation is per lever.
+  const cited = new Set(events.filter((e) => e.kind === 'trip').map((e) => `${e.lever}|${e.evidence_file}|${e.evidence_line}`));
   const found = [];
   const cache = new Map();
   for (const [lever, reg] of Object.entries(registry)) {
     if (states?.[lever] !== 'auto') continue;
     const s = byLever[lever];
     if (!REVERTIBLE.includes(s.state)) continue;
-    const tickets = Object.values(queue?.tickets ?? {}).filter((t) => onArm(t, lever, s, slug, events))
+    const tickets = Object.values(queue?.tickets ?? {}).filter((t) => onArm(t, lever, s, slug, events, registry))
       .sort((a, b) => String(a.levers?.at ?? '').localeCompare(String(b.levers?.at ?? '')));
     let hit = null;
     for (const t of tickets) {
@@ -280,7 +263,7 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
         if (!detect) continue;
         let recs = [];
         try { recs = detect({ state, t, queue, lever, trip, now, cache }); } catch { recs = []; }
-        const r = recs.find((x) => !cited.has(`${x.file}|${x.line}`));
+        const r = recs.find((x) => !cited.has(`${lever}|${x.file}|${x.line}`));
         if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, ...r }; break; }
       }
       if (hit) break;
@@ -300,10 +283,9 @@ export function applyTrips({ slug, name = slug, trips, registry = REGISTRY, now 
       const events = read(slug).events;
       const s = leverStatesIn(events, registry)[x.lever];
       if (s.state !== x.from) return null;
-      if (events.some((y) => y.kind === 'trip' && y.evidence_file === x.file && y.evidence_line === x.line)) return null;
-      const prior = events.filter((y) => ['transition', 'trip'].includes(y.kind) && y.lever === x.lever && ['reverted', 'frozen'].includes(y.to)).length;
+      if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return null;
       return {
-        kind: 'trip', lever: x.lever, from: s.state, to: prior >= 1 ? 'frozen' : 'reverted', actor: ACTOR, reason_code: snake(x.trip), at,
+        kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
         reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
         evidence_file: x.file, evidence_line: x.line, ...(x.error ? { error: x.error } : {}),
       };
@@ -316,7 +298,7 @@ export function applyTrips({ slug, name = slug, trips, registry = REGISTRY, now 
         kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : 'own_step_error', at, ticket: x.ticket,
         evidence_file: x.file, evidence_line: x.line,
         reason: frozen
-          ? `${x.lever} is frozen in ${name} after its second revert (${x.trip} on ${x.ticket}${x.error ? `: ${x.error}` : ''}): it stays off there until you set it by hand`
+          ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${x.error ? `: ${x.error}` : ''}`)
           : `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`,
       }));
       if (n) written.push(n);

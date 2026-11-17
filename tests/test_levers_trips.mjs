@@ -1,5 +1,5 @@
 // suite: levers trips (a hard trip reverts its lever in that repo within one pass)
-// covers: desk/bin/levers-trips.mjs desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/levers-evaluate.mjs desk/bin/lever-registry.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
+// covers: desk/bin/levers-trips.mjs desk/bin/log-tool-calls.mjs desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/levers-evaluate.mjs desk/bin/lever-registry.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runTrips() runs on synthetic queues, run records, worker logs and post-merge files in a scratch HOME,
 // one repo per trip so each starts from an empty lever log.
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
@@ -65,16 +65,36 @@ writeFileSync(log1, jsonl([
   init('s1'),
   call('u1', 'Bash', { command: 'git stash list' }),
   result('u1', 'Permission to use Bash with command git stash list has been denied.'),
-  call('u2', 'Bash', { command: 'pnpm test' }),
-  result('u2', 'Permission to use Bash with command pnpm test has been denied.'),
+  call('u2', 'Bash', { command: 'pnpm dlx prettier --check .' }),
+  result('u2', 'Permission to use Bash with command pnpm dlx prettier --check . has been denied.'),
+  call('u3', 'Bash', { command: 'pnpm test' }),
+  result('u3', 'Exit code 127\n(eval):1: command not found: pnpm'),
 ]));
+const P1before = JSON.stringify(P1);
 const r1 = run(A1, queueOf(P1));
 const trip1 = eventsOf(A1, 'trip');
 t('AC1 preflight is reverted in that repo', [stateIn(A1, 'preflight'), trip1.map((e) => [e.from, e.to])], ['reverted', [['trial', 'reverted']]]);
 t('AC1 the reason names the trip and the ticket', [trip1[0].reason_code, /skipped-preflight-failure on P-1/.test(trip1[0].reason)], ['skipped_preflight_failure', true]);
-t('AC1 a denial the preflight does not check is not a trip: the cited line is the pnpm one', trip1[0].evidence_line, 5);
+t('AC1 denials the preflight does not check (git stash, a pnpm subcommand the settings refuse) are not a trip: the cited line is the missing pnpm', trip1[0].evidence_line, 7);
 t('AC8 one trip event with actor trip, the ticket, and the record\'s path and line',
-  [trip1.length, trip1[0].kind, trip1[0].actor, trip1[0].ticket, trip1[0].evidence_file, trip1[0].evidence_line], [1, 'trip', 'trip', 'P-1', log1, 5]);
+  [trip1.length, trip1[0].kind, trip1[0].actor, trip1[0].ticket, trip1[0].evidence_file, trip1[0].evidence_line], [1, 'trip', 'trip', 'P-1', log1, 7]);
+t('AC1 a refusal of the probe command itself trips', (() => {
+  const A = 'acme__probe';
+  const s = repo(A);
+  writeFileSync(join(s, 'workers', 'P-3.runs.jsonl'), jsonl([
+    { at: at(-50), ticket: 'P-3', preflight: 'skipped', worktree: '/wt/P-3', probes: ['pnpm --version'], jira: false, codex: true },
+    { at: at(-50), ticket: 'P-3', session: 's3' },
+  ]));
+  writeFileSync(join(s, 'logs', 'P-3.log'), jsonl([
+    init('s3'),
+    call('u1', 'Bash', { command: 'codex exec -m o3 hi' }),
+    result('u1', 'Permission to use Bash with command codex exec -m o3 hi has been denied.'),
+    call('u2', 'Bash', { command: 'pnpm  --version' }),
+    result('u2', 'Permission to use Bash with command pnpm --version has been denied.'),
+  ]));
+  run(A, queueOf(onTicket(A, 'P-3', 'preflight')));
+  return eventsOf(A, 'trip').map((e) => e.evidence_line);
+})(), [5]);
 t('AC1 the pass line says what tripped', r1.line, 'levers trips: preflight trial → reverted (skipped-preflight-failure on P-1)');
 t('the next pass reverts nothing more', [run(A1, queueOf(P1)).events.length, eventsOf(A1, 'trip').length], [0, 1]);
 t('a refusal in a start that ran its preflight is not a trip', (() => {
@@ -86,7 +106,7 @@ t('a refusal in a start that ran its preflight is not a trip', (() => {
 })(), [0, 'trial']);
 
 // ---- AC7: tickets in flight keep their pin; new tickets get the lever off --------------------------------
-t('AC7 the ticket admitted before the trip still runs with its pinned set', leverOnFor('preflight', P1, { on: [] }), true);
+t('AC7 the trip leaves the ticket admitted before it as it was, and it still runs with its pinned set', [JSON.stringify(P1) === P1before, stateIn(A1, 'preflight'), leverOnFor('preflight', P1, { on: [] })], [true, 'reverted', true]);
 const after = assignPin('P-9', { slug: A1, states: AUTO, frozen: false, values: VALUES, now: new Date(NOW) });
 t('AC7 a ticket admitted after the trip gets preflight off and no arm for it', [after.assigned, after.pin.set.includes('preflight'), 'preflight' in after.pin.arms], [true, false, false]);
 
@@ -124,12 +144,21 @@ t('a missing decision settles when the person answers', (() => {
   const A = 'acme__answered';
   const s = repo(A);
   recordWait(s, 'F-3', { class: 'missing decision', waiting: 'waiting for a person\'s call on what it quotes', blockers: [], pr: 6, head: 'def' }, at(-80));
-  mkdirSync(join(s, 'answers'), { recursive: true });
-  writeFileSync(join(s, 'answers', 'F-3.txt'), 'use the first option');
-  utimesSync(join(s, 'answers', 'F-3.txt'), new Date(NOW - 50 * HOUR), new Date(NOW - 50 * HOUR));
+  // With no worker waiting, the answer is saved to the briefing alone (answer.mjs).
+  mkdirSync(join(s, 'briefings'), { recursive: true });
+  writeFileSync(join(s, 'briefings', 'F-3.md'), `# Briefing for F-3\n\n## Answer from the user (${at(-50)})\n\nuse the first option\n`);
   run(A, queueOf(onTicket(A, 'F-3', 'failure-class')));
   return eventsOf(A, 'trip').map((e) => e.reason_code);
 })(), ['stale_wait']);
+t('an answer the person wrote 30 hours ago is not yet a trip', (() => {
+  const A = 'acme__answeredlate';
+  const s = repo(A);
+  recordWait(s, 'F-5', { class: 'missing decision', waiting: 'waiting for a person\'s call on what it quotes', blockers: [], pr: 7, head: 'fed' }, at(-80));
+  mkdirSync(join(s, 'answers'), { recursive: true });
+  writeFileSync(join(s, 'answers', 'F-5.txt'), 'use the first option');
+  utimesSync(join(s, 'answers', 'F-5.txt'), new Date(NOW - 30 * HOUR), new Date(NOW - 30 * HOUR));
+  return run(A, queueOf(onTicket(A, 'F-5', 'failure-class'))).events.length;
+})(), 0);
 
 // ---- AC3: a post-merge revert on the lever's arm ----------------------------------------------------------
 const A3 = 'acme__reverted';
@@ -142,6 +171,22 @@ writeFileSync(join(s3, 'post-merge.jsonl'), jsonl([
 const offArm = { ...onTicket(A3, 'M-0', 'memory'), levers: { set: [], arms: { memory: 'off' }, trial_ids: { memory: `${A3}/memory/initial` }, fp: {}, block: null, at: at(-100) } };
 run(A3, queueOf(offArm, onTicket(A3, 'M-1', 'memory', { state: 'done', merged_at: at(-40) })));
 t('AC3 memory is reverted on the revert of a ticket on its arm, not the off arm\'s', [stateIn(A3, 'memory'), eventsOf(A3, 'trip').map((e) => [e.reason_code, e.ticket, e.evidence_line])], ['reverted', [['post_merge_revert', 'M-1', 3]]]);
+t('AC3 one revert trips every lever its ticket was on', (() => {
+  const A = 'acme__twolevers';
+  const s = repo(A);
+  writeFileSync(join(s, 'post-merge.jsonl'), jsonl([{ kind: 'revert', ticket: 'M-2', pr: 10, at: at(-20) }]));
+  const two = { key: 'M-2', state: 'done', merged_at: at(-40), levers: { set: ['memory', 'wrappers'], arms: { memory: 'on', wrappers: 'on' }, trial_ids: { memory: `${A}/memory/initial`, wrappers: `${A}/wrappers/initial` }, fp: {}, block: null, at: at(-100) } };
+  run(A, queueOf(two));
+  return [stateIn(A, 'memory'), stateIn(A, 'wrappers'), eventsOf(A, 'trip').map((e) => [e.lever, e.evidence_line]).sort()];
+})(), ['reverted', 'reverted', [['memory', 1], ['wrappers', 1]]]);
+t('AC3 a ticket drawn on under the trial its lever was adopted from still trips it', (() => {
+  const A = 'acme__adopted';
+  const s = repo(A);
+  append(A, { kind: 'transition', lever: 'memory', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', eval_id: 'evl_y', evidence_file: 'levers-evidence/evl_y.jsonl', at: at(-50) });
+  writeFileSync(join(s, 'post-merge.jsonl'), jsonl([{ kind: 'revert', ticket: 'M-3', pr: 13, at: at(-10) }]));
+  run(A, queueOf(onTicket(A, 'M-3', 'memory', { state: 'done', merged_at: at(-40) })));
+  return [stateIn(A, 'memory'), eventsOf(A, 'trip').map((e) => [e.from, e.to])];
+})(), ['reverted', [['adopted', 'reverted']]]);
 
 // ---- AC4: the lever's own step exited non-zero on an on-arm start ------------------------------------------
 const A4 = 'acme__steperror';
