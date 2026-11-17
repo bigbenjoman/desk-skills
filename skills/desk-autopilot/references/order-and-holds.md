@@ -157,7 +157,8 @@ lane, size or design park keeps its park, its holds beside it. No
 hold is added for a blocker already Done and on the base, merged in the batch, failed in the batch
 (said), or waiting behind the ticket (said as a cycle, and raised once as a needs-you `triage` item
 naming both tickets, `cycle_link`; the ticket does not start while it stands, so neither of the two
-does). A hold on a ticket dropped from the batch (`dropped_link`), and a
+does. The item says how to settle it either way: the ticket first, remove its link; the one held behind
+it first, release that one and hold the ticket behind it, as its hold outlives its link). A hold on a ticket dropped from the batch (`dropped_link`), and a
 blocker in the batch closed as Won't Do with its PR unmerged (`wont_do_link`, as for one in no batch),
 are each raised once the same way. A ticket whose worker started keeps its holds, and
 the report says the link arrived after it started. A link removed lifts a hold in no batch (*outside
