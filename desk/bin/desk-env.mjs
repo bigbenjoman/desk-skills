@@ -1402,7 +1402,7 @@ export function spawnGate(row = configValue('spawn-gate')) {
 // `none`) keeps the files it names at 1. Unset is `3 over 1000 lines, else 1; serial: none`. A row
 // that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard.
 //   -> { big, lines, small, serial: [glob], bad: string | null }
-export const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
+const FILE_BUDGET_DEFAULT ={ big: 3, lines: 1000, small: 1, serial: [] };
 export function fileBudget(row = configValue('file-budget')) {
   if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
   const v = String(row).trim();

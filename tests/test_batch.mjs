@@ -589,9 +589,10 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const bad = planned('messages and the locales', ['AO-1', 'AO-2']);
   t('DS-689 AC6 plan-batch reads a malformed row as none and names it', `${bad.includes('AO-1 ~ AO-2: messages/en.json')} ${bad.includes('collisions: config §4 "Append-only paths" is not a list of path globs (messages and the locales) — read as none')}`, 'true true');
 
-  // DS-755 AC8: a ticket admitted as intake admits one, sharing a file with unfinished tickets, is held
-  // behind none of them: the collision is recorded for the plan and desk-q, and the pass's per-file
-  // budget decides at spawn time.
+  // DS-755 AC8: a ticket admitted sharing a file with unfinished tickets is held behind none of them,
+  // even with the --hold-collisions an older intake or batch move passes (on main it held HC-2 behind
+  // HC-4, the one not already waiting behind it): the collision is recorded for the plan and desk-q,
+  // and the pass's per-file budget decides at spawn time.
   aoRec('HC-1', ['src/app.ts']);
   aoRec('HC-2', ['src/app.ts']);
   aoRec('HC-3', ['src/app.ts']);
@@ -599,7 +600,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const heldOn = (by) => ({ state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by}` } });
   const env = { DESK_CONFIG: aoCfg(null), DESK_QUEUE: join(AO, 'queue-hc.json'), DESK_AUTOPILOT_STATE: AO };
   writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'ao', tickets: { 'HC-1': { key: 'HC-1', ...heldOn('HC-2') }, 'HC-3': { key: 'HC-3', ...heldOn('HC-1') }, 'HC-4': { key: 'HC-4', state: 'triaged' } } }));
-  const a = cli('queue.mjs', ['admit', 'HC-2', '--by', 'intake', '--hold-spine'], env);
+  const a = cli('queue.mjs', ['admit', 'HC-2', '--by', 'intake', '--hold-spine', '--hold-collisions'], env);
   const hc = JSON.parse(readFileSync(env.DESK_QUEUE, 'utf8')).tickets['HC-2'];
   t('DS-755 AC8 a ticket admitted sharing a file with unfinished tickets is held behind none of them', `${a.code} ${hc?.state} ${hc?.held_by} ${hc?.collides_with}`, '0 triaged null HC-1|HC-3|HC-4');
   // A lane park that keeps its holds in held_by beside it waits behind them too, so a ticket it
