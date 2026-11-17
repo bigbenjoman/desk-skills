@@ -60,8 +60,8 @@
 // drafted headless and left for the person in needs-you (epic-plan.mjs); without config §3
 // autopilot-workers `yes` it is reported as one to plan in a session (the /desk-autopilot epic flow).
 // Either way it is refused while its own feature batch is already live. A child of an epic whose feature
-// batch is live is admitted into that batch, held behind its blockers there and the unfinished
-// children it collides with. The person naming it is the approval. The open blockers in no batch of
+// batch is live is admitted into that batch, held behind its blockers there. The person naming it is
+// the approval. The open blockers in no batch of
 // what it admits are printed as `admit next: <KEY>...`, for /desk-admit to admit with no question.
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -73,7 +73,7 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout } from './batch-state.mjs';
+import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -131,8 +131,7 @@ export function intakeReasons(r) {
   if (r.facts_error) out.push(`its Jira facts could not be read (${r.facts_error})`);
   const { ask } = triageCalls(r);
   if (ask.length) out.push(`open question(s): ${ask.join(' · ')}`);
-  const size = String(r.size ?? '').toUpperCase();
-  if (['L', 'XL'].includes(size)) out.push(`size ${size}: it needs splitting before a worker takes it`);
+  if (sizePark(r.size)) out.push(`size ${String(r.size).toUpperCase()}: it needs splitting before a worker takes it`);
   return out;
 }
 
@@ -172,7 +171,7 @@ export function landedOn(key, base) {
 // why}, a start-without-it call logged on admit) where §3 autopilot-judgement is yes, else in `ask`, a
 // reason it stays out. One with neither a step nor a call is held in `outside`: triage.sh refuses a
 // record missing a call for an open blocker, so only a record written before calls were asked for has one.
-function holdsFor(rec, tickets, base) {
+export function holdsFor(rec, tickets, base) {
   const out = { held: [], outside: [], failed: [], merge: [], gates: [], free: [], ask: [] };
   const stepLabels = E.personStepLabels();
   const inputLabels = E.personInputLabels();
@@ -671,7 +670,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
   const reasons = reasonsAgainst(t.rec, holds);
   if (reasons.length) return { why: reasons.join('; ') };
   // queue.mjs adds the spine and an epic still waiting on its drafted plan (--hold-spine).
-  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', '--hold-collisions', ...holdArgs(holds)]);
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', ...holdArgs(holds)]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }

@@ -5,7 +5,10 @@
 #   tests/run.sh                          every suite
 #   tests/run.sh test_jira.sh test_ci.mjs only those suites (file names or paths under tests/), plus
 #                                         the attribution hook self-test; an unknown name is an error
+#   tests/run.sh --no-hook-test <suite>...  without the hook self-test (every CI shard but the first)
 set -u
+hook=1
+[ "${1:-}" = --no-hook-test ] && { hook=0; shift; }
 # A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
 # some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
 # the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck.
@@ -20,7 +23,7 @@ trap 'rm -f "$OUT"' EXIT
 # Every bash suite runs under the bash running this script, so `/bin/bash tests/run.sh` tests 3.2.
 SH="${BASH:-bash}"
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
-fail=0; total=0
+fail=0; total=0; failed=""
 # A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all. A failed
 # suite's whole output but its ok lines is printed, so whatever it said about the failure is in the log.
 run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1 3<&-; rc=$?; bad=0
@@ -30,7 +33,7 @@ run() { printf '\n== %s\n' "$1"; shift; "$@" >"$OUT" 2>&1 3<&-; rc=$?; bad=0
   grep -qE 'FAIL|too many arguments|unbound variable|bad substitution|syntax error' "$OUT" && bad=1
   [ $rc -eq 0 ] || { echo "exit $rc"; bad=1; }
   [ "$c" -gt 0 ] || { echo "no checks ran"; bad=1; }
-  [ $bad -eq 0 ] || { grep -vE '^ok|checks passed|^SKIP' "$OUT"; fail=1; }; }
+  [ $bad -eq 0 ] || { grep -vE '^ok|checks passed|^SKIP' "$OUT"; fail=1; }; return $bad; }
 # Every tests/test_*.sh and tests/test_*.mjs is a suite, run in name order, so adding one needs no
 # edit here. Its label is the first `# suite: <label>` (`// suite: <label>` in .mjs) line in its
 # first ten lines, or the file name without one.
@@ -48,14 +51,15 @@ if [ $# -gt 0 ]; then
   suites=$(printf '%s' "$want" | LC_ALL=C sort -u)
 fi
 # Suites that are not a tests/test_* file.
-run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test
+[ $hook = 0 ] || run "attribution hook self-test" python3 "$T/../hooks/deny-ai-attribution.py" --self-test || failed="$failed hooks/deny-ai-attribution.py"
 while IFS= read -r f <&3; do
   [ -f "$f" ] || continue  # a glob that matched nothing
   label=$(head -n 10 "$f" | grep -m 1 -E '^(#|//) suite: '); label=${label#* suite: }
   [ -n "$label" ] || label=${f##*/}
-  case "$f" in *.sh) run "$label" "$SH" "$f" ;; *) run "$label" node "$f" ;; esac
+  case "$f" in *.sh) run "$label" "$SH" "$f" ;; *) run "$label" node "$f" ;; esac || failed="$failed ${f##*/}"
 done 3<<EOF
 $suites
 EOF
-[ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; }
+# The last line names each failed suite by file, for the CI shard that ran it to report.
+[ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; echo "failed suites:$failed"; }
 exit $fail

@@ -19,12 +19,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # One Linux job. A pull request runs the suites its change reaches (tests/scope_sections.mjs, which
-  # runs every suite when it cannot place a changed file); a push to main runs every suite.
-  tests:
-    name: tests
+  # A pull request runs the suites its change reaches (tests/scope_sections.mjs, which runs every suite
+  # when it cannot place a changed file); a push to main runs every suite. tests/plan_shards.mjs splits
+  # them into parallel shards by their recorded durations (tests/suite_durations.json).
+  plan:
+    name: plan
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.shards.outputs.matrix }}
+      shells: ${{ steps.scope.outputs.shells }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,13 +38,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
-      - name: Ensure jq
-        run: |
-          command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
-          jq --version
       - name: Choose the suites
         id: scope
         env:
@@ -52,30 +49,121 @@ jobs:
           else
             node tests/scope_sections.mjs --full --github-output
           fi
-      # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it.
-      - name: Require shellcheck
-        run: |
-          shellcheck --version | head -2
-          echo DESK_REQUIRE_SHELLCHECK=1 >> "$GITHUB_ENV"
-      # The stock macOS bash (3.2.57) in Docker: `bash -n`, and a scan for bash 4+ features that parse
-      # in 3.2 but fail when run, over the changed shell scripts and those the chosen suites run.
+      - name: Plan the shards
+        id: shards
+        env:
+          SUITES: ${{ steps.scope.outputs.suites }}
+        run: node tests/plan_shards.mjs --suites "$SUITES" --github-output
+
+  # The stock macOS bash (3.2.57) in Docker: `bash -n`, and a scan for bash 4+ features that parse
+  # in 3.2 but fail when run, over the changed shell scripts and those the chosen suites run.
+  bash32:
+    name: bash 3.2
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Shell scripts under bash 3.2
         env:
-          SHELLS: ${{ steps.scope.outputs.shells }}
+          SHELLS: ${{ needs.plan.outputs.shells }}
         run: |
           # shellcheck disable=SC2086  # repo paths, one per word
           bash tests/bash32_check.sh $SHELLS
+
+  shard:
+    name: shard ${{ matrix.shard }}/${{ matrix.of }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it;
+    # test_lint.sh, in whichever shard runs it, reads this.
+    env:
+      DESK_REQUIRE_SHELLCHECK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: 3.x
+      - name: Ensure jq
+        run: |
+          command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
+          jq --version
+          shellcheck --version | head -2
+      # The result file is the shard's report to the tests job: written only once run.sh has finished,
+      # so a shard cancelled or timed out leaves none.
       - name: Run tests
         env:
-          SCOPE: ${{ steps.scope.outputs.scope }}
-          REASON: ${{ steps.scope.outputs.reason }}
-          SUITES: ${{ steps.scope.outputs.suites }}
+          SHARD: ${{ matrix.shard }}
+          OF: ${{ matrix.of }}
+          SUITES: ${{ matrix.suites }}
+          HOOK: ${{ matrix.hook }}
         run: |
           bash --version | head -1
-          echo "scope: $SCOPE ($REASON)"
-          if [ "$SCOPE" = full ]; then
-            bash tests/run.sh
-          else
-            # shellcheck disable=SC2086  # suite file names, one per word
-            bash tests/run.sh $SUITES
-          fi
+          echo "shard $SHARD/$OF: $SUITES"
+          flags=--no-hook-test
+          [ "$HOOK" = true ] && flags=
+          set +e
+          # shellcheck disable=SC2086  # a flag and suite file names, one per word
+          bash tests/run.sh $flags $SUITES 2>&1 | tee "$RUNNER_TEMP/run.log"
+          rc=${PIPESTATUS[0]}
+          mkdir -p "$RUNNER_TEMP/result"
+          failed=$(grep -m 1 '^failed suites:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
+          printf 'rc=%s\nfailed=%s\n' "$rc" "${failed# }" > "$RUNNER_TEMP/result/shard-$SHARD.txt"
+          exit "$rc"
+      - name: Save the result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/result/
+          if-no-files-found: ignore
+          overwrite: true
+          retention-days: 3
+
+  # The check branch protection and auto-release read. It runs whatever happened above, so a failed,
+  # cancelled or skipped shard turns it red rather than leaving it skipped.
+  tests:
+    name: tests
+    needs: [plan, bash32, shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fetch the shard results
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: shard-*
+          path: results
+          merge-multiple: true
+      - name: Every shard passed
+        env:
+          PLAN: ${{ needs.plan.result }}
+          BASH32: ${{ needs.bash32.result }}
+          SHARDS: ${{ needs.shard.result }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: |
+          bad=0
+          [ "$PLAN" = success ] || { echo "plan: $PLAN"; bad=1; }
+          [ "$BASH32" = success ] || { echo "bash 3.2 check: $BASH32"; bad=1; }
+          of=$(printf '%s' "$MATRIX" | jq -r '.include | length' 2>/dev/null)
+          for n in $(printf '%s' "$MATRIX" | jq -r '.include[].shard' 2>/dev/null); do
+            f="results/shard-$n.txt"
+            if [ ! -f "$f" ]; then echo "shard $n/$of did not finish: cancelled, timed out or stopped before its suites ran"; bad=1; continue; fi
+            rc=$(sed -n 's/^rc=//p' "$f"); failed=$(sed -n 's/^failed=//p' "$f")
+            if [ "$rc" = 0 ]; then echo "shard $n/$of passed"; else echo "shard $n/$of failed: ${failed:-exit $rc}"; bad=1; fi
+          done
+          [ "$SHARDS" = success ] || { echo "shards: $SHARDS"; bad=1; }
+          exit "$bad"

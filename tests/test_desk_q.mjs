@@ -1265,6 +1265,7 @@ const outside = (n, category = 'new') => Array.from({ length: n }, (_, i) => ({ 
 const twelveHours = [4, 5, 6, 7, 8, 9, 10, 4, 5, 6, 7, 8];
 dated('hold', 5000, { hours: twelveHours, tickets: {
   'B-RUN': { state: 'running', stage: '4/9' }, 'W-1': heldBy('B-RUN'),
+  'W-LC': { state: 'parked', lane: 'C', held_by: 'B-RUN', park: { question: 'lane C — spans layers' } },
   'B-DRAFT': prAt(175, { isDraft: true }), 'W-3': heldBy('B-DRAFT'),
   'B-READY': prAt(176), 'W-4': heldBy('B-READY'),
   'B-PARK': { state: 'parked', park: { question: 'which copy?' } }, 'W-5P': heldBy('B-PARK'),
@@ -1297,6 +1298,7 @@ const cells217 = (name, key, n = 2) => {
   return [l.slice(18, 31), l.slice(31, 83), l.slice(83, 96), l.slice(96, 110)].slice(0, n).map((s) => s.trim()).join(' | ');
 };
 t('DS-217 AC1 behind a running blocker: waiting, with its stage', cells217('hold', 'W-1'), '· waiting | behind B-RUN (running, stage 4/9)');
+t('DS-716 AC1 a lane C park held behind a running sibling: waiting, behind it', cells217('hold', 'W-LC'), '· waiting | behind B-RUN (running, stage 4/9)');
 t('DS-217 AC2 behind a PR a supervisor merges: waiting, naming the check, and STARTS after it merges', cells217('holdsup', 'W-2', 3), '· waiting | behind #177: tests running | after #177');
 t('DS-217 (DS-279) behind a PR in conflict that a fix try takes on: waiting', cells217('holdsup', 'W-2C'), '· waiting | behind #178: merge conflict with main');
 t('DS-217 (DS-280 AC9) behind a PR the merge driver leaves under a merge hold: waiting on the PR, which needs you', cells217('holdsup', 'W-2H'), '· waiting | behind #180, which needs you');
@@ -2276,6 +2278,18 @@ const r490 = Q.loadRepos(NOW).find((r) => r.name === 'stuck490');
 r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
+
+// ---- A dense hold graph: each ticket held by every one before it (as collision holds leave a batch)
+// has exponentially many paths. The walk reads each blocker once, so it stays fast.
+const dense = { tickets: { 'D-0': { key: 'D-0', state: 'running', stage: '3/9' } } };
+for (let i = 1; i <= 30; i++) {
+  const by = Array.from({ length: i }, (_, j) => `D-${j}`).join('|');
+  dense.tickets[`D-${i}`] = { key: `D-${i}`, state: 'parked', held_by: by, park: { question: `held by orchestrator: blocked by ${by.split('|').join(', ')} — starts once their PRs merge` } };
+}
+const denseStart = Date.now();
+const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
+t('a 30-ticket transitively held chain reads every state in well under a second', Date.now() - denseStart < 1000, true);
+t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

@@ -257,17 +257,15 @@ To hand off:
 
 1. **Commit everything** and leave `git status --porcelain` clean: the next session starts from your
    branch in this worktree, not from anything you hold. Do not push.
-2. **Write `$DESK_STATE/handoffs/<TICKET>.json`** with the Write tool, holding these fields and no
-   others (the orchestrator adds the branch and its commits, and drops anything else):
+2. **Write `$DESK_STATE/handoffs/<TICKET>.json` with this command**, never by hand. The
+   orchestrator adds the branch and its commits:
 
-   ```json
-   {"ticket": "<TICKET>", "stage": "<4b or 7>", "criteria": ["<each acceptance criterion, verbatim>"],
-    "lane": "<lane>", "verification": ["<each check you ran: command, scope and reason, result>"],
-    "review": ["<each self-review finding so far: severity, file:line, outcome and commit; the round and SHA it ran at>"],
-    "evidence": ["<the absolute path of each screenshot or log captured>"]}
+   ```bash
+   ~/.claude/desk/bin/handoff.mjs write <TICKET> --stage <4b|7> --lane '<lane>' --criterion '<each acceptance criterion, verbatim>' --verification '<each check you ran: command, scope and reason, result>' --review '<each self-review finding so far: severity, file:line, outcome and commit; round and SHA>' --evidence '<the absolute path of each screenshot or log captured>'
    ```
 
-   `review` and `evidence` are `[]` when there is nothing yet.
+   One line, one flag per item, no `node` (it is refused with a `..`); no `--review` or `--evidence`
+   when there is nothing yet.
 3. **Update your resume file** (`$DESK_STATE/resume/<TICKET>.json`), then print `AUTOPILOT_HANDOFF: 4b` (or `7`) at the start of a line in
    your reply text, never in a code fence, and end your turn. Print no `AUTOPILOT_DONE`: the ticket
    is not done.

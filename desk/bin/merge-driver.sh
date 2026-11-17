@@ -195,12 +195,33 @@ if [ -n "$LOG" ]; then
   if ! LOG_STATE="$(desk_load_paths && printf '%s' "$DESK_STATE")" || [ -z "$LOG_STATE" ] || ! mkdir -p "$LOG_STATE"; then
     echo "FAIL: --log: could not resolve the batch state directory" >&2; exit 1
   fi
-  exec >>"$LOG_STATE/merge-driver.log" 2>&1
 fi
+# A log past LOG_ROTATE_BYTES moves to <log>.1 and the redirect re-opens a new one, with the older
+# copies shifted up and only LOG_ROTATE_KEEP kept, as the supervisor does for its own log. Checked
+# once this driver holds the lock and between loops: only the main shell may re-open its redirect, and
+# a start that loses the lock must not move the running driver's log out from under it.
+LOG_ROTATE_BYTES="${DESK_LOG_ROTATE_BYTES:-10485760}"
+LOG_ROTATE_KEEP=3
+# rotate_log succeeds only when it moved the log aside.
+rotate_log(){
+  local f="$LOG_STATE/merge-driver.log" size i
+  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  [ "${size:-0}" -gt "$LOG_ROTATE_BYTES" ] || return 1
+  rm -f "$f.$LOG_ROTATE_KEEP"
+  for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
+  mv -f "$f" "$f.1"
+}
+# reopen_log: rotates the log if it is due, and re-opens the redirect when it rotated or when this
+# driver's output no longer goes to merge-driver.log (something else moved it).
+reopen_log(){
+  [ -n "$LOG" ] || return 0
+  if rotate_log || ! [ /dev/fd/1 -ef "$LOG_STATE/merge-driver.log" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
+}
+if [ -n "$LOG" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; [ -n "${SAID:-}" ] && rm -rf "$SAID"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -265,6 +286,7 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
   mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
+reopen_log
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
 node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
@@ -275,7 +297,36 @@ trap 'STOP=143' TERM
 stop_if_asked(){ if [ -n "$STOP" ]; then exit "$STOP"; fi; }
 
 cd "$DESK_REPO_ROOT" || exit 1
-log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
+# A line about one PR ("#<n> …", "epic PR #<n> …"), or the loop's draft and no-ready lines, is written
+# only when the last loop that logged about it said something else: each key keeps the lines of the
+# loop that last logged it in $SAID/<key>, under that loop's number, and the loop before's in .prev.
+# Files rather than variables, since log also runs in subshells.
+LOOP=0; SAID=""
+log(){
+  local msg="$*" key=""
+  case "$msg" in
+    *$'\n'*) ;;
+    '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
+    'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*) key=loop ;;
+  esac
+  case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
+  if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
+  echo "$(date -u +%H:%M:%SZ) $msg"
+}
+# said <key> <line>: records the line for this loop; succeeds when this or the key's last logged loop
+# already said it.
+said(){
+  local f="$SAID/$1" at="" hit=1
+  if [ -f "$f" ]; then IFS= read -r at < "$f" || true; fi
+  if [ "$at" != "$LOOP" ]; then
+    if [ -f "$f" ]; then mv -f "$f" "$f.prev"; fi
+    printf '%s\n' "$LOOP" > "$f"
+  fi
+  if grep -Fxqs -- "$2" "$f" || grep -Fxqs -- "$2" "$f.prev"; then hit=0; fi
+  printf '%s\n' "$2" >> "$f"
+  return "$hit"
+}
 Q="$DESK_RUN_BIN/queue.mjs"
 GATE="$DESK_RUN_BIN/gate.mjs"
 THREADS="$DESK_RUN_BIN/review-threads.mjs"
@@ -294,6 +345,9 @@ AUTHOR="$DESK_GITHUB_HANDLE"
 VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
+# What this run has logged per PR starts empty, so each start says every PR's state once. Only the
+# lock holder gets here, so a killed run's record is no one's.
+rm -rf "$SD"/said.*; SAID="$SD/said.$$"; mkdir -p "$SAID"
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
@@ -415,7 +469,10 @@ try { const all = JSON.parse(fs.readFileSync(qf, 'utf8')); q = all.tickets || {}
 const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
-for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
+// A --deps predecessor the ticket was freed from by hand (freed_from, needs-you link items) no longer holds
+// it: --deps outlive a restart, so without this a ticket freed from a dropped blocker would never release.
+const freed = (s) => new Set(String(q[s]?.freed_from ?? '').split('|').filter(Boolean));
+for (const pair of pairs) { const i = pair.indexOf(':'); const s = pair.slice(0, i); const f = freed(s); add(s, pair.slice(i + 1).split(',').filter((p) => !f.has(p))); }
 for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
 // Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
@@ -454,7 +511,7 @@ NODE
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
-      node "$Q" set "$succ" state=triaged park=null held_by=null >/dev/null </dev/null \
+      node "$Q" set "$succ" state=triaged park=null held_by=null freed_from=null >/dev/null </dev/null \
         && placed=$(node "$Q" front "$succ" </dev/null) && log "merged:$got -> RELEASED $placed"
     fi
   done <<EOF_PLAN
@@ -1097,6 +1154,8 @@ pause(){
 }
 while true; do
   stop_if_asked
+  LOOP=$((LOOP + 1))
+  reopen_log
   join_queue_tickets
   release_chain
 

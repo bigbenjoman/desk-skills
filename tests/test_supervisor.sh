@@ -540,6 +540,20 @@ check "DS-311 AC5: X-1 is not driven" '! grep -q "^X-1 " "$T/pass.batches" && gr
 out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
 check "DS-311 AC5: X-1 is no longer listed" '! grep -q "^X-1:" <<< "$out" && grep -q "^Y-1:" <<< "$out"'
 
+# ---- DS-759: supervisor.log rotates past its size limit, keeping three copies --------------------
+SL="$SS/supervisor.log"
+rm -f "$SL".[1-4]
+printf 'old line %s\n' $(seq 1 100) > "$SL"; old=$(cat "$SL")
+out=$(DESK_LOG_ROTATE_BYTES=1000 mtick)
+check "DS-759 AC1: a log over the limit is kept as supervisor.log.1, and the tick writes a new one" '[ "$(cat "$SL.1")" = "$old" ] && ! grep -q "old line" "$SL" && grep -q "pass: exit" "$SL"'
+check "DS-759 AC4: the new log, whose tail desk-q reads, ends with the tick's last line, not an empty file" '[ -s "$SL" ] && tail -1 "$SL" | grep -q . && ! tail -1 "$SL" | grep -q "old line"'
+out=$(DESK_LOG_ROTATE_BYTES=1000 mtick)
+check "DS-759: a log under the limit is appended to, not rotated" '[ "$(cat "$SL.1")" = "$old" ] && [ ! -e "$SL.2" ] && [ "$(grep -c "pass: exit" "$SL")" = 2 ]'
+echo copy1 > "$SL.1"; echo copy2 > "$SL.2"; echo copy3 > "$SL.3"
+printf 'old line %s\n' $(seq 1 100) > "$SL"
+out=$(DESK_LOG_ROTATE_BYTES=1000 mtick)
+check "DS-759 AC2: with three copies, the oldest is deleted and the others move up one" '[ "$(cat "$SL.3")" = copy2 ] && [ "$(cat "$SL.2")" = copy1 ] && [ "$(cat "$SL.1")" = "$old" ] && [ ! -e "$SL.4" ] && ! grep -q "old line" "$SL"'
+
 # ---- AC10: uninstall ----------------------------------------------------------------------------
 out=$(sup uninstall); rc=$?
 check "AC10: uninstall exits 0" '[ $rc -eq 0 ]'
