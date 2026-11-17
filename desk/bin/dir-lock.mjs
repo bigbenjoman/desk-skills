@@ -86,9 +86,14 @@ export function tryLockFile(file, fields = {}) {
     if (!(isStale() && clearStale(file, isStale))) return filePid(file);
   }
 }
-process.on('exit', () => {
-  for (const f of heldFiles) { try { if (filePid(f) === process.pid) rmSync(f, { force: true }); } catch { /* gone */ } }
-});
+// Lets go of `file`, or with none every file lock this process holds; never one another process holds.
+export function unlockFile(file) {
+  for (const f of file ? [file] : [...heldFiles]) {
+    try { if (filePid(f) === process.pid) rmSync(f, { force: true }); } catch { /* gone */ }
+    heldFiles.delete(f);
+  }
+}
+process.on('exit', () => unlockFile());
 
 // Writes `obj` as JSON to `file` through a temporary file and a rename, so a reader that takes no
 // lock always sees one whole version.

@@ -69,7 +69,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
-import { listBatches, batchPinned, alive, orchestratorHolder, supervisorHolder } from './batches.mjs';
+import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
+import { tryLockFile, unlockFile } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
@@ -434,23 +435,15 @@ function batchInterval(intake) {
 }
 
 // Takes <state>/supervisor.lock for this process: -> null, or the pid of the live run that holds it
-// (or the orchestrator's pass lock).
+// (or the orchestrator's pass lock). Taken exclusively (dir-lock.mjs tryLockFile), so of two ticks
+// that both find a dead holder's lock only one takes it over.
 function takeLock(state) {
-  const holder = orchestratorHolder(state) ?? supervisorHolder(state);
-  if (holder) return holder;
-  const mine = () => JSON.stringify({ pid: process.pid, since: new Date().toISOString() });
-  try { writeFileSync(supervisorLock(state), mine(), { flag: 'wx' }); }
-  catch {
-    // A dead holder's lock is taken over; a live one started in the moment since the check above.
-    const live = supervisorHolder(state);
-    if (live) return live;
-    writeFileSync(supervisorLock(state), mine());
-  }
-  return null;
+  const pass = orchestratorHolder(state);
+  if (pass) return pass;
+  const got = tryLockFile(supervisorLock(state));
+  return got === true ? null : (got ?? '?');
 }
-function dropLock(state) {
-  try { if (JSON.parse(readFileSync(supervisorLock(state), 'utf8')).pid === process.pid) rmSync(supervisorLock(state)); } catch { /* gone */ }
-}
+const dropLock = (state) => unlockFile(supervisorLock(state));
 
 // Standing intake (intake.mjs), where config §3b "Intake query" names a query: the lines for the
 // report, empty when it was not due. Triage runs a model per ticket, so it gets the longest wait.
