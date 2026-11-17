@@ -24,7 +24,7 @@ import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutO
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { checkinTimes, checkinRow, checkin, urgentParks, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
-import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals, appendOnlyFrom } from './scope-report.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
@@ -43,7 +43,7 @@ import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded,
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -2050,7 +2050,49 @@ if (lowMemory) {
       `(${running.length} running; a worker mid-suite will drain)`);
 }
 const runningKeys = new Set(running.map((r) => r.key));
-const collidesWithRunning = (r) => (r.collides_with ?? '').split('|').filter(Boolean).some((k) => runningKeys.has(k));
+// The per-file budget (config §3b, desk-env fileBudget): a ticket waits while any file its triage record
+// names is already named by as many running tickets as that file's places. Worked out now, from the
+// triage records of the tickets running now, so a ticket that has finished holds nothing. A file
+// §4 Append-only paths covers is only added to, and has no limit.
+const FILE_BUDGET = E.fileBudget();
+const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
+const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeOf = new Map();
+const budgetFiles = (key) => {
+  if (!scopeOf.has(key)) {
+    const files = triageRec(key)?.files_in_scope;
+    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
+  }
+  return scopeOf.get(key);
+};
+// A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
+const lineCounts = new Map();
+const linesOnBase = (f) => {
+  if (!lineCounts.has(f)) {
+    const base = E.batchBase() ?? DEFAULT_BRANCH;
+    let n = 0;
+    for (const ref of [`origin/${base}`, base]) {
+      try { n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', `${ref}:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\n').length - 1; break; } catch { /* not on that ref */ }
+    }
+    lineCounts.set(f, n);
+  }
+  return lineCounts.get(f);
+};
+const placesFor = (f) => (budgetSerial.some((re) => re.test(f)) ? 1
+  : FILE_BUDGET.big === FILE_BUDGET.small ? FILE_BUDGET.small
+  : linesOnBase(f) > FILE_BUDGET.lines ? FILE_BUDGET.big : FILE_BUDGET.small);
+// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+const budgetHolds = (r) => {
+  const holds = [];
+  for (const f of budgetFiles(r.key)) {
+    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
+    if (!by.length) continue;
+    const k = placesFor(f);
+    if (by.length >= k) holds.push({ file: f, k, by });
+  }
+  return holds;
+};
+const collidesWithRunning = (r) => budgetHolds(r).length > 0;
 
 // A ticket whose worker already printed AUTOPILOT_DONE has finished, whatever its state says. The
 // orchestrator can requeue a parked ticket that in fact finished (answer.mjs only records the answer;
@@ -3229,7 +3271,7 @@ let dbDown = null;
 for (const t of spawnable) {
   // usageStop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it.
   if (baseHold || usageStop || !(attempts < ticketSlots)) break;
-  // A ticket spawned earlier in this pass is running too: two that collide never start together.
+  // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (collidesWithRunning(t)) continue;
   if (fixTryStale(t)) continue;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
@@ -3771,6 +3813,7 @@ for (const [label, items] of [['spawned', report.spawned], ['advanced', report.a
 if (report.outOfScope.length) out.push(`out of triaged scope (report only):\n  ${report.outOfScope.join('\n  ')}`);
 if (incidentalBad) out.push(`scope: ${incidentalBad} — read as the default (lockfiles)`);
 if (appendOnlyBad) out.push(`collisions: ${appendOnlyBad} — read as none, so a shared append-only file still collides`);
+if (FILE_BUDGET.bad) out.push(`collisions: ${FILE_BUDGET.bad} — read as 1 for every file, so no two tickets naming one file run at once`);
 for (const why of unreadableQueues) out.push(`ports: ${why} — its running workers' ports were not skipped`);
 out.push(...epicLines);
 if (report.paused.length) out.push(`paused on the usage limit: ${report.paused.join(' | ')}`);
@@ -5194,7 +5237,8 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
 if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(SHOWN_BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
-if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
+const budgetText = (h) => `${h.file} has ${h.by.length} running of its ${h.k}: ${h.by.join(', ')}`;
+if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => `${x.key} (${budgetHolds(x).map(budgetText).join('; ')})`).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));
 if (resumeWaits.length) out.push(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`);
 const bootWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && r.resume === 'reboot' && rebootReady(r).wait);
@@ -5320,11 +5364,9 @@ if (!DRY) {
   const unspawned = eligible.filter((r) => qEnd.tickets[r.key]?.state === 'triaged').length;
   // usageStop and USAGE_HOLD also cover a limit met mid-pass, after `held` was fixed.
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
-  const appendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs;
   const collisions = heldBack.map((r) => {
-    const by = String(r.collides_with ?? '').split('|').filter((k) => runningKeys.has(k));
-    const mine = triageRec(r.key)?.files_in_scope ?? [];
-    return { key: r.key, with: by, files: [...new Set(by.flatMap((k) => sharedFiles(mine, triageRec(k)?.files_in_scope ?? [], appendOnly)))] };
+    const holds = budgetHolds(r);
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }

@@ -387,6 +387,7 @@ export const CONFIG_ROWS = Object.freeze({
   subscription: { section: '3b', row: 'Subscription' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
+  'file-budget': { section: '3b', row: 'Per-file collision budget' },
   'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
   'maintenance-window': { section: '3b', row: 'Maintenance window' },
   'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
@@ -1393,6 +1394,32 @@ export function spawnGate(row = configValue('spawn-gate')) {
   const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
   const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
   return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
+}
+
+// §3b "Per-file collision budget": how many running tickets may name one file before a ticket naming
+// it waits. `<big> over <lines> lines, else <small>` gives a file longer than <lines> on the batch base
+// <big> places and any other <small>; a bare `<k>` gives every file k. `; serial: <glob>, ...` (or
+// `none`) keeps the files it names at 1. Unset is `3 over 1000 lines, else 1; serial: none`. A row
+// that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard. The
+// row is one code span: a cell of more than one is read whole and does not read, since its first span
+// alone would drop the serial list without a word.
+//   -> { big, lines, small, serial: [glob], bad: string | null }
+const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
+// configValues refuses a cell mixing `none` with other spans: more than one span all the same.
+const fileBudgetSpans = () => { try { return configValues('file-budget'); } catch { return [null, null]; } };
+export function fileBudget(row = fileBudgetSpans()) {
+  if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
+  const spans = [].concat(row);
+  const v = spans.length === 1 ? String(spans[0]).trim() : '';
+  const m = /^(?:(\d+)\s+over\s+(\d+)\s+lines?\s*,\s*else\s+(\d+)|(\d+))\s*(?:;\s*serial\s*:\s*(.*))?$/i.exec(v);
+  const serial = m?.[5] == null || isNone(m[5].trim()) ? [] : m[5].split(',').map((s) => s.trim());
+  const big = Number(m?.[1] ?? m?.[4]);
+  const small = Number(m?.[3] ?? m?.[4]);
+  if (!m || !(big >= 1) || !(small >= 1) || serial.some((g) => !g || /\s/.test(g))) {
+    const read = spans.length === 1 ? `reads "${v}"` : 'holds more than one code span';
+    return { big: 1, lines: 0, small: 1, serial: [], bad: `config §3b "${CONFIG_ROWS['file-budget'].row}" ${read}, not one \`<k> over <n> lines, else <k>; serial: <globs>\`` };
+  }
+  return { big, lines: m[2] == null ? 0 : Number(m[2]), small, serial, bad: null };
 }
 
 // ---- ticket ids ------------------------------------------------------------------------------

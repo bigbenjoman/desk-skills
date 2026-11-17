@@ -24,10 +24,10 @@ reads as `none`, and the pass report names it.
 **The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
 blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
 tickets that gate the most others first. If the user asks for a literal chain that would idle a gate,
-say what that costs and ask. A released ticket's `collides_with` still
-blocks it while that worker runs, so clear the entry too if you release it early. A ticket added
-mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs hold <SUCCESSOR>
-<TICKET>` behind any ticket it shares files with.
+say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
+records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
+up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not
+chained for you: hold it with `queue.mjs hold <SUCCESSOR> <TICKET>` where its merge must wait.
 
 ### Dependencies from Jira links
 

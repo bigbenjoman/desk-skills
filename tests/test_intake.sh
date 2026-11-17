@@ -541,7 +541,7 @@ check "DS-300 AC4: the child is triaged again in its feature batch, on that batc
 mkdir -p "$NS/triage"; printf '{"ticket":"X-2","files_in_scope":["src/shared.js"]}\n' > "$NS/triage/X-2.json"
 rec X-5 A '"epic":{"key":"X-1","summary":"a feature"},"files_in_scope":["src/shared.js"],"blockers":[{"key":"X-4","category":"new"}]'
 out=$(admit X-5); rc=$?
-check "DS-300 AC4: a child is held behind its blocker there and behind an in-flight child it collides with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4|X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4, X-2$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+check "DS-300 AC4 DS-755 AC8: a child is held behind its blocker there, and not behind an in-flight child it shares a file with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4" ] && [ "$(nget tickets.X-5.collides_with)" = "X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 # In feature mode, X-2 is the spine: a child sharing nothing with it still waits for it.
 node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.feature=true; q.spine="X-2"; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
 rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
