@@ -56,7 +56,7 @@ import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, 
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
@@ -2055,6 +2055,25 @@ if (lowMemory) {
     : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
       `(${running.length} running; a worker mid-suite will drain)`);
 }
+// Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
+// test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
+// and none resumes into a stage that runs suites, since each would only join the queue. Every other
+// resume goes ahead. AUTOPILOT_LOCK_QUEUE=off skips the read, as the test runner does: its passes must
+// not be held by this machine's real queue.
+const SUITE_STAGES = ['4', '4b'];
+const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
+  const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
+  return lockQueue({
+    waiting: lockWaiters({ procs: processList(), holders: lockHolders(E.lockDir()) }),
+    slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
+    factor: whole(E.machineValue('test-lock-queue-factor'), 2),
+  });
+})();
+if (LOCK_QUEUE?.unread) report.stalled.push(LOCK_QUEUE.line);
+// Held by the gate: a new local session, a handoff to 4b, or a killed worker last at Stage 4 or 4b.
+const lockQueueHolds = (r) => !!LOCK_QUEUE?.deep && r.location !== 'cloud'
+  && (toResume(r) ? SUITE_STAGES.includes(roundStage(r.stage)) : toHandoff(r) ? SUITE_STAGES.includes(String(r.handoff_stage)) : true);
+const lockQueueHeld = [];
 const runningKeys = new Set(running.map((r) => r.key));
 // The per-file budget (config §3b, desk-env fileBudget): a ticket waits while any file its triage record
 // names is already named by as many running tickets as that file's places. Worked out now, from the
@@ -2207,7 +2226,7 @@ const epicOn = !!BASE && !!SOURCE && BASE !== SOURCE && epicBatch(fresh);
 const epicPr = epicOn ? readEpicPr(fresh) : null;
 const baseWorkerHeld = held === PACE_HELD ? null : held;
 // The holds on a base worker that come before the slot count; baseFixRoom adds the budgets.
-const baseWorkerMay = !baseWorkerHeld && !lowMemory && running.length < concurrency;
+const baseWorkerMay = !baseWorkerHeld && !lowMemory && !LOCK_QUEUE?.deep && running.length < concurrency;
 // A draft epic PR's review try is a worker with no ticket to spawn, so it claims its one slot as a due
 // gate conflict fix does, but only when this pass could start it: a claim it cannot use would keep the
 // slot from a sibling batch every pass. Only a clean review not yet acted on is counted wrongly, for
@@ -2307,6 +2326,7 @@ let gateConflict = null;
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
+  : LOCK_QUEUE?.deep ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
   : repoUnlocked ? repoLine
@@ -3334,6 +3354,11 @@ for (const t of spawnable) {
     report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
     continue;
   }
+  // Held without taking a slot: a resume at a stage that runs no suite may still start in its place.
+  if (lockQueueHolds(t)) {
+    lockQueueHeld.push(t.key);
+    continue;
+  }
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
   // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
   // the job is dropped here, in the same locked step, so no pump can start it before the worker runs.
@@ -3540,6 +3565,10 @@ for (const t of spawnable) {
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
+const lockQueueHeldText = lockQueueHeld.length
+  ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}); they start once the queue drains below ${LOCK_QUEUE.at}`
+  : null;
+if (lockQueueHeldText) report.stalled.push(lockQueueHeldText);
 // A worktree held at an earlier pass and not this one: dropped once it is clean, or the ticket has
 // moved on (spawned this pass, requeued, parked), including one the loop did not reach this pass.
 if (!DRY) {
@@ -5431,10 +5460,10 @@ if (idle) {
 const heldWhy = report.spawned.length || !eligible.length ? null
   : held ?? (baseHold ? 'the batch base sync holds every spawn'
   : lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
-  : MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
+  : lockQueueHeldText ?? (MACHINE.room <= 0 ? `the machine budget: ${MACHINE.line}`
   : repoUnlocked ? `the repo's shared cap: ${repoLine}`
   : REPO.room <= 0 ? `the repo's shared cap: ${REPO.line}`
-  : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null);
+  : concurrency <= 0 ? `the batch's worker count is ${concurrency}` : null));
 const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 

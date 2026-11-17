@@ -56,6 +56,13 @@ evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out
 guest figure can take the whole VM down and kill every agent mid-flight.
 An OOM leaves a worker's worktree, database and port behind.
 
+**The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
+machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
+the machine profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile), the pass
+holds new local workers, fix tries, base workers, handoffs to 4b and resumes of a worker last at Stage
+4 or 4b, and its STALLED line names the queue depth. A resume at any other stage goes ahead. Where ps
+cannot be read, the pass starts workers as it would without the gate, and says the queue was not read.
+
 **A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
 record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
 number as `concurrency_user`, and the pass report's `workers:` line says whose the count is. While

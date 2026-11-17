@@ -101,5 +101,27 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
   return waiting ? 'lock' : null;
 }
 
+// How many runs wait on the test lock machine-wide, any worktree or session: a with-lock.sh test|tsc
+// wrapper no holder file names (a flock slot's wrapper has exec'd into its command by the time it
+// holds), and a single-slot flock with no child yet. Null when ps cannot be read.
+export function lockWaiters({ procs, holders }) {
+  if (!procs) return null;
+  let n = 0;
+  for (const p of procs) {
+    if (holders.has(p.pid)) continue;
+    if (WRAPPER.test(p.args) || (FLOCK.test(p.args) && !procs.some((c) => c.ppid === p.pid))) n++;
+  }
+  return n;
+}
+
+// Whether the test lock's queue is deep enough to hold new work: `waiting` runs at or over `slots` x
+// `factor`. `waiting` null is a queue not read, which holds nothing.
+export function lockQueue({ waiting, slots, factor }) {
+  const at = slots * factor;
+  if (waiting == null) return { deep: false, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
+  const deep = waiting >= at;
+  return { deep, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}` };
+}
+
 // What the pass says of each, in its quiet list and in a wedged park's reason.
 export const SUITE_WAIT_TEXT = { suite: 'running its suite', lock: 'waiting on the test lock', unknown: 'ps could not be read, so whether it is running its suite is unknown' };
