@@ -4429,7 +4429,7 @@ fbq fbb ''
 fbt FB-11 running src/big.ts; fbt FB-12 running src/big.ts; fbt FB-13 running src/big.ts
 q set FB-11 session_id=live-1; q set FB-12 session_id=live-2; q set FB-13 session_id=live-3
 fbt FB-14 triaged src/big.ts
-fbt FB-15 done src/edge.ts; fbt FB-16 triaged src/edge.ts; q set FB-16 collides_with=FB-15
+fbt FB-15 "done" src/edge.ts; fbt FB-16 triaged src/edge.ts; q set FB-16 collides_with=FB-15
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
   '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
