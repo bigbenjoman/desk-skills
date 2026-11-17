@@ -114,6 +114,10 @@ t('DS-614 AC1 and its brief says where the base red check is red', fixBrief({ fi
 const lateTk = { key: 'T-1', base_red: late.base_red };
 const lateStill = fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'fail' }) }));
 t('DS-614 AC2 while the job is still red on the base, the hold stays and still says where', `${lateStill?.call} ${JSON.stringify(lateStill?.base_red?.latest)} ${/latest run of that job/.test(lateStill?.why)}`, 'held ["Size"] true');
+t('DS-614 AC2 while the base\'s latest run cannot be read, the hold stays', fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: null }) }))?.call, 'held');
+const asked = [];
+fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: { ...read({ Size: 'pass' }, { Size: 'fail' }), latestOnBase: (n, o) => { asked.push(o?.held === true); return 'fail'; } } }));
+t('DS-614 AC2 a held check asks for the base\'s latest run as held, which may read further back', JSON.stringify(asked), '[true]');
 const lateCleared = fixCall(lateTk, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'pass' }) }));
 t('DS-614 AC2 once it passes on the base, the hold clears and a fix try proceeds as today', `${lateCleared?.call} ${lateCleared?.fix.what} ${JSON.stringify(lateCleared?.base_red?.cleared)} ${'latest' in (lateCleared?.base_red ?? {})}`, 'requeue red: Size ["Size"] false');
 // AC3: green on the base's latest run and at the merge base: a fix try as today, with no unknown note.

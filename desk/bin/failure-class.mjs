@@ -83,8 +83,9 @@ export function runsState(runs) {
 // where there are any }, kept on the ticket as `base_red`) is read again only for its own head: a
 // held check clears once the job's latest completed run on the default branch passes, and stays
 // cleared at that head.
-// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name) -> 'fail' | 'pass' | null
-//         (its newest completed run at or since the merge base; null unread or with none) }
+// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name, { held }) -> 'fail' | 'pass' | null
+//         (its newest completed run at or since the merge base; null unread or with none; `held` for
+//         a check already held, which may read further back) }
 // -> { red, latest (those of red that are not red at the merge base), unknown, mine (the checks a fix
 //      try takes), record (the hold to keep, or null) }
 export function baseSplit(failing, head, held, read) {
@@ -94,7 +95,7 @@ export function baseSplit(failing, head, held, read) {
   for (const f of failing) {
     if (cleared.includes(f.name)) { mine.push(f); continue; }
     if (at?.checks?.includes(f.name)) {
-      if (read.latestOnBase(f.name) === 'pass') { cleared.push(f.name); mine.push(f); } else { red.push(f); if (at.latest?.includes(f.name)) latest.push(f); }
+      if (read.latestOnBase(f.name, { held: true }) === 'pass') { cleared.push(f.name); mine.push(f); } else { red.push(f); if (at.latest?.includes(f.name)) latest.push(f); }
       continue;
     }
     const state = read.atMergeBase(f.name);
