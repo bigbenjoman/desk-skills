@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared setup for the pass suites (tests/test_pass_*.sh), which each source it first: a scratch HOME,
 # a git repo and its config, a DESK_HOME whose bin holds the real queue and harvest scripts beside stubs
 # for everything that would touch GitHub, a browser, a worktree or a worker, and the helpers more than
