@@ -304,6 +304,13 @@ const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
 // before the subscription changed, holds that worker alone.
 const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
 const onRepoLogin = (login) => !!REPO_LOGIN && !!login && login.dir === REPO_LOGIN.dir;
+// A pin to a subscription set off is one item for the person (needs-you subscription-off) while it
+// stands: the queue's subscription_off, dropped by the first pass that finds the pin resolving again.
+{
+  const was = queue().subscription_off ?? null;
+  const off = REPO_SUB.off ? { email: REPO_SUB.email, login: REPO_SUB.off.name } : null;
+  if (!DRY && (off ? was?.email !== off.email || was?.login !== off.login : was)) q('set-batch', `subscription_off=${off ? JSON.stringify({ since: PASS_AT, ...off }) : 'null'}`);
+}
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
 const probeOnce = (login = OWN_LOGIN) => {

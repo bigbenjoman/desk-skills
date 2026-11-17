@@ -254,6 +254,10 @@ const item = /^NOTIFY: 1 item\(s\) need you — (\S+)$/m.exec(out)?.[1] ?? null;
 t('it is one item needing you, named for the repo', item === E_SLUG(), true);
 t('its stall names the repo, the email and the command that moves it', out.includes(`${item}: this repo's config §3b "Subscription" row names login-3@example.com, which is off (claude login-3), so nothing new starts for ${item}`)
   && out.includes(`Move ${item} to another subscription with desk-env subscription set <slug> <default|email>`), true);
+t('the batch records it for needs-you', `${batchOf().subscription_off?.email} ${batchOf().subscription_off?.login}`, 'login-3@example.com login-3');
+writeSubs([['login-2', 'default', 70, 70], ['login-3', 'unused', 10, 10]]);
+pass(env);
+t('once the subscription is unused, the record goes and the ticket starts on it', `${batchOf().subscription_off ?? null} ${row('Y-1').state} ${on('Y-1')}`, 'null running login-3');
 
 // AC12: the repo's subscription signed out.
 env = world([['b', 'default', 10, 10], ['c', 'unused', 90, 90]], fresh);
