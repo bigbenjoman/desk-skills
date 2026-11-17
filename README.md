@@ -860,6 +860,8 @@ AUTOPILOT_PREFLIGHT=1 ~/.claude/desk/bin/spawn-worker.sh <TICKET> <worktree> pre
 
 With the `preflight` lever on (config §3b Phase 0 levers), a ticket whose last preflight passed on
 the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` to force one.
+A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
+checks that should be OK, is run once more at default effort; a boundary failure is never retried.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
