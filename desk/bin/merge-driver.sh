@@ -480,7 +480,10 @@ const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
 // So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
 const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// A ticket queue.mjs stop held (batch-state.mjs STOPPED_PREFIX) starts only when the person lets it,
+// even where --deps still names it as a successor whose predecessors have merged.
+const stopped = (t) => String(t.park?.question ?? '').startsWith('held by orchestrator: stopped by queue.mjs stop');
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !stopped(q[s]) && !q[s].held_outside && !onDate(q[s]) &&ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0

@@ -258,6 +258,12 @@ q set T-15 held_label=null
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-15:T-11" 2>&1)
 check "DS-555 the same hold with no blocked-until label is released by those blockers" '[ "$(qf T-15 .state)" = triaged ] && echo "$out" | grep -q "RELEASED T-15"'
 q set T-15 state=done
+# DS-742: a ticket queue.mjs stop held waits on the person, even where --deps names merged blockers.
+q add T-17 Task A; q set T-17 state=triaged branch=fix/T-17
+q park T-17 "held by orchestrator: stopped by queue.mjs stop at 2026-11-17T00:00:00Z; its work so far is nothing to commit (clean). Starts again only once you let it"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-17:T-11" 2>&1)
+check "DS-742 a ticket queue.mjs stop held is not released by merged --deps blockers" '[ "$(qf T-17 .state)" = parked ] && ! echo "$out" | grep -q "RELEASED T-17"'
+q set T-17 state=done
 # A lane C park held behind a blocker that has merged keeps its own park: no release sends it to a worker.
 q add T-16 Task C; q set T-16 state=triaged branch=fix/T-16; q park T-16 "lane C — needs a plan"; q hold T-16 T-11
 out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-16:T-11" 2>&1)
