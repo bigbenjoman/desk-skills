@@ -24,7 +24,7 @@ const f = process.env.DESK_QUEUE, q = JSON.parse(readFileSync(f, 'utf8'));
 q.tickets['A-1'] = { ...q.tickets['A-1'], state: '$2', at: new Date().toISOString(), id: randomUUID(), by: import.meta.url,
   due: new Date(Date.now() + ${4:-1} * 3600e3).toISOString() };
 writeFileSync(f, JSON.stringify(q));
-console.log('A-1 is $3 at ' + new Date().toISOString() + ' from ' + import.meta.url);
+console.log('A-1 is $3 at ' + new Date().toISOString() + ' from ' + import.meta.url + '${5:-}');
 EOF
   cat > "$T/$1/tests/test_pass.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -62,6 +62,12 @@ check "DS-763 AC3 a report line printed differently lists both lines" '[ $rc = 1
 mktree due running running 2
 cmp "$T/base" "$T/due"
 check "DS-763 AC2 a deadline worked out from now differently lists both times" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue A-1 due: base \"20[0-9-]+T[0-9:.]+Z\", head \"20[0-9-]+T[0-9:.]+Z\"$" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+
+# Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
+mktree shabase running running 1 ' at origin/main 332065893'
+mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
+cmp "$T/shabase" "$T/shahead"
+check "DS-763 AC4 an abbreviated SHA that is all digits matches the other tree's" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 
 cmp "$T/base" "$T/crash"
 check "DS-763 AC5 a pass that fails to run on one tree is reported not compared, and the run exits non-zero" '[ $rc = 2 ] && echo "$out" | grep -qF "test_pass.sh run 1 (before: the first pass): not compared: the pass failed to run on the head: Error [ERR_MODULE_NOT_FOUND]" && echo "$out" | grep -qE "^compare_pass: 0 pass run\(s\) compared, [0-9]+ differ, 2 not compared$"'

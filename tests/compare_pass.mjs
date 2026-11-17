@@ -93,7 +93,10 @@ function normalizer(roots) {
 // whole or abbreviated, is named by the order it first appears in within one run: the same commit at
 // the same step reads alike. Per run, not per suite: two commits a tree made in the same second can
 // share a SHA there and not on the other tree, which would shift every later run's names.
-const SHA = /\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b/g;
+// A SHA needs a letter and a digit, as a number or a word has not both, except at the lengths the
+// pass abbreviates to (9 and 12) and a whole one: one in about 70 nine-character abbreviations is all
+// digits, and no time the pass prints has 9, 12 or 40 digits.
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9})\b/g;
 function renamer() {
   const seen = new Map();
   return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); });
