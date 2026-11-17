@@ -13,7 +13,7 @@ import * as E from './desk-env.mjs';
 import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, HELD_PREFIX, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
-import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, handoffTarget, branchCommits, renderHandoff,
+import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
 import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX, workerEnd } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
@@ -514,15 +514,22 @@ function refuseUnnamedLease(t, question) {
 
 // A session that handed off (AUTOPILOT_HANDOFF: 4b or 7) is queued to start that stage in a fresh
 // session, ahead of new tickets, in the same worktree and on the same branch (spawnHandoff below). A
-// stage no session starts at, a worktree or branch that is gone, or a handoff briefing that cannot be
-// read parks it, naming which, and spawns nothing.
+// stage no session starts at, a worktree or branch that is gone, or a handoff briefing that is missing
+// or names no criteria parks it, naming which, and spawns nothing. One that is not JSON is kept aside
+// and replaced by a briefing that has the session read the criteria from the ticket, and the report
+// names it: parking it would only park again on every requeue.
 // In stage order: Object.keys lists an integer-like key (7) before '4b'.
 const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
 const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
 function handoffRefusal(t, stage) {
   const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
   if (missing) return `handoff to Stage ${stage}: ${missing}, so no session was spawned. ${FROM_ZERO(t)}`;
-  const r = readHandoff(STATE, t.key);
+  let r = readHandoff(STATE, t.key);
+  if (r.unreadable) {
+    const kept = replaceUnreadable(STATE, { key: t.key, stage });
+    report.advanced.push(`${t.key}: ${r.why}: kept as ${kept}, and the Stage ${stage} session is told to read its criteria from the ticket`);
+    r = readHandoff(STATE, t.key);
+  }
   return r.ok ? null : `handoff to Stage ${stage}: ${r.why}, so no session was spawned. ${FROM_ZERO(t)}`;
 }
 // A finished ticket recorded done: its cost (a ticket whose sessions handed off spent what each of them
