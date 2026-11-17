@@ -37,7 +37,7 @@
     "test_codex_login.mjs": 1,
     "test_codex_usage.mjs": 1,
     "test_command_shapes.mjs": 1,
-  "test_compare_pass.sh": 480,
+    "test_compare_pass.sh": 480,
     "test_config.mjs": 3,
     "test_config_row_refs.mjs": 1,
     "test_cost_cache.mjs": 3,

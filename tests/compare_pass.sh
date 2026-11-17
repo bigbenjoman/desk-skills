@@ -60,8 +60,8 @@ for v in $(compgen -e); do case "$v" in DESK_*) unset "$v" ;; esac; done
 unset DATABASE_URL DIRECT_DATABASE_URL
 export AUTOPILOT_LOCK_QUEUE=off PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
 SH="${BASH:-bash}"
-# The two trees run side by side, each suite in its own scratch HOME, so the comparison takes one
-# suite run's time rather than two.
+# The two trees run one after the other, each suite in its own scratch HOME: side by side, one tree's
+# queue.mjs stop ends the other's stand-in worker, which it finds by session id across the machine.
 side(){ mkdir -p "$W/rec/$1"
   for s in "${suites[@]}"; do
     echo "compare_pass: $s on the $1" >&2
@@ -69,7 +69,6 @@ side(){ mkdir -p "$W/rec/$1"
       "$SH" "tests/$s" > "$W/rec/$1/$s.log" 2>&1 < /dev/null)
     mkdir -p "$W/rec/$1/$s"
   done; }
-side base & b=$!
-side head & h=$!
-wait "$b"; wait "$h"
+side base
+side head
 "$NODE" "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"
