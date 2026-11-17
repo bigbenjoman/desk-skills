@@ -42,7 +42,7 @@ t('outcome: neither', baseFixOutcome([]), 'ended with no marker');
 t('outcome: a park answered, then a done, is finished', baseFixOutcome([['AUTOPILOT_PARK', 'which side?'], ['AUTOPILOT_DONE', 'pr=none jira=none']]), 'finished: pr=none jira=none');
 t('outcome: a done, then a park, is parked', baseFixOutcome([['AUTOPILOT_DONE', 'pr=none'], ['AUTOPILOT_PARK', 'push refused']]), 'parked: push refused');
 
-// DS-663 AC4: a park made only on the busy test lock is said with its own marker, and spends no try.
+// A park made only on the busy test lock is said with its own marker, and spends no try.
 t('DS-663 lock wait: the marker before the last park', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy']]), true);
 t('DS-663 lock wait negative: a park with no marker', lockWaitPark([['AUTOPILOT_PARK', 'which side?']]), false);
 t('DS-663 lock wait negative: the marker before an earlier park only', lockWaitPark([['AUTOPILOT_PARK_WAIT', 'test-lock'], ['AUTOPILOT_PARK', 'lock busy'], ['AUTOPILOT_PARK', 'which side?']]), false);

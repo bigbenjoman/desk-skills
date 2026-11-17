@@ -2379,6 +2379,8 @@ function endTry(outcome, path, extra = {}) {
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[n - 1]);
 }
+// The last try's number, which a try that waited only on the test lock leaves for the next one too.
+const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 // What endTry kept of the last try, for its report line.
 const keptNote = (x) => (!x?.kept ? '' : x.kept.ref ? `; its unpushed ${String(x.kept.sha).slice(0, 12)} is kept on ${x.kept.ref}`
   : `; its unpushed ${String(x.kept.sha).slice(0, 12)} could not be kept on a ref (${x.kept.error})`);
@@ -2483,7 +2485,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       const lockWait = said && lockWaitPark(markers);
       endTry(outcome, wt.ok ? wt.path : null, lockWait ? { lock_wait: true } : {});
       const ended = bf.tries[bf.tries.length - 1];
-      baseLines.push(`base ${tryWhat(ended)}: try ${ended.try ?? bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
+      baseLines.push(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
     } else {
       baseFixLive = true;
       if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
@@ -2544,7 +2546,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     metConflict = true;
     const last = bf.tries[bf.tries.length - 1];
     const line = last?.kind === 'review' ? `epic PR review try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
-      : `${tryWhat(last)} try ${bf.tries.length} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
+      : `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
     heldForFix(line);
     gateConflict = { worker: true, line };
   } else if (wantSync) {
@@ -2554,7 +2556,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
     // PR's review tries are kept: they count per head, and a sync is no new review.
     const conflictTries = (bf?.tries ?? []).filter((x) => x.kind !== 'review');
     if (s.ok && !s.dry && conflictTries.length && !DRY) {
-      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.length)}`);
+      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter((x) => !x.lock_wait).length)}`);
       for (const x of conflictTries) if (x.kept?.ref) sh('git', ['-C', MAIN, 'update-ref', '-d', x.kept.ref], quiet);
       const kept = bf.tries.filter((x) => x.kind === 'review');
       bf = kept.length ? { tries: kept, running: null, port: null } : null;
@@ -2595,7 +2597,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   if (wt.ok && !metConflict && !gateBusy && g?.state === 'failed' && Array.isArray(g.conflict)) {
     sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], { tolerant: true });
     if (baseFixLive) {
-      gateConflict = { worker: true, line: `conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
+      gateConflict = { worker: true, line: `conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
     } else if (g.sha && g.sha === originSha(BASE)) {
       let person = null;
       const line = conflicted(g.conflict, (why) => { person = why; }, g.tree_check ?? null);
@@ -3286,7 +3288,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   flushQueue();
-  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
 

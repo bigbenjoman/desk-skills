@@ -220,7 +220,7 @@ check "DS-320 AC4 and no second try starts" '[ "$(grep -c "^base-feat-x " "$T/sp
 check "DS-663 AC5 a try that committed no merge keeps nothing, and the worktree is reset" \
   "[ \"\$(jq -r '.base_fix.tries[0].kept' \"\$DESK_QUEUE\")\" = null ] && [ -z \"\$(git -C \"\$C/repo\" for-each-ref refs/desk)\" ] && [ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$(origin_tip)\" ]"
 
-# DS-663: a try that commits its merge in the base worktree and parks before pushing. keepmerge: what
+# A try that commits its merge in the base worktree and parks before pushing. keepmerge: what
 # that worker does there; lockpark: its park, only on the busy test lock.
 keepmerge(){
   git -C "$C/wt/base-feat-x" merge -q --no-edit origin/main >/dev/null 2>&1; printf 'ours\ntheirs\n' > "$C/wt/base-feat-x/a.txt"
@@ -238,9 +238,12 @@ check "DS-663 AC2 the next try starts from the kept merge, in the base worktree"
   "[ \"\$(git -C $BWT rev-parse HEAD)\" = \"\$kept\" ] && [ \"\$(jq -r '.base_fix.tries[1].from.sha' \"\$DESK_QUEUE\")\" = \"\$kept\" ] && [[ \"\$out\" == *\"try 1 starts from try 1's kept merge\"* ]]"
 check "DS-663 AC2 and is told not to resolve the conflict again" \
   'tail -n 1 "$T/spawns" | grep -q "carry on from your HEAD, which already holds try 1.s merge of origin/main into feat/x" && grep -q "do not merge or resolve the conflicts again" "$C/state/briefings/base-feat-x.md"'
+live; pass; rm -f "$T/agents.json"
+check "DS-663 AC4 while it runs it is still try 1 of 2" '[[ "$out" == *"conflict fix try 1 of 2 is merging main into feat/x"* ]] && [[ "$out" != *"try 2 of 2"* ]]'
 git -C "$C/wt/base-feat-x" push -q origin HEAD:refs/heads/feat/x; ended "AUTOPILOT_DONE: pr=none jira=none"; pass
 check "DS-663 once the base is current, the kept ref goes with the tries" \
   '[ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && [ -z "$(git -C "$C/repo" for-each-ref refs/desk)" ] && origin_has_main'
+check "DS-663 AC4 and the lock wait is not counted among the tries it took" '[[ "$out" == *"current with main again, after 1 fix try"* ]]'
 
 : > "$T/spawns"; fresh bkeepstale; feature; fixrow yes; conflict; pass
 kept=$(keepmerge); lockpark
