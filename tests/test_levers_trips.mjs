@@ -112,7 +112,13 @@ t('a fix try after the wait ended it', (() => {
   const A = 'acme__tried';
   const s = repo(A);
   recordWait(s, 'F-2', wait, at(-80));
-  return run(A, queueOf(onTicket(A, 'F-2', 'failure-class', { fix_tries: [{ try: 1, at: at(-60) }] }), blocker(-70))).events.length;
+  return run(A, queueOf(onTicket(A, 'F-2', 'failure-class', { held_by: 'B-1', fix_tries: [{ try: 1, at: at(-60) }] }), blocker(-70))).events.length;
+})(), 0);
+t('a ticket released from its merged blocker is no longer waiting', (() => {
+  const A = 'acme__released';
+  const s = repo(A);
+  recordWait(s, 'F-4', wait, at(-80));
+  return run(A, queueOf(onTicket(A, 'F-4', 'failure-class'), blocker(-70))).events.length;
 })(), 0);
 t('a missing decision settles when the person answers', (() => {
   const A = 'acme__answered';

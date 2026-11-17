@@ -245,8 +245,10 @@ export const DETECTORS = Object.freeze({
     let settled = null;
     let what = null;
     if (w.class === 'dependency wait') {
+      // Still waiting means still held behind one of them.
+      const held = String(t.held_by ?? '').split('|').filter(Boolean);
       const merged = (w.blockers ?? []).map((k) => queue?.tickets?.[k]?.merged_at ?? null);
-      if (merged.length && merged.every(Boolean)) { settled = Math.max(...merged.map((m) => Date.parse(m))); what = `${w.blockers.join(', ')} merged`; }
+      if (merged.length && merged.every(Boolean) && (w.blockers ?? []).some((k) => held.includes(k))) { settled = Math.max(...merged.map((m) => Date.parse(m))); what = `${w.blockers.join(', ')} merged`; }
     } else {
       const answer = join(state, 'answers', `${t.key}.txt`);
       try { const m = statSync(answer).mtimeMs; if (m > since) { settled = m; what = 'the person answered'; } } catch { /* no answer */ }
