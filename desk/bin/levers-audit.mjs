@@ -190,8 +190,8 @@ export function readAudit(text, sha) {
 function loadQueue(file) {
   try {
     const q = JSON.parse(readFileSync(file, 'utf8'));
-    return { v: 1, trials: q?.trials ?? {}, items: q?.items ?? {} };
-  } catch { return { v: 1, trials: {}, items: {} }; }
+    return { v: 1, trials: q?.trials ?? {}, items: q?.items ?? {}, spend: q?.spend ?? null };
+  } catch { return { v: 1, trials: {}, items: {}, spend: null }; }
 }
 // Runs `fn(queue)` on the repo's audit queue under its lock and writes it back.
 function withQueue(slug, fn) {
@@ -258,12 +258,12 @@ function recordAudit({ slug, name, item, ended, text, states, now, registry }) {
 //   mergeCommit(item) -> sha | null       ended(item) -> { at } | null     log(item) -> text
 //   cleanup(item)                          pace() -> { hold }                 spend({ slug, now }) -> usd
 //   room() -> why no worker may start now, or null
-//   -> { recorded: [row], deferred: [event], started: [item], events: [event], line }
+//   -> { recorded: [row], deferred: [event], started: [item], failed: [text], events: [event], line }
 export async function runAudits({
   slug, name = slug, repo = slug, states, tickets, now = Date.now(), registry = REGISTRY, model = reviewModel,
   spawn, mergeCommit, ended = endedFromExit, log = logOf, cleanup = () => {}, pace = () => usagePace(), spend = weeklySpend, room = () => null,
 }) {
-  const out = { recorded: [], deferred: [], started: [], events: [], line: null };
+  const out = { recorded: [], deferred: [], started: [], failed: [], events: [], line: null };
   if (!Object.values(states ?? {}).includes('auto')) return out;
   // A log that does not parse is the assignment's to report; nothing is sampled on a partial read.
   if (read(slug).bad.length) return out;
@@ -315,7 +315,10 @@ export async function runAudits({
     if (pace()?.hold) reason = 'window_tight';
     else {
       const spent = rowsOf(auditFile(slug)).filter((r) => Date.parse(r.row.at) >= week).reduce((n, r) => n + (Number(r.row.usd) || 0), 0);
-      const cap = BUDGET_SHARE * spend({ slug, now });
+      // The spend reads every ticket's logs, so it is measured once a day and kept in the queue file.
+      const day = new Date(now).toISOString().slice(0, 10);
+      if (q.spend?.day !== day || !Number.isFinite(q.spend?.usd)) q.spend = { day, usd: Number(spend({ slug, now })) || 0 };
+      const cap = BUDGET_SHARE * q.spend.usd;
       if (spent >= cap) reason = 'weekly_cap';
       due.cap = { spent: Math.round(spent * 100) / 100, cap: Math.round(cap * 100) / 100 };
     }
@@ -352,6 +355,7 @@ export async function runAudits({
       i.tries = (i.tries ?? 0) + 1;
       i.error = String(why).slice(0, 300);
       i.state = i.tries >= SPAWN_TRIES ? 'failed' : 'queued';
+      out.failed.push(`${item.ticket} audit not started (try ${i.tries} of ${SPAWN_TRIES}): ${i.error}`);
     });
     let sha = null;
     try { sha = await mergeCommit(item); } catch { sha = null; }
@@ -377,6 +381,7 @@ export async function runAudits({
     ...out.events.filter((e) => e.kind === 'trip').map((e) => `${e.lever} ${e.from} → ${e.to} (${TRIP} on ${e.ticket})`),
     ...out.deferred.map((e) => `${e.ticket} deferred (${e.reason_code})`),
     ...out.started.map((i) => `${i.ticket} audit started at ${i.sha.slice(0, 12)}`),
+    ...out.failed,
   ];
   out.line = parts.length ? `levers audits: ${parts.join(', ')}` : null;
   return out;
