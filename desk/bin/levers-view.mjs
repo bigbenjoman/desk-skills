@@ -24,6 +24,7 @@ import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfi
 import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
+import { reworkSummary } from './rework.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -169,7 +170,8 @@ function readRepo(r, root) {
     try { return { file, at: JSON.parse(readFileSync(file, 'utf8')).at ?? null, error: null }; } catch (e) { return { file, at: null, error: { file, line: null, message: e.message } }; }
   });
   const postMerge = dirs.map((d) => readJsonl(join(d, 'post-merge.jsonl')));
-  const evidence = listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl')).map((f) => readJsonl(join(state, 'levers-evidence', f)));
+  const evidence = listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl'))
+    .map((f) => { const file = join(state, 'levers-evidence', f); return { ...readJsonl(file), at: mtimeIso(file) }; });
   const baselines = listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f));
   return {
     slug: r.slug, name, config: r.config, items, configRead: { error: configError },
@@ -375,8 +377,23 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const guardRows = cells.flatMap((l) => l.cells.filter((c) => c.guardrails).flatMap((c) => c.guardrails.map((g) => ({ repo: c.repo, lever: l.lever, ...g }))));
   const scans = repos.map((r) => ({ repo: r.name, at: r.postMerge.flatMap((p) => p.rows).filter((x) => x.kind === 'scan').map((x) => x.at).sort().pop() ?? null }));
   const scanStale = scans.filter((s) => s.at && age(s.at, now, MAX_AGE_S.post_merge).stale).map((s) => s.repo);
-  const guardrails = panel(!guardRows.length ? 'empty' : scanStale.length || evalAge.stale ? 'stale' : 'ok', { rows: guardRows, post_merge: scans.map((s) => ({ repo: s.repo, ...age(s.at, now, MAX_AGE_S.post_merge) })) },
-    errs(repos.map((r) => r.evals), repos.map((r) => r.postMerge)));
+  // Each repo's rework share over its tickets admitted this week, aged by its newest evidence file.
+  const rework = repos.map((r) => {
+    const mine = rows.filter((x) => x.slug === r.slug && Date.parse(x.admitted_at) >= weekAgo && Date.parse(x.admitted_at) < now);
+    const s = reworkSummary(mine);
+    const usdOf = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, round(v, 2)]));
+    return {
+      repo: r.name, admitted: mine.length, known: s.known, unknown: s.unknown.length,
+      share: round(s.share, 4), rework_usd: s.known ? round(s.rework_cost, 2) : null, usd: s.known ? round(s.cost, 2) : null,
+      by_cause: Object.fromEntries(Object.entries(s.by_cause).map(([c, v]) => [c, { usd: round(v.cost, 2), share: round(v.share, 4) }])),
+      by_class: usdOf(s.by_class), age: age(r.evidence.map((f) => f.at).filter(Boolean).sort().pop() ?? null, now, MAX_AGE_S.evals),
+    };
+  });
+  const reworkStale = rework.some((x) => x.admitted && x.age.stale);
+  const guardStale = (guardRows.length && (scanStale.length || evalAge.stale)) || reworkStale;
+  const guardrails = panel(!guardRows.length && !rework.some((x) => x.admitted) ? 'empty' : guardStale ? 'stale' : 'ok',
+    { rows: guardRows, post_merge: scans.map((s) => ({ repo: s.repo, ...age(s.at, now, MAX_AGE_S.post_merge) })), rework },
+    errs(repos.map((r) => r.evals), repos.map((r) => r.postMerge), rowErrors.map((error) => ({ error }))));
 
   // P6 the changes: this week's, and every one, each with the evaluation it cites.
   const evalById = new Map();

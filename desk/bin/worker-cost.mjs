@@ -195,14 +195,16 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
 // URL and its wall time from session start to PR (`cloud`), and its usage stays null. Its one session
 // starts at Stage 0 with no model or effort passed, which is what startFields gives for nothing.
+// A log's place in a ticket's round order: `.round<n>` by n, the current log last.
+export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
+
 export function ticketCost(stateDir, ticket) {
   if (ticket.location === 'cloud' && ticket.cloud) {
     return { key: ticket.key, runs: 1, unknown: 0, usage: null, preflight: { n: 0, cost: 0, unknown: 0 }, first: null, stages: null,
       sessions: [{ starts: [startFields({})], cost: null }],
       cloud: { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) } };
   }
-  const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
-  const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => round(a) - round(b));
+  const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => logRound(a) - logRound(b));
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
   const preflight = { n: 0, cost: 0, unknown: 0 };
