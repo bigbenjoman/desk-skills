@@ -11,7 +11,8 @@
 //
 // <repo> is the repo's name as desk-q shows it, or its slug. The override is read by admission and
 // the levers view as any other (levers-auto.mjs leverStatesIn): `off` pins the lever off, `trial` puts it
-// on trial with a fresh trial id. Exits 0 once recorded (or with nothing to undo), 2 on a refusal that
+// on trial with a fresh trial id, and is refused for a lever admission draws no arm for (any but the
+// low-risk layer). Exits 0 once recorded (or with nothing to undo), 2 on a refusal that
 // writes nothing, 1 when the lever log could not be written.
 import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -70,6 +71,11 @@ export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now
   const r = resolveRepo(repo, configRoot);
   checkLever(lever);
   if (!CHOICES.includes(choice)) refuse(`levers decide: the choice is ${CHOICES.join(' or ')}, not "${choice}"`);
+  // Admission draws trial arms for the low-risk layer alone (levers-auto.mjs draw), so a quality-risk
+  // lever set to trial would sit on trial with no ticket ever drawn on it.
+  if (choice === 'trial' && REGISTRY[lever].layer !== 'low-risk') {
+    refuse(`levers decide: ${lever} is a ${REGISTRY[lever].layer} lever, and admission draws trial arms only for low-risk levers, so no ticket would ever be drawn on it; set it off, or put a low-risk lever on trial`);
+  }
   const event = appendFrom(r.slug, (events) => {
     const at = stamp(events, now);
     const s = leverStatesIn(events)[lever];
@@ -136,8 +142,8 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     }
     const ever = changes.some((e) => (e.kind === 'transition' && ADOPTED.includes(e.to)) || e.kind === 'override');
     nothing = ever
-      ? `${lever}'s latest change in ${r.name} is desk's ${last.to}, not an adopt or your own call, so there's nothing to undo.`
-      : `${lever} has never been adopted in ${r.name}, so there's nothing to undo.`;
+      ? `${lever}'s latest change in ${r.name} is desk's ${last.to}, not an adopt or your own call, so there is nothing to undo.`
+      : `${lever} has never been adopted in ${r.name}, so there is nothing to undo.`;
     return null;
   });
   if (!event) return { event: null, entry: null, relisted: [], repo: r, text: nothing };

@@ -38,7 +38,7 @@ for (const [slug, gh] of [[AA, 'sophos-education/ai-agents'], [DS, 'bigbenjoman/
 
 const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
 const { read, logFile } = await import('../desk/bin/lever-log.mjs');
-const { REGISTRY, ENTRIES, loadRegistry } = await import('../desk/bin/lever-registry.mjs');
+const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
 const { recordLeverDecision } = await import('../desk/bin/lever-changes.mjs');
 const { buildView, autopilotRoot } = await import('../desk/bin/levers-view.mjs');
 
@@ -54,14 +54,14 @@ const ev = { eval_id: 'evl_x', evidence_file: 'levers-evidence/evl_x.jsonl' };
 
 // codex paused in ai-agents after two turn-offs: reverted, back on trial, then frozen with its
 // needs-you item.
-function paused() {
+function paused(lever = 'codex') {
   reset(AA);
   mkdirSync(state(AA), { recursive: true });
   writeFileSync(logFile(AA), [
-    line({ id: 'e1', at: at(20), kind: 'transition', lever: 'codex', from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'CI reds rose', ...ev }),
-    line({ id: 'e2', at: at(15), kind: 'transition', lever: 'codex', from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'try again' }),
-    line({ id: 'e3', at: at(2), kind: 'transition', lever: 'codex', from: 'trial', to: 'frozen', actor: 'levers-auto', reason_code: 'frozen_second_revert', reason: 'second revert', ...ev }),
-    line({ id: 'e4', at: at(2), kind: 'needs_you', lever: 'codex', actor: 'levers-auto', reason_code: 'frozen_second_revert', reason: 'codex is frozen in ai-agents after its second revert', ...ev }),
+    line({ id: 'e1', at: at(20), kind: 'transition', lever, from: 'trial', to: 'reverted', actor: 'levers-auto', reason_code: 'guardrail_ci_reds', reason: 'CI reds rose', ...ev }),
+    line({ id: 'e2', at: at(15), kind: 'transition', lever, from: 'reverted', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'try again' }),
+    line({ id: 'e3', at: at(2), kind: 'transition', lever, from: 'trial', to: 'frozen', actor: 'levers-auto', reason_code: 'frozen_second_revert', reason: 'second revert', ...ev }),
+    line({ id: 'e4', at: at(2), kind: 'needs_you', lever, actor: 'levers-auto', reason_code: 'frozen_second_revert', reason: `${lever} is frozen in ai-agents after its second revert`, ...ev }),
   ].join(''));
 }
 const ALL_AUTO = Object.fromEntries(Object.keys(REGISTRY).map((n) => [n, 'auto']));
@@ -108,17 +108,22 @@ const rBack = levers('undo', 'ai-agents', 'codex');
 const oBack = events(AA).at(-1);
 t('undo to plain off: the override goes back to off with no value, and the lever reads plain off', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'off', false, { state: 'off', at: oBack.at, id: oBack.id }]);
 
-// ---- AC5: trial -----------------------------------------------------------------------------------------
-paused();
-const r5 = levers('decide', 'ai-agents', 'codex', 'trial');
+// ---- AC5: trial, on a low-risk lever admission draws ----------------------------------------------------
+t('AC5 wrappers is a low-risk lever in the registry', REGISTRY.wrappers.layer, 'low-risk');
+paused('wrappers');
+const r5 = levers('decide', 'ai-agents', 'wrappers', 'trial');
 const e5 = events(AA).at(-1);
-t('AC5 exits 0, and the override records to trial', [r5.status, e5.kind, e5.to], [0, 'override', 'trial']);
-t('AC5 the lever reads on trial', leverStatesIn(events(AA)).codex.state, 'trial');
-// Admission draws arms for the low-risk layer; a lever that could be paused after two turn-offs on
-// trial is drawn there, as here.
-const DRAWN = loadRegistry({ ...ENTRIES, codex: { ...ENTRIES.codex, layer: 'low-risk', trialled: true } });
-const p5 = admit('AA-5', DRAWN);
-t('AC5 the next ticket admitted draws a codex arm under the new trial', [['on', 'off'].includes(p5.arms.codex), p5.trial_ids.codex], [true, `${AA}/codex/${e5.id}`]);
+t('AC5 exits 0, and the override records to trial', [r5.status, e5.kind, e5.to, e5.lever], [0, 'override', 'trial', 'wrappers']);
+t('AC5 the lever reads on trial', leverStatesIn(events(AA)).wrappers.state, 'trial');
+const p5 = admit('AA-5');
+t('AC5 the next ticket admitted draws a wrappers arm under the new trial', [['on', 'off'].includes(p5.arms.wrappers), p5.trial_ids.wrappers], [true, `${AA}/wrappers/${e5.id}`]);
+
+// Trial on a lever admission draws no arm for (codex is quality-risk) is refused, saying why, and writes nothing.
+paused();
+const s5 = [raw(AA), decisions(AA).length];
+const r5q = levers('decide', 'ai-agents', 'codex', 'trial');
+t('trial on a quality-risk lever exits 2 and writes nothing', [r5q.status, raw(AA), decisions(AA).length], [2, ...s5]);
+t('it says admission draws trial arms only for low-risk levers', r5q.stderr.includes('codex is a quality-risk lever, and admission draws trial arms only for low-risk levers'), true);
 
 // ---- AC6 to AC8: refusals that write nothing --------------------------------------------------------------
 paused();
@@ -164,7 +169,7 @@ t('AC10 its line', r10.stdout.trim(), 'Turned off wrappers in desk-skills. It st
 reset(DS);
 const r12 = levers('undo', 'desk-skills', 'wrappers');
 t('AC12 exits 0 and writes nothing', [r12.status, raw(DS), decisions(DS).length], [0, '', 0]);
-t('AC12 its line', r12.stdout.trim(), "wrappers has never been adopted in desk-skills, so there's nothing to undo.");
+t('AC12 its line', r12.stdout.trim(), 'wrappers has never been adopted in desk-skills, so there is nothing to undo.');
 
 const ru = levers('decide', 'ai-agents', 'codex');
 t('usage: a missing choice exits 2', ru.status, 2);
