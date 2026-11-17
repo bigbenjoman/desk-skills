@@ -1,13 +1,14 @@
 // A worker's handoff to a fresh session: at the end of Stage 4 it hands off to Stage 4b, and at the
 // end of Stage 6 to Stage 7, so self-review and the PR stage each start on a short briefing rather
 // than on a context that has grown through the build. The worker writes $DESK_STATE/handoffs/<TICKET>.json
-// and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
+// with `handoff.mjs write` (below) and prints `AUTOPILOT_HANDOFF: <stage>`; pass.mjs reads the file, adds the branch and its commits
 // from git, and spawns the next session with the rendered briefing in its first message.
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, renameSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
-import { RESUME_STAGES } from './desk-env.mjs';
+import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -22,12 +23,37 @@ export const handoffPath = (stateDir, key) => join(stateDir, 'handoffs', `${key}
 
 const list = (v) => (Array.isArray(v) ? v : v == null || v === '' ? [] : [v]).map((x) => String(x).trim()).filter(Boolean);
 
-// The worker's file, as { ok, data } with only the fields a briefing holds, or { ok: false, why }.
+// The text with every raw control character inside a string literal escaped, so a file written by
+// hand with a tab or a newline in a string parses. Anything outside a string is left as it is.
+export function escapeRawControls(text) {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (const ch of text) {
+    if (inString && !escaped && ch < ' ') { out += `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`; continue; }
+    if (escaped) escaped = false;
+    else if (inString && ch === '\\') escaped = true;
+    else if (ch === '"') inString = !inString;
+    out += ch;
+  }
+  return out;
+}
+
+// JSON.parse, and on its error a second try with raw control characters in strings escaped. A file
+// neither reads throws the first error.
+export function parseJsonLenient(text) {
+  try { return JSON.parse(text); } catch (e) {
+    try { return JSON.parse(escapeRawControls(text)); } catch { throw e; }
+  }
+}
+
+// The worker's file, as { ok, data } with only the fields a briefing holds, or { ok: false, why },
+// with `unreadable: true` when the file is there but is not JSON.
 export function readHandoff(stateDir, key) {
   const path = handoffPath(stateDir, key);
   if (!existsSync(path)) return { ok: false, why: `its handoff briefing ${path} does not exist` };
   let d;
-  try { d = JSON.parse(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, why: `its handoff briefing ${path} is not JSON (${e.message})` }; }
+  try { d = parseJsonLenient(readFileSync(path, 'utf8')); } catch (e) { return { ok: false, unreadable: true, why: `its handoff briefing ${path} is not JSON (${e.message})` }; }
   if (d?.ticket != null && String(d.ticket) !== key) return { ok: false, why: `its handoff briefing ${path} is for ${d.ticket}, not ${key}` };
   const criteria = list(d?.criteria);
   if (!criteria.length) return { ok: false, why: `its handoff briefing ${path} lists no acceptance criteria` };
@@ -58,6 +84,69 @@ export function writeHandback(stateDir, { key, lane, note, at = new Date().toISO
     handed_back: { note, at },
   }, null, 2)}\n`);
   return path;
+}
+
+// A handoff briefing that is not JSON even with its control characters escaped, moved aside to
+// `<path>.unreadable` and replaced by one that tells the session to read the criteria from the ticket,
+// so the stage still starts. Returns the path the unreadable file was kept at.
+export function replaceUnreadable(stateDir, { key, stage }) {
+  const path = handoffPath(stateDir, key);
+  const kept = `${path}.unreadable`;
+  renameSync(path, kept);
+  writeFileSync(path, `${JSON.stringify({
+    ticket: key,
+    stage,
+    criteria: [`Not handed on: the earlier session's handoff briefing could not be read (kept as ${kept}), so read them from ${key} at the start of Stage ${stage}`],
+    lane: 'not recorded: read it from your resume file',
+    verification: [],
+    review: [],
+    evidence: [],
+  }, null, 2)}\n`);
+  return kept;
+}
+
+const WRITE_USAGE = 'usage: handoff.mjs write <TICKET> --stage <4b|7> --criterion <text> [--criterion <text> …] [--lane <text>] ' +
+  '[--verification <text> …] [--review <text> …] [--evidence <path> …]';
+const WRITE_LISTS = { '--criterion': 'criteria', '--verification': 'verification', '--review': 'review', '--evidence': 'evidence' };
+
+// `handoff.mjs write`'s arguments as the briefing it writes, or { error }. Each flag takes the next
+// argument whole, whatever it starts with; the list flags repeat.
+export function handoffFromArgs(args) {
+  const [key, ...rest] = args;
+  if (!key || key.startsWith('--')) return { error: WRITE_USAGE };
+  if (!SAFE_ID.test(key) || key.includes('..')) return { error: `'${key}' is not usable as a ticket id (letters, digits, . _ - only; no ..)` };
+  const d = { ticket: key, stage: null, criteria: [], lane: '', verification: [], review: [], evidence: [] };
+  for (let i = 0; i < rest.length; i += 2) {
+    const flag = rest[i];
+    const value = rest[i + 1];
+    if (value === undefined) return { error: `${flag} needs a value. ${WRITE_USAGE}` };
+    if (WRITE_LISTS[flag]) d[WRITE_LISTS[flag]].push(value);
+    else if (flag === '--stage') d.stage = value;
+    else if (flag === '--lane') d.lane = value;
+    else return { error: `unknown argument ${flag}. ${WRITE_USAGE}` };
+  }
+  const stage = handoffStage(d.stage);
+  if (!stage || String(d.stage).trim().toLowerCase() !== stage) return { error: `--stage takes 4b or 7, not ${d.stage == null ? 'nothing' : `'${d.stage}'`}` };
+  d.stage = stage;
+  if (!d.criteria.some((c) => c.trim())) return { error: 'a criterion is required: pass --criterion <text> once for each acceptance criterion, verbatim' };
+  return { data: d };
+}
+
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+
+if (isMain) {
+  const [cmd, ...args] = process.argv.slice(2);
+  if (cmd !== 'write') { console.error(WRITE_USAGE); process.exit(2); }
+  const got = handoffFromArgs(args);
+  if (got.error) { console.error(got.error); process.exit(2); }
+  const dir = stateDir();
+  const path = handoffPath(dir, got.data.ticket);
+  mkdirSync(join(dir, 'handoffs'), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(got.data, null, 2)}\n`);
+  console.log(`wrote ${path}: ${got.data.criteria.length} criteria, for Stage ${got.data.stage}`);
 }
 
 // null when the session can start in this worktree on this branch, else what is missing.
@@ -106,7 +195,7 @@ export function resumeCheck({ worktree, key, branch, stateDir }) {
   if (!found) return { ok: true, path: workerResumePath(stateDir, key) };
   const no = (why) => ({ ok: false, why, path: found });
   let d;
-  try { d = JSON.parse(readFileSync(found, 'utf8')); } catch (e) { return no(`its resume file ${found} is not JSON (${e.message})`); }
+  try { d = parseJsonLenient(readFileSync(found, 'utf8')); } catch (e) { return no(`its resume file ${found} is not JSON (${e.message})`); }
   if (!d?.branch) return no(`its resume file ${found} records no branch`);
   if (String(d.branch) !== branch) return no(`its resume file is for branch ${d.branch}, not the queue's ${branch}`);
   return { ok: true, path: found };
