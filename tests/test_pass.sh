@@ -89,7 +89,7 @@ chmod +x "$T/stub0/gh"
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
-all_done(){ node -e 'const f = process.argv[1], q = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const t of Object.values(q.tickets)) { t.state = "done"; if (t.result?.pr != null) { t.merged_at ??= "2026-10-23T10:00:00Z"; t.pr_status = { pr: t.result.pr, state: "MERGED", merged_at: t.merged_at, checks: [] }; } } require("fs").writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"; }
+all_done(){ jq -c '.tickets |= map_values(.state = "done" | if .result.pr != null then .merged_at //= "2026-10-23T10:00:00Z" | .pr_status = { pr: .result.pr, state: "MERGED", merged_at: .merged_at, checks: [] } else . end)' "$DESK_QUEUE" > "$DESK_QUEUE.all-done" && mv "$DESK_QUEUE.all-done" "$DESK_QUEUE"; }
 
 # A signed-in browser profile, as the upload queue runs no upload without one.
 printf '{"user":"t","cookies":[{"name":"user_session","domain":"github.com","expires":%s}],"origins":[]}\n' "$(( $(date +%s) + 31536000 ))" > "$T/profile.github-session.json"
@@ -98,7 +98,15 @@ export PATH="$T/stub0:$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/de
   DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+# The field readers below use jq, not a node process per read (DS-778). at() walks a dot path as JS's
+# o?.[k] does: an array or string takes an index or "length", and a missing step is null.
+JQ_AT='def at($p): reduce (if $p == "" then [""] else $p | split(".") end)[] as $k (.;
+  if type == "object" then .[$k]
+  elif (type == "array" or type == "string") and $k == "length" then length
+  elif type == "array" and ($k | test("^(0|[1-9][0-9]*)$")) then .[$k | tonumber]
+  elif type == "string" and ($k | test("^(0|[1-9][0-9]*)$")) then (.[($k | tonumber):($k | tonumber) + 1] | if . == "" then null else . end)
+  else null end);'
+field(){ jq -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
 # One assistant turn of a worker's stream-json log, carrying the given marker lines.
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 
@@ -314,7 +322,7 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 # A worker count the user set is theirs. A fresh queue and state under a §3b default of 3, cap 6.
 { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `3 / 6` |\n'; } > "$T/config2.md"
 export DESK_CONFIG="$T/config2.md" DESK_QUEUE="$T/queue2.json" DESK_AUTOPILOT_STATE="$T/state2"; mkdir -p "$T/state2/logs"
-bfield(){ node -e 'console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))) ?? null))' "$DESK_QUEUE" "$1"; }
+bfield(){ jq -c --arg p "$1" "$JQ_AT"' at($p)' "$DESK_QUEUE"; }
 q init c
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 AC2 a count nobody set reports the §3b default" 'echo "$out" | grep -qx "workers: concurrency 3, the §3b default"'
@@ -1326,7 +1334,7 @@ esac
 EOF
 chmod +x "$T/stub/desk-jira" "$T/stub/gh"
 blocked(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-9","fields":{"status":{"statusCategory":{"key":"%s"}}}}},{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"J-2","fields":{"status":{"statusCategory":{"key":"new"}}}}}]}}\n' "$1" > "$T/jira/J-1.json"; }
-pass_rec(){ node -e 'const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).pass ?? {}; console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], p) ?? null))' "$DESK_QUEUE" "$1"; }
+pass_rec(){ jq -c --arg p "$1" "$JQ_AT"' .pass | at($p)' "$DESK_QUEUE"; }
 q init j
 q add J-1; q set J-1 state=triaged open_questions=1
 q add J-2; q set J-2 state=triaged open_questions=1
