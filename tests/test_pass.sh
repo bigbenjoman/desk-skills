@@ -98,14 +98,8 @@ export PATH="$T/stub0:$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/de
   DESK_BROWSER_PROFILE="$T/profile"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-# The field readers below use jq, not a node process per read (DS-778). at() walks a dot path as JS's
-# o?.[k] does: an array or string takes an index or "length", and a missing step is null.
-JQ_AT='def at($p): reduce (if $p == "" then [""] else $p | split(".") end)[] as $k (.;
-  if type == "object" then .[$k]
-  elif (type == "array" or type == "string") and $k == "length" then length
-  elif type == "array" and ($k | test("^(0|[1-9][0-9]*)$")) then .[$k | tonumber]
-  elif type == "string" and ($k | test("^(0|[1-9][0-9]*)$")) then (.[($k | tonumber):($k | tonumber) + 1] | if . == "" then null else . end)
-  else null end);'
+# shellcheck source=jq_at.sh
+. "$S/jq_at.sh"
 field(){ jq -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
 # One assistant turn of a worker's stream-json log, carrying the given marker lines.
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
