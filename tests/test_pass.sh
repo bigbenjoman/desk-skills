@@ -1022,6 +1022,8 @@ check "DS-339 a round started at Stage 0 moves the stale state-dir resume file a
 # ---- DS-742: a worker queue.mjs stop ended stays held until the person lets it start -------------
 all_done
 handing S-1; hlog S-1 "AUTOPILOT_STAGE: 5/9 evidence"
+# What an earlier release left on it: a label whose day has come, and a blocker in no batch.
+q set S-1 held_label=blocked-until-2000-01-01 held_outside=GONE-9
 echo "half-written" > "$T/wt/S-1/widget.txt"
 # The worker, as spawn-worker.sh starts it: a session leader whose command line names its session.
 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id old-S-1 &
@@ -1030,6 +1032,7 @@ node "$B/queue.mjs" stop S-1 >/dev/null 2>&1
 wait "$sw" 2>/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-742 AC2 a stopped ticket gets no worker from the next pass" '! spawned_for S-1 && [ "$(field S-1 state)" = "\"parked\"" ] && [ "$(field S-1 held_by)" = null ] && echo "$out" | grep -q "S-1: STOPPED — its worker was stopped by queue.mjs stop"'
+check "DS-742 a stopped ticket is not released on the date label or outside blocker an earlier release left" '[ "$(field S-1 held_outside)" = null ] && ! echo "$out" | grep -qE "(date|outside) hold: S-1"'
 # needs-you's start runs desk-env's releaseCommand: these two writes.
 q set S-1 state=triaged park=null held_by=null; q front S-1
 out=$(node "$B/pass.mjs" 2>&1)
