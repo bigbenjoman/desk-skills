@@ -89,12 +89,14 @@ t('AC1 a refusal of the probe command itself trips', (() => {
     init('s3'),
     call('u1', 'Bash', { command: 'codex exec -m o3 hi' }),
     result('u1', 'Permission to use Bash with command codex exec -m o3 hi has been denied.'),
+    call('u3', 'Bash', { command: 'pnpm install && jq . package.json' }),
+    result('u3', 'Exit code 127\nzsh:1: command not found: jq'),
     call('u2', 'Bash', { command: 'pnpm  --version' }),
     result('u2', 'Permission to use Bash with command pnpm --version has been denied.'),
   ]));
   run(A, queueOf(onTicket(A, 'P-3', 'preflight')));
   return eventsOf(A, 'trip').map((e) => e.evidence_line);
-})(), [5]);
+})(), [7]);
 t('AC1 the pass line says what tripped', r1.line, 'levers trips: preflight trial → reverted (skipped-preflight-failure on P-1)');
 t('the next pass reverts nothing more', [run(A1, queueOf(P1)).events.length, eventsOf(A1, 'trip').length], [0, 1]);
 t('a refusal in a start that ran its preflight is not a trip', (() => {

@@ -47,7 +47,7 @@ import { workerLogs } from './worker-cost.mjs';
 import { WAITING_CLASSES } from './failure-class.mjs';
 import { toolOutcomes } from './log-tool-calls.mjs';
 import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
-import { ANSWER_HEAD } from './briefing.mjs';
+import { answerEntriesSince } from './handoff.mjs';
 
 export const ACTOR = 'trip';
 // The states a trip reverts from.
@@ -155,7 +155,13 @@ export function preflightChecks(o, rec) {
   const probes = [...(rec.probes ?? []), ...(rec.codex ? ['codex --version'] : [])].map(bare).filter(Boolean);
   if (o.denied) return probes.includes(cmd) || (!!rec.jira && startsWithCommand(cmd, 'desk-jira'));
   if (o.exit !== NOT_FOUND) return false;
-  return [...probes.map(binOf), ...(rec.jira ? ['desk-jira'] : [])].some((b) => startsWithCommand(cmd, b));
+  return [...probes.map(binOf), ...(rec.jira ? ['desk-jira'] : [])].some((b) => startsWithCommand(cmd, b) && notFound(b).test(o.text ?? ''));
+}
+// The shell's words for binary `bin` itself missing (zsh, bash, sh), so a 127 from another command on
+// the line, or from inside the binary, is not read as the binary missing.
+function notFound(bin) {
+  const b = bin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`command not found: ${b}(?:\\s|$)|(?:^|[\\s:])${b}: (?:command )?not found`);
 }
 
 // The pattern of a lever's own step as a worker calls it, or null for a step no worker runs: the
@@ -230,7 +236,7 @@ export const DETECTORS = Object.freeze({
       // saveAnswer), or the mailbox, written only while a worker waits.
       let brief = '';
       try { brief = readFileSync(join(state, 'briefings', `${t.key}.md`), 'utf8'); } catch { /* no briefing */ }
-      const stamps = [...brief.matchAll(new RegExp(`^${ANSWER_HEAD} \\(([^)]+)\\)`, 'gm'))].map((m) => Date.parse(m[1]));
+      const stamps = answerEntriesSince(brief, last.rec.at).map((a) => Date.parse(a.at));
       try { stamps.push(statSync(join(state, 'answers', `${t.key}.txt`)).mtimeMs); } catch { /* no mailbox */ }
       const after = stamps.filter((m) => Number.isFinite(m) && m > since);
       if (after.length) { settled = Math.min(...after); what = 'the person answered'; }
