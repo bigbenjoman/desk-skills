@@ -4069,8 +4069,9 @@ const faultOf = (f) => {
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
 // A red check is read against the default branch before a fix try is spent on it, with the
 // failure-class lever on or off (fix-tries.mjs againstBase): the job's check runs at the PR's exact
-// merge base, and its newest completed run among the commits the default branch has gained since that
-// merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
+// merge base, and its newest completed run among the newest commits the default branch has gained
+// since that merge base (latestOnBaseOf says how many). Each read once per pass; one gh cannot read is
+// unknown.
 const FAILURE_CLASS = E.leverOn('failure-class');
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);

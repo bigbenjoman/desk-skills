@@ -2226,7 +2226,7 @@ api "repos/acme/widgets/compare/main...$H1" "$MT"$'\t'"$MB"; api "repos/acme/wid
 api "repos/acme/widgets/compare/main...$H2" "$MT"$'\t'"$MB2"; api "repos/acme/widgets/compare/main...$H3" "$MT"$'\t'"$MB2"
 runs "$MB" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MB2" Lint '[]'
 q init fb; q set-batch concurrency=5
-# DS-614 FB-4, with no levers set: red on Lint, which passed at its merge base MB4 but whose latest run
+# FB-4, with no levers set: red on Lint, which passed at its merge base MB4 but whose latest run
 # on the base since, at MB5, failed: the base went red after the PR branched. Held as base red, no worker.
 MB4=1111111111111111111111111111111111111111; MB5=2222222222222222222222222222222222222222
 api "repos/acme/widgets/compare/main...$H4" "$MT"$'\t'"$MB4"

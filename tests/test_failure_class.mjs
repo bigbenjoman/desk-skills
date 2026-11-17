@@ -96,7 +96,7 @@ t('AC6 no hold is kept', unknown?.base_red, null);
 const noMb = baseSplit([red('Lint')], HEAD, null, { mergeBase: () => null, atMergeBase: () => null, latestOnBase: () => null });
 t('AC6 a merge base that cannot be read is unknown too', `${noMb.unknown.length} ${noMb.red.length}`, '1 0');
 
-// DS-614: the base went red after the PR's merge base. A check that passed there, or had no run there,
+// The base went red after the PR's merge base. A check that passed there, or had no run there,
 // but whose latest run on the base fails is base red too.
 const late = fixCall({ key: 'T-1' }, pr([ok('tests'), red('Size')]), ctx({ baseRead: read({ Size: 'pass' }, { Size: 'fail' }) }));
 t('DS-614 AC1 passed at the merge base, red on the base\'s latest run: held, no try', `${late?.call} ${late?.class} ${late?.fix}`, 'held base red undefined');
