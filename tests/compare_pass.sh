@@ -6,8 +6,8 @@
 # listed side by side (compare_pass.mjs diff). Written for bash 3.2 as well as 4+.
 #   bash tests/compare_pass.sh <base> [<head>]                  base and head: a git ref or a directory;
 #                                                               head defaults to HEAD
-#   bash tests/compare_pass.sh --suite test_pass.sh <base> ...  only that suite (repeatable); by default
-#                                                               every tests/test_pass*.sh in the base
+#   bash tests/compare_pass.sh --suite test_pass_spawns.sh <base> ...  only that suite (repeatable); by
+#                                                               default every tests/test_pass*.sh in the base
 # Exit 0 when nothing differs, 1 when something does, 2 when a run was not compared (it ran on one tree
 # only, or crashed on one only) or the trees could not be built.
 set -u
