@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readLogFile } from './harvest.mjs';
+import { seededRandom as rng } from './seeded-random.mjs';
 
 export const HISTORY_FILE = 'eta-history.jsonl';
 export const WINDOW_DAYS = 30;
@@ -272,16 +273,6 @@ export function nextCheckin(t) {
     }
   }
   return null;
-}
-
-// mulberry32: a small seeded generator, so every run of the forecast draws the same numbers.
-function rng(seed) {
-  return () => {
-    seed = (seed + 0x6D2B79F5) | 0;
-    let x = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    x = (x + Math.imul(x ^ (x >>> 7), 61 | x)) ^ x;
-    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 // The share of a running ticket's work done, from its stage ("6/9", "4b/9").

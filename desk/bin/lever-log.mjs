@@ -16,8 +16,9 @@ import { REGISTRY, REASON_CODES } from './lever-registry.mjs';
 
 export const VERSION = 1;
 export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you']);
-// Kinds that act on every lever in the repo, or on the machine, so they name no lever.
-const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change']);
+// Kinds that may name no lever: those acting on every lever in the repo or on the machine, a ticket's
+// assignment across every lever, and an item about the whole repo.
+const NO_LEVER = Object.freeze(['freeze', 'thaw', 'row_change', 'assign', 'needs_you']);
 // Kinds that act on the machine rather than one repo: their `repo` is `*` in whichever log holds them.
 const MACHINE_WIDE = Object.freeze(['freeze', 'thaw']);
 // A transition by hand is Ben's own call, with no evaluation or evidence file behind it.

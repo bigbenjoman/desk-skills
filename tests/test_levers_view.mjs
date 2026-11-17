@@ -267,6 +267,24 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('AC15 the change list holds this week\'s changes only', v.panels.changes.events.map((e) => e.kind).join(), 'transition');
 }
 
+// An auto repo whose lever log cannot be read as far as the assignment's item is one item saying the
+// repo cannot be assigned trial arms.
+{
+  const items = (v) => v.panels.waiting.items.filter((i) => i.kind === 'lever' && i.repo === 'desk-skills').map((i) => i.text);
+  const override = { v: 1, id: 'a', at: iso(DAY), repo: DS, lever: 'memory', kind: 'override', to: 'reverted', actor: 'ben', reason_code: 'ben_override', reason: 'off' };
+  const written = { v: 1, id: 'b', at: iso(MIN), repo: DS, kind: 'needs_you', actor: 'levers-auto', reason_code: 'state_unreadable', reason: 'desk-skills cannot be assigned trial arms: written' };
+  const torn = items(view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl([override, '{ torn', written]) } })));
+  t('unassignable: a line that does not parse is one item', j(torn), j(['desk-skills cannot be assigned trial arms: line 2 of its lever log does not parse; tickets get the levers row\'s named levers alone until it is fixed']));
+  const m = machine({ repos: autoRepos });
+  mkdirSync(join(m.root, DS, 'levers.jsonl'), { recursive: true });
+  const dir = items(view(m));
+  t('unassignable: a log that cannot be opened is one item', j([dir.length, /^desk-skills cannot be assigned trial arms: its lever log cannot be read/.test(dir[0])]), '[1,true]');
+  t('unassignable: the item the assignment wrote, when it can be read, is not listed twice', j(items(view(machine({ repos: autoRepos, files: { [`${DS}/levers.jsonl`]: jsonl([override, written]) } })))), j([written.reason]));
+  const pinned = machine();
+  mkdirSync(join(pinned.root, DS, 'levers.jsonl'), { recursive: true });
+  t('unassignable: a repo not on auto is not told it cannot be assigned', items(view(pinned)).length, 0);
+}
+
 // The baseline file's total block, as phase0-report prints it.
 {
   const { base: b, error } = V.readBaseline(join(machine().root, DS, 'phase0-baseline-2026-11-13.txt'));

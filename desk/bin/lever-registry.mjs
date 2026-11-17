@@ -128,10 +128,17 @@ export const REASON_CODES = Object.freeze({
   freeze: 'trials were frozen',
   thaw: 'trials were thawed',
   row_change: 'the repo\'s levers row changed',
+  assigned_at_admission: 'the ticket was given its arms when it was admitted',
+  state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',
 });
 
 // The wording for a reason code, or null for a code not in the list.
 export const reasonWording = (code) => (Object.hasOwn(REASON_CODES, code) ? REASON_CODES[code] : null);
+
+// The needs-you item's text for repo `repo`, whose lever log stops its tickets being assigned arms
+// because of `why`: written by the assignment (levers-auto.mjs), and shown by the levers view when
+// the log cannot be read as far as that item.
+export const unassignableText = (repo, why) => `${repo} cannot be assigned trial arms: ${why}; tickets get the levers row's named levers alone until it is fixed`;
 
 export class LeverRegistryError extends Error {}
 
