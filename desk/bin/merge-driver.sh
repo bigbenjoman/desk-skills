@@ -495,13 +495,11 @@ NODE
   local merged known
   known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
 import { readFileSync } from 'node:fs';
-const { readArchive } = await import(process.argv[3]);
-let q = {};
-try { q = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+const { attachArchive, everyTicket } = await import(process.argv[3]);
+const q = { tickets: {} };
+try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-let a = {};
-try { a = readArchive(process.argv[2]).tickets; } catch { /* unreadable archive */ }
-for (const [k, t] of Object.entries({ ...a, ...q })) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of everyTicket(attachArchive(q, process.argv[2]))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
