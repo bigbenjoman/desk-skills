@@ -13,12 +13,13 @@
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { jiraSearch, keySearch } from './jira-search.mjs';
 import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -136,9 +137,6 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
 
 // A key `key in (...)` can take: anything else a queue holds (a work id, an issue slug) is not asked about.
 const JIRA_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
-// Keys per search: Jira's largest page for a search returning fields.
-export const DONE_CHUNK = 100;
-const SEARCH_TIMEOUT_MS = 30 * 1000;
 
 // Where to run a repo's own desk-jira, so its search uses that repo's config and credentials:
 // {cwd, env}, or {why} when its Jira status cannot be checked. The calling repo runs it as this process
@@ -156,21 +154,8 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   return { cwd, env: E.otherRepoEnv() };
 }
 
-// One desk-jira search, one page: {ok, issues} or {ok: false, why}. A page with more behind it read
-// nothing about the keys past it, so it is a failure rather than a partial answer.
-export function jiraSearch({ cwd, env }, jql, max) {
-  const r = spawnSync('desk-jira', ['search', jql, String(max), '--json'], { cwd, env, encoding: 'utf8', timeout: SEARCH_TIMEOUT_MS, maxBuffer: 64 << 20 });
-  const why = `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status ?? r.signal}`;
-  if (r.status !== 0) return { ok: false, why };
-  let res;
-  try { res = JSON.parse(r.stdout); } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
-  if (!Array.isArray(res?.issues)) return { ok: false, why: `desk-jira search returned no issue list${res?.errorMessages?.length ? ` (${res.errorMessages.join('; ')})` : ''}` };
-  if (res.nextPageToken) return { ok: false, why: `Jira returned fewer than ${max} issues a page` };
-  return { ok: true, issues: res.issues };
-}
-
 // One repo's parked tickets that Jira has moved to a Done status: {done: [keys]}, {unchecked: why}, or
-// null when it has no park to check. One `key in (...)` search per DONE_CHUNK keys, never one per ticket;
+// null when it has no park to check. One `key in (...)` search per KEY_CHUNK keys (keySearch), never one per ticket;
 // any search failing leaves the whole repo unchecked. Reads the queue, never writes it.
 export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) {
   const q = readJson(r.queue, null);
@@ -178,17 +163,9 @@ export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) 
   if (!keys.length) return null;
   const where = target(r);
   if (where.why) return { unchecked: where.why };
-  const asked = keys.filter((k) => JIRA_KEY.test(k)).sort();
-  const done = [];
-  for (let i = 0; i < asked.length; i += DONE_CHUNK) {
-    const chunk = asked.slice(i, i + DONE_CHUNK);
-    let res;
-    try { res = search(where, `key in (${chunk.join(', ')})`, chunk.length); } catch (e) { res = { ok: false, why: e.message }; }
-    if (!res?.ok) return { unchecked: res?.why ?? 'the search failed' };
-    const wanted = new Set(chunk);
-    for (const issue of res.issues) if (wanted.has(issue?.key) && issue.fields?.status?.statusCategory?.key === 'done') done.push(issue.key);
-  }
-  return { done: done.sort() };
+  const res = keySearch(keys.filter((k) => JIRA_KEY.test(k)).sort(), (jql, max) => search(where, jql, max));
+  if (!res.ok) return { unchecked: res.why };
+  return { done: [...res.issues.values()].filter((issue) => issue.fields?.status?.statusCategory?.key === 'done').map((issue) => issue.key).sort() };
 }
 
 // The page's line for a repo's Done check, or null when there is nothing to say.

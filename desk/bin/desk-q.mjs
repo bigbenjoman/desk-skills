@@ -246,6 +246,8 @@ function blockerHold(q, key, b, ctx, seen) {
     return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
       : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   }
+  // One the pass raised as dropped (dropped_link) is asked as that triage item, never twice.
+  if (!bt && keysOf(q.tickets?.[key]?.dropped_link).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, no longer in this batch: asked whether the link is still right` };
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {

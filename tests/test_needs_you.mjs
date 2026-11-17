@@ -1902,6 +1902,59 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
 }
 
+// DS-718: a hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
+// Won't Do with its PR unmerged (wont_do_link) and two tickets linked as blocking each other (cycle_link)
+// are each one triage item, and the ticket held behind the dropped one is not listed again.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  put('psi718', { port: 4718, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' },
+    'V-2': { ...heldOn('V-3'), wont_do_link: 'V-3' },
+    'V-3': { state: 'triaged', lane: 'A' },
+    'V-4': { state: 'triaged', lane: 'A', cycle_link: 'V-5' },
+    'V-5': heldOn('V-4'),
+  }, triage: {
+    'V-2': { blockers: [{ key: 'V-3', category: 'done', resolution: "Won't Do" }] },
+    'V-4': { blockers: [{ key: 'V-5', category: 'new' }] },
+  } });
+  const items = N.collect({ word: 'psi718' }).items;
+  const link = (k) => items.find((i) => i.t.key === k);
+  t('DS-718 AC3/AC5/AC6 each link is one triage item', items.filter((i) => i.blocker).map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'link:V-1:V-9 triage,link:V-2:V-3 triage,link:V-4:V-5 triage');
+  t('DS-718 AC3 the dropped one asks whether the link is still right',
+    /^V-1 is held behind V-9, which is no longer in this batch, so nothing releases it\. Is the link still right\?/.test(link('link:V-1:V-9')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says so',
+    /^V-2 is blocked by V-3, which is in this batch with its PR unmerged and was closed as Won't Do without landing, so V-2 is held behind it/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC5 the one in this batch says its hold outlives the link, so the ticket is released by hand',
+    /nothing releases it\. Is the link still right\? If not, remove it in Jira, then release V-2 from it \(queue\.mjs set V-2 state=triaged park=null held_by=null, then queue\.mjs front V-2\), as its hold outlives the link;/.test(link('link:V-2:V-3')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle names both tickets', /^V-4 and V-5 are linked in Jira as blocking each other/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC6 the cycle says how to settle it either way, the held one by release and hold, as its hold outlives its link',
+    /If V-4, remove its "is blocked by V-5" link in Jira; .* If V-5, removing V-5's link leaves its hold, so release V-5 \(queue\.mjs set V-5 state=triaged park=null held_by=null, then queue\.mjs front V-5\), then hold V-4 behind it \(queue\.mjs hold V-4 V-5\), and this clears$/.test(link('link:V-4:V-5')?.need ?? ''), true);
+  t('DS-718 AC3 the ticket held behind the dropped one is not listed a second time', items.some((i) => i.t.key === 'V-1'), false);
+}
+
+// A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park
+// and send it to a worker.
+{
+  put('psi718c', { port: 4719, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-6': { state: 'parked', lane: 'C', held_by: 'V-8', dropped_link: 'V-8', park: { question: 'lane C — needs the person', since: minsAgo(30) } },
+  } });
+  const need = N.collect({ word: 'psi718c' }).items.find((i) => i.t.key === 'link:V-6:V-8')?.need ?? '';
+  t('DS-718 AC3 a lane C park held behind a dropped ticket is freed from that hold and keeps its park',
+    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null freed_from=V-8)') && !need.includes('park=null'), true);
+}
+
+// A ticket held behind several blockers, freed from a dropped one: the rest of held_by is quoted, as a
+// shell reads `|` as a pipe, and freed_from names the dropped one so the merge driver's --deps skip it.
+{
+  put('psi718m', { port: 4720, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-10': { state: 'parked', lane: 'A', held_by: 'V-9|V-11|V-12', dropped_link: 'V-9', park: { question: 'held by orchestrator: blocked by V-9, V-11, V-12 — starts once their PRs merge', since: minsAgo(30) } },
+    'V-11': { state: 'triaged', lane: 'A' }, 'V-12': { state: 'triaged', lane: 'A' },
+  } });
+  const need = N.collect({ word: 'psi718m' }).items.find((i) => i.t.key === 'link:V-10:V-9')?.need ?? '';
+  t('DS-718 AC3 freeing one of several holds quotes the rest and records the freed one',
+    need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
+}
+
 // DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
 {
   put('chi715', { port: 4715, beat: 1, supervised: true, tickets: {

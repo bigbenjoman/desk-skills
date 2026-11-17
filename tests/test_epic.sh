@@ -861,6 +861,12 @@ printf '%s\n' feat/KAN-701 feat/KAN-702 > "$T/merged"; md
 check "driver: released once every predecessor merged; held_by cleared; moved to front" \
   '[ "$(qg KAN-703 .state)" = triaged ] && [ "$(qg KAN-703 .held_by)" = null ] && [ "$(qg KAN-703 .park)" = null ] && [ "$(jq -r ".tickets|keys_unsorted|.[0]" "$DESK_QUEUE")" != KAN-701 ]'
 check "driver: a queue-held ticket is released from held_by alone" '[ "$(qg KAN-704 .state)" = triaged ]'
+# DS-718: a ticket freed by hand from a --deps predecessor (freed_from) waits on its other blockers only.
+node "$B/queue.mjs" add KAN-705 Task A >/dev/null; node "$B/queue.mjs" add KAN-706 Task A >/dev/null
+node "$B/queue.mjs" set KAN-705 branch=feat/KAN-705 held_by=KAN-701 freed_from=KAN-706 >/dev/null; node "$B/queue.mjs" park KAN-705 "held by orchestrator: blocked by KAN-701 (Jira link)" >/dev/null
+out=$(PATH="$T/fakebin:$PATH" FAKE_MERGED="$T/merged" MERGE_DRIVER_RELEASE_ONLY=1 bash "$B/merge-driver.sh" --tickets "KAN-701 KAN-705" --deps "KAN-705:KAN-701,KAN-706" 2>&1); rc=$?
+check "DS-718 driver: a --deps predecessor the ticket was freed from no longer holds it; freed_from cleared" \
+  '[ $rc -eq 0 ] && [ "$(qg KAN-705 .state)" = triaged ] && [ "$(qg KAN-705 .freed_from)" = null ]'
 
 # merge-driver main loop: a ticket admitted to the queue after the driver started joins its PR set.
 # The fake gh admits KAN-802 on its first open-PR listing; the fake sleep stops the driver after two loops.

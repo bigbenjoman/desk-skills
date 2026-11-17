@@ -415,7 +415,10 @@ try { const all = JSON.parse(fs.readFileSync(qf, 'utf8')); q = all.tickets || {}
 const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
-for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
+// A --deps predecessor the ticket was freed from by hand (freed_from, needs-you link items) no longer holds
+// it: --deps outlive a restart, so without this a ticket freed from a dropped blocker would never release.
+const freed = (s) => new Set(String(q[s]?.freed_from ?? '').split('|').filter(Boolean));
+for (const pair of pairs) { const i = pair.indexOf(':'); const s = pair.slice(0, i); const f = freed(s); add(s, pair.slice(i + 1).split(',').filter((p) => !f.has(p))); }
 for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
 // Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
@@ -454,7 +457,7 @@ NODE
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
-      node "$Q" set "$succ" state=triaged park=null held_by=null >/dev/null </dev/null \
+      node "$Q" set "$succ" state=triaged park=null held_by=null freed_from=null >/dev/null </dev/null \
         && placed=$(node "$Q" front "$succ" </dev/null) && log "merged:$got -> RELEASED $placed"
     fi
   done <<EOF_PLAN

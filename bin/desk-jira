@@ -988,7 +988,9 @@ desk-jira <command> [args]
 
   where [--dir]                   which repo, site, project, email and token it resolved
   whoami                          confirm auth
-  search <jql> [max] [--json]     key / status / priority (§4 Priority field if set) / summary
+  search <jql> [max] [--fields=a,b] [--json]
+                                  key / status / priority (§4 Priority field if set) / summary;
+                                  --fields asks for more fields (issuelinks, parent, resolution)
   get <KEY> [--json]              the whole issue: parent, custom fields in full, links, subtasks,
                                   attachments, web links, description with wiki escapes removed
                                   (--json: the raw issue); `view` is the same command
@@ -1104,13 +1106,17 @@ case "$cmd" in
   search)
     [[ $# -ge 1 ]] || die 'usage: desk-jira search <jql> [max] [--json]'
     jql="$1"; shift
-    max=50; raw=0
+    max=50; raw=0; more='[]'
     for a in "$@"; do
-      case "$a" in --json) raw=1 ;; *[0-9]*) max="$a" ;; esac
+      case "$a" in
+        --json) raw=1 ;;
+        --fields=*) more=$(jq -cn --arg f "${a#--fields=}" '$f | split(",") | map(select(. != ""))') ;;
+        *[0-9]*) max="$a" ;;
+      esac
     done
     ensure_auth   # an empty result means "no issues" only once the credentials are proven
-    payload=$(jq -n --arg jql "$jql" --argjson max "$max" --argjson f "$SEARCH_FIELDS" \
-      '{jql:$jql, maxResults:$max, fields:$f}')
+    payload=$(jq -n --arg jql "$jql" --argjson max "$max" --argjson f "$SEARCH_FIELDS" --argjson more "$more" \
+      '{jql:$jql, maxResults:$max, fields:($f + $more | unique)}')
     res=$(json POST 'api/3/search/jql' -d "$payload")
     if (( raw )); then printf '%s\n' "$res"; else
       printf '%s' "$res" | jq -r --arg pf "$PRIORITY_FIELD" "$JQ_VAL"'
