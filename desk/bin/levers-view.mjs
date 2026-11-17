@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameS
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
-import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording } from './lever-registry.mjs';
+import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 
@@ -318,11 +318,20 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
   const leverItems = [];
   for (const r of repos) {
     const evs = r.log.rows.filter((e) => !Number.isNaN(Date.parse(e.at))).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    let unassignable = false;
     evs.forEach((e, i) => {
       if (e.kind !== 'needs_you') return;
       const spent = evs.slice(i + 1).some((x) => ['transition', 'override', 'thaw', 'trip'].includes(x.kind) && (e.lever == null || x.lever === e.lever));
-      if (!spent) leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
+      if (spent) return;
+      leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
+      if (e.reason_code === 'state_unreadable') unassignable = true;
     });
+    // A log that cannot be opened, or stops at a line that does not parse, also stops an auto repo's
+    // tickets being assigned arms, and the item the assignment wrote is beyond what was read.
+    if (r.enrol.auto && r.log.error && !unassignable) {
+      const why = r.log.error.line == null ? `its lever log cannot be read (${r.log.error.message})` : `line ${r.log.error.line} of its lever log does not parse`;
+      leverItems.push({ kind: 'lever', repo: r.name, lever: null, at: null, text: unassignableText(r.name, why), command: `needs-you list ${r.name}` });
+    }
   }
   const waiting = panel(waitingItems.length || leverItems.length ? 'ok' : 'empty', { count: waitingItems.length + leverItems.length, items: [...leverItems, ...waitingItems] }, errs(repos.map((r) => r.log)));
 

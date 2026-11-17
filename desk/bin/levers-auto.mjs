@@ -16,16 +16,17 @@
 // The pin is the queue ticket's `levers: { set, arms, trial_ids, fp, block, at }` (lever-pin.mjs); one
 // `assign` event in the lever log records the same draw, so exposure outlives the queue. A repo whose
 // row has no `auto` gets the row's set and no arm. A lever log that cannot be read, or holds a line that
-// does not parse, gets the row's set too, and one `needs_you` event says the repo cannot be assigned.
+// does not parse, gets the row's set too, and one `needs_you` event says the repo cannot be assigned;
+// where the log cannot be read as far as that event, the levers view raises the same item itself.
 //
-//   import { assignPin, leverStatesIn, seeded } from './levers-auto.mjs'
+//   import { assignPin, leverStatesIn } from './levers-auto.mjs'
 //   node levers-auto.mjs assign <TICKET>   pins a queued ticket that has no pin and prints the pin;
 //                                          a ticket already pinned is left as it is
 import { randomBytes } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { leverStates, leversFrozen, queueFile, repoSlug, stateDir, SAFE_ID } from './desk-env.mjs';
-import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues } from './lever-registry.mjs';
+import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
@@ -39,17 +40,6 @@ const WEEK_MS = 7 * 24 * 3_600_000;
 
 // A uniform draw in [0, 1) from the system's random source.
 const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
-
-// A repeatable uniform source in [0, 1) for seed `seed` (mulberry32).
-export function seeded(seed) {
-  let s = Number(seed) >>> 0;
-  return () => {
-    s = (s + 0x6d2b79f5) >>> 0;
-    let x = Math.imul(s ^ (s >>> 15), 1 | s);
-    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
-    return ((x ^ (x >>> 14)) >>> 0) / 2 ** 32;
-  };
-}
 
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
 //   -> { <lever>: { state, at, id } }, `at` and `id` those of the event that set it, null with none.
@@ -166,7 +156,7 @@ export function assignPin(key, {
         // One item while the log stays broken: nothing else can be appended until it is fixed.
         const last = log?.events.at(-1);
         if (last?.kind === 'needs_you' && last.reason_code === 'state_unreadable') return null;
-        return { kind: 'needs_you', actor: ACTOR, reason_code: 'state_unreadable', reason: `${slug} cannot be assigned trial arms: ${unreadable}; tickets get the levers row's named levers alone until it is fixed`, ticket: key };
+        return { kind: 'needs_you', actor: ACTOR, reason_code: 'state_unreadable', reason: unassignableText(slug, unreadable), ticket: key };
       }
       result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values: values ?? repoValues(), random, now, registry });
       return result.event;

@@ -1,5 +1,5 @@
 // suite: levers auto (each admitted ticket's trial arms, by blocked randomisation, recorded on its pin)
-// covers: desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/lever-registry.mjs desk/bin/lever-pin.mjs desk/bin/queue.mjs
+// covers: desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/lever-registry.mjs desk/bin/lever-pin.mjs desk/bin/queue.mjs desk/bin/seeded-random.mjs
 // assignPin draws against a repo's lever log in a scratch HOME with a seeded random source; queue.mjs
 // admit and add and `levers-auto.mjs assign` run as subprocesses on a scratch queue and repo.
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -55,7 +55,8 @@ Object.assign(process.env, {
   DESK_MACHINE: join(T, 'none.md'), GIT_CONFIG_NOSYSTEM: '1',
 });
 
-const { assignPin, seeded, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+const { assignPin, leverStatesIn } = await import('../desk/bin/levers-auto.mjs');
+const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
 const { append, read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
 const { leverRow, LEVERS } = await import('../desk/bin/desk-env.mjs');
@@ -69,7 +70,7 @@ const QUALITY = Object.keys(REGISTRY).filter((n) => REGISTRY[n].layer === 'quali
 const NOW = new Date('2026-11-16T10:00:00Z');
 const daysAgo = (d) => new Date(NOW.getTime() - d * 86_400_000).toISOString();
 const admitMany = (slug, n, { size = 'S', seed = 7, frozen = null, prefix = 'K' } = {}) => {
-  const random = seeded(seed);
+  const random = seededRandom(seed);
   return Array.from({ length: n }, (_, i) => assignPin(`${prefix}-${i + 1}`, { slug, size, random, frozen, now: NOW }));
 };
 const share = (pins, pred) => pins.filter((r) => pred(r.pin)).length / pins.length;
@@ -81,7 +82,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
 
 // ---- AC1: blocks of four per size keep each arm at exactly two ----------------------------------
 {
-  const random = seeded(11);
+  const random = seededRandom(11);
   const pins = [];
   for (let i = 0; i < 8; i++) {
     pins.push(assignPin(`S-${i + 1}`, { slug: 'ac1', size: 'S', random, now: NOW }).pin);
@@ -110,7 +111,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
 
 // ---- AC3 and AC11: the pin and its assign event ------------------------------------------------
 {
-  const { pin, assigned } = assignPin('P-1', { slug: 'ac3', size: 'M', random: seeded(3), now: NOW });
+  const { pin, assigned } = assignPin('P-1', { slug: 'ac3', size: 'M', random: seededRandom(3), now: NOW });
   t('AC3 assigned', assigned, true);
   t('AC3 the pin holds the set, the arms, the trial ids, the fingerprints, the block and the time', Object.keys(pin), ['set', 'arms', 'trial_ids', 'fp', 'block', 'at']);
   t('AC3 an arm per lever on trial', Object.keys(pin.arms).sort(), [...TRIAL].sort());
@@ -134,7 +135,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   t(`AC4 inside the holdback, 7-13% of 1,000 tickets have wrappers off as holdback (${held})`, held >= 0.07 && held <= 0.13, true);
   t('AC4 every holdback ticket has it off, every other has it on', pins.every((r) => r.pin.set.includes('wrappers') === (r.pin.arms.wrappers === 'adopted')), true);
   byHand('ac4-late', 'wrappers', 'adopted', daysAgo(29));
-  const late = assignPin('L-1', { slug: 'ac4-late', size: 'S', random: seeded(1), now: NOW }).pin;
+  const late = assignPin('L-1', { slug: 'ac4-late', size: 'S', random: seededRandom(1), now: NOW }).pin;
   t('AC4 past its four weeks it is on with no arm', [late.set.includes('wrappers'), late.arms.wrappers ?? null], [true, null]);
 }
 
@@ -150,7 +151,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
 
 // ---- AC6: a repo with no auto pins its row -----------------------------------------------------
 {
-  const r = assignPin('R-1', { slug: 'ac6', size: 'S', states: ROW_STATES, random: seeded(6), now: NOW });
+  const r = assignPin('R-1', { slug: 'ac6', size: 'S', states: ROW_STATES, random: seededRandom(6), now: NOW });
   t('AC6 the pin is the row\'s set and the time, with no arm', r.pin, { set: ['preflight'], at: NOW.toISOString() });
   t('AC6 nothing is written to the lever log', existsSync(logFile('ac6')), false);
 }
@@ -162,7 +163,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   const pins = admitMany('ac7', 20, { seed: 7, frozen: { at: daysAgo(0), reason: 'test' } });
   t('AC7 frozen: the pin holds the repo\'s adopted set', [...new Set(pins.map((r) => [...r.pin.set].sort().join(' ')))], ['memory wrappers']);
   t('AC7 frozen: no trial arm and no block', pins.every((r) => !Object.keys(r.pin.arms).length && r.pin.block == null), true);
-  const named = assignPin('F-1', { slug: 'ac7', size: 'S', states: AUTO_PIN_STATES, random: seeded(1), frozen: { at: daysAgo(0) }, now: NOW }).pin;
+  const named = assignPin('F-1', { slug: 'ac7', size: 'S', states: AUTO_PIN_STATES, random: seededRandom(1), frozen: { at: daysAgo(0) }, now: NOW }).pin;
   t('AC7 frozen: a lever the row names stays on', [...named.set].sort(), ['memory', 'preflight', 'wrappers']);
 }
 
@@ -171,14 +172,21 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   for (const l of QUALITY) byHand('ac8', l, 'trial', daysAgo(1));
   const pins = admitMany('ac8', 40, { seed: 8 });
   t('AC8 no ticket carries a quality-risk lever, even one recorded on trial', pins.every((r) => QUALITY.every((l) => !r.pin.set.includes(l) && r.pin.arms[l] == null)), true);
+  t('AC8 the registry marks every quality-risk lever not yet trialled', QUALITY.every((l) => REGISTRY[l].trialled === false), true);
+  for (const [i, l] of QUALITY.entries()) byHand('ac8-kept', l, i % 2 ? 'settled' : 'adopted', daysAgo(60));
+  const kept = admitMany('ac8-kept', 8, { seed: 8 });
+  t('AC8 nor one recorded as adopted or settled', kept.every((r) => QUALITY.every((l) => !r.pin.set.includes(l) && r.pin.arms[l] == null)), true);
+  const trialled = Object.fromEntries(Object.entries(REGISTRY).map(([n, l]) => [n, QUALITY.includes(n) ? { ...l, trialled: true } : l]));
+  const once = assignPin('Q8-1', { slug: 'ac8-kept', size: 'S', random: seededRandom(8), now: NOW, registry: trialled }).pin;
+  t('AC8 once the registry marks them trialled, a kept quality-risk lever is on', QUALITY.every((l) => once.set.includes(l)), true);
 }
 
 // ---- AC9: a lever log that cannot be read ------------------------------------------------------
 {
   append('ac9', { kind: 'override', lever: 'memory', to: 'reverted', actor: 'ben', reason_code: 'ben_override', reason: 'off', at: daysAgo(2) });
   appendFileSync(logFile('ac9'), '{ torn\n');
-  const a = assignPin('B-1', { slug: 'ac9', size: 'S', states: AUTO_PIN_STATES, random: seeded(9), now: NOW });
-  const b = assignPin('B-2', { slug: 'ac9', size: 'S', states: AUTO_PIN_STATES, random: seeded(9), now: NOW });
+  const a = assignPin('B-1', { slug: 'ac9', size: 'S', states: AUTO_PIN_STATES, random: seededRandom(9), now: NOW });
+  const b = assignPin('B-2', { slug: 'ac9', size: 'S', states: AUTO_PIN_STATES, random: seededRandom(9), now: NOW });
   t('AC9 the pin is the row\'s named levers alone', [a.pin, a.assigned], [{ set: ['preflight'], at: NOW.toISOString() }, false]);
   t('AC9 it says why', /ac9 cannot be assigned trial arms \(line 2 of its lever log does not parse\)/.test(a.warning), true);
   const items = read('ac9', { kinds: ['needs_you'] }).events;
@@ -186,8 +194,10 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   t('AC9 the item says the repo cannot be assigned', [items[0].reason_code, /^ac9 cannot be assigned trial arms/.test(items[0].reason)], ['state_unreadable', true]);
   t('AC9 no assign event is written', read('ac9', { kinds: ['assign'] }).events.length, 0);
   mkdirSync(logFile('ac9-dir'), { recursive: true });
-  const c = assignPin('D-1', { slug: 'ac9-dir', size: 'S', random: seeded(9), now: NOW });
+  const c = assignPin('D-1', { slug: 'ac9-dir', size: 'S', random: seededRandom(9), now: NOW });
   t('AC9 a log that cannot be opened: the row\'s set, saying so', [c.pin.set, c.assigned, /ac9-dir cannot be assigned/.test(c.warning)], [[], false, true]);
+  // The needs-you item for a log that cannot be read as far as the assignment's own item is the levers
+  // view's (tests/test_levers_view.mjs, "unassignable").
 }
 
 // ---- AC10 and admission: queue.mjs and the CLI -------------------------------------------------

@@ -135,6 +135,11 @@ export const REASON_CODES = Object.freeze({
 // The wording for a reason code, or null for a code not in the list.
 export const reasonWording = (code) => (Object.hasOwn(REASON_CODES, code) ? REASON_CODES[code] : null);
 
+// The needs-you item's text for repo `repo`, whose lever log stops its tickets being assigned arms
+// because of `why`: written by the assignment (levers-auto.mjs), and shown by the levers view when
+// the log cannot be read as far as that item.
+export const unassignableText = (repo, why) => `${repo} cannot be assigned trial arms: ${why}; tickets get the levers row's named levers alone until it is fixed`;
+
 export class LeverRegistryError extends Error {}
 
 // Every entry, checked and frozen, with its layer's ramp and the shared guardrails filled in. Throws
