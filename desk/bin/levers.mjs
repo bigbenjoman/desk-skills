@@ -142,8 +142,8 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     }
     const ever = changes.some((e) => (e.kind === 'transition' && ADOPTED.includes(e.to)) || e.kind === 'override');
     nothing = ever
-      ? `${lever}'s latest change in ${r.name} is desk's ${last.to}, not an adopt or your own call, so there is nothing to undo.`
-      : `${lever} has never been adopted in ${r.name}, so there is nothing to undo.`;
+      ? `${lever}'s latest change in ${r.name} is desk's ${last.to}, not an adopt or your own call, so there's nothing to undo.`
+      : `${lever} has never been adopted in ${r.name}, so there's nothing to undo.`;
     return null;
   });
   if (!event) return { event: null, entry: null, relisted: [], repo: r, text: nothing };

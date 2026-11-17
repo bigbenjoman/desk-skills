@@ -169,7 +169,7 @@ t('AC10 its line', r10.stdout.trim(), 'Turned off wrappers in desk-skills. It st
 reset(DS);
 const r12 = levers('undo', 'desk-skills', 'wrappers');
 t('AC12 exits 0 and writes nothing', [r12.status, raw(DS), decisions(DS).length], [0, '', 0]);
-t('AC12 its line', r12.stdout.trim(), 'wrappers has never been adopted in desk-skills, so there is nothing to undo.');
+t('AC12 its line', r12.stdout.trim(), "wrappers has never been adopted in desk-skills, so there's nothing to undo.");
 
 const ru = levers('decide', 'ai-agents', 'codex');
 t('usage: a missing choice exits 2', ru.status, 2);
