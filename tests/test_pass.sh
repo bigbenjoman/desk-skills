@@ -3716,6 +3716,56 @@ check "DS-752 a refused spawn keeps the resume file that rules out resuming the 
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-752 and the next pass starts it at Stage 0, moving the file aside then" \
   'grep -qx "RR-5 resume= stage=" "$T/rr-spawns" && [ "$(spawns_of RR-5)" = 1 ] && [ -f "$T/state-rr/resume/RR-5.json.old" ]'
+q set RR-5 state=done session_id=null
+
+# ---- DS-662: a deep test lock queue holds new workers and resumes into Stage 4 ------------------------
+# The ps stub prints $T/ps.out: two wrappers wait on the test lock with no profile (1 slot x 2), one
+# from another repo; a third holds it. Every other suite runs its passes with the gate off (run.sh).
+q set-batch concurrency=9
+cat > "$T/ps.out" <<'EOF'
+ 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh
+ 9102  9101 bash tests/run.sh
+ 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck
+ 9301     1 bash /other/repo/desk/bin/with-lock.sh test -- pnpm test
+EOF
+mkdir -p "$T/locks-lq/desk-test.lock.d"; echo "9101 9102" > "$T/locks-lq/desk-test.lock.d/pid"
+lq_pass(){ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1); }
+for k in LQ-2 LQ-3 LQ-4 LQ-5; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; done
+q add LQ-1; q set LQ-1 state=triaged lane=A branch=fix/LQ-1
+q add LQ-2; q set LQ-2 state=triaged lane=A branch=fix/LQ-2 "worktree=$T/wt/LQ-2" session_id=sess-lq2 stage=4/9 resume=pending resume_why=x
+q add LQ-3; q set LQ-3 state=triaged lane=A branch=fix/LQ-3 "worktree=$T/wt/LQ-3" handoff=pending handoff_stage=4b; hfile LQ-3 4b "typecheck: pass"
+lq_pass
+check "DS-662 AC1 with the queue at slots x factor, a ticket ready to start gets no worker, and the report names the depth" \
+  '[ "$(spawns_of LQ-1)" = 0 ] && [ "$(field LQ-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2: holding new workers and resumes into Stage 4 (.*LQ-1"'
+check "DS-662 AC1 the pass record names the lock queue as what held its spawns" 'node -e "const p = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).pass; process.exit(/^test lock queue: 2 run.*\(LQ-2, LQ-3, LQ-1\)/.test(p?.held ?? \"\") ? 0 : 1)" "$DESK_QUEUE"'
+check "DS-662 AC2 a killed worker last at Stage 4 and a handoff to 4b are held, still queued, and named" \
+  '[ "$(spawns_of LQ-2)" = 0 ] && [ "$(field LQ-2 resume)" = "\"pending\"" ] && [ "$(spawns_of LQ-3)" = 0 ] && [ "$(field LQ-3 handoff)" = "\"pending\"" ] && echo "$out" | grep -q "holding new workers and resumes into Stage 4 (LQ-2, LQ-3, LQ-1)"'
+q add LQ-4; q set LQ-4 state=triaged lane=A branch=fix/LQ-4 "worktree=$T/wt/LQ-4" session_id=sess-lq4 stage=3/9 resume=pending resume_why=x
+q add LQ-5; q set LQ-5 state=triaged lane=A branch=fix/LQ-5 "worktree=$T/wt/LQ-5" handoff=pending handoff_stage=7; hfile LQ-5 7 "typecheck: pass"
+lq_pass
+check "DS-662 AC4 a resume at Stage 3 and a handoff to Stage 7 start as today, while the held ones stay held" \
+  'grep -qx "LQ-4 resume=yes stage=" "$T/rr-spawns" && [ "$(field LQ-4 state)" = "\"running\"" ] && grep -qx "LQ-5 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-5 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ]'
+q set LQ-4 state=done session_id=null; q set LQ-5 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/LQ-7 "$T/wt/LQ-7"
+q add LQ-7; q set LQ-7 state=triaged lane=A branch=fix/LQ-7 "worktree=$T/wt/LQ-7" 'last_round={"stage":"7/9","question":"which title?"}'
+lq_pass
+check "DS-662 AC4 a requeue resuming its last round at Stage 7 starts as today, while the held ones stay held" \
+  'grep -qx "LQ-7 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-7 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-7"'
+q set LQ-7 state=done session_id=null
+# One waiter drains: below the hold, the held resume and handoff start in the pass's two places.
+printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
+lq_pass
+check "DS-662 AC3 below the hold, the held resume and handoff start, and nothing names the lock queue" \
+  'grep -qx "LQ-2 resume=yes stage=" "$T/rr-spawns" && grep -qx "LQ-3 resume= stage=4b" "$T/rr-spawns" && ! echo "$out" | grep -q "test lock queue"'
+q set LQ-2 state=done session_id=null; q set LQ-3 state=done session_id=null
+lq_pass
+check "DS-662 AC3 and the held new ticket starts once a place frees" '[ "$(spawns_of LQ-1)" = 1 ] && [ "$(field LQ-1 state)" = "\"running\"" ]'
+q set LQ-1 state=done session_id=null
+q add LQ-6; q set LQ-6 state=triaged lane=A branch=fix/LQ-6
+touch "$T/ps.fail"; lq_pass; rm -f "$T/ps.fail"
+check "DS-662 AC5 with ps unreadable, a ticket starts as today and the pass says the lock queue was not read" \
+  '[ "$(spawns_of LQ-6)" = 1 ] && echo "$out" | grep -q "test lock queue: not read (ps could not be read), so workers start as they would without it"'
+q set LQ-6 state=done session_id=null; rm -f "$T/ps.out"
 rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
 
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
