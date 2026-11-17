@@ -4101,4 +4101,70 @@ out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
 check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
   'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
 
+# ---- DS-573: a parked ticket whose own PR merged before its Jira tail was done goes back to a worker
+# for its after-merge steps only. PR 701, 703 and 704 merged, 702 is open; MT-3 is done in Jira. GitHub's
+# list of merged PRs holds 701 and 704 from the tickets' own branches, which the spawn's shipped-elsewhere
+# check must not read as shipped.
+export DESK_QUEUE="$T/queue-mt.json" DESK_AUTOPILOT_STATE="$T/state-mt"; mkdir -p "$T/state-mt/logs"
+{ cat "$T/config.md"; printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `MT-[0-9]+` |\n'; } > "$T/config-mt.md"
+cat > "$T/stub/gh" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "pr view 701 "*|"pr view 703 "*|"pr view 704 "*|"pr view 705 "*) echo '{"state":"MERGED","isDraft":false,"mergedAt":"2026-11-12T09:01:00Z"}' ;;
+  "pr view 702 "*) echo '{"state":"OPEN","isDraft":true,"mergedAt":null}' ;;
+  *"--state merged --search MT-1 in:title"*) echo '[{"number":701,"title":"fix(x): MT-1 add x","headRefName":"fix/MT-1"}]' ;;
+  *"--state merged --search MT-5 in:title"*) echo '[{"number":705,"title":"fix(x): MT-5 add x","headRefName":"fix/MT-5"}]' ;;
+  "pr list --repo "*" --state merged --search "*) echo '[{"number":701,"headRefName":"fix/MT-1","mergedAt":"2099-01-01T09:01:00Z"},{"number":704,"headRefName":"fix/MT-4","mergedAt":"2099-01-01T09:01:00Z"}]' ;;
+  "pr list"*) echo '[]' ;;
+esac
+exit 0
+EOF
+cat > "$T/stub/desk-jira" <<'EOF'
+#!/bin/sh
+[ "$1" = get ] || exit 0
+[ "$2" = MT-5 ] && { echo "desk-jira: 503 from Jira" >&2; exit 1; }
+c=indeterminate; [ "$2" = MT-3 ] && c=done
+printf '{"key":"%s","fields":{"status":{"statusCategory":{"key":"%s"}}}}\n' "$2" "$c"
+EOF
+chmod +x "$T/stub/gh" "$T/stub/desk-jira"
+export DESK_CONFIG="$T/config-mt.md"
+q init mt; q set-batch concurrency=4
+MQ="MT-1: PR #701's unit tests are red: which fixture should win?"
+q add MT-1; q set MT-1 lane=A branch=fix/MT-1 draft_pr=701 handoff_stage=7; q park MT-1 "$MQ"
+q add MT-2; q set MT-2 lane=A branch=fix/MT-2 draft_pr=702; q park MT-2 "MT-2: which fixture should win?"
+q add MT-3; q set MT-3 lane=A draft_pr=703; q park MT-3 "MT-3: which fixture should win?"
+q add MT-4; q set MT-4 state=parked lane=A branch=fix/MT-4 draft_pr=704 'park={"question":"MT-4: waiting on PR #704 to merge","clears_when":{"kind":"pr-merged","pr":704}}'
+# MT-5's branch adds nothing to main (origin's main already holds x.txt) and merged PR #705 names it,
+# but its Jira read fails: it is left parked, never dropped as a duplicate with its tail unread. Origin
+# goes back to DS-397's, whose main holds x.txt, so dropDuplicate would drop it were it reached.
+git -C "$T/repo" remote set-url origin "$T/rc-origin.git"
+git -C "$T/repo" worktree add -q -b fix/MT-5 "$T/wt/MT-5" main
+echo x > "$T/wt/MT-5/x.txt"; git -C "$T/wt/MT-5" add x.txt; git -C "$T/wt/MT-5" commit -q -m "fix(x): MT-5 add x"
+q add MT-5; q set MT-5 lane=A branch=fix/MT-5 "worktree=$T/wt/MT-5" draft_pr=705; q park MT-5 "MT-5: which fixture should win?"
+out=$(node "$B/pass.mjs" 2>&1)
+MTB="$T/state-mt/briefings/MT-1.md"
+check "DS-573 AC1 a parked ticket whose PR merged, not done in Jira, is requeued and spawned, with no question left" \
+  '[ "$(field MT-1 state)" = "\"running\"" ] && [ "$(field MT-1 park)" = null ] && [ "$(field MT-1 merged_tail)" = 701 ] && [ "$(field MT-1 prev_park.question)" = "\"$MQ\"" ] && echo "$out" | grep -qF "MT-1: its PR #701 merged while it was parked, and it is not done in Jira: requeued for its after-merge steps only, with no push"'
+check "DS-573 AC1 its briefing names the merge" \
+  'grep -qF "## Your PR has merged: run only the steps after the merge" "$MTB" && grep -qF "A pass found PR #701 merged at 2026-11-12 09:01 UTC, and MT-1 is not done in Jira yet." "$MTB" && grep -qF "The last round parked on: $MQ" "$MTB"'
+check "DS-573 AC2 its briefing says to run only the after-merge steps and not to push, starting from Stage 0, not its handoff" \
+  'grep -qF "this round does not push, rebase, merge any branch, open or edit a PR, or change code" "$MTB" && grep -qF "Run only the steps left after a merge: desk-ticket Stage 8" "$MTB" && grep -qF "AUTOPILOT_DONE: pr=701" "$MTB" && ! grep -qF "## What cleared your last park" "$MTB" && [ "$(field MT-1 handoff_stage)" = null ]'
+check "DS-573 AC3 a parked ticket whose PR is still open is left as it was" \
+  '[ "$(field MT-2 state)" = "\"parked\"" ] && [ "$(field MT-2 park.question)" = "\"MT-2: which fixture should win?\"" ] && [ "$(field MT-2 merged_tail)" = null ] && ! echo "$out" | grep -q "MT-2: its PR"'
+check "DS-573 a ticket already done in Jira is not requeued for a tail" \
+  '[ "$(field MT-3 state)" = "\"parked\"" ] && [ "$(field MT-3 merged_tail)" = null ]'
+check "DS-573 AC1 a park whose recorded condition holds, its PR merged and not done in Jira, is requeued for its tail, not recorded done" \
+  '[ "$(field MT-4 state)" = "\"running\"" ] && [ "$(field MT-4 merged_tail)" = 704 ] && grep -qF "A pass found PR #704 merged at 2026-11-12 09:01 UTC" "$T/state-mt/briefings/MT-4.md" && echo "$out" | grep -qF "MT-4: its PR #704 merged while it was parked"'
+check "DS-573 a merged PR whose Jira read fails is left parked, its branch and worktree kept, not recorded done as a duplicate" \
+  '[ "$(field MT-5 state)" = "\"parked\"" ] && [ "$(field MT-5 park.question)" = "\"MT-5: which fixture should win?\"" ] && [ "$(field MT-5 merged_tail)" = null ] && [ -e "$T/wt/MT-5" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/MT-5 >/dev/null && echo "$out" | grep -qF "MT-5: whether its PR #705 merged, or its ticket is done, could not be read" && ! echo "$out" | grep -qF "MT-5: its branch fix/MT-5 adds nothing"'
+# The tail worker parks in its turn: that park is the person's, never requeued again on the same PR.
+# Its branch adds nothing to main once squash-merged, and merged PR #701 names it: still never dropped.
+git -C "$T/repo" worktree add -q -B fix/MT-1 "$T/wt/MT-1-tail" main
+echo x > "$T/wt/MT-1-tail/x.txt"; git -C "$T/wt/MT-1-tail" add x.txt; git -C "$T/wt/MT-1-tail" commit -q -m "fix(x): MT-1 add x"
+q set MT-1 "worktree=$T/wt/MT-1-tail"
+q park MT-1 "MT-1: jira-close-own-merged is ask: may I move it to Done?"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-573 a park of the tail worker's own stays parked for the person, its branch kept, not recorded done as a duplicate" \
+  '[ "$(field MT-1 state)" = "\"parked\"" ] && [ "$(field MT-1 park.question)" = "\"MT-1: jira-close-own-merged is ask: may I move it to Done?\"" ] && [ -e "$T/wt/MT-1-tail" ] && git -C "$T/repo" rev-parse --verify -q refs/heads/fix/MT-1 >/dev/null && ! echo "$out" | grep -qF "MT-1: its PR #701 merged" && ! echo "$out" | grep -qF "MT-1: its branch fix/MT-1 adds nothing"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
