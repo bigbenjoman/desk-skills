@@ -390,7 +390,7 @@ t('per-ticket AC10: a --since/--until window holds exactly the tickets admitted 
 t('per-ticket AC10: the window is a proper subset', want.length > 0 && want.length < 36, true);
 t('per-ticket AC10: the window is printed with the rows', `${win.since} ${win.until}`, `${nineIso} ${twoIso}`);
 
-// ---- DS-692: rework share by cause -----------------------------------------------------------
+// ---- rework share by cause -------------------------------------------------------------------
 // R-1 ran once. R-2 handed off to 4b, then went back for a review fix, a red-check fix, and a resume
 // after the 5-hour limit inside the red-check round. R-3's second round left no result event.
 const RW = join(T, 'rework');
@@ -434,6 +434,27 @@ t('DS-692 AC1: the report prints the rework share, its split by cause and the un
   '  by cause: review round $2.20 (17%) · CI red $1.50 (12%) · usage limit $1.00 (8%)\n' +
   '  by failure class: application defect $3.70 · quota $1.00\n' +
   '  unknown cost, counted apart: 1 ticket(s): R-3');
+
+// K-1 was killed before any result event, so its resume's running total holds both starts' spend.
+// K-2 hit the 5-hour limit, answered again once it lifted, and was then killed. K-3 printed its
+// handoff only in its final result text.
+const KW = join(T, 'rework-kills');
+const kwQ = join(KW, 'queue.json');
+for (const d of ['logs', 'workers', 'triage']) mkdirSync(join(KW, d), { recursive: true });
+const kwLog = (name, ...lines) => writeFileSync(join(KW, 'logs', name), `${lines.join('\n')}\n`);
+kwLog('K-1.log', spawnAt(0), init('k1'), say('AUTOPILOT_STAGE: 3/9 implement'), spawnAt(1, 'resume'), init('k1'), result(10, 10, 1));
+kwLog('K-2.log', spawnAt(0), init('k2'), rejected, say('AUTOPILOT_STAGE: 4/9 verify'), result(2, 10, 1), spawnAt(1, 'resume'), init('k2'), result(3, 10, 1));
+kwLog('K-3.log.round1', spawnAt(0), init('k3'), JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 2, result: 'Verified.\nAUTOPILOT_HANDOFF: 4b' }));
+kwLog('K-3.log', spawnAt(1, '4b'), init('k3b'), result(1, 10, 1));
+writeFileSync(kwQ, JSON.stringify({ tickets: Object.fromEntries(['K-1', 'K-2', 'K-3'].map((k) => [k, { key: k, added_at: at(-1), branch: `feat/${k}` }])) }));
+const kw = perTicket({ slug: 'o__r', batches: [{ name: 'KW', queue: kwQ, state: KW }], since: SINCE, until: NOW, ci: false });
+const kwRow = (k) => kw.rows.find((r) => r.key === k);
+t('rework: a resume after a start that left no result cannot be split, so the share is unknown and the ticket counted apart',
+  `${kwRow('K-1').rework_share} ${kwRow('K-1').rework_starts[0].cause} ${kwRow('K-1').rework_starts[0].cost} ${kw.rework.unknown.includes('K-1')}`, 'null killed null true');
+t('rework: a usage limit that lifted before the worker was killed is a kill, as the pass reads it',
+  JSON.stringify(kwRow('K-2').rework_starts.map((s) => [s.cause, s.class, s.cost])), '[["killed","runner or resource",1]]');
+t('rework: a handoff printed in the final result text is read as harvest reads it, so the next session is not rework',
+  `${kwRow('K-3').rework_share} ${JSON.stringify(kwRow('K-3').rework_starts)}`, '0 []');
 
 // ---- spawn-worker.sh appends the line for every start -------------------------------------
 const spawn = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');

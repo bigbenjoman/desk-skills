@@ -400,15 +400,14 @@ export function perTicket({
 
 // The rework share of the tickets admitted in the window, by cause and failure class, with the tickets
 // whose cost or rework was not recorded named apart.
-export function reworkLines(s) {
+function reworkLines(s) {
   const head = 'rework share, tickets admitted in the window';
   if (!s.tickets) return [`${head}: no ticket admitted`];
-  const share = (v) => `${Math.round(v * 100)}%`;
   const out = [s.share == null
     ? `${head}: ${NR}: no admitted ticket has its cost and rework recorded`
-    : `${head}: ${share(s.share)}, ${usd(s.rework_cost)} of ${usd(s.cost)} over ${s.known} ticket(s) with their cost recorded (what each ticket's starts after its first cost, over all it cost)`];
+    : `${head}: ${pct(s.share)}, ${usd(s.rework_cost)} of ${usd(s.cost)} over ${s.known} ticket(s) with their cost recorded (what each ticket's starts after its first cost, over all it cost)`];
   const causes = Object.entries(s.by_cause);
-  out.push(`  by cause: ${causes.length ? causes.map(([c, v]) => `${c} ${usd(v.cost)} (${share(v.share)})`).join(' · ') : 'none'}`);
+  out.push(`  by cause: ${causes.length ? causes.map(([c, v]) => `${c} ${usd(v.cost)} (${pct(v.share)})`).join(' · ') : 'none'}`);
   const classes = byCount(s.by_class);
   out.push(`  by failure class: ${classes.length ? classes.map(([c, v]) => `${c} ${usd(v)}`).join(' · ') : 'none'}`);
   out.push(`  unknown cost, counted apart: ${s.unknown.length ? `${s.unknown.length} ticket(s): ${s.unknown.join(', ')}` : 'none'}`);

@@ -188,7 +188,7 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('AC9 the week\'s cost leaves it out', v.panels.cost.this_week.usd_per_admitted, 16.8);
 }
 
-// DS-692 AC2: each repo's rework share this week, cost-weighted, with its data age.
+// Each repo's rework share this week, cost-weighted, with its data age.
 {
   const rw = (key, o) => ({ ...row(key, 2, o), rework_share: o.share, rework_cost: o.rework, rework_by_cause: o.causes, rework_by_class: o.classes });
   const m = machine({ files: evidence(DS, [

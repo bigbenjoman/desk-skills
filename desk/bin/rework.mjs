@@ -15,13 +15,14 @@
 //   usage limit   a resume, or a fresh round, after a worker that ended at a usage limit
 //   other         anything else: a park answered, a capture or protected-files try, an instruction
 // with the failure class (failure-class.mjs) of the fix try or park beside it.
-import { readLogFile, saidIn, markersIn } from './harvest.mjs';
+import { readLogFile, workerMarkers } from './harvest.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { parkClass, fixClass } from './failure-class.mjs';
+import { logRound } from './worker-cost.mjs';
 
-export const CAUSES = Object.freeze(['review round', 'CI red', 'conflict', 'base fix', 'killed', 'usage limit', 'other']);
+const CAUSES = Object.freeze(['review round', 'CI red', 'conflict', 'base fix', 'killed', 'usage limit', 'other']);
 // A fix try's kind (fix-tries.mjs) as the cause of the start it sent.
-export const KIND_CAUSE = Object.freeze({
+const KIND_CAUSE = Object.freeze({
   review: 'review round', rereview: 'review round', feedback: 'review round', gaps: 'review round',
   checks: 'CI red', conflict: 'conflict', sync: 'base fix', renames: 'base fix',
 });
@@ -34,8 +35,9 @@ const isInit = (d) => d?.type === 'system' && d.subtype === 'init';
 // One log's starts, in order: a new start opens at each init event after the first, with the preflight
 // and start lines written just before it. Each start: { at, stage, ran, preflight (the dollars its
 // preflights reported), result (its last result's total_cost_usd, or null with none), end ({ kind, value } of the last park,
-// done or handoff marker it printed, or null), limited (it reached a usage limit), text }.
-export function logStarts(text) {
+// done or handoff marker it printed, read as harvest reads markers, or null), limited (it was at a usage
+// limit when it ended, as usage-limit.mjs reads one), text }.
+function logStarts(text) {
   const groups = [];
   let cur = { lines: [], init: false };
   let tail = 0;
@@ -62,15 +64,10 @@ export function logStarts(text) {
       }
       if (d?.type === 'desk_spawn') { s.at = d.at ?? s.at; s.stage = d.stage ?? null; }
       if (d?.type === 'result') s.result = Number(d.total_cost_usd) || 0;
-      if (d?.type === 'assistant') {
-        for (const c of d.message?.content ?? []) {
-          const said = saidIn(c);
-          if (said == null) continue;
-          for (const [k, v] of markersIn([said])) if (ENDS.has(k)) s.end = { kind: k, value: String(v).trim() };
-        }
-      }
     }
-    s.limited = usageLimit(s.text).limits.length > 0;
+    for (const [k, v] of workerMarkers(s.text)) if (ENDS.has(k)) s.end = { kind: k, value: String(v).trim() };
+    const u = usageLimit(s.text);
+    s.limited = u.last?.kind === 'limit' && !u.last.resumed;
     return s;
   });
 }
@@ -78,20 +75,22 @@ export function logStarts(text) {
 // Each start's own cost inside one log. A resumed session's result events are running totals for the
 // session (worker-cost.mjs logUsage reads the last as the log's cost), so a start costs the rise since
 // the start before it. A log whose totals fall is not split: its last total goes to its first start.
+// A total after a start that left none also holds that start's spend, so it is `unsplit`: what the
+// later start cost alone is not known.
 function splitCosts(starts) {
   const ran = starts.filter((s) => s.ran);
   const totals = ran.map((s) => s.result).filter((v) => v != null);
   const rising = totals.every((v, i) => i === 0 || v >= totals[i - 1]);
   let before = 0;
+  let lost = false;
   for (const s of ran) {
     if (!rising) { s.run = s === ran[0] ? totals.at(-1) ?? 0 : 0; continue; }
     s.run = s.result == null ? 0 : s.result - before;
-    if (s.result != null) before = s.result;
+    s.unsplit = s.result != null && lost;
+    if (s.result == null) lost = true;
+    else before = s.result;
   }
 }
-
-// The round order worker-cost.mjs ticketCost reads logs in: `.round<n>` by n, the current log last.
-const roundOf = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
 
 // Why start `s` happened, given the start before it and the ticket's fix tries not yet matched to a
 // start. -> { cause, class } or { handoff: true }.
@@ -125,7 +124,7 @@ function causeOf(s, prev, sameLog, t, unused) {
 export function ticketRework(logs, t = {}, total = null) {
   const starts = [];
   let pending = 0;
-  for (const file of [...logs].sort((a, b) => roundOf(a) - roundOf(b))) {
+  for (const file of [...logs].sort((a, b) => logRound(a) - logRound(b))) {
     let text = '';
     try { text = readLogFile(file); } catch { /* unreadable: no starts */ }
     const mine = logStarts(text);
@@ -137,7 +136,7 @@ export function ticketRework(logs, t = {}, total = null) {
     ran.forEach((s, i) => {
       const before = i === 0 ? mine.slice(0, mine.indexOf(s)).reduce((n, x) => n + x.preflight, 0) + pending : 0;
       if (i === 0) pending = 0;
-      starts.push({ ...s, first: i === 0, cost: s.run + s.preflight + before, known: s.result != null });
+      starts.push({ ...s, first: i === 0, cost: s.run + s.preflight + before, known: s.result != null && !s.unsplit });
     });
   }
   if (starts.length && pending) starts.at(-1).cost += pending;
