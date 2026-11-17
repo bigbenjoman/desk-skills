@@ -2239,8 +2239,7 @@ q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813; fx 813 "
 # commit no other names as a parent, its latest state is MB8's pass, and the fix try proceeds.
 H8=8181818181818181818181818181818181818181; MB8=8282828282828282828282828282828282828282; BR8=8383838383838383838383838383838383838383; MC8=8484848484848484848484848484848484848484
 api "repos/acme/widgets/compare/main...$H8" "$MC8"$'\t'"$MB8"
-api "repos/acme/widgets/compare/$MB8...main?per_page=100" "$MC8"$'\t'"$MB8,$BR8
-$BR8"$'\t'"$MB8"
+api "repos/acme/widgets/compare/$MB8...main?per_page=100" "$MC8"$'\t'"$MB8,$BR8"$'\n'"$BR8"$'\t'"$MB8"
 runs "$MB8" Lint '[{"status":"completed","conclusion":"success"}]'; runs "$BR8" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MC8" Lint '[]'
 q add FB-8; q set FB-8 state=done lane=A branch=fix/FB-8 result.pr=818; fx 818 "$H8" MERGEABLE tests:SUCCESS Lint:FAILURE:918; fbran 818 "$H8" Lint
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
@@ -2272,9 +2271,7 @@ q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:
 # by reading past the newest ten, and before MO's.
 MO=3333333333333333333333333333333333333333
 # Each row is a commit and its parents, as the compare's --jq gives them.
-api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO"$'\t'"$MB
-$MT"$'\t'"$MO
-$(p=$MT; for i in 0 1 2 3 4 5 6 7 8 9; do c=$(printf 'f%039d' "$i"); printf '%s\t%s\n' "$c" "$p"; p=$c; done)"
+api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO"$'\t'"$MB"$'\n'"$MT"$'\t'"$MO"$'\n'"$(p=$MT; for i in 0 1 2 3 4 5 6 7 8 9; do c=$(printf 'f%039d' "$i"); printf '%s\t%s\n' "$c" "$p"; p=$c; done)"
 runs "$MO" Lint '[{"status":"completed","conclusion":"failure"}]'
 runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
 for i in 0 1 2 3 4 5 6 7 8 9; do runs "$(printf 'f%039d' "$i")" Lint '[]'; done
