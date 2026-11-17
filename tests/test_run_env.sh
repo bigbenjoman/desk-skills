@@ -16,7 +16,7 @@ check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1";
 
 # The scratch repo: both runners, a stub attribution hook, and one probe suite.
 R="$T/repo"; mkdir -p "$R/tests" "$R/hooks"
-cat "$S/run.sh" > "$R/tests/run.sh"; cat "$S/related.sh" > "$R/tests/related.sh"
+cat "$S/run.sh" > "$R/tests/run.sh"; cat "$S/suite_env.sh" > "$R/tests/suite_env.sh"; cat "$S/related.sh" > "$R/tests/related.sh"
 printf 'print("ok stub hook")\n' > "$R/hooks/deny-ai-attribution.py"
 cat > "$R/tests/test_probe.sh" <<'EOF'
 #!/usr/bin/env bash

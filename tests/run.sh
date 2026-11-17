@@ -20,18 +20,9 @@ while [ $# -gt 0 ]; do
 done
 case "$jobs" in ''|*[!0-9]*) jobs=0 ;; esac
 [ "$jobs" -ge 1 ] || { echo "-j wants how many suites run at once, a whole number from 1"; exit 2; }
-# A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
-# some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
-# the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck.
-keep_env=" DESK_REQUIRE_SHELLCHECK "
-for v in $(compgen -e); do
-  case "$v" in DESK_*) case "$keep_env" in *" $v "*) ;; *) unset "$v" ;; esac ;; esac
-done
-unset DATABASE_URL DIRECT_DATABASE_URL
-# The pass's test lock gate reads this machine's real lock queue, which a suite run from a worker is
-# itself part of: every suite's passes run without it, and the suites that test it turn it back on.
-export AUTOPILOT_LOCK_QUEUE=off
 T="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=suite_env.sh
+. "$T/suite_env.sh"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
@@ -39,8 +30,6 @@ pids=""
 stop_jobs() { for p in $pids; do kill "$p" 2>/dev/null; done; wait; rm -rf "$OUT"; }
 trap stop_jobs EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
-# Every bash suite runs under the bash running this script, so `/bin/bash tests/run.sh` tests 3.2.
-SH="${BASH:-bash}"
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
 [ "$jobs" -eq 1 ] || echo "up to $jobs suites at once"
 fail=0; total=0; failed=""
