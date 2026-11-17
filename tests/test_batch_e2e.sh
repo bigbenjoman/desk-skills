@@ -11,6 +11,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 NODE="$(node -p process.execPath)"   # the binary itself, never a version manager's shim
+JQ="$(command -v jq)" || { echo "FAIL jq is needed to read the queue"; exit 1; }   # by path: PATH below drops Homebrew's
 T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"
 mkdir -p "$T/home" "$T/state/triage" "$T/stub" "$T/wt" "$T/live" "$T/runs" "$T/scripts" "$T/go"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
@@ -257,10 +258,12 @@ mkdir -p "$T/locks"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
 pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
-field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+# shellcheck source=jq_at.sh
+. "$S/jq_at.sh"
+field(){ "$JQ" -c --arg t "$1" --arg p "$2" "$JQ_AT"' .tickets[$t] | at($p)' "$DESK_QUEUE"; }
 state(){ field "$1" state | tr -d '"'; }
 # A batch-level field of the queue, as JSON.
-bfield(){ node -e 'const q = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(JSON.stringify(process.argv[2].split(".").reduce((o, k) => o?.[k], q) ?? null))' "$DESK_QUEUE" "$1"; }
+bfield(){ "$JQ" -c --arg p "$1" "$JQ_AT"' at($p)' "$DESK_QUEUE"; }
 # A triage record as triage.sh writes one: the fields queue.mjs admit reads, and pass.mjs's size.
 # record <TICKET> <file> [lane, default A] [size, default S; - for none]
 record(){ local size="\"${4:-S}\""; [ "${4:-}" = - ] && size=null
