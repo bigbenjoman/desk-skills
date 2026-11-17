@@ -49,7 +49,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -2984,31 +2984,39 @@ function recordWorkerHead(t) {
 // spawns, its PR is read again. Merged, closed, or at a head past the one the try was made for, the try
 // ends with no worker and the ticket is done on its PR again, so the PR's own reading records the merge
 // or the close, and drafts a try for the new head if one is still needed. No worker ran it, so it is
-// taken out of fix_tries and counts against none of the PR's tries. A PR that cannot be read holds it
-// this pass. A resumed or handed-off session is its own try's, and may have moved the head itself.
-// -> true when it must not spawn.
+// marked `no_worker`, which every reader of a finished try's work refuses (fix-tries.mjs
+// workerFinished): its threads are not replied on as worked, nor an earlier worker's summary quoted as
+// its own. It is taken out of fix_tries too, so it counts against none of the PR's tries. A PR that
+// cannot be read holds it this pass. Only a merge or a close ends a resumed or handed-off session,
+// which is its own try's and may have moved the head itself, and a person's call (their answer on the
+// gaps, their instruction, a review they sent back), which is theirs and is never drafted again from
+// the PR: its worker carries it out at the new head. -> true when it must not spawn.
 function fixTryStale(t) {
   const f = t.fix;
-  if (!f || f.finished || f.pr == null || toResume(t) || toHandoff(t)) return false;
+  if (!f || f.finished || f.pr == null) return false;
+  const resumed = toResume(t) || toHandoff(t);
+  const headBound = Boolean(f.head) && !resumed && !personCall(f) && !f.person;
   const what = `${f.kind === 'capture' ? 'capture try' : f.kind === 'rereview' ? 'review try' : 'fix try'} ${f.try} of ${f.of} on PR #${f.pr}`;
   let v = null;
   try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
-    report.waiting.push(`${t.key}: its ${what} was not spawned: the PR could not be read to check it is still open at the try's head (${e.message}). The next pass reads it again`);
+    report.waiting.push(`${t.key}: its ${what} was not ${resumed ? 'resumed' : 'spawned'}: the PR could not be read to check it is still open${headBound ? ' at the try\'s head' : ''} (${e.message}). The next pass reads it again`);
     return true;
   }
-  if (!v?.state || (f.head && !v.headRefOid)) {
-    report.waiting.push(`${t.key}: its ${what} was not spawned: gh gave no ${v?.state ? 'head' : 'state'} for the PR, so it is not known to be open at the try's head. The next pass reads it again`);
+  if (!v?.state || (headBound && !v.headRefOid)) {
+    report.waiting.push(`${t.key}: its ${what} was not ${resumed ? 'resumed' : 'spawned'}: gh gave no ${v?.state ? 'head' : 'state'} for the PR, so it is not known to be open${headBound ? ' at the try\'s head' : ''}. The next pass reads it again`);
     return true;
   }
   const merged = v.state === 'MERGED';
   const ended = merged ? `PR #${f.pr} merged${v.mergedAt ? ` at ${v.mergedAt}` : ''}`
     : v.state === 'CLOSED' ? `PR #${f.pr} was closed unmerged`
-    : f.head && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
+    : headBound && v.headRefOid !== f.head ? `head moved: PR #${f.pr} is at ${String(v.headRefOid).slice(0, 9)}, past ${String(f.head).slice(0, 9)} the try was made for` : null;
   if (!ended) return false;
-  const line = `${t.key}: its ${what} was not spawned, ${ended}: the try is finished and the ticket done on its PR again`;
+  const line = `${t.key}: its ${what} was not ${resumed ? 'resumed' : 'spawned'}, ${ended}: the try is finished and the ticket done on its PR again`;
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
+  // A resumed session's try had its worker, so it stays a try made.
   const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
-  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, `fix_tries=${JSON.stringify(tries)}`, 'state=done', 'handoff=null', 'worktree_busy=null');
+  const unrun = resumed ? [] : ['fix.no_worker=true', `fix_tries=${JSON.stringify(tries)}`];
+  q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
   if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
   report.done.push(merged ? `${line}, recorded merged` : line);
   return true;

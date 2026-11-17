@@ -4079,6 +4079,8 @@ case "$*" in
   "pr view 903 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr view 904 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h1","statusCheckRollup":[]}' ;;
   "pr view 905 "*) echo 'HTTP 502: Bad Gateway' >&2; exit 1 ;;
+  "pr view 906 "*|"pr view 907 "*) echo '{"state":"OPEN","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
+  "pr view 908 "*) echo '{"state":"CLOSED","mergedAt":null,"headRefOid":"h2","statusCheckRollup":[]}' ;;
   "pr list "*) echo '[]' ;;
 esac
 exit 0
@@ -4089,6 +4091,16 @@ for k in 1 2 3 4 5; do
     'fix={"try":2,"of":2,"pr":90'"$k"',"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z"}' \
     'fix_tries=[{"try":1,"head":"h0","kind":"checks","what":"red: Lint","at":"2026-11-12T12:00:00Z"},{"try":2,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 done
+# FT-6's feedback try and FT-7's instruction from the person both meet a moved head; FT-8 is a killed
+# worker's session waiting to resume, whose PR was closed since.
+q add FT-6; q set FT-6 state=triaged lane=A branch=fix/FT-6 result.pr=906 \
+  'fix={"try":1,"of":2,"pr":906,"head":"h1","kind":"feedback","what":"review feedback: 1 unresolved thread","threads":[{"id":"PRRT_1","text":"a thread"}],"at":"2026-11-12T15:28:05Z"}' \
+  'fix_tries=[{"try":1,"head":"h1","kind":"feedback","what":"review feedback: 1 unresolved thread","at":"2026-11-12T15:28:05Z"}]'
+q add FT-7; q set FT-7 state=triaged lane=A branch=fix/FT-7 result.pr=907 \
+  'fix={"try":1,"of":1,"pr":907,"head":"h1","kind":"instruction","ready":true,"what":"your instruction","answer":"rename the flag"}'
+q add FT-8; q set FT-8 state=triaged lane=A branch=fix/FT-8 result.pr=908 resume=pending \
+  'fix={"try":1,"of":2,"pr":908,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
+  'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 AC1 a fix try whose PR merged since spawns no worker, is finished, and the ticket is recorded merged" \
   '! grep -qx FT-1 "$T/ft-spawns" && [ "$(field FT-1 state)" = "\"done\"" ] && [ "$(field FT-1 fix.finished)" != null ] && [ "$(field FT-1 merged_at)" = "\"2026-11-12T15:38:26.000Z\"" ] && echo "$out" | grep -qF "FT-1: its fix try 2 of 2 on PR #901 was not spawned, PR #901 merged at 2026-11-12T15:38:26Z: the try is finished and the ticket done on its PR again, recorded merged"'
@@ -4102,5 +4114,11 @@ check "DS-605 AC4 a fix try whose PR is open at the try's head spawns, as before
   'grep -qx FT-4 "$T/ft-spawns" && [ "$(field FT-4 state)" = "\"running\"" ] && [ "$(field FT-4 fix.finished)" = null ]'
 check "DS-605 AC5 a fix try whose PR cannot be read is not spawned this pass, and the report says why" \
   '! grep -qx FT-5 "$T/ft-spawns" && [ "$(field FT-5 state)" = "\"triaged\"" ] && [ "$(field FT-5 fix.finished)" = null ] && echo "$out" | grep -qF "FT-5: its fix try 2 of 2 on PR #905 was not spawned: the PR could not be read"'
+check "DS-605 a try ended before any worker ran it is marked so, and its threads are not replied on or resolved as worked" \
+  '! grep -qx FT-6 "$T/ft-spawns" && [ "$(field FT-6 fix.no_worker)" = true ] && [ "$(field FT-3 fix.no_worker)" = true ] && [ "$(field FT-6 fix.resolved)" = null ] && ! echo "$out" | grep -q "FT-6.*resolved"'
+check "DS-605 the person's instruction is not ended by a moved head: its worker carries it out at the new head" \
+  'grep -qx FT-7 "$T/ft-spawns" && [ "$(field FT-7 fix.finished)" = null ]'
+check "DS-605 a session waiting to resume on a PR closed since is not resumed, and keeps its try as made" \
+  '! grep -qx FT-8 "$T/ft-spawns" && [ "$(field FT-8 state)" = "\"done\"" ] && [ "$(field FT-8 resume)" = null ] && [ "$(field FT-8 fix.no_worker)" = null ] && [ "$(field FT-8 fix_tries | jq length)" = 1 ] && echo "$out" | grep -qF "FT-8: its fix try 1 of 2 on PR #908 was not resumed, PR #908 was closed unmerged"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
