@@ -4110,10 +4110,11 @@ const faultOf = (f) => {
 };
 // What a person clears, as the fix tries split a red PR's checks (fix-tries.mjs splitFailing).
 const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, premerge: preMergeRow.checks, steps: checkSteps };
-// With the failure-class lever on, a red check is read against the default branch before a fix try is
-// spent on it (fix-tries.mjs againstBase): the job's check runs at the PR's exact merge base, and,
-// for a base red hold, its newest completed run among the commits the default branch has gained since
-// that merge base, however few of them ran it. Each read once per pass; one gh cannot read is unknown.
+// A red check is read against the default branch before a fix try is spent on it, with the
+// failure-class lever on or off (fix-tries.mjs againstBase): the job's check runs at the PR's exact
+// merge base, and its newest completed run among the newest commits the default branch has gained
+// since that merge base (latestOnBaseOf says how many). Each read once per pass; one gh cannot read is
+// unknown.
 const FAILURE_CLASS = E.leverOn('failure-class');
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
@@ -4126,20 +4127,43 @@ const baseAtOf = (head) => cached(`base-at:${head}`, () => {
   return /^[0-9a-f]{40}$/.test(base_sha ?? '') && /^[0-9a-f]{40}$/.test(merge_base ?? '') ? { base_sha, merge_base } : null;
 });
 const mergeBaseOf = (head) => baseAtOf(head)?.merge_base ?? null;
-// The default branch's commits since a merge base, newest first. The compare lists them oldest first and
-// holds 250 a page unpaged, so every page is read before the list is turned round.
+// The default branch's own commits since a merge base, newest first: its first-parent line from its
+// tip back to the merge base, so a merged PR's branch commits, whose runs are that branch's CI and not
+// the default branch's, are never read as the base. The tip is the one listed commit no other names as
+// a parent, since the compare lists by date, not by parent; with none or several, or a line that stops
+// short of the merge base, the list is unread. Every page is read. Null unread.
 const baseCommitsSince = (sha) => cached(`base-commits:${sha}`, () => {
-  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[].sha']);
-  return r.ok ? r.out.split('\n').filter(Boolean).reverse() : [];
+  const r = shOut('gh', ['api', `repos/${GH_REPO}/compare/${sha}...${encodeURIComponent(DEFAULT_BRANCH)}?per_page=100`, '--paginate', '--jq', '.commits[] | [.sha, ([.parents[].sha] | join(","))] | @tsv']);
+  if (!r.ok) return null;
+  const rows = r.out.split('\n').filter(Boolean).map((l) => { const [c, ps = ''] = l.split('\t'); return [c, ps.split(',').filter(Boolean)]; });
+  const parents = new Map(rows), named = new Set(rows.flatMap(([, ps]) => ps));
+  const tips = rows.filter(([c]) => !named.has(c));
+  if (tips.length !== 1) return rows.length ? null : [];
+  const line = [];
+  let s = tips[0][0];
+  for (; parents.has(s) && line.length < rows.length; s = parents.get(s)[0]) line.push(s);
+  return s === sha ? line : null;
 });
-const baseReads = (head) => (FAILURE_CLASS && head ? { baseRead: {
+// The job's latest state on the base: its newest completed run among the newest BASE_WALK commits since
+// the merge base (HELD_WALK for a check already held, so a job that runs only on some pushes can still
+// clear its hold), else at the merge base itself when fewer came since. Null when a read fails (never
+// an older run read past one), or when none of those commits ran it: a job that does not run on the
+// base's pushes is not read commit by commit back to the merge base on every pass.
+const BASE_WALK = 25, HELD_WALK = 100;
+const latestOnBaseOf = (head, name, held = false) => {
+  const since = mergeBaseOf(head), commits = since ? baseCommitsSince(since) : null, walk = held ? HELD_WALK : BASE_WALK;
+  if (!commits) return null;
+  for (const sha of commits.slice(0, walk)) {
+    const runs = checkRunsAt(sha, name);
+    if (runs == null) return null;
+    const state = runsState(runs); if (state) return state;
+  }
+  return commits.length > walk ? null : runsState(checkRunsAt(since, name));
+};
+const baseReads = (head) => (head ? { baseRead: {
   mergeBase: () => mergeBaseOf(head),
   atMergeBase: (name) => { const sha = mergeBaseOf(head); return sha ? runsState(checkRunsAt(sha, name)) : null; },
-  latestOnBase: (name) => {
-    const since = mergeBaseOf(head);
-    for (const sha of since ? baseCommitsSince(since) : []) { const state = runsState(checkRunsAt(sha, name)); if (state) return state; }
-    return null;
-  },
+  latestOnBase: (name, o) => latestOnBaseOf(head, name, o?.held === true),
 } } : {});
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
@@ -4719,8 +4743,8 @@ function settleWorked(t, n, head, worked) {
   return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
-// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`. With the
-// failure-class lever on, `held` (base red) waits with no try, a requeue records its try's class
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, and `held` (base
+// red) waits with no try. With the failure-class lever on, a requeue records its try's class
 // (failure-class.mjs fixClass) before the worker spawns, one classed missing decision or dependency
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
 // runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.

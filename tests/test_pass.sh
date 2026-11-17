@@ -2105,7 +2105,7 @@ check "DS-278 AC3 a DIRTY PR is requeued once for the conflict" '[ "$(field F-2 
 check "DS-278 AC6 red only on a check no worker can fix: never requeued, stuck with its command" \
   '[ "$(field F-3 state)" = "\"done\"" ] && [ "$(field F-3 fix)" = null ] && [ "$(field F-3 stuck.why)" = "\"Flows image missing · build it: ensure-flows-image.sh\"" ]'
 check "DS-278 AC6 and it is put to the person" 'echo "$out" | grep -q "F-3: STUCK — PR #696: Flows image missing · build it: ensure-flows-image.sh"'
-check "DS-278 AC7 red on both: requeued for the fixable check only" '[ "$(field F-4 state)" = "\"triaged\"" ] && [ "$(field F-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field F-4 fix.not_mine | jq -r ".[0].name")" = "Flows image missing" ]'
+check "DS-278 AC7 red on both: requeued for the fixable check only" '[ "$(field F-4 state)" = "\"triaged\"" ] && [ "$(field F-4 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\"" ] && [ "$(field F-4 fix.not_mine | jq -r ".[0].name")" = "Flows image missing" ]'
 check "DS-320 AC5 a conflict a person commented on reads pr-conflict-reviewed: not requeued, put to the person" \
   '[ "$(field F-6 state)" = "\"done\"" ] && [ "$(field F-6 fix)" = null ] && echo "$out" | grep -q "F-6: CONFLICT — PR #705 is out of draft and conflicts with main, and config §3 pr-conflict-reviewed is \"no\", so no fix worker resolves it"'
 check "DS-320 AC5 the user's own handle and a bot do not count as reviewed: pr-conflict-unreviewed requeues it" \
@@ -2226,12 +2226,32 @@ api "repos/acme/widgets/compare/main...$H1" "$MT"$'\t'"$MB"; api "repos/acme/wid
 api "repos/acme/widgets/compare/main...$H2" "$MT"$'\t'"$MB2"; api "repos/acme/widgets/compare/main...$H3" "$MT"$'\t'"$MB2"
 runs "$MB" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MB2" Lint '[]'
 q init fb; q set-batch concurrency=5
-# FB-4, with the lever off: red on Lint, red on the base too, held behind a blocker. Routed as today.
-q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813 held_by=X-9; fx 813 "$H4" MERGEABLE tests:SUCCESS Lint:FAILURE:914; fbran 813 "$H4" Lint
+# FB-4, with no levers set: red on Lint, which passed at its merge base MB4 but whose latest run
+# on the base since, at MB5, failed: the base went red after the PR branched. Held as base red, no worker.
+MB4=1111111111111111111111111111111111111111; MB5=2222222222222222222222222222222222222222
+api "repos/acme/widgets/compare/main...$H4" "$MT"$'\t'"$MB4"
+api "repos/acme/widgets/compare/$MB4...main?per_page=100" "$MB5"$'\t'"$MB4"
+runs "$MB4" Lint '[{"status":"completed","conclusion":"success"}]'; runs "$MB5" Lint '[{"status":"completed","conclusion":"failure"}]'
+q add FB-4; q set FB-4 state=done lane=A branch=fix/FB-4 result.pr=813; fx 813 "$H4" MERGEABLE tests:SUCCESS Lint:FAILURE:914; fbran 813 "$H4" Lint
+# FB-8: since its merge base MB8 the base gained one merge commit, MC8, of a branch commit BR8 whose own
+# PR's run of Lint failed. MC8 has no run of Lint yet. BR8 is not the base's commit, so its run is not
+# read as the base's, though the compare lists it last (its date is later): the base's tip is the
+# commit no other names as a parent, its latest state is MB8's pass, and the fix try proceeds.
+H8=8181818181818181818181818181818181818181; MB8=8282828282828282828282828282828282828282; BR8=8383838383838383838383838383838383838383; MC8=8484848484848484848484848484848484848484
+api "repos/acme/widgets/compare/main...$H8" "$MC8"$'\t'"$MB8"
+api "repos/acme/widgets/compare/$MB8...main?per_page=100" "$MC8"$'\t'"$MB8,$BR8"$'\n'"$BR8"$'\t'"$MB8"
+runs "$MB8" Lint '[{"status":"completed","conclusion":"success"}]'; runs "$BR8" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MC8" Lint '[]'
+q add FB-8; q set FB-8 state=done lane=A branch=fix/FB-8 result.pr=818; fx 818 "$H8" MERGEABLE tests:SUCCESS Lint:FAILURE:918; fbran 818 "$H8" Lint
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
-check "DS-446 AC7 with the lever off, a red check red on the base too and held behind a blocker is requeued as today" \
-  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 fix_tries | jq -c ".[0] | has(\"class\")")" = false ] && [ "$(field FB-4 base_red)" = null ]'
-check "DS-446 AC7 and the base's check runs are not read" '! grep -qF "check-runs?check_name=Lint" "$T/gh-calls" &&! grep -qF "compare/main...$H4" "$T/gh-calls"'
+check "DS-614 a merged branch's own commit is not read as the base: its red run holds nothing" \
+  '[ "$(field FB-8 state)" = "\"triaged\"" ] && [ "$(field FB-8 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-8 base_red)" = null ]'
+check "DS-614 AC4 with no levers set, a check red on the base's latest run since the merge base is held as base red, and no fix worker" \
+  '[ "$(field FB-4 state)" = "\"done\"" ] && [ "$(field FB-4 fix)" = null ] && [ "$(field FB-4 fix_tries)" = null ] && [ "$(field FB-4 base_red | jq -c "[.class, .head, .merge_base, .checks, .latest]")" = "[\"base red\",\"$H4\",\"$MB4\",[\"Lint\"],[\"Lint\"]]" ] && ! grep -q "^FB-4" "$T/spawns"'
+check "DS-614 AC4 and the item says so" 'echo "$out" | grep -qF "FB-4: BASE RED — PR #813: base red: Lint is red on main'"'"'s latest run of that job since the merge base 111111111111, so no fix try is spent on it"'
+runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
+out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
+  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
 H9=8888888888888888888888888888888888888888; TIP9=9999999999999999999999999999999999999999
 api "repos/acme/widgets/compare/main...$H9" "$TIP9"$'\t'"$MB"
 q add FB-9; q set FB-9 state=done lane=A branch=fix/FB-9 result.pr=819; fx 819 "$H9" CONFLICTING tests:SUCCESS
@@ -2250,22 +2270,22 @@ q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:
 # them. Lint ran red on the oldest, MO, then on MT, and on none of the newest ten: MT's run is read only
 # by reading past the newest ten, and before MO's.
 MO=3333333333333333333333333333333333333333
-api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO
-$MT
-$(for i in 0 1 2 3 4 5 6 7 8 9; do printf 'f%039d\n' "$i"; done)"
+# Each row is a commit and its parents, as the compare's --jq gives them.
+api "repos/acme/widgets/compare/$MB...main?per_page=100" "$MO"$'\t'"$MB"$'\n'"$MT"$'\t'"$MO"$'\n'"$(p=$MT; for i in 0 1 2 3 4 5 6 7 8 9; do c=$(printf 'f%039d' "$i"); printf '%s\t%s\n' "$c" "$p"; p=$c; done)"
 runs "$MO" Lint '[{"status":"completed","conclusion":"failure"}]'
 runs "$MT" Lint '[{"status":"in_progress","conclusion":null}]'
+for i in 0 1 2 3 4 5 6 7 8 9; do runs "$(printf 'f%039d' "$i")" Lint '[]'; done
 export DESK_CONFIG="$T/config-fl.md"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC3 red on the base at its merge base too: base red, and no fix worker" \
   '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && [ "$(field FB-1 base_red | jq -c "[.class, .head, .merge_base, .checks]")" = "[\"base red\",\"$H1\",\"$MB\",[\"Lint\"]]" ]'
 check "DS-446 AC3 and the item says so" 'echo "$out" | grep -qF "FB-1: BASE RED — PR #810: base red: Lint is red on main at the merge base 444444444444 too, so no fix try is spent on it"'
 check "DS-446 AC6 no run at the merge base: not base red, the fix try proceeds, and it says the base state is unknown" \
-  '[ "$(field FB-2 state)" = "\"triaged\"" ] && [ "$(field FB-2 base_red)" = null ] && [ "$(field FB-2 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it on main at the merge base)\"" ]'
+  '[ "$(field FB-2 state)" = "\"triaged\"" ] && [ "$(field FB-2 base_red)" = null ] && [ "$(field FB-2 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\"" ]'
 check "DS-446 AC2 the try records its class before its worker spawns" \
   '[ "$(field FB-2 fix.class)" = "\"application defect\"" ] && [ "$(field FB-2 fix_tries | jq -r ".[0].class")" = "application defect" ] && ! grep -q "^FB-2" "$T/spawns"'
 check "DS-446 AC4 a try classed dependency wait does not spawn, and the item says what it waits for" \
-  '[ "$(field FB-3 state)" = "\"done\"" ] && [ "$(field FB-3 fix)" = null ] && [ "$(field FB-3 fix_tries)" = null ] && echo "$out" | grep -qF "FB-3: WAITING — PR #812: no fix try for red: Lint; base state unknown for Lint (no run of it on main at the merge base), classed dependency wait: waiting for X-9 to merge"'
+  '[ "$(field FB-3 state)" = "\"done\"" ] && [ "$(field FB-3 fix)" = null ] && [ "$(field FB-3 fix_tries)" = null ] && echo "$out" | grep -qF "FB-3: WAITING — PR #812: no fix try for red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since), classed dependency wait: waiting for X-9 to merge"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
 runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
@@ -2301,7 +2321,7 @@ q set-batch concurrency=2; q set P-1 state=triaged session_id=null
 : > "$T/spawns"; out=$(DESK_CONFIG="$T/config-pa.md" env -u AUTOPILOT_USER_APPROVED node "$B/pass.mjs" 2>&1)
 check "DS-278 ahead of pace, a fix try still waits for workers to be allowed" '[ ! -s "$T/spawns" ] && [ "$(field P-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "autopilot-workers is \"ask\""'
 export DESK_QUEUE="$T/queue-f.json" DESK_AUTOPILOT_STATE="$T/state-f"
-check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint\",true]" ]'
+check "DS-278 AC8 the ticket keeps its last try and what it fixed, with the try finished" '[ "$(field F-1 fix | jq -c "[.try, .of, .what, (.finished != null)]")" = "[2,2,\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\",true]" ]'
 
 # ---- a pass held on pacing whose reading is older than the probe interval takes a new one.
 # pace_case <name> <7-day utilisation> <age of the reading in seconds>: a batch of its own, one triaged
@@ -2739,7 +2759,7 @@ check "DS-316 AC2 a verdict its own commits moved past sends the head to a revie
   '[ "$(field C-2 state)" = "\"triaged\"" ] && [ "$(field C-2 fix.kind)" = "\"rereview\"" ] && [ "$(field C-2 fix.head)" = "\"$CC\"" ] && ! grep -q "^pr ready 752" "$T/gh-calls" && echo "$out" | grep -qF "review try 1 of 2: C-2 requeued for PR #752 — review its head: its review verdict is for ${CA:0:9}"'
 check "DS-316 AC2 and it is not put to the person" '! echo "$out" | grep -q "C-2: DRAFT"'
 check "DS-316 AC4 a red required check sends the draft to a fix worker, with the check and its run" \
-  '[ "$(field C-3 state)" = "\"triaged\"" ] && [ "$(field C-3 fix | jq -c "[.kind, .draft, .what, .checks[0].url]")" = "[\"checks\",true,\"red: tests\",\"https://github.com/acme/widgets/actions/runs/953\"]" ] && ! echo "$out" | grep -q "C-3: DRAFT"'
+  '[ "$(field C-3 state)" = "\"triaged\"" ] && [ "$(field C-3 fix | jq -c "[.kind, .draft, .what, .checks[0].url]")" = "[\"checks\",true,\"red: tests; base state unknown for tests (no run of it read on main at the merge base or since)\",\"https://github.com/acme/widgets/actions/runs/953\"]" ] && ! echo "$out" | grep -q "C-3: DRAFT"'
 check "DS-316 AC5 still red at a head a fix try was made for: stuck, with why" \
   '[ "$(field C-4 state)" = "\"done\"" ] && [ "$(field C-4 stuck.why)" = "\"still red after 1 fix try: tests\"" ] && echo "$out" | grep -q "C-4: STUCK — PR #754: still red after 1 fix try: tests"'
 check "DS-316 AC3 a review with no desk-review verdict line sends the head to a review worker" \
