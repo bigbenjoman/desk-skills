@@ -151,7 +151,7 @@ export function machineBudget({ running, wanted = 0, machine = machineCap(), que
 // A ticket another batch could start now: triaged, with no question open, and not held.
 const isReady = (t) => t?.state === 'triaged' && (t.open_questions ?? 0) === 0 && !isHeld(t);
 
-const batchLabel = (b) => (b == null ? 'the standing batch' : `batch ${b}`);
+export const batchLabel = (b) => (b == null ? 'the standing batch' : `batch ${b}`);
 
 // The repo's §3b cap is shared by its batches: a pass starts at most the cap less every batch's
 // running workers, less the slots kept for the others. The free slots are dealt one at a time among

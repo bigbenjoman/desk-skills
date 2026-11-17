@@ -61,7 +61,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -2074,15 +2074,18 @@ const budgetFiles = (key) => {
 };
 // The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
 // its batch's queue and triage record. A queue that does not read counts nothing, and is named in the report.
+// Read here for the ready list, and again from the queues read under the borrow lock before any spawn.
 const elsewhereRunning = [];
 const budgetUnread = [];
-{
-  let slug = null;
-  try { slug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
-  for (const o of slug == null ? [] : otherQueues({ self: QUEUE_FILE })) {
-    if (o.slug !== slug) continue;
+let budgetSlug = null;
+try { budgetSlug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
+const countElsewhere = (queues) => {
+  elsewhereRunning.length = 0;
+  budgetUnread.length = 0;
+  for (const o of budgetSlug == null ? [] : queues) {
+    if (o.slug !== budgetSlug) continue;
     if (o.error) { budgetUnread.push(o.error); continue; }
-    const triageDir = join(E.batchPaths(slug, o.batch).state, 'triage');
+    const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
     for (const t of Object.values(o.q.tickets ?? {})) {
       if (t?.state !== 'running' || !t.key) continue;
       let rec = null;
@@ -2090,8 +2093,8 @@ const budgetUnread = [];
       elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
     }
   }
-}
-const batchLabel = (b) => (b ? `batch ${b}` : 'the standing batch');
+};
+countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
 const lineCounts = new Map();
 const linesOnBase = (f) => {
@@ -2248,6 +2251,9 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
+// The per-file budget counts the other batches' running tickets from this read too, so a ticket another
+// batch started while this pass waited for the lock holds its files here.
+if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const planFor = (workers, on = BORROW.on) => borrowPlan({
   on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
