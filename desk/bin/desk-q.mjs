@@ -274,14 +274,18 @@ function blockerHold(q, key, b, ctx, seen) {
 
 // The tickets a held ticket waits on at the end of its chain: each unmerged blocker that is not itself
 // held, followed through those that are, a triage park held behind its blockers among them (holdsKept).
+// A held one nothing further holds (a stop or date hold, or every blocker merged) is a root itself.
+// Each key is read once, so a dense held_by graph stays linear.
 export function waitRoots(q, t) {
   const roots = new Set(), seen = new Set([t.key]);
   for (let edge = unmergedBlockers(q, t); edge.length;) {
     const next = [];
-    for (const b of edge.filter((k) => !seen.has(k))) {
+    for (const b of edge) {
+      if (seen.has(b)) continue;
       seen.add(b);
       const bt = q.tickets?.[b];
-      if (bt && holdsKept(bt)) next.push(...unmergedBlockers(q, bt)); else roots.add(b);
+      const up = bt && holdsKept(bt) ? unmergedBlockers(q, bt) : [];
+      if (up.length) next.push(...up); else roots.add(b);
     }
     edge = next;
   }

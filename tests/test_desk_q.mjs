@@ -2299,6 +2299,21 @@ t('DS-657 AC4 negative control: waiting tickets behind two tickets add no note',
 put657('park657', 5705, { 'S-1': { state: 'running', stage: '4/9' },
   'C-1': { state: 'parked', lane: 'C', held_by: 'S-1', park: { question: 'lane C — needs the person' } }, 'H-1': held657('C-1') });
 t('DS-657 AC4 a row waiting through a triage park held behind a running ticket names that ticket', notes657('park657').join(' / '), 'all 2 wait on S-1 (running, stage 4/9).');
+// A held blocker nothing further holds (here a queue.mjs stop hold) is a root of its own, so a ticket
+// waiting on it and on a running one waits on two tickets, and the row adds no note.
+put657('stop657', 5706, { 'P-1': { state: 'parked', park: { question: 'held by orchestrator: stopped by queue.mjs stop' } },
+  'R-1': { state: 'running', stage: '4/9' }, 'X-1': held657('P-1|R-1') });
+t('DS-657 AC4 negative control: a wait on a stopped ticket beside a running one adds no note', notes657('stop657').length, 0);
+// Layers of two tickets, each held by both of the layer before: the walk reads each key once.
+const layered = { tickets: { 'Z-0': { key: 'Z-0', state: 'running' } } };
+for (let i = 1, prev = ['Z-0']; i <= 24; i++) {
+  const keys = [`Z-${i}a`, `Z-${i}b`];
+  for (const k of keys) layered.tickets[k] = { key: k, ...held657(prev.join('|')) };
+  prev = keys;
+}
+const layeredStart = Date.now();
+const layeredRoots = [...Q.waitRoots(layered, { key: 'Z-T', held_by: 'Z-24a|Z-24b' })];
+t('DS-657 AC4 a layered hold graph walks to its one root in well under a second', `${layeredRoots.join()} ${Date.now() - layeredStart < 1000}`, 'Z-0 true');
 
 // ---- A dense hold graph: each ticket held by every one before it (as collision holds leave a batch)
 // has exponentially many paths. The walk reads each blocker once, so it stays fast.
