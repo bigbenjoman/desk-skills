@@ -97,7 +97,9 @@ let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
 // DESK_DEFAULT_BRANCH here, and setup-worktree, spawn-worker and the worker all inherit it.
 try { E.applyBatchBase(); MAIN = E.repoRoot(); WORKTREES = E.worktreesDir(); } catch (e) { refuse(e.message); }
-const BIN = E.binDir();
+// Scripts this pass starts come from its own release; commands it shows a person name the live bin.
+const BIN = E.runBin();
+const SHOWN_BIN = E.binDir();
 const STATE = E.stateDir();
 const QUEUE_FILE = E.queueFile();
 const GH_REPO = E.ghRepo();
@@ -115,7 +117,7 @@ if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor 
 const PASS_AT = new Date().toISOString();
 
 if (!existsSync(QUEUE_FILE)) {
-  refuse(`no queue at ${QUEUE_FILE} — run: node ${BIN}/queue.mjs init <batch-name>`);
+  refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
 }
 // A corrupt queue refuses here, before the pass touches anything, rather than mid-pass as a stack.
 try { readQueue(QUEUE_FILE); } catch (e) { refuse(describeCrash(e)); }
@@ -958,7 +960,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     } else if (!t.images_reported) {
       q('set', t.key, 'images_reported=true');
       report.waiting.push(`${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${E.permissionKey('pr-images')} is "${uploadPerm}". ` +
-        `Ask, then: DESK_UPLOAD_APPROVED=1 node ${join(BIN, 'upload-images.mjs')} ${prNo} ${imgDir}`);
+        `Ask, then: DESK_UPLOAD_APPROVED=1 node ${join(SHOWN_BIN, 'upload-images.mjs')} ${prNo} ${imgDir}`);
     }
   }
 
@@ -1943,7 +1945,7 @@ if (!maySpawn && eligible.length) {
 // Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
 if (blockedByDone.length) {
   personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
-    `if the re-run is deliberate: node ${join(BIN, 'queue.mjs')} requeue <TICKET>`);
+    `if the re-run is deliberate: node ${join(SHOWN_BIN, 'queue.mjs')} requeue <TICKET>`);
 }
 
 // ---- slots, and borrowing ----------------------------------------------------
@@ -3542,7 +3544,7 @@ if (report.quiet.length) out.push(`quiet: ${report.quiet.join(', ')}`);
 // A worker count of 0 is a pause, not a finished batch: say what is waiting behind it.
 if (concurrency <= 0 && eligible.length) {
   out.push(`paused: new spawns are paused by the batch's worker count (concurrency ${concurrency}); ${eligible.length} triaged ticket(s) wait. ` +
-    `Resume with node ${join(BIN, 'queue.mjs')} set-batch concurrency=<n> concurrency_by=user`);
+    `Resume with node ${join(SHOWN_BIN, 'queue.mjs')} set-batch concurrency=<n> concurrency_by=user`);
 }
 // Held tickets. Each finished blocker's PR is looked up once per pass, so a hold behind a PR that was
 // closed unmerged, or a blocker that finished with no PR, surfaces instead of waiting for ever.
@@ -4542,11 +4544,11 @@ if (onEpic.length) {
 }
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'approval')) {
   report.waiting.push(`${t.key}: SPINE APPROVAL — PR #${t.result?.pr ?? '?'} lands a strict expected-fail spec per criterion and stays draft. ` +
-    `Review them read-only first (node ${join(BIN, 'spine-review.mjs')} brief ${t.key}), then put one question per spec to the person (spine-review.mjs questions ${t.key} <reply>): approved, node ${join(BIN, 'queue.mjs')} approve ${t.key}; rejected, node ${join(BIN, 'queue.mjs')} reject ${t.key} "<their note>"`);
+    `Review them read-only first (node ${join(SHOWN_BIN, 'spine-review.mjs')} brief ${t.key}), then put one question per spec to the person (spine-review.mjs questions ${t.key} <reply>): approved, node ${join(SHOWN_BIN, 'queue.mjs')} approve ${t.key}; rejected, node ${join(SHOWN_BIN, 'queue.mjs')} reject ${t.key} "<their note>"`);
 }
 for (const t of Object.values(qNow.tickets).filter((r) => spinePark(r) === 'specs')) {
   report.waiting.push(`${t.key}: SPINE SPECS — ${(t.spine_check?.problems ?? []).join('; ') || 'the check failed'}. No approval is offered: ` +
-    `send it back with what to fix, node ${join(BIN, 'queue.mjs')} reject ${t.key} "<note>"`);
+    `send it back with what to fix, node ${join(SHOWN_BIN, 'queue.mjs')} reject ${t.key} "<note>"`);
 }
 // An approved spine merges under the batch's merge rules: the merge driver where §3 grants it, else
 // the person.
@@ -4934,7 +4936,7 @@ if (report.waiting.length) out.push(`WAITING ON YOU:\n  ${report.waiting.join('\
 // Blocked-on-questions must be visible, or "no change this pass" reads as "idle" when it
 // really means "nobody answered yet".
 const blocked = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) > 0);
-if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(BIN, 'answer.mjs')} <TICKET> "<answer>"`);
+if (blocked.length) out.push(`BLOCKED ON ANSWERS: ${blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${join(SHOWN_BIN, 'answer.mjs')} <TICKET> "<answer>"`);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 if (heldBack.length) out.push(`held back by a collision: ${heldBack.map((x) => x.key).join(', ')}`);
 const resumeWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged' && toResume(r) && !(r.resume === 'reboot' && rebootReady(r).wait));
