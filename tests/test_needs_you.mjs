@@ -637,6 +637,14 @@ const lambda = N.collect({ word: 'lambda' }).items;
 t('DS-344 AC5 a batch held on the usage limit is one item, and no ticket is one', lambda.map((i) => `${i.t.key} ${i.kind}`).join(), 'usage-limit usage');
 t('DS-344 AC5 its need names the limit and how many workers wait', /^held on the weekly usage limit until .+: nothing new starts, and 2 paused workers wait\. It carries on by itself once the limit lifts$/.test(lambda[0]?.need ?? ''), true);
 t('DS-344 AC5 it offers done and not-now, and done is recorded', `${lambda[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'lambda', ticket: 'usage-limit', action: 'done' }).ok}`, 'done,not-now true');
+// A repo pinned to a subscription since set off: its queued work starts nowhere, and that is one item.
+put('studia', { port: 4110, beat: 1, supervised: true, batch: { subscription_off: { since: minsAgo(5), email: 'ops@studia.example', login: 'work-2' } }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });
+const studia = N.collect({ word: 'studia' }).items;
+t('a repo pinned to an off subscription is one item, and its queued ticket is none', studia.map((i) => `${i.t.key} ${i.kind}`).join(), 'subscription-off subscription-off');
+t('its need names the repo, the email and the command that moves it', studia[0]?.need,
+  'acme__studia is pinned to ops@studia.example, which is off (claude work-2), so no new work starts for it: move it to another subscription (desk-env subscription set acme__studia <default|email>), or set work-2 unused (desk-env logins set claude work-2 unused)');
+t('and desk-q\'s NEEDS YOU count, and left, count it', `${N.needsCount(loadRepos().find((r) => r.name === 'studia')).shown} ${cli('left', 'studia').out.split('\n')[0]}`, '1 desk-q counts 1 item needing you in studia.');
+t('it offers done and not-now, and done is recorded', `${studia[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'studia', ticket: 'subscription-off', action: 'done' }).ok}`, 'done,not-now true');
 const { needText: rowText } = await import('../desk/bin/desk-q.mjs');
 const lr = loadRepos().find((r) => r.name === 'lambda');
 const l1 = rowText(lr, lr.rows.find((x) => x.t.key === 'L-1'));
