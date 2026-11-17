@@ -670,7 +670,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
   const reasons = reasonsAgainst(t.rec, holds);
   if (reasons.length) return { why: reasons.join('; ') };
   // queue.mjs adds the spine and an epic still waiting on its drafted plan (--hold-spine).
-  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', '--hold-collisions', ...holdArgs(holds)]);
+  const a = queueCmdIn(batchEnv(b), ['admit', key, '--by', by, '--hold-spine', ...holdArgs(holds)]);
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }

@@ -263,6 +263,7 @@ These are not oversights. Editing them to `yes` changes nothing; the skills refu
 | Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
 | Memory ceiling for parallel work (GB) | WSL: `16` · otherwise physical RAM minus ~8 | `TODO` (`DESK_CLEARANCE_MEM_GB` overrides) |
 | Spawn gate (available memory) | start work > 8 GiB · hold 4–8 · drop to 1 below 4 | `TODO` |
+| Per-file collision budget | `3 over 1000 lines, else 1; serial: none` | `TODO` (how many running tickets may name one file before a ticket naming it waits: `<k> over <n> lines, else <k>`, by the file's length on the batch base, then `; serial: <glob>, ...` for files kept at 1, or a bare `1` for one at a time everywhere. Unset is the recommended value; a row that does not read is 1 for every file, and the pass report says so) |
 | Test worker cap under the test lock | `4`, `2` while the spawn gate says hold | `TODO` |
 | Autopilot per-worker budget (USD) | `25` (a runaway guard) | `TODO` (`none` turns it off) |
 | Autopilot batch budget (USD) | `none` | `TODO` |

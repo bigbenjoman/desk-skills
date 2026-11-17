@@ -4392,4 +4392,65 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a fix try whose spawn was refused is not marked started, so it is still a try no worker ran" \
   '[ "$(field FT-13 state)" = "\"failed\"" ] && [ "$(field FT-13 spawn_failed)" = true ] && [ "$(field FT-13 fix.started)" = null ]'
 
+# ---- DS-755: tickets naming one file start up to its per-file budget. On main, src/big.ts and
+# src/hot.ts are 1,200 lines and src/edge.ts 1,000. Each case is a queue of its own, cap 8.
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1" >> "$T/fb-spawns"; echo "[spawn] ticket=\$1"
+EOF
+printf '#!/bin/sh\nexit 0\n' > "$T/stub/gh"
+printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}, {\"sessionId\": \"live-2\"}, {\"sessionId\": \"live-3\"}]'" > "$T/stub/claude"
+git -C "$T/repo" checkout -q main
+mkdir -p "$T/repo/src"; seq 1 1200 > "$T/repo/src/big.ts"; seq 1 1000 > "$T/repo/src/edge.ts"; seq 1 1200 > "$T/repo/src/hot.ts"
+git -C "$T/repo" add src; git -C "$T/repo" commit -q -m "budget fixtures"
+fbconf(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; [ -n "$1" ] && printf '| Per-file collision budget | x | `%s` |\n' "$1"; } > "$T/config-fb.md"; }
+# fbq <name> <row>: a fresh queue under that row; fbt <KEY> <state> <files...>: a ticket and its triage record.
+fbq(){ fbconf "$2"; export DESK_CONFIG="$T/config-fb.md" DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1"; mkdir -p "$T/state-$1/logs" "$T/state-$1/triage"; : > "$T/fb-spawns"; q init "$1"; q set-batch concurrency=8 concurrency_by=user; }
+fbt(){ k=$1 st=$2; shift 2; jq -nc '{files_in_scope: $ARGS.positional}' --args "$@" > "$DESK_AUTOPILOT_STATE/triage/$k.json"; q add "$k"; q set "$k" "state=$st" "branch=fix/$k"; }
+spawned(){ grep -qx "$1" "$T/fb-spawns"; }
+
+fbq fba ''
+fbt FB-1 triaged src/big.ts; fbt FB-2 triaged src/big.ts src/a.ts; fbt FB-3 triaged src/big.ts
+fbt FB-4 triaged src/big.ts; fbt FB-5 triaged src/edge.ts; fbt FB-6 triaged src/edge.ts
+fbt FB-7 triaged src/new.ts src/big.ts; fbt FB-8 triaged src/solo.ts; q set FB-8 collides_with=FB-1
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC1 with no budget row, three ready tickets naming a file over 1,000 lines on the base all start" \
+  'spawned FB-1 && spawned FB-2 && spawned FB-3'
+check "DS-755 AC2 a fourth naming it does not start, and the report names the file and the three running" \
+  '! spawned FB-4 && [ "$(field FB-4 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "FB-4 (src/big.ts has 3 running of its 3: FB-1, FB-2, FB-3)"'
+check "DS-755 AC3 AC9 of two naming a 1,000-line file, the first in queue order starts and the other waits" \
+  'spawned FB-5 && ! spawned FB-6 && echo "$out" | grep -qF "FB-6 (src/edge.ts has 1 running of its 1: FB-5)"'
+check "DS-755 AC5 a ticket naming two files, one at its budget, does not start" '! spawned FB-7 && [ "$(field FB-7 state)" = "\"triaged\"" ]'
+check "DS-755 AC7 an admission-time collides_with naming a running ticket that shares no file in the triage records holds nothing" 'spawned FB-8'
+check "DS-755 the metrics line names each held ticket's files at their budget and the running tickets filling them" \
+  'tail -n 1 "$T/state-fba/passes.jsonl" | jq -e ".held.collision == 3 and (.collisions | map(select(.key == \"FB-7\")) == [{\"key\":\"FB-7\",\"with\":[\"FB-1\",\"FB-2\",\"FB-3\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+
+fbq fbb ''
+fbt FB-11 running src/big.ts; fbt FB-12 running src/big.ts; fbt FB-13 running src/big.ts
+q set FB-11 session_id=live-1; q set FB-12 session_id=live-2; q set FB-13 session_id=live-3
+fbt FB-14 triaged src/big.ts
+fbt FB-15 done src/edge.ts; fbt FB-16 triaged src/edge.ts; q set FB-16 collides_with=FB-15
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC2 with three already running that name the file, a fourth does not start, and the report names them" \
+  '! spawned FB-14 && echo "$out" | grep -qF "FB-14 (src/big.ts has 3 running of its 3: FB-11, FB-12, FB-13)"'
+check "DS-755 AC3 AC7 once the first has stopped running, the other starts: a done ticket its collides_with names holds nothing" 'spawned FB-16'
+
+fbq fbc '3 over 1000 lines, else 1; serial: src/hot.ts, docs/*.md'
+fbt FB-21 triaged src/hot.ts; fbt FB-22 triaged src/hot.ts; fbt FB-23 triaged src/big.ts; fbt FB-24 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC4 of two ready tickets naming a file on the serial list, only one starts, whatever its length" \
+  'spawned FB-21 && ! spawned FB-22 && spawned FB-23 && spawned FB-24'
+
+fbq fbd '1'
+fbt FB-31 triaged src/big.ts; fbt FB-32 triaged src/big.ts src/a.ts; fbt FB-33 triaged src/edge.ts; fbt FB-34 triaged src/edge.ts; fbt FB-35 triaged src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC6 a row of 1 starts and holds exactly the tickets one at a time does" \
+  'spawned FB-31 && ! spawned FB-32 && spawned FB-33 && ! spawned FB-34 && spawned FB-35 && echo "$out" | grep -qF "held back by a collision: FB-32 (src/big.ts has 1 running of its 1: FB-31), FB-34 (src/edge.ts has 1 running of its 1: FB-33)"'
+
+fbq fbe 'three, mostly'
+fbt FB-41 triaged src/big.ts; fbt FB-42 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
+  'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
