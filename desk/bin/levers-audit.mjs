@@ -10,19 +10,21 @@
 //
 // Each sampled ticket is an item in <repo state>/audit-queue.json; one audit runs at a time per repo,
 // spawned by the pass (pass.mjs) as worker `audit.<TICKET>` in a worktree detached at the merge commit,
-// with DESK_LEVERS `none`, on the trial's audit model: the repo's review model when the trial's first
-// item was queued (or the `audit_model` its starting event names), kept in the queue file's `trials`
-// for the trial's life. An audit due while usage pacing holds spawns waits, as does one due once this
-// week's audits (Monday 00:00 UTC on) have spent BUDGET_SHARE of the repo's measured weekly ticket
-// spend; each deferral is one `audit_deferred` event in the lever log, reason `window_tight` or
-// `weekly_cap`, once per item and reason (and week, for the cap).
+// with DESK_LEVERS `none`, on the trial's audit model: the repo's review model at the first pass that
+// saw the trial running, kept in the queue file's `trials` for the trial's life. An audit due while
+// usage pacing holds spawns, or whose preflight the usage limit refused, waits, as does one due once
+// this week's audits (Monday 00:00 UTC on) have spent BUDGET_SHARE of the repo's measured weekly ticket
+// spend, preflights included; each deferral is one `audit_deferred` event in the lever log, reason
+// `window_tight` or `weekly_cap`, once per item and reason (and week, for the cap).
 //
 // An audit that ended is one line in <repo state>/audit.jsonl, in the findings format (reviewer
 // `audit`) plus the ticket, PR, merge commit, lever, arm, every quality-risk arm the ticket drew, model,
-// `usd` and `duration_s`, and one `audit` event in the lever log citing that line. A P0 on a ticket
-// drawn `on` for a lever reverts that lever in the repo as a hard trip (a `trip` event, trip
-// `audit-p0`; frozen on a second revert) and raises one needs_you event naming the defect. An audit
-// writes nothing to the tracker.
+// `usd` (its preflights included) and `duration_s`, and one `audit` event in the lever log citing that
+// line. A P0 on a ticket drawn `on` for a lever reverts that lever in the repo as a hard trip through
+// levers-trips.mjs applyTrips (a `trip` event, trip `audit-p0`; frozen on a second revert), which
+// raises one needs_you event naming the defect. Recording is idempotent, so one a crash cut short is
+// finished by a later pass. An audit writes nothing to the tracker, and its worker is denied every
+// tracker and PR write (worker-settings.mjs).
 //
 //   import { runAudits, sampleAudits, auditTask, auditBrief } from './levers-audit.mjs'
 import { mkdirSync, readFileSync, appendFileSync } from 'node:fs';
@@ -31,8 +33,7 @@ import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
 import { leverStatesIn, trialId } from './levers-auto.mjs';
-import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
-import { REVERTIBLE, ACTOR as TRIP_ACTOR } from './levers-trips.mjs';
+import { REVERTIBLE, applyTrips, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
 import { logUsage, ticketCost } from './worker-cost.mjs';
@@ -49,6 +50,8 @@ export const TRIP = 'audit-p0';
 export const SPAWN_TRIES = 3;
 // A spawn a crashed pass left part way is tried again after this long.
 const STARTING_MS = 3_600_000;
+// A recording a crashed or failed pass left part way is finished by a later pass after this long.
+const RECORDING_MS = 600_000;
 const DAY_MS = 86_400_000;
 // The marker the audit worker prints once per P0 it confirms.
 const P0_MARK = /^[\s`>*-]*AUDIT_P0:[ \t]*(.+?)[\s`]*$/gm;
@@ -62,18 +65,6 @@ export function weekStart(now) {
   const d = new Date(now);
   const day = (d.getUTCDay() + 6) % 7;
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
-}
-
-// Each line of a jsonl file that parses, with its 1-based line number.
-function rowsOf(file) {
-  let body = '';
-  try { body = readFileSync(file, 'utf8'); } catch { return []; }
-  const out = [];
-  body.split('\n').forEach((raw, i) => {
-    if (!raw.trim()) return;
-    try { const row = JSON.parse(raw); if (row && typeof row === 'object') out.push({ line: i + 1, row }); } catch { /* not a row */ }
-  });
-  return out;
 }
 
 const mergedPr = (t) => {
@@ -113,12 +104,18 @@ export function sampleAudits({ slug, events, tickets, states, registry = REGISTR
   return out.sort((x, y) => Date.parse(x.merged_at) - Date.parse(y.merged_at));
 }
 
+// Where the change a PR merged at `sha` starts: its first parent, except a multi-commit PR merged by
+// rebase, whose `commits` commits all landed on the base, so it starts that many back.
+export function auditBase({ sha, method, commits }) {
+  return method === 'rebase' && Number.isInteger(commits) && commits > 1 ? `${sha}~${commits}` : `${sha}^1`;
+}
+
 // The prompt the audit worker starts with (spawn-worker.sh's AUTOPILOT_TASK). It names no lever and no
 // arm: the review is blind to how the PR was built.
-export function auditTask({ pr, sha, repo }) {
+export function auditTask({ pr, sha, base = `${sha}^1`, repo }) {
   return 'Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET: ' +
     `a review of PR #${pr} in ${repo}, which has merged, at its merge commit ${sha}. Your worktree $WT is checked out at that commit, detached. ` +
-    `Your task is that one review and nothing else: run the review desk-env review-cmd prints over ${sha}^1..${sha}, the change the PR merged, and fix nothing. ` +
+    `Your task is that one review and nothing else: run the review desk-env review-cmd prints over ${base}..${sha}, the change the PR merged, and fix nothing. ` +
     'When it ends, print its findings line with verdict.mjs --findings <results> --reviewer audit, then, for each P0 it confirms, one line ' +
     '`AUDIT_P0: <file:line>: <the defect in one sentence>`, each at the start of a line and never in a code fence. ' +
     'Post nothing anywhere: no PR review or comment, no Jira ticket, comment or transition, and no commit or push. ' +
@@ -205,9 +202,32 @@ function withQueue(slug, fn) {
   }, { waitMs: 10_000, pollMs: 20 });
 }
 
-// The audit row for an ended item, and its line in audit.jsonl once written.
+// Marks queue item `due` deferred for `reason` (`window_tight`, or `weekly_cap` until next week). ->
+// { defer: due, fresh }, `fresh` when this deferral is new, so its event is written once.
+function deferIn(due, reason, now, why = null) {
+  const week = weekStart(now);
+  const key = reason === 'weekly_cap' ? `${reason}|${new Date(week).toISOString().slice(0, 10)}` : reason;
+  const fresh = due.deferred?.key !== key;
+  due.state = 'deferred';
+  due.deferred = { key, reason, at: fresh ? new Date(now).toISOString() : due.deferred.at, ...(why ? { why } : {}),
+    ...(reason === 'weekly_cap' ? { until: new Date(week + 7 * DAY_MS).toISOString() } : {}) };
+  return { defer: due, fresh };
+}
+
+// How many of the repo's audit workers are running or part way through starting, for the pass's worker
+// counts.
+export const auditsRunning = (slug) => Object.values(loadQueue(auditQueueFile(slug)).items).filter((i) => ['running', 'starting'].includes(i.state)).length;
+
+// What an item's preflights cost: all of them, or those since `from` (ms).
+const preflightUsd = (item, from = -Infinity) => (item.preflights ?? []).filter((p) => Date.parse(p.at) >= from).reduce((n, p) => n + (Number(p.usd) || 0), 0);
+
+// The audit row for an ended item, and its line in audit.jsonl once written. Each write is skipped
+// where an earlier, interrupted recording of the same session already made it, so recording again
+// finishes the job rather than repeating it.
 function recordAudit({ slug, name, item, ended, text, states, now, registry }) {
-  const { findings: f, usd, p0s } = readAudit(text, item.sha);
+  const { findings: f, usd: workerUsd, p0s } = readAudit(text, item.sha);
+  const pre = preflightUsd(item);
+  const usd = workerUsd == null && !pre ? null : Math.round(((workerUsd ?? 0) + pre) * 10000) / 10000;
   const at = new Date(Math.max(now, Date.parse(ended.at) || 0)).toISOString();
   const duration = Number.isFinite(Date.parse(item.started_at)) && Number.isFinite(Date.parse(ended.at))
     ? Math.max(0, Math.round((Date.parse(ended.at) - Date.parse(item.started_at)) / 1000)) : null;
@@ -220,48 +240,41 @@ function recordAudit({ slug, name, item, ended, text, states, now, registry }) {
   };
   const file = auditFile(slug);
   mkdirSync(dirname(file), { recursive: true });
-  appendFileSync(file, `${JSON.stringify(row)}\n`);
-  const line = rowsOf(file).findLast((r) => r.row.session === item.session && r.row.ticket === item.ticket)?.line ?? rowsOf(file).length;
+  const mine = () => rowsOf(file).findLast((r) => r.rec.session === item.session && r.rec.ticket === item.ticket);
+  let written = mine();
+  if (!written) { appendFileSync(file, `${JSON.stringify(row)}\n`); written = mine(); }
+  const line = written?.line ?? rowsOf(file).length;
   const events = [];
-  const add = (e) => { if (e) events.push(e); return e; };
   const counts = f ? `P0 ${f.p0}, P1 ${f.p1}, P2 ${f.p2}` : 'no findings line';
-  add(appendWith(slug, () => ({ kind: 'audit', lever: item.lever, actor: ACTOR, reason_code: 'audit_recorded', at, ticket: item.ticket,
-    reason: `${item.ticket} (PR #${item.pr}) was audited at ${String(item.sha).slice(0, 12)}: ${counts}`, evidence_file: file, evidence_line: line })));
-  if (!(f?.p0 > 0)) return { row, events };
+  const noted = appendWith(slug, () => (read(slug).events.some((y) => y.kind === 'audit' && y.evidence_file === file && y.evidence_line === line) ? null
+    : { kind: 'audit', lever: item.lever, actor: ACTOR, reason_code: 'audit_recorded', at, ticket: item.ticket,
+      reason: `${item.ticket} (PR #${item.pr}) was audited at ${String(item.sha).slice(0, 12)}: ${counts}`, evidence_file: file, evidence_line: line }));
+  if (noted) events.push(noted);
+  if (!(f?.p0 > 0)) return { row: written?.rec ?? row, events };
   // A P0 trips every lever the ticket was drawn on for, while it is still in a state a trip reverts.
   const defect = p0s.length ? p0s.join('; ') : `${f.p0} P0 at ${String(item.sha).slice(0, 12)}; the review is in ${join(item.state_dir, 'logs', `${item.key}.log`)}`;
-  for (const [lever, a] of Object.entries(item.arms ?? {})) {
-    if (a !== 'on' || states?.[lever] !== 'auto') continue;
-    const trip = add(appendWith(slug, () => {
-      const log = read(slug).events;
-      const s = leverStatesIn(log, registry)[lever];
-      if (!REVERTIBLE.includes(s?.state)) return null;
-      if (log.some((y) => y.kind === 'trip' && y.lever === lever && y.evidence_file === file && y.evidence_line === line)) return null;
-      return { kind: 'trip', lever, from: s.state, to: revertTarget(priorRevertsOf(log, lever)), actor: TRIP_ACTOR, reason_code: 'audit_p0', at, trip: TRIP, ticket: item.ticket,
-        reason: `${TRIP} on ${item.ticket}: the blind audit of PR #${item.pr} found ${f.p0} P0 (${file}:${line})`, evidence_file: file, evidence_line: line };
-    }));
-    if (!trip) continue;
-    const frozen = trip.to === 'frozen';
-    add(appendWith(slug, () => ({ kind: 'needs_you', lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : 'audit_p0', at, ticket: item.ticket,
-      evidence_file: file, evidence_line: line,
-      reason: frozen
-        ? frozenText(lever, name, `the blind audit of ${item.ticket}, PR #${item.pr}, found a P0: ${defect}`)
-        : `${lever} was reverted in ${name}: the blind audit of ${item.ticket}, PR #${item.pr}, found a P0 that merged: ${defect}` })));
-  }
-  return { row, events };
+  const byLever = leverStatesIn(read(slug).events, registry);
+  const trips = Object.entries(item.arms ?? {})
+    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
+    .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
+      why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
+  events.push(...applyTrips({ slug, name, trips, registry, now: Date.parse(at) }));
+  return { row: written?.rec ?? row, events };
 }
 
 // One pass's audits for repo `slug`: records each audit that ended, queues what the sample adds, and
 // starts the oldest item due, or defers it. Every effect outside this module is a dependency, so a
 // stub review worker stands in for one in tests:
-//   spawn({ key, item, sha, model, task, brief, env }) -> { session, worktree, state } | { error }
-//   mergeCommit(item) -> sha | null       ended(item) -> { at } | null     log(item) -> text
+//   spawn({ key, item, sha, model, task, brief, env }) -> { session, worktree, state, preflight_usd }
+//     | { error, preflight_usd } | { wait: 'window_tight' | <why>, why, preflight_usd }
+//   mergeCommit(item) -> sha | { sha, commits } | null                       mergeMethod: config §4's
+//   ended(item) -> { at } | null     log(item) -> text
 //   cleanup(item)                          pace() -> { hold }                 spend({ slug, now }) -> usd
 //   room() -> why no worker may start now, or null
 //   -> { recorded: [row], deferred: [event], started: [item], failed: [text], events: [event], line }
 export async function runAudits({
   slug, name = slug, repo = slug, states, tickets, now = Date.now(), registry = REGISTRY, model = reviewModel,
-  spawn, mergeCommit, ended = endedFromExit, log = logOf, cleanup = () => {}, pace = () => usagePace(), spend = weeklySpend, room = () => null,
+  spawn, mergeCommit, mergeMethod = 'merge', ended = endedFromExit, log = logOf, cleanup = () => {}, pace = () => usagePace(), spend = weeklySpend, room = () => null,
 }) {
   const out = { recorded: [], deferred: [], started: [], failed: [], events: [], line: null };
   if (!Object.values(states ?? {}).includes('auto')) return out;
@@ -271,36 +284,43 @@ export async function runAudits({
 
   // Each running audit that ended is claimed under the queue's lock, so two passes never record one
   // twice, then recorded, and leaves the queue.
+  // A recording a pass left part way (it died, or a write failed) is claimed again once it is stale.
   const ending = withQueue(slug, (q) => Object.values(q.items).flatMap((i) => {
-    if (i.state !== 'running') return [];
-    const e = ended(i);
+    let e = null;
+    if (i.state === 'recording' && !(now - Date.parse(i.recording_at) < RECORDING_MS)) e = i.ended ?? ended(i);
+    else if (i.state === 'running') e = ended(i);
     if (!e) return [];
-    i.state = 'recording';
+    Object.assign(i, { state: 'recording', recording_at: new Date(now).toISOString(), ended: e });
     return [{ item: { ...i }, e }];
   }));
   for (const { item, e } of ending) {
-    const r = recordAudit({ slug, name, item, ended: e, text: log(item), states, now, registry });
-    out.recorded.push(r.row);
-    out.events.push(...r.events);
+    // One audit's failure to record leaves it for a later pass, never the others.
+    try {
+      const r = recordAudit({ slug, name, item, ended: e, text: log(item), states, now, registry });
+      out.recorded.push(r.row);
+      out.events.push(...r.events);
+    } catch (err) {
+      out.failed.push(`${item.ticket} audit not recorded, a later pass finishes it: ${String(err?.message ?? err).split('\n')[0]}`);
+      continue;
+    }
     try { cleanup(item); } catch { /* a worktree left behind is not the audit's result */ }
     withQueue(slug, (q) => { delete q.items[item.ticket]; });
   }
 
   // The sample adds what is newly due; a ticket audited already, or queued, is not added again.
-  const audited = new Set(rowsOf(auditFile(slug)).map((r) => r.row.ticket));
+  const rows = rowsOf(auditFile(slug));
+  const audited = new Set(rows.map((r) => r.rec.ticket));
   const events = read(slug).events;
   const sample = sampleAudits({ slug, events, tickets: all, states, registry });
   const byLever = leverStatesIn(events, registry);
-  const live = new Set(Object.keys(registry).filter((n) => states?.[n] === 'auto' && byLever[n].state === 'trial').map((n) => trialId(slug, n, byLever[n])));
+  const live = new Set(Object.keys(registry).filter((n) => registry[n].layer === 'quality-risk' && states?.[n] === 'auto' && byLever[n].state === 'trial').map((n) => trialId(slug, n, byLever[n])));
   const next = withQueue(slug, (q) => {
+    // A trial's audit model is the review model when the trial is first seen running, fixed for its life.
+    for (const id of live) q.trials[id] ??= { model: model(), at: new Date(now).toISOString() };
     // An audit not yet started whose trial has ended (adopted, reverted, or left to the row) is dropped.
     for (const [k, i] of Object.entries(q.items)) if (['queued', 'deferred', 'failed'].includes(i.state) && !live.has(i.trial_id)) delete q.items[k];
     for (const s of sample) {
       if (audited.has(s.ticket) || q.items[s.ticket]) continue;
-      if (!q.trials[s.trial_id]) {
-        const opener = events.find((e) => e.id === s.trial_id.split('/').pop());
-        q.trials[s.trial_id] = { model: typeof opener?.audit_model === 'string' ? opener.audit_model : model(), at: new Date(now).toISOString() };
-      }
       q.items[s.ticket] = { ...s, key: auditKey(s.ticket), model: q.trials[s.trial_id].model, state: 'queued', queued_at: new Date(now).toISOString(), tries: 0 };
     }
     const items = Object.values(q.items);
@@ -314,7 +334,9 @@ export async function runAudits({
     let reason = null;
     if (pace()?.hold) reason = 'window_tight';
     else {
-      const spent = rowsOf(auditFile(slug)).filter((r) => Date.parse(r.row.at) >= week).reduce((n, r) => n + (Number(r.row.usd) || 0), 0);
+      // Recorded audits, and the preflights of those not yet recorded, started or not.
+      const spent = rows.filter((r) => Date.parse(r.rec.at) >= week).reduce((n, r) => n + (Number(r.rec.usd) || 0), 0)
+        + items.reduce((n, i) => n + preflightUsd(i, week), 0);
       // The spend reads every ticket's logs, so it is measured once a day and kept in the queue file.
       const day = new Date(now).toISOString().slice(0, 10);
       if (q.spend?.day !== day || !Number.isFinite(q.spend?.usd)) q.spend = { day, usd: Number(spend({ slug, now })) || 0 };
@@ -322,13 +344,7 @@ export async function runAudits({
       if (spent >= cap) reason = 'weekly_cap';
       due.cap = { spent: Math.round(spent * 100) / 100, cap: Math.round(cap * 100) / 100 };
     }
-    if (reason) {
-      const key = reason === 'weekly_cap' ? `${reason}|${new Date(week).toISOString().slice(0, 10)}` : reason;
-      const fresh = due.deferred?.key !== key;
-      due.state = 'deferred';
-      due.deferred = { key, reason, at: fresh ? new Date(now).toISOString() : due.deferred.at, ...(reason === 'weekly_cap' ? { until: new Date(week + 7 * DAY_MS).toISOString() } : {}) };
-      return { defer: due, fresh };
-    }
+    if (reason) return deferIn(due, reason, now);
     // No room for another worker this pass (memory, the machine's or repo's cap): it waits, untried.
     if (room()) return null;
     due.state = 'starting';
@@ -336,39 +352,59 @@ export async function runAudits({
     return { start: { ...due } };
   });
 
+  const deferEvent = (d) => {
+    const e = appendWith(slug, () => ({
+      kind: 'audit_deferred', lever: d.lever, actor: ACTOR, reason_code: d.deferred.reason, at: new Date(now).toISOString(), ticket: d.ticket,
+      reason: d.deferred.reason === 'window_tight'
+        ? `the audit of ${d.ticket} (PR #${d.pr}) waits: ${d.deferred.why ?? 'usage pacing is holding spawns'}`
+        : `the audit of ${d.ticket} (PR #${d.pr}) waits for the week of ${d.deferred.until.slice(0, 10)}: this week's audits spent $${d.cap.spent} of their $${d.cap.cap}`,
+    }));
+    if (e) { out.deferred.push(e); out.events.push(e); }
+  };
   if (next?.defer) {
-    const d = next.defer;
-    if (next.fresh) {
-      const e = appendWith(slug, () => ({
-        kind: 'audit_deferred', lever: d.lever, actor: ACTOR, reason_code: d.deferred.reason, at: new Date(now).toISOString(), ticket: d.ticket,
-        reason: d.deferred.reason === 'window_tight'
-          ? `the audit of ${d.ticket} (PR #${d.pr}) waits: usage pacing is holding spawns`
-          : `the audit of ${d.ticket} (PR #${d.pr}) waits for the week of ${d.deferred.until.slice(0, 10)}: this week's audits spent $${d.cap.spent} of their $${d.cap.cap}`,
-      }));
-      if (e) { out.deferred.push(e); out.events.push(e); }
-    }
+    if (next.fresh) deferEvent(next.defer);
   } else if (next?.start) {
     const item = next.start;
-    const fail = (why) => withQueue(slug, (q) => {
+    // Each preflight the start paid for is the audit's spend, whatever became of the start.
+    const paid = (i, s) => { if (Number.isFinite(s?.preflight_usd)) (i.preflights ??= []).push({ at: new Date(now).toISOString(), usd: s.preflight_usd }); };
+    const fail = (why, s) => withQueue(slug, (q) => {
       const i = q.items[item.ticket];
       if (!i) return;
+      paid(i, s);
       i.tries = (i.tries ?? 0) + 1;
       i.error = String(why).slice(0, 300);
       i.state = i.tries >= SPAWN_TRIES ? 'failed' : 'queued';
       out.failed.push(`${item.ticket} audit not started (try ${i.tries} of ${SPAWN_TRIES}): ${i.error}`);
     });
-    let sha = null;
-    try { sha = await mergeCommit(item); } catch { sha = null; }
+    // A start refused for want of usage or a login is no fault of the audit: it waits, untried, and a
+    // usage-limit refusal is a tight window like any other.
+    const wait = (s) => {
+      const d = withQueue(slug, (q) => {
+        const i = q.items[item.ticket];
+        if (!i) return null;
+        paid(i, s);
+        if (s.wait === 'window_tight') return deferIn(i, 'window_tight', now, s.why);
+        i.state = 'queued';
+        out.failed.push(`${item.ticket} audit waits: ${s.why ?? s.wait}`);
+        return null;
+      });
+      if (d?.fresh) deferEvent(d.defer);
+    };
+    let m = null;
+    try { m = await mergeCommit(item); } catch { m = null; }
+    const sha = typeof m === 'string' ? m : m?.sha;
     if (!/^[0-9a-f]{40}$/.test(String(sha ?? ''))) fail(`the merge commit of PR #${item.pr} could not be read`);
     else {
-      const ctx = { ticket: item.ticket, pr: item.pr, sha, repo };
+      const ctx = { ticket: item.ticket, pr: item.pr, sha, base: auditBase({ sha, method: mergeMethod, commits: m?.commits }), repo };
       let s;
       try { s = await spawn({ key: item.key, item, sha, model: item.model, task: auditTask(ctx), brief: auditBrief(ctx), env: { DESK_LEVERS: 'none' } }); } catch (e) { s = { error: e?.message ?? String(e) }; }
-      if (!s || s.error || !s.session) fail(s?.error ?? 'the spawn returned no session');
+      if (s?.wait) wait(s);
+      else if (!s || s.error || !s.session) fail(s?.error ?? 'the spawn returned no session', s);
       else {
         const started = withQueue(slug, (q) => {
           const i = q.items[item.ticket];
           if (!i) return null;
+          paid(i, s);
           Object.assign(i, { state: 'running', sha, session: s.session, worktree: s.worktree ?? null, state_dir: s.state ?? null, started_at: new Date(now).toISOString() });
           return { ...i };
         });

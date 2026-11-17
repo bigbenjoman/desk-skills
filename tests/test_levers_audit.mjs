@@ -196,7 +196,62 @@ const kind = (id) => {
   return r.status === 0 ? r.stdout.trim() : `exit ${r.status}`;
 };
 t('AC3 audit.<key> is kind audit; an audit of an audit, or of no ticket, is refused', [kind('audit.DS-645'), kind('audit.audit.DS-645'), kind('audit.nope')], ['audit', 'exit 2', 'exit 2']);
-t('AC3 spawn-worker.sh gives an audit DESK_LEVERS none, not a pin', /if \[ "\$KIND" = audit \]; then\n\s+export DESK_LEVERS=none/.test(readFileSync(join(import.meta.dirname, '..', 'desk', 'bin', 'spawn-worker.sh'), 'utf8')), true);
+// spawn-worker.sh exports what lever-pin.mjs env prints as DESK_LEVERS, before anything reads a lever.
+const pinEnv = (id) => {
+  const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'lever-pin.mjs'), 'env', id], { env: { ...process.env, DESK_CONFIG: CFG, DESK_REPO_OVERRIDE: 'acme/widgets', DESK_QUEUE: join(T, 'no-queue.json') }, encoding: 'utf8' });
+  return [r.status, r.stdout.trim()];
+};
+t('AC3 an audit runs with every lever off: its DESK_LEVERS is none; a ticket with no pin reads the row', [pinEnv('audit.DS-645'), pinEnv('DS-645')], [[0, 'none'], [3, '']]);
+
+// ---- review findings: a rebase merge, a recording cut short, a usage limit, preflight spend ----------
+t('a rebase merge of several commits is audited whole; a merge or squash from its first parent',
+  [A.auditBase({ sha: 'abc', method: 'rebase', commits: 3 }), A.auditBase({ sha: 'abc', method: 'rebase', commits: 1 }), A.auditBase({ sha: 'abc', method: 'squash', commits: 3 }), A.auditBase({ sha: 'abc', method: 'merge', commits: 3 })],
+  ['abc~3', 'abc^1', 'abc^1', 'abc^1']);
+const S7 = 'acme__rebase';
+const h7 = harness(S7, tickets(repo(S7), 5, 5));
+await h7.pass(NOW, { mergeMethod: 'rebase', mergeCommit: async (item) => ({ sha: sha(item.pr), commits: 4 }) });
+t('the task of a rebase-merged PR reviews all its commits', h7.spawns[0].task.includes(`${sha(105)}~4..${sha(105)}`), true);
+
+const S8 = 'acme__resume';
+const h8 = harness(S8, tickets(repo(S8), 5, 5));
+await h8.pass(NOW);
+h8.ended.set('C-on5', { at: iso(NOW + 10 * MIN) });
+const cut = await h8.pass(NOW + 11 * MIN, { log: () => { throw new Error('the lever log is locked'); } });
+t('a recording that fails is reported and left for a later pass', [cut.recorded.length, cut.failed.length, queueOf(S8).items['C-on5'].state, h8.cleaned], [0, 1, 'recording', []]);
+const soon = await h8.pass(NOW + 12 * MIN);
+t('a recording in hand is not claimed again at once', soon.recorded.length, 0);
+h8.logs.set('C-on5', workerLog({ head: sha(105), p0: 1, defects: ['a.mjs:1: x'] }));
+const resumed = await h8.pass(NOW + 30 * MIN);
+t('a later pass finishes it: one row, one audit event, the trip and its needs-you', [resumed.recorded.length, auditRows(S8).length, read(S8).events.filter((e) => e.kind === 'audit').length,
+  read(S8).events.filter((e) => e.kind === 'trip').length, read(S8).events.filter((e) => e.kind === 'needs_you').length, h8.cleaned], [1, 1, 1, 1, 1, ['C-on5']]);
+
+const S9 = 'acme__limit';
+const h9 = harness(S9, tickets(repo(S9), 5, 5));
+for (let i = 0; i < 4; i++) await h9.pass(NOW + i * MIN, { spawn: async () => ({ wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd: 0.1 }) });
+t('a usage-limit refusal spends no try: the audit is deferred for a tight window, recorded once',
+  [queueOf(S9).items['C-on5'].state, queueOf(S9).items['C-on5'].tries, read(S9).events.filter((e) => e.kind === 'audit_deferred').map((e) => e.reason_code)], ['deferred', 0, ['window_tight']]);
+await h9.pass(NOW + 5 * MIN, { spawn: async () => ({ wait: 'no login', why: 'no login' }) });
+t('no login to start on spends no try either', [queueOf(S9).items['C-on5'].state, queueOf(S9).items['C-on5'].tries], ['queued', 0]);
+
+const S10 = 'acme__preflight';
+const h10 = harness(S10, tickets(repo(S10), 5, 5));
+h10.spendUsd = 40; // a $2 week
+await h10.pass(NOW, { spawn: async () => ({ error: 'refused', preflight_usd: 0.5 }) });
+const h10spawn = async (x) => { h10.spawns.push(x); return { session: `s-${x.item.ticket}`, worktree: `/wt/${x.key}`, state: join(T, 'state'), preflight_usd: 0.25 }; };
+await h10.pass(NOW + MIN, { spawn: h10spawn });
+h10.ended.set('C-on5', { at: iso(NOW + 10 * MIN) });
+h10.logs.set('C-on5', workerLog({ head: sha(105), usd: 1 }));
+await h10.pass(NOW + 10 * MIN, { spawn: async () => ({ error: 'refused', preflight_usd: 0.5 }) });
+t('AC9 the audit\'s cost holds its preflights, a failed start\'s too', auditRows(S10)[0].usd, 1.75);
+await h10.pass(NOW + 11 * MIN, { spawn: async () => ({ error: 'refused', preflight_usd: 0.5 }) });
+t('AC6 a failed start\'s preflight counts against the week: $1.75 + $0.50 reaches the $2 cap', [queueOf(S10).items['C-off5'].state, queueOf(S10).items['C-off5'].deferred?.reason ?? null], ['deferred', 'weekly_cap']);
+
+const S11 = 'acme__model';
+const tid11 = repo(S11);
+const h11 = harness(S11, tickets(tid11, 3, 3));
+await h11.pass(NOW);
+h11.model = () => 'sonnet';
+t('AC3 the audit model is recorded on the trial when it is first seen running, before any audit is due', [queueOf(S11).trials[tid11]?.model, h11.spawns.length], ['opus', 0]);
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

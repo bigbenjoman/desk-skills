@@ -6,12 +6,13 @@
 // it. An empty set is every lever off; only a ticket with no pin reads the row.
 //
 //   import { pinAtAdmission, pinnedSet, envValue } from './lever-pin.mjs'
-//   node lever-pin.mjs env <TICKET>   the pin's set as DESK_LEVERS takes it (`none` when empty);
-//                                     exit 3 when the ticket has no pin or is not in the queue,
-//                                     1 when the queue or the pin cannot be read
+//   node lever-pin.mjs env <TICKET>   the pin's set as DESK_LEVERS takes it (`none` when empty, and
+//                                     always for a blind audit, levers-audit.mjs, which runs with
+//                                     every lever off); exit 3 when the ticket has no pin or is not
+//                                     in the queue, 1 when the queue or the pin cannot be read
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { levers, queueFile } from './desk-env.mjs';
+import { levers, queueFile, ticketKind } from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
 // The pin a ticket is admitted with: the row's levers now, whatever DESK_LEVERS the admitting process
@@ -52,6 +53,7 @@ if (isMain) {
   const [cmd, key] = process.argv.slice(2);
   if (cmd !== 'env' || !key) { console.error('usage: lever-pin.mjs env <TICKET>'); process.exit(2); }
   try {
+    if (ticketKind(key).kind === 'audit') { console.log(envValue([])); process.exit(0); }
     const qf = queueFile();
     const t = existsSync(qf) ? readQueue(qf).tickets?.[key] : null;
     const set = pinnedSet(t);

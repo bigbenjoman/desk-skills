@@ -69,7 +69,7 @@ import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
-import { runAudits, endedFromExit } from './levers-audit.mjs';
+import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -2336,12 +2336,14 @@ const planFor = (workers, on = BORROW.on) => borrowPlan({
 const plan = planFor(running.length);
 // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
 const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
+// So is the repo's blind audit (levers-audit.mjs), which belongs to no batch's queue.
+const auditWorkers = (() => { try { return auditsRunning(REPO_SLUG); } catch { return 0; } })();
 // A base conflict fix or epic review due with no ticket to spawn still wants its one slot.
 const wantedWorkers = Math.min(plan.slots, spawnable.length) || (gateFixDue || epicReviewDue ? 1 : 0);
-const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: wantedWorkers, machine: MACHINE_CAP, queues: otherRepos });
+const MACHINE = machineBudget({ running: running.length + ownBaseFix + auditWorkers, wanted: wantedWorkers, machine: MACHINE_CAP, queues: otherRepos });
 const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
 const REPO = repoBudget({
-  batch: E.batchName(), running: running.length + ownBaseFix, wanted: wantedWorkers,
+  batch: E.batchName(), running: running.length + ownBaseFix + auditWorkers, wanted: wantedWorkers,
   last: fresh.last_start ?? null, cap: E.concurrencyLimits().cap, batches: repoBatches,
 });
 // A repo's batches share its cap only under the lock: without it two passes could each count the same
@@ -5063,7 +5065,7 @@ if (!DRY) {
 // as worker audit.<TICKET> in a worktree detached at the merge commit, with every lever off.
 async function spawnAudit({ key, item, sha, model, task, brief }) {
   const pick = repoLogin();
-  if (!pick) return { error: 'no login to start on' };
+  if (!pick) return { wait: 'no login', why: 'this repo has no signed-in login to start on' };
   const wt = join(WORKTREES, key);
   if (!existsSync(wt)) {
     if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], { tolerant: true });
@@ -5076,7 +5078,10 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   const briefPath = join(STATE, 'briefings', `${key}.md`);
   writeFileSync(briefPath, brief);
   const pre = preflight(key, wt, workerEnv);
-  if (pre.failure) { logPreflight(key, pre.cost); return { error: pre.limit ? 'its preflight was refused at the usage limit' : `preflight failed — ${pre.failure.split('\n')[0]}` }; }
+  const preflight_usd = pre.cost.skipped ? null : pre.cost.usd;
+  // Refused at the usage limit, it holds the batch as a ticket's would, and the audit waits untried.
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return { wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd }; }
+  if (pre.failure) { logPreflight(key, pre.cost); return { error: `preflight failed — ${pre.failure.split('\n')[0]}`, preflight_usd }; }
   const sid = E.uuid();
   const port = await freePort();
   E.rotateRound(key);
@@ -5086,21 +5091,30 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: task },
   });
   const refused = spawnRefusal(spawned.out);
-  if (refused) return { error: refused };
+  if (refused) return { error: refused, preflight_usd };
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
-  return { session: sid, worktree: wt, state: STATE };
+  return { session: sid, worktree: wt, state: STATE, preflight_usd };
+}
+// The PR's merge commit, and how many commits it had, so a rebase merge is audited whole.
+function auditMergeCommit(item) {
+  const out = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits', '--jq', '[.mergeCommit.oid, (.commits | length)] | @tsv'],
+    { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const [sha, n] = String(out ?? '').trim().split('\t');
+  return sha ? { sha, commits: Number(n) } : null;
 }
 if (!DRY) {
   try {
     const au = await runAudits({
       slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? E.repoSlug(), states: E.leverStates({}).states,
       spawn: spawnAudit,
-      mergeCommit: (item) => sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit', '--jq', '.mergeCommit.oid'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null,
+      mergeCommit: auditMergeCommit,
+      mergeMethod: String(E.configValue('merge-method') ?? '').toLowerCase().split(/\s+/)[0] || 'merge',
       // Ended once its exit is recorded, or once the registry, read cleanly, no longer lists its session.
       ended: (item) => endedFromExit(item) ?? (registryOk && !liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
       cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
       pace: () => PACE,
-      room: () => (lowMemory || usageStop || MAINT.hold || MACHINE.room <= 0 || REPO.room <= 0 || repoUnlocked ? 'no room' : null),
+      // The room the pass counted, less what it has spawned since.
+      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0 ? 'no room' : null),
     });
     if (au.line) out.push(au.line);
   } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
