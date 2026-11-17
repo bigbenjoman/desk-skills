@@ -15,7 +15,7 @@ import { levers, queueFile } from './desk-env.mjs';
 import { readQueue } from './batch-state.mjs';
 
 // The pin a ticket is admitted with: the row's levers now, whatever DESK_LEVERS the admitting process
-// carries. Trial arms are drawn elsewhere.
+// carries. Trial arms are drawn in levers-auto.mjs.
 export const pinAtAdmission = (l = levers({}), now = new Date()) => ({ set: [...l.on], at: now.toISOString() });
 
 // The levers ticket `t` is pinned to, or null when it has no pin. Throws on a pin that

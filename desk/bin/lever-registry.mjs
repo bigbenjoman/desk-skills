@@ -128,6 +128,8 @@ export const REASON_CODES = Object.freeze({
   freeze: 'trials were frozen',
   thaw: 'trials were thawed',
   row_change: 'the repo\'s levers row changed',
+  assigned_at_admission: 'the ticket was given its arms when it was admitted',
+  state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',
 });
 
 // The wording for a reason code, or null for a code not in the list.

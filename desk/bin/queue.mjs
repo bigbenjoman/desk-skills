@@ -14,7 +14,7 @@ import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy } from './clears-when.mjs';
-import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
@@ -26,7 +26,7 @@ import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
-import { pinAtAdmission } from './lever-pin.mjs';
+import { assignPin } from './levers-auto.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -65,6 +65,13 @@ const newPark = (question, since = new Date().toISOString()) => ({ question, sin
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
 const STATES = ['queued', 'triaged', 'running', 'parked', 'done', 'failed'];
+// A ticket's levers pin as it enters the queue (levers-auto.mjs), saying why when its repo could not
+// be assigned trial arms.
+const admissionPin = (key, size) => {
+  const { pin, warning } = assignPin(key, { size });
+  if (warning) console.error(warning);
+  return pin;
+};
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
 // orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap. A
@@ -365,8 +372,9 @@ const spineHolds = (q, key) => [
 // `holdCollisions` is. `outside`, its blockers in no batch, are held too and recorded as held_outside:
 // pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
 // batch, hold nothing until its PR is ready: recorded as merge_after, they hold only its merge.
-// `pin` is its levers pin (lever-pin.mjs): the row's levers now, unless it carries one already.
-function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false, pin = pinAtAdmission() }) {
+// `pin` is its levers pin (lever-pin.mjs), drawn as it is admitted (levers-auto.mjs) unless it carries
+// one already.
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, holdCollisions = false, pin }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
@@ -398,6 +406,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
   // ones once the design is snapshotted; so does the person's step, which no release starts.
   const designOnly = park != null && (park === designPark(r) || park === stepPark);
   if (park && holds.length && !designOnly) throw new Error(`${key} is parked for its own reason (${park}): it cannot be held as well`);
+  if (pin === undefined) pin = admissionPin(key, r.size);
   q.tickets[key] = {
     key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
     worktree: null, branch: r.branch ?? null, database: null, port: null,
@@ -667,7 +676,7 @@ switch (cmd) {
       key, type, lane, state: 'queued',
       worktree: null, branch: null, database: null, port: null,
       session_id: null, pid: null, base_sha: null, stage: null,
-      park: null, log: null, result: null, levers: pinAtAdmission(),
+      park: null, log: null, result: null, levers: admissionPin(key, sizeOf(stateDir(), key)),
       added_at: new Date().toISOString(),
     };
     save(q);

@@ -70,12 +70,13 @@ const lines = (r) => r.stdout.trim().split('\n');
 const state = (r, lever) => lines(r).find((l) => l.startsWith(`${lever}: `))?.slice(lever.length + 2);
 const others = (r, lever) => [...new Set(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers'].filter((n) => n !== lever).map((n) => state(r, n)))];
 let n = 0;
-const admit = () => {
+const admitPin = () => {
   const key = `R-${++n}`;
   writeFileSync(QUEUE, JSON.stringify({ version: 1, batch: 'b', concurrency: 1, tickets: {} }));
   spawnSync('node', [join(BIN, 'queue.mjs'), 'add', key, 'Story', 'A'], { cwd: join(T, 'repo'), env: env(), encoding: 'utf8' });
-  return JSON.parse(readFileSync(QUEUE, 'utf8')).tickets[key]?.levers?.set;
+  return JSON.parse(readFileSync(QUEUE, 'utf8')).tickets[key]?.levers;
 };
+const admit = () => admitPin()?.set;
 const log = (slug) => {
   const f = join(HOME, '.desk-autopilot', slug, 'levers.jsonl');
   return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -89,7 +90,9 @@ t('AC1 exits 0', r.status, 0);
 t('AC1 preflight is pinned', state(r, 'preflight'), 'pinned');
 t('AC1 every other lever is auto', others(r, 'preflight'), ['auto']);
 t('AC1 only the pin is on', lines(r)[0], 'on: preflight');
-t('AC2 a ticket admitted under auto preflight is pinned with preflight alone', admit(), ['preflight']);
+const autoPin = admitPin();
+t('AC2 a ticket admitted under auto preflight is pinned with preflight on, outside any trial', [autoPin?.set.includes('preflight'), Object.hasOwn(autoPin?.arms ?? {}, 'preflight')], [true, false]);
+t('AC2 and only the levers auto hands to trials draw arms', Object.keys(autoPin?.arms ?? {}).sort(), ['failure-class', 'memory', 'wrappers']);
 
 // ---- AC3: none --------------------------------------------------------------------------------------
 setRow('`none`');
