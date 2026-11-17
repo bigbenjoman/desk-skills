@@ -2856,13 +2856,19 @@ async function freePort(own = null) {
 const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
 // The login a new session starts on, the repo's subscription, as { login, vars, row, line }: the
 // variables its spawn takes, its queue field and its report text. Null, with the stall said once, when
-// the subscription names no login here or its login is signed out: nothing falls back to another.
+// the subscription names no login here, or one set off, or its login is signed out: nothing falls back
+// to another.
 // A login that could not be checked goes on to its preflight, which says what is wrong with it.
 let REPO_CHECK = null;
 let noLoginWhy = null;
 function repoLogin() {
   if (INHERITS) return { login: OWN_LOGIN, vars: {}, row: 'login=null', line: '' };
   const login = REPO_SUB.login;
+  if (!login && REPO_SUB.off) {
+    const slug = E.repoSlug();
+    noLogin(`${slug}: ${REPO_SUB.from} names ${REPO_SUB.email}, which is off (claude ${REPO_SUB.off.name}), so nothing new starts for ${slug}; it never falls back to another. ${REPO_SUB.fix === 'the row' ? `Move ${slug} to another subscription with desk-env subscription set <slug> <default|email>` : `Change ${REPO_SUB.fix}`}, or set ${REPO_SUB.off.name} unused (desk-env logins set claude ${REPO_SUB.off.name} unused)`);
+    return null;
+  }
   if (!login) {
     noLogin(`${REPO_SUB.from} names ${REPO_SUB.email}, which is not one of this computer's subscriptions, so nothing new starts for this repo; it never falls back to another. Sign that account in and add it in desk-q view 6 (Usage), or change ${REPO_SUB.fix}`);
     return null;

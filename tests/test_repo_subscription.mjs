@@ -112,6 +112,28 @@ t('AC13 remove exits non-zero', rm.code !== 0, true);
 t('AC13 it names forewatt, and the other repo on it, as running on it', rm.err.split('\n')[0], 'logins: bigbenjoman__case, bigbenjoman__forewatt run on claude login-4, by their config\'s Subscription row: move them to another subscription first (desk-env subscription set <slug> <default|email>)');
 t('AC13 the subscriptions file is unchanged', readFileSync(SUBS, 'utf8'), SUBS_TEXT);
 
+// ---- an off subscription: no repo is pinned to it, and one a repo is pinned to is not turned off
+account(join(H, '.claude-logins', 'login-5'), 'ben@personal.example');
+const OFF_TEXT = `${SUBS_TEXT}| \`claude\` | \`login-5\` | \`~/.claude-logins/login-5\` | \`off\` |\n`;
+writeFileSync(SUBS, OFF_TEXT);
+const beforeOff = readFileSync(forewatt, 'utf8');
+const offSet = run(['subscription', 'set', 'bigbenjoman__forewatt', 'ben@personal.example']);
+t('a pin to an off subscription exits 4', offSet.code, 4);
+t('and the config is unchanged', readFileSync(forewatt, 'utf8'), beforeOff);
+t('its message says it is off and names the command that sets it unused', offSet.err,
+  'desk-env subscription set: ben@personal.example is off (claude login-5), so desk starts no new work on it: set it unused first (desk-env logins set claude login-5 unused); bigbenjoman__forewatt\'s config is unchanged');
+t('a subscription naming an off one says so', /DESK_SUBSCRIPTION names ben@personal\.example, which is off \(claude login-5\)/.test(run(['subscription'], { DESK_CONFIG: here, DESK_SUBSCRIPTION: 'ben@personal.example' }).err), true);
+writeFileSync(`${SUBS}.bak`, 'the copy before\n');
+const offPinned = run(['logins', 'set', 'claude', 'login-4', 'off']);
+t('turning off a subscription repos are pinned to exits non-zero', offPinned.code !== 0, true);
+t('it names both repos and the command that moves them', offPinned.err.split('\n')[0], 'logins: bigbenjoman__case, bigbenjoman__forewatt run on claude login-4, by their config\'s Subscription row: move them to another subscription first (desk-env subscription set <slug> <default|email>)');
+t('the subscriptions file and its .bak are unchanged', `${readFileSync(SUBS, 'utf8') === OFF_TEXT} ${readFileSync(`${SUBS}.bak`, 'utf8')}`, 'true the copy before\n');
+t('an off subscription set unused', run(['logins', 'set', 'claude', 'login-5', 'unused']).code, 0);
+t('can then be pinned to', `${run(['subscription', 'set', 'bigbenjoman__forewatt', 'ben@personal.example']).code} ${resolved(forewatt)}`, '0 ben@personal.example ~/.claude-logins/login-5 row');
+run(['subscription', 'set', 'bigbenjoman__forewatt', 'ben@studia.io']);
+t('a subscription no repo is pinned to is turned off', `${run(['logins', 'set', 'claude', 'login-5', 'off']).code} ${readFileSync(SUBS, 'utf8').includes('| `claude` | `login-5` | `~/.claude-logins/login-5` | `off` |')}`, '0 true');
+writeFileSync(SUBS, SUBS_TEXT);
+
 // ---- list
 for (const s of ['bigbenjoman__here', 'bigbenjoman__todo', 'bigbenjoman__pinned', 'bigbenjoman__case', 'bigbenjoman__unknown', 'bigbenjoman__forewatt']) config(s, null);
 config('bigbenjoman__voicepa', 'ben@voicepa.ai');
