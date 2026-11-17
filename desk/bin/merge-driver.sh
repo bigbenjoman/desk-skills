@@ -493,13 +493,14 @@ NODE
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
   local merged known
-  known=$(node - "$DESK_QUEUE" <<'NODE'
-const fs = require('fs');
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+import { readFileSync } from 'node:fs';
+const { readArchive } = await import(process.argv[3]);
 let q = {};
-try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+try { q = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
 let a = {};
-try { a = JSON.parse(fs.readFileSync(process.argv[2].replace(/\.json$/, '') + '.archive.json', 'utf8')).tickets || {}; } catch { /* no archive */ }
+try { a = readArchive(process.argv[2]).tickets; } catch { /* unreadable archive */ }
 for (const [k, t] of Object.entries({ ...a, ...q })) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""

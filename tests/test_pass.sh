@@ -1289,6 +1289,18 @@ check "DS-180 AC9 the next pass records it done with its PR, and clears the note
   '[ "$(field CO-1 state)" = "\"done\"" ] && [ "$(field CO-1 result.pr)" = 400 ] && [ "$(field CO-1 park)" = null ] && [ ! -f "$T/state-co/closed-out/CO-1.json" ] && echo "$out" | grep -q "CO-1: closed out from an interactive session (merged, PR #400)"'
 check "DS-180 AC9 a ticket nobody closed out stays parked" '[ "$(field CO-2 state)" = "\"parked\"" ]'
 check "DS-180 a note older than the ticket's place in the queue is stale: dropped, and the ticket stays parked" '[ "$(field CO-3 state)" = "\"parked\"" ] && [ ! -f "$T/state-co/closed-out/CO-3.json" ]'
+# DS-757: a close-out whose write is refused (the queue locked past its wait) keeps its note, and the
+# next pass records it.
+node "$B/closeout.mjs" CO-2 --pr 401 >/dev/null
+sleep 30 & holder=$!
+mkdir "$DESK_QUEUE.lock"; echo "$holder" > "$DESK_QUEUE.lock/pid"
+out=$(DESK_QUEUE_LOCK_WAIT_MS=200 node "$B/pass.mjs" 2>&1)
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; rm -rf "$DESK_QUEUE.lock"
+check "DS-757 a close-out the queue refused keeps its note and is not reported done" \
+  '[ "$(field CO-2 state)" = "\"parked\"" ] && [ -f "$T/state-co/closed-out/CO-2.json" ] && echo "$out" | grep -q "CO-2: queue write refused, not recorded" && ! echo "$out" | grep -q "CO-2: closed out from"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-757 and the next pass records it done and clears the note" \
+  '[ "$(field CO-2 state)" = "\"done\"" ] && [ "$(field CO-2 result.pr)" = 401 ] && [ ! -f "$T/state-co/closed-out/CO-2.json" ]'
 
 # ---- DS-221: PR draft, review and mergeable state, outside blockers, and the pass record
 cat "$T/config.md" > "$T/config-j.md"

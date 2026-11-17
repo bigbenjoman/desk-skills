@@ -380,6 +380,13 @@ rec A-7 A '"blockers":[{"key":"Z","category":"indeterminate"}]'
 rec A-8 A; search A-8 A-7; out=$(intake)
 check "AC2: a finished batch gets a new standing batch" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-8.state)" = triaged ] && [ "$(qget tickets.Z)" = undefined ]'
 check "a blocker left in the finished batch holds its ticket in the new one" '[ "$(qget tickets.A-7.held_outside)" = Z ] && grep -q "^admitted: lane A, size S, waiting for Z, outside the batch" <<< "$(handed A-7)"'
+# DS-757: a session's batch whose finished tickets all moved to the archive is finished, not one with
+# no tickets yet: the next ticket starts a new standing batch.
+printf '{"version":3,"batch":"arch","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
+printf '{"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":7},"merged_at":"2026-11-16T10:00:00.000Z"}}}\n' > "${DESK_QUEUE%.json}.archive.json"
+rec A-61 A; search A-61; out=$(intake)
+check "DS-757 a batch whose tickets are all archived is finished: a new standing batch takes the ticket" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-61.state)" = triaged ]'
+rm -f "${DESK_QUEUE%.json}.archive.json"
 # Not finished: a failed ticket waits on the person, and a batch on a base has its gate to come.
 printf '{"version":1,"batch":"f1","supervised":false,"tickets":{"Z":{"key":"Z","state":"failed"}}}\n' > "$DESK_QUEUE"
 rec A-6 A; search A-6; out=$(intake)

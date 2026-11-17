@@ -207,14 +207,19 @@ function writeLines(r) {
 // A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it
 // are written, so it reads them.
 const qRun = (args) => { flushQueue(); return shOut('node', [join(BIN, 'queue.mjs'), ...args]); };
+// One queue command, in the pass's write where queue-writer.mjs applies it, else as queue.mjs, without
+// reporting a refusal: -> { ok, out }, out being the refusal when not ok.
+const qTry = (args) => {
+  const a = QW.apply(args);
+  return a.direct ? qRun(args) : a.ok ? a : { ok: false, out: a.why };
+};
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
 // would hide a ticket whose recorded state is now wrong. Returns '' when refused.
 const qWrite = (args, refused = 'not recorded') => {
-  const a = QW.apply(args);
-  const r = a.direct ? qRun(args) : a;
+  const r = qTry(args);
   if (r.ok) return r.out;
-  report.failed.push(refusedLine(args, refused, a.direct ? r.out : r.why));
+  report.failed.push(refusedLine(args, refused, r.out));
   return '';
 };
 const q = (...args) => qWrite(args);
@@ -1247,6 +1252,9 @@ if (notes.length) appendNotes(notes, STATE);
 // left parked. A running one is its worker's until it ends. With its PR recorded, the merge is read
 // below as any other. The note goes once the queue has the change; a note written for another queue
 // file is left for it, and one older than the ticket's place in this queue is stale and goes unread.
+// A note whose change this pass records goes only once that change is in the file: a write that is
+// refused, or that another writer's change to the ticket overrides, leaves it for the next pass.
+const recorded = [];
 for (const c of readCloseouts(STATE)) {
   if (c.queue && c.queue !== QUEUE_FILE) continue;
   const t = queue().tickets[c.ticket];
@@ -1257,9 +1265,18 @@ for (const c of readCloseouts(STATE)) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
     if (report.failed.length !== before) continue;
-    report.done.push(`${t.key}: ${how}`);
+    recorded.push({ c, line: `${t.key}: ${how}` });
+    continue;
   }
   try { unlinkSync(c.file); } catch { /* gone */ }
+}
+if (recorded.length) {
+  const r = flushQueue();
+  for (const { c, line } of recorded) {
+    if (!r.ok || r.conflicts.some((x) => x.ticket === c.ticket)) continue;
+    report.done.push(line);
+    try { unlinkSync(c.file); } catch { /* gone */ }
+  }
 }
 
 // ---- live reads ---------------------------------------------------------------------
@@ -3162,6 +3179,8 @@ async function spawnBaseFix({ wt, fix }) {
   if (refused) { failed('could not be spawned', refused); return; }
   made[made.length - 1].session = sid;
   record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
+  // In the file now, as a ticket's running write is, so a pass that ends early never loses the session.
+  flushQueue();
   report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${tryWhat(fix)} try ${fix.try} of ${fix.of} on ${BASE}${review ? `, PR #${fix.pr}` : ''}); ${preflightNote(pre.cost)}`);
 }
 const spawnedBefore = report.spawned.length;
@@ -3205,6 +3224,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   if (refused) return fail(refused);
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
+  flushQueue();
   report.spawned.push(`${key} resumed — ${ended}; session ${sid} port=${port}${INHERITS ? '' : ` login=${login.name}`} (conflict fix try ${bf.tries.length} of ${FIX_TRIES_MAX} on ${BASE}); ${preflightNote(pre.cost)}`);
 }
 if (baseFixResume) await resumeBaseFix(baseFixResume);
@@ -5009,8 +5029,8 @@ for (const t of releaseDue) {
   else if (DRY) out.push(`release due (dry run): ${t.key} would be released, every blocker merged (${predsOf(t).join(', ')})`);
   else {
     const [setArgs, frontArgs] = E.releaseCommand(t.key, '').split(/, then /).map((s) => s.trim().split(/\s+/));
-    const set = qRun(setArgs);
-    const front = set.ok ? qRun(frontArgs) : null;
+    const set = qTry(setArgs);
+    const front = set.ok ? qTry(frontArgs) : null;
     if (set.ok) {
       releasedNow.push(t);
       out.push(`released: ${t.key}, every blocker merged (${predsOf(t).join(', ')}) and no merge driver is running${front.ok ? `; ${front.out.split('\n').pop()}` : `, but it was not moved to the front (${front.out.split('\n').pop()})`}`);
@@ -5160,12 +5180,20 @@ function baseGate(qx) {
     if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
     const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
     q('set-batch', `gate=${JSON.stringify({ state: 'running', pid: null, started: new Date().toISOString(), sha: head, slice })}`);
+    // base-gate.mjs reads the gate's sha from the file as it starts, so the gate is in the file first;
+    // refused, no gate starts, and the next pass tries again.
+    const gateWrite = flushQueue();
+    if (!gateWrite.ok || gateWrite.conflicts.some((c) => c.ticket == null && c.field === 'gate')) {
+      out.push(`BASE GATE: not started on ${BASE}: its record could not be written to the queue (see the failures above); the next pass tries again`);
+      return true;
+    }
     mkdirSync(join(STATE, 'logs'), { recursive: true });
     const fd = openSync(GATE_LOG, 'a');
     const child = spawn(process.execPath, [join(BIN, 'base-gate.mjs')], { cwd: MAIN, detached: true, stdio: ['ignore', fd, fd], env: process.env });
     child.unref();
     closeSync(fd);
     q('set-batch', `gate.pid=${child.pid}`);
+    flushQueue();
     const why = complete ? '' : milestones.length ? `, since milestone ${milestones.map((t) => t.key).join(', ')} merged` : `, since ${uncovered.length} children merged since the last ${g ? 'gate' : 'promotion'}`;
     out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} for ${sliceLabel(slice)}${why} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}${g?.redrafted ? `. Promotion PR #${g.pr} is back in draft until it passes` : ''}`);
     outside();
