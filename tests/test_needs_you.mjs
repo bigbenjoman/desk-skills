@@ -1940,7 +1940,19 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   } });
   const need = N.collect({ word: 'psi718c' }).items.find((i) => i.t.key === 'link:V-6:V-8')?.need ?? '';
   t('DS-718 AC3 a lane C park held behind a dropped ticket is freed from that hold and keeps its park',
-    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null)') && !need.includes('park=null'), true);
+    need.includes('release V-6 from it (queue.mjs set V-6 held_by=null freed_from=V-8)') && !need.includes('park=null'), true);
+}
+
+// A ticket held behind several blockers, freed from a dropped one: the rest of held_by is quoted, as a
+// shell reads `|` as a pipe, and freed_from names the dropped one so the merge driver's --deps skip it.
+{
+  put('psi718m', { port: 4720, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
+    'V-10': { state: 'parked', lane: 'A', held_by: 'V-9|V-11|V-12', dropped_link: 'V-9', park: { question: 'held by orchestrator: blocked by V-9, V-11, V-12 — starts once their PRs merge', since: minsAgo(30) } },
+    'V-11': { state: 'triaged', lane: 'A' }, 'V-12': { state: 'triaged', lane: 'A' },
+  } });
+  const need = N.collect({ word: 'psi718m' }).items.find((i) => i.t.key === 'link:V-10:V-9')?.need ?? '';
+  t('DS-718 AC3 freeing one of several holds quotes the rest and records the freed one',
+    need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
 }
 
 // DS-715: a lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.

@@ -739,10 +739,15 @@ function linkItems(r) {
     });
 }
 // The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
-// (lane, size, design, the person's step), stay, as a release would send that park to a worker.
+// (lane, size, design, the person's step), stay, as a release would send that park to a worker. The
+// merge driver also waits on its --deps, which outlive a restart, so freed_from names `b` for it to skip.
+// A value holding `|` is quoted, or a shell would read it as a pipe.
+const shellArg = (s) => (/^[\w.,:=@+-]+$/.test(s) ? s : `'${s}'`);
 const freeCommand = (x, b) => {
   const rest = keysOf(x.held_by).filter((k) => k !== b);
-  return rest.length || parkedAtTriage(x) ? `queue.mjs set ${x.key} held_by=${rest.join('|') || 'null'}` : releaseCommand(x.key);
+  if (!rest.length && !parkedAtTriage(x)) return releaseCommand(x.key);
+  const freed = [...new Set([...keysOf(x.freed_from), b])].join('|');
+  return `queue.mjs set ${x.key} ${shellArg(`held_by=${rest.join('|') || 'null'}`)} ${shellArg(`freed_from=${freed}`)}`;
 };
 function linkItem(r, t, b, kind = 'wontDo') {
   const rec = (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b);
