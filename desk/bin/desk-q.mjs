@@ -272,6 +272,57 @@ function blockerHold(q, key, b, ctx, seen) {
   return { k: 'waiting', name: b, text: bk === 'needs' ? `behind ${b}, which needs you` : `behind ${b}` };
 }
 
+// The tickets a held ticket waits on at the end of its chain: each unmerged blocker that is not itself
+// held, followed through those that are, a triage park held behind its blockers among them (holdsKept).
+// A held one nothing further holds (a stop or date hold, or every blocker merged) is a root itself.
+// Each key is read once, so a dense held_by graph stays linear.
+export function waitRoots(q, t) {
+  const roots = new Set(), seen = new Set([t.key]);
+  for (let edge = unmergedBlockers(q, t); edge.length;) {
+    const next = [];
+    for (const b of edge) {
+      if (seen.has(b)) continue;
+      seen.add(b);
+      const bt = q.tickets?.[b];
+      const up = bt && holdsKept(bt) ? unmergedBlockers(q, bt) : [];
+      if (up.length) next.push(...up); else roots.add(b);
+    }
+    edge = next;
+  }
+  return roots;
+}
+// What a repo row's waiting tickets all wait on, where that is one ticket and nothing else of the row is
+// ready or running: `all 23 wait on VPL-511 (PR #954, your merge)`. null otherwise.
+export function waitCause(r) {
+  if (r.error || !r.rows || count(r, 'ready')) return null;
+  const waiting = [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'waiting');
+  if (!waiting.length) return null;
+  const roots = new Map();
+  for (const x of waiting) {
+    const b = x.b ?? r;
+    const each = holdsKept(x.t) ? waitRoots(b.q, x.t) : new Set();
+    if (!each.size) return null;
+    for (const key of each) roots.set(`${b.stateDir}\t${key}`, { b, key });
+  }
+  if (roots.size !== 1) return null;
+  const [{ b, key }] = roots.values();
+  if (r.rows.some((x) => groupOf(x.k) === 'running' && (x.t.key !== key || (x.b ?? r) !== b))) return null;
+  const n = waiting.length;
+  return `${n === 1 ? '1 waits' : `all ${n} wait`} on ${key}${rootWords(b, key)}`;
+}
+// What the one ticket a row waits on is doing, in brackets after its key.
+function rootWords(b, key) {
+  const bt = b.q?.tickets?.[key];
+  if (!bt) return ' (outside this batch)';
+  if (bt.state === 'running') return ` (running, stage ${b.ctx?.stage?.(key) ?? '?'})`;
+  if (bt.state === 'done' && bt.result?.pr != null) {
+    const m = prNeed(b.q, bt, b.ctx ?? NOBODY, null);
+    const what = m.k !== 'needs' ? m.k : ['hold', 'green', 'running'].includes(m.why?.code) ? 'your merge' : 'needs you';
+    return ` (PR #${bt.result.pr}, ${what})`;
+  }
+  return groupOf(shownState(b.q, bt, b.ctx ?? NOBODY)) === 'needs' ? ' (needs you)' : '';
+}
+
 // What a PR the pass recorded stuck is still stuck on, read against its checks as they are now:
 // { why, checks, outside }: `checks` the recorded checks still red, `outside` those of them a person
 // clears off GitHub ({ name, command }). A check named in the record that is no longer red is dropped,
@@ -303,18 +354,22 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 // names, which needs-you words for the person (prWhy).
 // A merge_blocked note the merge driver wrote for a §4 Merge hold, or null: { text (after the prefix),
 // why, where, routine (the command it names, or null), off (why it was not run, or null), failed
-// ({ sha, exit, step }, or null) }.
+// ({ sha, exit, step }, or null), more (how many other holds with no routine the PR touches, which the
+// note counts after the first: ` (and <n> more merge hold(s))`) }.
 export function parseHoldNote(note) {
   const m = /^merge hold:\s*(.*)$/s.exec(String(note ?? ''));
   if (!m) return null;
   const text = m[1];
   const r = /; routine `([^`]+)` (?:not run: (.*)|failed at (\S+) \(exit (-?\d+)\): (.*))$/s.exec(text);
-  const head = r ? text.slice(0, r.index) : text;
+  let head = r ? text.slice(0, r.index) : text;
+  const extra = r ? null : / \(and (\d+) more merge hold\(s\)\)$/.exec(head);
+  if (extra) head = head.slice(0, extra.index);
   const i = head.indexOf(' — ');
   return {
     text, why: (i < 0 ? head : head.slice(0, i)).trim(), where: i < 0 ? '' : head.slice(i + 3).trim(),
     routine: r?.[1] ?? null, off: r?.[2] ?? null,
     failed: r && r[3] ? { sha: r[3], exit: Number(r[4]), step: r[5] } : null,
+    more: extra ? Number(extra[1]) : 0,
   };
 }
 
@@ -2437,6 +2492,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   notes.push(...cost.notes);
   // What a narrow table left out: merging counts, in cyan, then ready tickets with no free slot.
   const ok = list.filter((r) => !r.error);
+  // A row whose WAIT is all behind one ticket says which.
+  for (const r of ok) { const c = waitCause(r); if (c) notes.push({ tag: `· ${r.name}`, sgr: STATE_SGR.waiting, text: [[`${c}.`, null]] }); }
   if (lay.drop.includes('MERGING')) {
     for (const r of ok.filter((x) => count(x, 'merging'))) {
       const m = count(r, 'merging');
