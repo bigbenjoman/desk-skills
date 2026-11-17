@@ -182,6 +182,21 @@ function readRepo(r, root) {
   };
 }
 
+// Every file whose contents the view's figures read, for a refresh to tell whether any changed.
+// supervisor.json and health.json are left out: the view reads only their age, and a refresh rebuilds
+// on age alone often enough to keep that current.
+export function inputFiles({ root = autopilotRoot(), configRoot = deskConfigRoot() } = {}) {
+  const files = [join(leversDir(root), 'pooled-evals.jsonl'), join(root, 'levers.freeze')];
+  for (const r of configuredRepos(configRoot)) {
+    const state = join(root, r.slug);
+    files.push(r.config, ...['levers.jsonl', 'lever-evals.jsonl', 'audit.jsonl'].map((f) => join(state, f)),
+      ...listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl')).map((f) => join(state, 'levers-evidence', f)),
+      ...listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f)).map((f) => join(state, f)),
+      ...stateDirs(state).map((d) => join(d, 'post-merge.jsonl')));
+  }
+  return files;
+}
+
 // ---- dates, in the person's own time zone ---------------------------------------------------------------
 const dayKey = (ms, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
 const keyMs = (k) => Date.UTC(Number(k.slice(0, 4)), Number(k.slice(5, 7)) - 1, Number(k.slice(8, 10)));
@@ -482,7 +497,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
 }
 
 // What build.json records: when it built, how long it took, each input's age and every panel error.
-function buildRecord(view, ms) {
+export function buildRecord(view, ms) {
   const errors = [];
   for (const [name, p] of Object.entries(view.panels)) for (const e of p.errors ?? []) {
     const had = errors.find((x) => x.file === e.file && x.line === e.line);

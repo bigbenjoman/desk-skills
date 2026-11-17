@@ -554,6 +554,32 @@ printf 'old line %s\n' $(seq 1 100) > "$SL"
 out=$(DESK_LOG_ROTATE_BYTES=1000 mtick)
 check "DS-759 AC2: with three copies, the oldest is deleted and the others move up one" '[ "$(cat "$SL.3")" = copy2 ] && [ "$(cat "$SL.2")" = copy1 ] && [ "$(cat "$SL.1")" = "$old" ] && [ ! -e "$SL.4" ] && ! grep -q "old line" "$SL"'
 
+# ---- DS-654: each tick ends by refreshing the machine-wide Levers page --------------------------
+# The real levers-refresh.mjs, linked beside the supervisor (node runs it from its own folder).
+ln -s "$B/levers-refresh.mjs" "$T/bin/levers-refresh.mjs"
+LV="$HOME/.desk-autopilot/levers"; LS="$HOME/.desk-autopilot/acme__widgets"; mkdir -p "$LS"
+built(){ grep -c "levers: built the page" "$LOG"; }
+# Moves build.json's last attempt <n> minutes into the past, leaving its fingerprint.
+attempted(){ node -e 'const f=process.argv[1],r=JSON.parse(require("fs").readFileSync(f,"utf8"));r.attempted_at=new Date(Date.now()-process.argv[2]*60000).toISOString();require("fs").writeFileSync(f,JSON.stringify(r))' "$LV/build.json" "$1"; }
+b0=$(built); out=$(tick)
+check "DS-654: a tick builds the page that is not there yet" '[ "$(built)" = $((b0 + 1)) ] && [ -s "$LV/index.html" ] && [ -s "$LV/view.json" ]'
+mtime(){ node -e 'console.log(require("fs").statSync(process.argv[1]).mtimeMs)' "$1"; }
+attempted 4; b0=$(built); m0=$(mtime "$LV/build.json"); out=$(tick)
+check "DS-654 AC1: no input changed and the last build 4 minutes ago, the tick runs no build" '[ "$(built)" = "$b0" ] && [ "$(mtime "$LV/build.json")" = "$m0" ]'
+attempted 11; b0=$(built); out=$(tick)
+check "DS-654: no input changed but the last build 11 minutes ago, the tick builds" '[ "$(built)" = $((b0 + 1)) ]'
+printf '{"at":"%s","kind":"transition","lever":"preflight","from":"trial","to":"adopted","actor":"evaluate","ticket":"WID-654"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LS/levers.jsonl"
+b0=$(built); out=$(tick)
+check "DS-654 AC2: a new levers.jsonl line, the next tick builds, and the page and its view model show it" '[ "$(built)" = $((b0 + 1)) ] && grep -q WID-654 "$LV/view.json" && grep -q WID-654 "$LV/index.html"'
+page0=$(cksum < "$LV/index.html"); mkdir "$LV/index.html.tmp"; echo >> "$LS/levers.jsonl"
+out=$(tick); rc=$?
+check "DS-654 AC3: a build that throws leaves index.html unchanged, build.json holds the error, and the tick succeeds" '[ $rc -eq 0 ] && [ "$(cksum < "$LV/index.html")" = "$page0" ] && grep -q "\"failed\"" "$LV/build.json" && grep -q "index.html.tmp" "$LV/build.json" && grep -q "levers: couldn.t update the page" "$LOG"'
+rmdir "$LV/index.html.tmp"; echo >> "$LS/levers.jsonl"
+b0=$(built)
+for _ in 1 2 3 4; do tick > /dev/null & done; wait
+check "DS-654 AC4: four ticks ending within a second run exactly one build" '[ "$(built)" = $((b0 + 1)) ] && ! grep -q "\"failed\"" "$LV/build.json"'
+rm -f "$T/bin/levers-refresh.mjs"
+
 # ---- AC10: uninstall ----------------------------------------------------------------------------
 out=$(sup uninstall); rc=$?
 check "AC10: uninstall exits 0" '[ $rc -eq 0 ]'

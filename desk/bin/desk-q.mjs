@@ -17,12 +17,16 @@
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //   desk-q <repo> supervisor [on|off]    the repo's supervisor: its status, or install or uninstall it
+//   desk-q levers                        opens the Levers page in the browser, rebuilt first when it is
+//                                        over 10 minutes old (levers-refresh.mjs); with --plain, prints
+//                                        home's Levers line and the page's path
 //
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–6 for a place's Queue,
 // Timeline, By day and Epics, Costs on home and on a repo, and Usage, every Claude and Codex login on this
-// computer, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// computer, and clicks on the breadcrumb, the tabs, the rows and home's Levers line (as v, which opens
+// the Levers page); piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove,
 // and adds one by showing its sign-in command and waiting until it is signed in; a Codex login's folder
@@ -61,6 +65,7 @@ import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, pr
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
+import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -1086,6 +1091,8 @@ const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.bl
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
 // The band, when nothing can run, is bold and reversed on red.
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
+// A link's text, underlined in the terminal's own colour.
+const UNDERLINE = '4';
 // A PR number's cyan, and its checks: passed green, failed red.
 const PR_SGR = STATE_SGR.merging, GOOD = HUE.green, FAIL = HUE.red;
 // A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
@@ -1879,6 +1886,58 @@ function machineLine(running, cap, room, avail) {
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
 
+// The Levers line, under the machine line: the levers' headline, its figures, then a link to the page
+// (levers-refresh.mjs pageState's `p`). `link: 'levers'` marks it for a click to find.
+const LEVERS_ARROW = ' ↗';
+const agoShort = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
+// What stops the page updating, in words: build.json's failure, else a page built with a broken line.
+const leversFault = (p) => p.failed?.where ?? (p.view?.line?.state === 'broken' ? whereOf(p.view.line.error, p.view.repos) : null);
+function leversLine(p, now) {
+  const link = (text) => [BAR, [`${text}${LEVERS_ARROW}`, UNDERLINE]];
+  const fig = (label, n) => [[label, GREY], [String(n), BOLD]];
+  const fault = leversFault(p);
+  let segs;
+  if (fault) segs = [["● Levers couldn't update", HUE.red], BAR, [fault, GREY], ...link(p.page ? 'Open the last good page' : 'Try again')];
+  else if (!p.page) segs = [['○ Levers page not built yet', GREY], ...link('Build and open')];
+  else if (p.stale) segs = [[`● Levers page built ${agoShort(Math.max(0, now - p.builtAt))} ago`, WARN], BAR, ['the supervisor may be stopped', GREY], ...link('Rebuild and open')];
+  else {
+    const l = p.view.line;
+    const needs = l.needs_you ? [[' · ', GREY], [`${l.needs_you} need${l.needs_you === 1 ? 's' : ''} you`, YOU_BOLD]] : [];
+    if (l.state === 'today') {
+      const byLever = new Map();
+      for (const x of l.pinned ?? []) byLever.set(x.lever, [...(byLever.get(x.lever) ?? []), x.repo]);
+      segs = [['○ Levers not running yet', GREY], BAR, ...fig('repos on auto ', `${l.on_auto} of ${l.repos}`),
+        ...[...byLever].flatMap(([lever, repos]) => [[' · ', GREY], [`${lever} pinned in `, GREY], [repos.join(', '), BOLD]]), ...needs];
+    } else if (l.state === 'early') {
+      segs = [['○ Levers too early to say', GREY], BAR, ...fig('testing ', l.testing),
+        ...(l.smaller_arm ? [[' · ', GREY], ...fig('smaller arm ', `${l.smaller_arm.n} of ${l.smaller_arm.min}`), [' tickets', GREY]] : []), ...needs];
+    } else {
+      const pct = l.cheaper_pct;
+      const head = pct == null ? ['○ Levers no cost figure yet', GREY]
+        : pct >= 0 ? [`▼ Levers ${pct.toFixed(1)}% cheaper per ticket`, STATE_SGR.running] : [`▲ Levers ${(-pct).toFixed(1)}% dearer per ticket`, WARN];
+      segs = [head, BAR, ...fig('kept ', l.kept), [' · ', GREY], ...fig('testing ', l.testing), ...needs];
+    }
+    segs.push(...link('Open Levers'));
+  }
+  return { ...segLine(segs), link: 'levers' };
+}
+
+// What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
+// time before the rebuild (undefined when none ran). Opens the page where there is one.
+function openLeversPage(p, opener, before) {
+  const fault = leversFault(p);
+  if (fault && !p.page) {
+    const line = p.failed?.error?.line ?? p.view?.line?.error?.line;
+    return `Couldn't build Levers: ${fault}. There's no earlier page to open. Fix that${line ? ' line' : ''}, then press v again.`;
+  }
+  if (!p.page) return "Levers isn't built yet: another build is still running. Press v again in a moment.";
+  try { opener(p.page); } catch (e) { return `Could not open ${p.page}: ${describeCrash(e)}`; }
+  if (fault) return `Couldn't update Levers: ${fault}. Opened the last good page, built ${hhmm(p.builtAt)}.`;
+  return `Opened Levers in your browser. Built ${before !== undefined && p.builtAt !== before ? 'just now' : hhmm(p.builtAt)}.`;
+}
+// Whether opening the page rebuilds it first: none yet, older than REBUILD_MS, or its last build failed.
+const leversDue = (p) => !p.page || p.stale || !!leversFault(p);
+
 // The usage reading every header shows: the newest of both windows on the line's login (this computer's
 // Claude default with a subscriptions file, else lineLogin), how many workers run in every repo here,
 // and which of the `shown` repos weekly pace holds new workers in (usage-pace.mjs, each repo by its own
@@ -2400,10 +2459,10 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 
 // Every repo's header: a band for each batch no pass can run, what needs the user in each repo, the
 // machine, then usage.
-function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
+  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -2451,7 +2510,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   // RUNS ON's cell, empty while the column is not shown.
   const runs = (r) => (!lay.runsW ? ['', null] : ((t) => [pad(t, lay.runsW), t === '—' ? GREY : null])(runsOn(r.slug)));
   const head = [
-    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage }),
+    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now) }),
     '',
     bold(`  ${pad('REPO', w)}${lay.runsW ? pad('RUNS ON', lay.runsW) : ''}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('ALL DONE BY', lay.qdW)}  WORKERS`),
   ];
@@ -3120,7 +3179,7 @@ const SHIPS = ['ships', 'when'];
 const VERBS = ['show', ...MOVES, 'workers', 'supervisor', 'ships', 'days'];
 const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
 // A command that prints a line rather than opening a view.
-const isCommand = (v) => isWrite(v) || v.kind === 'supervisor';
+const isCommand = (v) => isWrite(v) || v.kind === 'supervisor' || v.kind === 'levers';
 // The view a ships or days word names.
 const etaView = (word, slug) => ({ kind: word.toLowerCase() === 'days' ? 'days' : 'timeline', slug });
 
@@ -3132,6 +3191,10 @@ function target(repos, words) {
   if (repoWord.toLowerCase() === 'costs') {
     if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q costs [<repo>].`);
     return verb ? { kind: 'costs', ...costWord(repos, verb) } : { kind: 'costs' };
+  }
+  if (repoWord.toLowerCase() === 'levers') {
+    if (verb) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q levers [--plain].`);
+    return { kind: 'levers' };
   }
   // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
   if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
@@ -3306,13 +3369,25 @@ function loadOrRefuse(now) {
   return repos;
 }
 
-export function run(argv, { now = Date.now() } = {}) {
+// `desk-q levers`: opens the page as v does, rebuilding it first when it is due, `say` printing that it
+// is updating. --plain prints the Levers line, less its arrow, and the page's path.
+function leversCommand(argv, { now, opener, rebuild, say }) {
+  const p = pageState({ now });
+  if (argv.includes('--plain')) return `${leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '')}\n${p.file}`;
+  if (!leversDue(p)) return openLeversPage(p, opener);
+  say('Updating Levers…');
+  rebuild();
+  return openLeversPage(pageState({ now: Date.now() }), opener, p.builtAt);
+}
+
+export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
-    + '       desk-q <repo> supervisor [on|off]';
+    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
   const v = target(repos, argv);
+  if (v.kind === 'levers') return leversCommand(argv, { now, opener, rebuild, say });
   if (v.kind === 'supervisor') return apply(repos, v);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
@@ -3392,6 +3467,16 @@ function deskEnvRun(args, done) {
   p.on('error', (e) => done({ code: 1, out, err: e.message }));
   p.on('close', (code) => done({ code, out, err }));
 }
+// The Levers page's refresh (levers-refresh.mjs) in the background, so the screen keeps drawing while it
+// builds. done() once it has ended, whatever it did: the page and build.json say.
+const LEVERS_REFRESH_MJS = join(dirname(fileURLToPath(import.meta.url)), 'levers-refresh.mjs');
+function rebuildLevers(done) {
+  let ended = false;
+  const end = () => { if (!ended) { ended = true; done(); } };
+  const p = spawn(process.execPath, [LEVERS_REFRESH_MJS], { stdio: 'ignore' });
+  p.on('error', end);
+  p.on('close', end);
+}
 // The account check is rerun this often while Usage is shown, and while a login is being added, this
 // often whatever is shown, so a sign-in shows well within a minute.
 const CHECK_EVERY_MS = 60_000;
@@ -3409,7 +3494,7 @@ const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
 const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY};${SELECT_BG}`, OPT_GOOD = `${GOOD};${SELECT_BG}`;
 // What undoes each code that sets more than a colour; a colour alone is undone by 39, and a dimmed
 // colour by 22;39.
-const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49', [OPT_GOOD]: '39;49' };
+const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [UNDERLINE]: '24', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49', [OPT_GOOD]: '39;49' };
 // Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.
 const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 
@@ -3417,7 +3502,7 @@ const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
 // background holds across the runs, and its erase to the end of the line (ESC [K, which the
 // terminal fills with the current background) carries the tint across the full width.
-// NO_COLOR drops the colours and keeps bold, faint and reverse, and selects in reverse video.
+// NO_COLOR drops the colours and keeps bold, faint, reverse and underline, and selects in reverse video.
 function paint(x, w, selected) {
   const plain = !!process.env.NO_COLOR;
   let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
@@ -3430,7 +3515,7 @@ function paint(x, w, selected) {
   }
   const out = segs.map(([s, k0]) => {
     const k = plain ? NO_COLOR_AS[k0] ?? k0 : k0;
-    return k && s && !(plain && ![BOLD, FAINT, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${OFF[k] ?? (k.startsWith(`${FAINT};`) ? '22;39' : '39')}m` : s;
+    return k && s && !(plain && ![BOLD, FAINT, REVERSE, UNDERLINE].includes(k)) ? `${ESC}${k}m${s}${ESC}${OFF[k] ?? (k.startsWith(`${FAINT};`) ? '22;39' : '39')}m` : s;
   }).join('');
   if (!selected) return out;
   return plain ? `${ESC}7m${out}${ESC}27m` : `${ESC}${SELECT_BG}m${out}${ESC}K${ESC}49m`;
@@ -3493,7 +3578,7 @@ export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
-  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription,
+  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, leversWith = rebuildLevers,
 } = {}) {
   let repos = loadOrRefuse(clock());
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
@@ -3516,6 +3601,8 @@ export function interactive({
   let typed = null, adding = null, addTimer = null;
   // A repo's subscription dropdown, open: { slug, at }, `at` the option ↑↓ is on (null: the ✓ one).
   let drop = null;
+  // While the Levers page rebuilds before it opens.
+  let leversBusy = false;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3597,7 +3684,7 @@ export function interactive({
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
       return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
-        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · ${cmdKeys}` };
     }
     if (view.kind === 'repo') {
       const rp = repoPlace(repos, view.slug);
@@ -3662,7 +3749,9 @@ export function interactive({
       const n = Math.ceil(l.line.length / w);
       return [{ full: paint(l, Infinity, false), cut: fit(l), n }, ...Array(n - 1).fill(SPILL)];
     };
-    const head = screen.head.flatMap(lay);
+    const head = [];
+    let leversAt = null;
+    for (const l of screen.head) { if (l?.link === 'levers') leversAt = 1 + head.length; head.push(...lay(l)); }
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // usage lines stay put above it and the keys, a blank line above them.
@@ -3684,7 +3773,9 @@ export function interactive({
     } else if (rows.length) scroll = 0;
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
-    layout = { pinned: pinned.length, top, room, first, rows: rows.length };
+    // `levers`: the screen line the Levers line is drawn on, null while it is not shown.
+    layout = { pinned: pinned.length, top, room, first, rows: rows.length,
+      levers: leversAt != null && leversAt >= top && leversAt < top + room ? pinned.length + leversAt - top : null };
     // A whole line is written in full only where every row it runs on to is shown, else cut; a SPILL
     // whose line scrolled off is a blank row.
     const out = [];
@@ -3924,8 +4015,8 @@ export function interactive({
     if (k === 'x') removeKey(x);
   }
 
-  // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
-  // selects and opens it. The wheel moves the selection as the arrows do.
+  // A left click on the breadcrumb goes to that place, on the tab line to that view, on home's Levers
+  // line opens the Levers page as v does, on a row selects and opens it. The wheel moves the selection as the arrows do.
   function onMouse(b, x, y) {
     if (done || !layout || cmd != null || typed != null || ask) return;
     if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
@@ -3940,6 +4031,9 @@ export function interactive({
       const p = hit(tabParts());
       if (!p) return;
       setTab(p.id);
+    } else if (line === layout.levers) {
+      if (drop) drop = null;
+      openLevers();
     } else {
       const i = line - layout.pinned + layout.top - layout.first;
       if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
@@ -3997,6 +4091,22 @@ export function interactive({
     exit(code);
   }
 
+  // Opens the Levers page, rebuilding it first (leversWith, in the background) when it is due; the
+  // message says what happened. desk-q stays open.
+  function openLevers() {
+    const p = pageState({ now: clock() });
+    if (!leversDue(p)) { msg = openLeversPage(p, opener); return; }
+    if (leversBusy) { msg = 'Still updating Levers…'; return; }
+    leversBusy = true;
+    msg = 'Updating Levers…';
+    leversWith(() => {
+      leversBusy = false;
+      if (done) return;
+      msg = openLeversPage(pageState({ now: clock() }), opener, p.builtAt);
+      draw();
+    });
+  }
+
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
@@ -4009,6 +4119,7 @@ export function interactive({
       checkFlags(words);
       const v = target(repos, words);
       if (v.kind === 'supervisor') act(v);
+      else if (v.kind === 'levers') openLevers();
       else if (isWrite(v)) {
         // A change typed anywhere lands on that repo's Queue, with the moved ticket selected.
         if (!(view.kind === 'repo' && view.slug === v.slug && tab === 'queue')) { goPlace({ kind: 'repo', slug: v.slug }); tab = 'queue'; }
@@ -4093,6 +4204,7 @@ export function interactive({
       if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });
     }
+    else if (str === 'v' && view.kind === 'overview' && tab === 'queue') openLevers();
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;

@@ -51,6 +51,7 @@
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
+// After every batch, each tick refreshes the machine-wide Levers page (levers-refresh.mjs).
 // A tick runs intake once, then every batch the repo holds (batches.mjs listBatches), one after another:
 // the standing batch, then each named batch. Each runs as above in its own state folder, with its own
 // merge driver and notifications titled with the repo and the batch, and with DESK_BATCH naming it and
@@ -349,6 +350,24 @@ function interval() {
       } catch { /* nowhere to say it */ }
     }
   });
+  leversRefresh(batches[0].state);
+}
+
+// The Levers page, refreshed after the batches (levers-refresh.mjs): built only when an input changed
+// or the last attempt is 10 minutes old, under one machine-wide lock. Run apart, so a build that fails
+// or hangs never fails the tick; a build, or a failed one, is logged in the standing batch's log.
+const LEVERS_TIMEOUT_MS = 2 * 60 * 1000;
+function leversRefresh(standing) {
+  const script = join(HERE, 'levers-refresh.mjs');
+  if (!existsSync(script)) return;
+  const r = spawnSync(process.execPath, [script], { encoding: 'utf8', env: process.env, timeout: LEVERS_TIMEOUT_MS });
+  let res = null;
+  try { res = JSON.parse(String(r.stdout).trim().split('\n').at(-1)); } catch { /* said below */ }
+  const line = res?.ran === false ? null
+    : res?.ok ? `levers: built the page (line: ${res.line})`
+      : `levers: couldn't update the page: ${res?.where ?? String(r.stderr || r.error?.message || `exit ${r.status}`).trim().split('\n')[0]}`;
+  if (!line) return;
+  try { mkdirSync(standing, { recursive: true }); logTo(standing)([`== ${stamp()} ${line}`]); } catch { /* nowhere to say it */ }
 }
 
 // Whether this repo's committed copies of desk's templates are behind them (repo-templates.mjs check,
