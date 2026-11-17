@@ -1407,10 +1407,10 @@ export function fileBudget(row = configValue('file-budget')) {
   if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
   const v = String(row).trim();
   const m = /^(?:(\d+)\s+over\s+(\d+)\s+lines?\s*,\s*else\s+(\d+)|(\d+))\s*(?:;\s*serial\s*:\s*(.*))?$/i.exec(v);
-  const serial = m?.[5] == null || isNone(m[5].trim()) ? [] : m[5].split(',').map((s) => s.trim().replace(/^`|`$/g, '')).filter(Boolean);
+  const serial = m?.[5] == null || isNone(m[5].trim()) ? [] : m[5].split(',').map((s) => s.trim().replace(/^`|`$/g, ''));
   const big = Number(m?.[1] ?? m?.[4]);
   const small = Number(m?.[3] ?? m?.[4]);
-  if (!m || !(big >= 1) || !(small >= 1) || (m[5] != null && !m[5].trim())) {
+  if (!m || !(big >= 1) || !(small >= 1) || serial.some((g) => !g || /\s/.test(g))) {
     return { big: 1, lines: 0, small: 1, serial: [], bad: `config §3b "${CONFIG_ROWS['file-budget'].row}" reads "${v}", not \`<k> over <n> lines, else <k>; serial: <globs>\`` };
   }
   return { big, lines: m[2] == null ? 0 : Number(m[2]), small, serial, bad: null };
