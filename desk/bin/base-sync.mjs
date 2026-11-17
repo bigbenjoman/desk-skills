@@ -11,15 +11,15 @@
 // base would strand them. It is all or nothing: a conflict is aborted and a refused push is rolled
 // back, so the worktree is never left holding a merge origin does not have. A feature-mode batch's
 // promotion PR needs the base to hold a commit the default branch lacks, which openingCommit pushes.
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
 import { runItem } from './baseline.mjs';
+import { execGit } from './remote-git.mjs';
 
 const git = (cwd, args) => {
-  try { return { ok: true, out: execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
+  try { return { ok: true, out: execGit('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
   catch (e) { return { ok: false, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message }; }
 };
 const firstLine = (s) => String(s).split('\n').map((l) => l.trim()).find(Boolean) ?? '';
