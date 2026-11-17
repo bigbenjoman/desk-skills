@@ -48,6 +48,7 @@ not be made (its path holds something else). In feature mode that pass spawns no
 spawning carries on from the base as it stands while it is at most 20 commits behind §0 Default branch
 (`AUTOPILOT_BASE_BEHIND_MAX` overrides the number), and past that the pass spawns nothing, saying how
 far behind the base is; tickets already running carry on, and spawns resume once a sync lands. A
+lag the pass cannot count (a base ref never fetched) holds nothing and is reported as not read. A
 sync left to a conflict fix try holds the same way. Feature mode here is the decision `plan-batch`
 recorded on the queue when it seeded (`feature`), not whatever `feature.json` names.
 

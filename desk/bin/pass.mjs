@@ -2428,16 +2428,19 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   // ever. Read from origin as fetched now; a fetch that fails reads the refs as they were.
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
   sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], quiet);
-  const behindBy = Number(sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet)) || 0;
+  // null when the count cannot be read (a ref never fetched): unknown, never reported as 0.
+  const behindRaw = sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet);
+  const behindBy = /^\d+$/.test(behindRaw) ? Number(behindRaw) : null;
   const behindNow = behindBy > 0;
   const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN' || behindNow;
   // A sync that does not land holds spawns in feature mode, and otherwise once the base lags too far.
-  const lag = `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
-  const lagHolds = !featureMode && behindBy > BASE_BEHIND_MAX;
+  // A lag that cannot be read holds nothing outside feature mode, and the note says it was not read.
+  const lag = behindBy === null ? `how far ${BASE} is behind ${SOURCE} could not be read` : `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
+  const lagHolds = !featureMode && behindBy !== null && behindBy > BASE_BEHIND_MAX;
   const syncHolds = featureMode || lagHolds;
   const holdNote = featureMode ? 'feature mode, so nothing spawns this pass'
     : lagHolds ? `${lag}, more than the ${BASE_BEHIND_MAX} it may lag and still spawn, so nothing spawns this pass`
-      : `spawning carries on from the base as it stands (${lag}, within the ${BASE_BEHIND_MAX} it may lag)`;
+      : `spawning carries on from the base as it stands (${lag}${behindBy === null ? '' : `, within the ${BASE_BEHIND_MAX} it may lag`})`;
   const holdSpawns = () => {
     if (!syncHolds) return;
     baseHold = true;

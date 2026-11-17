@@ -173,7 +173,7 @@ check "DS-320 AC2 the next pass finds the base current and clears the tries" \
   '[[ "$out" == *"try 1 of 2 on feat/x finished: pr=none jira=none"* ]] && [[ "$out" == *"feat/x is current with main again, after 1 fix try"* ]] && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ]'
 check "DS-320 AC2 and spawns resume" '[ "$(grep -c "^T-1 " "$T/spawns")" = 1 ] && origin_has_main'
 
-# DS-668: outside feature mode, a blocked sync holds every spawn once the base is more than
+# Outside feature mode, a blocked sync holds every spawn once the base is more than
 # AUTOPILOT_BASE_BEHIND_MAX commits behind main. The conflict leaves feat/x 3 behind.
 fresh lagheld; conflict; AUTOPILOT_BASE_BEHIND_MAX=2 pass
 check "DS-668 AC1 a blocked sync on a base past the threshold spawns nothing" '[[ "$out" != *"spawned:"* ]] && [[ "${out#*WAITING ON YOU}" == *"Conflicting files: a.txt"* ]]'
@@ -188,6 +188,9 @@ fresh lagclean; AUTOPILOT_BASE_BEHIND_MAX=0 pass
 check "DS-668 AC3 a sync that lands spawns whatever the threshold" '[[ "$out" == *"spawned: T-1"* ]] && origin_has_main'
 fresh lagfeature; feature; conflict; AUTOPILOT_BASE_BEHIND_MAX=100 pass
 check "DS-668 AC5 feature mode holds whatever the threshold" '[[ "$out" != *"spawned:"* ]] && [[ "$out" == *"feature mode, so nothing spawns this pass"* ]]'
+# A base origin no longer has, and was never fetched: its lag cannot be counted, so it is not read as 0.
+fresh lagunread; git -C "$C/origin.git" branch -q -D feat/x; git -C "$C/repo" update-ref -d refs/remotes/origin/feat/x; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "a lag that cannot be counted is said so, never as 0, and holds nothing" '[[ "$out" == *"spawned: T-1"* ]] && [[ "$out" == *"spawning carries on from the base as it stands (how far feat/x is behind main could not be read)"* ]] && [[ "$out" != *"0 commit(s) behind"* ]]'
 rm -f "$T/agents.json"; : > "$T/spawns"; fresh lagfix; fixrow yes; conflict; AUTOPILOT_BASE_BEHIND_MAX=2 pass
 check "DS-668 a sync left to a fix try holds too, past the threshold" '[[ "$out" == *"Conflict fix try 1 of 2 starts this pass"* ]] && [[ "$out" == *"more than the 2 it may lag and still spawn, so nothing else spawns this pass"* ]] && [ "$(grep -c "^T-1 " "$T/spawns")" = 0 ]'
 
