@@ -4129,5 +4129,20 @@ q add FT-9; q set FT-9 state=triaged lane=A branch=fix/FT-9 result.pr=909 \
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a migration renames try, which holds the merge, is not ended by a moved head either" \
   'grep -qx FT-9 "$T/ft-spawns" && [ "$(field FT-9 fix.finished)" = null ]'
+# FT-10's fix try worker parked, and its PR #901 merged since: DS-573's tailAfterMerge sent it back for
+# its after-merge steps (merged_tail, cleared.tail). That tail spawns; its merged PR does not end it.
+export DESK_QUEUE="$T/queue-ft10.json" DESK_AUTOPILOT_STATE="$T/state-ft10"; mkdir -p "$T/state-ft10/logs"
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 task=\${AUTOPILOT_TASK:-}" >> "$T/ft-spawns"; echo "[spawn] ticket=\$1"
+EOF
+q init ft10; q set-batch concurrency=1
+q add FT-10; q set FT-10 state=triaged lane=A branch=fix/FT-10 result.pr=901 merged_tail=901 \
+  'cleared={"what":"PR #901 merged at 2026-11-12 15:38 UTC, and FT-10 is not done in Jira yet","tail":{"pr":901,"merged_at":"2026-11-12T15:38:26Z"}}' \
+  'fix={"try":1,"of":2,"pr":901,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}' \
+  'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-605 a ticket sent back for its after-merge steps spawns for them: its merged PR does not end it, and its fix try is finished, kept as made" \
+  'grep -qx "FT-10 task=" "$T/ft-spawns" && [ "$(field FT-10 state)" = "\"running\"" ] && [ "$(field FT-10 fix.finished)" != null ] && [ "$(field FT-10 fix.no_worker)" = null ] && [ "$(field FT-10 fix_tries | jq length)" = 1 ] && grep -qF "## Your PR has merged: run only the steps after the merge" "$T/state-ft10/briefings/FT-10.md" && ! grep -qF "## Fix try" "$T/state-ft10/briefings/FT-10.md" && ! echo "$out" | grep -qF "FT-10: its fix try"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

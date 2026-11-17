@@ -2994,6 +2994,14 @@ function recordWorkerHead(t) {
 function fixTryStale(t) {
   const f = t.fix;
   if (!f || f.finished || f.pr == null) return false;
+  // Sent back for its after-merge steps (tailAfterMerge): its PR merged by design, and that tail is what
+  // spawns. Its try had a worker, so, as a resumed one on a merge, it is finished and stays a try made,
+  // which keeps the fix brief and task off the tail worker's spawn.
+  if (t.cleared?.tail) {
+    if (!DRY) q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=PR #${f.pr} merged: ${t.key} went back for its after-merge steps`);
+    f.finished = PASS_AT;
+    return false;
+  }
   const resumed = toResume(t) || toHandoff(t);
   // A renames fix holds the merge as an instruction does (merge-driver.sh instruction_held), so a moved
   // head does not end it either: its worker updates the migrations at the new head.
