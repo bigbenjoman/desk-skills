@@ -4403,7 +4403,7 @@ printf '#!/bin/sh\necho %s\n' "'[{\"sessionId\": \"live-1\"}, {\"sessionId\": \"
 git -C "$T/repo" checkout -q main
 mkdir -p "$T/repo/src"; seq 1 1200 > "$T/repo/src/big.ts"; seq 1 1000 > "$T/repo/src/edge.ts"; seq 1 1200 > "$T/repo/src/hot.ts"
 git -C "$T/repo" add src; git -C "$T/repo" commit -q -m "budget fixtures"
-fbconf(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; [ -n "$1" ] && printf '| Per-file collision budget | x | `%s` |\n' "$1"; } > "$T/config-fb.md"; }
+fbconf(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Autopilot worker concurrency | `2 / 3` | `8 / 8` |\n'; case "$1" in '') ;; *'`'*) printf '| Per-file collision budget | x | %s |\n' "$1" ;; *) printf '| Per-file collision budget | x | `%s` |\n' "$1" ;; esac; } > "$T/config-fb.md"; }
 # fbq <name> <row>: a fresh queue under that row; fbt <KEY> <state> <files...>: a ticket and its triage record.
 fbq(){ fbconf "$2"; export DESK_CONFIG="$T/config-fb.md" DESK_QUEUE="$T/queue-$1.json" DESK_AUTOPILOT_STATE="$T/state-$1"; mkdir -p "$T/state-$1/logs" "$T/state-$1/triage"; : > "$T/fb-spawns"; q init "$1"; q set-batch concurrency=8 concurrency_by=user; }
 fbt(){ k=$1 st=$2; shift 2; jq -nc '{files_in_scope: $ARGS.positional}' --args "$@" > "$DESK_AUTOPILOT_STATE/triage/$k.json"; q add "$k"; q set "$k" "state=$st" "branch=fix/$k"; }
@@ -4456,7 +4456,15 @@ check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the repor
 fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \
   '[ "$(fbrow "3 over 1000 lines, else 1; serial: ,")" = "1 1  true" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial: a b")" = "1 1  true" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial:")" = "1 1  true" ]'
-check "DS-755 a serial list of globs, backticked or not, and serial: none both read" \
-  '[ "$(fbrow "3 over 1000 lines, else 1; serial: \`desk/bin/desk-env.mjs\`, docs/*.md")" = "3 1 desk/bin/desk-env.mjs+docs/*.md false" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial: none")" = "3 1  false" ]'
+check "DS-755 a serial list of globs and serial: none both read" \
+  '[ "$(fbrow "3 over 1000 lines, else 1; serial: desk/bin/desk-env.mjs, docs/*.md")" = "3 1 desk/bin/desk-env.mjs+docs/*.md false" ] && [ "$(fbrow "3 over 1000 lines, else 1; serial: none")" = "3 1  false" ]'
+
+# The budget in one span and the serial path in a second: read whole, it does not read, so the
+# serial list is never dropped in silence.
+fbq fbf '`3 over 1000 lines, else 1`; serial: `src/hot.ts`'
+fbt FB-51 triaged src/big.ts; fbt FB-52 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
+  'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
