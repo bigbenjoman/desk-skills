@@ -1112,8 +1112,7 @@ t('DS-657 AC6 a reason naming the glob the hold guards is no sign-off file: the 
 t('DS-657 AC6 a reason naming a file the hold guards is no sign-off file: the line is unchanged', h657['S-6']?.need, `${step657(186, 'Ben approves prompts/call.md before merge')}${ask657}`);
 t('DS-657 AC6 a keyed hold (path#key) whose reason names its own file is no sign-off file: the line is unchanged', h657['S-7']?.need,
   `PR #187 is under a merge hold, so desk never merges it itself: "Ben approves package.json script changes" (package.json#scripts, 1 file(s), e.g. package.json).${ask657}`);
-t('DS-657 AC6 a PR under another hold with no routine never reads as only the merge left, and is told to settle that one too', h657['S-8']?.need,
-  `${step657(188)} Do what it asks first, and the step of the other merge hold it touches (desk's log names it), then merge it on GitHub; the ticket is then done.`);
+t('DS-657 AC6 a PR under another hold with no routine never reads as only the merge left: the line is unchanged', h657['S-8']?.need, `${step657(188)}${ask657}`);
 
 // ---- A live item says how many held tickets wait behind it, directly or through
 // another, and ranks by that after PRODUCTION BROKEN, ahead of one that has waited longer.
@@ -2011,11 +2010,15 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('link657', { port: 4757, beat: 1, supervised: true, pattern: 'V-[0-9]+', tickets: {
     'V-1': { ...heldOn('V-9'), dropped_link: 'V-9' }, 'V-2': heldOn('V-1'), 'V-3': heldOn('V-2'),
     'V-4': parked('A', 300, 'Which endpoint?'),
-  } });
+    // Held behind V-4, so it waits on V-4, not on its Won't Do link to X-9.
+    'V-5': { ...heldOn('V-4'), wont_do_link: 'X-9' },
+  }, triage: { 'V-5': { blockers: [{ key: 'X-9', category: 'done', resolution: "Won't Do" }] } } });
   const items = N.collect({ word: 'link657' }).items;
   t('DS-657 AC1 a dropped link counts the ticket on it and those held behind that one',
     /\(3 tickets wait behind this\)$/.test(items.find((i) => i.t.key === 'link:V-1:V-9')?.need ?? ''), true);
-  t('DS-657 AC2 and ranks ahead of one that has waited longer', items.map((i) => i.t.key).join(), 'link:V-1:V-9,V-4');
+  t('DS-657 AC1 a link on a ticket held on another blocker counts nothing: nothing waits on that link',
+    /wait(s)? behind this/.test(items.find((i) => i.t.key === 'link:V-5:X-9')?.need ?? 'missing wait behind this'), false);
+  t('DS-657 AC2 and ranks ahead of one that has waited longer', items.map((i) => i.t.key).join(), 'link:V-1:V-9,V-4,link:V-5:X-9');
 }
 
 // A lane C park held behind a dropped ticket is freed from that hold alone: a release would drop its park

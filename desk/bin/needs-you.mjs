@@ -439,8 +439,7 @@ function holdPlain(n, w, done = null) {
   if (!holdNeedsPerson(w.why)) return `${n} is under a merge hold whose step an agent can check, but the hold names no routine, so desk cannot run it: "${one(w.why)}"${files}. Give this hold a routine: /desk-update proposes one (\`; desk runs: <command>\` on its §4 Merge holds item, with §3 merge-hold-routine yes); desk then runs it and merges.`;
   // Otherwise the hold's reason is the step the person takes before merging, unless it reads done.
   if (done) return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Its step is done: the PR changes ${andList(done.map((f) => `\`${f}\``))}, and its checks are green. Only the merge is left: merge it on GitHub; the ticket is then done.`;
-  const others = w.more ? `, and the step${w.more === 1 ? '' : 's'} of the ${w.more === 1 ? 'other merge hold' : `${w.more} other merge holds`} it touches (desk's log names ${w.more === 1 ? 'it' : 'them'})` : '';
-  return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first${others}, then merge it on GitHub; the ticket is then done.`;
+  return `${n} is under a merge hold, so desk never merges it itself: "${one(w.why)}"${files}. Do what it asks first, then merge it on GitHub; the ticket is then done.`;
 }
 
 // The files a hold's reason names: a backticked path, a path with a slash, or a file name with one of
@@ -770,11 +769,15 @@ function linkItems(r) {
     .flatMap((t) => {
       const seen = new Set();
       return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b))
-        // Every ticket held behind the one on the link waits on it, and so does that one where it is held
-        // or its merge waits (a cycle's other side may hold nothing) (collect).
-        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind),
-          behind: heldBehindAll([[r, t.key]], holdsKept(t) || keysOf(t.merge_after).length > 0) })));
+        .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind), behind: linkBehind(r, t, b, kind) })));
     });
+}
+// How many tickets wait on the link from `t` to `b` (collect ranks by it): `t` where its hold or its merge
+// names `b`, with every ticket held behind it. A cycle's other side waits behind `t` whatever `t` waits on;
+// a ticket held on another blocker waits on that one, not on this link.
+function linkBehind(r, t, b, kind) {
+  const waits = (holdsKept(t) && keysOf(t.held_by).includes(b)) || keysOf(t.merge_after).includes(b);
+  return waits || kind === 'cycle' ? heldBehindAll([[r, t.key]], waits) : 0;
 }
 // The command that frees ticket `x` from its hold on `b` alone: its other holds, and a park at triage
 // (lane, size, design, the person's step), stay, as a release would send that park to a worker. The
