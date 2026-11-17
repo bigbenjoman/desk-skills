@@ -1082,6 +1082,8 @@ put('hold657', { port: 5657, beat: 1, supervised: true, merge: 'yes', tickets: {
   'S-2': greenPr(182, { merge_blocked: hold657(why657) }),
   'S-3': greenPr(183, { merge_blocked: hold657(why657) }),
   'S-4': greenPr(184, { merge_blocked: hold657('a person runs `scripts/verify.sh` first') }),
+  'S-5': greenPr(185, { merge_blocked: hold657('a person approves every change to `prompts/**`') }),
+  'S-6': greenPr(186, { merge_blocked: hold657('Ben approves prompts/call.md before merge') }),
 } });
 const green657 = [{ __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', completedAt: minsAgo(1) }];
 const signed657 = [{ path: 'prompts/call.md' }, { path: 'docs/signoff/call-script.md' }];
@@ -1090,6 +1092,8 @@ const gh657 = {
   182: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
   183: { state: 'OPEN', files: signed657, statusCheckRollup: [{ ...green657[0], status: 'IN_PROGRESS', conclusion: null }] },
   184: { state: 'OPEN', files: [{ path: 'prompts/call.md' }, { path: 'scripts/verify.sh' }], statusCheckRollup: green657 },
+  185: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
+  186: { state: 'OPEN', files: [{ path: 'prompts/call.md' }], statusCheckRollup: green657 },
 };
 const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...N.READS, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
 const step657 = (pr, why = why657) => `PR #${pr} is under a merge hold, so desk never merges it itself: "${why}" (prompts/**, 1 file(s), e.g. prompts/call.md).`;
@@ -1100,6 +1104,8 @@ t('DS-657 AC6 the sign-off file not changed: the line is unchanged', h657['S-2']
 t('DS-657 AC6 a check still running: the line is unchanged', h657['S-3']?.need, `${step657(183)}${ask657}`);
 t('DS-657 AC6 a script the reason names is a step to run, not a file the step changes: the line is unchanged', h657['S-4']?.need, `${step657(184, 'a person runs `scripts/verify.sh` first')}${ask657}`);
 t('DS-657 AC6 a hold whose reason names no file is unchanged', h413['H-1']?.need.endsWith(ask657), true);
+t('DS-657 AC6 a reason naming the glob the hold guards is no sign-off file: the line is unchanged', h657['S-5']?.need, `${step657(185, 'a person approves every change to `prompts/**`')}${ask657}`);
+t('DS-657 AC6 a reason naming a file the hold guards is no sign-off file: the line is unchanged', h657['S-6']?.need, `${step657(186, 'Ben approves prompts/call.md before merge')}${ask657}`);
 
 // ---- A live item says how many held tickets wait behind it, directly or through
 // another, and ranks by that after PRODUCTION BROKEN, ahead of one that has waited longer.
@@ -1114,6 +1120,22 @@ t('DS-657 AC1 a live item says how many tickets wait behind it, the one behind a
 t('DS-657 AC1 one with a single ticket behind it says so', need657('W-3'), 'PRODUCTION BROKEN: login returns 500 (1 ticket waits behind this)');
 t('DS-657 AC1 negative control: one with none behind it says nothing', need657('W-2'), 'Which endpoint?');
 t('DS-657 AC2 PRODUCTION BROKEN first, then most tickets behind, ahead of one that has waited longer', w657.map((i) => i.t.key).join(), 'W-3,W-1,W-2');
+// A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
+// parked tickets, a person's step by the tickets waiting on it and those held behind them.
+put('nu657', { port: 5659, beat: 1, supervised: true, tickets: {
+  'U-1': parked('A', 5, 'CONFIG_DENIED: worker-web-read (unset): needs the published rate'), 'U-2': parked('A', 300, 'Which copy?'),
+  'U-3': behind657('U-1'), 'U-4': behind657('U-3'),
+} });
+const u657 = N.collect({ word: 'nu657' }).items;
+t('DS-657 AC1 an unset row\'s item says how many tickets wait behind its parked tickets', /\(2 tickets wait behind this\)$/.test(u657.find((i) => i.kind === 'config')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', u657.map((i) => i.t.key).join(), 'unset:worker-web-read,U-2');
+put('kappa657', { port: 5660, beat: 1, supervised: true, tickets: {
+  'K-1': { state: 'done', lane: 'A', result: { pr: 76 }, pr_status: { pr: 76, state: 'OPEN', isDraft: false, checks: [] }, merge_after: 'OPS-6' },
+  'K-2': parked('A', 300, 'Which endpoint?'), 'K-3': behind657('K-1'),
+} });
+const k657 = N.collect({ word: 'kappa657' }).items;
+t('DS-657 AC1 a person\'s step says how many tickets wait behind it, those held behind its waiting tickets counted', /\(2 tickets wait behind this\)$/.test(k657.find((i) => i.kind === 'step')?.need ?? ''), true);
+t('DS-657 AC2 and ranks ahead of one that has waited longer', k657.map((i) => i.t.key).join(), 'step:OPS-6,K-2');
 
 // ---- DS-415: drafts whose evidence run failed wait on one fix ticket: no PR item each, and the fix's
 // park, naming a setting only the person holds, is the one item.

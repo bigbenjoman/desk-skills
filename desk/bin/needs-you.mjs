@@ -448,16 +448,21 @@ const HOLD_FILE = /`([^`\s]+)`|(?<![\w/.:-])((?:[\w.-]+\/)+[\w.*-]+|[\w.-]+\.(?:
 const SCRIPT = /\.(?:sh|py|[cm]?[jt]s|rb)$/i;
 const holdFiles = (why) => [...new Set([...String(why ?? '').matchAll(HOLD_FILE)].map((m) => (m[1] ?? m[2]).replace(/[.,;:]+$/, ''))
   .filter((p) => /[/.]/.test(p) && !SCRIPT.test(p)))];
+// The glob a hold note's `where` names first (merge-driver.sh: `<glob>, <n> file(s), e.g. <file>`).
+const holdGlob = (where) => /^(.+?), \d+ file\(s\)/.exec(String(where ?? ''))?.[1] ?? null;
 // A person's merge hold whose step reads done on GitHub: the PR changes every file its reason names
 // (a sign-off or approval file), and its checks at its head are green. -> those files, or null when the
-// reason names none, one is unchanged, a check is not green, or the PR cannot be read.
+// reason names none, one is unchanged, a check is not green, or the PR cannot be read. A name that is a
+// glob, or a path the hold itself guards, is not a sign-off file: the PR changes it only because it is
+// under the hold, so it says nothing of the step.
 function holdStepDone(r, t, w, reads) {
-  const named = holdFiles(w.why);
+  const glob = holdGlob(w.where), guarded = glob ? globToRegExp(glob) : null;
+  const named = holdFiles(w.why).filter((p) => !p.includes('*') && !(guarded && (p === glob || guarded.test(p))));
   if (!named.length || w.routine || w.failed || !holdNeedsPerson(w.why)) return null;
   const { v } = reads.pr(r, t.result.pr, ',files,statusCheckRollup');
   if (v?.state !== 'OPEN') return null;
   const changed = (v.files ?? []).map((f) => String(f?.path ?? ''));
-  if (!named.every((p) => changed.some((f) => f === p || globToRegExp(p).test(f)))) return null;
+  if (!named.every((p) => changed.includes(p))) return null;
   const checks = latestPerCheck(normaliseRollup(v.statusCheckRollup));
   return evaluateGate(checks, { required: r.ctx?.required ?? [], advisory: r.ctx?.advisory ?? [] }).state === 'pass' ? named : null;
 }
@@ -699,7 +704,10 @@ function stepItems(batches) {
   const standing = batches.find((b) => b.batch == null);
   return [...waits].map(([key, ws]) => {
     const r = standing ?? ws.map((w) => w.b).sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];
-    return { r, dir: standingDir(r), in: new Set(ws.map((w) => w.b)), t: { key: `${STEP}${key}` }, item: { ...stepItem(key, ws), waiting: waitingOn(r.slug, key) } };
+    return { r, dir: standingDir(r), in: new Set(ws.map((w) => w.b)), t: { key: `${STEP}${key}` }, item: { ...stepItem(key, ws), waiting: waitingOn(r.slug, key) },
+      // Ranked by every ticket waiting on it; its line names the waiting ones, so it adds the count only
+      // where more are held behind them.
+      behind: heldBehindAll(ws.map(({ b, t }) => [b, t.key]), true), said: heldBehindAll(ws.map(({ b, t }) => [b, t.key])) > 0 };
   });
 }
 function stepItem(key, ws) {
@@ -1005,6 +1013,17 @@ const recordedBefore = (e) => !(Date.parse(e.at) >= ACTIONS_SINCE);
 export const HOLDS_BACK = 3;
 // How many held tickets of r's batch wait behind `key`: held by it, or by a ticket held behind it.
 export const heldBehind = (r, key) => heldBehindOf(r.q, key).size;
+// How many held tickets wait behind a repo-level item, over the [batch, ticket] pairs it stands for:
+// each one's held tickets, once each per batch, plus the pairs themselves where `self` (a step's
+// waiting tickets wait on it; an unset row's parked tickets are the item, not behind it).
+function heldBehindAll(pairs, self = false) {
+  const all = new Set();
+  for (const [b, key] of pairs) {
+    if (self) all.add(`${b.stateDir}\t${key}`);
+    for (const k of heldBehindOf(b.q, key)) all.add(`${b.stateDir}\t${k}`);
+  }
+  return all.size;
+}
 const holdingWords = (n) => `${n} tickets wait behind it, so it is listed though you put it off`;
 const behindWords = (n) => (n === 1 ? '1 ticket waits behind this' : `${n} tickets wait behind this`);
 // What a reply putting `key` off adds while enough tickets wait behind it that it stays listed.
@@ -1101,12 +1120,15 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
   const groups = new Map();
   // The repo-level and step items, put off under their own key as any other item is.
   // `dir` is where it is put off, its batch's state folder unless the item names another.
-  const repoItem = (r, t, item, since, dir = r.stateDir) => {
+  // `behind` held tickets wait behind it: it says so and ranks by that, as a ticket's item does (judged).
+  // `say` false ranks it without the words.
+  const repoItem = (r, t, item, since, dir = r.stateDir, behind = 0, say = true) => {
     const key = putOffKey(r, t, item);
     const l = lookup(readRegister(dir), key);
     if (l.status === 'put_off') { putOff++; return; }
     if (l.status === 'changed') item.need = `${item.need} (${l.line})`;
-    items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false });
+    if (behind > 0 && say) item.need = `${item.need} (${behindWords(behind)})`;
+    items.push({ r, t, ...item, putOffKey: key, putOffDir: dir, since, broken: false, ...(behind > 0 ? { behind } : {}) });
   };
   for (const r of scope.filter((x) => !x.error && x.q)) {
     const register = readRegister(r.stateDir);
@@ -1131,7 +1153,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     const dirs = new Set(inScope.filter((x) => x.slug === slug).map((x) => resolve(x.stateDir)));
     for (const s of stepItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) {
-      if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+      if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
   for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since);
@@ -1139,7 +1161,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
-  for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))));
+  for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
     const r = repos.find((x) => x.slug === slug && x.batch == null);
