@@ -4086,7 +4086,8 @@ EOF
 q init ft; q set-batch concurrency=5
 for k in 1 2 3 4 5; do
   q add "FT-$k"; q set "FT-$k" state=triaged lane=A "branch=fix/FT-$k" "result.pr=90$k" \
-    'fix={"try":2,"of":2,"pr":90'"$k"',"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z"}'
+    'fix={"try":2,"of":2,"pr":90'"$k"',"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z"}' \
+    'fix_tries=[{"try":1,"head":"h0","kind":"checks","what":"red: Lint","at":"2026-11-12T12:00:00Z"},{"try":2,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
 done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 AC1 a fix try whose PR merged since spawns no worker, is finished, and the ticket is recorded merged" \
@@ -4095,6 +4096,8 @@ check "DS-605 AC2 a fix try whose PR was closed unmerged spawns no worker and is
   '! grep -qx FT-2 "$T/ft-spawns" && [ "$(field FT-2 state)" = "\"done\"" ] && [ "$(field FT-2 fix.finished)" != null ] && [ "$(field FT-2 fix.ended)" = "\"PR #902 was closed unmerged\"" ] && [ "$(field FT-2 merged_at)" = null ]'
 check "DS-605 AC3 a fix try whose PR head moved past the try's spawns no worker and is finished with head moved" \
   '! grep -qx FT-3 "$T/ft-spawns" && [ "$(field FT-3 state)" = "\"done\"" ] && [ "$(field FT-3 fix.finished)" != null ] && field FT-3 fix.ended | grep -q "^\"head moved: PR #903 is at h2, past h1"'
+check "DS-605 a try that ended with no worker is taken out of fix_tries, so it spends none of the PR's tries" \
+  '[ "$(field FT-3 fix_tries | jq -c "[.[].try]")" = "[1]" ] && [ "$(field FT-4 fix_tries | jq -c "[.[].try]")" = "[1,2]" ]'
 check "DS-605 AC4 a fix try whose PR is open at the try's head spawns, as before" \
   'grep -qx FT-4 "$T/ft-spawns" && [ "$(field FT-4 state)" = "\"running\"" ] && [ "$(field FT-4 fix.finished)" = null ]'
 check "DS-605 AC5 a fix try whose PR cannot be read is not spawned this pass, and the report says why" \
