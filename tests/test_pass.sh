@@ -4129,7 +4129,7 @@ q add FT-9; q set FT-9 state=triaged lane=A branch=fix/FT-9 result.pr=909 \
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a migration renames try, which holds the merge, is not ended by a moved head either" \
   'grep -qx FT-9 "$T/ft-spawns" && [ "$(field FT-9 fix.finished)" = null ]'
-# FT-10's fix try worker parked, and its PR #901 merged since: DS-573's tailAfterMerge sent it back for
+# FT-10's fix try worker parked, and its PR #901 merged since: tailAfterMerge sent it back for
 # its after-merge steps (merged_tail, cleared.tail). That tail spawns; its merged PR does not end it.
 export DESK_QUEUE="$T/queue-ft10.json" DESK_AUTOPILOT_STATE="$T/state-ft10"; mkdir -p "$T/state-ft10/logs"
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
@@ -4144,5 +4144,22 @@ q add FT-10; q set FT-10 state=triaged lane=A branch=fix/FT-10 result.pr=901 mer
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-605 a ticket sent back for its after-merge steps spawns for them: its merged PR does not end it, and its fix try is finished, kept as made" \
   'grep -qx "FT-10 task=" "$T/ft-spawns" && [ "$(field FT-10 state)" = "\"running\"" ] && [ "$(field FT-10 fix.finished)" != null ] && [ "$(field FT-10 fix.no_worker)" = null ] && [ "$(field FT-10 fix_tries | jq length)" = 1 ] && grep -qF "## Your PR has merged: run only the steps after the merge" "$T/state-ft10/briefings/FT-10.md" && ! grep -qF "## Fix try" "$T/state-ft10/briefings/FT-10.md" && ! echo "$out" | grep -qF "FT-10: its fix try"'
+# FT-11 and FT-12's fix try workers started (fix.started), parked, and were requeued once answered:
+# FT-11's worker pushed its PR #903 to h2 itself, and FT-12's PR #902 was closed since.
+export DESK_QUEUE="$T/queue-ft11.json" DESK_AUTOPILOT_STATE="$T/state-ft11"; mkdir -p "$T/state-ft11/logs"
+q init ft11; q set-batch concurrency=2
+for k in 11 12; do
+  pr=903; [ "$k" = 12 ] && pr=902
+  q add "FT-$k"; q set "FT-$k" state=triaged lane=A "branch=fix/FT-$k" \
+    'fix={"try":1,"of":2,"pr":'"$pr"',"head":"h1","kind":"checks","what":"red: Lint","checks":[{"name":"Lint","url":null}],"at":"2026-11-12T15:28:05Z","started":"2026-11-12T15:30:00Z"}' \
+    'fix_tries=[{"try":1,"head":"h1","kind":"checks","what":"red: Lint","at":"2026-11-12T15:28:05Z"}]'
+done
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-605 a started try requeued after its park is not ended by a head its own worker moved: it spawns again" \
+  'grep -q "^FT-11 task=" "$T/ft-spawns" && [ "$(field FT-11 state)" = "\"running\"" ] && [ "$(field FT-11 fix.finished)" = null ] && [ "$(field FT-11 fix.no_worker)" = null ]'
+check "DS-605 a started try whose PR was closed since ends, kept as a try made, not marked no_worker" \
+  '! grep -q "^FT-12 " "$T/ft-spawns" && [ "$(field FT-12 state)" = "\"done\"" ] && [ "$(field FT-12 fix.no_worker)" = null ] && [ "$(field FT-12 fix_tries | jq length)" = 1 ] && echo "$out" | grep -qF "FT-12: its fix try 1 of 2 on PR #902 was not spawned again, PR #902 was closed unmerged"'
+check "DS-605 the spawn that starts a fix try marks it started" \
+  '[ "$(DESK_QUEUE="$T/queue-ft.json" field FT-4 fix.started)" != null ] && [ "$(DESK_QUEUE="$T/queue-ft.json" field FT-1 fix.started)" = null ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
