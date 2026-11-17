@@ -213,26 +213,6 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
   rm -f "$PREFLIGHT_RECORD"
   PRE_PROMPT="Perform these $NCHECKS checks and reply with EXACTLY $NCHECKS lines, nothing else. Do not stop early if one is refused.
 $CHECKS"
-  RAW=$(desk_timeout 300 claude -p "$PRE_PROMPT" \
-    --setting-sources "" --strict-mcp-config \
-    ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
-    --settings "$SETTINGS" \
-    --agents "$AGENTS" \
-    --permission-mode dontAsk \
-    "${ADD_DIRS[@]}" \
-    ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
-    ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} \
-    --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
-  # The call as the bench replays it (preflight-record.mjs), taken before any check tidies its files.
-  # A record that cannot be written never stops the spawn.
-  REC_ARGS=()
-  for p in "${TOOL_PROBES[@]}"; do REC_ARGS+=(--probe "$p"); done
-  for d in "${ADD_DIRS[@]}"; do [ "$d" != --add-dir ] && REC_ARGS+=(--add-dir "$d"); done
-  printf '%s' "$RAW" | node "$BIN/preflight-record.mjs" --state "$STATE" --ticket "$TICKET" --prompt "$PRE_PROMPT" \
-    --worktree "$WT" --canary "$CANARY" --settings "$SETTINGS" --agents "$AGENTS" --model "$MODEL" \
-    --effort "${PRE_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
-    --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
-    ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
   # unknown, never zero. pass.mjs reads the [preflight] cost line.
@@ -248,30 +228,122 @@ $CHECKS"
         else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
       });' "$1" || true
   }
-  PRE_COST="$(read_raw cost)"
-  RESULT="$(read_raw reply)"
-  PRE_LIMIT="$(read_raw limit)"
+  # One preflight call: its raw output, recorded for the bench, then its cost, reply and limit.
+  preflight_call() {
+    RAW=$(desk_timeout 300 claude -p "$PRE_PROMPT" \
+      --setting-sources "" --strict-mcp-config \
+      ${TOOL_ARGS[@]+"${TOOL_ARGS[@]}"} \
+      --settings "$SETTINGS" \
+      --agents "$AGENTS" \
+      --permission-mode dontAsk \
+      "${ADD_DIRS[@]}" \
+      ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} \
+      ${CALL_EFFORT_ARGS[@]+"${CALL_EFFORT_ARGS[@]}"} \
+      --max-budget-usd 2 --output-format json 2>&1 < /dev/null | tr -d '\r') || true
+    # The call as the bench replays it (preflight-record.mjs), taken before any check tidies its files.
+    # A record that cannot be written never stops the spawn.
+    REC_ARGS=()
+    for p in "${TOOL_PROBES[@]}"; do REC_ARGS+=(--probe "$p"); done
+    for d in "${ADD_DIRS[@]}"; do [ "$d" != --add-dir ] && REC_ARGS+=(--add-dir "$d"); done
+    printf '%s' "$RAW" | node "$BIN/preflight-record.mjs" --state "$STATE" --ticket "$TICKET" --prompt "$PRE_PROMPT" \
+      --worktree "$WT" --canary "$CANARY" --settings "$SETTINGS" --agents "$AGENTS" --model "$MODEL" \
+      --effort "${CALL_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
+      --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
+      ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
+    PRE_COST="$(read_raw cost)"
+    RESULT="$(read_raw reply)"
+    PRE_LIMIT="$(read_raw limit)"
+  }
+  # Two calls' "cost=<usd> turns=<n>" added up; either part unknown in one call is unknown in the sum.
+  sum_cost() {
+    printf '%s\n%s\n' "$1" "$2" | awk '{ for (i = 1; i <= NF; i++) { split($i, kv, "="); if (kv[2] !~ /^[0-9.]+$/) bad[kv[1]] = 1; else s[kv[1]] += kv[2] } }
+      END { c = bad["cost"] ? "unknown" : s["cost"]; t = bad["turns"] ? "unknown" : s["turns"]; printf "cost=%s turns=%s\n", c, t }'
+  }
+  # A session with no tool turn, or no reply, ran no check: its BLOCKED lines are no verdict.
+  no_run_reason() {
+    turns="${PRE_COST##*turns=}"
+    case "$turns" in ''|*[!0-9]*) ;; *) [ "$turns" -le 1 ] && { echo "ran no tool (turns=$turns)"; return; } ;; esac
+    [ -z "$(printf '%s' "$RESULT" | tr -d '[:space:]')" ] && echo "gave no reply"
+    return 0
+  }
 
-  fail=0
+  # A wanted-OK miss is SOFT (retryable); a boundary miss is hard; a rejected model or file on disk is a breach.
   check() { # name expected
     got=$(printf '%s\n' "$RESULT" | grep -oE "^$1=(OK|BLOCKED)" | head -1 | cut -d= -f2 || true)
-    if [ "$got" = "$2" ]; then printf '  %-6s %-8s ok\n' "$1" "$got"
-    else printf '  %-6s %-8s FAIL (wanted %s)\n' "$1" "${got:-?}" "$2"; fail=1; fi
+    if [ "$got" = "$2" ]; then LINES="$LINES$(printf '  %-6s %-8s ok' "$1" "$got")"$'\n'
+    else LINES="$LINES$(printf '  %-6s %-8s FAIL (wanted %s)' "$1" "${got:-?}" "$2")"$'\n'; fail=1
+      if [ "$2" = OK ]; then SOFT="$SOFT $1"; else hard=1; fi
+    fi
   }
+  run_checks() {
+    LINES=""; SOFT=""; fail=0; hard=0; breach=0
+    # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
+    if [ -n "$MODEL" ]; then
+      if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then LINES="$LINES$(printf '  %-6s %-8s ok' MODEL "$MODEL")"$'\n'
+      else LINES="$LINES  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"$'\n'; fail=1; breach=1; fi
+    fi
+    # The file in the worktree is the proof W_IN asks for: there, the reply cannot say otherwise.
+    if [ -e "$WT/.preflight.tmp" ]; then LINES="$LINES$(printf '  %-6s %-8s ok' W_IN OK)"$'\n'
+    else check W_IN OK; fi  # must be able to edit its own worktree
+    check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
+    i=0
+    for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
+    check AGENTS OK       # the named review seats resolve, not general-purpose
+    check DENY  BLOCKED   # deny must still win over allow
+    check DENY2 BLOCKED   # git config and aliases are not reachable through -c
+    check ESCAPE BLOCKED  # a shell write outside the worktree is refused: proves user-level settings
+                          # (e.g. a personal Bash(*) allow) are NOT loaded into the worker
+    [ -e "$CANARY.bash" ] && { LINES="$LINES  ESCAPE file was created: $CANARY.bash — the worker is NOT isolated"$'\n'; rm -f "$CANARY.bash"; fail=1; breach=1; }
+    if [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" = none ]; then LINES="$LINES  JIRA   skipped  (config §4 Tracker is none)"$'\n'
+    elif [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
+    else LINES="$LINES  JIRA   skipped  (desk-jira not installed — Jira steps will park for the orchestrator)"$'\n'; fi
+    # Cross-vendor refutation. Where config §3 codex-review is yes it must reach the binary, not a
+    # denial: the user asked for cross-vendor review, and a worker without codex silently reviews its
+    # own work with the same vendor (and fails any review gate the repo keys on the vendor).
+    # AUTOPILOT_ALLOW_NO_CODEX=1 accepts a missing binary knowingly. Where the row is not yes, codex is
+    # denied on purpose, so the check proves the deny holds instead.
+    if [ "$CODEX_PERM" = "yes" ]; then
+      if [ -n "$HAVE_CODEX" ]; then check CODEX OK
+      elif [ -n "${AUTOPILOT_ALLOW_NO_CODEX:-}" ]; then LINES="$LINES  CODEX  skipped  (not installed; AUTOPILOT_ALLOW_NO_CODEX set — reviews will be same-vendor)"$'\n'
+      else LINES="$LINES  CODEX  FAIL     (codex not installed but config §3 codex-review is yes — install it or set AUTOPILOT_ALLOW_NO_CODEX=1)"$'\n'; fail=1; breach=1; fi
+    elif [ -n "$HAVE_CODEX" ]; then check CODEX BLOCKED
+    else LINES="$LINES  CODEX  skipped  (config §3 codex-review is $CODEX_PERM — reviews will be same-vendor)"$'\n'; fi
+
+    # Never trust the model's own report over the filesystem.
+    if [ -e "$CANARY" ]; then
+      echo "  !! canary file was actually created in the primary checkout — boundary NOT enforced" >&2
+      rm -f "$CANARY"; fail=1; breach=1
+    fi
+    rm -f "$WT/.preflight.tmp"
+  }
+
   echo "[preflight] $TICKET"
-  echo "[preflight] ${PRE_COST:-cost=unknown turns=unknown}"
-  # Refused at the usage limit, the call answered no check: say so once, rather than a FAIL per check
-  # that reads as a broken sandbox. pass.mjs holds the batch on this line and fails nothing.
-  if [ "$PRE_LIMIT" = yes ]; then
-    echo "[preflight] usage-limit: the account is at its usage limit ($(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
-    echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
-    exit 1
-  fi
-  # A model the CLI rejects answers no check at all; say which value, or it reads as a permissions fault.
-  if [ -n "$MODEL" ]; then
-    if printf '%s\n' "$RESULT" | grep -qE '^[A-Z0-9_]+=(OK|BLOCKED)'; then printf '  %-6s %-8s ok\n' MODEL "$MODEL"
-    else echo "  MODEL  FAIL     (no check answered on --model $MODEL — config §3b Worker models names \"$MODEL\"; the CLI said: $(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
-  fi
+  # A first call that ran no check, or missed only wanted-OK checks, is retried once at default effort.
+  TOTAL_COST=""; RETRY_NOTE=""; WHY=""; attempt=1
+  CALL_EFFORT_ARGS=(${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"})
+  while :; do
+    preflight_call
+    TOTAL_COST="$(if [ -n "$TOTAL_COST" ]; then sum_cost "$TOTAL_COST" "$PRE_COST"; else printf '%s' "$PRE_COST"; fi)"
+    # Refused at the usage limit, the call answered no check: say so once, rather than a FAIL per check
+    # that reads as a broken sandbox. pass.mjs holds the batch on this line and fails nothing.
+    if [ "$PRE_LIMIT" = yes ]; then
+      echo "[preflight] ${TOTAL_COST:-cost=unknown turns=unknown}"
+      [ -z "$RETRY_NOTE" ] || echo "$RETRY_NOTE"
+      echo "[preflight] usage-limit: the account is at its usage limit ($(printf '%s' "$RESULT" | grep -m 1 . | cut -c1-200))"
+      echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
+      exit 1
+    fi
+    run_checks
+    WHY="$(no_run_reason)"
+    [ "$fail" -eq 1 ] && [ "$attempt" -eq 1 ] && [ "$breach" -eq 0 ] && { [ -n "$WHY" ] || [ "$hard" -eq 0 ]; } || break
+    RETRY_NOTE="[preflight] retry at default effort: the session ${WHY:-read BLOCKED on checks that want OK:$SOFT}"
+    CALL_EFFORT_ARGS=(); attempt=2
+  done
+  echo "[preflight] ${TOTAL_COST:-cost=unknown turns=unknown}"
+  [ -z "$RETRY_NOTE" ] || echo "$RETRY_NOTE"
+  printf '%s' "$LINES"
+  [ "$attempt" -eq 2 ] && [ -n "$WHY" ] && echo "  !! the session $WHY on the retry either, so no check ran: its lines above are not a permissions verdict" >&2
+
   # §3b Worker models' finder and text models (from pass.mjs; empty when unset) never run in this
   # call, so each is asked for one word on its own: a value the CLI rejects fails here, naming it.
   for extra in "finder:${AUTOPILOT_FINDER_MODEL:-}" "text:${AUTOPILOT_TEXT_MODEL:-}"; do
@@ -282,41 +354,10 @@ $CHECKS"
     if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
     else echo "  $(printf '%s' "$key" | tr 'a-z' 'A-Z')  FAIL     (config §3b Worker models names $key=\"$val\", and the CLI did not answer on it: $(printf '%s' "$GOT" | grep -m 1 . | cut -c1-200))"; fail=1; fi
   done
-  check W_IN  OK        # must be able to edit its own worktree
-  check W_OUT BLOCKED   # must NOT be able to touch the primary checkout
-  i=0
-  for _ in "${TOOL_PROBES[@]}"; do i=$((i + 1)); check "TOOL$i" OK; done   # every toolchain binary (config §4) executes
-  check AGENTS OK       # the named review seats resolve, not general-purpose
-  check DENY  BLOCKED   # deny must still win over allow
-  check DENY2 BLOCKED   # git config and aliases are not reachable through -c
-  check ESCAPE BLOCKED  # a shell write outside the worktree is refused: proves user-level settings
-                        # (e.g. a personal Bash(*) allow) are NOT loaded into the worker
-  [ -e "$CANARY.bash" ] && { echo "  ESCAPE file was created: $CANARY.bash — the worker is NOT isolated"; rm -f "$CANARY.bash"; fail=1; }
-  if [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" = none ]; then echo "  JIRA   skipped  (config §4 Tracker is none)"
-  elif [ -n "$HAVE_JIRA" ]; then check JIRA OK   # Stage 8 must be reachable
-  else echo "  JIRA   skipped  (desk-jira not installed — Jira steps will park for the orchestrator)"; fi
-  # Cross-vendor refutation. Where config §3 codex-review is yes it must reach the binary, not a
-  # denial: the user asked for cross-vendor review, and a worker without codex silently reviews its
-  # own work with the same vendor (and fails any review gate the repo keys on the vendor).
-  # AUTOPILOT_ALLOW_NO_CODEX=1 accepts a missing binary knowingly. Where the row is not yes, codex is
-  # denied on purpose, so the check proves the deny holds instead.
-  if [ "$CODEX_PERM" = "yes" ]; then
-    if [ -n "$HAVE_CODEX" ]; then check CODEX OK
-    elif [ -n "${AUTOPILOT_ALLOW_NO_CODEX:-}" ]; then echo "  CODEX  skipped  (not installed; AUTOPILOT_ALLOW_NO_CODEX set — reviews will be same-vendor)"
-    else echo "  CODEX  FAIL     (codex not installed but config §3 codex-review is yes — install it or set AUTOPILOT_ALLOW_NO_CODEX=1)"; fail=1; fi
-  elif [ -n "$HAVE_CODEX" ]; then check CODEX BLOCKED
-  else echo "  CODEX  skipped  (config §3 codex-review is $CODEX_PERM — reviews will be same-vendor)"; fi
 
   # An empty result is not a permissions verdict: the preflight is itself a claude -p call, and
   # the account's session limit makes it fail with no reason at all.
   [ -z "$RESULT" ] && echo "  !! preflight produced no output — check for an account session limit (HTTP 429) before debugging permissions" >&2
-
-  # Never trust the model's own report over the filesystem.
-  if [ -e "$CANARY" ]; then
-    echo "  !! canary file was actually created in the primary checkout — boundary NOT enforced" >&2
-    rm -f "$CANARY"; fail=1
-  fi
-  rm -f "$WT/.preflight.tmp"
 
   if [ "$fail" -eq 0 ]; then
     [ -z "$PASSED" ] || printf '%s\n' "$PASSED" > "$PREFLIGHT_RECORD"
