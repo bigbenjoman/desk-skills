@@ -1254,7 +1254,7 @@ if (notes.length) appendNotes(notes, STATE);
 // file is left for it, and one older than the ticket's place in this queue is stale and goes unread.
 // A note whose change this pass records goes only once that change is in the file: a write that is
 // refused, or that another writer's change to the ticket overrides, leaves it for the next pass.
-const recorded = [];
+const closedOut = [];
 for (const c of readCloseouts(STATE)) {
   if (c.queue && c.queue !== QUEUE_FILE) continue;
   const t = queue().tickets[c.ticket];
@@ -1265,14 +1265,14 @@ for (const c of readCloseouts(STATE)) {
     const before = report.failed.length;
     q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.summary=${how}`, ...(c.pr ? [`result.pr=${c.pr}`] : []));
     if (report.failed.length !== before) continue;
-    recorded.push({ c, line: `${t.key}: ${how}` });
+    closedOut.push({ c, line: `${t.key}: ${how}` });
     continue;
   }
   try { unlinkSync(c.file); } catch { /* gone */ }
 }
-if (recorded.length) {
+if (closedOut.length) {
   const r = flushQueue();
-  for (const { c, line } of recorded) {
+  for (const { c, line } of closedOut) {
     if (!r.ok || r.conflicts.some((x) => x.ticket === c.ticket)) continue;
     report.done.push(line);
     try { unlinkSync(c.file); } catch { /* gone */ }
