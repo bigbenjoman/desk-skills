@@ -559,10 +559,15 @@ if (mode === 'triage') {
   // the exact payload. Enforcement is the rule, not the wording. A row the config lacks reads as
   // `no` but is named `unset`: it was never asked, and /desk-update asks it.
   const setting = (id) => (E.permissionMissing(id) ? 'unset' : E.permission(id));
+  // A blind audit (levers-audit.mjs) reviews a merged PR and posts nothing: no tracker or PR write is
+  // granted to it, whatever §3 says.
+  const AUDIT = E.ticketKind(T).kind === 'audit';
+  const AUDIT_NEVER = new Set(['pr-open', 'pr-edit', 'pr-self-review-comment', 'pr-reply', 'pr-update-branch', 'ci-rerun', 'jira-comment', 'jira-transition', 'jira-create', 'jira-edit']);
   const grant = (id, rules, denyRules = rules) => {
-    const p = E.permission(id);
+    const audited = AUDIT && AUDIT_NEVER.has(id);
+    const p = audited ? 'never' : E.permission(id);
     if (p === 'yes') allow.push(...rules);
-    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${setting(id)})`); }
+    else { deny.push(...denyRules); denied.push(`${E.permissionKey(id)} (${audited ? 'an audit posts nothing' : setting(id)})`); }
     return p === 'yes';
   };
 
@@ -619,7 +624,7 @@ if (mode === 'triage') {
   grant('jira-create', bash('desk-jira', ' create', ' create-batch'));
   grant('jira-edit', bash('desk-jira', ' edit', ' labels'));
   deny.push(...bash('desk-jira', ...JIRA_NEVER));
-  if (!(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
+  if (AUDIT || !(E.permission('jira-create') === 'yes' && E.permission('jira-edit') === 'yes')) deny.push(...bash('desk-jira', ' attach'));
   else allow.push(...bash('desk-jira', ' attach'));
 
   // Cross-vendor refutation, read-only only. Without an allow rule `dontAsk` refuses the binary and

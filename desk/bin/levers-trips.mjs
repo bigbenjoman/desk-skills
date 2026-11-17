@@ -64,7 +64,7 @@ const snake = (k) => k.replace(/-/g, '_');
 
 // ---- the run record ---------------------------------------------------------------------------------
 // Each line of a jsonl file that parses, with its 1-based line number: [{ line, rec }].
-function lines(file) {
+export function lines(file) {
   let body;
   try { body = readFileSync(file, 'utf8'); } catch { return []; }
   const out = [];
@@ -290,7 +290,8 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
 }
 
 // Reverts each lever a trip found, under the lever log's lock, while the lever is still in the state
-// the trip was read in. -> the events written.
+// the trip was read in. A trip carrying `defect` (the defect it found, in a sentence) raises one
+// needs_you naming it whether or not the revert froze the lever. -> the events written.
 // Each trip is logged as a taken call in the repo's own decision log (`decisionsState`), for the digest.
 export function applyTrips({ slug, name = slug, repo = null, decisionsState = batchPaths(slug).state, trips, registry = REGISTRY, now = Date.now() }) {
   const written = [];
@@ -311,13 +312,16 @@ export function applyTrips({ slug, name = slug, repo = null, decisionsState = ba
     written.push(e);
     recordLeverDecision([e], { slug, repo, state: decisionsState });
     const frozen = e.to === 'frozen';
-    if (frozen || x.error) {
+    if (frozen || x.error || x.defect) {
+      const detail = x.error ?? x.defect;
       const n = appendWith(slug, () => ({
-        kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : 'own_step_error', at, ticket: x.ticket,
+        kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : x.error ? 'own_step_error' : snake(x.trip), at, ticket: x.ticket,
         evidence_file: x.file, evidence_line: x.line,
         reason: frozen
-          ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${x.error ? `: ${x.error}` : ''}`)
-          : `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`,
+          ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${detail ? `: ${detail}` : ''}`)
+          : x.error
+            ? `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`
+            : `${x.lever} was reverted in ${name}: ${x.why} on ${x.ticket}, a defect that merged: ${x.defect}`,
       }));
       if (n) written.push(n);
     }
