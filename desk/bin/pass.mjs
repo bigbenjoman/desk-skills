@@ -185,14 +185,19 @@ const shOut = (cmd, args, opts = {}) => {
 };
 // A queue write that is refused (the queue locked past its wait, a bad value) goes in the report as
 // a failure naming the ticket and the change: the pass carries on as if it had been made, so silence
-// would hide a ticket whose recorded state is now wrong.
-const q = (...args) => {
+// would hide a ticket whose recorded state is now wrong. Returns '' when refused.
+const qWrite = (args, refused = 'not recorded') => {
   const r = shOut('node', [join(BIN, 'queue.mjs'), ...args]);
   if (r.ok) return r.out;
   const change = args.slice(args[0] === 'set-batch' ? 1 : 2).join(' ');
-  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, not recorded — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
+  report.failed.push(`${args[0] === 'set-batch' ? 'batch' : args[1]}: queue write refused, ${refused} — ${args[0]} ${change.length > 200 ? `${change.slice(0, 200)}…` : change} — ${r.out.split('\n').pop()}`);
   return '';
 };
+const q = (...args) => qWrite(args);
+// The one exception: a spawn's state=running write. Refused, nothing may start, since the queue would
+// still read the ticket as waiting and the next pass would start a second worker on it.
+const recordRunning = (key, pairs, what = 'no worker was started') =>
+  Boolean(qWrite(['set', key, 'state=running', ...pairs], `not recorded, so ${what}`));
 const queue = () => readQueue(QUEUE_FILE);
 // A failed ticket keeps why (`failed`), which the status table, desk-q and needs-you quote: a reason in
 // this pass's report alone is gone by the next. The report gets the same reason, then `tail`.
@@ -2839,8 +2844,8 @@ async function resumeKilled(t) {
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
   const log = join(STATE, 'logs', `${t.key}.log`);
   logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', 'resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
-    `log_bytes=${existsSync(log) ? statSync(log).size : 0}`);
+  if (!recordRunning(t.key, ['resume=null', `resumes=${n}`, `port=${port}`, 'idle_passes=0', ...(boot ? ['reboot_stop_at=null'] : []), ...fixStarted(t),
+    `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -2992,10 +2997,12 @@ function spawnCloud(t) {
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
   const tests = E.configValues('test-cmd') ?? [];
   const started = new Date().toISOString();
+  // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
+  // which moves it off running.
+  if (!recordRunning(t.key, ['stage=cloud', 'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null'], 'no cloud session was started')) return;
   const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
   if (s.error) { park(s.error); return; }
-  q('set', t.key, 'state=running', `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, 'stage=cloud',
-    'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null', ...fixStarted(t));
+  q('set', t.key, `cloud=${JSON.stringify({ session: s.session, url: s.url, started })}`, ...fixStarted(t));
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
   runningKeys.add(t.key);
@@ -3028,8 +3035,9 @@ async function spawnHandoff(t, pick) {
   const port = await freePort(t);
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t));
+  if (!recordRunning(t.key, [`session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
+  `no Stage ${stage} session was started; the handoff waits for the next pass`)) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
     env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_START_STAGE: stage, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
@@ -3454,7 +3462,7 @@ for (const t of spawnable) {
   if (existsSync(handoffPath(STATE, t.key))) renameSync(handoffPath(STATE, t.key), `${handoffPath(STATE, t.key)}.old`);
   // So does its resume file: desk-ticket resumes from one it finds, and this round was not resumed.
   if (!resumed.stage && existsSync(workerResumePath(STATE, t.key))) renameSync(workerResumePath(STATE, t.key), `${workerResumePath(STATE, t.key)}.old`);
-  q('set', t.key, 'state=running', `session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
+  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
@@ -3465,7 +3473,8 @@ for (const t of spawnable) {
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
     // handoff's session is the same round.
-    `upload_round=${sid}`);
+    `upload_round=${sid}`]);
+  if (!recorded) continue;
   // A ticket first spawned before spawned_at was recorded keeps its earliest round's start: that
   // round's log was moved aside above, and the history measures from it.
   const now = new Date().toISOString();

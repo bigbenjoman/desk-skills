@@ -3575,6 +3575,63 @@ effort_cfg 0=turbo; cloud_ticket CW-5
 out=$(DESK_CONFIG="$T/config-ef.md" node "$B/pass.mjs" 2>&1)
 check "DS-450 AC4 a malformed Worker effort row refuses a cloud start, naming the value" '[ "$(field CW-5 state)" = "\"parked\"" ] && field CW-5 park.question | grep -q "unknown effort .turbo." && [ ! -e "$T/cloud-prompt" ]'
 
+# ---- A spawn whose state=running write the queue refuses starts nothing, and the next pass starts it.
+# queue.mjs refuses `set <KEY> state=running` while $T/refuse-running-<KEY> exists, as a queue locked
+# past its wait does; every other write goes through. Each path runs alone: refused, then writable.
+export DESK_QUEUE="$T/queue-rr.json" DESK_AUTOPILOT_STATE="$T/state-rr"; mkdir -p "$T/state-rr/logs" "$T/state-rr/tickets" "$T/state-rr/handoffs"
+rm "$T/desk/bin/queue.mjs"
+cat > "$T/desk/bin/queue.mjs" <<EOF
+import { existsSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+const a = process.argv.slice(2);
+if (a[0] === 'set' && a.includes('state=running') && existsSync('$T/refuse-running-' + a[1])) { console.error('queue.json is locked by pid 1, past its 200ms wait'); process.exit(1); }
+process.exit(spawnSync(process.execPath, ['$B/queue.mjs', ...a], { stdio: 'inherit' }).status ?? 1);
+EOF
+cat > "$T/desk/bin/setup-worktree.sh" <<EOF
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+EOF
+cat > "$T/desk/bin/spawn-worker.sh" <<EOF
+if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
+echo "\$1 resume=\${AUTOPILOT_RESUME:+yes} stage=\${AUTOPILOT_START_STAGE:-}" >> "$T/rr-spawns"; echo "[spawn] ticket=\$1"
+EOF
+: > "$T/rr-spawns"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
+spawns_of(){ grep -c "^$1 " "$T/rr-spawns"; }
+refused_pass(){ touch "$T/refuse-running-$1"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-running-$1"; }
+q init rr
+q add RR-1; q set RR-1 state=triaged lane=A branch=fix/RR-1
+refused_pass RR-1
+check "DS-752 AC1 a refused state=running write starts no worker, and the failed line names the ticket and says so" \
+  '[ "$(spawns_of RR-1)" = 0 ] && [ "$(field RR-1 state)" = "\"triaged\"" ] && [ "$(field RR-1 session_id)" = null ] && [ "$(field RR-1 spawn_failed)" = null ] && echo "$out" | grep -q "RR-1: queue write refused, not recorded, so no worker was started — set state=running" && ! echo "$out" | grep -q "spawned: RR-1"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC2 with the queue writable again, the next pass starts exactly one worker" '[ "$(spawns_of RR-1)" = 1 ] && [ "$(field RR-1 state)" = "\"running\"" ]'
+check "DS-752 AC6 a recorded write spawns, and the report reads as before" 'echo "$out" | grep -q "spawned: RR-1 port=[0-9]* db=none" && ! echo "$out" | grep -q "queue write refused"'
+q set RR-1 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/RR-2 "$T/wt/RR-2"
+q add RR-2; q set RR-2 state=triaged lane=A branch=fix/RR-2 "worktree=$T/wt/RR-2" session_id=sess-rr2 resume=pending resume_why=x
+refused_pass RR-2
+check "DS-752 AC3 a killed worker whose state=running write is refused is not resumed, and still waits to resume" \
+  '[ "$(spawns_of RR-2)" = 0 ] && [ "$(field RR-2 state)" = "\"triaged\"" ] && [ "$(field RR-2 resume)" = "\"pending\"" ] && [ "$(field RR-2 resumes)" = null ] && echo "$out" | grep -q "RR-2: queue write refused, not recorded, so no worker was resumed"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC3 the next pass resumes it once" 'grep -qx "RR-2 resume=yes stage=" "$T/rr-spawns" && [ "$(spawns_of RR-2)" = 1 ] && [ "$(field RR-2 state)" = "\"running\"" ]'
+q set RR-2 state=done session_id=null
+git -C "$T/repo" worktree add -q -b fix/RR-3 "$T/wt/RR-3"
+q add RR-3; q set RR-3 state=triaged lane=A branch=fix/RR-3 "worktree=$T/wt/RR-3" handoff=pending handoff_stage=4b; hfile RR-3 4b "typecheck: pass"
+refused_pass RR-3
+check "DS-752 AC4 a handoff whose state=running write is refused starts no session, and the handoff is still pending" \
+  '[ "$(spawns_of RR-3)" = 0 ] && [ "$(field RR-3 state)" = "\"triaged\"" ] && [ "$(field RR-3 handoff)" = "\"pending\"" ] && [ "$(field RR-3 spawn_failed)" = null ] && echo "$out" | grep -q "RR-3: queue write refused, not recorded, so no Stage 4b session was started"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC4 the next pass starts its Stage 4b session once" 'grep -qx "RR-3 resume= stage=4b" "$T/rr-spawns" && [ "$(spawns_of RR-3)" = 1 ] && [ "$(field RR-3 state)" = "\"running\"" ]'
+q set RR-3 state=done session_id=null
+q add RR-4; q set RR-4 state=triaged lane=A branch=feat/RR-4 location=cloud
+printf '# RR-4\n\nSource: the user, in this conversation\n\nMake the widget save. AC1: it saves.\n' > "$T/state-rr/tickets/RR-4.md"
+refused_pass RR-4
+check "DS-752 AC5 a cloud ticket whose state=running write is refused starts no cloud session" \
+  '[ ! -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"triaged\"" ] && [ "$(field RR-4 cloud)" = null ] && echo "$out" | grep -q "RR-4: queue write refused, not recorded, so no cloud session was started"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-752 AC6 with the write recorded, the cloud session starts and is recorded running" \
+  '[ -e "$T/cloud-prompt" ] && [ "$(field RR-4 state)" = "\"running\"" ] && [ "$(field RR-4 stage)" = "\"cloud\"" ] && [ "$(field RR-4 cloud.session)" = "\"session_01Vy49H7Z4T3CSgAhSxsuhqj\"" ] && echo "$out" | grep -q "RR-4 in a cloud session: https://claude.ai/code/"'
+rm "$T/desk/bin/queue.mjs"; ln -s "$B/queue.mjs" "$T/desk/bin/queue.mjs"
+
 # ---- A pass holds a ticket whose kept worktree is in use, and spawns it once that clears.
 # W-1's worktree is another process's working directory. W-2 and W-3 are fix tries: W-2's worktree
 # has an uncommitted change, W-3's branch a commit origin does not have. W-4 is a fix try with only an
