@@ -188,6 +188,29 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
   t('AC9 the week\'s cost leaves it out', v.panels.cost.this_week.usd_per_admitted, 16.8);
 }
 
+// DS-692 AC2: each repo's rework share this week, cost-weighted, with its data age.
+{
+  const rw = (key, o) => ({ ...row(key, 2, o), rework_share: o.share, rework_cost: o.rework, rework_by_cause: o.causes, rework_by_class: o.classes });
+  const m = machine({ files: evidence(DS, [
+    rw('DS-1', { cost: 10, share: 0.4, rework: 4, causes: { 'review round': 3, 'CI red': 1 }, classes: { 'application defect': 4 } }),
+    rw('DS-2', { cost: 6, share: 0, rework: 0, causes: {}, classes: {} }),
+    rw('DS-3', { cost: 5, complete: false, share: null, rework: 0, causes: {}, classes: {} }),
+    row('DS-4', 2, { cost: 2 }),
+    // Admitted before this week.
+    { ...rw('DS-5', { cost: 9, share: 0.5, rework: 4.5, causes: { conflict: 4.5 }, classes: {} }), admitted_at: iso(9 * DAY) },
+  ]) } });
+  const ev = join(m.root, DS, 'levers-evidence', 'evl_2026-11-15_x.jsonl');
+  utimesSync(ev, new Date(NOW - 3 * HOUR), new Date(NOW - 3 * HOUR));
+  const v = view(m);
+  const ds = v.panels.guardrails.rework.find((r) => r.repo === 'desk-skills');
+  t('DS-692 AC2 view.json carries the rework share per repo, cost-weighted over this week\'s tickets', `${ds.share} ${ds.rework_usd} ${ds.usd} ${ds.known} ${ds.unknown} ${ds.admitted}`, '0.25 4 16 2 2 4');
+  t('DS-692 AC2 split by cause', j(ds.by_cause), '{"review round":{"usd":3,"share":0.1875},"CI red":{"usd":1,"share":0.0625}}');
+  t('DS-692 AC2 with its data age, from the evidence it was read from', `${ds.age.as_of} ${ds.age.age_s} ${ds.age.stale}`, `${iso(3 * HOUR)} 10800 false`);
+  const zd = v.panels.guardrails.rework.find((r) => r.repo === 'studia-zendesk');
+  t('DS-692 AC2 a repo with no tickets this week has no share, never 0', `${zd.share} ${zd.admitted} ${zd.age.as_of}`, 'null 0 null');
+  t('DS-692 AC2 the guardrails panel reads ok on the rework alone', v.panels.guardrails.state, 'ok');
+}
+
 // AC10: the same inputs build the same view.json, generated_at aside.
 {
   const m = machine({ repos: autoRepos, files: { [`${DS}/lever-evals.jsonl`]: jsonl([evalRow('wrappers'), evalRow('memory')]), ...evidence(DS, [row('DS-1', 3), row('DS-2', 9)]) } });

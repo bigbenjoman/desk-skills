@@ -7,7 +7,8 @@
 //   node phase0-report.mjs --per-ticket [--json] [--days <n> | --since <iso> [--until <iso>]] [--no-ci]
 //       one JSON row per ticket admitted in the window, across every batch, archived ones included,
 //       each costing the ticket's whole spend; `carried_in` is the in-window spend of tickets
-//       admitted earlier, so rows plus carried_in equal the report's total for the same --days
+//       admitted earlier, so rows plus carried_in equal the report's total for the same --days, and
+//       `rework` is the rows' cost-weighted rework share by cause (rework.mjs)
 //   node phase0-report.mjs spawn-line --ticket <KEY> --session <id> [--stage <s>] [--model <m>]
 //       [--effort <e>] [--system-bytes <n>] [--prompt-bytes <n>] [--log <worker log>]
 //       one JSON line for spawn-worker.sh to append to $DESK_STATE/workers/<KEY>.runs.jsonl, and with
@@ -34,6 +35,7 @@ import { leverFingerprints } from './lever-registry.mjs';
 import { parkClass } from './failure-class.mjs';
 import { sizeOf } from './desk-q-eta.mjs';
 import { pinDisagrees } from './lever-pin.mjs';
+import { ticketRework, reworkSummary } from './rework.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';
@@ -328,6 +330,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
     // A cloud worker leaves no log here, so its run is read from the queue entry.
     x.c ??= t.location === 'cloud' && t.cloud ? ticketCost(state, t) : null;
     const size = sizeOf(state, t.key);
+    const rework = ticketRework(x.logs, t, x.cost);
     const reds = ciRuns && t.branch ? ciRuns.filter((r) => r.branch === t.branch) : [];
     const starts = x.starts.map(({ sid, record: s }) => ({
       at: s?.at ?? null, session: sid || null, stage: s?.stage ?? null, desk_commit: s?.desk_commit ?? null,
@@ -345,6 +348,9 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
       // A start that recorded levers other than the pin's set: false with no pin.
       pin_mismatch: starts.some((s) => pinDisagrees(t.levers?.set, s.levers)),
+      // What the starts after the first cost, as a share of `cost`, by cause and failure class (rework.mjs).
+      rework_share: rework.share, rework_cost: rework.cost, rework_by_cause: rework.by_cause, rework_by_class: rework.by_class,
+      rework_starts: rework.starts,
     });
   }
   return { rows, carriedIn };
@@ -388,8 +394,25 @@ export function perTicket({
   }
   return {
     slug, since: new Date(since).toISOString(), until: new Date(until).toISOString(), ci: ciNote ?? 'read', rows,
-    carried_in: { cost: carried.reduce((n, c) => n + c.cost, 0), tickets: carried }, unreadable,
+    carried_in: { cost: carried.reduce((n, c) => n + c.cost, 0), tickets: carried }, unreadable, rework: reworkSummary(rows),
   };
+}
+
+// The rework share of the tickets admitted in the window, by cause and failure class, with the tickets
+// whose cost or rework was not recorded named apart.
+export function reworkLines(s) {
+  const head = 'rework share, tickets admitted in the window';
+  if (!s.tickets) return [`${head}: no ticket admitted`];
+  const share = (v) => `${Math.round(v * 100)}%`;
+  const out = [s.share == null
+    ? `${head}: ${NR}: no admitted ticket has its cost and rework recorded`
+    : `${head}: ${share(s.share)}, ${usd(s.rework_cost)} of ${usd(s.cost)} over ${s.known} ticket(s) with their cost recorded (what each ticket's starts after its first cost, over all it cost)`];
+  const causes = Object.entries(s.by_cause);
+  out.push(`  by cause: ${causes.length ? causes.map(([c, v]) => `${c} ${usd(v.cost)} (${share(v.share)})`).join(' · ') : 'none'}`);
+  const classes = byCount(s.by_class);
+  out.push(`  by failure class: ${classes.length ? classes.map(([c, v]) => `${c} ${usd(v)}`).join(' · ') : 'none'}`);
+  out.push(`  unknown cost, counted apart: ${s.unknown.length ? `${s.unknown.length} ticket(s): ${s.unknown.join(', ')}` : 'none'}`);
+  return out;
 }
 
 // ---- versions and the checkout -------------------------------------------------------------------
@@ -549,6 +572,11 @@ export function report({
     : `unreadable: no 7-day usage reading in any worker log or usage probe output since ${new Date(since).toISOString()}`;
   out.push('', `total${ciRuns ? ' (red CI counts every failed run in the repo, not only batch branches)' : ''}:`);
   out.push(...figureLines(total, { ci: ciNote, quotaMissing: missing }).map((l) => `  ${l}`));
+  const admitted = batches.flatMap((b) => {
+    const got = existsSync(b.queue) ? ticketRows({ queue: b.queue, state: b.state, slug, batch: b.name ?? null, since, until: now }) : { rows: [] };
+    return got.rows ?? [];
+  });
+  out.push('', ...reworkLines(reworkSummary(admitted)));
   out.push('', ...pinMismatchLines(batches, since));
   out.push('', 'Usage readings name no login, so a 7-day window stands for the login it belongs to. Needs-you raised counts AUTOPILOT_PARK lines workers printed; answered counts answers recorded through the digest. Starts before workers recorded their desk commit and levers show as not recorded.');
   return out;

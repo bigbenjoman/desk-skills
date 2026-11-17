@@ -1,5 +1,5 @@
 // suite: phase 0 baseline report and levers row (phase0-report.mjs, desk-env levers)
-// covers: desk/bin/phase0-report.mjs desk/bin/desk-env.mjs desk/bin/spawn-worker.sh desk/bin/lever-registry.mjs
+// covers: desk/bin/phase0-report.mjs desk/bin/desk-env.mjs desk/bin/spawn-worker.sh desk/bin/lever-registry.mjs desk/bin/rework.mjs
 // The report on fixture worker logs (stream-json), fix tries, digest answers, usage readings, spawn
 // records and a stub gh; a main checkout behind origin with uncommitted files that the report leaves
 // exactly as it found it; and the §3b Phase 0 levers row read through desk-env, with no row, known
@@ -389,6 +389,51 @@ const win = perTicket({ slug: 'o__r', batches: ptBatches, since: Date.parse(nine
 t('per-ticket AC10: a --since/--until window holds exactly the tickets admitted in it', JSON.stringify(win.rows.map((r) => r.key).sort()), JSON.stringify(want));
 t('per-ticket AC10: the window is a proper subset', want.length > 0 && want.length < 36, true);
 t('per-ticket AC10: the window is printed with the rows', `${win.since} ${win.until}`, `${nineIso} ${twoIso}`);
+
+// ---- DS-692: rework share by cause -----------------------------------------------------------
+// R-1 ran once. R-2 handed off to 4b, then went back for a review fix, a red-check fix, and a resume
+// after the 5-hour limit inside the red-check round. R-3's second round left no result event.
+const RW = join(T, 'rework');
+const rwQ = join(RW, 'queue.json');
+for (const d of ['logs', 'workers', 'triage']) mkdirSync(join(RW, d), { recursive: true });
+const at = (h) => iso(DAY_MS * 2 - h * 3_600_000);
+const spawnAt = (h, stage = '0') => JSON.stringify({ type: 'desk_spawn', session: 'x', stage, model: 'default', effort: 'default', at: at(h) });
+const pre = (h, usd) => preflightLine({ usd, turns: 1 }, new Date(Date.parse(at(h)))).trim();
+const rejected = JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: RESET } });
+const rwLog = (name, ...lines) => writeFileSync(join(RW, 'logs', name), `${lines.join('\n')}\n`);
+rwLog('R-1.log', spawnAt(0), init('r1'), result(3, 10, 1), say('AUTOPILOT_DONE: pr=1 jira=Done'));
+rwLog('R-2.log.round1', pre(0, 0.1), spawnAt(0), init('a'), result(4, 10, 1), say('AUTOPILOT_HANDOFF: 4b'));
+rwLog('R-2.log.round2', spawnAt(1, '4b'), init('b'), result(1, 10, 1), say('AUTOPILOT_DONE: pr=2 jira=In Review'));
+rwLog('R-2.log.round3', pre(3, 0.2), spawnAt(3, 'task'), init('c'), result(2, 10, 1), say('AUTOPILOT_DONE: pr=2 jira=In Review'));
+rwLog('R-2.log', spawnAt(5, 'task'), init('d'), result(1.5, 10, 1), rejected, spawnAt(6, 'resume'), init('d'), result(2.5, 10, 1));
+rwLog('R-3.log.round1', spawnAt(0), init('e'), result(1, 10, 1), say('AUTOPILOT_PARK: which price?'));
+rwLog('R-3.log', spawnAt(2), init('f'), say('AUTOPILOT_STAGE: 3/9 implement'));
+writeFileSync(rwQ, JSON.stringify({ tickets: {
+  'R-1': { key: 'R-1', added_at: at(-1), merged_at: at(1), branch: 'feat/R-1' },
+  'R-2': { key: 'R-2', added_at: at(-1), merged_at: at(7), branch: 'feat/R-2',
+    fix_tries: [{ try: 1, kind: 'review', class: 'application defect', at: at(2) }, { try: 2, kind: 'checks', at: at(4) }] },
+  'R-3': { key: 'R-3', added_at: at(-1), branch: 'feat/R-3' },
+} }));
+const rw = perTicket({ slug: 'o__r', batches: [{ name: 'RW', queue: rwQ, state: RW }], since: SINCE, until: NOW, ci: false });
+const rwRow = (k) => rw.rows.find((r) => r.key === k);
+const r2 = rwRow('R-2');
+t('DS-692 AC3: a ticket with one start has a rework share of 0', `${rwRow('R-1').rework_share} ${rwRow('R-1').rework_cost} ${JSON.stringify(rwRow('R-1').rework_starts)}`, '0 0 []');
+t('DS-692: the starts add up to the row\'s cost', r2.cost.toFixed(2), '9.80');
+t('DS-692: a handoff session is the first attempt\'s, and each later start has its cause and cost',
+  JSON.stringify(r2.rework_starts.map((s) => [s.cause, s.class, s.cost.toFixed(2)])),
+  '[["review round","application defect","2.20"],["CI red","application defect","1.50"],["usage limit","quota","1.00"]]');
+t('DS-692: the rework share is the later starts\' cost over the whole', r2.rework_share.toFixed(4), (4.7 / 9.8).toFixed(4));
+t('DS-692: split by cause', JSON.stringify(Object.fromEntries(Object.entries(r2.rework_by_cause).map(([k, v]) => [k, v.toFixed(2)]))), '{"review round":"2.20","CI red":"1.50","usage limit":"1.00"}');
+t('DS-692: a later start with no result event leaves the share unknown, never a guess', `${rwRow('R-3').rework_share} ${rwRow('R-3').rework_starts[0].cause} ${rwRow('R-3').rework_starts[0].cost}`, 'null other null');
+t('DS-692 AC1: the summary weights by cost and counts unknown-cost tickets apart',
+  `${rw.rework.share.toFixed(4)} ${rw.rework.known} ${JSON.stringify(rw.rework.unknown)}`, `${(4.7 / 12.8).toFixed(4)} 2 ["R-3"]`);
+const rwLines = report({ ...base, batches: [{ name: 'RW', queue: rwQ, state: RW }], ci: false });
+const rwAt = rwLines.findIndex((l) => l.startsWith('rework share'));
+t('DS-692 AC1: the report prints the rework share, its split by cause and the unknown-cost tickets apart', rwLines.slice(rwAt, rwAt + 4).join('\n'),
+  'rework share, tickets admitted in the window: 37%, $4.70 of $12.80 over 2 ticket(s) with their cost recorded (what each ticket\'s starts after its first cost, over all it cost)\n' +
+  '  by cause: review round $2.20 (17%) · CI red $1.50 (12%) · usage limit $1.00 (8%)\n' +
+  '  by failure class: application defect $3.70 · quota $1.00\n' +
+  '  unknown cost, counted apart: 1 ticket(s): R-3');
 
 // ---- spawn-worker.sh appends the line for every start -------------------------------------
 const spawn = readFileSync(join(ROOT, 'desk', 'bin', 'spawn-worker.sh'), 'utf8');
