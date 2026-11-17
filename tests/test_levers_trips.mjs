@@ -125,7 +125,9 @@ recordWait(s2, 'F-1', wait, at(-80));
 recordWait(s2, 'F-1', wait, at(-70));
 t('a wait is recorded once per head and class however many passes hold it', readFileSync(join(s2, 'workers', 'F-1.runs.jsonl'), 'utf8').trim().split('\n').length, 1);
 const blocker = (hours) => ({ key: 'B-1', state: 'done', merged_at: at(hours) });
-const F1 = onTicket(A2, 'F-1', 'failure-class', { held_by: 'B-1' });
+// A wait is held on a done ticket's open PR, as the pass's fix tries hold one.
+const waiting = (o = {}) => ({ state: 'done', result: { pr: 5 }, ...o });
+const F1 = onTicket(A2, 'F-1', 'failure-class', waiting({ held_by: 'B-1' }));
 t('a blocker settled 30 hours ago is not yet a trip', [run(A2, queueOf(F1, blocker(-30))).events.length, stateIn(A2, 'failure-class')], [0, 'trial']);
 run(A2, queueOf(F1, blocker(-49)));
 const trip2 = eventsOf(A2, 'trip');
@@ -134,13 +136,13 @@ t('a fix try after the wait ended it', (() => {
   const A = 'acme__tried';
   const s = repo(A);
   recordWait(s, 'F-2', wait, at(-80));
-  return run(A, queueOf(onTicket(A, 'F-2', 'failure-class', { held_by: 'B-1', fix_tries: [{ try: 1, at: at(-60) }] }), blocker(-70))).events.length;
+  return run(A, queueOf(onTicket(A, 'F-2', 'failure-class', waiting({ held_by: 'B-1', fix_tries: [{ try: 1, at: at(-60) }] })), blocker(-70))).events.length;
 })(), 0);
 t('a ticket released from its merged blocker is no longer waiting', (() => {
   const A = 'acme__released';
   const s = repo(A);
   recordWait(s, 'F-4', wait, at(-80));
-  return run(A, queueOf(onTicket(A, 'F-4', 'failure-class'), blocker(-70))).events.length;
+  return run(A, queueOf(onTicket(A, 'F-4', 'failure-class', waiting()), blocker(-70))).events.length;
 })(), 0);
 t('a missing decision settles when the person answers', (() => {
   const A = 'acme__answered';
@@ -149,7 +151,7 @@ t('a missing decision settles when the person answers', (() => {
   // With no worker waiting, the answer is saved to the briefing alone (answer.mjs).
   mkdirSync(join(s, 'briefings'), { recursive: true });
   writeFileSync(join(s, 'briefings', 'F-3.md'), `# Briefing for F-3\n\n## Answer from the user (${at(-50)})\n\nuse the first option\n`);
-  run(A, queueOf(onTicket(A, 'F-3', 'failure-class')));
+  run(A, queueOf(onTicket(A, 'F-3', 'failure-class', waiting())));
   return eventsOf(A, 'trip').map((e) => e.reason_code);
 })(), ['stale_wait']);
 t('an answer the person wrote 30 hours ago is not yet a trip', (() => {
@@ -159,7 +161,13 @@ t('an answer the person wrote 30 hours ago is not yet a trip', (() => {
   mkdirSync(join(s, 'answers'), { recursive: true });
   writeFileSync(join(s, 'answers', 'F-5.txt'), 'use the first option');
   utimesSync(join(s, 'answers', 'F-5.txt'), new Date(NOW - 30 * HOUR), new Date(NOW - 30 * HOUR));
-  return run(A, queueOf(onTicket(A, 'F-5', 'failure-class'))).events.length;
+  return run(A, queueOf(onTicket(A, 'F-5', 'failure-class', waiting()))).events.length;
+})(), 0);
+t('a waiting ticket whose PR merged waits no more', (() => {
+  const A = 'acme__mergedwait';
+  const s = repo(A);
+  recordWait(s, 'F-6', wait, at(-80));
+  return run(A, queueOf(onTicket(A, 'F-6', 'failure-class', waiting({ held_by: 'B-1', merged_at: at(-1) })), blocker(-70))).events.length;
 })(), 0);
 
 // ---- AC3: a post-merge revert on the lever's arm ----------------------------------------------------------

@@ -216,7 +216,8 @@ export const DETECTORS = Object.freeze({
   },
 
   'stale-wait': ({ state, t, queue, now, trip }) => {
-    if (t.merged_at || ['done', 'failed'].includes(t.state)) return [];
+    // A wait is held on a done ticket's open PR (pass.mjs applyFix); merged or failed, it waits no more.
+    if (t.merged_at || t.state === 'failed') return [];
     const file = runsPath(state, t.key);
     const last = lines(file).filter((l) => l.rec.fix_wait && l.rec.at).at(-1);
     if (!last || !WAITING_CLASSES.includes(last.rec.fix_wait.class)) return [];
