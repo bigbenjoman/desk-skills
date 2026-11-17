@@ -73,9 +73,9 @@ const T = mkdtempSync(join(tmpdir(), 'desk-shards-'));
 try {
   const out = join(T, 'out');
   writeFileSync(out, '');
-  const gh = spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), '--suites', 'test_lint.sh tests/test_merge_driver.sh', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
+  const gh = spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), '--suites', 'test_lint.sh tests/test_batch_e2e.sh', '--github-output'], { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: out } });
   const m = JSON.parse(readFileSync(out, 'utf8').replace(/^matrix=/, ''));
-  t('cli --github-output prints the plan and writes the matrix', [gh.status, /^shard 1\/2: .* predicted: test_merge_driver\.sh$/m.test(gh.stdout), m.include.map((x) => x.suites)], [0, true, ['test_merge_driver.sh', 'test_lint.sh']]);
+  t('cli --github-output prints the plan and writes the matrix', [gh.status, /^shard 1\/2: .* predicted: test_batch_e2e\.sh$/m.test(gh.stdout), m.include.map((x) => x.suites)], [0, true, ['test_batch_e2e.sh', 'test_lint.sh']]);
   const whole = JSON.parse(cli('--json').stdout);
   t('cli with no flags plans every suite into SHARDS shards', [whole.shards.length, whole.shards.flatMap((x) => x.suites).length], [SHARDS, suites.length]);
   t('cli --shards overrides the count', JSON.parse(cli('--shards', '2', '--json').stdout).shards.length, 2);
