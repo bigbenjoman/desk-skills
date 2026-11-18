@@ -45,7 +45,8 @@ writeFileSync(join(T, 'profile.github-session.json'),
 writeFileSync(join(T, 'pw.mjs'), `
 const realNow = Date.now; let skew = 0; Date.now = () => realNow() + skew;
 let value = '';
-const loc = { first: () => loc, waitFor: async () => {}, scrollIntoViewIfNeeded: async () => {}, click: async () => {},
+const loc = { first: () => loc, last: () => loc, or: () => loc, locator: () => loc, count: async () => 1,
+  waitFor: async () => {}, scrollIntoViewIfNeeded: async () => {}, click: async () => {},
   setInputFiles: async (paths) => {
     for (const p of paths) {
       const f = p.split('/').pop(); const base = f.replace(/\\.[^.]+$/, '');
@@ -53,7 +54,7 @@ const loc = { first: () => loc, waitFor: async () => {}, scrollIntoViewIfNeeded:
     }
   },
   inputValue: async () => { if (process.env.FAKE_STALL) skew += 200000; return value; }, fill: async (v) => { value = v; } };
-const page = { goto: async () => {}, evaluate: async () => 'me', locator: () => loc };
+const page = { goto: async () => {}, evaluate: async () => 'me', locator: () => loc, getByRole: () => loc };
 const ctx = { addCookies: async () => {}, pages: () => [page], newPage: async () => page, cookies: async () => [], close: async () => {} };
 export const chromium = { launchPersistentContext: async () => ctx };
 `);

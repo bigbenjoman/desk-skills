@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!-- GitHub's React PR page, cut to what the composer finder reads. Modelled on a probe of
+     bigbenjoman/pr-ninja#1074 on 2026-11-18: no textarea#new_comment_field; the one textarea has
+     placeholder "Leave a comment", aria-label "Markdown value" and a React useId for its id; no
+     input[type=file] until the box is focused. The composer mounts after load, as on hydration. -->
+<html>
+<head><meta name="user-login" content="octocat"><title>Fix the widget by octocat · Pull Request #7 · acme/widgets</title></head>
+<body>
+<main>
+  <div class="timeline">
+    <div class="timeline-comment"><p>Opened this PR.</p></div>
+  </div>
+  <div id="composer-root"></div>
+</main>
+<script>
+setTimeout(() => {
+  const root = document.getElementById('composer-root');
+  root.innerHTML = '<div data-composer="new"><div class="toolbar"><button type="button" aria-label="Attach files">+</button></div>'
+    + '<textarea id="_r_24_" aria-label="Markdown value" placeholder="Leave a comment"></textarea></div>';
+  const box = root.querySelector('[data-composer]');
+  box.querySelector('textarea').addEventListener('focus', () => {
+    if (box.querySelector('input[type=file]')) return;
+    const input = document.createElement('input');
+    input.type = 'file'; input.multiple = true; input.hidden = true;
+    box.appendChild(input);
+  });
+}, 300);
+</script>
+</body>
+</html>
