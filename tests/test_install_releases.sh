@@ -70,6 +70,9 @@ check "AC5: installed.json records the commit, and the release carries its own r
 check "the install from before releases is kept as a release, with its record" \
   '[ "$(cat "$D"/releases/before-releases-*/bin/queue.mjs)" = legacy ] && [ "$(jq -r .commit "$D"/releases/before-releases-*/release.json)" = 0ld ]'
 check "a file desk never installed is carried into the new release" '[ "$(cat "$D/bin/my-own.sh")" = mine ]'
+check "the modules a script imports from a folder in bin go into the release beside it" \
+  '[ -f "$D/releases/$A/bin/pass/crashed-uploads.mjs" ] && grep -qx bin/pass/run-phase.mjs "$D/releases/$A/release-files" \
+   && node --input-type=module -e "await import(process.argv[1])" "$D/bin/pass/crashed-uploads.mjs"'
 
 # ---- AC2, AC3: a script started on one release, while the next goes live ---------------------
 B="$(mark B)"

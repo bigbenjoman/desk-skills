@@ -64,6 +64,8 @@ import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
+import { runPhase } from './pass/run-phase.mjs';
+import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -271,6 +273,11 @@ const Q = queue();
 const rows = Object.values(Q.tickets);
 const notes = [];
 const report = { advanced: [], parked: [], done: [], failed: [], spawned: [], waiting: [], quiet: [], stalled: [], personStalls: [], outOfScope: [], paused: [], unrecognised: [], putOff: [], clears: [], inputs: [], recovered: [] };
+// The handlers every phase's actions share (pass/run-phase.mjs): a queue write and a report line.
+const PHASE_HANDLERS = {
+  set: (a) => q('set', a.key, ...a.fields),
+  report: (a) => report[a.list].push(a.line),
+};
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -1184,31 +1191,23 @@ for (const t of rows.filter((r) => r.state === 'running')) {
 }
 
 // ---- crashed uploads -----------------------------------------------------
-// An upload that crashed is tried again from the directory it was given, not from a round's log line:
-// a ticket requeued for a fix starts a round whose log names no screenshots. A running worker is left
-// to finish, since it may still edit the body, and a PR the ticket has moved off drops the record.
-// First the machine's upload queue is pumped every pass, whatever this repo's §3 pr-images says (each
-// job carries its own repo's grant), and the results it holds for this batch are recorded.
+// The decision is pass/crashed-uploads.mjs. First the machine's upload queue is pumped every pass,
+// whatever this repo's §3 pr-images says (each job carries its own repo's grant), and the results it
+// holds for this batch are recorded. An upload action pumps the queue again, which can record another
+// ticket's result after the snapshot was read: that ticket's actions are skipped, as its upload ran.
 pumpUploads();
-if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
-  for (const t of Object.values(queue().tickets)) {
-    const c = t.upload_crash;
-    if (!c || t.state === 'running' || uploadedThisPass.has(t.key) || (!c.busy && !c.throttled && c.tries >= UPLOAD_TRIES)) continue;
-    if (Date.parse(c.throttled) > Date.now()) continue;
-    const cur = t.result?.pr ?? t.draft_pr;
-    if (cur != null && Number(cur) !== Number(c.pr)) { q('set', t.key, 'upload_crash=null'); continue; }
-    // A body with no cell left was filled after all (the crash came after the uploader's edit, or the
-    // evidence workflow filled it): uploading again would duplicate its assets and read as incomplete.
-    const { body, why } = prBody(c.pr);
-    if (body == null) { report.failed.push(`${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${why})`); continue; }
-    if (!dragCells(body)) {
-      q('set', t.key, 'upload_crash=null', 'images_uploaded=true');
-      report.advanced.push(`${t.key} #${c.pr} has no screenshot cell left, so its crashed upload is not tried again`);
-      continue;
-    }
-    uploadShots(t, String(c.pr), c.dir);
-  }
-}
+runPhase({
+  name: 'crashed uploads',
+  snapshot: () => {
+    const s = { tickets: queue().tickets, allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, uploaded: new Set(uploadedThisPass), now: Date.now() };
+    s.bodies = Object.fromEntries(crashedUploadBodies(s).map((pr) => [pr, prBody(pr)]));
+    return s;
+  },
+  decide: decideCrashedUploads,
+  handlers: { ...PHASE_HANDLERS, upload: (a, s) => uploadShots(s.tickets[a.key], a.pr, a.dir) },
+  report,
+  skip: (a) => uploadedThisPass.has(a.key),
+});
 
 // ---- the usage limit -----------------------------------------------------
 // A paused worker holds the batch while it is still running once the loop is done. A preflight the
