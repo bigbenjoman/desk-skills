@@ -1707,6 +1707,11 @@ t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind =
   t('DS-790 put off from alpha, it is in the machine\'s register, and off both lists and rv\'s count', `${off.ok} ${off.line.endsWith(`put off (${offFile}).`)} ${pageOf('alpha').length} ${pageOf('rv').length} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'true true 0 0 0');
   rmSync(offFile, { force: true });
   t('DS-790 its put-off cleared, it is listed again', pageOf('alpha').length, 1);
+  // The queue holds the repo as the pass's origin spells it, which GitHub does not care about.
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'Acme/RV', pr: 301, key: 'RV-1' }],
+    page: { at: minsAgo(20), why, repo: 'Acme/RV', pr: 301, install: '/desk/releases/aaa/bin' } }));
+  const cased = N.collect().items.filter((i) => i.kind === 'upload-page');
+  t('DS-790 a repo spelled in other case is still its repo: listed and counted there', `${cased.length} ${cased[0]?.r.slug} ${N.needsCount(rvBatch()).shown - rvBefore}`, '1 acme__rv 1');
   writeFileSync(uq, JSON.stringify({ jobs: [], page: null }));
   t('DS-790 AC4 the pause cleared, the item is gone', `${N.collect().items.some((i) => i.kind === 'upload-page')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
   rmSync(uq);

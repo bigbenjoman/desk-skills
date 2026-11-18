@@ -84,7 +84,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { deskHome, expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -923,7 +923,9 @@ function pageItems(batches, { home = false } = {}) {
   if (!p) return [];
   const live = batches.filter((x) => !x.error && x.q);
   const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
-  const r = first(live.filter((b) => ghRepoOf(b) === p.repo)) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => j.repo === ghRepoOf(b)))));
+  // The queue holds the pass's GitHub repo as its origin spells it; GitHub's names are case-insensitive.
+  const isRepo = (b, repo) => repo != null && [b.slug, slugOf(ghRepoOf(b))].includes(slugOf(String(repo)));
+  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => isRepo(b, j.repo)))));
   if (!r) return [];
   const prs = [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))];
   return [{ r, dir: deskHome(), t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
