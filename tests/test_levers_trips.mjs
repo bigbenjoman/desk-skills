@@ -308,6 +308,20 @@ t('every registered trip has a detector, or names the module that applies it', O
   run(C3, queueOf(onTicket(C3, 'E-1', 'codex', {}, tr3.id)));
   t('codex exiting with its own error (not a dead seat) is still its own step failing', eventsOf(C3, 'trip').map((e) => e.trip), ['own-step-error']);
 }
+// A trip read before a levers undo restored the trial, and written after it, is stamped after the
+// restore, so the log replays it last and the trial reads reverted.
+{
+  const { tripEvents } = await import('../desk/bin/levers-trips.mjs');
+  const early = new Date(Date.now() - 60_000).toISOString();
+  const restoreAt = new Date().toISOString();
+  const log = [
+    { id: 'o1', at: new Date(Date.now() - 120_000).toISOString(), kind: 'override', lever: 'codex', actor: 'ben', reason_code: 'ben_override', from: 'trial', to: 'off', value: 'off', reason: 'off' },
+    { id: 'o2', at: restoreAt, kind: 'override', lever: 'codex', actor: 'ben', reason_code: 'ben_override', from: 'overridden', to: 'trial', restores: { id: null, at: null }, undoes_event: 'o1', reason: 'undo' },
+  ];
+  const evs = tripEvents({ events: log, name: 'acme', at: early, x: { lever: 'codex', trip: 'audit-p0', ticket: 'K-1', from: 'trial', file: 'audit.jsonl', line: 1, why: 'a P0', defect: 'a P0' } });
+  const after = [...log, ...evs].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  t('a trip built after a restore is stamped no earlier than it, and the trial reads reverted', [evs.map((e) => e.at >= restoreAt), leverStatesIn(after).codex.state], [[true, true], 'reverted']);
+}
 t('a trip event missing its record\'s line is refused', (() => { try { append(A9, { kind: 'trip', lever: 'memory', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'x', ticket: 'M-9', evidence_file: 'f' }); return 'appended'; } catch (e) { return /evidence_line/.test(e.message); } })(), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');

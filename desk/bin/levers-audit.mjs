@@ -31,7 +31,7 @@ import { mkdirSync, readFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
 import { REVERTIBLE, applyTrips, tripEvents, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
@@ -271,9 +271,11 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   for (const [key, a] of Object.entries(item.arms ?? {})) {
     if (a !== 'on' || !isPairKey(key)) continue;
     const e = appendWith(slug, () => {
-      const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now: Date.parse(at) });
+      const evs = read(slug).events;
+      const p = pairTrial({ slug, events: evs, states, values: null, registry, now: Date.parse(at) });
       if (p?.key !== key || p.id !== item.trial_id || p.state !== 'trial') return null;
-      return pairRevert(p, { at, ticket: item.ticket, file, line, reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}` });
+      // After whatever the log holds, so a revert read past an undo's restore replays after it.
+      return pairRevert(p, { at: stampAfter(evs, at), ticket: item.ticket, file, line, reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}` });
     });
     if (e) events.push(e);
   }

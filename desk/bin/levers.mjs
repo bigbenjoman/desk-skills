@@ -88,6 +88,18 @@ const latestChange = (events, lever) => events.filter((e) => STATE_KINDS.include
 // An override of Ben's whose decision line was never written: the run that wrote it stopped short.
 const unfinished = (e, logged) => e?.kind === 'override' && e.actor === BY_HAND && !!e.decision_id && !logged.has(e.decision_id);
 
+// The lever's latest change in `events`, looking past the events an undo's own replay wrote in its
+// write (marked `replayed_by` its decision id): a trip the replay wrote would otherwise hide the undo it
+// belongs to from a run that finishes it.
+function latestOwnChange(events, lever) {
+  const changes = events.filter((e) => STATE_KINDS.includes(e.kind) && e.lever === lever && e.to != null);
+  let k = changes.length - 1;
+  while (k >= 0 && changes[k].replayed_by != null) k -= 1;
+  const own = changes[k];
+  if (own && changes.slice(k + 1).every((e) => e.replayed_by === own.decision_id)) return own;
+  return changes.at(-1);
+}
+
 // Appends what `build` returns from the repo's log under its lock (lever-log.mjs appendChecked). -> the
 // event (or events) as written, or null; throws on a refusal, which writes nothing.
 function appendFrom(slug, build) {
@@ -161,16 +173,19 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
   let relisted = [];
   let pending = null;
   let replays = 0;
+  let pendingReplay = [];
   const written = appendFrom(r.slug, (events) => {
-    const last = latestChange(events, lever);
+    const own = latestOwnChange(events, lever);
     // An undo whose decision line was never written is finished, not undone in its turn.
-    if (unfinished(last, loggedIds(state)) && last.undoes_event != null) {
-      pending = last;
-      undone = events.find((e) => e.id === last.undoes_event) ?? null;
+    if (unfinished(own, loggedIds(state)) && own.undoes_event != null) {
+      pending = own;
+      undone = events.find((e) => e.id === own.undoes_event) ?? null;
       adopt = undone?.kind === 'transition' ? adoptOf(events, undone) : null;
-      relisted = events.filter((e) => e.kind === 'needs_you' && e.relisted_by === last.decision_id);
+      relisted = events.filter((e) => e.kind === 'needs_you' && e.relisted_by === own.decision_id);
+      pendingReplay = events.filter((e) => e.replayed_by === own.decision_id);
       return null;
     }
+    const last = latestChange(events, lever);
     const at = stamp(events, now);
     const id = decisionId('undo', r.slug, lever, at);
     const cur = leverStatesIn(events)[lever];
@@ -190,7 +205,9 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
       // The items Ben's call cleared are listed again, after the undo that brings them back, in the same write.
       const relist = spentBy(events, i, lever).map(({ v, id: itemId, at: _at, repo: _repo, ...rest }) => ({ ...rest, at, relisted_from: itemId, relisted_by: id }));
       // A trial the undo restores answers a blind audit P0 recorded while it was off, in this same write.
-      const replay = auditP0Replay({ slug: r.slug, name: r.name, events: [...events, override], states: rowStates(repoConfigValues(r.slug, 'levers', configRoot)), at });
+      // Each carries the undo's decision id, so a run finishing this undo finds the undo past them.
+      const replay = auditP0Replay({ slug: r.slug, name: r.name, events: [...events, override], states: rowStates(repoConfigValues(r.slug, 'levers', configRoot)), at })
+        .map((e) => ({ ...e, replayed_by: id }));
       replays = replay.length;
       return [override, ...relist, ...replay];
     }
@@ -210,7 +227,8 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     return null;
   });
   if (!written && !pending) return { event: null, entry: null, relisted: [], repo: r, text: nothing };
-  const lines = written ? [written].flat() : [pending, ...relisted];
+  if (!written) replays = pendingReplay.length;
+  const lines = written ? [written].flat() : [pending, ...relisted, ...pendingReplay];
   const replayed = lines.splice(lines.length - replays, replays);
   const [event, ...items] = lines;
 

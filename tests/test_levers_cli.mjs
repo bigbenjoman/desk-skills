@@ -168,6 +168,12 @@ t('undo back to adopted: a ticket pinned on before the call still counts toward 
   const rT = levers('undo', 'ai-agents', 'codex');
   const tripped = events(AA).filter((e) => e.kind === 'trip');
   t('undo back to a trial with a P0 recorded while it was off: the trial is tripped in the same call, and the trip is logged', [rT.status, leverStatesIn(events(AA)).codex.state, tripped.map((e) => [e.from, e.to, e.trip]), decisions(AA).some((d) => d.lever_event != null && d.lever_event === tripped[0]?.id)], [0, 'reverted', [['trial', 'reverted', 'audit-p0']], true]);
+  // That undo, its decision line lost: a re-run looks past the trip its replay wrote, and finishes it.
+  const nT = events(AA).length;
+  const undoT = events(AA).filter((e) => e.kind === 'override').at(-1).decision_id;
+  writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA)[0])}\n`);
+  const rTRe = levers('undo', 'ai-agents', 'codex');
+  t('an undo re-run after a lost decision line, with a replayed trip in its write, finishes it and logs the trip', [rTRe.status, events(AA).length, decisions(AA).some((d) => d.id === undoT), decisions(AA).some((d) => d.lever_event === tripped[0]?.id), leverStatesIn(events(AA)).codex.state], [0, nT, true, true, 'reverted']);
   t('a trial with no such P0 is restored as it was', (() => { reset(AA); levers('decide', 'ai-agents', 'codex', 'off'); levers('undo', 'ai-agents', 'codex'); return [leverStatesIn(events(AA)).codex.state, events(AA).some((e) => e.kind === 'trip')]; })(), ['trial', false]);
 }
 

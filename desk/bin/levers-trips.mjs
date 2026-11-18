@@ -43,7 +43,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, stat
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REGISTRY, KEPT_STATES } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId } from './levers-auto.mjs';
 import { runsPath } from './findings.mjs';
 import { postMergePath } from './post-merge.mjs';
@@ -364,6 +364,9 @@ export function tripEvents({ events, name, x, at, registry = REGISTRY }) {
   const s = leverStatesIn(events, registry)[x.lever];
   if (s.state !== x.from) return [];
   if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return [];
+  // Stamped no earlier than what the log already holds (lever-log.mjs stampAfter): a trip read before a
+  // levers undo restored the lever, and written after it, would otherwise replay before the restore.
+  at = stampAfter(events, at);
   const e = {
     kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
     reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
