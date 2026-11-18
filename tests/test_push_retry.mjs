@@ -118,7 +118,7 @@ t('AC3 git\'s own exit code is kept', r.code, 128);
 r = await run(['origin', 'b'], [E5, NFF]);
 t('AC3 a refusal after a 5xx stops there', [r.code, r.calls.length], [1, 2]);
 
-// DS-803: a hook that could not run its checks is an environment failure, never a failing check.
+// A hook that could not run its checks is an environment failure, never a failing check.
 const VPL861 = [
   'pre-push: FAIL  pnpm format:check (1s, exit 1)',
   '> voicepa@ format:check /Users/x/voicepa-worktrees/base-feat-VPL-861-demo-caller-voices',
@@ -136,7 +136,9 @@ for (const [name, out, want] of [
   ['dash names it its own way', 'pre-push: FAIL  npm run lint (0s, exit 127)\nsh: 1: eslint: not found', '`eslint` (command not found)'],
   ['bash with a line number', 'pre-push: FAIL  make check (0s, exit 127)\nbash: line 1: ruff: command not found', '`ruff` (command not found)'],
   ['zsh puts the name last', 'pre-push: FAIL  just check (0s, exit 127)\nzsh: command not found: just', '`just` (command not found)'],
-  ['packages missing with no tool named', 'pre-push: FAIL  pnpm test (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?', '`node_modules` (packages not installed)'],
+  ['packages missing, and a package could not be loaded', 'pre-push: FAIL  pnpm test (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\nError: Cannot find module \'vitest\'', '`node_modules` (packages not installed)'],
+  ['or so says an ES module import', 'pre-push: FAIL  pnpm check (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\nnode:internal/modules/esm/resolve:873\n  code: \'ERR_MODULE_NOT_FOUND\'', '`node_modules` (packages not installed)'],
+  ['packages missing beside a check that ran and failed is a failing check', 'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\n[warn] b.txt\n[warn] Code style issues found in the above file.', null],
   ['DS-803 AC3 a real formatting failure is not one', FORMAT, null],
   ['nor is a refusal with no hook in it', 'sh: turbo: command not found\n ! [remote rejected] b -> b (pre-receive hook declined)', null],
 ]) t(name, hookEnvFailure(out), want);

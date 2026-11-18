@@ -23,7 +23,7 @@ const GIT_5XX = [
   /^(?:fatal|error): .*(?:RPC failed; HTTP 5\d\d\b|The requested URL returned error: 5\d\d\b)/i,
   new RegExp(`^remote: .*\\b${REASON}`, 'i'),
 ];
-const HOOK_FAILED = /^pre-push: FAIL\b/m;
+const HOOK_FAILED = /^pre-push: FAIL\b.*$/m;
 
 // Did this refused push fail on a server error, rather than on a check, a rule or the branch's history?
 export function transientPush(out) {
@@ -40,8 +40,11 @@ const NOT_FOUND = [
   /^\s*\S+: \d+: ([^\s:]+): not found\s*$/m,
   /^\s*\S+: command not found: (\S+)\s*$/m,
 ];
-// pnpm's warning before it runs a script whose packages were never installed.
+// pnpm's warning before it runs a script whose packages were never installed. It comes before every
+// script there, a check that ran and failed on the code included, so on its own it proves nothing:
+// it is an environment failure only beside node's own error for a package it could not load.
 const NO_PACKAGES = /\bnode_modules missing\b/;
+const NO_MODULE = /^\s*(?:Error: Cannot find (?:module|package) |.*\bERR_MODULE_NOT_FOUND\b)/m;
 export function hookEnvFailure(out) {
   const s = String(out ?? '');
   if (!HOOK_FAILED.test(s)) return null;
@@ -49,14 +52,14 @@ export function hookEnvFailure(out) {
     const m = re.exec(s);
     if (m) return `\`${m[1]}\` (command not found)`;
   }
-  return NO_PACKAGES.test(s) ? '`node_modules` (packages not installed)' : null;
+  return NO_PACKAGES.test(s) && NO_MODULE.test(s) ? '`node_modules` (packages not installed)' : null;
 }
 
 // The line a refused push is quoted by: a hook's FAIL line where its check failed, which names the
 // check, and otherwise git's or the remote's first line.
 export function refusalLine(out) {
   const s = String(out ?? '').replace(/^To .*$/m, '');
-  const failed = /^pre-push: FAIL\b.*$/m.exec(s)?.[0];
+  const failed = HOOK_FAILED.exec(s)?.[0];
   const env = hookEnvFailure(s);
   if (env) return `the pre-push hook could not run its checks here: ${env}, an environment failure, not a failing check (${failed.trim()})`;
   return (failed ?? s.split('\n').map((l) => l.trim()).find(Boolean) ?? '').trim();

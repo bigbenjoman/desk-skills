@@ -246,5 +246,5 @@ export function openingCommit({ path, base, branch, push = true, message }) {
   const p = git(path, ['push', '-q', '--no-verify', 'origin', `HEAD:refs/heads/${base}`]);
   if (p.ok) return { ok: true, ahead: 1, pushed: true };
   git(path, ['reset', '-q', '--hard', before]);
-  return { ok: false, reason: 'push', why: `the push of an empty commit to ${base} was refused: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
+  return { ok: false, reason: 'push', why: `the push of an empty commit to ${base} was refused: ${refusalLine(p.out)}` };
 }

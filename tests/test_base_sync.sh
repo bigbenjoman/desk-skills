@@ -552,12 +552,18 @@ NO_DEPS=$'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN   Local package.
 fresh hooked; hook "$NO_DEPS"; pass
 check "#837 DS-803 AC1 a base with nothing of its own is synced without running the hook, to main's content" \
   'origin_has_main && [ ! -e "$C/hook.ran" ] && git -C "$C/origin.git" diff --quiet main feat/x && [[ "$out" != *"was refused"* ]] && [[ "$out" != *"turbo"* ]]'
-# DS-803 AC3: with content of its own, the hook runs, and a real failing check refuses the push.
+# With content of its own, the hook runs, and a real failing check refuses the push.
 fresh hookfmt; own_commit; hook $'pre-push: ok    pnpm lint (1s)\npre-push: FAIL  pnpm format:check (1s, exit 1)\n[warn] b.txt\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\npre-push: push stopped.'
 tip=$(origin_tip); pass
 check "DS-803 AC3 a base with its own content runs the hook, and a failing check refuses the sync" \
   '[ -e "$C/hook.ran" ] && [ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"the push to feat/x was refused: pre-push: FAIL  pnpm format:check"* ]] && [[ "$out" != *"environment failure"* ]]'
-# DS-803 AC2: a hook that could not run its checks there is said as an environment failure, and the
+# pnpm warns of missing packages before every script there, so the warning beside a check that ran
+# and failed is still a failing check, and still refuses the push.
+fresh hookwarn; own_commit; hook $'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN   Local package.json exists, but node_modules missing, did you mean to install?\n[warn] b.txt\n[warn] Code style issues found in the above file.\npre-push: push stopped.'
+tip=$(origin_tip); pass
+check "DS-803 AC3 pnpm's missing-packages warning beside a failing check still refuses the sync" \
+  '[ -e "$C/hook.ran" ] && [ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"the push to feat/x was refused: pre-push: FAIL  pnpm format:check"* ]] && [[ "$out" != *"environment failure"* ]]'
+# A hook that could not run its checks there is said as an environment failure, and the
 # sync pushes without it.
 fresh hookenv; own_commit; hook "$NO_DEPS"; pass
 check "DS-803 AC2 a hook missing its tool is an environment failure naming it, and the sync still pushes" \
