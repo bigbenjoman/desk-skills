@@ -118,11 +118,12 @@ const QUALITY_KEY = (k, registry) => isPairKey(k) || registry[k]?.layer === 'qua
 
 // The quality-risk levers a repo's tickets may carry, from its row `states`, its config `values` and
 // its lever states `byLever`: those on trial, and those kept (adopted or settled), in registry order.
+// With `values` null the preconditions are not read (the evaluation weighs what tickets drew).
 function qualityLevers({ states, values, byLever, registry }) {
   const out = { trial: [], kept: [] };
   for (const [name, l] of Object.entries(registry)) {
     if (l.layer !== 'quality-risk' || !l.trialled || states?.[name] !== 'auto') continue;
-    if (!preconditions(name, values, registry).eligible) continue;
+    if (values && !preconditions(name, values, registry).eligible) continue;
     const s = byLever[name];
     if (s.state === 'trial') out.trial.push(name);
     else if (KEPT_STATES.includes(s.state)) out.kept.push(name);
@@ -130,8 +131,22 @@ function qualityLevers({ states, values, byLever, registry }) {
   return out;
 }
 
+// The id of the event that began `lever`'s latest unbroken run of kept states (adopted, then settled),
+// so settling an adopted lever does not start its pair trial again.
+function keptSince(events, lever) {
+  let id = null;
+  let kept = false;
+  for (const e of events) {
+    if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
+    const now = KEPT_STATES.includes(e.to);
+    if (now && !kept) id = e.id ?? null;
+    kept = now;
+  }
+  return kept ? id : null;
+}
+
 // The pair trial a repo runs, or null: its first two kept quality-risk levers once both are past their
-// holdbacks. Its id names the state each lever was kept in, so a lever reverted and kept again starts
+// holdbacks. Its id names the event each lever was kept from, so a lever reverted and kept again starts
 // a new one. `state` is the latest `pair` event's `to` for that id, `trial` with none.
 //   -> { key, id, levers, state, at } | null
 export function pairTrial({ slug, events, states, values = repoValues(), registry = REGISTRY, now = Date.now() }) {
@@ -141,7 +156,7 @@ export function pairTrial({ slug, events, states, values = repoValues(), registr
   const [a, b] = kept;
   if ([a, b].some((n) => inHoldback(byLever[n], registry[n], now))) return null;
   const key = pairKey(a, b);
-  const id = `${slug}/${key}/${byLever[a].id ?? 'initial'}+${byLever[b].id ?? 'initial'}`;
+  const id = `${slug}/${key}/${keptSince(events, a) ?? 'initial'}+${keptSince(events, b) ?? 'initial'}`;
   const last = events.filter((e) => e.kind === 'pair' && e.trial_id === id && e.to != null).at(-1);
   return { key, id, levers: [a, b].sort(), state: last ? last.to : 'trial', at: last?.at ?? null, event_id: last?.id ?? null };
 }
