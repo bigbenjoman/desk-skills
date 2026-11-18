@@ -75,11 +75,12 @@ function* gate(s) {
   const stoppedList = stopped.map((t) => `${t.key} (${t.state === 'failed' ? 'failed' : `parked: ${String(t.park?.question ?? '').slice(0, 80)}`})`).join(', ');
   let complete = false;
   let waits = false;
-  // The lines on the last slice, said only where the gate does not start.
+  // The lines on the last slice, said only where the gate does not start. Each is built as it is said,
+  // so it reads the gate as the redraft below leaves it.
   const lastLines = [];
   if (s.settled) {
     if (stopped.length) {
-      lastLines.push(waiting(`BASE GATE: ${g ? 'the last slice is ' : ''}not run, since ${stopped.length} child(ren) did not finish: ${stoppedList}. ` +
+      lastLines.push(() => waiting(`BASE GATE: ${g ? 'the last slice is ' : ''}not run, since ${stopped.length} child(ren) did not finish: ${stoppedList}. ` +
         `The base is checked ${g ? 'as a whole ' : ''}once every child has merged into ${BASE}${p.pr && !g?.ready ? `; promotion PR #${p.pr} stays draft` : ''}`));
     } else {
       const state = new Map();
@@ -88,10 +89,10 @@ function* gate(s) {
       const closed = tickets.filter((t) => t.result?.pr != null && state.get(t.key) === 'CLOSED');
       const open = tickets.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(state.get(t.key)));
       const never = [...noPr.map((t) => `${t.key} (finished with no PR)`), ...closed.map((t) => `${t.key} (PR #${t.result.pr} closed without merging)`)];
-      if (never.length) lastLines.push(waiting(`BASE GATE: not run, since ${never.join(', ')} cannot merge into ${BASE}: requeue or drop ${never.length > 1 ? 'them' : 'it'}`));
+      if (never.length) lastLines.push(() => waiting(`BASE GATE: not run, since ${never.join(', ')} cannot merge into ${BASE}: requeue or drop ${never.length > 1 ? 'them' : 'it'}`));
       if (open.length) {
         const list = open.map((t) => `${t.key} (PR #${t.result.pr})`).join(', ');
-        lastLines.push(s.driverLive ? out(`BASE GATE: waits on ${list} merging into ${BASE}`)
+        lastLines.push(() => s.driverLive ? out(`BASE GATE: waits on ${list} merging into ${BASE}`)
           : waiting(`BASE GATE: waits on ${list} merging into ${BASE}, and no merge driver is running: merge them`));
       }
       complete = !never.length && !open.length;
@@ -100,7 +101,7 @@ function* gate(s) {
   }
   const due = complete || uncovered.length >= s.slice || milestones.length > 0;
   if (!g && !due) {
-    yield* lastLines;
+    for (const l of lastLines) yield l();
     if (!lastLines.length) yield out(`BASE GATE: the next slice runs once ${s.slice - uncovered.length} more child(ren) merge into ${BASE} (${uncovered.length} of ${s.slice} so far), a milestone child merges, or the last child merges`);
     return waits;
   }
@@ -150,7 +151,7 @@ function* gate(s) {
   }
 
   const at = `${BASE} at ${String(g.sha ?? '?').slice(0, 12)}${g.slice ? ` (${sliceLabel(g.slice)})` : ''}`;
-  if (!complete) { yield* lastLines; yield* outside(); }
+  if (!complete) { for (const l of lastLines) yield l(); yield* outside(); }
   if (g.state === 'passed') {
     const link = qx.promotion?.url ?? (g.pr != null ? `https://github.com/${GH_REPO}/pull/${g.pr}` : null);
     if (g.pr == null) {

@@ -153,6 +153,9 @@ const fiveMerged = byKey(...['T-1', 'T-2', 'T-3', 'T-4', 'T-5'].map((k) => merge
   const slice = drive(snap({ tickets: byKey(merged('T-1'), parked), gate: passed() }));
   t('a parked child is named as not in the slice, before the gate\'s own line', j(lines(slice)), j(['BASE GATE: not in this slice: T-9 (parked: q)',
     'BASE GATE: passed on feat/x at aaaaaaaaaaaa (slice 1: 1 of 6 children): every acceptance spec, Typecheck, Lint and Unit tests. Promotion PR #50 is ready for review: https://github.com/o/r/pull/50 (merging it is yours)']));
+  const stoppedLast = drive(snap({ tickets: byKey(merged('T-1'), merged('T-2'), parked), gate: passed() }, { settled: true }));
+  t('a stopped last slice, once its ready PR goes back to draft, says the PR stays draft', lines(stoppedLast, 'report')[0],
+    'BASE GATE: the last slice is not run, since 1 child(ren) did not finish: T-9 (parked: q). The base is checked as a whole once every child has merged into feat/x; promotion PR #50 stays draft');
 }
 
 // A gate that failed on a conflict.
