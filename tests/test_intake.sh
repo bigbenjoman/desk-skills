@@ -107,6 +107,8 @@ esac
 EOF
 printf '#!/bin/sh\nexit 1\n' > "$T/fakes/launchctl"
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
+# No real notifier: on Linux notify.mjs tries notify-send, then WSL's powershell.exe, and neither may reach the desktop.
+printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell.exe"
 chmod +x "$T/fakes/"* "$T/bin/triage.sh" "$T/bin/merge-driver.sh"
 export PATH="$T/fakes:$PATH"
 
