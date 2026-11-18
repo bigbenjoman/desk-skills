@@ -19,3 +19,26 @@ export function runPhase({ name, snapshot, decide, handlers, report, skip = () =
   }
   return actions;
 }
+
+// How pass.mjs runs a phase whose decision is a generator (pass/advance.mjs): one that needs a read only
+// some cases make, or the result of a write, yields it as an action, and what the action's handler
+// returns is what its yield gives back. The handlers run as each action is yielded, so reads and writes
+// keep the order the decision makes them in. An action with no handler is reported as runPhase's is,
+// and its yield gives back undefined. -> the actions, in order.
+export function runSteps({ name, snapshot, decide, handlers, report }) {
+  const snap = snapshot();
+  const steps = decide(snap);
+  const actions = [];
+  for (let r = steps.next(); !r.done;) {
+    const a = r.value;
+    actions.push(a);
+    const handle = Object.hasOwn(handlers, a.type) ? handlers[a.type] : null;
+    if (typeof handle !== 'function') {
+      report.failed.push(`${a.key ? `${a.key}: ` : ''}the ${name} step has no handler for its "${a.type}" action, so that action was not carried out`);
+      r = steps.next(undefined);
+      continue;
+    }
+    r = steps.next(handle(a, snap));
+  }
+  return actions;
+}
