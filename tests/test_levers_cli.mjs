@@ -174,6 +174,16 @@ t('undo back to adopted: a ticket pinned on before the call still counts toward 
   writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA)[0])}\n`);
   const rTRe = levers('undo', 'ai-agents', 'codex');
   t('an undo re-run after a lost decision line, with a replayed trip in its write, finishes it and logs the trip', [rTRe.status, events(AA).length, decisions(AA).some((d) => d.id === undoT), decisions(AA).some((d) => d.lever_event === tripped[0]?.id), leverStatesIn(events(AA)).codex.state], [0, nT, true, true, 'reverted']);
+  // An undo whose decision line was lost, with a trip a pass wrote after it: a re-run still finishes it.
+  reset(AA);
+  levers('decide', 'ai-agents', 'codex', 'off');
+  levers('undo', 'ai-agents', 'codex');
+  const undoP = events(AA).filter((e) => e.kind === 'override').at(-1).decision_id;
+  writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA)[0])}\n`);
+  writeFileSync(logFile(AA), raw(AA) + line({ id: 'tp', at: new Date(Date.now() + 1000).toISOString(), kind: 'trip', lever: 'codex', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'reverted', trip: 'post-merge-revert', ticket: 'AA-7', evidence_file: 'post-merge.jsonl', evidence_line: 1 }));
+  const nP = events(AA).length;
+  const rPRe = levers('undo', 'ai-agents', 'codex');
+  t('an undo re-run after a lost decision line, with a pass trip after it, finishes it and writes nothing', [rPRe.status, events(AA).length, decisions(AA).some((d) => d.id === undoP), leverStatesIn(events(AA)).codex.state], [0, nP, true, 'reverted']);
   t('a trial with no such P0 is restored as it was', (() => { reset(AA); levers('decide', 'ai-agents', 'codex', 'off'); levers('undo', 'ai-agents', 'codex'); return [leverStatesIn(events(AA)).codex.state, events(AA).some((e) => e.kind === 'trip')]; })(), ['trial', false]);
 }
 

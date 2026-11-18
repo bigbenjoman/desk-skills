@@ -264,7 +264,7 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   appendWith(slug, () => { byLever = leverStatesIn(read(slug).events, registry); return null; });
   const trips = Object.entries(item.arms ?? {})
     .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
-    .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
+    .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, from_id: byLever[lever].id, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
   events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));
   // A P0 on a ticket drawn on for a pair trial ends that trial: the levers stay kept alone.

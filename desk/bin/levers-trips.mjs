@@ -319,7 +319,7 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
       if (!detect || hit) continue;
       let r = null;
       try { r = detect({ state, tickets, trip, cache }); } catch { r = null; }
-      if (r && !cited.has(`${lever}|${r.file}|${r.line}`)) hit = { lever, trip: trip.id, from: s.state, ...r };
+      if (r && !cited.has(`${lever}|${r.file}|${r.line}`)) hit = { lever, trip: trip.id, from: s.state, from_id: s.id, ...r };
     }
     for (const t of hit ? [] : tickets) {
       for (const trip of reg.trips) {
@@ -328,7 +328,7 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
         let recs = [];
         try { recs = detect({ state, t, queue, lever, trip, now, cache, registry }); } catch { recs = []; }
         const r = recs.find((x) => !cited.has(`${lever}|${x.file}|${x.line}`));
-        if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, ...r }; break; }
+        if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, from_id: s.id, ...r }; break; }
       }
       if (hit) break;
     }
@@ -358,11 +358,14 @@ export function applyTrips({ slug, name = slug, repo = null, decisionsState = ba
 
 // The events trip `x` writes on the lever log `events` (read under its lock): the trip, then its
 // needs_you where it froze the lever or names an error or a defect. None while the lever is no longer in
-// the state `x.from` the trip was read in, or once a trip cites the same evidence.
+// the state `x.from` the trip was read in, or, where `x` carries `from_id`, no longer in that same run of
+// it (leverStatesIn's `id`: a fresh trial levers decide started since has a new one, and a trial an undo
+// restored keeps its own), or once a trip cites the same evidence.
 //   -> [event] (applyTrips appends them; the caller logs the trip's decision)
 export function tripEvents({ events, name, x, at, registry = REGISTRY }) {
   const s = leverStatesIn(events, registry)[x.lever];
   if (s.state !== x.from) return [];
+  if (Object.hasOwn(x, 'from_id') && (s.id ?? null) !== (x.from_id ?? null)) return [];
   if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return [];
   // Stamped no earlier than what the log already holds (lever-log.mjs stampAfter): a trip read before a
   // levers undo restored the lever, and written after it, would otherwise replay before the restore.

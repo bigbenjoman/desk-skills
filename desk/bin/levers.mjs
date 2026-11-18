@@ -88,17 +88,10 @@ const latestChange = (events, lever) => events.filter((e) => STATE_KINDS.include
 // An override of Ben's whose decision line was never written: the run that wrote it stopped short.
 const unfinished = (e, logged) => e?.kind === 'override' && e.actor === BY_HAND && !!e.decision_id && !logged.has(e.decision_id);
 
-// The lever's latest change in `events`, looking past the events an undo's own replay wrote in its
-// write (marked `replayed_by` its decision id): a trip the replay wrote would otherwise hide the undo it
-// belongs to from a run that finishes it.
-function latestOwnChange(events, lever) {
-  const changes = events.filter((e) => STATE_KINDS.includes(e.kind) && e.lever === lever && e.to != null);
-  let k = changes.length - 1;
-  while (k >= 0 && changes[k].replayed_by != null) k -= 1;
-  const own = changes[k];
-  if (own && changes.slice(k + 1).every((e) => e.replayed_by === own.decision_id)) return own;
-  return changes.at(-1);
-}
+// Ben's latest call on the lever in `events`, an override by hand with a decision id, past any change
+// desk made after it: a trip its undo's own replay wrote, or one a pass wrote since, would otherwise
+// hide an undo whose decision line was never written from the run that finishes it.
+const latestCall = (events, lever) => events.filter((e) => e.kind === 'override' && e.actor === BY_HAND && e.lever === lever && !!e.decision_id).at(-1);
 
 // Appends what `build` returns from the repo's log under its lock (lever-log.mjs appendChecked). -> the
 // event (or events) as written, or null; throws on a refusal, which writes nothing.
@@ -175,7 +168,7 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
   let replays = 0;
   let pendingReplay = [];
   const written = appendFrom(r.slug, (events) => {
-    const own = latestOwnChange(events, lever);
+    const own = latestCall(events, lever);
     // An undo whose decision line was never written is finished, not undone in its turn.
     if (unfinished(own, loggedIds(state)) && own.undoes_event != null) {
       pending = own;
@@ -205,7 +198,7 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
       // The items Ben's call cleared are listed again, after the undo that brings them back, in the same write.
       const relist = spentBy(events, i, lever).map(({ v, id: itemId, at: _at, repo: _repo, ...rest }) => ({ ...rest, at, relisted_from: itemId, relisted_by: id }));
       // A trial the undo restores answers a blind audit P0 recorded while it was off, in this same write.
-      // Each carries the undo's decision id, so a run finishing this undo finds the undo past them.
+      // Each carries the undo's decision id, so a run finishing this undo logs the trip's decision too.
       const replay = auditP0Replay({ slug: r.slug, name: r.name, events: [...events, override], states: rowStates(repoConfigValues(r.slug, 'levers', configRoot)), at })
         .map((e) => ({ ...e, replayed_by: id }));
       replays = replay.length;
