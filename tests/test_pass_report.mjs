@@ -6,7 +6,9 @@ import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
-const lines = (acts) => acts.filter((a) => a.type === 'out' || a.type === 'line').map((a) => a.line);
+// A generator decision's actions, each yield given back what `answer` returns for it.
+const drive = (steps, answer) => { const acts = []; for (let r = steps.next(); !r.done; r = steps.next(answer(r.value))) acts.push(r.value); return acts; };
+const lines = (acts) =>acts.filter((a) => a.type === 'out' || a.type === 'line').map((a) => a.line);
 
 const NOW = Date.parse('2026-11-18T12:00:00.000Z');
 const byKey = (list) => Object.fromEntries(list.map((x) => [x.key, x]));
@@ -137,12 +139,16 @@ const after = (fields = {}) => ({
   const at = '2026-11-10T09:00:00.000Z';
   const was = { 'pr-head': 'aaa' };
   const register = { ok: true, entries: new Map([[questionKey('Q?'), { hash: inputsHash(was), inputs: was, by: 'Ben', at }]]) };
-  const refresh = decidePutOffRefresh({ putOff: [
-    { key: 'P-1', question: 'Q?', inputs: was, now: { 'pr-head': 'bbb' } },
-    { key: 'P-2', question: 'Q?', inputs: was, now: was },
-  ] });
-  t('a put-off park whose input changed has its inputs refreshed, only while it is still parked on that question; one unchanged is not',
-    j(refresh), j([{ type: 'park-inputs', key: 'P-1', question: 'Q?', inputs: { 'pr-head': 'bbb' } }]));
+  const reads = { 'P-1': { 'pr-head': 'bbb' }, 'P-2': was };
+  const refresh = drive(decidePutOffRefresh({ putOff: [
+    { key: 'P-1', question: 'Q?', inputs: was, branch: 'fix/P-1' },
+    { key: 'P-2', question: 'Q?', inputs: was, branch: 'fix/P-2' },
+  ] }), (a) => (a.type === 'read-inputs' ? reads[a.key] : undefined));
+  t('a put-off park whose input changed gets its refreshed inputs; one unchanged does not',
+    j(refresh.filter((a) => a.type === 'park-inputs')), j([{ type: 'park-inputs', key: 'P-1', question: 'Q?', inputs: { 'pr-head': 'bbb' } }]));
+  t('...each park is read again and its write staged before the next park is read',
+    j(refresh.map((a) => `${a.type}:${a.key}`)), '["read-inputs:P-1","park-inputs:P-1","read-inputs:P-2"]');
+  t('...and a read names the park\'s inputs and branch', j(refresh[0]), j({ type: 'read-inputs', key: 'P-1', inputs: was, branch: 'fix/P-1' }));
   const acts = decideReportLines(after({ register, askedAgain: [{ key: 'P-1', question: 'Q?', now: { 'pr-head': 'bbb' } }] }));
   t('a put-off park asked again is reported, and writes nothing more', j(acts.map((a) => `${a.type}:${a.key ?? ''}`)), '["report:P-1","out:"]');
   t('...and it is listed under PARKED, saying what changed', acts[1].line, `PARKED:\n  P-1: Q? — ${lookup(register, { question: 'Q?', inputs: { 'pr-head': 'bbb' } }).line}`);
@@ -234,14 +240,14 @@ const vsnap = (tickets, fields = {}) => {
     return [
       decideDrift({ tickets, branch: 'main', behind: { A: '2' } }),
       decideReportOpening(opening({ registry: registry(false, 'x'), report: { ...emptyReport(), spawned: ['A'] } })),
-      decidePutOffRefresh({ putOff: [{ key: 'P', question: 'Q?', inputs: { 'pr-head': 'a' }, now: { 'pr-head': 'b' } }] }),
+      drive(decidePutOffRefresh({ putOff: [{ key: 'P', question: 'Q?', inputs: { 'pr-head': 'a' }, branch: 'fix/P' }] }), () => ({ 'pr-head': 'b' })),
       decideReportLines(after({ overrides: [{ id: 'o', ticket: 'A', question: 'q', chose: 'b', was: 'a', by: 'x', at: 'y' }], reviewClash: 'c' })),
       decideGroups({ tickets, at: 'T', groups: { A: 'Running' } }),
       decideVerdict(vsnap(Object.values(tickets))),
       decideVerdictLines({ push: [], out: ['a'], footer: [], idle: true, queue: { tickets }, costTable: null }),
     ];
   });
-  t('AC4 each decision returns its actions', j(out?.map((acts) => acts.length)), '[1,2,1,5,1,1,5]');
+  t('AC4 each decision returns its actions', j(out?.map((acts) => acts.length)), '[1,2,2,5,1,1,5]');
   t('AC4 and starts no process and writes no file on the way', j([threw, calls]), '[null,[]]');
 }
 

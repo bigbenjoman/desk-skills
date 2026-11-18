@@ -5246,24 +5246,23 @@ updateLedger(queue());
 const blocked = blockedOf(all);
 const heldBack = all.filter((r) => r.state === 'triaged' && (r.open_questions ?? 0) === 0 && collidesWithRunning(r));
 // A put-off park whose inputs changed (pass/report.mjs decidePutOffRefresh) gets its refreshed inputs
-// only onto the park it read: a requeue or answer landing during the remote read stands. They are
-// written before PARKED is built, so a requeue landing after a set takes it back under the lock, and
-// that ticket is not listed.
+// only onto the park it read: a requeue or answer landing during the remote read stands. Each park's
+// inputs are read and its set staged before the next park's are read, so a write landing on a park
+// already staged is kept at the flush. They are written before PARKED is built, so a requeue landing
+// after a set takes it back under the lock, and that ticket is not listed.
 const askedAgain = [];
-runPhase({
+runSteps({
   name: 'put-off refresh',
   snapshot: () => ({
     ...baseSnapshot(),
-    putOff: Object.values(queue().tickets).filter(putOff).map((t) => ({
-      key: t.key, question: t.park.question, inputs: t.park.inputs ?? {},
-      now: refreshInputs(t.park.inputs ?? {}, {
-        prHead: () => (t.branch ? sh('git', ['ls-remote', 'origin', `refs/heads/${t.branch}`], { tolerant: true }).split(/\s/)[0] || null : null),
-        config: (id) => { try { return E.configValue(id); } catch { return null; } },
-      }),
-    })),
+    putOff: Object.values(queue().tickets).filter(putOff).map((t) => ({ key: t.key, question: t.park.question, inputs: t.park.inputs ?? {}, branch: t.branch ?? null })),
   }),
   decide: decidePutOffRefresh,
   handlers: {
+    'read-inputs': (a) => refreshInputs(a.inputs, {
+      prHead: () => (a.branch ? sh('git', ['ls-remote', 'origin', `refs/heads/${a.branch}`], { tolerant: true }).split(/\s/)[0] || null : null),
+      config: (id) => { try { return E.configValue(id); } catch { return null; } },
+    }),
     'park-inputs': (a) => {
       const args = ['set', a.key, `park.inputs=${JSON.stringify(a.inputs)}`];
       const w = QW.apply(args, { when: (x) => x.state === 'parked' && x.park?.question === a.question });

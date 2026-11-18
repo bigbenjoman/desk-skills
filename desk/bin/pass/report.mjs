@@ -11,6 +11,8 @@
 //   { type: 'set', key, fields }           queue fields to set on the ticket
 //   { type: 'drift', key, line }           a ticket behind the default branch, for the drift line
 //   { type: 'seen', file, text }           a seen-file in the state directory, rewritten
+//   { type: 'read-inputs', key, inputs, branch }  a put-off park's inputs read again (a yield, given
+//                                          back as the inputs now: decidePutOffRefresh)
 //   { type: 'park-inputs', key, question, inputs }  a put-off park's refreshed inputs, written only
 //                                          while the ticket is still parked on `question`
 import { isHeld, batchIdle, waitingOnRead } from '../batch-state.mjs';
@@ -100,11 +102,16 @@ function promotionHoldLine(s) {
 // ---- put-off parks asked again -------------------------------------------------
 // A put-off park whose `pr-head` or `config:<id>` input has changed since is asked again: its
 // refreshed inputs go on the park, where the verdict and the digest read them, and decideReportLines
-// lists it under PARKED. The snapshot adds:
-//   putOff   [{ key, question, inputs, now }] each put-off park, with its inputs read again
-export function decidePutOffRefresh(s) {
-  return s.putOff.filter((p) => inputsHash(p.now) !== inputsHash(p.inputs))
-    .map((p) => ({ type: 'park-inputs', key: p.key, question: p.question, inputs: p.now }));
+// lists it under PARKED. A generator run by runSteps: each park's inputs are read again (yield
+// `read-inputs`, given back as the inputs now) and its set staged before the next park's are read.
+// The snapshot adds:
+//   putOff   [{ key, question, inputs, branch }] each put-off park
+export function* decidePutOffRefresh(s) {
+  for (const p of s.putOff) {
+    const now = yield { type: 'read-inputs', key: p.key, inputs: p.inputs, branch: p.branch };
+    if (inputsHash(now) === inputsHash(p.inputs)) continue;
+    yield { type: 'park-inputs', key: p.key, question: p.question, inputs: now };
+  }
 }
 
 // The snapshot adds:
