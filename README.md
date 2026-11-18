@@ -893,7 +893,11 @@ process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it throug
 (`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
 actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
 `pass.mjs` as a handler. Each phase has its own unit suite, `tests/test_pass_<phase>.mjs`; the first
-is crashed uploads.
+is crashed uploads. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
+the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
+false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers
+more than one phase calls live in that module too (`tests/test_pass_shared.mjs`); a phase imports
+them from there, never from `pass.mjs`.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
