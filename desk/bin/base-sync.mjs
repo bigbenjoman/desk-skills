@@ -17,6 +17,7 @@ import { join, resolve } from 'node:path';
 import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
 import { runItem } from './baseline.mjs';
 import { execGit } from './remote-git.mjs';
+import { hookEnvFailure, refusalLine } from './push-retry.mjs';
 
 const git = (cwd, args) => {
   try { return { ok: true, out: execGit('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; }
@@ -202,12 +203,17 @@ export function syncBase({ path, base, branch, push = true, dry = false, check =
       git(path, ['clean', '-fdq']);
       if (failed) return { ok: false, reason: 'check', files: [], check: failed, merged };
     }
-    // --no-verify: the repo's pre-push hook is for authored work, and this push adds none: it holds
-    // commits the default branch's CI has already checked (and `check`, where §4 Merged-tree check
-    // is set, has run on the merged tree). The base worktree has no installed dependencies, so a
-    // hook that runs the repo's own checks could only fail there, on the worktree, not the code.
-    const p = git(path, ['push', '-q', '--no-verify', 'origin', `HEAD:refs/heads/${base}`]);
-    if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0 };
+    // A merged tree that is origin/<branch>'s own adds nothing the default branch's CI has not
+    // checked, so it pushes with --no-verify: the base worktree has no installed dependencies, and a
+    // hook that runs the repo's checks could only fail there, on the worktree, not the code. Where
+    // the base holds content of its own the hook runs, and a failing check refuses the push; a hook
+    // that could not run its checks at all is skipped, and the result says so in `hookSkipped`.
+    const own = git(path, ['rev-parse', 'HEAD^{tree}']).out !== git(path, ['rev-parse', `origin/${branch}^{tree}`]).out;
+    const pushTo = (verify) => git(path, ['push', '-q', ...(verify ? [] : ['--no-verify']), 'origin', `HEAD:refs/heads/${base}`]);
+    let p = pushTo(own);
+    const hookSkipped = own && !p.ok ? hookEnvFailure(p.out) : null;
+    if (hookSkipped) p = pushTo(false);
+    if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0, ...(hookSkipped ? { hookSkipped } : {}) };
     // Never leave a merge origin does not have: the next sync starts from origin's base again.
     git(path, ['reset', '-q', '--hard', before]);
     // The merge driver can merge a PR into the base between our fetch and our push. Once only.
@@ -218,7 +224,7 @@ export function syncBase({ path, base, branch, push = true, dry = false, check =
       if (!merged) return { ok: true, merged: 0, pushed: false, retried: true };
       continue;
     }
-    return { ok: false, reason: 'push', why: `the push to ${base} was refused${attempt ? ' (after one fetch and retry)' : ''}: ${firstLine(p.out.replace(/^To .*$/m, ''))}` };
+    return { ok: false, reason: 'push', why: `the push to ${base} was refused${attempt ? ' (after one fetch and retry)' : ''}: ${refusalLine(p.out)}` };
   }
 }
 

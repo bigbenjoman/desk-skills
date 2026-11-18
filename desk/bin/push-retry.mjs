@@ -31,6 +31,37 @@ export function transientPush(out) {
   return !HOOK_FAILED.test(s) && s.split('\n').some((l) => GIT_5XX.some((re) => re.test(l)));
 }
 
+// A pre-push hook that could not run its checks, rather than one a check failed: what it lacked, as
+// `turbo` (command not found) or `node_modules` (packages not installed), or null. A shell names a
+// missing command in one of three forms: bash `turbo: command not found`, dash `sh: 1: turbo: not
+// found`, zsh `zsh: command not found: turbo`.
+const NOT_FOUND = [
+  /^\s*(?:\S+: )*(?:line \d+: )?([^\s:]+): command not found\s*$/m,
+  /^\s*\S+: \d+: ([^\s:]+): not found\s*$/m,
+  /^\s*\S+: command not found: (\S+)\s*$/m,
+];
+// pnpm's warning before it runs a script whose packages were never installed.
+const NO_PACKAGES = /\bnode_modules missing\b/;
+export function hookEnvFailure(out) {
+  const s = String(out ?? '');
+  if (!HOOK_FAILED.test(s)) return null;
+  for (const re of NOT_FOUND) {
+    const m = re.exec(s);
+    if (m) return `\`${m[1]}\` (command not found)`;
+  }
+  return NO_PACKAGES.test(s) ? '`node_modules` (packages not installed)' : null;
+}
+
+// The line a refused push is quoted by: a hook's FAIL line where its check failed, which names the
+// check, and otherwise git's or the remote's first line.
+export function refusalLine(out) {
+  const s = String(out ?? '').replace(/^To .*$/m, '');
+  const failed = /^pre-push: FAIL\b.*$/m.exec(s)?.[0];
+  const env = hookEnvFailure(s);
+  if (env) return `the pre-push hook could not run its checks here: ${env}, an environment failure, not a failing check (${failed.trim()})`;
+  return (failed ?? s.split('\n').map((l) => l.trim()).find(Boolean) ?? '').trim();
+}
+
 // A push that never got an answer: no network, or a remote that could not be reached. A 4xx is an
 // answer, and so is git's "Could not read from remote", which also follows a revoked SSH key.
 const UNREACHED = /^(?:ssh: |fatal: (?:unable to access (?!.*The requested URL returned error)|the remote end hung up))/m;
@@ -73,7 +104,10 @@ export async function pushWithRetry({ more, push }, { git, sleep, now, say }) {
     const tried = now();
     const r = git(push);
     if (r.status === 0) return 0;
-    if (!transientPush(r.out)) return r.status || 1;
+    if (!transientPush(r.out)) {
+      if (hookEnvFailure(r.out)) say(`push-retry: ${refusalLine(r.out)}`);
+      return r.status || 1;
+    }
     const secs = waits[tries - 1];
     const spent = Math.round((now() - began) / 1000);
     const last = Math.round((now() - tried) / 1000);

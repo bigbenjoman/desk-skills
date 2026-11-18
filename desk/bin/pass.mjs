@@ -2295,7 +2295,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       q('set-batch', `base_fix=${bf ? JSON.stringify(bf) : 'null'}`);
     }
     if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
-    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}${staleCI.length ? `; ${staleCI.join(', ')} ${staleCI.length === 1 ? 'is' : 'are'} reopened so CI runs` : ''}`);
+    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}${s.hookSkipped ? `; the pre-push hook could not run its checks in the base worktree (${s.hookSkipped}, an environment failure, not a failing check), so it was pushed without them and CI checks it` : ''}${staleCI.length ? `; ${staleCI.join(', ')} ${staleCI.length === 1 ? 'is' : 'are'} reopened so CI runs` : ''}`);
     else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
     else if (s.reason === 'conflict' || s.reason === 'check') {
       metConflict = true;
