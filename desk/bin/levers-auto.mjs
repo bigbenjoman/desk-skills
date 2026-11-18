@@ -139,12 +139,16 @@ function qualityLevers({ states, values, byLever, registry }) {
 }
 
 // The id of the event that began `lever`'s latest unbroken run of kept states (adopted, then settled),
-// so settling an adopted lever does not start its pair trial again.
+// so settling an adopted lever does not start its pair trial again. An undo that restores a state
+// (levers undo) puts back the run as it stood before the call it undoes, so the pair keeps its trial id.
 function keptSince(events, lever) {
   let id = null;
   let kept = false;
+  const before = new Map();
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
+    before.set(e.id, { id, kept });
+    if (e.kind === 'override' && e.restores && before.has(e.undoes_event)) { ({ id, kept } = before.get(e.undoes_event)); continue; }
     const now = KEPT_STATES.includes(e.to);
     if (now && !kept) id = e.id ?? null;
     kept = now;

@@ -133,6 +133,25 @@ t('undo back to adopted: the holdback runs from the adopt, not the undo', [sAd.s
 const pinnedBefore = { levers: { set: ['wrappers'], arms: {}, at: at(2) } };
 t('undo back to adopted: a ticket pinned on before the call still counts toward its trips', onArm(pinnedBefore, 'wrappers', sAd, AA, events(AA)), true);
 
+// Undo back to a kept quality-risk lever keeps its pair trial, and the pair's recorded verdict with it.
+{
+  const { pairTrial, qualityTrials } = await import('../desk/bin/levers-auto.mjs');
+  reset(AA);
+  mkdirSync(state(AA), { recursive: true });
+  writeFileSync(logFile(AA), [
+    line({ id: 'kc', at: at(10), kind: 'transition', lever: 'codex', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', ...ev }),
+    line({ id: 'kr', at: at(9), kind: 'transition', lever: 'review-reuse', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', ...ev }),
+  ].join(''));
+  const pair = () => pairTrial({ slug: AA, events: events(AA), states: ALL_AUTO, values: null });
+  const p0 = pair();
+  writeFileSync(logFile(AA), raw(AA) + line({ id: 'pv', at: at(5), kind: 'pair', trial_id: p0.id, from: 'trial', to: 'reverted', actor: 'levers-audit', reason_code: 'audit_p0', reason: 'a blind audit found a P0' }));
+  t('kept pair: the audit reverted the pair', pair().state, 'reverted');
+  levers('decide', 'ai-agents', 'codex', 'off');
+  levers('undo', 'ai-agents', 'codex');
+  const p1 = pair();
+  t('undo back to a kept pair: the pair keeps its trial id and its reverted verdict, so no ticket draws it again', [leverStatesIn(events(AA)).codex.state, p1.id, p1.state, qualityTrials({ slug: AA, events: events(AA), states: ALL_AUTO, values: null }).some((q) => q.key === p1.key)], ['adopted', p0.id, 'reverted', false]);
+}
+
 // A run that wrote its override but stopped before its decision line is finished by running it again.
 reset(AA);
 levers('decide', 'ai-agents', 'wrappers', 'off');
