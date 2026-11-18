@@ -351,7 +351,8 @@ function leverRows(v) {
     let next;
     if (status === 'pinned') next = `Pinned by hand in ${l.cells.filter((c) => c.state === 'pinned').map((c) => c.repo).join(', ')}, so this is a before-and-after, not a test.`;
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
-    else if (reg && !reg.trialled) next = 'Tested one at a time with blind reviews, once desk starts trialling it.';
+    // A quality-risk lever is off until its trial is begun, then reaches tickets one lever at a time.
+    else if (reg && (!reg.trialled || reg.layer === 'quality-risk')) next = 'Tested one at a time with blind reviews, once desk starts trialling it.';
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
     return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, i, rank: order[status] };
