@@ -162,7 +162,7 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // merged is one; a pass that saw that merge recorded it as the last (lastPromotionRecorded).
   const left = rows.filter((t) => !['done', 'running'].includes(t.state) && !t.merged_at);
   const kept = rows.filter((t) => !left.includes(t));
-  // A merged promotion ends the batch only when it was the last slice, as pass.mjs nextPromotion
+  // A merged promotion ends the batch only when it was the last slice, as pass/promotion-pr.mjs nextPromotion
   // decides; an earlier merged slice is followed by the next one. It is decided here too, since no
   // pass runs for a batch that went idle before its last promotion merged.
   const last = ps === 'MERGED' && (lastPromotion(q.tickets, mergedAt(p))
