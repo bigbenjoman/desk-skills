@@ -538,6 +538,12 @@ node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileS
 pass
 check "a production base in the queue is refused"    '[ $rc -eq 11 ] && [[ "$out" == *"is a production branch"* ]] && [ "$(git -C "$C/origin.git" rev-parse production)" = "$tip" ] && [ ! -e "$C/wt/base-production" ]'
 
+# desk-skills#837: the repo's own pre-push hook does not run on a base sync. The base worktree has no
+# installed deps, so a hook that runs the repo's checks could only fail there.
+fresh hooked; mkdir -p "$C/hooks"; printf '#!/bin/sh\necho "sh: turbo: command not found" >&2\nexit 1\n' > "$C/hooks/pre-push"; chmod +x "$C/hooks/pre-push"
+git -C "$C/repo" config core.hooksPath "$C/hooks"; pass
+check "#837 a failing pre-push hook does not refuse the base sync" 'origin_has_main && [[ "$out" != *"was refused"* ]] && [[ "$out" != *"turbo"* ]]'
+
 # AC5: a push refused as non-fast-forward is fetched, merged again and retried once.
 fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q feat/x; echo "$C/other" > "$T/race.arm"; pass
 check "a non-fast-forward push is retried and lands" 'origin_has_main && git -C "$C/origin.git" log --format=%s feat/x | grep -qx "merged by the driver"'
