@@ -35,7 +35,8 @@ import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
 import { read as readLeverLog, appendWith as appendLeverLog } from './lever-log.mjs';
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
-import { leversDir, build as buildLeversView, render as renderLeversView } from './levers-view.mjs';
+import { leversDir } from './levers-view.mjs';
+import { refresh as refreshLevers } from './levers-refresh.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -281,9 +282,10 @@ export function leverChanges({ list, since = null, now = new Date(), seen = null
   return { changes, seen: recent };
 }
 
-// Rebuilds the Levers page the digest links. -> null, or why it could not be.
+// Brings the Levers page the digest links up to date (levers-refresh.mjs), keeping the last good page
+// when a build fails. -> null, or why it could not be.
 const buildLeversPage = () => {
-  try { buildLeversView(); renderLeversView(); return null; } catch (e) { return e.message; }
+  try { const r = refreshLevers(); return r.ran && !r.ok ? r.where : null; } catch (e) { return e.message; }
 };
 
 // The page: every repo with something to answer or something taken, questions first.

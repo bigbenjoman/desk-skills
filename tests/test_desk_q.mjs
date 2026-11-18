@@ -2381,6 +2381,9 @@ t('DS-654 AC19 dearer than the baseline, the headline in the warning colour', `$
   '▲ Levers 2.3% dearer per ticket │ kept 3 · testing 2 │ Open Levers ↗ | true');
 L654 = await leversLine654({ line: null, page: false });
 t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Build and open ↗');
+// A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
+L654 = await leversLine654({ line: WORKING654, age: 15 });
+t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
 
 // v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves.
 async function press654(opts, { rebuilt = null, how = 'v' } = {}) {
@@ -2423,6 +2426,7 @@ const run654 = (argv, opts, rebuilt = null) => {
 };
 t('DS-654 AC17 desk-q levers opens the page as v does and prints the same message', run654(['levers'], { line: WORKING654 }), `Opened Levers in your browser. Built ${at654(5)}. | 1`);
 t('DS-654 AC17 and rebuilds an old page first, saying so', run654(['levers'], { line: WORKING654, age: 180 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
+t('DS-654 AC17 a page over 10 minutes old is rebuilt first too', run654(['levers'], { line: WORKING654, age: 15 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
 t('DS-654 AC18 desk-q levers --plain prints the line without its arrow, then the page\'s path', run654(['levers', '--plain'], { line: WORKING654 }),
   `▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers\n${join(LV, 'index.html')} | 0`);
 rmSync(LV, { recursive: true, force: true });

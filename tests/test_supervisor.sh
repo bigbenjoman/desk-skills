@@ -571,10 +571,11 @@ check "DS-654: no input changed but the last build 11 minutes ago, the tick buil
 printf '{"at":"%s","kind":"transition","lever":"preflight","from":"trial","to":"adopted","actor":"evaluate","ticket":"WID-654"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LS/levers.jsonl"
 b0=$(built); out=$(tick)
 check "DS-654 AC2: a new levers.jsonl line, the next tick builds, and the page and its view model show it" '[ "$(built)" = $((b0 + 1)) ] && grep -q WID-654 "$LV/view.json" && grep -q WID-654 "$LV/index.html"'
-page0=$(cksum < "$LV/index.html"); mkdir "$LV/index.html.tmp"; echo >> "$LS/levers.jsonl"
+# A folder where view.json goes makes the build's write throw.
+page0=$(cksum < "$LV/index.html"); rm "$LV/view.json"; mkdir "$LV/view.json"; echo >> "$LS/levers.jsonl"
 out=$(tick); rc=$?
-check "DS-654 AC3: a build that throws leaves index.html unchanged, build.json holds the error, and the tick succeeds" '[ $rc -eq 0 ] && [ "$(cksum < "$LV/index.html")" = "$page0" ] && grep -q "\"failed\"" "$LV/build.json" && grep -q "index.html.tmp" "$LV/build.json" && grep -q "levers: couldn.t update the page" "$LOG"'
-rmdir "$LV/index.html.tmp"; echo >> "$LS/levers.jsonl"
+check "DS-654 AC3: a build that throws leaves index.html unchanged, build.json holds the error, and the tick succeeds" '[ $rc -eq 0 ] && [ "$(cksum < "$LV/index.html")" = "$page0" ] && grep -q "\"failed\"" "$LV/build.json" && grep -q "view.json" "$LV/build.json" && grep -q "levers: couldn.t update the page" "$LOG"'
+rmdir "$LV/view.json"; echo >> "$LS/levers.jsonl"
 b0=$(built)
 for _ in 1 2 3 4; do tick > /dev/null & done; wait
 check "DS-654 AC4: four ticks ending within a second run exactly one build" '[ "$(built)" = $((b0 + 1)) ] && ! grep -q "\"failed\"" "$LV/build.json"'

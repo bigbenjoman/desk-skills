@@ -17,7 +17,7 @@
 // 90% interval and n; a point estimate is hidden below 10 per arm; a guardrail may read breached early
 // but never ok early; cost is worded against its non-inferiority margin, and a saving is stated only
 // for an adopted lever whose whole interval is under 1.00; unknown is null, never 0.
-import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
@@ -25,6 +25,7 @@ import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignab
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
+import { writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -154,9 +155,30 @@ export function readBaseline(file) {
   };
 }
 
+// The files the view reads: the machine's, then each repo's, by what each holds. readRepo and buildView
+// read these and inputFiles fingerprints them, so an input is named in one place.
+const machineFiles = (root) => ({ pooled: join(leversDir(root), 'pooled-evals.jsonl'), freeze: join(root, 'levers.freeze') });
+function repoFiles(r, root) {
+  const state = join(root, r.slug);
+  const dirs = stateDirs(state);
+  return {
+    config: [r.config],
+    log: [join(state, 'levers.jsonl')], evals: [join(state, 'lever-evals.jsonl')], audit: [join(state, 'audit.jsonl')],
+    evidence: listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl')).map((f) => join(state, 'levers-evidence', f)),
+    baselines: listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f)).map((f) => join(state, f)),
+    postMerge: dirs.map((d) => join(d, 'post-merge.jsonl')),
+    supervisor: dirs.map((d) => join(d, 'supervisor.json')),
+    healths: dirs.map((d) => join(d, 'health.json')),
+  };
+}
+// The repo files a refresh leaves out of its fingerprint: the view shows only when each was last
+// written (supervisor.json's age, health.json's `at`), and a refresh rebuilds on age alone often
+// enough to keep that current, where fingerprinting them would rebuild on every tick.
+const AGE_ONLY = new Set(['supervisor', 'healths']);
+
 // Everything one repo holds, read once.
 function readRepo(r, root) {
-  const state = join(root, r.slug);
+  const f = repoFiles(r, root);
   const name = (r.ghRepo ?? r.slug).split('/').pop();
   // A malformed levers row is an error naming the config, never a missing row.
   let items = null;
@@ -164,37 +186,23 @@ function readRepo(r, root) {
   try { items = repoConfigValues(r.slug, 'levers', r.root); } catch (e) { configError = { file: r.config, line: rowNumber(r.config), message: e.message }; }
   const invalid = configError ? null : enrolment(items).invalid;
   if (invalid) configError = { file: r.config, line: rowNumber(r.config), message: invalid };
-  const dirs = stateDirs(state);
-  const newest = (file) => dirs.map((d) => mtimeIso(join(d, file))).filter(Boolean).sort().pop() ?? null;
-  const healths = dirs.map((d) => join(d, 'health.json')).filter(existsSync).map((file) => {
+  const healths = f.healths.filter(existsSync).map((file) => {
     try { return { file, at: JSON.parse(readFileSync(file, 'utf8')).at ?? null, error: null }; } catch (e) { return { file, at: null, error: { file, line: null, message: e.message } }; }
   });
-  const postMerge = dirs.map((d) => readJsonl(join(d, 'post-merge.jsonl')));
-  const evidence = listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl'))
-    .map((f) => { const file = join(state, 'levers-evidence', f); return { ...readJsonl(file), at: mtimeIso(file) }; });
-  const baselines = listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f));
   return {
     slug: r.slug, name, config: r.config, items, configRead: { error: configError },
     enrol: configError ? { row: 'error', auto: false, pinned: [] } : enrolment(items),
-    supervisor_at: newest('supervisor.json'), healths,
-    log: readJsonl(join(state, 'levers.jsonl')), evals: readJsonl(join(state, 'lever-evals.jsonl')), audit: readJsonl(join(state, 'audit.jsonl')),
-    postMerge, evidence, baseline: baselines.length ? join(state, baselines.at(-1)) : null,
+    supervisor_at: f.supervisor.map(mtimeIso).filter(Boolean).sort().pop() ?? null, healths,
+    log: readJsonl(f.log[0]), evals: readJsonl(f.evals[0]), audit: readJsonl(f.audit[0]),
+    postMerge: f.postMerge.map(readJsonl), evidence: f.evidence.map((file) => ({ ...readJsonl(file), at: mtimeIso(file) })),
+    baseline: f.baselines.at(-1) ?? null,
   };
 }
 
 // Every file whose contents the view's figures read, for a refresh to tell whether any changed.
-// supervisor.json and health.json are left out: the view reads only their age, and a refresh rebuilds
-// on age alone often enough to keep that current.
 export function inputFiles({ root = autopilotRoot(), configRoot = deskConfigRoot() } = {}) {
-  const files = [join(leversDir(root), 'pooled-evals.jsonl'), join(root, 'levers.freeze')];
-  for (const r of configuredRepos(configRoot)) {
-    const state = join(root, r.slug);
-    files.push(r.config, ...['levers.jsonl', 'lever-evals.jsonl', 'audit.jsonl'].map((f) => join(state, f)),
-      ...listDir(join(state, 'levers-evidence')).filter((f) => f.endsWith('.jsonl')).map((f) => join(state, 'levers-evidence', f)),
-      ...listDir(state).filter((f) => /^phase0-baseline-.*\.txt$/.test(f)).map((f) => join(state, f)),
-      ...stateDirs(state).map((d) => join(d, 'post-merge.jsonl')));
-  }
-  return files;
+  return [...Object.values(machineFiles(root)), ...configuredRepos(configRoot).flatMap((r) => Object.entries(repoFiles(r, root))
+    .filter(([k]) => !AGE_ONLY.has(k)).flatMap(([, files]) => files))];
 }
 
 // ---- dates, in the person's own time zone ---------------------------------------------------------------
@@ -275,8 +283,9 @@ const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Bool
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.
 export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now() } = {}) {
   const repos = configuredRepos(configRoot).map((r) => readRepo({ ...r, root: configRoot }, root));
-  const pooled = readJsonl(join(leversDir(root), 'pooled-evals.jsonl'));
-  const frozen = existsSync(join(root, 'levers.freeze'));
+  const machine = machineFiles(root);
+  const pooled = readJsonl(machine.pooled);
+  const frozen = existsSync(machine.freeze);
   const today = dayKey(now, tz);
   const weekAgo = now - WEEK_DAYS * DAY_MS;
 
@@ -514,8 +523,6 @@ export function buildRecord(view, ms) {
   };
 }
 
-const writeAtomic = (file, value) => { writeFileSync(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`); renameSync(`${file}.tmp`, file); };
-
 // Builds the view and writes view.json and build.json into `out`. -> { view, record, files }
 export function build({ out = leversDir(), ...opts } = {}) {
   const t0 = Date.now();
@@ -523,8 +530,8 @@ export function build({ out = leversDir(), ...opts } = {}) {
   const record = buildRecord(view, Date.now() - t0);
   mkdirSync(out, { recursive: true });
   const files = { view: join(out, 'view.json'), build: join(out, 'build.json') };
-  writeAtomic(files.view, view);
-  writeAtomic(files.build, record);
+  writeJsonAtomic(files.view, view);
+  writeJsonAtomic(files.build, record);
   return { view, record, files };
 }
 
@@ -534,8 +541,7 @@ export function render({ dir = leversDir() } = {}) {
   let view;
   try { view = JSON.parse(readFileSync(src, 'utf8')); } catch (e) { throw new Error(e.code === 'ENOENT' ? `no view.json at ${src}: run \`levers-view.mjs build\` first` : `cannot read ${src}: ${e.message}`); }
   const file = join(dir, 'index.html');
-  writeFileSync(`${file}.tmp`, renderPage(view));
-  renameSync(`${file}.tmp`, file);
+  writeTextAtomic(file, renderPage(view));
   return { file, view };
 }
 

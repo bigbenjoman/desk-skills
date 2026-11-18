@@ -126,11 +126,14 @@ export function unlockFile(file) {
 }
 process.on('exit', () => unlockFile());
 
-// Writes `obj` as JSON to `file` through a temporary file and a rename, so a reader that takes no
-// lock always sees one whole version.
-export function writeJsonAtomic(file, obj) {
+// Writes `text` to `file` through a temporary file and a rename, so a reader that takes no lock always
+// sees one whole version.
+export function writeTextAtomic(file, text) {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp.${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(obj, null, 2)}\n`);
+  writeFileSync(tmp, text);
   renameSync(tmp, file); // atomic within the same filesystem
 }
+
+// writeTextAtomic of `obj` as JSON.
+export const writeJsonAtomic = (file, obj) => writeTextAtomic(file, `${JSON.stringify(obj, null, 2)}\n`);

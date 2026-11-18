@@ -1935,8 +1935,8 @@ function openLeversPage(p, opener, before) {
   if (fault) return `Couldn't update Levers: ${fault}. Opened the last good page, built ${hhmm(p.builtAt)}.`;
   return `Opened Levers in your browser. Built ${before !== undefined && p.builtAt !== before ? 'just now' : hhmm(p.builtAt)}.`;
 }
-// Whether opening the page rebuilds it first: none yet, older than REBUILD_MS, or its last build failed.
-const leversDue = (p) => !p.page || p.stale || !!leversFault(p);
+// Whether opening the page rebuilds it first: none yet, old (pageState), or its last build failed.
+const leversDue = (p) => !p.page || p.old || !!leversFault(p);
 
 // The usage reading every header shows: the newest of both windows on the line's login (this computer's
 // Claude default with a subscriptions file, else lineLogin), how many workers run in every repo here,

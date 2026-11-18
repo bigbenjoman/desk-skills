@@ -6,28 +6,30 @@
 //
 //   node levers-refresh.mjs        one refresh; prints its result as one JSON line, and exits 0
 //
-//   import { refresh, pageState, whereOf, REBUILD_MS } from './levers-refresh.mjs'
+//   import { refresh, pageState, whereOf } from './levers-refresh.mjs'
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, mkdirSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deskConfigRoot } from './desk-env.mjs';
 import { autopilotRoot, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
 import { renderPage } from './levers-page.mjs';
-import { releaseDirLock, takeDirLock } from './dir-lock.mjs';
+import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
 // A page older than this is rebuilt whatever its inputs, so the ages it shows stay current.
-export const REBUILD_MS = 10 * 60 * 1000;
+const REBUILD_MS = 10 * 60 * 1000;
+// A page older than this has missed the rebuild several supervisor ticks would have made, so desk-q
+// warns that the supervisor may be stopped. Well past REBUILD_MS: a page waits up to one tick after
+// turning REBUILD_MS old before a tick rebuilds it, and that wait is not a fault.
+const STALE_MS = 30 * 60 * 1000;
 // How long a refresh waits for another one's build before leaving the page to it.
-export const LOCK_WAIT_MS = 10_000;
+const LOCK_WAIT_MS = 10_000;
 
 const filesIn = (dir) => ({ page: join(dir, 'index.html'), view: join(dir, 'view.json'), build: join(dir, 'build.json'), lock: join(dir, 'build.lock') });
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
-const writeAtomic = (file, text) => { writeFileSync(`${file}.tmp`, text); renameSync(`${file}.tmp`, file); };
-const json = (v) => `${JSON.stringify(v, null, 2)}\n`;
 
 // The inputs' names, sizes and modification times, hashed.
-export function fingerprint(opts) {
+function fingerprint(opts) {
   const parts = inputFiles(opts).map((f) => { try { const s = statSync(f); return `${f}\t${s.mtimeMs}\t${s.size}`; } catch { return `${f}\t-`; } });
   return createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 16);
 }
@@ -40,16 +42,17 @@ export function whereOf(error, repos = [], root = autopilotRoot()) {
   return `${r ? `${r.name} ` : ''}${basename(error.file)}${error.line ? ` line ${error.line}` : ''}`;
 }
 
-// What the last refresh left: the page, the view it was rendered from, build.json, and whether the
-// page is older than REBUILD_MS. `builtAt` is the page's build time in ms, null with no page.
+// What the last refresh left: the page, the view it was rendered from and build.json's failure.
+// `builtAt` is the page's build time in ms, null with no page; `old` says opening it rebuilds it
+// first (older than REBUILD_MS), and `stale` that no supervisor has rebuilt it (older than STALE_MS).
 export function pageState({ dir = leversDir(), now = Date.now() } = {}) {
   const f = filesIn(dir);
   const view = readJson(f.view);
-  const record = readJson(f.build);
   const page = existsSync(f.page) ? f.page : null;
   const at = page && view ? Date.parse(view.generated_at) : NaN;
   const builtAt = Number.isNaN(at) ? null : at;
-  return { dir, file: f.page, page, view, record, failed: record?.failed ?? null, builtAt, stale: builtAt == null || now - builtAt > REBUILD_MS };
+  const age = builtAt == null ? Infinity : now - builtAt;
+  return { file: f.page, page, view, failed: readJson(f.build)?.failed ?? null, builtAt, old: age > REBUILD_MS, stale: age > STALE_MS };
 }
 
 // One refresh. -> { ran: false, why: 'up_to_date' | 'busy' } or { ran: true, ok, line?, where? }.
@@ -74,16 +77,17 @@ export function refresh({ root = autopilotRoot(), configRoot = deskConfigRoot(),
     const fail = (error) => {
       const where = whereOf(error, view?.repos, root);
       const { failed: _, ...kept } = prev ?? {};
-      writeAtomic(f.build, json({ ...kept, attempted_at: attempted, fingerprint: fp, failed: { at: attempted, error, where } }));
+      writeJsonAtomic(f.build, { ...kept, attempted_at: attempted, fingerprint: fp, failed: { at: attempted, error, where } });
       return { ran: true, ok: false, where };
     };
     try {
       view = buildView({ root, configRoot });
       if (view.line.state === 'broken') return fail(view.line.error);
-      // The page first, so a write that fails leaves the view and the page it was drawn from.
-      writeAtomic(f.page, renderPage(view));
-      writeAtomic(f.view, json(view));
-      writeAtomic(f.build, json({ ...buildRecord(view, Date.now() - t0), attempted_at: attempted, fingerprint: fp }));
+      // The page last, so a write that fails before it leaves the last good page in place.
+      const html = renderPage(view);
+      writeJsonAtomic(f.view, view);
+      writeTextAtomic(f.page, html);
+      writeJsonAtomic(f.build, { ...buildRecord(view, Date.now() - t0), attempted_at: attempted, fingerprint: fp });
       return { ran: true, ok: true, line: view.line.state };
     } catch (e) { return fail({ file: null, line: null, message: e.message }); }
   } finally { releaseDirLock(f.lock); }
