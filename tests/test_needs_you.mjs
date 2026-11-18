@@ -2662,17 +2662,23 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 {
   const { prStatusOf } = await import('../desk/bin/batch-state.mjs');
   const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
-  put('web799', { port: 5801, beat: 1, supervised: true, tickets: {
+  put('web799', { port: 5801, beat: 1, supervised: true, pattern: 'S-[0-9]+', tickets: {
     'S-1': { state: 'done', lane: 'A', result: { pr: 3324 }, merged_at: minsAgo(90) },
     'S-2': { state: 'done', lane: 'A', result: { pr: 12 }, pr_status: { pr: 12, state: 'OPEN' } },
     'S-3': { state: 'done', lane: 'A', result: { pr: 3117 }, pr_status: { pr: 3117, state: 'MERGED', merged_at: minsAgo(80) } },
+    'S-6': { state: 'done', lane: 'A', result: { pr: 3330 }, merged_at: minsAgo(90) },
   } });
-  put('zen799', { port: 5800, beat: 1, supervised: true, project: 'S', tickets: {
+  // issue-<n> keys name a different ticket in each repo, so neither repo's issue-3 is the other's.
+  put('own799', { port: 5802, beat: 1, supervised: true, tickets: { 'issue-3': { state: 'done', lane: 'A', result: { pr: 20 }, merged_at: minsAgo(60) } } });
+  put('mine799', { port: 5803, beat: 1, supervised: true, tickets: { 'issue-3': { state: 'failed', lane: 'A' } } });
+  put('zen799', { port: 5800, beat: 1, supervised: true, project: 'S', pattern: 'S-[0-9]+', tickets: {
     'S-1': { state: 'failed', lane: 'A' },
     'S-2': { state: 'failed', lane: 'A' },
     'S-3': { ...held('S-9'), held_outside: 'S-9', open_questions: 1, outside_blockers: [{ key: 'S-9', category: 'new', assignee: null }] },
     'S-4': { state: 'failed', lane: 'A' },
     'S-5': held('S-1'),
+    // Requeued for more work after it merged here, then stopped: repo B's earlier merge is not this round's.
+    'S-6': { state: 'failed', lane: 'A', merged_at: minsAgo(20) },
   } });
   // GitHub knows S-4's merged PR in web799 only; no repo's queue records it.
   const reads = { ...N.READS, merged: (slug, key) => (slug === 'acme__web799' && key === 'S-4' ? { pr: 77, mergedAt: minsAgo(30) } : null) };
@@ -2687,6 +2693,10 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-799 AC3 a ticket held outside its batch whose PR merged in another repo recommends done', `${first(items['S-3'])} | ${items['S-3']?.actions.map((a) => a[0]).join()}`,
     'held | done | its PR #3117 merged in acme/web799: done records it done here from that PR, and the tickets held behind it can start | done,admit,answer,not-now');
   t('DS-799 AC4 a stopped ticket whose PR in another repo is unmerged offers no done', items['S-2']?.actions.map((a) => a[0]).includes('done'), false);
+  t('DS-799 AC4 a merge in another repo before this ticket\'s own merge here offers no done', items['S-6']?.actions.map((a) => a[0]).includes('done'), false);
+  const issueReads ={ ...N.READS, merged: () => ({ pr: 21, mergedAt: minsAgo(30) }) };
+  const mine = N.collect({ word: 'mine799', reads: issueReads }).items.find((i) => i.t.key === 'issue-3');
+  t('DS-799 AC4 an issue key merged in another repo is that repo\'s own issue, so offers no done', `${mine?.kind} ${mine?.actions.map((a) => a[0]).includes('done')}`, 'stopped false');
 
   const zq = () => queueOf('zen799').tickets;
   const d1 = N.record({ word: 'zen799', ticket: 'S-1', action: 'done', reads });

@@ -85,7 +85,8 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';import { fixClass } from './failure-class.mjs';
+import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
+import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
@@ -230,23 +231,30 @@ export const READS = {
 const mergedRead = new Map();
 // The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
 // queue record of it first (a PR it records merged), then GitHub (READS.merged) where `reads` is given.
-// -> { slug, repo, pr, mergedAt }, or null.
-function mergedElsewhere(r, key, reads) {
+// Only a tracker key both repos share is the same ticket there: an issue-<n> or ticket-file slug names
+// a different ticket in each repo. A ticket requeued after a merge here counts only a later merge, as
+// the pass's shippedElsewhere does. -> { slug, repo, pr, mergedAt }, or null.
+function mergedElsewhere(r, t, reads) {
+  const key = t.key;
+  if (!trackerTicket(r, key)) return null;
+  const own = Date.parse(t.merged_at);
+  const later = (e) => (Number.isNaN(own) || Date.parse(e.mergedAt) > own ? e : null);
   let others;
-  try { others = repoPortClaims().map((c) => c.slug).filter((s) => s !== r.slug); } catch { return null; }
+  try { others = repoPortClaims().map((c) => c.slug).filter((s) => s !== r.slug && trackerTicket({ slug: s }, key)); } catch { return null; }
   for (const slug of others) {
     let batches;
     try { batches = listBatches(slug); } catch { continue; }
     for (const b of batches) {
-      let t;
-      try { t = existsSync(b.queue) ? readQueue(b.queue).tickets?.[key] : null; } catch { continue; }
-      const s = prStatusOf(t);
-      if (t?.result?.pr != null && (t.merged_at || s?.state === 'MERGED')) return { slug, repo: ghRepoOf({ slug }), pr: Number(t.result.pr), mergedAt: t.merged_at ?? s?.merged_at ?? null };
+      let o;
+      try { o = existsSync(b.queue) ? readQueue(b.queue).tickets?.[key] : null; } catch { continue; }
+      const s = prStatusOf(o);
+      const hit = o?.result?.pr != null && (o.merged_at || s?.state === 'MERGED') && later({ slug, repo: ghRepoOf({ slug }), pr: Number(o.result.pr), mergedAt: o.merged_at ?? s?.merged_at ?? null });
+      if (hit) return hit;
     }
   }
   for (const slug of reads?.merged ? others : []) {
     const hit = reads.merged(slug, key);
-    if (hit) return { slug, repo: ghRepoOf({ slug }), ...hit };
+    if (hit && later(hit)) return { slug, repo: ghRepoOf({ slug }), ...hit };
   }
   return null;
 }
@@ -1024,7 +1032,7 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   // A stopped or outside-held ticket whose PR merged in another repo, where it was built, is done.
-  const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t.key, finds) : null;
+  const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t, finds) : null;
   const shipped = (item) => (elsewhere ? { ...item, elsewhere, actions: shippedFirst(item.actions, elsewhere) } : item);
   if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
   if (x.k === 'failed') {
