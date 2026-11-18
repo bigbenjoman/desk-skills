@@ -42,9 +42,12 @@ const NOT_FOUND = [
 ];
 // pnpm's warning before it runs a script whose packages were never installed. It comes before every
 // script there, a check that ran and failed on the code included, so on its own it proves nothing:
-// it is an environment failure only beside node's own error for a package it could not load.
+// it is an environment failure only beside node's own error for a package it could not load. A path
+// node could not load ('./x', '/abs/x.js', 'file:…') is the code's own missing file: a failing check.
 const NO_PACKAGES = /\bnode_modules missing\b/;
-const NO_MODULE = /^\s*(?:Error: Cannot find (?:module|package) |.*\bERR_MODULE_NOT_FOUND\b)/m;
+const NOT_LOADED = /\bCannot find (?:module|package) '([^']+)'/g;
+const isPackage = (spec) => !/^(?:\.{1,2}(?:[/\\]|$)|[/\\]|[A-Za-z]:[/\\]|file:)/.test(spec);
+const packageNotLoaded = (s) => [...s.matchAll(NOT_LOADED)].some((m) => isPackage(m[1]));
 export function hookEnvFailure(out) {
   const s = String(out ?? '');
   if (!HOOK_FAILED.test(s)) return null;
@@ -52,7 +55,7 @@ export function hookEnvFailure(out) {
     const m = re.exec(s);
     if (m) return `\`${m[1]}\` (command not found)`;
   }
-  return NO_PACKAGES.test(s) && NO_MODULE.test(s) ? '`node_modules` (packages not installed)' : null;
+  return NO_PACKAGES.test(s) && packageNotLoaded(s) ? '`node_modules` (packages not installed)' : null;
 }
 
 // The line a refused push is quoted by: a hook's FAIL line where its check failed, which names the
