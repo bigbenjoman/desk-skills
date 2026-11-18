@@ -10,8 +10,9 @@ are in `../SKILL.md`, already loaded. §4 Priority below is `desk-env list jira-
 - **Field values.** `field=@path` reads a file. JSON passes through untouched. A bare value is
   wrapped to the shape the field needs: `customfield_12345=P1` becomes `{"value":"P1"}`,
   `assignee=me` becomes your accountId.
-- **Every `edit` prints the fields read back from Jira.** Check that output. A line saying
-  `the write did not stick` is a failed write, even though the PUT returned 2xx.
+- **Every `edit` and `create` prints the fields read back from Jira.** Check that output. A line
+  saying `the write did not stick` is a failed write, even though the PUT or POST returned 2xx:
+  set the field with `edit`, and tell the user if that fails too.
 - **Bodies are positional.** `comment <KEY> <body-file|text>`, and `create`'s description the same
   way. There is no `--file` flag. The CLI refuses a body that looks like a flag or a missing
   `.md`/`.txt`. Write approved text to a file and pass the path. The literal-string form of

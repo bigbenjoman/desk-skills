@@ -75,7 +75,9 @@ desk-jira fields priority                               # a custom priority fiel
 desk-jira fields size                                   # a Size field (XS-XL); none: tell the user it is a manual
                                                         # per-project UI step (desk-jira Epics), record it in §4 Other fields if found
                                                         # and in §4 Size field (desk-jira refuses an XL outside an Epic)
-desk-jira meta                                          # per type, what Jira requires: propose §4 Required fields from it
+desk-jira meta                                          # per type, what Jira requires: propose §4 Required fields from it,
+                                                        # then ask which fields the team expects at creation that Jira does
+                                                        # not require (a house rule a bot enforces) and add them
                                                         # and the user's answer; the top priority values go in §4
                                                         # Priorities only you set only if the user says so
 # §4 people

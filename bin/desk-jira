@@ -1005,7 +1005,8 @@ desk-jira <command> [args]
   create <type> <summary> <desc-file|text> [field=value ...] [--route] [--approved <text>] [--no-lint] [--check]
                                   linted first, and refused on a blocking finding unless --no-lint;
                                   assigned to you when §3 jira-assign-self is yes and no assignee
-                                  is given; anyone else needs --route; the assignee is read back;
+                                  is given; anyone else needs --route; the assignee and every field
+                                  sent are read back, and one that came back empty is named;
                                   --check runs every check and sends nothing
   create-batch <file.tsv> [--route]
                                   files a set of tickets: a line per ticket, tab-separated,
@@ -1368,13 +1369,18 @@ case "$cmd" in
       '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
     key=$(json POST 'api/2/issue' -d "$payload" | jq -r '.key')
     echo "created $key  https://$SITE/browse/$key"
-    # A 201 is not proof the assignee landed (a project can drop it), so read it back.
-    if back=$(api GET "api/2/issue/$key?fields=assignee"); then
+    # A 201 is not proof a field landed (a project can drop one), so read back the assignee and
+    # every field sent but the description.
+    names=$(printf '%s' "$extra" | jq -r '[keys[] | select(. != "description" and . != "assignee")] + ["assignee"] | join(",")')
+    if back=$(api GET "api/2/issue/$key?fields=$names"); then
       printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL"'
-        if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
-        else "  assignee: \(.fields.assignee | val)" end'
+        (if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
+         else "  assignee: \(.fields.assignee | val)" end),
+        (.fields as $got | $sent | keys[] | select(. != "description" and . != "assignee") as $k
+         | if $got[$k] == null and $sent[$k] != null then "  \($k): (empty - the write did not stick)"
+           else "  \($k): " + ($got[$k] | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end) end)'
     else
-      echo "  assignee: (could not read back)"
+      echo "  fields: (could not read back)"
     fi
     if [[ -n "$APPROVED" ]]; then record_approval "$key" "$extra" "$APPROVED"; fi
     ;;

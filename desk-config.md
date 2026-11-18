@@ -335,7 +335,7 @@ such thing.
 | Done state | `TODO` (what `jira-close-own-merged` moves to) |
 | Priority | `TODO` (built-in priority, or a custom field id and its values) |
 | Other fields | `TODO` (e.g. a Figma URL field id; `desk-jira fields <filter>` resolves the rest) |
-| Required fields | `TODO` (the fields each issue type must carry, one span per rule as `` `<Type>[, <Type>…]: <field id>[, <field id>…]` ``, e.g. `` `Epic, Story, Task, Bug: customfield_10208, customfield_10207` ``; or `none`. `desk-jira create` refuses a ticket missing one, and `edit` refuses clearing one) |
+| Required fields | `TODO` (the fields each issue type must carry, one span per rule as `` `<Type>[, <Type>…]: <field id>[, <field id>…]` ``, e.g. `` `Epic, Story, Task, Bug: customfield_10208, customfield_10207` ``; or `none`. `desk-jira create` refuses a ticket missing one, and `edit` refuses clearing one. Include a field the team requires that Jira does not, a house rule a bot enforces after creation: desk reads this row, not Jira's, for created and drafted tickets alike) |
 | Size field | `TODO` (the size field's id, e.g. `customfield_10208`, or `none`. `desk-jira` refuses an XL on every type but Epic: split the ticket instead) |
 | Priorities only you set | `TODO` (the top values of the §4 Priority field, one span each, e.g. `` `P0` `P1` ``; or `none`. A headless autopilot worker can never set them; an interactive session sets them only with `desk-jira … --approved "<your decision>"`, which is posted to the ticket) |
 | Labels | `TODO` (labels the skills may apply, or `any`) |
