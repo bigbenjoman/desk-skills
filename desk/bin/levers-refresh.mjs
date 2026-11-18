@@ -12,7 +12,7 @@ import { existsSync, readFileSync, realpathSync, statSync, mkdirSync } from 'nod
 import { basename, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deskConfigRoot } from './desk-env.mjs';
-import { autopilotRoot, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
+import { autopilotRoot, buildLock, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
 import { renderPage } from './levers-page.mjs';
 import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
@@ -25,7 +25,7 @@ const STALE_MS = 30 * 60 * 1000;
 // How long a refresh waits for another one's build before leaving the page to it.
 const LOCK_WAIT_MS = 10_000;
 
-const filesIn = (dir) => ({ page: join(dir, 'index.html'), view: join(dir, 'view.json'), build: join(dir, 'build.json'), lock: join(dir, 'build.lock') });
+const filesIn = (dir) => ({ page: join(dir, 'index.html'), view: join(dir, 'view.json'), build: join(dir, 'build.json'), lock: buildLock(dir) });
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
 
 // The inputs' names, sizes and modification times, hashed.

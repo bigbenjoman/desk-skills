@@ -755,6 +755,16 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-q"
   ok "desk-q -> ~/.local/bin (desk-q: every repo's autopilot queue)"
   wrote "desk-q   ~/.local/bin/desk-q"
+  # levers and levers-view on PATH: a lever decided or undone by hand, and the Levers data rebuilt.
+  for LV in levers levers-view; do
+    LV_SHIM="$(mktemp)"
+    printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: %s.\nexec node "%s" "$@"\n' \
+      "$LV" "$DESKDIR/bin/$LV.mjs" > "$LV_SHIM"
+    install_file "$LV_SHIM" "$HOME/.local/bin/$LV"; rm -f "$LV_SHIM"
+    chmod +x "$HOME/.local/bin/$LV"
+  done
+  ok "levers, levers-view -> ~/.local/bin (levers decide|undo <repo> <lever>; levers-view build)"
+  wrote "levers   ~/.local/bin/levers, ~/.local/bin/levers-view"
   # skills-upstream runs from this checkout (vendor/ lives here), so the shim records where it is.
   UP_SHIM="$(mktemp)"
   printf '#!/usr/bin/env bash\n# Installed by desk-skills install.sh: check and upgrade the pinned third-party skills.\nexec python3 "%s" "$@"\n' \

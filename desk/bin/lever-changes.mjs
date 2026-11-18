@@ -89,7 +89,7 @@ export function changeLine(e, { decision = null, overridden = false, cmd = 'dige
     const why = String(e.reason ?? '').startsWith(`${trip}: `) ? e.reason.slice(trip.length + 2) : e.reason;
     line = `${e.to === 'frozen' ? 'reverted and froze' : 'reverted'} ${e.lever} in ${name} on a hard trip, ${trip}${why ? `: ${why}` : ''}`;
   } else if (e.kind === 'override') {
-    line = `overridden ${e.lever} ${e.value ?? '?'} in ${name} by ${e.actor}${e.decision_id ? ` (decision \`${e.decision_id}\`)` : ''}`;
+    line = `overridden ${e.lever} ${e.value ?? e.to ?? '?'} in ${name} by ${e.actor}${e.decision_id ? ` (decision \`${e.decision_id}\`)` : ''}`;
   } else if (e.kind === 'transition' && e.to) {
     const verb = { adopted: 'adopted', reverted: 'reverted', frozen: 'reverted and froze', settled: 'settled' }[e.to] ?? `moved to ${e.to}`;
     const ev = evidenceText(e);
