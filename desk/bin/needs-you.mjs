@@ -739,7 +739,18 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+// A ticket of a batch with a base merged there, not into the default branch: its code is out once a
+// promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since). Null
+// until then. A ticket carried in from an earlier batch is judged by its own merge.
+function outAt(q, t) {
+  if (!q?.base || 'carried_from' in t) return t.merged_at;
+  const own = Date.parse(t.merged_at);
+  const p = q.promotion ?? {};
+  const after = [p.since, p.merged_at, ...(p.merged ?? []).map((m) => m?.merged_at)]
+    .filter(Boolean).map((x) => Date.parse(x)).filter((x) => x > own);
+  return after.length ? new Date(Math.min(...after)).toISOString() : null;
+}
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
 function followItems(r) {
   return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
 }
@@ -755,7 +766,7 @@ function followItem(r, t) {
   return { kind: 'follow', ticket: t.key,
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
-    since: timeOf(t.merged_at) };
+    since: timeOf(outAt(r.q, t)) };
 }
 
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
