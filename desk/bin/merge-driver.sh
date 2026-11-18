@@ -241,17 +241,17 @@ case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *) echo "FAIL: config §4 Merge method is '${MERGE_METHOD:-unset}' — want squash, merge or rebase. Run /desk-setup." >&2; exit 1 ;;
 esac
-if ! REQUIRED="$(node "$DESK_ENV_MJS" list required-checks 2>/dev/null)"; then
+if ! REQUIRED="$(desk_list required-checks 2>/dev/null)"; then
   echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` when nothing is required; every non-advisory check must still pass)." >&2; exit 1
 fi
-node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
+desk_list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
 UPDATE_PERM="$(desk_perm pr-update-branch)"
 # Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
 ROUTINE_PERM="$(desk_perm merge-hold-routine)"
 # Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
-FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
+FEEDBACK_RAW="$(desk_perm_or_unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
 desk_apply_batch_base || exit 1

@@ -43,11 +43,15 @@ config(){ # config <ci-rerun> <done state>
 |---|---|
 | Tracker | \`none\` |
 | Done state | \`$2\` |
+| Required checks | \`test\` \`Lint, Type Check & Build\` |
+| Merge holds | \`none\` |
+| Env files | \`~/env/.env\` \`apps/web/.env.local\` |
 EOF
 }
 config yes "It's \$HOME \`x\`"
 export DESK_CONFIG="$T/config.md"
 want_done="$(node "$B/desk-env.mjs" get done-state)"; want_budget="$(node "$B/desk-env.mjs" budget worker)"
+want_checks="$(node "$B/desk-env.mjs" list required-checks)"; want_env="$(node "$B/desk-env.mjs" list env-files)"
 
 # shellcheck source=../desk/bin/desk-env.sh
 . "$B/desk-env.sh"
@@ -55,7 +59,12 @@ desk_load_config
 : > "$T/node.log"
 tracker="$(desk_cfg tracker)"; done_state="$(desk_cfg done-state)"; perm="$(desk_perm ci-rerun)"; budget="$(desk_budget worker)"
 desk_cfg jira-site; unset_rc=$?
+checks="$(desk_list required-checks)"; env_files="$(desk_list env-files)"; holds="$(desk_list merge-holds)"
+desk_list jira-site; list_rc=$?
+ci_set="$(desk_perm_or_unset ci-rerun)"; desk_perm_or_unset merge-feedback-first; unset_perm_rc=$?
 check "DS-791 AC1: several config, permission and budget reads start no node after the one snapshot" '[ "$(runs)" = 0 ]'
+check "DS-791 AC1: desk_list gives each item on its own line, home expanded, as desk-env.mjs list does" '[ "$checks" = "$want_checks" ] && [ "$(printf "%s\n" "$checks" | wc -l | tr -d " ")" = 2 ] && [ "$env_files" = "$want_env" ] && [[ "$env_files" == "$HOME/env/.env"* ]] && [ "$holds" = none ] && [ "$list_rc" = 3 ]'
+check "DS-791 AC1: desk_perm_or_unset gives a set row, and exits 3 for an unset one" '[ "$ci_set" = yes ] && [ "$unset_perm_rc" = 3 ]'
 check "DS-791 AC1: each reads as desk-env.mjs prints it, quotes and \$ kept" '[ "$tracker" = none ] && [ "$done_state" = "$want_done" ] && [ "$perm" = yes ] && [ "$budget" = "$want_budget" ] && [ "$budget" = 12 ]'
 check "DS-791 AC1: an unset row prints nothing and exits 3, as desk-env.mjs get does" '[ "$unset_rc" = 3 ]'
 

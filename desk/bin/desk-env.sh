@@ -13,17 +13,19 @@ DESK_ENV_MJS="$DESK_ENV_DIR/desk-env.mjs"
 command -v node >/dev/null 2>&1 || { echo "desk: node is required and is not on PATH" >&2; return 1 2>/dev/null || exit 1; }
 
 desk_cfg()  { _desk_read G get "$1"; }      # desk_cfg <config id>      (exit 3 if unset)
+desk_list() { _desk_read L list "$1"; }     # desk_list <config id>: every item, one per line (exit 3 if unset)
 desk_perm() { _desk_read P perm "$1"; }     # desk_perm <permission id> -> yes|ask|no|never|stop
+desk_perm_or_unset() { _desk_read U perm-or-unset "$1"; } # as desk_perm, but exit 3 when the row is unset
 desk_budget() { _desk_read B budget "$1"; } # desk_budget worker|batch -> <usd>|none (exit 4 if malformed)
 desk_perm_fresh() { node "$DESK_ENV_MJS" perm "$1"; } # desk_perm, read from the file now
 
-# Config is read once per script: desk_load_config (desk_load_paths runs it) takes every value
-# desk_cfg, desk_perm and desk_budget give in one node run, and they answer from it for the rest of
-# the script. So a long script sees the config as it was at that point, and an edit made while it
-# runs is not seen. A value that must follow such an edit is read with desk_perm_fresh, or straight
-# from desk-env.mjs as the merge driver's merge-grant is. The snapshot holds only while the inputs it
-# was read under are unchanged (the directory, HOME, and the variables in _desk_inputs); otherwise,
-# and for an id it lacks, each read runs node as before. It is not exported: a child takes its own.
+# Config is read once per script: desk_load_config (desk_load_paths runs it) takes every value the
+# readers above give in one node run, and they answer from it for the rest of the script. So a long
+# script sees the config as it was at that point, and an edit made while it runs is not seen. A value
+# that must follow such an edit is read with desk_perm_fresh, or straight from desk-env.mjs as the
+# merge driver's merge-grant is. The snapshot holds only while the inputs it was read under are
+# unchanged (the directory, HOME, and the variables in _desk_inputs); otherwise, and for an id it
+# lacks, each read runs node as before. It is not exported: a child script takes its own.
 _desk_inputs() {
   _DESK_INPUTS="${HOME:-}|${PWD:-}|${DESK_REPO_DIR:-}|${DESK_REPO_OVERRIDE:-}|${DESK_CONFIG:-}|${DESK_CONFIG_ROOT:-}|${DESK_MACHINE:-}|${DESK_BATCH:-}|${AUTOPILOT_BUDGET_USD:-}|${AUTOPILOT_BATCH_BUDGET_USD:-}"
 }
@@ -38,7 +40,7 @@ desk_load_config() {
   eval "$out"
   _DESK_SNAPSHOT="$_DESK_INPUTS"
 }
-# _desk_read G|P|B get|perm|budget <id>: the snapshot's value, else desk-env.mjs <command> <id>.
+# _desk_read <kind> <command> <id>: what desk-env.mjs <command> <id> prints, from the snapshot.
 _desk_read() {
   local n v
   _desk_inputs
@@ -47,7 +49,7 @@ _desk_read() {
       ''|*[!a-z0-9-]*) ;;
       *) n="_DESK_$1_${3//-/_}"; v="${!n:-}"
          case "$v" in
-           =*) printf '%s\n' "${v#=}"; return 0 ;;
+           =*) printf '%s' "${v#=}"; return 0 ;;
            '!') return 3 ;;
          esac ;;
     esac

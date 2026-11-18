@@ -41,8 +41,9 @@
 //                                             (`default` with the lever off), exit 4 if §3b Worker
 //                                             effort is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
-//   node desk-env.mjs config                  print every get (but default-branch), perm and budget value
-//                                             as shell assignments, for desk-env.sh's desk_load_config
+//   node desk-env.mjs config                  print what every get (but default-branch), list, perm,
+//                                             perm-or-unset and budget prints, as shell assignments for
+//                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
@@ -2063,10 +2064,11 @@ if (isMain) {
         console.log(permission(args[0]));
         break;
       case 'config': {
-        // Every value desk_cfg, desk_perm and desk_budget read, as assignments for desk_load_config
-        // to eval: `=<value>` as get, perm or budget prints it, `!` for a get that exits 3. A read that
-        // fails is left out, so the shell asks node for it alone and gets that read's own error.
-        // default-branch is left out too: it follows the queue's batch base, which changes mid-run.
+        // Every value desk-env.sh's readers (desk_cfg, desk_list, desk_perm, desk_perm_or_unset,
+        // desk_budget) give, as assignments for desk_load_config to eval: `=` and what get, list, perm,
+        // perm-or-unset or budget prints, or `!` for one that exits 3. A read that fails is left out, so
+        // the shell asks node for it alone and gets that read's own error. default-branch is left out
+        // too: it follows the queue's batch base, which can change mid-run.
         const out = [];
         const put = (kind, id, read) => {
           if (!/^[a-z0-9-]+$/.test(id)) return;
@@ -2074,12 +2076,17 @@ if (isMain) {
           try { v = read(); } catch { return; }
           out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v == null ? '!' : `=${v}`)}`);
         };
+        const line = (v) => (v == null ? null : `${v}\n`);
         for (const id of Object.keys(CONFIG_ROWS)) {
-          if (id !== 'default-branch') put('G', id, () => { const v = configValue(id); return v == null ? null : expandHome(v); });
+          if (id !== 'default-branch') put('G', id, () => line(expandHome(configValue(id))));
+          put('L', id, () => configValues(id)?.map((x) => line(expandHome(x))).join('') ?? null);
         }
-        for (const id of Object.keys(PERMISSION_KEYS)) put('P', id, () => permission(id));
-        put('B', 'worker', () => { const b = workerBudget(); return b.off ? 'none' : String(b.usd); });
-        put('B', 'batch', () => { const b = batchBudget(); return b.off ? 'none' : String(b.usd); });
+        for (const id of Object.keys(PERMISSION_KEYS)) {
+          put('P', id, () => line(permission(id)));
+          put('U', id, () => line(permissionOrUnset(id)));
+        }
+        put('B', 'worker', () => { const b = workerBudget(); return line(b.off ? 'none' : b.usd); });
+        put('B', 'batch', () => { const b = batchBudget(); return line(b.off ? 'none' : b.usd); });
         console.log(out.join('\n'));
         break;
       }
