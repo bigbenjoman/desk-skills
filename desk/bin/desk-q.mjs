@@ -165,7 +165,7 @@ const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // How an open blocker `b` of ticket `key` holds it when the blocker is a step only the person takes,
-// as `key`'s triage record in `at` (triageOf) last read it and repo `slug`'s label rows judge it (personStep:
+// as `key`'s triage record read through listing object `at` (triageOf) last read it and repo `slug`'s label rows judge it (personStep:
 // 'build' or 'merge'), else null. A Done blocker holds nothing as a step.
 export function personStepOf(at, slug) {
   const labels = [personStepLabels(slug), personInputLabels(slug)];
@@ -606,11 +606,10 @@ function readTriageRecord(stateDir, key) {
   if (!existsSync(p)) return null;
   try { return readJsonOrRefuse(p, `re-run triage.sh ${key}`); } catch { return { summary: '(triage record unreadable)' }; }
 }
-// Ticket `key`'s triage record in `at`'s state folder: `at` a listing's repo object, which reads each
-// record once and drops them with the listing, or a state folder path, which reads it from disk.
+// Ticket `key`'s triage record in the state folder of `at`, a listing's repo object (`stateDir`), which
+// reads each record once and drops them with the listing.
 const triageRead = new WeakMap();
 export function triageOf(at, key) {
-  if (typeof at === 'string') return readTriageRecord(at, key);
   let m = triageRead.get(at);
   if (!m) triageRead.set(at, (m = new Map()));
   if (!m.has(key)) m.set(key, readTriageRecord(at.stateDir, key));

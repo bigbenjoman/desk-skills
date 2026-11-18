@@ -2581,5 +2581,36 @@ put('ds742', { port: 5742, beat: 1, tickets: {
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
 
+// ---- DS-795 AC1: one needs-you listing reads each triage record from disk once, however many step items
+// scan the held tickets and however many triage questions ask for their text.
+{
+  const { createRequire, syncBuiltinESMExports } = await import('node:module');
+  const fsCjs = createRequire(import.meta.url)('node:fs');
+  const realReadFileSync = fsCjs.readFileSync;
+  const reads = new Map();
+  const dir = join('acme__omicron795', 'triage');
+  const tickets = {}, triage = {};
+  for (let i = 1; i <= 4; i++) {
+    tickets[`H-${i}`] = { state: 'parked', lane: 'A', held_by: `OPS-${i}`, held_outside: `OPS-${i}`, park: { question: `held by orchestrator: blocked by OPS-${i}` } };
+    triage[`H-${i}`] = { blockers: [{ key: `OPS-${i}`, category: 'new', type: 'Task', summary: `Step ${i}`, labels: ['ben-input'] }] };
+    tickets[`Q-${i}`] = { state: 'triaged', lane: 'A', open_questions: 1, added_at: minsAgo(60) };
+    triage[`Q-${i}`] = { unknowns: [`Which way for Q-${i}?`] };
+  }
+  put('omicron795', { port: 5795, beat: 1, supervised: true, inputLabels: 'ben-input', tickets, triage });
+  fsCjs.readFileSync = function (p, ...rest) {
+    const s = String(p);
+    if (s.includes(dir)) reads.set(s, (reads.get(s) ?? 0) + 1);
+    return realReadFileSync.call(this, p, ...rest);
+  };
+  syncBuiltinESMExports();
+  let items;
+  try { items = N.collect({ word: 'omicron795' }).items; } finally { fsCjs.readFileSync = realReadFileSync; syncBuiltinESMExports(); }
+  t('DS-795 AC1 the listing has the four step items and the four triage questions',
+    items.map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'Q-1 triage,Q-2 triage,Q-3 triage,Q-4 triage,step:OPS-1 step,step:OPS-2 step,step:OPS-3 step,step:OPS-4 step');
+  t('DS-795 AC1 a triage question still reads its text from the record', items.find((i) => i.t.key === 'Q-2')?.need, 'Which way for Q-2?');
+  t('DS-795 AC1 one needs-you listing reads every triage record', reads.size, 8);
+  t('DS-795 AC1 and reads each from disk once', Math.max(...reads.values()), 1);
+}
+
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);
