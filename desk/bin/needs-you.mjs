@@ -84,7 +84,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -739,11 +739,14 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-// A ticket of a batch with a base merged there, not into the default branch: its code is out once a
-// promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since). Null
-// until then. A ticket carried in from an earlier batch is judged by its own merge.
+// A child of a feature or epic batch merged into the base, not the default branch: its code is out once
+// a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
+// archive check stamps it on the ticket before archiving the batch (promoted_at, batch.mjs). Null until
+// then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
+// batch, are judged by the ticket's own merge.
 function outAt(q, t) {
-  if (!q?.base || 'carried_from' in t) return t.merged_at;
+  if (t.promoted_at) return t.promoted_at;
+  if (!(q?.feature === true || epicBatch(q)) || !q.base || 'carried_from' in t) return t.merged_at;
   const own = Date.parse(t.merged_at);
   const p = q.promotion ?? {};
   const after = [p.since, p.merged_at, ...(p.merged ?? []).map((m) => m?.merged_at)]

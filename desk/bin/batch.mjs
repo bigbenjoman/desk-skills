@@ -28,6 +28,7 @@ import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX } from '.
 import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
+import { followOnPending } from './harvest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -149,7 +150,7 @@ function moveDone(dir, at) {
 // The archive check for one named batch {name, queue, state}. -> {archived, lines, log}: `lines` go in
 // the batch's own log, `log` in the standing batch's, since an archived batch's own log moves with it.
 // `stopped` is set when the check told the batch's merge driver to stop, and the batch waits for it to exit.
-export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
+export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, mark = markIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
   const none = { archived: false, lines: [], log: [] };
   if (!b?.name) return none;
   let q;
@@ -179,6 +180,22 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   if (items.length) {
     const added = existsSync(b.state) ? handItems(b.state, items, now) : [];
     if (added.length) lines.push(`archive: batch ${b.name} waits on ${added.map((x) => `${x.item.ticket} (PR #${x.pr})`).join(', ')}, handed to the digest`);
+    return { ...none, lines };
+  }
+  // A merged ticket whose follow-on steps the person has not run keeps a batch its last promotion took
+  // to the default branch: needs-you held them until now (needs-you.mjs outAt) and reads no archived
+  // batch, so archiving would drop them unseen. Each is stamped with that merge, which needs-you lists
+  // it from, and the batch is archived once every one is done.
+  const follows = last ? rows.filter(followOnPending) : [];
+  if (follows.length) {
+    const at = mergedAt(p) ?? now.toISOString();
+    const stamped = [];
+    for (const t of follows.filter((x) => !x.promoted_at)) {
+      const r = mark(b, t.key, `promoted_at=${at}`);
+      if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be marked promoted (${r}), so needs-you does not list its follow-on steps yet; the next tick tries again`);
+      else stamped.push(t.key);
+    }
+    if (stamped.length) lines.push(`archive: batch ${b.name} waits on the follow-on steps of ${stamped.join(', ')}, which needs-you now lists; it is archived once each is done`);
     return { ...none, lines };
   }
   const busy = holder(b);
@@ -251,6 +268,7 @@ function queueIn(b, args) {
 // Moves `key` from named batch `b` to the standing batch (queue.mjs transfer). -> null, or why not.
 const moveToStanding = (b, key) => queueIn(b, ['transfer', key, 'standing']);
 const parkIn = (b, key, question) => queueIn(b, ['park', key, question]);
+const markIn = (b, key, pair) => queueIn(b, ['set', key, pair]);
 
 // Drops this batch's archive items no longer open. -> report lines.
 function dropArchiveItems(state, keep) {

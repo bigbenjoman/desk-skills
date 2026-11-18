@@ -301,6 +301,21 @@ a = res(archive('X-3', { 9: 'MERGED', 10: 'MERGED' }));
 t('AC5 a second X-3 archives beside the first', a.archived === true && existsSync(doneQ('X-3')) && (a.log ?? []).join(' ').includes('.done/X-3.'), true);
 t('AC5 a last promotion merged is logged as merged', (a.log ?? []).join(' ').includes('its promotion PR #9 is merged'), true);
 
+// DS-784: a child whose follow-on steps needs-you held until the last promotion merged keeps the batch,
+// stamped with that merge so needs-you lists it, and the batch is archived once the steps are done.
+const stepsLeft = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+mkdirSync(namedS('X-12'), { recursive: true });
+a = res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 follow-on steps not run: not archived', a.archived === false && existsSync(namedQ('X-12')), true);
+t('DS-784 the child is stamped with the promotion merge', readQ('X-12').tickets['X-13'].promoted_at, MERGED_AT);
+t('DS-784 the report says what the batch waits on', (a.lines ?? []).join(' ').includes('waits on the follow-on steps of X-13'), true);
+t('DS-784 a second check stamps nothing new and says nothing', (res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).lines ?? []).length, 0);
+writeQ('X-12', { ...readQ('X-12'), tickets: { 'X-13': { ...readQ('X-12').tickets['X-13'], follow_on_done: '2026-10-30T14:00:00Z' } } });
+t('DS-784 once they are done, it is archived', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+t('DS-784 a closed promotion never took them out, so it archives as before', res(archive('X-12', { 9: 'CLOSED', 13: 'MERGED' })).archived, true);
+
 // DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
 // promotion a pass recorded, one admitted since moves to the standing batch, and the archive line names it.
 const standingLive = JSON.stringify({ version: 1, batch: 'standing-2', supervised: true, tickets: { 'S-1': { key: 'S-1', state: 'running' } } });

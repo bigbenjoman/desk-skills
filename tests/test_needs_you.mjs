@@ -1977,6 +1977,24 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-784 AC3 a child merged after the first promotion stays held until a later one merges',
     follows('psi784c').map((i) => i.t.key).join(), 'follow:P-2');
 
+  // A base desk opens no promotion PR for (set-batch base= with neither feature mode nor an epic) holds
+  // nothing: the person lands that branch, and nothing would ever release the hold.
+  put('psi784e', { port: 4788, beat: 1, supervised: true, batch: { base: 'feat/plain' }, tickets: { 'P-6': child(106, 40) } });
+  const plain = follows('psi784e');
+  t('DS-784 a plain base batch lists the item, aged from its own merge', `${plain.map((i) => i.t.key).join()} ${plain[0]?.since === Date.parse(minsAgo(40))}`, 'follow:P-6 true');
+  // An epic batch: the epic PR's merge releases it, and a reopen that failed keeps it released.
+  const epic = (word, port, promotion) => put(word, { port, beat: 1, supervised: true,
+    batch: { base: 'feat/E-1', epic: 'E-1', promotion }, tickets: { 'P-7': child(107, 1200) } });
+  epic('psi784f', 4789, { pr: 108, merged_at: minsAgo(90) });
+  t('DS-784 an epic batch lists it once the epic PR merged, aged from that merge', follows('psi784f').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(90))}`).join(), 'follow:P-7 true');
+  epic('psi784g', 4790, { pr: null, why: 'refused', since: minsAgo(90), merged: [{ pr: 108, merged_at: minsAgo(90) }] });
+  t('DS-784 and still after a reopen of the next epic PR failed', follows('psi784g').map((i) => i.t.key).join(), 'follow:P-7');
+  epic('psi784h', 4791, { pr: 108, at: minsAgo(1300) });
+  t('DS-784 an epic batch holds it while the epic PR is open', follows('psi784h').length, 0);
+  // The archive check stamps a child promoted before it archives the batch (batch.mjs), and the stamp wins.
+  feature('psi784i', 4792, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-8': { ...child(109, 1200), promoted_at: minsAgo(20) } });
+  t('DS-784 a child stamped promoted is listed, aged from the stamp', follows('psi784i').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(20))}`).join(), 'follow:P-8 true');
+
   put('psi784d', { port: 4787, beat: 1, supervised: true, tickets: { 'P-5': child(105, 30) } });
   const own = follows('psi784d');
   t('DS-784 AC4 a ticket merged into the default branch is listed, aged from its own merge',

@@ -653,3 +653,10 @@ export function epicDue(q) {
   return kids.length > 0 && kids.every(childDone)
     && merged.some((t) => last == null || Date.parse(t.merged_at) > Date.parse(last));
 }
+// What the next epic PR's record carries from promotion `p`: the last merge as `since` and every merge
+// so far in `merged`, kept through a retry whose record has neither `pr` nor `merged_at`.
+export function epicCarry(p) {
+  const merged = [...(p?.merged ?? []), ...(p?.merged_at ? [{ pr: p.pr ?? null, merged_at: p.merged_at }] : [])];
+  const since = p?.merged_at ?? p?.since ?? null;
+  return { ...(since ? { since } : {}), ...(merged.length ? { merged } : {}) };
+}
