@@ -1951,6 +1951,52 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// A feature batch's promotion PR still red once its check tries are spent (pass.mjs
+// promotion.red) is one pr item naming the children whose follow items wait on it. DS-784 holds those
+// follow items off the list until the promotion merges, so nothing waiting on it is listed above it.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(900), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(900) }, ...more });
+  const STEP786 = { step: 'build the Flows image', row: 'staging-write' };
+  const red = { pr: 1001, head: 'e'.repeat(40), checks: ['flows-image', 'portal (1/3)'], tried: 2, since: minsAgo(30),
+    why: `still failing flows-image, portal (1/3) at ${'e'.repeat(12)} after 2 check tries; the last try parked: the Flows image is missing` };
+  const batch = (promotion) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion } });
+  const kids = { 'P-1': merged(91, { follow_on: [STEP786] }), 'P-2': merged(92, { follow_on: [STEP786] }) };
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red }) });
+  const items = () => N.collect({ word: 'chi786' }).items;
+  const ci = items();
+  const pi = ci.find((i) => i.t.key === 'promotion:1001');
+  t('DS-786 AC2 a promotion PR red once its tries are spent is listed as a pr item', pi?.kind, 'pr');
+  t('DS-786 AC2 it names the failing checks and what desk tried',
+    /^promotion PR #1001 \(feat\/VPL-842 into the default branch\) is red, failing flows-image and portal \(1\/3\); it is still failing flows-image, portal \(1\/3\) after 2 check tries; the last try parked: the Flows image is missing, so no more workers go to it\. /.test(pi?.need ?? ''), true);
+  t('DS-786 AC3 it names the follow items waiting on it', (pi?.need ?? '').endsWith('The follow steps of P-1 and P-2 wait on it reaching the default branch'), true);
+  t('DS-786 AC3 the follow items waiting on it stay held, so nothing waiting on it is listed above it', ci.map((i) => i.t.key).join(), 'promotion:1001');
+  t('DS-786 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi786')).shown, 1);
+  const done786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'done' });
+  t('DS-786 done records nothing: the next pass reads its checks again', `${done786.ok} ${queueOf('chi786').promotion.red.pr} ${items().length}`, 'true 1001 1');
+  const off786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'not-now' });
+  t('DS-786 not-now puts it off', `${off786.ok} ${items().some((i) => i.t.key === 'promotion:1001')}`, 'true false');
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: { ...red, head: 'f'.repeat(40) } }) });
+  t('DS-786 a new head brings it back', items().some((i) => i.t.key === 'promotion:1001'), true);
+  // AC4 and AC5: the pass records no red while the PR is draft waiting on children, or green; nor once it merged.
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001 }) });
+  t('DS-786 AC4 AC5 negative: no red recorded, no item', items().map((i) => i.t.key).join(), '');
+  // A child promoted by an earlier slice is out: its follow item is listed, and it does not wait on this PR.
+  // Its own repo, so the not-now above does not reach it.
+  put('omega786', { port: 4797, beat: 1, supervised: true, ...batch({ pr: 1001, red, since: minsAgo(600) }),
+    tickets: { 'P-1': kids['P-1'], 'P-2': merged(92, { follow_on: [STEP786], merged_at: minsAgo(60) }) } });
+  const split = N.collect({ word: 'omega786' }).items;
+  t('DS-786 AC3 only the child merged since the last promotion is named as waiting, and it ranks above a listed follow item',
+    `${split.map((i) => i.t.key).join()} ${split[0]?.need.endsWith('The follow steps of P-2 wait on it reaching the default branch')}`, 'promotion:1001,follow:P-1 true');
+  // A head the not-now above never saw, so only each guard can keep the item off the list.
+  const redD = { ...red, head: 'd'.repeat(40) };
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD }) });
+  t('DS-786 control: that red record on the open promotion PR is listed', items().some((i) => i.t.key === 'promotion:1001'), true);
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD, merged_at: minsAgo(1) }) });
+  t('DS-786 negative: a merged promotion PR is not listed', items().some((i) => i.t.key === 'promotion:1001'), false);
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1002, red: redD }) });
+  t('DS-786 negative: a red record for an earlier promotion PR is not listed', items().some((i) => i.t.key.startsWith('promotion:')), false);
+}
+
 // DS-784: a child of a feature batch merged into the batch base is out only once a promotion PR that
 // merged after it has taken it to the default branch, and its follow item is held until then.
 {
