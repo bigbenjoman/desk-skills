@@ -2429,7 +2429,65 @@ t('DS-654 AC17 and rebuilds an old page first, saying so', run654(['levers'], { 
 t('DS-654 AC17 a page over 10 minutes old is rebuilt first too', run654(['levers'], { line: WORKING654, age: 15 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
 t('DS-654 AC18 desk-q levers --plain prints the line without its arrow, then the page\'s path', run654(['levers', '--plain'], { line: WORKING654 }),
   `▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers\n${join(LV, 'index.html')} | 0`);
+
+// ---- DS-701: desk-q --json, the same views as data
+// Home's JSON and its plain screen for this process's fixture world, read at one clock and one
+// free-memory figure, so the two differ only if the JSON counts differently.
+const home701 = (opts = {}) => ({ json: Q.homeJson(Q.loadRepos(NOW), { now: NOW, avail: 30, ...opts }), plain: Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, ...opts }) });
+// Every repo row's counts, the header's needs-you count and the machine line, as the JSON has them,
+// against the screen: each mismatch named, or '' when they agree.
+function disagrees701({ json, plain }) {
+  const L = lines(plain), bad = [];
+  for (const r of json.repos.filter((x) => !x.error)) {
+    const row = L.find((l) => l.startsWith(`  ${r.name} `)) ?? '';
+    const rest = row.slice(row.indexOf(r.last_pass) + r.last_pass.length).trim().replace(/\s+/g, ' ');
+    const want = [r.running, r.ready, r.merging, r.waiting, `${r.needs_you}${r.put_off ? ` (+${r.put_off} put off)` : ''}`, r.done].join(' ');
+    if (!row.includes(r.last_pass) || !rest.startsWith(`${want} `)) bad.push(`${r.name} row "${rest}" vs ${want}`);
+    if (!row.includes(`${r.workers.running} of ${r.workers.allowed} · cap ${r.workers.cap}`)) bad.push(`${r.name} workers`);
+  }
+  const n = json.needs_you.count;
+  if (!L.some((l) => l.startsWith(n ? `◆ ${n} ticket${n === 1 ? ' needs' : 's need'} you` : '◆ nothing needs you'))) bad.push(`needs you ${n}`);
+  const m = json.machine;
+  if (!L.includes(`● ${m.running} worker${m.running === 1 ? '' : 's'} running │ machine cap ${m.cap} · room for ${m.room} more │ ${m.avail_gib.toFixed(1)} GiB free`)) bad.push('machine line');
+  const named = json.repos.map((r) => r.name).sort().join(), shown = L.filter((l) => /^ {2}\S/.test(l) && json.repos.some((r) => l.startsWith(`  ${r.name} `))).length;
+  if (shown !== json.repos.length) bad.push(`rows ${named}`);
+  return bad.join('; ');
+}
+levers654({ line: WORKING654 });
+const H701 = home701(), A701 = home701({ all: true });
+t('DS-701 AC1 home JSON counts equal the screen', `${disagrees701(H701)} | ${H701.json.repos.length > 0}`, ' | true');
+t('DS-701 AC1 and with --all', `${disagrees701(A701)} | ${A701.json.repos.length >= H701.json.repos.length}`, ' | true');
+t('DS-701 AC1 every repo row of the screen is in the JSON', lines(H701.plain).filter((l) => /^ {2}\S+ +(●|▲|■|✕|queue unreadable)/.test(l)).length, H701.json.repos.length);
+t('DS-701 the plain lines are the screen, byte for byte', [...H701.json.lines.head, ...H701.json.lines.rows.map((r) => r.line), ...H701.json.lines.foot].join('\n'), H701.plain);
+t('DS-701 every input carries its age', `${H701.json.v} ${H701.json.view} ${H701.json.inputs.queues.every((x) => typeof x.age_s === 'number' && x.as_of)} ${H701.json.inputs.levers.age_s}`, `1 home true ${5 * 60}`);
+// The Levers block reads the same view.json the line does, in each of its states.
+const leversAgree701 = (line) => {
+  levers654({ line });
+  const { json, plain } = home701();
+  const shown = lines(plain).find((l) => /^[○●▼▲] Levers /.test(l));
+  return `${json.levers.state} | ${shown === `${json.levers.text} ↗`} | ${JSON.stringify(json.levers.figures) === JSON.stringify(line)}`;
+};
+t('DS-701 AC4 working: the levers block is the Levers line and its figures', leversAgree701(WORKING654), 'working | true | true');
+t('DS-701 AC4 the figures are the line\'s', (({ levers: l }) => `${l.text} | ${l.figures.cheaper_pct} ${l.figures.kept} ${l.figures.testing}`)(home701().json),
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers | 4.1 3 2');
+t('DS-701 AC4 today', leversAgree701(TODAY654), 'today | true | true');
+t('DS-701 AC4 too early', leversAgree701({ state: 'early', on_auto: 1, repos: 4, pinned: [], testing: 2, smaller_arm: { n: 18, min: 30 } }), 'early | true | true');
+levers654({ line: WORKING654, age: 180 });
+t('DS-701 AC4 a stale page says so, with its age', (({ levers: l }) => `${l.state} ${l.built.age_s} ${l.figures.kept}`)(home701().json), `stale ${180 * 60} 3`);
 rmSync(LV, { recursive: true, force: true });
+t('DS-701 AC4 with no page, no figures', (({ levers: l }) => `${l.state} ${l.page} ${l.figures}`)(home701().json), 'unbuilt null null');
+
+// The command line: each view parses, and a wrong one refuses saying which views there are.
+const J701 = (...args) => { const r = W.run('--json', ...args); try { return { code: r.code, j: JSON.parse(r.out) }; } catch { return { code: r.code, err: r.err.trim(), out: r.out }; } };
+const repo701 = J701('repo', 'voicepa');
+t('DS-701 desk-q --json repo: each ticket under its group, in spawn order', `${repo701.code} ${repo701.j?.tickets.map((x) => `${x.key}:${x.group}:${x.pos}`).join()}`, '0 VPL-1:running:1,VPL-2:running:2,VPL-3:waiting:3');
+t('DS-701 desk-q --json repo: the repo\'s home figures', `${repo701.j?.repo.running} ${repo701.j?.repo.waiting} ${repo701.j?.repo.done}`, '2 1 3');
+const tk701 = J701('ticket', 'vo', 'VPL-3');
+t('DS-701 desk-q --json ticket', `${tk701.code} ${tk701.j?.ticket.key} ${tk701.j?.ticket.group} ${tk701.j?.lines.head.length > 0}`, '0 VPL-3 waiting true');
+t('DS-701 desk-q --json home from the command line', (({ code, j }) => `${code} ${j?.view} ${Array.isArray(j?.repos)} ${j?.no_batch.length >= 0}`)(J701('home')), '0 home true true');
+t('DS-701 desk-q --json usage and costs parse', ['usage', 'costs'].map((v) => (({ code, j }) => `${code} ${j?.view}`)(J701(v))).join(), '0 usage,0 costs');
+t('DS-701 an unknown view refuses, naming the views', (({ code, err }) => `${code} ${err}`)(J701('levers')), '1 Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].');
+t('DS-701 a ticket not in the queue refuses as show does', (({ code, err }) => `${code} ${err}`)(J701('ticket', 'voicepa', 'VPL-99')), "1 VPL-99 isn't in voicepa's queue.");
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

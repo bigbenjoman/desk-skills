@@ -20,6 +20,9 @@
 //   desk-q levers                        opens the Levers page in the browser, rebuilt first when it is
 //                                        over 10 minutes old (levers-refresh.mjs); with --plain, prints
 //                                        home's Levers line and the page's path
+//   desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]
+//                                        the view as JSON: its figures, each input's age, and its plain
+//                                        lines; home carries the Levers line's figures from view.json
 //
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
@@ -1868,14 +1871,19 @@ const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's 
 // The overview's first line: how many tickets need the user, then each repo's share, most first;
 // labels grey, figures bright. The count is followed by how long the oldest question has waited,
 // from when it parked, else from when it was added.
+// When the oldest question in `ok` (needsCount's for each, `c`) started waiting, or null with none.
+const oldestNeed = (ok, c) => {
+  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
+  return waited.length ? Math.min(...waited) : null;
+};
 function needsLine(list, now) {
   const ok = list.filter((r) => !r.error);
   const c = new Map(ok.map((r) => [r, needsCount(r)])), n = (r) => c.get(r).shown;
   const you = ok.reduce((a, r) => a + n(r), 0);
   const per = ok.filter((r) => n(r)).sort((a, x) => n(x) - n(a))
     .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
-  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
-  const oldest = waited.length ? [['  oldest ', GREY], [since(Math.max(0, now - Math.min(...waited))), null]] : [];
+  const first = oldestNeed(ok, c);
+  const oldest = first != null ? [['  oldest ', GREY], [since(Math.max(0, now - first)), null]] : [];
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
 
@@ -1921,6 +1929,8 @@ function leversLine(p, now) {
   }
   return { ...segLine(segs), link: 'levers' };
 }
+// The Levers line as plain text, less its arrow.
+const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
 
 // What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
 // time before the rebuild (undefined when none ran). Opens the page where there is one.
@@ -3359,8 +3369,8 @@ function supervisor(r, op) {
 }
 
 function checkFlags(argv) {
-  const unknown = argv.filter((a) => a.startsWith('--') && !['--plain', '--all', '--help'].includes(a));
-  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
+  const unknown = argv.filter((a) => a.startsWith('--') && !['--plain', '--all', '--help', '--json'].includes(a));
+  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all, --json.`);
 }
 
 function loadOrRefuse(now) {
@@ -3373,7 +3383,7 @@ function loadOrRefuse(now) {
 // is updating. --plain prints the Levers line, less its arrow, and the page's path.
 function leversCommand(argv, { now, opener, rebuild, say }) {
   const p = pageState({ now });
-  if (argv.includes('--plain')) return `${leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '')}\n${p.file}`;
+  if (argv.includes('--plain')) return `${leversText(p, now)}\n${p.file}`;
   if (!leversDue(p)) return openLeversPage(p, opener);
   say('Updating Levers…');
   rebuild();
@@ -3383,9 +3393,11 @@ function leversCommand(argv, { now, opener, rebuild, say }) {
 export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
-    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]';
+    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
+    + '       desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]';
   checkFlags(argv);
   const repos = loadOrRefuse(now);
+  if (argv.includes('--json')) return jsonCommand(repos, argv, now);
   const v = target(repos, argv);
   if (v.kind === 'levers') return leversCommand(argv, { now, opener, rebuild, say });
   if (v.kind === 'supervisor') return apply(repos, v);
@@ -3401,6 +3413,126 @@ export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = (
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
+}
+
+// ---- --json: the same views as data ------------------------------------------------------------
+// Each view's figures, read by the same functions its screen draws them with, beside the screen's
+// plain lines (`lines`). Every input carries its age, as levers-view.mjs's view.json does.
+
+export const JSON_VERSION = 1;
+const JSON_VIEWS = ['home', 'repo', 'ticket', 'usage', 'costs'];
+const msOf = (t) => (typeof t === 'number' ? (Number.isFinite(t) ? t : null) : t == null ? null : ((n) => (Number.isNaN(n) ? null : n))(Date.parse(t)));
+const isoOf = (t) => ((ms) => (ms == null ? null : new Date(ms).toISOString()))(msOf(t));
+// When an input was read, and how many seconds old that is now.
+export const inputAge = (t, now) => ((ms) => ({ as_of: isoOf(ms), age_s: ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)) }))(msOf(t));
+export const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
+const plainParts = (s) => ({ head: s.head.map(textOf), rows: s.rows.map((x) => ({ id: x.id ?? null, line: textOf(x), open: x.open ?? null })), foot: s.foot.map(textOf) });
+const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, generated_at: new Date(now).toISOString(), inputs, ...body, lines: plainParts(parts) });
+// Each batch's queue, by its file's last write.
+const queueAges = (list, now) => list.flatMap((r) => r.batches ?? [r]).filter((b) => b.queuePath).map((b) => ({ batch: b.word ?? b.name, ...inputAge(mtimeOf(b.queuePath), now) }));
+
+// A repo row's figures, each the home table's column of the same name.
+function repoFigures(r, needs, now, checkin) {
+  const id = { id: r.id, slug: r.slug, name: r.name };
+  if (r.error) return { ...id, error: r.error };
+  return { ...id, error: null, live: !!r.live, last_pass_at: isoOf(r.last), last_pass: lastPass(r, now)[0],
+    running: count(r, 'running'), ready: count(r, 'ready'), merging: count(r, 'merging'), waiting: count(r, 'waiting'),
+    needs_you: needs.shown, put_off: needs.putOff, done: r.done,
+    workers: { running: workersRunning(r), allowed: r.workers, cap: r.cap, ready_no_slot: Math.max(0, unslotted(r)) },
+    all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null };
+}
+
+// The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
+// `figures` the view.json line it reads, `text` the line as home shows it.
+export function leversJson(p, now) {
+  const fault = leversFault(p);
+  const state = fault ? 'fault' : !p.page ? 'unbuilt' : p.stale ? 'stale' : p.view.line.state;
+  return { state, text: leversText(p, now), fault: fault ?? null,
+    page: p.page ? p.file : null, built: inputAge(p.builtAt, now), figures: p.view?.line ?? null };
+}
+
+const usageJson = (u) => ({ reading: u.reading, running: u.running, held: u.held, held_by: u.heldBy });
+
+export function homeJson(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), checkin = false } = {}) {
+  const shown = shownRepos(repos, all), list = byRepo(shown);
+  const ok = list.filter((r) => !r.error);
+  const needs = new Map(ok.map((r) => [r, needsCount(r)]));
+  const running = machineRunning(repos);
+  const levers = pageState({ now });
+  const usage = usageOf(repos, now, list);
+  const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
+  const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
+  return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
+    needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
+    machine: { running, cap: cap ?? null, room: headroom({ running, cap, avail, gate, perWorker }), avail_gib: avail },
+    levers: leversJson(levers, now),
+    usage: usageJson(usage),
+    repos: list.map((r) => repoFigures(r, needs.get(r), now, checkin)),
+    no_batch: none.map((r) => r.name),
+  }, parts);
+}
+
+// One repo's or batch's Queue: its home figures, and each ticket row under the group the screen shows it in.
+export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
+  const usage = usageOf(repos, now, [r]);
+  const parts = repoParts(r, { now, usage, title: true });
+  const groupKey = new Map(GROUPS.map(([name, k]) => [name, k]));
+  const all = [...(r.rows ?? []), ...(r.prs ?? [])];
+  const tickets = [];
+  let group = null;
+  for (const row of parts.rows) {
+    if (row.open?.kind !== 'ticket') { group = groupKey.get(String(row.segs?.[0]?.[0] ?? '').trim()) ?? group; continue; }
+    const x = all.find((y) => y.t.key === row.id);
+    tickets.push({ key: row.id, group, state: x?.k ?? null, pos: x?.pos ?? null, placed: !!x?.t.placed, lane: x?.t.lane ?? null, pr: x?.t.result?.pr ?? null, line: row.line });
+  }
+  const repo = r.error || !r.q ? { id: r.id, slug: r.slug, name: r.name, error: r.error ?? null } : repoFigures(r, needsCount(r), now, checkin);
+  return envelope('repo', now, { queues: queueAges([r], now), usage: inputAge(usage.reading?.at, now) }, { repo, tickets, usage: usageJson(usage) }, parts);
+}
+
+export function ticketJson(r, key, { now = Date.now() } = {}) {
+  const x = [...(r.rows ?? []), ...(r.prs ?? [])].find((y) => y.t.key === key);
+  const t = x?.t ?? r.q?.tickets?.[key] ?? null;
+  const ticket = { key, repo: r.name, state: x?.k ?? t?.state ?? null, group: x ? groupOf(x.k) : null, pos: x?.pos ?? null, lane: t?.lane ?? null, stage: t?.stage ?? null, pr: t?.result?.pr ?? null };
+  return envelope('ticket', now, { queues: queueAges([r], now) }, { ticket }, ticketParts(r, key, { now }));
+}
+
+// Every Claude and Codex login on this computer, as the Usage view lists them.
+export function usageViewJson(repos, { now = Date.now() } = {}) {
+  const u = usageTable(repos, now);
+  const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
+    workers: x.workers, reading: x.reading ?? null, read: inputAge(x.reading?.at, now), limit: x.limit ?? null });
+  return envelope('usage', now, { usage: [...u.claude, ...u.codex].map((x) => ({ login: loginLabel(x.login), ...inputAge(x.reading?.at, now) })) },
+    { logins: [...u.claude, ...u.codex].map(login), following: u.following }, usageParts(repos, { now }));
+}
+
+// This month's charges by name, or one name's by supplier, from the cost cache.
+export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
+  const c = costs.exists && costs.entries.length ? chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] }) : null;
+  const inputs = { costs: SUPPLIERS.filter((s) => cache?.[s]).map((s) => ({ supplier: s, ...inputAge(cache[s].at, now) })) };
+  const parts = v.name !== undefined ? supplierParts(repos, v.name, { now, costs, cache, label: v.label ?? v.name }) : costsParts(repos, { now, costs, cache });
+  const charges = !c ? null : v.name !== undefined ? { period: c.period, name: c.names.find((x) => x.name === v.name) ?? null }
+    : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges }, parts);
+}
+
+const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';
+function jsonCommand(repos, argv, now) {
+  const [view, ...rest] = argv.filter((a) => !a.startsWith('--'));
+  const k = view?.toLowerCase();
+  if (!JSON_VIEWS.includes(k)) throw new Usage(JSON_USAGE);
+  const arity = { home: [0, 0], repo: [1, 1], ticket: [2, 2], usage: [0, 0], costs: [0, 1] }[k];
+  if (rest.length < arity[0] || rest.length > arity[1]) throw new Usage(JSON_USAGE);
+  let out;
+  if (k === 'home') out = homeJson(repos, { all: argv.includes('--all'), now });
+  else if (k === 'repo') out = repoJson(repos, repoPlace(repos, resolveRepo(repos, rest[0]).id), { now });
+  else if (k === 'ticket') {
+    const t = target(repos, [rest[0], 'show', rest[1]]);
+    if (t.kind !== 'ticket') throw new Usage(JSON_USAGE);
+    out = ticketJson(repos.find((x) => x.id === t.slug), t.key, { now });
+  }
+  else if (k === 'usage') out = usageViewJson(repos, { now });
+  else out = costsJson(repos, target(repos, ['costs', ...rest]), { now });
+  return JSON.stringify(out, null, 2);
 }
 
 // ---- the interactive screen --------------------------------------------------------------------
@@ -4270,7 +4402,7 @@ if (isMain) {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
     let start = null;
-    if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
+    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
       checkFlags(argv);
       start = target(loadOrRefuse(Date.now()), argv);
     }
