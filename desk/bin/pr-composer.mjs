@@ -9,9 +9,9 @@
 //   - The React page renders the file input only once the box is focused, so it is looked for after
 //     the click, in the composer's nearest ancestor that holds one and no other textarea (the
 //     classic page's is its form): a reply box's input, mounted first, is never the composer's.
-//   - Since 18 Nov 2026 GitHub's React page mounts no file input at all: the composer has a "Paste,
-//     drop, or click to add files" button that opens a file chooser. Found in the same nearest
-//     ancestor, it is used when there is no input (desk-skills#838).
+//   - The React page can also mount no file input at all: its composer has a "Paste, drop, or click
+//     to add files" button that opens a file chooser. Found in the same nearest ancestor, it is used
+//     when there is no input.
 
 // Shared with the throttle exit: the run stops and nothing is uploaded, so the queue holds every
 // repo's uploads rather than spending the PR's tries.
