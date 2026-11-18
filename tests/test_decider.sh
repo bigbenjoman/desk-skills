@@ -83,7 +83,9 @@ esac
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
 printf '#!/bin/sh\necho OPEN\n' > "$T/fakes/gh"
-chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh"
+# No real notifier: on Linux notify.mjs tries notify-send, then WSL's powershell.exe, and neither may reach the desktop.
+printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell.exe"
+chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh" "$T/fakes/notify-send" "$T/fakes/powershell.exe"
 export PATH="$T/fakes:$PATH"
 
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }

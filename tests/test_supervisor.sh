@@ -582,7 +582,9 @@ esac
 EOF
 printf '#!/bin/sh\necho Linger=no\n' > "$T/fakes/loginctl"
 printf '#!/bin/sh\nprintf "%%s|" "$@" >> "%s/notify-send.calls"; echo >> "%s/notify-send.calls"\n' "$T" "$T" > "$T/fakes/notify-send"
-chmod +x "$T/fakes/systemctl" "$T/fakes/loginctl" "$T/fakes/notify-send"
+# No real Windows toast: on WSL the next notifier after notify-send is powershell.exe.
+printf '#!/bin/sh\nexit 1\n' > "$T/fakes/powershell.exe"
+chmod +x "$T/fakes/systemctl" "$T/fakes/loginctl" "$T/fakes/notify-send" "$T/fakes/powershell.exe"
 UD="$T/xdg/systemd/user"; SV="$UD/com.desk-skills.supervisor.acme__widgets.service"; TM="$UD/com.desk-skills.supervisor.acme__widgets.timer"
 out=$(sup install); rc=$?
 check "#735 AC1: install on Linux exits 0 and writes no launchd agent" '[ $rc -eq 0 ] && [ ! -f "$PL" ]'
