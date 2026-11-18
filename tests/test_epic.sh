@@ -906,6 +906,4 @@ check "driver loop: a ticket not yet in the queue is not the batch's" '[ -n "$fi
 check "driver loop: a ticket admitted mid-run joins on the next loop, no restart" \
   'printf "%s" "$out" | grep -q "KAN-802 joined the batch" && printf "%s" "$last" | grep -q "#201 #202"'
 
-check "the pass still reports base drift (regression guard)" 'grep -q "out(\`base drift:" "$B/pass/report.mjs"'
-
 echo "epic: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

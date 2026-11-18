@@ -1,7 +1,7 @@
 // What a pass says, as decisions: base drift, the report's lines, the ticket groups and the verdict.
 // Pure: each reads only the snapshot it is given. pass.mjs reads what each needs (a worktree's git
 // count, a seen-file, the groups desk-q finds, the check-in) into the snapshot, and carries out the
-// actions; the decisions run at the points their sections ran when they were inline.
+// actions; each decision runs at the point in the pass whose state it reads.
 //
 // The actions:
 //   { type: 'out', line }                  a line for the report's list of changes (`out`)
