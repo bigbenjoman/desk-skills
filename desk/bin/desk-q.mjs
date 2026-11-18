@@ -670,14 +670,14 @@ function batchNames(c, repoName, batch, q) {
   return { name: `${repoName} · ${batch}${base}`, repo: repoName, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` };
 }
 
-// A batch read only for its names and its running workers, shaped as machineRunning and runningOn read
-// a loaded one. An unreadable queue keeps its error, so it counts at its cap.
+// A batch read only for its names, its running workers and its usage hold, shaped as machineRunning,
+// runningOn and holdOut read a loaded one. An unreadable queue keeps its error, so it counts at its cap.
 function lightBatch(c, repoName, batch, limits) {
   const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
   let q = null, error = null;
   if (existsSync(queuePath)) { try { q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { error = describeCrash(e); } }
   const rows = Object.values(q?.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => ({ t, k: 'running' }));
-  return { ...batchNames(c, repoName, batch, q), slug: c.slug, batch, stateDir, cap: limits.cap, error, rows, prs: [], q: q && { base: q.base, base_fix: q.base_fix } };
+  return { ...batchNames(c, repoName, batch, q), slug: c.slug, batch, stateDir, cap: limits.cap, error, rows, prs: [], q: q && { base: q.base, base_fix: q.base_fix, usage_hold: q.usage_hold } };
 }
 
 function loadBatch(c, repoName, batch, limits, now) {
@@ -2066,7 +2066,7 @@ function loginUses(subs = readSubscriptions(subscriptionsPath())) {
 // and the decider wait on) as a limit `out`: { at, type }, `at` null with no reset time; null with none.
 // A hold naming no login is on the pass's own, which desk-q shares.
 const holdOut = (repos, l, now) => ((h) => (h ? { at: h.resets_at ?? null, type: h.type } : null))(
-  holdOn(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
+  holdOn(withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
 const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
 
@@ -3328,15 +3328,20 @@ function loadOrRefuse(now, word = null) {
   return repos;
 }
 
+// The repo `desk-q <repo> …` loads alone (loadRepos), else null for every repo. Costs, ships and days
+// read every repo, and so does a workers change, which is weighed against every live batch's workers
+// and every repo's ports.
+function scopeWord(argv) {
+  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
+  return first && !['costs', ...SHIPS, 'days'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
+}
+
 export function run(argv, { now = Date.now() } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
-  // `desk-q <repo> …` loads only that repo. Costs, ships and days read every repo, and so does a workers
-  // change, which is weighed against every live batch's workers and every repo's ports.
-  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
-  const word = first && !['costs', ...SHIPS, 'days'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
+  const word = scopeWord(argv);
   const repos = loadOrRefuse(now, word);
   const v = target(repos, argv);
   if (v.kind === 'supervisor') return apply(repos, v);
@@ -3519,9 +3524,20 @@ export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
-  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription,
+  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, word = null,
 } = {}) {
-  let repos = loadOrRefuse(clock());
+  // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
+  // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
+  // change, read every repo, so the first move there loads every repo, and so does every reread after.
+  let scope = word;
+  const reload = () => loadOrRefuse(clock(), scope);
+  let repos = reload();
+  const inScope = () => view?.slug != null && !['costs', 'usage'].includes(tab) && repos.some((x) => x.id === view.slug);
+  function widen(always = false) {
+    if (scope == null || (!always && inScope())) return;
+    scope = null;
+    repos = reload();
+  }
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
   // and how far past the selection it shows when it has.
   // `tab`: the view, one of VIEWS, kept across every change of place.
@@ -3651,6 +3667,7 @@ export function interactive({
   // Rebuilds the screen from disk, then writes it.
   function draw() {
     if (done) return;
+    try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
     crumbs = crumbParts();
     frame();
@@ -4025,14 +4042,18 @@ export function interactive({
 
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
-    try { msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
+    try { repos = reload(); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
     const words = line.trim().split(/\s+/).filter(Boolean);
     try {
       checkFlags(words);
+      // A command for another repo, or for every repo, reads every repo.
+      const w = scopeWord(words);
+      const here = () => { try { return resolveRepo(repos, w) != null; } catch { return false; } };
+      if (scope != null && (w == null || !here())) widen(true);
       const v = target(repos, words);
       if (v.kind === 'supervisor') act(v);
       else if (isWrite(v)) {
@@ -4158,7 +4179,7 @@ export function interactive({
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
   timer = setInterval(() => {
-    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = reload(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
@@ -4184,12 +4205,13 @@ if (isMain) {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
     let start = null;
+    const word = scopeWord(argv);
     if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now()), argv);
+      start = target(loadOrRefuse(Date.now(), word), argv);
     }
     if (start && !isCommand(start)) {
-      const ui = interactive({ start });
+      const ui = interactive({ start, word });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

@@ -387,6 +387,14 @@ claudeReading(null, [1, at(24, 14, 5)], [0.66, at(27, 6, 0)]);
 const B = await usage();
 t('AC4 the default at its limit reads ◉ default, its 5H bar at 100% with the reset', rowOf(B.frame(), 'me@example.test'),
   row(1, 'me@example.test', 'Ultra', '◉ default', '██████████ 100% 14:05', '███████··· 66% Tue 06:00', '0'));
+// DS-792: a listing scoped to another repo, which loads solo only lightly, still reads solo's hold on the default.
+config('acme__other792');
+batch('acme__other792', 0, 1);
+const limit792 = (word) => JSON.stringify(Q.usageOf(Q.loadRepos(FIXED, word), FIXED).logins?.claude?.limit ?? null);
+t('DS-792 AC2 a listing scoped to another repo reads solo\'s usage hold as the unscoped listing does',
+  `${limit792(null) !== 'null'} ${limit792('other792') === limit792(null)}`, 'true true');
+config('acme__other792', false);
+rmSync(join(env.DESK_HOME, 'repos', 'acme__other792'), { recursive: true, force: true });
 B.done();
 repo();
 claudeReading(null, [0.31, at(24, 14, 5)], [0.61, at(27, 6, 0)]);
