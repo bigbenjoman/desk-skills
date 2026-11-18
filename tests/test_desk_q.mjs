@@ -1068,12 +1068,11 @@ Hb.ui.finish(0);
 
 // AC3: a batch passing on time, one stopped for under a day and one for over a day, each with a
 // ticket that needs the user so the overview lists it. The one stopped for hours has a history and a
-// ready ticket, so its QUEUE DONE reads passes stopped.
+// ready ticket, so its QUEUE DONE reads passes stopped. The overview reads the real clock, so that
+// history is dated from it: dated from FIXED, it falls out of the 30-day window once FIXED is a month old.
 const needsOne = (b) => ({ batch: b, concurrency: 1, tickets: { [`${b.toUpperCase()}-1`]: { state: 'parked', park: { question: 'which copy?' } } } });
 put(I.T, I.env, 'ontime', { port: 4800, conc: '1 / 2', beat: 1, queue: needsOne('ontime') });
-// Its history ends at the real clock, as this screen reads it: dated at FIXED, it ages out of the
-// 30-day window once the real date is a month past FIXED, and reads "no history".
-dated('hours', 4810, { at: NOW, hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
+dated('hours', 4810, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], at: Date.now(), tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
 put(I.T, I.env, 'hours', { port: 4810, conc: '1 / 2', beat: 200, queue: { batch: 'hours', concurrency: 1, tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } } });
 put(I.T, I.env, 'longgone', { port: 4820, conc: '1 / 2', beat: 3000, queue: needsOne('longgone') });
 const Lp = screen({ kind: 'overview', all: false }, 200);

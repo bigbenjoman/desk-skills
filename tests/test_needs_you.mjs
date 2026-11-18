@@ -1951,6 +1951,56 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// DS-784: a child of a feature batch merged into the batch base is out only once a promotion PR that
+// merged after it has taken it to the default branch, and its follow item is held until then.
+{
+  const STEP = { step: 'check delete-and-Undo on staging', row: 'staging-write' };
+  const child = (pr, m) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(m), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(m) }, follow_on: [STEP] });
+  const feature = (word, port, promotion, tickets) => put(word, { port, beat: 1, supervised: true,
+    batch: { base: 'feat/P-1-portal', feature: true, epic: 'P-1', promotion }, tickets });
+  const follows = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
+  const count = (word) => N.needsCount(loadRepos().find((r) => r.slug === `acme__${word}`)).shown;
+
+  feature('psi784', 4784, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
+  t('DS-784 AC1 no follow item while the promotion PR is open', follows('psi784').length, 0);
+  t('DS-784 AC5 a held follow item counts towards nothing', count('psi784'), 0);
+
+  feature('psi784b', 4785, { pr: 101, slice: 1, at: minsAgo(1300), merged: [{ pr: 101, slice: 1, merged_at: minsAgo(60) }] },
+    { 'P-2': child(97, 1200), 'P-3': child(100, 1000) });
+  const out = follows('psi784b');
+  t('DS-784 AC2 each child is listed once the promotion PR holding its merge has merged', out.map((i) => i.t.key).sort().join(), 'follow:P-2,follow:P-3');
+  t('DS-784 AC2 aged from the promotion merge, not the child\'s', out.map((i) => i.since).join(), `${Date.parse(minsAgo(60))},${Date.parse(minsAgo(60))}`);
+  t('DS-784 AC5 once listed, it counts', count('psi784b'), 2);
+
+  feature('psi784c', 4786, { pr: 102, slice: 2, since: minsAgo(500), at: minsAgo(500), merged: [{ pr: 101, slice: 1, merged_at: minsAgo(500) }] },
+    { 'P-2': child(97, 1200), 'P-4': child(103, 300) });
+  t('DS-784 AC3 a child merged after the first promotion stays held until a later one merges',
+    follows('psi784c').map((i) => i.t.key).join(), 'follow:P-2');
+
+  // A base desk opens no promotion PR for (set-batch base= with neither feature mode nor an epic) holds
+  // nothing: the person lands that branch, and nothing would ever release the hold.
+  put('psi784e', { port: 4788, beat: 1, supervised: true, batch: { base: 'feat/plain' }, tickets: { 'P-6': child(106, 40) } });
+  const plain = follows('psi784e');
+  t('DS-784 a plain base batch lists the item, aged from its own merge', `${plain.map((i) => i.t.key).join()} ${plain[0]?.since === Date.parse(minsAgo(40))}`, 'follow:P-6 true');
+  // An epic batch: the epic PR's merge releases it, and a reopen that failed keeps it released.
+  const epic = (word, port, promotion) => put(word, { port, beat: 1, supervised: true,
+    batch: { base: 'feat/E-1', epic: 'E-1', promotion }, tickets: { 'P-7': child(107, 1200) } });
+  epic('psi784f', 4789, { pr: 108, merged_at: minsAgo(90) });
+  t('DS-784 an epic batch lists it once the epic PR merged, aged from that merge', follows('psi784f').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(90))}`).join(), 'follow:P-7 true');
+  epic('psi784g', 4790, { pr: null, why: 'refused', since: minsAgo(90), merged: [{ pr: 108, merged_at: minsAgo(90) }] });
+  t('DS-784 and still after a reopen of the next epic PR failed', follows('psi784g').map((i) => i.t.key).join(), 'follow:P-7');
+  epic('psi784h', 4791, { pr: 108, at: minsAgo(1300) });
+  t('DS-784 an epic batch holds it while the epic PR is open', follows('psi784h').length, 0);
+  // The archive check stamps a child promoted before it archives the batch (batch.mjs), and the stamp wins.
+  feature('psi784i', 4792, { pr: 101, slice: 1, at: minsAgo(1300) }, { 'P-8': { ...child(109, 1200), promoted_at: minsAgo(20) } });
+  t('DS-784 a child stamped promoted is listed, aged from the stamp', follows('psi784i').map((i) => `${i.t.key} ${i.since === Date.parse(minsAgo(20))}`).join(), 'follow:P-8 true');
+
+  put('psi784d', { port: 4787, beat: 1, supervised: true, tickets: { 'P-5': child(105, 30) } });
+  const own = follows('psi784d');
+  t('DS-784 AC4 a ticket merged into the default branch is listed, aged from its own merge',
+    `${own.map((i) => i.t.key).join()} ${own[0]?.since === Date.parse(minsAgo(30))}`, 'follow:P-5 true');
+}
+
 // A link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
 // item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
 {

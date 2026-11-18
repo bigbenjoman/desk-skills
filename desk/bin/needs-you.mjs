@@ -84,7 +84,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -739,7 +739,17 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+// A child of a feature or epic batch merged into the base, not the default branch: its code is out once
+// a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
+// archive check stamps it on the ticket before archiving the batch (promoted_at, batch.mjs). Null until
+// then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
+// batch, are judged by the ticket's own merge.
+function outAt(q, t) {
+  if (t.promoted_at) return t.promoted_at;
+  if (!(q?.feature === true || epicBatch(q)) || !q.base || 'carried_from' in t) return t.merged_at;
+  return promotedAt(q, t);
+}
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
 function followItems(r) {
   return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
 }
@@ -755,7 +765,7 @@ function followItem(r, t) {
   return { kind: 'follow', ticket: t.key,
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
-    since: timeOf(t.merged_at) };
+    since: timeOf(outAt(r.q, t)) };
 }
 
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
