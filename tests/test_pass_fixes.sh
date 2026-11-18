@@ -1251,4 +1251,15 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-433 AC4 where no driver may merge, a PR with no verdict gets no review worker" \
   '[ "$(field M-6 state)" = "\"done\"" ] && [ "$(field M-6 fix_tries)" = null ] && [ "$(field M-6 stuck)" = null ]'
 
+# ---- #805: rerun.sh reruns every job of a run when the gate says full, and only the failed ones otherwise.
+mkdir -p "$T/rr805/bin" "$T/rr805/sd"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$T/rr805/calls" > "$T/rr805/bin/gh"; chmod +x "$T/rr805/bin/gh"
+rr805(){ printf '%s' "$1" | PATH="$T/rr805/bin:$PATH" RERUN_PERM=yes bash "$B/rerun.sh" "$T/rr805/sd" acme/widgets 805 "$H1" >/dev/null; }
+rr805 '{"gate":{"pending":[],"failedRuns":["9201"],"full":true,"failing":[{"name":"Integration","runId":"9201"}],"reasons":[]}}'
+check "#805 a full gate reruns every job of its run" 'grep -qx "run rerun 9201 --repo acme/widgets" "$T/rr805/calls"'
+check "#805 and records the rerun as accepted for its check" 'grep -qx Integration "$T/rr805/sd/reruns-ok-805-$H1"'
+rm -f "$T/rr805/sd/cooldown-805"
+rr805 '{"gate":{"pending":[],"failedRuns":["9202"],"failing":[{"name":"Lint","runId":"9202"}],"reasons":[]}}'
+check "#805 any other gate reruns only the failed jobs" 'grep -qx "run rerun 9202 --repo acme/widgets --failed" "$T/rr805/calls"'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
