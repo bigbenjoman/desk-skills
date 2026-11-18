@@ -652,11 +652,13 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
 // that repo's checkout with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
 export function admitInRepo(p, key, { by }) {
   const intake = join(runBin(), 'intake.mjs');
-  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${join(binDir(), 'intake.mjs')} admit ${key} --by ${by}`;
+  // This repo's copy is dropped once the admit is made, so it does not refuse it (batches.mjs belongsElsewhere).
+  const from = currentRepo().slug ?? '';
+  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && DESK_ADMIT_FROM=${from} node ${join(binDir(), 'intake.mjs')} admit ${key} --by ${by}`;
   if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
   const env = otherRepoEnv();
   for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
-  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
+  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root, DESK_ADMIT_FROM: from });
   const x = spawnSync(process.execPath, [intake, 'admit', key, '--by', by, '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
   let out = null;
   try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }

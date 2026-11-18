@@ -46,7 +46,9 @@ for (const t of tickets) {
   if (!existsSync(join(STATE, 'triage', `${t}.json`))) refuse(`missing triage record for ${t} — run triage.sh ${t}`);
   records.push(readTriage(STATE, t));
   const elsewhere = belongsElsewhere(t, records.at(-1), queueFile());
-  if (elsewhere) refuse(`${elsewhere.why}: leave it out of this plan`);
+  // Queued already in the repo its Jira Repository names: handOver finds it in place there.
+  const inPlace = elsewhere?.repo && repoPlacement(records.at(-1).repository)?.ghRepo === elsewhere.repo;
+  if (elsewhere && !inPlace) refuse(`${elsewhere.why}: leave it out of this plan`);
 }
 
 // Ownership boundary, the ticket equivalent of desk-clearance's "only your own PRs".

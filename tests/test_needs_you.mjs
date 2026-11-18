@@ -66,6 +66,7 @@ function put(name, r) {
     (r.gateReviewers ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Gate reviewers | \`${r.gateReviewers}\` |\n` : '') +
     (r.evidence ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Evidence workflow | \`${r.evidence}\` |\n` : '') +
     (r.pattern ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Ticket key pattern | \`${r.pattern}\` |\n` : '') +
+    (r.site ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Jira site | \`${r.site}\` |\n` : '') +
     (r.project ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Jira project | \`${r.project}\` |\n` : '') +
     (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
     (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
@@ -2146,6 +2147,56 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const need = N.collect({ word: 'psi718m' }).items.find((i) => i.t.key === 'link:V-10:V-9')?.need ?? '';
   t('DS-718 AC3 freeing one of several holds quotes the rest and records the freed one',
     need.includes("release V-10 from it (queue.mjs set V-10 'held_by=V-11|V-12' freed_from=V-9)"), true);
+}
+
+// DS-800: one ticket queued in two repos on the same Jira site. The copy held behind a ticket the other
+// repo's batch has is the extra one, listed as a duplicate with drop recommended in place of its dropped
+// link; the other copy lists nothing, and dropping the extra one leaves it as it is.
+{
+  const heldOn = (k) => ({ state: 'parked', lane: 'A', held_by: k, park: { question: `held by orchestrator: blocked by ${k} — starts once their PRs merge`, since: minsAgo(30) } });
+  const site = 'acme.atlassian.net';
+  put('zen800', { port: 4800, beat: 1, supervised: true, site, tickets: { 'SV-84': { state: 'running', lane: 'A' }, 'SV-91': heldOn('SV-84') } });
+  put('web800', { port: 4810, beat: 1, supervised: true, site, tickets: { 'SV-91': { ...heldOn('SV-84'), dropped_link: 'SV-84' }, 'SV-70': { state: 'triaged', lane: 'A' } } });
+  const web = N.collect({ word: 'web800' }).items;
+  const dup = web.find((i) => i.t.key === 'SV-91');
+  t('DS-800 AC2 the copy whose blocker is in the other repo is listed as a duplicate', dup?.kind, 'duplicate');
+  t('DS-800 AC2 drop is recommended for it', `${dup?.actions.map(([a]) => a).join()} ${!!dup?.actions[0][1]}`, 'drop,not-now true');
+  t('DS-800 AC2 its need names the other repo\'s copy and the blocker there',
+    /^SV-91 is queued here and in acme\/zen800's standing batch \(parked\), .* held behind SV-84, which is in that batch and not this one/.test(dup?.need ?? ''), true);
+  t('DS-800 AC2 the dropped link item is not listed beside it', web.some((i) => i.t.key === 'link:SV-91:SV-84'), false);
+  t('DS-800 AC2 the other copy is not listed as a duplicate', N.collect({ word: 'zen800' }).items.some((i) => i.kind === 'duplicate'), false);
+  const zenBefore = JSON.stringify(queueOf('zen800'));
+  const rec = N.record({ word: 'web800', ticket: 'SV-91', action: 'drop' });
+  t('DS-800 AC3 drop on the duplicate is recorded', rec.ok, true);
+  t('DS-800 AC3 the copy in repo B is removed, and the rest of its batch stays', `${'SV-91' in queueOf('web800').tickets} ${'SV-70' in queueOf('web800').tickets}`, 'false true');
+  t('DS-800 AC3 the copy in repo A is unchanged', JSON.stringify(queueOf('zen800')), zenBefore);
+  t('DS-800 AC3 and nothing is listed for it any more', N.collect({ word: 'zen800' }).items.concat(N.collect({ word: 'web800' }).items).some((i) => i.ticket === 'SV-91'), false);
+
+  // Neither copy waits on the other's batch: each lists the other, with drop offered but not recommended.
+  put('zen800b', { port: 4820, beat: 1, supervised: true, site, tickets: { 'SV-95': { state: 'triaged', lane: 'A' } } });
+  put('web800b', { port: 4830, beat: 1, supervised: true, site, tickets: { 'SV-95': { state: 'triaged', lane: 'A' } } });
+  for (const w of ['zen800b', 'web800b']) {
+    const it = N.collect({ word: w }).items.find((i) => i.t.key === 'SV-95');
+    t(`DS-800 neither copy held on the other: ${w} lists it, drop not recommended`, `${it?.kind} ${it?.actions.map(([a]) => a).join()} ${it?.actions[0][1]}`, 'duplicate drop,not-now null');
+  }
+  // A copy parked on its own question lists that park beside its duplicate item; not-now puts off both.
+  put('zen800n', { port: 4870, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'triaged', lane: 'A' } } });
+  put('web800n', { port: 4880, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'parked', lane: 'A', park: { question: 'Which colour is the button?', since: minsAgo(30) } } } });
+  const kinds = () => N.collect({ word: 'web800n' }).items.filter((i) => i.t.key === 'SV-97').map((i) => i.kind).sort().join();
+  t('a parked copy lists its park and its duplicate item', kinds(), 'duplicate,parked');
+  const nn = N.record({ word: 'web800n', ticket: 'SV-97', action: 'not-now' });
+  t('not-now on it puts off its park and its duplicate item', `${nn.ok} ${kinds()}`, 'true ');
+  // The same key on another Jira site, or a repo with no tracker, is another ticket.
+
+  put('other800', { port: 4840, beat: 1, supervised: true, site: 'other.atlassian.net', tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  put('none800', { port: 4850, beat: 1, supervised: true, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  put('zen800c', { port: 4860, beat: 1, supervised: true, site, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
+  t('DS-800 a key on another Jira site or in a repo with no tracker is no duplicate',
+    ['other800', 'none800', 'zen800c'].some((w) => N.collect({ word: w }).items.some((i) => i.kind === 'duplicate')), false);
+  // Their items are these checks' alone: later ones list every repo.
+  for (const w of ['zen800', 'web800', 'zen800b', 'web800b', 'zen800n', 'web800n', 'other800', 'none800', 'zen800c']) {
+    for (const d of [join(env.DESK_CONFIG_ROOT, 'repos', `acme__${w}`), join(env.DESK_HOME, 'repos', `acme__${w}`)]) rmSync(d, { recursive: true, force: true });
+  }
 }
 
 // A lane C park whose hold the pass lifted once its sibling merged is listed as its own session item.
