@@ -270,6 +270,15 @@ JIRA_CREATE_PERM="$(desk_perm jira-create)"
 CLOSE_PERM="$(desk_perm jira-close-own-merged)"
 DONE_STATE="$(desk_cfg done-state 2>/dev/null || true)"
 SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
+# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
+# Read here, before the cd below, so it comes from the snapshot taken in this directory.
+CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
@@ -332,14 +341,6 @@ Q="$DESK_RUN_BIN/queue.mjs"
 GATE="$DESK_RUN_BIN/gate.mjs"
 THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
-# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
-CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
-# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
-REVIEW_HOLD=""
-case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
-  ''|todo|none) ;;
-  *) REVIEW_HOLD=1 ;;
-esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 # The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.

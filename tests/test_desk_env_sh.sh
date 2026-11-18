@@ -81,5 +81,9 @@ check "DS-791: with a budget variable set, desk_budget runs node and honours it"
 out="$(desk_cfg no-such-id 2>&1)"; rc=$?
 check "DS-791: an id the snapshot lacks gets desk-env.mjs'\''s own error" '[ $rc -ne 0 ] && [[ "$out" == *"unknown config id \"no-such-id\""* ]] && [ "$(runs)" = 4 ]'
 
-echo "desk-env.sh snapshot: $PASS passed, $FAIL failed"
+export AUTOPILOT_BUDGET_USD=7; desk_load_config; ok_budget="$(desk_budget worker)"
+export AUTOPILOT_BUDGET_USD=bad; desk_load_config; out="$(desk_budget worker 2>&1)"; rc=$?; unset AUTOPILOT_BUDGET_USD
+check "DS-791: a read that fails in a new snapshot is not answered from the old one, and exits as desk-env.mjs does" '[ "$ok_budget" = 7 ] && [ $rc = 4 ] && [[ "$out" != 7* ]]'
+
+echo "desk-env.sh snapshot:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

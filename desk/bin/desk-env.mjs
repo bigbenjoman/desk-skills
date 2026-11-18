@@ -1940,6 +1940,28 @@ export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs writ
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
 
+// What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
+// 3. The CLI cases print it and `config` snapshots it, so desk-env.sh's readers answer as they do.
+const line = (v) => (v == null ? null : `${v}\n`);
+const READS = {
+  // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks
+  // for <default> gets the branch its batch targets, not the config row.
+  get: (id) => line(expandHome(id === 'default-branch' ? defaultBranch() : configValue(id))),
+  list: (id) => configValues(id)?.map((x) => line(expandHome(x))).join('') ?? null,
+  perm: (id) => line(permission(id)),
+  'perm-or-unset': (id) => line(permissionOrUnset(id)),
+  budget: (which) => {
+    const b = which === 'batch' ? batchBudget() : which === 'worker' ? workerBudget() : null;
+    if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
+    return line(b.off ? 'none' : b.usd);
+  },
+};
+const printRead = (cmd, id) => {
+  const out = READS[cmd](id);
+  if (out == null) process.exit(3);
+  process.stdout.write(out);
+};
+
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
@@ -1964,12 +1986,9 @@ if (isMain) {
         if (!r.slug) process.exit(3);
         break;
       }
-      case 'list': {
-        const v = configValues(args[0]);
-        if (v == null) process.exit(3);
-        for (const x of v) console.log(expandHome(x));
+      case 'list':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'cmds': {
         const v = configValues(args[0]);
         if (v == null) process.exit(3);
@@ -1981,14 +2000,9 @@ if (isMain) {
         console.log(JSON.stringify(requiredFields(args[0] ?? '')));
         break;
       }
-      case 'get': {
-        // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that
-        // asks for <default> gets the branch its batch targets, not the config row.
-        const v = args[0] === 'default-branch' ? defaultBranch() : configValue(args[0]);
-        if (v == null) process.exit(3);
-        console.log(expandHome(v));
+      case 'get':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'review-cmd': {
         const { run } = reviewRows();
         if (run == null) process.exit(3);
@@ -2054,39 +2068,34 @@ if (isMain) {
         if (why) { console.error(`desk: branch '${args[0] ?? ''}' is not usable: ${why}`); process.exit(1); }
         break;
       }
-      case 'perm-or-unset': {
-        const v = permissionOrUnset(args[0]);
-        if (v == null) process.exit(3);
-        console.log(v);
-        break;
-      }
+      case 'perm-or-unset':
       case 'perm':
-        console.log(permission(args[0]));
+        printRead(cmd, args[0]);
         break;
       case 'config': {
         // Every value desk-env.sh's readers (desk_cfg, desk_list, desk_perm, desk_perm_or_unset,
         // desk_budget) give, as assignments for desk_load_config to eval: `=` and what get, list, perm,
-        // perm-or-unset or budget prints, or `!` for one that exits 3. A read that fails is left out, so
-        // the shell asks node for it alone and gets that read's own error. default-branch is left out
-        // too: it follows the queue's batch base, which can change mid-run.
+        // perm-or-unset or budget prints, or `!` for one that exits 3. A read that fails is assigned
+        // empty, so the shell asks node for it alone and gets that read's own error, and a value from
+        // an earlier snapshot is not kept. default-branch is left out: it follows the queue's batch
+        // base, which can change mid-run.
         const out = [];
-        const put = (kind, id, read) => {
+        const put = (kind, cmd, id) => {
           if (!/^[a-z0-9-]+$/.test(id)) return;
           let v;
-          try { v = read(); } catch { return; }
-          out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v == null ? '!' : `=${v}`)}`);
+          try { v = READS[cmd](id); v = v == null ? '!' : `=${v}`; } catch { v = ''; }
+          out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v)}`);
         };
-        const line = (v) => (v == null ? null : `${v}\n`);
         for (const id of Object.keys(CONFIG_ROWS)) {
-          if (id !== 'default-branch') put('G', id, () => line(expandHome(configValue(id))));
-          put('L', id, () => configValues(id)?.map((x) => line(expandHome(x))).join('') ?? null);
+          if (id !== 'default-branch') put('G', 'get', id);
+          put('L', 'list', id);
         }
         for (const id of Object.keys(PERMISSION_KEYS)) {
-          put('P', id, () => line(permission(id)));
-          put('U', id, () => line(permissionOrUnset(id)));
+          put('P', 'perm', id);
+          put('U', 'perm-or-unset', id);
         }
-        put('B', 'worker', () => { const b = workerBudget(); return line(b.off ? 'none' : b.usd); });
-        put('B', 'batch', () => { const b = batchBudget(); return line(b.off ? 'none' : b.usd); });
+        put('B', 'budget', 'worker');
+        put('B', 'budget', 'batch');
         console.log(out.join('\n'));
         break;
       }
@@ -2112,12 +2121,9 @@ if (isMain) {
         if (!args[0]) throw new Error(`usage: desk-env.mjs effort ${EFFORT_STARTS.join('|')}`);
         console.log(workerEffort(args[0]));
         break;
-      case 'budget': {
-        const b = args[0] === 'batch' ? batchBudget() : args[0] === 'worker' ? workerBudget() : null;
-        if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
-        console.log(b.off ? 'none' : b.usd);
+      case 'budget':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
         for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);

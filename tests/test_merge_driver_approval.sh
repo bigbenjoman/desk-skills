@@ -70,7 +70,7 @@ jq '."121".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/p
 mloop "$T/config-ask.md"
 check "DS-203 AC6: a new batch carries no approval, so it is asked again" '[ $rc -eq 1 ] && echo "$out" | grep -qF "with no batch approval" && [ "$(merged)" = 121 ]'
 
-# ---- DS-791: the grant is read again before each merge, so revoking it stops a running driver ------
+# ---- the grant is read again before each merge, so revoking it stops a running driver --------------
 SHA24=b444444444444444444444444444444444444444
 printf '{ "124": { "head": "fix/T-24", "base": "main", "sha": "%s", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }\n' "$SHA24" > "$T/prs.json"
 q init merge-revoke

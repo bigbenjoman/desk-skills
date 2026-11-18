@@ -25,7 +25,7 @@ desk_perm_fresh() { node "$DESK_ENV_MJS" perm "$1"; } # desk_perm, read from the
 # that must follow such an edit is read with desk_perm_fresh, or straight from desk-env.mjs as the
 # merge driver's merge-grant is. The snapshot holds only while the inputs it was read under are
 # unchanged (the directory, HOME, and the variables in _desk_inputs); otherwise, and for an id it
-# lacks, each read runs node as before. It is not exported: a child script takes its own.
+# lacks or a read that failed when it was taken, each read runs node as before. It is not exported: a child script takes its own.
 _desk_inputs() {
   _DESK_INPUTS="${HOME:-}|${PWD:-}|${DESK_REPO_DIR:-}|${DESK_REPO_OVERRIDE:-}|${DESK_CONFIG:-}|${DESK_CONFIG_ROOT:-}|${DESK_MACHINE:-}|${DESK_BATCH:-}|${AUTOPILOT_BUDGET_USD:-}|${AUTOPILOT_BATCH_BUDGET_USD:-}"
 }
