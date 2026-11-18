@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
-export const asksPath = (stateDir) => join(stateDir, 'asks.json');
+const asksPath = (stateDir) => join(stateDir, 'asks.json');
 
 // The file's asks, [] when there is none. An unreadable file reads as none here; changing it refuses.
 export function readAsks(stateDir) {

@@ -2799,7 +2799,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-799 AC4 done on a stopped ticket with no merged PR anywhere is refused, naming its actions', `${d2.ok} ${/done is not an action for a stopped item \(requeue, not-now/.test(d2.line)} ${zq()['S-2'].state}`, 'false true failed');
 }
 
-// ---- #811: an action a session hands the person is recorded with `ask`, and listed until done
+// ---- an action a session hands the person is recorded with `ask`, and listed until done
 {
   put('ask811', { port: 4811 });
   const asks = () => N.collect({ word: 'ask811' }).items.filter((i) => i.kind === 'ask');
