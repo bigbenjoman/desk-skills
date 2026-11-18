@@ -23,7 +23,8 @@ given the same name; a placeholder is not a written handoff.
 A desk session is one whose repo has a desk config (`desk-env where` says EXISTS=yes); anywhere else
 the hook is silent. Context used is the last main-chain assistant entry's usage in the transcript
 since its last compaction (input + cache creation + cache read tokens), divided by the window: DESK_CONTEXT_WINDOW if set,
-else 1,000,000 for a `[1m]` model (SessionStart's model id, or ANTHROPIC_MODEL or settings.json's
+else 1,000,000 for a model whose default window is 1M (DEFAULT_1M_SINCE, unless
+CLAUDE_CODE_DISABLE_1M_CONTEXT is set) or a `[1m]` model (SessionStart's model id, or ANTHROPIC_MODEL or settings.json's
 `model` for the same family, since that id drops the suffix; or once usage has passed 200,000,
 which no smaller window allows), else 200,000. Handoffs are <repo root>/.handoffs/<yyyy-mm-dd>[-n].md, and .handoffs/ is
 added to .git/info/exclude. Per-session state is ~/.claude/desk/handoff/<session id>.json, which is
@@ -169,11 +170,32 @@ def family(model):
     return ""
 
 
+# The oldest version of each family whose default window is 1M, with no [1m] (Claude Code's model
+# configuration docs). An older version reaches 1M only through its [1m] variant.
+DEFAULT_1M_SINCE = {"fable": (0, 0), "sonnet": (5, 0), "haiku": (5, 5), "opus": (4, 7)}
+
+
+def version(model):
+    """(5, 5) for `claude-opus-5-5`, (4, 5) for `claude-haiku-4-5-20251001`; None for an alias."""
+    nums = [int(p) for p in model.lower().replace("[1m]", "").split("-") if p.isdigit() and len(p) <= 2]
+    return tuple((nums + [0])[:2]) if nums else None
+
+
+def default_1m(model):
+    """Whether the model runs on a 1M window with no [1m]. CLAUDE_CODE_DISABLE_1M_CONTEXT holds every
+    model to 200k."""
+    if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT"):
+        return False
+    since, v = DEFAULT_1M_SINCE.get(family(model)), version(model)
+    return since is not None and v is not None and v >= since
+
+
 def is_1m(state):
-    """Whether the session runs on a 1M window. SessionStart's model id carries no `[1m]` even on a
-    1M session, so a `[1m]` the user chose counts too, for the same model family."""
+    """Whether the session runs on a 1M window: a model that is 1M by default, or one with `[1m]`.
+    SessionStart's model id carries no `[1m]` even on a 1M session, so a `[1m]` the user chose counts
+    too, for the same model family."""
     model = str(state.get("model") or "")
-    if "[1m]" in model.lower():
+    if "[1m]" in model.lower() or default_1m(model):
         return True
     chosen = configured_model()
     if "[1m]" not in chosen.lower():
