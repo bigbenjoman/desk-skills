@@ -895,8 +895,12 @@ PR bodies it needs included) and returns actions such as `{ type: 'set', key, fi
 process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it through `runPhase`
 (`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
 actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
-`pass.mjs` as a handler. Each phase has its own unit suite, `tests/test_pass_<phase>.mjs`; the first
-is crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
+`pass.mjs` as a handler. A decision that needs a read only some cases make (a gh call, the usage
+probe), or the result of a write (the issue links it made), is a generator run by `runSteps` instead:
+it yields each read or write as an action and gets the handler's answer back, so each is made only
+where, and in the order, the pass made it before. Advancing running tickets and the usage limit
+(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time. Each phase has its
+own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
 fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
 the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
 false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers

@@ -11,16 +11,16 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicCarry,epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicCarry,epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, followOnIn, FOLLOW_ON_MAX, workerEnd } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
-import { parseDecision, decisionEntry, appendDecisions, workerCalls, noteLine, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
+import { parseDecision, decisionEntry, appendDecisions, workerCalls, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, inputsHash, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
@@ -35,7 +35,7 @@ import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpus
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
-import { usageLimit, resetText, limitName } from './usage-limit.mjs';
+import { usageLimit, limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
@@ -56,7 +56,7 @@ import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, 
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, SUITE_WAIT_TEXT, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
@@ -64,9 +64,10 @@ import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
-import { runPhase } from './pass/run-phase.mjs';
+import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
-import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
+import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
+import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, ownWords, LINK_STEP, linkSteps, parkFollowOn, gateListsOf,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed } from './pass/shared.mjs';
 
@@ -262,7 +263,6 @@ function exitCodeOf(key, sid) {
     return sid && e?.session === sid && Number.isInteger(e.code) ? e.code : null;
   } catch { return null; }
 }
-const exitText = (code) => (code == null ? 'exit code not recorded' : `exit code ${code}`);
 
 // ---- liveness ------------------------------------------------------------
 // The session registry, read once a pass for every phase's snapshot (pass/shared.mjs registryView): a
@@ -728,8 +728,6 @@ const RESUME = resumeSetting(E.configValue('resume-killed'), RESUME_ROW);
 // When this computer last started, for telling a reboot from a crash. DESK_BOOT_TIME (ISO, or epoch
 // seconds) stands in for it in tests.
 const bootMs = bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
-const REBOOT = 'the computer restarted after its last log write';
-const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? REBOOT : 'its process died while the computer stayed up');
 // A worker stopped for a planned reboot waits for a restart, or for config §3b "Maintenance drain
 // limit (minutes)" from its stop (pass/shared.mjs rebootReady).
 const rebootReady = (t) => rebootReadyOf(t, { bootMs, drainMins: drainLimit(E.configValue('maintenance-drain')).minutes, drainRow: DRAIN_ROW });
@@ -834,302 +832,67 @@ function liveReadOf(t, question) {
 
 // ---- advance running tickets --------------------------------------------
 const onJira = /^jira\b/i.test(String(E.configValue('tracker') ?? '').trim());
+// The decision is pass/advance.mjs decideAdvance, run for each running ticket in turn: each ticket's
+// snapshot is read as its turn comes, and its reads and writes are the handlers below, made as the
+// decision yields them (runSteps).
+const ADVANCE_HANDLERS = {
+  ...PHASE_HANDLERS,
+  cloud: (a, s) => advanceCloud(s.t),
+  'open-pr': (a) => sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', a.branch, '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true }),
+  note: (a) => { notes.push(a.line); },
+  hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
+  'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }),
+  kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
+  park: (a) => { q('park', a.key, a.question); },
+  'build-park': (a, s) => buildParkOf(s.t, a.question),
+  'merge-park': (a, s) => {
+    const m = mergeParkOf(s.t, parseClearsWhen(afterLastPark(s.log.path, 'AUTOPILOT_PARK_CLEARS_WHEN'), { here: GH_REPO }).cond);
+    return m?.call === 'done' ? { ...m, grant: E.mergeGrant(queue()).why } : m;
+  },
+  shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
+  cells: (a) => cellsFor(a.pr, a.shots),
+  upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
+  'open-question': (a) => openQuestion(STATE, a.key),
+  'worker-head': (a, s) => recordWorkerHead(s.t),
+  done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
+  'settle-links': (a, s) => settleLinks(s.t, s.log.path),
+  'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
+  'live-read': (a, s) => liveReadOf(s.t, a.question),
+  'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path),
+  register: (a, s) => againstRegister(s.t, a.question, s.log.path, a.cond),
+  recommends: (a, s) => recommendsOf(s.t, a.question, s.log.path),
+  'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
+  decisions: (a, s) => logDecisions(s.t, s.log.path, a.pr),
+  'refuse-lease': (a, s) => refuseUnnamedLease(s.t, a.question),
+  handoff: (a, s) => { handedOff(s.t, a.said, { log: s.log.path, h: s.log.h, imgs: a.imgs, stopped: a.stopped }); },
+  lifted: (a, s) => lifted(a.limit, loginOf(loginDirOf(s.t))),
+  'exit-code': (a, s) => exitCodeOf(a.key, s.t.session_id),
+  fail: (a) => markFailed(a.key, a.why, { tail: a.tail }),
+};
+// A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
+function advanceLog(t) {
+  if (t.location === 'cloud' && t.cloud) return null;
+  const path = join(STATE, 'logs', `${t.key}.log`);
+  if (!existsSync(path)) return null;
+  const h = sh('node', [join(BIN, 'harvest.mjs'), path], { tolerant: true });
+  const raw = readFileSync(path);
+  const { size, mtimeMs } = statSync(path);
+  return { path, h, raw, text: raw.toString(), size, mtimeMs };
+}
+const UPLOAD_GRANT = { perm: uploadPerm, key: E.permissionKey('pr-images'), command: join(SHOWN_BIN, 'upload-images.mjs') };
 for (const t of rows.filter((r) => r.state === 'running')) {
-  if (t.location === 'cloud' && t.cloud) { advanceCloud(t); continue; }
-  const log = join(STATE, 'logs', `${t.key}.log`);
-  if (!existsSync(log)) continue;
-  const h = sh('node', [join(BIN, 'harvest.mjs'), log], { tolerant: true });
-
-  const stage = [...h.matchAll(/AUTOPILOT_STAGE:\s*(\S+)/g)].pop()?.[1];
-  if (stage && stage !== t.stage) { q('set', t.key, `stage=${stage}`); report.advanced.push(`${t.key} → ${stage}`); }
-  // A worker opens its draft PR at Stage 7 and carries on (review, Jira) before it prints DONE, and
-  // only DONE records result.pr. From Stage 7 on, ask GitHub once a pass until the PR shows, and keep
-  // it as draft_pr, so the status watch shows a PR opened while its worker still runs.
-  if (t.draft_pr == null && t.branch && parseInt(stage ?? t.stage, 10) >= 7) {
-    const opened = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch,
-      '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    if (/^\d+$/.test(opened)) { q('set', t.key, `draft_pr=${opened}`); report.advanced.push(`${t.key} opened PR #${opened}`); }
-  }
-
-  // ORDER MATTERS, and getting it wrong re-parks finished tickets. A worker that parks, gets
-  // answered, posts and exits leaves BOTH markers in the log. Taking the last PARK unconditionally
-  // re-parks a completed ticket — the log is append-only and this function has no
-  // notion of which markers it has already actioned, so a spent PARK reads exactly like a live one.
-  // Whichever marker appears LAST is the one that describes how the worker actually ended.
-  const lastPark = [...h.matchAll(/AUTOPILOT_PARK:\s*(.+)/g)].pop();
-  const lastDone = [...h.matchAll(/AUTOPILOT_DONE:\s*(.+)/g)].pop();
-  const parkSupersededByDone = lastPark && lastDone && lastDone.index > lastPark.index;
-  // A handoff (AUTOPILOT_HANDOFF: 4b or 7) ends this session so the next stage starts in a fresh one.
-  // It counts only as the last marker: a session that hands off has neither parked nor finished.
-  const lastHandoff = [...h.matchAll(/AUTOPILOT_HANDOFF:\s*(.+)/g)].pop();
-  // A stop for a planned reboot (AUTOPILOT_REBOOT) is resumed by the pass after the boot, never parked.
-  // It counts only as the last of the four, and only once: a resumed session keeps this log, so the
-  // stops already acted on (reboot_stops) are spent. A session that already printed DONE has finished.
-  const reboots = [...h.matchAll(/AUTOPILOT_REBOOT:[ \t]*(.*)/g)];
-  const lastReboot = reboots.length > (t.reboot_stops ?? 0) && !lastDone ? reboots.at(-1) : null;
-  const reboot = lastReboot && [lastPark, lastHandoff].every((m) => !m || lastReboot.index > m.index)
-    ? (lastReboot[1].trim() || 'no reason given') : undefined;
-  const handoffLast = !reboot && !!lastHandoff && [lastPark, lastDone].every((m) => !m || lastHandoff.index > m.index);
-  const handoff = handoffLast ? lastHandoff[1].trim() : undefined;
-  const park = handoff || reboot || parkSupersededByDone ? undefined : lastPark?.[1];
-  // A worker whose last word is DONE has finished, whether or not its session ever exits: one that
-  // hangs after printing it must be recorded done, never left running and then parked as wedged.
-  const done = park || handoff || reboot ? undefined : lastDone?.[1];
-  for (const m of h.matchAll(/AUTOPILOT_NOTE:\s*(.+)/g)) notes.push(noteLine(t.key, m[1]));
-
-  // A worker at a usage limit (usage-limit.mjs decides; nothing here reads the event). Only a worker
-  // that has neither parked nor finished, and has not answered since the limit, is acted on.
-  const logRaw = readFileSync(log);
-  const logText = logRaw.toString();
-  const usage = usageLimit(logText);
-  const limit = !park && !done && !handoff && !reboot && usage.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
-  if (usage.unrecognised.length > (t.usage_unrecognised ?? 0)) {
-    q('set', t.key, `usage_unrecognised=${usage.unrecognised.length}`);
-    report.unrecognised.push(`${t.key}: ${usage.unrecognised.at(-1)}`);
-  }
-  for (const l of usage.limits.filter((x) => x.resumed)) {
-    notes.push(`- [${t.key}] resumed after ${limitName(l.type)}${l.resetsAt != null ? ` (reset at ${resetText(l.resetsAt)})` : ''}`);
-  }
-  const pausedOnLimit = pausedOn(limit);
-  // Kept below only while the ticket is still running once the loop is done.
-  if (pausedOnLimit) usageHolds.push({ key: t.key, limit, was: t.usage_paused, login: loginOf(loginDirOf(t)) });
-  else if (t.usage_paused) q('set', t.key, 'usage_paused=null');
-
-  // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
-  // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
-  // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
-  // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
-  // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
-  const bytes = statSync(log).size;
-  let wedged = false;
-  if (wroteSince(logRaw, t.log_bytes ?? 0)) {
-    q('set', t.key, `log_bytes=${bytes}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
-  } else if (pausedOnLimit) {
-    // Waiting for the reset is not a stall.
-    if (t.idle_passes) q('set', t.key, 'idle_passes=0');
-  } else {
-    const idle = (t.idle_passes ?? 0) + 1;
-    const stall = idle >= WEDGE_PASSES && !done && !handoff && !reboot;
-    // Held since the first pass that found it so; the ceiling counts from then.
-    const waitOn = stall ? suiteWait(t.worktree ?? join(WORKTREES, t.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }) : null;
-    const since = waitOn ? (t.suite_wait_since ?? Date.now()) : null;
-    const overCeiling = since != null && Date.now() - since > SUITE_WAIT_CEILING_MS;
-    q('set', t.key, `idle_passes=${idle}`, ...(since !== (t.suite_wait_since ?? null) ? [`suite_wait_since=${since}`] : []));
-    if (waitOn && !overCeiling) {
-      report.quiet.push(`${t.key}: quiet for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]}`);
-    } else if (stall && registryOk) {
-      // With no registry the worker cannot be stopped, so it is left for the next pass, never parked as stopped.
-      // Free the slot. The worker's session id survives, so it can be resumed later with
-      // its context intact; leaving it wedged blocks the whole batch.
-      const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
-      if (pid) sh('kill', [String(pid)], { tolerant: true });
-      wedged = true;
-      const why = overCeiling
-        ? `no output for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]} for over the ${SUITE_WAIT_CEILING_MS / 60000}-minute ceiling`
-        : `no output for ${idle} passes`;
-      q('park', t.key, `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox`);
-      report.stalled.push(`${t.key}: ${why} — stopped and parked, slot freed`);
-    } else if (idle >= QUIET_PASSES) report.quiet.push(`${t.key}: quiet for ${idle} passes`);
-  }
-
-  // Screenshots the worker captured but cannot upload: one shared browser profile, so the
-  // orchestrator does it, one PR at a time, and only once per ticket — and only where config §3
-  // grants driving the signed-in browser. Otherwise surface it for the user once.
-  // The worker prints an absolute path, but a `~/...` one must still work: node does not expand ~,
-  // and an unexpanded path made the uploader exit on every pass.
-  // A session started from a handoff may open the PR for screenshots an earlier session captured: the
-  // directory that session printed is kept on the ticket (images_dir) when it hands off.
-  const logImgDir = [...h.matchAll(/AUTOPILOT_IMAGES:\s*(\S+)/g)].pop()?.[1];
-  // Where neither names one, the directory every worker is briefed to capture into (the spawn's
-  // "Screenshot directory"), since a worker can save its screenshots there and never print the marker
-  // (KAN-629: five PNGs, five rounds, no AUTOPILOT_IMAGES, and its cells went to the person).
-  const namedImgDir = E.expandHome(logImgDir ?? t.images_dir ?? undefined);
-  const imgDir = namedImgDir ?? ticketShotDir(t, STATE);
-  // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
-  // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
-  const built = park && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id)) ? buildParkOf(t, park.trim()) : null;
-  // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
-  // the merge question naming the row that keeps desk from it.
-  const merging = park && !built && !wedged && registryOk && !(t.session_id && liveSids.has(t.session_id))
-    ? mergeParkOf(t, parseClearsWhen(afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN'), { here: GH_REPO }).cond) : null;
-  const mergeOnly = merging?.call === 'done' ? merging : null;
-  // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
-  const prNo = [...h.matchAll(/AUTOPILOT_DONE:[^\n]*pr=(\d+)/g)].pop()?.[1] ?? (built ? String(built.pr) : null) ?? (mergeOnly ? String(mergeOnly.pr) : null) ?? t.result?.pr;
-  if (imgDir && prNo && !t.images_uploaded) {
-    // A directory that is missing or holds no screenshot means no images, not a failed upload. A
-    // running worker may still capture into it, so only a finished one is recorded as having none.
-    let shots = [];
-    try { shots = readdirSync(imgDir).filter((f) => E.SCREENSHOT_FILE.test(f)); } catch { /* missing */ }
-    if (!shots.length) {
-      if (done || built || mergeOnly) q('set', t.key, 'images_uploaded=none');
-    } else if (!namedImgDir && (crashOf(t, prNo) || !((done || built || mergeOnly) && cellsFor(prNo, shots)))) {
-      // The briefed directory, unnamed this round, is uploaded only once its worker is finished (with no
-      // marker, nothing says its screenshots are all taken) and only while the PR's body still has a
-      // `_drag <file>_` cell naming one of them. It keeps every round's screenshots and the uploader
-      // sends the whole directory, so a later round's PR whose cells were filled would get each asset
-      // again. A body that could not be read waits for the undraft step, which reads it again. An
-      // upload of it that crashed is the crashed-uploads step's, which keeps to UPLOAD_TRIES.
-    } else if (uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED) {
-      uploadShots(t, prNo, imgDir);
-    } else if (!t.images_reported) {
-      q('set', t.key, 'images_reported=true');
-      report.waiting.push(`${t.key}: screenshots for PR #${prNo} are in ${imgDir} — config §3 ${E.permissionKey('pr-images')} is "${uploadPerm}". ` +
-        `Ask, then: DESK_UPLOAD_APPROVED=1 node ${join(SHOWN_BIN, 'upload-images.mjs')} ${prNo} ${imgDir}`);
-    }
-  }
-
-  const stillLive = registryOk && t.session_id && liveSids.has(t.session_id);
-  let stopped = '';
-  if (stillLive && (done || handoff || reboot)) {
-    // Finished (or handed off, or stopped for a reboot) but hung: stop the session (it has nothing left to do) and record it below.
-    const pid = live.find((a) => a.sessionId === t.session_id)?.pid;
-    if (pid) sh('kill', [String(pid)], { tolerant: true });
-    const said = done ? 'DONE' : handoff ? 'HANDOFF' : 'REBOOT';
-    stopped = pid ? ` (session still live after ${said} — stopped pid ${pid})` : ` (session still live after ${said}, no pid to stop: session ${t.session_id})`;
-  } else if (stillLive) {
-    // A worker sitting on an unanswered question is waiting, not working.
-    const asked = openQuestion(STATE, t.key);
-    if (asked) report.waiting.push(`${t.key}: ${asked}`);
-    continue;
-  }
-  if (!registryOk) continue; // cannot tell — leave it alone rather than guess
-  // The head its worker left: a later fix try pushes commits up to it rather than hold them (busyWorktree).
-  recordWorkerHead(t);
-
-  // Exited, or finished and stopped above. Decide what it was, from the markers read above.
-  // A park waiting only on a check §4 Check builds names (built, read above) is done: the undraft step builds it.
-  if (reboot) {
-    // Its session, branch, worktree and unpushed commits are kept, and it is not counted as a kill:
-    // the spawn resumes it once the computer has restarted, or once no restart came in time (rebootReady).
-    q('set', t.key, 'state=triaged', 'resume=reboot', `resume_why=stopped for a planned reboot (${reboot})`,
-      `reboot_stops=${reboots.length}`, `reboot_stop_at=${statSync(log).mtime.toISOString()}`);
-    report.advanced.push(`${t.key} stopped for a planned reboot (${reboot}): queued to resume in its own session after the restart${stopped}`);
-  } else if (built) {
-    const checks = built.checks.map((x) => `"${x}"`).join(', ');
-    recordDone(t, {
-      log, h, pr: String(built.pr), summary: `parked only on ${checks}, which §4 Check builds clears: recorded done`,
-      line: `PR #${built.pr} recorded done, not parked: its park waited only on ${checks} red at ${String(built.head).slice(0, 9)}, which §4 Check builds clears, so the undraft step runs \`${built.command}\`. Steps its park named as not reached (a tracker comment or transition) are left undone. The park: ${park.trim()}${stopped}`,
-      // The screenshot directory the worker printed, for the undraft step's missing-shot check (shotsOf).
-      sets: logImgDir ? [`images_dir=${logImgDir}`] : [],
-    });
-    parkLinks(t, settleLinks(t, log), built.pr);
-  } else if (mergeOnly) {
-    // The park's own words are kept as its follow-on: the steps it named for after the merge are listed
-    // for the person once the PR merges (needs-you), never a reason to hold it.
-    const n = mergeOnly.pr;
-    recordDone(t, {
-      log, h, pr: String(n), summary: `parked only on who merges PR #${n}, which desk merges: recorded done`,
-      line: `PR #${n} recorded done, not parked: its park waited only on #${n} merging, and #${n} is green with a clean review at ${String(mergeOnly.head).slice(0, 9)}, so the undraft step takes it out of draft and the merge driver merges it (${E.mergeGrant(queue()).why}). What the park said is kept as a follow-on, listed for you once #${n} merges. The park: ${park.trim()}${stopped}`,
-      sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
-    });
-    parkLinks(t, settleLinks(t, log), n);
-  } else if (park) {
-    // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
-    // The links the worker asked for are made now; any not made join its question, and its follow-ons
-    // below (keepLinks).
-    const linkNeeds = settleLinks(t, log);
-    const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${park.trim()}` : park.trim()}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
-    q('park', t.key, asked);
-    // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
-    // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
-    // answer given before this pass saw the park still counts as its answer.
-    q('set', t.key, `last_round=${JSON.stringify({ stage: stage ?? t.stage ?? null, question: park.trim(), at: statSync(log).mtime.toISOString() })}`);
-    // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
-    // section below and settles it there.
-    const read = wedged ? null : liveReadOf(t, park.trim());
-    const cleared = read ? { kind: LIVE_READ, ...read } : clearsWhenOf(t, log);
-    const reg = againstRegister(t, park.trim(), log, cleared);
-    const recommends = recommendsOf(t, park.trim(), log);
-    // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
-    q('set', t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
-      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
-    keepLinks(t, linkNeeds.map((n) => n.why), t.result?.pr);
-    // Before the requeue, which moves this round's log aside.
-    logDecisions(t, log, null);
-    if (!wedged && !read && !needsSession({ ...t, park: { question: park.trim() } }) && unnamedForcePush({ question: park.trim(), inputs: reg.inputs }, t.branch) && refuseUnnamedLease(t, park.trim())) continue;
-    if (read) report.clears.push(`${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${READ_BRANCH} (${READ_CHECKOUT}), never the ticket's worktree; requeued once they finish. The park: ${park.trim()}`);
-    else if (reg.status === 'put_off') report.putOff.push(`${t.key}: ${park.trim()} (put off on ${reg.entry.at.slice(0, 10)})`);
-    else report.parked.push(`${t.key}: ${asked}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
-  }
-  else if (handoff) handedOff(t, handoff, { log, h, imgs: logImgDir, stopped });
-  else if (done) {
-    const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
-    // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
-    // the stage its last handoff named.
-    // A capture try's said= names each screen it could not take and why: kept whole (result.done.said), as
-    // the summary's 200 characters cut all but the first few (fix-tries.mjs captureTry). Written as JSON,
-    // so a said= opening with a bracket is never parsed by queue.mjs as JSON and refused.
-    const said = /\bsaid=(.*)$/.exec(done.trim())?.[1]?.trim();
-    // Steps that wait on the merge (follow_on=), kept for needs-you once the PR merges.
-    const follow = followOnIn(done);
-    if (follow.error) report.inputs.push(`${t.key}: unreadable follow_on on its DONE marker (${follow.error}), nothing kept: ${done.trim()}`);
-    recordDone(t, { log, h, pr, summary: done.trim(), line: `${done.trim()}${stopped}`, sets: [
-      ...(said ? [`result.done=${JSON.stringify({ said: said.slice(0, 2000) })}`] : []),
-      ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
-    ] });
-    parkLinks(t, settleLinks(t, log), pr);
-  } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
-    // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
-    // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,
-    // then is resumed in its own session on its own login, never failed, taken as done or started on
-    // another login. Once per limit: a resume that
-    // ends before the model answers, with no new rejection, leaves the same count of limits in the log,
-    // and is then handled as any other exit below rather than resumed on every pass.
-    if (lifted(limit, loginOf(loginDirOf(t)))) {
-      const why = `exited at ${limitName(limit.type)}, which lifted (${liftedHow(limit)})`;
-      q('set', t.key, 'state=triaged', 'resume=usage', `resume_why=${why}`,
-        `resume_limits=${usage.limits.length}`);
-      report.advanced.push(`${t.key} ${why}: queued to resume in its own session`);
-    }
-  } else {
-    // Killed mid-run, PR open or not: resumed in its own session by the spawn below, ahead of new
-    // tickets, unless config §3b refuses another resume.
-    const killed = !wedged && !endedNormally(logText) && t.session_id ? killedBy(log) : null;
-    const stop = killed ? resumeRefusal(t, killed) : null;
-    // A log written in the last two minutes, since this computer started, is a worker the registry
-    // has not caught up with, not a dead one: resuming it would put two processes on one session.
-    if (killed && killed !== REBOOT && Date.now() - statSync(log).mtimeMs < 120_000) {
-      report.quiet.push(`${t.key}: not in the session registry, but its log was written in the last 2 minutes — left running, checked again next pass`);
-      continue;
-    }
-    if (killed && !stop) {
-      q('set', t.key, 'state=triaged', 'resume=pending', `resume_why=${killed}`);
-      report.advanced.push(`${t.key} killed before it finished (${killed}): queued to resume`);
-      continue;
-    }
-    // No marker is not evidence of failure. A worker can do everything and exit without
-    // announcing it. Ask GitHub what actually exists before believing the silence. An open PR
-    // means a PR exists, NOT that the review posted or that it merged — verify those separately.
-    const pr = sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch ?? '',
-      '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true });
-    const prOpen = /^\d+$/.test(pr);
-    // A fix that holds the merge is the exception: the person's instruction, or a migration rename try.
-    // An open PR says nothing about whether it was carried out, and done would close the fix that holds
-    // the merge (merge-driver.sh instruction_held) and, for a rename, spend its one try (renamesFix).
-    const held = !t.fix?.finished && ['instruction', 'renames'].includes(t.fix?.kind) ? t.fix.kind : null;
-    if (prOpen && !held) {
-      recordDone(t, { log, h, pr, summary: 'completed without printing a marker', line: `PR #${pr} (no marker printed — PR exists on GitHub; verify review and merge state)` });
-    } else {
-      logDecisions(t, log, null);
-      if (prOpen) {
-        const why = held === 'renames'
-          ? `its worker ended with no marker, so the migrations PR #${pr} names may not be updated to their base's new names (${(t.fix.renames ?? []).map((r) => `${r.old} → ${r.new}`).join(', ') || 'see its fix'}), and the PR stays held from merging. Requeue it for a new worker on the same renames — check ${log}`
-          : `its worker ended with no marker, so your instruction on PR #${pr} may not be carried out, and the PR stays held from merging. Requeue it for a new worker on the same instruction — check ${log}`;
-        q('park', t.key, why);
-        report.parked.push(`${t.key}: ${why}`);
-      } else if (stop?.fail) {
-        const code = exitCodeOf(t.key, t.session_id);
-        markFailed(t.key, `killed before it finished (${killed}), with no marker and no open PR on ${t.branch} (${workerEnd(logText)}, ${exitText(code)}). ${stop.fail}`, { tail: ` — check ${log}` });
-      } else if (stop?.park) {
-        q('park', t.key, stop.park);
-        report.parked.push(`${t.key}: ${stop.park}`);
-      } else {
-        const code = exitCodeOf(t.key, t.session_id);
-        markFailed(t.key, `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(logText)}, ${exitText(code)})`, { tail: ` — check ${log}` });
-      }
-    }
-  }
+  runSteps({
+    name: 'advance',
+    snapshot: () => {
+      const log = advanceLog(t);
+      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs,
+        upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
+        read: { branch: READ_BRANCH, checkout: READ_CHECKOUT } };
+    },
+    decide: decideAdvance,
+    handlers: ADVANCE_HANDLERS,
+    report,
+  });
 }
 
 // ---- crashed uploads -----------------------------------------------------
@@ -1152,46 +915,28 @@ runPhase({
 });
 
 // ---- the usage limit -----------------------------------------------------
-// A paused worker holds the batch while it is still running once the loop is done. A preflight the
-// limit refused holds it through the queue's usage_hold, kept across passes until the limit lifts. A
-// hold whose limit has lifted holds nothing, and spawns and resumes go ahead as normal. Nothing moves
-// to another subscription: a worker waits for its own login's limit, and the batch for the repo's.
+// The decision is pass/advance.mjs decideUsageLimit, after every running ticket has had its turn: the
+// workers it found paused hold the batch while they are still running, and so does a preflight the
+// limit refused (the queue's usage_hold), until the limit lifts.
 let USAGE_HOLD = null;
 // Set when a limit met this pass holds the rest of it: a refused preflight, or a base worker paused.
 let usageStop = false;
-// A ticket a pass from before this left waiting to move to another login (`login_move`) resumes its own
-// session on its own login instead, as one that exited at the limit does; the field goes from every ticket.
-for (const t of Object.values(queue().tickets)) {
-  if (t.login_move == null) continue;
-  const from = t.login_move.from ?? 'its own';
-  const waiting = t.state === 'triaged' && !!t.session_id;
-  q('set', t.key, 'login_move=null', ...(waiting ? ['resume=usage', `resume_why=was waiting to move off login ${from}, which desk no longer does`] : []));
-  if (waiting) report.advanced.push(`${t.key}: no longer moved off login ${from}: it resumes its own session there`);
-}
-{
-  const tickets = queue().tickets;
-  for (const h of usageHolds.splice(0)) {
-    if (tickets[h.key]?.state !== 'running') {
-      if (tickets[h.key]?.usage_paused) q('set', h.key, 'usage_paused=null');
-      continue;
-    }
-    usageHolds.push(h);
-  }
-  for (const h of usageHolds) {
-    report.paused.push(`${h.key} on ${limitName(h.limit.type)}${untilText(h.limit)}, then it resumes, or sooner once a probe call succeeds`);
-    // desk-q reads this to show the ticket paused rather than at its stage.
-    if (h.was?.type !== h.limit.type || h.was?.resets_at !== h.limit.resetsAt) {
-      q('set', h.key, `usage_paused=${JSON.stringify({ type: h.limit.type, resets_at: h.limit.resetsAt })}`);
-    }
-  }
-  const stored = queue().usage_hold;
-  const pre = stored?.preflight ? { key: stored.preflight, limit: { type: stored.type ?? 'unknown', resetsAt: stored.resets_at ?? null },
-    login: stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir) } : null;
-  const holding = [...(pre ? [pre] : []), ...usageHolds].find((h) => onRepoLogin(h.login) && !lifted(h.limit, h.login));
-  if (holding) USAGE_HOLD = { type: holding.limit.type, resetsAt: holding.limit.resetsAt, preflight: holding === pre ? pre.key : null, login: holding.login };
-  else if (pre && !onRepoLogin(pre.login)) report.advanced.push(`${limitName(pre.limit.type)} on login ${pre.login.name} no longer holds the batch, as this repo's subscription is another: spawns go ahead`);
-  else if (pre) report.advanced.push(`${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit)}): spawns and resumes go ahead`);
-}
+runSteps({
+  name: 'usage limit',
+  snapshot: () => {
+    const { tickets, usage_hold: stored = null } = queue();
+    const preLogin = stored?.preflight ? (stored.login_dir === undefined ? OWN_LOGIN : loginOf(stored.login_dir)) : null;
+    return { tickets, holds: [...usageHolds], stored, preLogin, repoLogin: REPO_LOGIN, now: Date.now() };
+  },
+  decide: decideUsageLimit,
+  handlers: {
+    ...PHASE_HANDLERS,
+    'keep-holds': (a) => { const keep = new Set(a.keys); usageHolds.splice(0, usageHolds.length, ...usageHolds.filter((h) => keep.has(h.key))); },
+    lifted: (a) => lifted(a.limit, a.login),
+    'usage-hold': (a) => { USAGE_HOLD = a.hold; },
+  },
+  report,
+});
 
 // ---- batch notes ---------------------------------------------------------
 if (notes.length) appendNotes(notes, STATE);
