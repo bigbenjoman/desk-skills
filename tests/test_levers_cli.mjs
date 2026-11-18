@@ -88,6 +88,13 @@ t('AC3 the lever reads overridden off', [s3.state, s3.value], ['overridden', 'of
 const p3 = admit('AA-1');
 t('AC3 the next ticket admitted has codex pinned off, with no arm', [p3.set.includes('codex'), Object.hasOwn(p3.arms, 'codex')], [false, false]);
 t('AC4 needs-you no longer lists it', codexItems(), 0);
+// codex is quality-risk, which admission never arms, so the pin is shown on wrappers, a lever it does:
+// on trial it draws an arm, and once set off by levers decide it is out of the set with no arm.
+t('AC3 wrappers on trial draws an arm before the call', Object.hasOwn(admit('AA-2').arms, 'wrappers'), true);
+levers('decide', 'ai-agents', 'wrappers', 'off');
+const p3w = admit('AA-3');
+t('AC3 set off by levers decide, wrappers is pinned off on the next ticket, with no arm', [p3w.set.includes('wrappers'), Object.hasOwn(p3w.arms, 'wrappers'), leverStatesIn(events(AA)).wrappers.state], [false, false, 'overridden']);
+levers('undo', 'ai-agents', 'wrappers');
 
 // ---- AC11: undo Ben's own call ------------------------------------------------------------------------
 const r11 = levers('undo', 'ai-agents', 'codex');
@@ -106,7 +113,38 @@ const rOff = levers('decide', 'ai-agents', 'codex', 'off');
 t('undo to plain off: the call pins codex off', [rOff.status, leverStatesIn(events(AA)).codex.state], [0, 'overridden']);
 const rBack = levers('undo', 'ai-agents', 'codex');
 const oBack = events(AA).at(-1);
-t('undo to plain off: the override goes back to off with no value, and the lever reads plain off', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'off', false, { state: 'off', at: oBack.at, id: oBack.id }]);
+t('undo to plain off: the override goes back to off with no value, and the lever reads plain off as it did', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'off', false, { state: 'off', at: null, id: null }]);
+
+// Undo back to a trial keeps the trial: the next ticket draws under the trial id it had before the call.
+reset(AA);
+const tidBefore = admit('AA-20').trial_ids.wrappers;
+levers('decide', 'ai-agents', 'wrappers', 'off');
+levers('undo', 'ai-agents', 'wrappers');
+t('undo back to trial: the next ticket draws under the same trial id', [leverStatesIn(events(AA)).wrappers.state, admit('AA-21').trial_ids.wrappers], ['trial', tidBefore]);
+
+// Undo back to an adopt keeps its holdback start.
+reset(AA);
+mkdirSync(state(AA), { recursive: true });
+const adAt = at(3);
+writeFileSync(logFile(AA), line({ id: 'ad1', at: adAt, kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', ...ev }));
+levers('decide', 'ai-agents', 'wrappers', 'off');
+levers('undo', 'ai-agents', 'wrappers');
+const sAd = leverStatesIn(events(AA)).wrappers;
+t('undo back to adopted: the holdback runs from the adopt, not the undo', [sAd.state, sAd.at, sAd.id], ['adopted', adAt, 'ad1']);
+
+// A run that wrote its override but stopped before its decision line is finished by running it again.
+reset(AA);
+levers('decide', 'ai-agents', 'wrappers', 'off');
+const n1 = events(AA).length;
+rmSync(join(state(AA), 'decisions.jsonl'));
+const rRe = levers('decide', 'ai-agents', 'wrappers', 'off');
+t('a decide re-run after a lost decision line writes no second override and logs the first', [rRe.status, events(AA).length, decisions(AA).map((d) => d.id)], [0, n1, [events(AA).at(-1).decision_id]]);
+levers('undo', 'ai-agents', 'wrappers');
+const n2 = events(AA).length;
+const undoId = events(AA).filter((e) => e.kind === 'override').at(-1).decision_id;
+writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA)[0])}\n`);
+const rReU = levers('undo', 'ai-agents', 'wrappers');
+t('an undo re-run after a lost decision line finishes it, and does not undo the undo', [rReU.status, events(AA).length, decisions(AA).at(-1).id, leverStatesIn(events(AA)).wrappers.state], [0, n2, undoId, 'trial']);
 
 // ---- AC5: trial, on a low-risk lever admission draws ----------------------------------------------------
 t('AC5 wrappers is a low-risk lever in the registry', REGISTRY.wrappers.layer, 'low-risk');
@@ -170,6 +208,27 @@ reset(DS);
 const r12 = levers('undo', 'desk-skills', 'wrappers');
 t('AC12 exits 0 and writes nothing', [r12.status, raw(DS), decisions(DS).length], [0, '', 0]);
 t('AC12 its line', r12.stdout.trim(), "wrappers has never been adopted in desk-skills, so there's nothing to undo.");
+
+// Undoing a settled adopt overrides the adopt call desk logged against the adopt, as undoing the adopt does.
+reset(DS);
+mkdirSync(state(DS), { recursive: true });
+const settle = { ...adopt, id: 'a2', at: at(1), from: 'adopted', to: 'settled', reason_code: 'holdback_ended', reason: 'holdback ended' };
+writeFileSync(logFile(DS), [adopt, settle].map((e) => `${JSON.stringify(e)}\n`).join(''));
+const [settledCall] = recordLeverDecision([adopt], { slug: DS, state: state(DS) });
+const rSet = levers('undo', 'desk-skills', 'wrappers');
+t('undo of a settled adopt overrides the adopt call', [rSet.status, decisions(DS).at(-1).override_of], [0, settledCall.id]);
+
+// A lever the repo's Phase 0 levers row does not leave to auto is refused, writing nothing: admission
+// never reads the lever log for it.
+const ROW = 'acme__pinned';
+mkdirSync(join(CONFIG, 'repos', ROW), { recursive: true });
+writeFileSync(join(CONFIG, 'repos', ROW, 'config.md'), '# desk config\n\n## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/pinned` |\n\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `auto wrappers` |\n');
+const rPin = levers('decide', 'pinned', 'wrappers', 'off');
+t('a lever the row names is refused, exit 2, writing nothing', [rPin.status, raw(ROW), rPin.stderr.includes('named in pinned\'s Phase 0 levers row')], [2, '', true]);
+writeFileSync(join(CONFIG, 'repos', ROW, 'config.md'), '# desk config\n\n## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/pinned` |\n\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `none` |\n');
+const rNone = levers('undo', 'pinned', 'wrappers');
+t('a repo whose row is not auto is refused, exit 2, writing nothing', [rNone.status, raw(ROW), rNone.stderr.includes('is not auto')], [2, '', true]);
+rmSync(join(CONFIG, 'repos', ROW), { recursive: true, force: true });
 
 const ru = levers('decide', 'ai-agents', 'codex');
 t('usage: a missing choice exits 2', ru.status, 2);

@@ -85,19 +85,20 @@ export function append(slug, event) {
 
 // As append, but `build()` runs under the log's lock and returns the event, or null to write nothing
 // (append then returns null). A caller that decides from what the log already holds reads it there,
-// so two callers deciding at once cannot both append.
+// so two callers deciding at once cannot both append. `build()` may return an array of events: each is
+// checked before any is written, and all are written in one append (-> the lines, in order).
 export function appendWith(slug, build) {
   const file = logFile(slug);
   mkdirSync(dirname(file), { recursive: true });
   const lock = `${file}.lock`;
   return withDirLock(lock, () => {
-    const event = build();
-    if (event == null) return null;
-    check(event);
-    const { v, id, repo, at, ...rest } = event;
-    const line = { v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: MACHINE_WIDE.includes(event.kind) ? '*' : slug, ...rest };
-    appendFileSync(file, `${JSON.stringify(line)}\n`);
-    return line;
+    const built = build();
+    if (built == null) return null;
+    const events = Array.isArray(built) ? built : [built];
+    for (const event of events) check(event);
+    const lines = events.map(({ v, id, repo, at, ...rest }) => ({ v: VERSION, id: randomUUID(), at: at ?? new Date().toISOString(), repo: MACHINE_WIDE.includes(rest.kind) ? '*' : slug, ...rest }));
+    appendFileSync(file, lines.map((l) => `${JSON.stringify(l)}\n`).join(''));
+    return Array.isArray(built) ? lines : lines[0];
   }, {
     waitMs: LOCK_WAIT_MS,
     pollMs: 20,
@@ -115,7 +116,7 @@ export function stampAfter(events, at = new Date()) {
 }
 
 // As appendWith, for an event decided from what the log holds: `build(events)` runs under the lock on
-// the log's events and returns the event, null to write nothing, or { why } to refuse. A log with an
+// the log's events and returns the event (or an array of them), null to write nothing, or { why } to refuse. A log with an
 // unreadable line is refused before `build` runs: admission reads it as no log at all, so an override
 // written there would never pin. -> { event: the event as written, or null; why: the refusal, or null }
 export function appendChecked(slug, build) {

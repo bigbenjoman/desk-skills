@@ -388,7 +388,23 @@ t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk
   const code = await exited;
   t('AC14 once it lets go, the build runs and exits 0', j([code, existsSync(join(out, 'view.json')), existsSync(join(out, 'build.json'))]), j([0, true, true]));
   t('AC14 and says where it wrote', said.startsWith(`levers-view: wrote ${join(out, 'view.json')} and ${join(out, 'build.json')}`), true);
-  t('AC14 it lets go of the lock', existsSync(V.buildLock(out)), false);
+}
+
+// DS-709 AC14, in this process (where no exit handler stands in for build letting go): build takes the
+// lock, so one held here makes it wait and give up, and a build that ran has let go of it before returning.
+{
+  const { tryLock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const { existsSync } = await import('node:fs');
+  const m = machine({ repos: autoRepos });
+  const out = join(m.out, 'inproc');
+  mkdirSync(out, { recursive: true });
+  tryLock(V.buildLock(out));
+  let refused = '';
+  try { V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out, waitMs: 200 }); } catch (e) { refused = e.message; }
+  t('AC14 a build waits on the lock another build holds, then gives up writing nothing', j([refused.startsWith('another Levers build'), existsSync(join(out, 'view.json'))]), j([true, false]));
+  unlock(V.buildLock(out));
+  V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out });
+  t('AC14 a build that ran has let go of the lock before it returns', j([existsSync(join(out, 'view.json')), existsSync(V.buildLock(out))]), j([true, false]));
 }
 
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
