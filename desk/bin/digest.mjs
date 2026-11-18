@@ -182,6 +182,8 @@ export function jiraLine(slug, j) {
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
 // settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged or held ticket's unanswered triage unknowns. Questions
 // already answered from a digest are left out. A put-off question whose inputs changed says what changed.
+// `r.triage(key)`, where given, reads a ticket's triage record in place of its file, so a listing that
+// has read it already reads it once.
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = [];
@@ -210,7 +212,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
       const why = handed.find((x) => x.kind === 'parked' && x.ticket === t.key && x.text === String(t.park?.question ?? ''))?.why;
       if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text: why ? `${text} (handed on: ${why})` : text, key });
     } else if ((t.state === 'triaged' || isHeld(t)) && (t.open_questions ?? 0) > 0) {
-      const unknowns = readJson(join(r.state, 'triage', `${t.key}.json`), {})?.unknowns;
+      const unknowns = (r.triage ? r.triage(t.key) : readJson(join(r.state, 'triage', `${t.key}.json`), {}))?.unknowns;
       const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
       const key = questionKey(r.slug, t.key, text);
       if (!answered[key]) out.push({ ticket: t.key, kind: 'triage', text, key });

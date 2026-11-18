@@ -76,10 +76,12 @@ export function firstSpawnFromLogs(state, key) {
 
 // The size triage recorded, or `unknown`: never guessed from anything else.
 export function sizeOf(state, key) {
-  try {
-    const s = String(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8')).size ?? '').trim().toUpperCase();
-    return SIZES.includes(s) ? s : 'unknown';
-  } catch { return 'unknown'; }
+  try { return sizeIn(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8'))); } catch { return 'unknown'; }
+}
+// The size triage record `rec` holds, as sizeOf reads it.
+export function sizeIn(rec) {
+  const s = String(rec?.size ?? '').trim().toUpperCase();
+  return SIZES.includes(s) ? s : 'unknown';
 }
 
 export function historyLine({ key, size, spawned_at, merged_at }) {
