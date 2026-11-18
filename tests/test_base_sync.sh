@@ -914,7 +914,7 @@ check "DS-786 AC1 a live check try is waited on, not doubled" '[ "$(grep -c "^ba
 git -C "$C/wt/base-feat-x" -c user.name=t -c user.email=t@t commit -q --allow-empty -m wip
 ended "AUTOPILOT_PARK: the Flows image is missing, which only a person can build"; rm -f "$T/agents.json"; pass
 check "DS-786 a parked check try's unpushed commit is kept on a ref and the base worktree is put back at origin's base" \
-  '[ "$(git -C "$C/wt/base-feat-x" rev-list --count origin/feat/x..HEAD)" = 0 ] && [ -z "$(git -C "$C/wt/base-feat-x" status --porcelain)" ] && [ "$(jq -r ".base_fix.tries[0].kept.ref" "$DESK_QUEUE")" = refs/desk/base-fix/base-feat-x/1 ]'
+  '[ "$(git -C "$C/wt/base-feat-x" rev-list --count origin/feat/x..HEAD)" = 0 ] && [ -z "$(git -C "$C/wt/base-feat-x" status --porcelain)" ] && [ "$(jq -r ".base_fix.tries[0].kept.ref" "$DESK_QUEUE")" = refs/desk/base-fix/base-feat-x/checks-300-1 ]'
 check "DS-786 AC2 a try that left the head red goes to the person, recorded for needs-you, exit 11" \
   '[ $rc -eq 11 ] && [[ "${out#*WAITING ON YOU}" == *"PROMOTION PR: #300 is red: still failing tests at eeeeeeeeeeee after 1 check try; the last try parked: the Flows image is missing"* ]] && [ "$(jq -r ".promotion.red.checks | join(\",\")" "$DESK_QUEUE")" = tests ] && [ "$(jq -r .promotion.red.tried "$DESK_QUEUE")" = 1 ] && [ "$(grep -c "^base-feat-x " "$T/spawns")" = 1 ]'
 check "DS-786 AC2 and the batch is not idle while it is red" '[[ "$out" != *"IDLE"* ]]'
@@ -926,7 +926,10 @@ node "$B/queue.mjs" set T-2 state=parked 'park={"question":"Which endpoint?"}' >
 promo true FAILURE; pass
 check "DS-786 AC4 a draft promotion PR waiting on a child gets no check try and no record" \
   '! grep -q "^base-feat-x " "$T/spawns" && [ "$(jq -r .base_fix "$DESK_QUEUE")" = null ] && [ "$(jq -r .promotion.red "$DESK_QUEUE")" = null ] && [[ "$out" != *"PROMOTION PR"* ]] && [[ "$out" != *"promotion PR #300: tests"* ]]'
-promo false FAILURE; pass
+echo stray > "$C/wt/base-feat-x/stray.txt"; promo false FAILURE; pass
+check "DS-786 a base worktree holding work of its own gets no check try, and the person is told why" \
+  '! grep -q "^base-feat-x " "$T/spawns" && [[ "$out" == *"PROMOTION PR: #300 is red (tests), and its check try 1 of 2 cannot start, since the base worktree $C/wt/base-feat-x has uncommitted changes"* ]] && [ -f "$C/wt/base-feat-x/stray.txt" ]'
+rm -f "$C/wt/base-feat-x/stray.txt"; pass
 check "DS-786 AC4 negative: out of draft, the same red gets its check try" 'grep -q "^base-feat-x .*It is promotion PR #300" "$T/spawns"'
 
 echo "base sync: $PASS passed, $FAIL failed"; cd /; rm -rf "$T"; [ "$FAIL" -eq 0 ]

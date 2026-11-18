@@ -2386,15 +2386,24 @@ const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind === 'c
 // A merge try or promotion check try that parks or dies can leave its work in the base worktree, and the
 // next sync, which refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (cleanedTry(last)) dropUnpushed({ path, base: BASE }); };
-// The ref a try's unpushed commits are kept on, by its place in base_fix's tries.
-const keptRef = (n) => `refs/desk/base-fix/${BASE_FIX_KEY}/${n}`;
+// The ref a try's unpushed commits are kept on: a merge try's by its place in base_fix's tries, a check
+// try's by its PR and try number, since a sync drops the merge tries before it and keeps it.
+const keptRef = (n, x) => `refs/desk/base-fix/${BASE_FIX_KEY}/${x?.kind === 'checks' ? `checks-${x.pr}-${x.try}` : n}`;
+// What the base worktree holds of its own, which a try started there would have dropped with its own
+// when it ends: uncommitted changes, or commits origin's base does not have. null when it holds neither.
+function baseWtHolds(path) {
+  const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
+  if (sh('git', ['-C', path, 'status', '--porcelain'], quiet)) return `the base worktree ${path} has uncommitted changes: commit or discard them there`;
+  const ahead = sh('git', ['-C', path, 'rev-list', '--count', `origin/${BASE}..HEAD`], quiet);
+  return ahead === '0' ? null : `the base worktree ${path} holds ${ahead || 'an unread number of'} commit(s) origin's ${BASE} does not: push or drop them there`;
+}
 // Ends base_fix's last try with `outcome` (and `extra` on its record): the record drops its session
 // and port, and the try's merge is dropped from base worktree `path`, where there is one, once what it
 // committed is kept on keptRef and named on the try as `kept`.
 function endTry(outcome, path, extra = {}) {
   const n = bf.tries.length;
   const last = bf.tries[n - 1];
-  const kept = !DRY && path && cleanedTry(last) ? keepUnpushed({ path, base: BASE, ref: keptRef(n) }) : null;
+  const kept = !DRY && path && cleanedTry(last) ? keepUnpushed({ path, base: BASE, ref: keptRef(n, last) }) : null;
   bf = { tries: bf.tries.map((x, i) => (i === n - 1 ? { ...x, outcome, ...extra, ...(kept ? { kept } : {}) } : x)), running: null, port: null };
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
@@ -5394,8 +5403,9 @@ async function promotionChecksStep(qx) {
   // Read again here: the base sync may have moved its head and the base gate put it back to draft since
   // the pass began.
   const now = promoPr ? readPromotionPr(qx) : null;
-  // Unread, what was recorded stands until a pass can read it.
-  if (now?.unreadable && p.pr === now.pr) { out.push(`promotion PR #${now.pr}: its checks could not be read; the next pass tries again`); return !!p.red; }
+  // Unread, what was recorded stands until a pass can read it, and a PR this pass found red keeps the
+  // batch from idling until one does.
+  if (now?.unreadable && p.pr === now.pr) { out.push(`promotion PR #${now.pr}: its checks could not be read; the next pass tries again`); return !!p.red || promoRed != null; }
   const failing = promotionRed(qx, now);
   if (!failing || p.pr !== now?.pr || p.merged_at) { clear(); return false; }
   const n = now.pr;
@@ -5421,7 +5431,11 @@ async function promotionChecksStep(qx) {
   else if (baseFix || !baseFixRoom || !roomLeft) out.push(`${said}; check try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${baseFix ? `the ${tryWhat(baseFix.fix)} on ${BASE} starts first` : !baseFixRoom ? noBaseFixRoom() : 'the ticket workers started this pass took its free slots'})`);
   // Its slot was claimed, under the lock, only where the pass began with it due.
   else if (!promotionChecksDue) out.push(`${said}; check try ${c.fix.try} of ${c.fix.of} starts on the next pass`);
-  else await startBaseTry(c.fix);
+  else {
+    const held = baseWtHolds(baseWt);
+    if (held) report.waiting.push(`PROMOTION PR: #${n} is red (${failing.join(', ')}), and its check try ${c.fix.try} of ${c.fix.of} cannot start, since ${held}. ${link}`);
+    else await startBaseTry(c.fix);
+  }
   return true;
 }
 // Starts a try on a PR of the base's in the base worktree, after the spawn summary is printed, so it says
