@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
-import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
+import { leverStatesIn, pairTrial, qualityTrials, isPairKey, trialId } from './levers-auto.mjs';
 import { REVERTIBLE, applyTrips, tripEvents, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
@@ -89,8 +89,10 @@ export function liveTrials({ slug, events, states, registry = REGISTRY }) {
 export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY, now = Date.now() }) {
   const merged = tickets.filter((t) => t?.key && mergedPr(t) != null && t.levers && typeof t.levers === 'object');
   const trials = liveTrials({ slug, events, states, registry, now });
-  const armsOf = (t) => Object.fromEntries(trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]))
-    .map((x) => [x.key, t.levers.arms[x.key]]));
+  const drawn = (t) => trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]));
+  const armsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, t.levers.arms[x.key]]));
+  // The trial each of those arms was drawn under, so a P0 trips only that trial and not a fresh one.
+  const idsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, x.id]));
   const out = [];
   const seen = new Set();
   for (const { key, lever, id, pair } of trials) {
@@ -104,7 +106,7 @@ export function sampleAudits({ slug, events, tickets, states, registry = REGISTR
         const t = list[k * EVERY - 1];
         if (seen.has(t.key)) continue;
         seen.add(t.key);
-        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, ...(pair ? { pair } : {}), arm: a, trial_id: id, arms: armsOf(t) });
+        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, ...(pair ? { pair } : {}), arm: a, trial_id: id, arms: armsOf(t), trial_ids: idsOf(t) });
       }
     }
   }
@@ -262,8 +264,13 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   // it) or reads the audit row written above (and its replay trips it).
   let byLever = {};
   appendWith(slug, () => { byLever = leverStatesIn(read(slug).events, registry); return null; });
+  // A lever on trial trips only while it is the trial the arm was drawn under: a fresh trial levers
+  // decide started since is another one, and a trial an undo restored keeps its id. A lever kept since
+  // trips as before. An item queued before it carried trial_ids is checked on its own lever's trial_id.
+  const drawnUnder = (lever) => item.trial_ids?.[lever] ?? (lever === item.lever && !item.pair ? item.trial_id : null);
+  const sameTrial = (lever) => byLever[lever]?.state !== 'trial' || drawnUnder(lever) == null || trialId(slug, lever, byLever[lever]) === drawnUnder(lever);
   const trips = Object.entries(item.arms ?? {})
-    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
+    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state) && sameTrial(lever))
     .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, from_id: byLever[lever].id, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
   events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));

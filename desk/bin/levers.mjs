@@ -88,10 +88,15 @@ const latestChange = (events, lever) => events.filter((e) => STATE_KINDS.include
 // An override of Ben's whose decision line was never written: the run that wrote it stopped short.
 const unfinished = (e, logged) => e?.kind === 'override' && e.actor === BY_HAND && !!e.decision_id && !logged.has(e.decision_id);
 
-// Ben's latest call on the lever in `events`, an override by hand with a decision id, past any change
-// desk made after it: a trip its undo's own replay wrote, or one a pass wrote since, would otherwise
-// hide an undo whose decision line was never written from the run that finishes it.
-const latestCall = (events, lever) => events.filter((e) => e.kind === 'override' && e.actor === BY_HAND && e.lever === lever && !!e.decision_id).at(-1);
+// Ben's latest call on the lever in `events`, an override by hand with a decision id, while nothing but
+// trips changed the lever after it: a trip its undo's own replay wrote, or one a pass wrote since, would
+// otherwise hide an undo whose decision line was never written from the run that finishes it. Any
+// other change since (desk's adopt) is the latest change, and this run undoes that instead.
+function latestCall(events, lever) {
+  const changes = events.filter((e) => STATE_KINDS.includes(e.kind) && e.lever === lever && e.to != null);
+  const k = changes.findLastIndex((e) => e.kind === 'override' && e.actor === BY_HAND && !!e.decision_id);
+  return k >= 0 && changes.slice(k + 1).every((e) => e.kind === 'trip') ? changes[k] : undefined;
+}
 
 // Appends what `build` returns from the repo's log under its lock (lever-log.mjs appendChecked). -> the
 // event (or events) as written, or null; throws on a refusal, which writes nothing.

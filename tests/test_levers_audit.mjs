@@ -193,6 +193,26 @@ t('AC7 a reverted lever samples no more audits, and its queued ones are dropped'
 t('AC8 no audit wrote to the tracker', existsSync(join(T, 'jira-calls')), false);
 t('AC8 the task forbids every tracker write', /no Jira ticket, comment or transition/.test(h5.spawns[0].task) && /jira=none/.test(h5.spawns[0].task), true);
 
+// A P0 from an audit drawn under one trial trips nothing on a fresh trial levers decide started since.
+{
+  const SF = 'acme__fresh';
+  const tidF = repo(SF);
+  const hF = harness(SF, tickets(tidF, 5, 5));
+  await hF.pass(NOW);
+  t('a sampled audit carries the trial each arm was drawn under', queueOf(SF).items['C-on5'].trial_ids, { codex: tidF });
+  const fresh = append(SF, { kind: 'override', lever: 'codex', from: 'trial', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'a fresh trial', at: iso(NOW + 5 * MIN) });
+  await hF.finish('C-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1, defects: ['a defect'] }));
+  const s = leverStatesIn(read(SF).events).codex;
+  t('a P0 drawn under an earlier trial is recorded and trips nothing on the fresh trial', [auditRows(SF)[0]?.p0, read(SF).events.filter((e) => e.kind === 'trip').length, s.state, s.id], [1, 0, 'trial', fresh.id]);
+  // A lever adopted from the trial since the audit was drawn still trips, as it did.
+  const SA = 'acme__adopted';
+  const hA = harness(SA, tickets(repo(SA), 5, 5));
+  await hA.pass(NOW);
+  append(SA, { kind: 'transition', lever: 'codex', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'adopted', eval_id: 'evl_a', evidence_file: 'levers-evidence/evl_a.jsonl', at: iso(NOW + 5 * MIN) });
+  await hA.finish('C-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1, defects: ['a defect'] }));
+  t('a P0 drawn under the trial still trips the lever adopted from it', read(SA).events.filter((e) => e.kind === 'trip').map((e) => [e.from, e.to]), [['adopted', 'reverted']]);
+}
+
 // ---- spawn failures and the row ----------------------------------------------------------------
 const S6 = 'acme__fail';
 const tid6 = repo(S6);

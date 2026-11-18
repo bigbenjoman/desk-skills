@@ -184,6 +184,12 @@ t('undo back to adopted: a ticket pinned on before the call still counts toward 
   const nP = events(AA).length;
   const rPRe = levers('undo', 'ai-agents', 'codex');
   t('an undo re-run after a lost decision line, with a pass trip after it, finishes it and writes nothing', [rPRe.status, events(AA).length, decisions(AA).some((d) => d.id === undoP), leverStatesIn(events(AA)).codex.state], [0, nP, true, 'reverted']);
+  // The same lost line, then desk adopts the lever: the re-run undoes the adopt, the latest change.
+  writeFileSync(logFile(AA), raw(AA) + line({ id: 'ra', at: new Date(Date.now() + 2000).toISOString(), kind: 'transition', lever: 'codex', from: 'reverted', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', ...ev }));
+  writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA)[0])}\n`);
+  const rAd = levers('undo', 'ai-agents', 'codex');
+  const oAd = events(AA).at(-1);
+  t('an undo re-run with desk\'s adopt after a lost decision line turns the adopt off', [rAd.status, oAd.kind, oAd.undoes_event, leverStatesIn(events(AA)).codex.state, rAd.stdout.trim()], [0, 'override', 'ra', 'overridden', 'Turned off codex in ai-agents. It stays off until you set it back.']);
   t('a trial with no such P0 is restored as it was', (() => { reset(AA); levers('decide', 'ai-agents', 'codex', 'off'); levers('undo', 'ai-agents', 'codex'); return [leverStatesIn(events(AA)).codex.state, events(AA).some((e) => e.kind === 'trip')]; })(), ['trial', false]);
 }
 
