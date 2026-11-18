@@ -3,7 +3,7 @@
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -816,7 +816,13 @@ const gateTickets = {
 put('phi', { port: 4620, beat: 1, supervised: true, merge: 'yes', people: { 'Code reviewer': 'Chris Anthony (@mousedown)', 'Product owner': 'Sam' }, tickets: gateTickets });
 const vi = () => Object.fromEntries(N.collect({ word: 'phi' }).items.map((i) => [i.t.key, i]));
 const v1 = vi();
-const TAIL = 'No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
+// DS-701: items held by the same thing share a `cause`, so one answer can settle them together.
+const phi701 = Object.fromEntries(N.listItems({ word: 'phi', reads: null }).items.map((i) => [i.key, i.cause]));
+t('DS-701 two PRs held by the same approval share a cause', `${phi701['V-1'] != null} ${phi701['V-1'] === phi701['V-8']}`, 'true true');
+t('DS-701 a different approval is another cause', phi701['V-2'] !== phi701['V-1'] && phi701['V-2'] != null, true);
+t('DS-701 a PR held by a failing check beside the approval has no shared cause', phi701['V-6'], null);
+t('DS-701 the cause is keyed to its repo', phi701['V-1']?.startsWith('acme__phi:approval:'), true);
+const TAIL ='No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
 t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
 t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
 t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
@@ -1135,6 +1141,20 @@ t('DS-657 AC1 a live item says how many tickets wait behind it, the one behind a
 t('DS-657 AC1 one with a single ticket behind it says so', need657('W-3'), 'PRODUCTION BROKEN: login returns 500 (1 ticket waits behind this)');
 t('DS-657 AC1 negative control: one with none behind it says nothing', need657('W-2'), 'Which endpoint?');
 t('DS-657 AC2 PRODUCTION BROKEN first, then most tickets behind, ahead of one that has waited longer', w657.map((i) => i.t.key).join(), 'W-3,W-1,W-2');
+
+// ---- DS-701: the list as data (listItems, list --json): each item with its question as listed, its
+// actions, how many tickets wait behind it and its cause.
+const j701 = N.listItems({ word: 'wait657', reads: null });
+const ji701 = Object.fromEntries(j701.items.map((i) => [i.key, i]));
+t('DS-701 listItems lists what collect does, in its order', j701.items.map((i) => i.key).join(), w657.map((i) => i.t.key).join());
+t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map((k) => ji701[k]?.behind).join(), '3,1,0');
+t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
+t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
+t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'lane A: a worker finishes it once it has your answer', note: null } }));
+t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
+t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
+t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');
 // A repo-level item counts and ranks the same: an unset row's group by the tickets held behind its
 // parked tickets, a person's step by the tickets waiting on it and those held behind them.
 put('nu657', { port: 5659, beat: 1, supervised: true, tickets: {
@@ -2129,10 +2149,30 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('nu546', { port: 5547, beat: 1, supervised: true, tickets: { 'NU-1': { ...parked('B', 60, CURL), draft_pr: 921 }, 'NU-2': { ...parked('B', 50, CURL), draft_pr: 922 } } });
   onGitHub(921, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
   onGitHub(922, { state: 'OPEN', mergedAt: null, isDraft: true });
+  // DS-701 AC2: list --json --no-settle writes nothing, though a settling list would close NU-1.
+  const stamps = () => {
+    const dirs = [join(env.DESK_HOME, 'repos', 'acme__nu546'), join(env.HOME, '.desk-autopilot', 'acme__nu546')];
+    const walk = (d) => (existsSync(d) ? readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [`${join(d, e.name)} ${statSync(join(d, e.name)).mtimeMs}`])) : []);
+    return [...dirs.flatMap(walk), existsSync(ANSWERS) ? `answers ${statSync(ANSWERS).mtimeMs}` : 'answers none'].sort().join('\n');
+  };
+  const before701 = stamps();
+  const ns701 = cli('list', '--json', '--no-settle', 'nu546');
+  const nj701 = JSON.parse(ns701.out || '{}');
+  t('DS-701 AC2 list --json --no-settle changes no queue, state or answer file (by mtime)', `${ns701.code} ${stamps() === before701} ${before701.includes('queue.json')}`, '0 true true');
+  t('DS-701 AC2 and lists the item a settle would have closed', `${nj701.settled} ${nj701.items?.map((i) => i.key).join()} ${queueOf('nu546').tickets['NU-1'].state}`, 'false NU-1,NU-2 parked');
+  t('DS-701 list --no-settle without --json prints the list unsettled', cli('list', '--no-settle', 'nu546').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'NU-1,NU-2');
+  t('DS-701 an unknown flag still refuses', cli('list', '--nope').code, 11);
   const nuList = cli('list', 'nu546');
   t('DS-546 AC1 the CLI list closes it with no tracker, says so first, and lists only what is left',
     `${nuList.code} ${nuList.out.split('\n')[0]} ${nuList.out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join()} ${queueOf('nu546').tickets['NU-1'].state}`,
     '0 nu546 NU-1: PR #921 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. NU-2 done');
+  // DS-701: list --json settles first, as list does, and carries the lines that say what it settled.
+  put('nu701', { port: 5701, beat: 1, supervised: true, tickets: { 'NV-1': { ...parked('B', 60, CURL), draft_pr: 925 }, 'NV-2': { ...parked('B', 50, CURL), draft_pr: 926 } } });
+  onGitHub(925, { state: 'MERGED', mergedAt: '2026-11-09T19:40:54Z', isDraft: false });
+  onGitHub(926, { state: 'OPEN', mergedAt: null, isDraft: true });
+  const sj701 = JSON.parse(cli('list', '--json', 'nu701').out || '{}');
+  t('DS-701 list --json settles first and says what it settled', `${sj701.settled} ${sj701.settled_lines?.join(' | ')} | ${sj701.items?.map((i) => i.key).join()} ${queueOf('nu701').tickets['NV-1'].state}`,
+    'true nu701 NV-1: PR #925 merged at 2026-11-09 19:40 UTC, so it is recorded done and off your list. | NV-2 done');
 
   // DS-573: a parked item whose PR merged with its ticket not done in Jira goes back to a worker for its
   // after-merge steps, and leaves the list; one whose PR is open stays as it was.
