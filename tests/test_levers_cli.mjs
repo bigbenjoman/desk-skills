@@ -150,6 +150,16 @@ t('undo back to adopted: a ticket pinned on before the call still counts toward 
   levers('undo', 'ai-agents', 'codex');
   const p1 = pair();
   t('undo back to a kept pair: the pair keeps its trial id and its reverted verdict, so no ticket draws it again', [leverStatesIn(events(AA)).codex.state, p1.id, p1.state, qualityTrials({ slug: AA, events: events(AA), states: ALL_AUTO, values: null }).some((q) => q.key === p1.key)], ['adopted', p0.id, 'reverted', false]);
+
+  // A blind audit P0 on the pair's on arm recorded while codex was off: the undo that restores the pair
+  // trial reverts it at once, before any ticket can be drawn into it again.
+  const { auditFile } = await import('../desk/bin/levers-audit.mjs');
+  writeFileSync(logFile(AA), raw(AA).split('\n').filter((l) => l && JSON.parse(l).kind !== 'pair' && !JSON.parse(l).decision_id).map((l) => `${l}\n`).join(''));
+  t('a fresh kept pair is on trial', pair().state, 'trial');
+  levers('decide', 'ai-agents', 'codex', 'off');
+  writeFileSync(auditFile(AA), `${JSON.stringify({ v: 1, at: at(0), repo: AA, ticket: 'AA-9', pr: 9, merge_commit: 'a'.repeat(40), lever: 'codex', arm: 'on', trial_id: p0.id, p0: 1, p1: 0, p2: 0 })}\n`);
+  const rP = levers('undo', 'ai-agents', 'codex');
+  t('undo back to a pair with a P0 recorded while it was off: the pair trial is reverted in the same call, and it says so', [rP.status, pair().id, pair().state, / so that trial is reverted now\.$/.test(rP.stdout.trim())], [0, p0.id, 'reverted', true]);
 }
 
 // A run that wrote its override but stopped before its decision line is finished by running it again.

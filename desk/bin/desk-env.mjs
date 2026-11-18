@@ -1043,10 +1043,10 @@ export function leverStates(env = process.env) {
   const pin = env.DESK_LEVERS != null;
   const items = pin ? [env.DESK_LEVERS] : leverItems();
   const r = leverRow(items);
-  const auto = !pin && r.auto;
-  const states = Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : auto ? 'auto' : 'off']));
-  return { from: pin ? 'pin' : 'row', row: items?.length ? items.join(' ') : null, states, unknown: r.unknown, invalid: r.invalid };
+  return { from: pin ? 'pin' : 'row', row: items?.length ? items.join(' ') : null, states: rowStates(r, !pin && r.auto), unknown: r.unknown, invalid: r.invalid };
 }
+// Each lever's state under a parsed Phase 0 levers row `r` (leverRow), `auto` for a row read as auto.
+export const rowStates = (r, auto = r.auto) => Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : auto ? 'auto' : 'off']));
 
 // The machine-wide freeze: while ~/.desk-autopilot/levers.freeze exists, every trial in every repo is
 // stopped. `leversFrozen` is { at, reason } from the file, or null with no file; a file it cannot parse

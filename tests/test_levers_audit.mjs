@@ -286,6 +286,37 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   const pe = read(SP).events.filter((e) => e.kind === 'pair');
   t('a P0 on the pair\'s on arm ends the pair trial, the levers kept alone', [pe.map((e) => [e.from, e.to, e.reason_code, e.trial_id === pt.id]), pairTrial({ slug: SP, events: read(SP).events, states: AUTO, values: null, now: NOW + 11 * MIN }).state], [[['trial', 'reverted', 'audit_p0', true]], 'reverted']);
   t('and trips neither lever alone', read(SP).events.filter((e) => e.kind === 'trip').length + (done.events.some((e) => e.kind === 'trip') ? 1 : 0), 0);
+
+  // A P0 recorded while a member of the pair was set off by hand ends the pair trial once an undo
+  // restores it, rather than the pair being drawn again under its old trial id.
+  const SQ = 'acme__pairoff';
+  const kept = ['codex', 'review-reuse'].map((lever, i) => append(SQ, { kind: 'override', lever, to: 'adopted', actor: 'ben', reason_code: 'ben_override', reason: `${lever} adopted`, at: iso(NOW - (60 - i) * DAY) }));
+  const qt = pairTrial({ slug: SQ, events: read(SQ).events, states: AUTO, values: null, now: NOW });
+  const hq = harness(SQ, pairTickets.map((x) => ({ ...x, levers: { ...x.levers, trial_ids: { [KEY]: qt.id } } })));
+  await hq.pass(NOW);
+  const off = append(SQ, { kind: 'override', lever: 'codex', to: 'off', value: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'codex off', at: iso(NOW + MIN) });
+  await hq.finish('P-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1, defects: ['src/a.js:3: drops the error'] }));
+  t('a P0 while a member is off writes no pair revert: the pair is not running', read(SQ).events.filter((e) => e.kind === 'pair').length, 0);
+  append(SQ, { kind: 'override', lever: 'codex', to: 'adopted', actor: 'ben', reason_code: 'ben_override', reason: 'undid codex off', restores: { id: kept[0].id, at: kept[0].at }, undoes_event: off.id, at: iso(NOW + 11 * MIN) });
+  t('the undo restores the pair trial id', pairTrial({ slug: SQ, events: read(SQ).events, states: AUTO, values: null, now: NOW + 11 * MIN }).id, qt.id);
+  const rq = await hq.pass(NOW + 12 * MIN);
+  t('the next pass reverts the restored pair trial for the P0 recorded while it was off', [rq.events.filter((e) => e.kind === 'pair').map((e) => [e.to, e.reason_code, e.trial_id === qt.id]), pairTrial({ slug: SQ, events: read(SQ).events, states: AUTO, values: null, now: NOW + 13 * MIN }).state], [[['reverted', 'audit_p0', true]], 'reverted']);
+  t('and a later pass writes it once', (await hq.pass(NOW + 14 * MIN)).events.filter((e) => e.kind === 'pair').length, 0);
+}
+
+// The same for a lever on trial alone: its P0 recorded while it was off trips it once an undo restores
+// the trial.
+{
+  const SO = 'acme__trialoff';
+  const tr = append(SO, { kind: 'override', lever: 'codex', from: 'off', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'trial codex', at: iso(NOW - 30 * DAY) });
+  const ho = harness(SO, tickets(trialId(SO, 'codex', { id: tr.id }), 5, 5));
+  await ho.pass(NOW);
+  const off = append(SO, { kind: 'override', lever: 'codex', to: 'off', value: 'off', actor: 'ben', reason_code: 'ben_override', reason: 'codex off', at: iso(NOW + MIN) });
+  await ho.finish('C-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1 }));
+  t('a P0 while the lever is off trips nothing', read(SO).events.filter((e) => e.kind === 'trip').length, 0);
+  append(SO, { kind: 'override', lever: 'codex', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'undid codex off', restores: { id: tr.id, at: tr.at }, undoes_event: off.id, at: iso(NOW + 11 * MIN) });
+  const ro = await ho.pass(NOW + 12 * MIN);
+  t('the next pass trips the restored trial for it', [ro.events.filter((e) => e.kind === 'trip').map((e) => [e.lever, e.from, e.to, e.trip]), leverStatesIn(read(SO).events).codex.state], [[['codex', 'trial', 'reverted', 'audit-p0']], 'reverted']);
 }
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

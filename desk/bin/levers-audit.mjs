@@ -278,6 +278,37 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   return { row: written?.rec ?? row, events };
 }
 
+// A blind audit's P0 on a trial's on arm, recorded while that trial was not running (a lever set off by
+// hand, so no trip or pair revert could be written), is applied once the trial runs again under the same
+// trial id (levers undo restores it): the pair trial is reverted, or the lever on trial tripped.
+//   -> [event] as written
+export function replayAuditP0s({ slug, name = slug, repo = null, states, registry = REGISTRY, now = Date.now() }) {
+  const file = auditFile(slug);
+  const rows = rowsOf(file).filter((r) => r.rec.p0 > 0 && r.rec.arm === 'on');
+  if (!rows.length) return [];
+  const at = new Date(now).toISOString();
+  const out = [];
+  for (const t of liveTrials({ slug, events: read(slug).events, states, registry })) {
+    const r = rows.find((x) => x.rec.trial_id === t.id);
+    if (!r) continue;
+    const why = `the blind audit of PR #${r.rec.pr} found ${r.rec.p0} P0 while its trial was not running`;
+    const defect = `${r.rec.p0} P0 at ${String(r.rec.merge_commit).slice(0, 12)}`;
+    if (!t.pair) {
+      const s = leverStatesIn(read(slug).events, registry)[t.lever];
+      out.push(...applyTrips({ slug, name, repo, trips: [{ lever: t.lever, trip: TRIP, ticket: r.rec.ticket, from: s.state, file, line: r.line, why, defect }], registry, now }));
+      continue;
+    }
+    const e = appendWith(slug, () => {
+      const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now });
+      if (p?.id !== t.id || p.state !== 'trial') return null;
+      return { kind: 'pair', levers: p.levers, pair: p.key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket: r.rec.ticket,
+        reason: `${why}, on the ${p.levers.join(' with ')} pair: ${defect}`, evidence_file: file, evidence_line: r.line };
+    });
+    if (e) out.push(e);
+  }
+  return out;
+}
+
 // One pass's audits for repo `slug`: records each audit that ended, queues what the sample adds, and
 // starts the oldest item due, or defers it. Every effect outside this module is a dependency, so a
 // stub review worker stands in for one in tests:
@@ -322,6 +353,7 @@ export async function runAudits({
     try { cleanup(item); } catch { /* a worktree left behind is not the audit's result */ }
     withQueue(slug, (q) => { delete q.items[item.ticket]; });
   }
+  out.events.push(...replayAuditP0s({ slug, name, repo, states, registry, now }));
 
   // The sample adds what is newly due; a ticket audited already, or queued, is not added again.
   const rows = rowsOf(auditFile(slug));

@@ -19,7 +19,8 @@
 import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
+import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues, rowStates } from './desk-env.mjs';
+import { replayAuditP0s } from './levers-audit.mjs';
 import { KEPT_STATES, REGISTRY } from './lever-registry.mjs';
 import { appendChecked, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
@@ -216,10 +217,14 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     by: BY_HAND, slug: r.slug, lever, ...(event.undoes ? { undoes: event.undoes } : {}),
   };
   logDecision(state, entry);
+  // A trial this undo restores answers for a blind audit P0 recorded while it was off, at once.
+  const replayed = event.restores
+    ? replayAuditP0s({ slug: r.slug, name: r.name, repo: r.ghRepo, states: rowStates(leverRow(repoConfigValues(r.slug, 'levers', configRoot))), now: Date.parse(event.at) })
+    : [];
   const text = undone?.kind === 'transition'
     ? `Turned off ${lever} in ${r.name}. It stays off until you set it back.`
-    : `Put ${lever} back to ${event.to} in ${r.name}, undoing your decision ${event.undoes ?? '(no id)'}.${items.length ? ` Its needs-you item${items.length === 1 ? ' is' : 's are'} listed again.` : ''}`;
-  return { event, entry, relisted: items, repo: r, text };
+    : `Put ${lever} back to ${event.to} in ${r.name}, undoing your decision ${event.undoes ?? '(no id)'}.${items.length ? ` Its needs-you item${items.length === 1 ? ' is' : 's are'} listed again.` : ''}${replayed.length ? ' A blind audit found a P0 on its trial while it was off, so that trial is reverted now.' : ''}`;
+  return { event, entry, relisted: items, replayed, repo: r, text };
 }
 
 const USAGE = 'usage: levers decide <repo> <lever> off|trial · levers undo <repo> <lever>';
