@@ -266,7 +266,48 @@ const s9 = repo(A9);
 writeFileSync(join(s9, 'post-merge.jsonl'), jsonl([{ kind: 'revert', ticket: 'M-9', pr: 12, at: at(-10) }]));
 t('a lever the row pins is not the controller\'s to revert', run(A9, queueOf(onTicket(A9, 'M-9', 'memory')), { ...AUTO, memory: 'pinned' }).events.length, 0);
 t('a repo with no auto in its row runs no trips', run(A9, queueOf(onTicket(A9, 'M-9', 'memory')), Object.fromEntries(LEVERS.map((n) => [n, 'off']))).line, null);
-t('every registered trip has a detector, or names the module that applies it', Object.values(REGISTRY).flatMap((l) => l.trips.filter((x) => !x.by).map((x) => x.id)).filter((id) => !['skipped-preflight-failure', 'stale-wait', 'post-merge-revert', 'own-step-error'].includes(id)), []);
+t('every registered trip has a detector, or names the module that applies it', Object.values(REGISTRY).flatMap((l) => l.trips.filter((x) => !x.by).map((x) => x.id)).filter((id) => !['skipped-preflight-failure', 'stale-wait', 'post-merge-revert', 'own-step-error', 'codex-dead-seats'].includes(id)), []);
+
+// ---- DS-646 AC8: codex's dead seats above 20% over its last 10 calls revert it ----------------------------------
+{
+  const ok = (id) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'finding' }] } });
+  // A ticket's worker log of desk-codex calls, `exits` each one's exit code.
+  const codexLog = (state, key, exits) => writeFileSync(join(state, 'logs', `${key}.log`), jsonl([init(`s-${key}`), ...exits.flatMap((x, i) => {
+    const id = `${key}-c${i}`;
+    return [call(id, 'Bash', { command: `desk-codex ${i % 2 ? 'refuter' : 'finder'} --cd /wt 'review this'` }), x === 0 ? ok(id) : result(id, `Exit code ${x}\ndesk-codex: timed out after 600s`)];
+  })]));
+  const trialOf = (slug) => append(slug, { kind: 'override', lever: 'codex', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'trial codex', at: at(-200) });
+  const C1 = 'acme__codex';
+  const c1 = repo(C1);
+  const tr = trialOf(C1);
+  // 10 calls over two tickets, 3 dead (124, 75, 124): 30%.
+  codexLog(c1, 'C-1', [0, 124, 0, 0, 75]);
+  codexLog(c1, 'C-2', [0, 0, 124, 0, 0]);
+  const tickets = [onTicket(C1, 'C-1', 'codex', {}, tr.id), onTicket(C1, 'C-2', 'codex', {}, tr.id)];
+  tickets[1].levers.at = at(-90);
+  const r = run(C1, queueOf(...tickets));
+  const trip = eventsOf(C1, 'trip');
+  t('AC8 3 of the last 10 codex calls dead: codex is reverted in that repo', [stateIn(C1, 'codex'), trip.map((e) => [e.trip, e.reason_code, e.from, e.to])], ['reverted', [['codex-dead-seats', 'codex_dead_seats', 'trial', 'reverted']]]);
+  t('AC8 the trip cites the latest call and says the rate', [trip[0].ticket, trip[0].evidence_line, /3 of its last 10 codex calls died/.test(trip[0].reason), /codex trip/.test(r.line ?? '') || /codex trial → reverted/.test(r.line ?? '')], ['C-2', 11, true, true]);
+
+  const C2 = 'acme__codex_ok';
+  const c2 = repo(C2);
+  const tr2 = trialOf(C2);
+  // 2 dead in the last 10 (20%, not above it); an older dead call has rolled out of the window.
+  codexLog(c2, 'D-1', [124, 0, 0, 124, 0, 0]);
+  codexLog(c2, 'D-2', [0, 0, 75, 0, 0]);
+  const t2 = [onTicket(C2, 'D-1', 'codex', {}, tr2.id), onTicket(C2, 'D-2', 'codex', {}, tr2.id)];
+  t2[1].levers.at = at(-90);
+  t('AC8 20% dead over the last 10 calls is no trip, and a single dead seat is not its own step failing', [run(C2, queueOf(...t2)).events.length, stateIn(C2, 'codex')], [0, 'trial']);
+  const C3 = 'acme__codex_few';
+  const c3 = repo(C3);
+  const tr3 = trialOf(C3);
+  codexLog(c3, 'E-1', [124, 124, 0]);
+  t('AC8 fewer than 10 calls: no rate yet', run(C3, queueOf(onTicket(C3, 'E-1', 'codex', {}, tr3.id))).events.length, 0);
+  codexLog(c3, 'E-1', [0, 1]);
+  run(C3, queueOf(onTicket(C3, 'E-1', 'codex', {}, tr3.id)));
+  t('codex exiting with its own error (not a dead seat) is still its own step failing', eventsOf(C3, 'trip').map((e) => e.trip), ['own-step-error']);
+}
 t('a trip event missing its record\'s line is refused', (() => { try { append(A9, { kind: 'trip', lever: 'memory', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'x', ticket: 'M-9', evidence_file: 'f' }); return 'appended'; } catch (e) { return /evidence_line/.test(e.message); } })(), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');

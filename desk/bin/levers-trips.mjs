@@ -15,7 +15,12 @@
 //                              and landed), so a ticket still held behind one is not waiting past it
 //   post-merge-revert          post-merge.jsonl records a revert of the ticket's PR
 //   own-step-error             the lever's own step exited non-zero: a `lever_step` line in the ticket's
-//                              run record, or the worker's own call of that command in its log
+//                              run record, or the worker's own call of that command in its log. An exit
+//                              another of the lever's trips counts as a rate (codex's dead seats) is
+//                              left to that trip
+//   codex-dead-seats           more than the trip's rate of the last `calls` desk-codex finder and
+//                              refuter calls across the lever's on-arm tickets died (exit 124 or 75),
+//                              cited at the latest of them
 //
 // A trip counts only for a ticket on the lever's arm in its current state: drawn `on` under the trial
 // running now, or, for an adopted or settled lever, admitted with it in its set since the trial it was
@@ -45,7 +50,7 @@ import { postMergePath } from './post-merge.mjs';
 import { readLogFile } from './harvest.mjs';
 import { workerLogs } from './worker-cost.mjs';
 import { WAITING_CLASSES } from './failure-class.mjs';
-import { toolOutcomes } from './log-tool-calls.mjs';
+import { toolOutcomes, codexCalls } from './log-tool-calls.mjs';
 import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
 import { answerEntriesSince } from './handoff.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
@@ -184,16 +189,19 @@ export const DETECTORS = Object.freeze({
     .filter((l) => l.rec.kind === 'revert' && l.rec.ticket === t.key)
     .map((l) => ({ file: postMergePath(state), line: l.line, why: `its PR${l.rec.pr ? ` #${l.rec.pr}` : ''} was reverted after merging${l.rec.commit ? ` (${String(l.rec.commit).slice(0, 12)})` : ''}` })),
 
-  'own-step-error': ({ state, t, lever, trip, cache }) => {
+  'own-step-error': ({ state, t, lever, trip, cache, registry = REGISTRY }) => {
     const file = runsPath(state, t.key);
-    const recorded = lines(file).filter((l) => l.rec.lever_step?.lever === lever && Number(l.rec.lever_step.exit) !== 0 && l.rec.lever_step.exit != null)
+    // Exits a rate trip of the lever counts (a dead codex seat) do not trip it one at a time.
+    const rated = new Set((registry[lever]?.trips ?? []).flatMap((x) => x.exits ?? []));
+    const counts = (exit) => exit != null && Number(exit) !== 0 && !rated.has(Number(exit));
+    const recorded = lines(file).filter((l) => l.rec.lever_step?.lever === lever && counts(l.rec.lever_step.exit))
       .map((l) => {
         const s = l.rec.lever_step;
         const error = `${s.step ?? trip.step} exited ${s.exit}${s.error ? `: ${s.error}` : ''}`;
         return { file, line: l.line, error, why: error };
       });
     const re = stepPattern(trip.step);
-    const called = re ? logOutcomes(state, t.key, t.levers?.at, cache).filter((o) => o.tool === 'Bash' && !o.denied && o.exit != null && re.test(bare(o.input?.command)))
+    const called = re ? logOutcomes(state, t.key, t.levers?.at, cache).filter((o) => o.tool === 'Bash' && !o.denied && counts(o.exit) && re.test(bare(o.input?.command)))
       .map((o) => {
         const error = `${trip.step} exited ${o.exit}${o.text ? `: ${o.text.slice(0, 200)}` : ''}`;
         return { file: o.file, line: o.line, error, why: error };
@@ -255,6 +263,34 @@ export const DETECTORS = Object.freeze({
   },
 });
 
+// Each of ticket `key`'s desk-codex review calls in its worker logs since `since`, oldest first; read once
+// per `cache`.
+function codexCallsOf(state, key, since, cache = new Map()) {
+  const k = `codex|${state}|${key}|${since ?? ''}`;
+  if (!cache.has(k)) {
+    cache.set(k, workerLogs(state, key, since ?? null).sort().flatMap((file) => {
+      let text;
+      try { text = readLogFile(file); } catch { return []; }
+      return codexCalls(text).map((c) => ({ ...c, file, ticket: key }));
+    }));
+  }
+  return cache.get(k);
+}
+
+// Trips read as a rate over the calls of every on-arm ticket, in their admission order. Each returns
+// the record to cite, { ticket, file, line, why }, or null.
+export const RATE_DETECTORS = Object.freeze({
+  'codex-dead-seats': ({ state, tickets, trip, cache }) => {
+    const calls = tickets.flatMap((t) => codexCallsOf(state, t.key, t.levers?.at, cache)).filter((c) => c.exit != null);
+    const last = calls.slice(-trip.calls);
+    if (last.length < trip.calls) return null;
+    const dead = last.filter((c) => trip.exits.includes(c.exit)).length;
+    if (!(dead / last.length > trip.rate)) return null;
+    const at = last.at(-1);
+    return { ticket: at.ticket, file: at.file, line: at.line, why: `${dead} of its last ${last.length} codex calls died (exit ${trip.exits.join(' or ')}), over the ${Math.round(trip.rate * 100)}% a trip allows` };
+  },
+});
+
 // The first trip each lever in `states` (each lever's state in the repo's row, desk-env leverStates)
 // meets among the queue's tickets, given the repo's lever log events: [{ lever, trip, ticket, file,
 // line, error, why, from }]. A lever the row does not leave to `auto`, or not on trial, adopted or
@@ -273,12 +309,20 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
     const tickets = Object.values(everyTicket(queue)).filter((t) => onArm(t, lever, s, slug, events, registry))
       .sort((a, b) => String(a.levers?.at ?? '').localeCompare(String(b.levers?.at ?? '')));
     let hit = null;
-    for (const t of tickets) {
+    // A rate trip reads the lever's calls across every on-arm ticket at once.
+    for (const trip of reg.trips) {
+      const detect = RATE_DETECTORS[trip.id];
+      if (!detect || hit) continue;
+      let r = null;
+      try { r = detect({ state, tickets, trip, cache }); } catch { r = null; }
+      if (r && !cited.has(`${lever}|${r.file}|${r.line}`)) hit = { lever, trip: trip.id, from: s.state, ...r };
+    }
+    for (const t of hit ? [] : tickets) {
       for (const trip of reg.trips) {
         const detect = DETECTORS[trip.id];
         if (!detect) continue;
         let recs = [];
-        try { recs = detect({ state, t, queue, lever, trip, now, cache }); } catch { recs = []; }
+        try { recs = detect({ state, t, queue, lever, trip, now, cache, registry }); } catch { recs = []; }
         const r = recs.find((x) => !cited.has(`${lever}|${x.file}|${x.line}`));
         if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, ...r }; break; }
       }

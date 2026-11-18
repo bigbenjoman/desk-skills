@@ -1,8 +1,11 @@
 // The tool calls a worker log (claude's stream-json) shows refused or ending in error, read once for
 // phase0-report.mjs's denial counts and levers-trips.mjs's trips.
 //
-//   import { toolOutcomes } from './log-tool-calls.mjs'
+//   import { toolOutcomes, bashCalls, codexCalls } from './log-tool-calls.mjs'
 //   toolOutcomes(text) -> [{ line, session, tool, input, denied, exit, text }]
+//   bashCalls(text)    -> [{ line, session, command, exit }], every Bash call with a result, 0 when it
+//                         did not error, null when it was refused
+//   codexCalls(text)   -> bashCalls narrowed to the review's desk-codex finder and refuter calls
 export const DENIED = /Permission to use \S+.*\bdenied\b/;
 const EXIT = /^Exit code (\d+)/;
 export const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
@@ -44,3 +47,35 @@ export function toolOutcomes(text) {
   });
   return out;
 }
+
+// Every Bash call that has a result, in order, once per tool_use id, with the 1-based line of its
+// result: `exit` is the result's `Exit code` (0 for one that did not error), null for a refused call or
+// an error with no exit code.
+export function bashCalls(text) {
+  const out = [];
+  const calls = new Map();
+  const seen = new Set();
+  let session = null;
+  String(text ?? '').split('\n').forEach((raw, i) => {
+    let d;
+    try { d = JSON.parse(raw); } catch { return; }
+    if (d?.type === 'system' && d.subtype === 'init') { session = d.session_id ?? null; return; }
+    if (d?.type === 'assistant') {
+      for (const c of d.message?.content ?? []) if (c?.type === 'tool_use' && c.name === 'Bash') calls.set(c.id, String(c.input?.command ?? ''));
+    } else if (d?.type === 'user') {
+      for (const c of d.message?.content ?? []) {
+        if (c?.type !== 'tool_result' || !calls.has(c.tool_use_id) || seen.has(c.tool_use_id)) continue;
+        seen.add(c.tool_use_id);
+        const body = textOf(c.content).trim();
+        const m = EXIT.exec(body);
+        const exit = !c.is_error ? 0 : DENIED.test(body) ? null : m ? Number(m[1]) : null;
+        out.push({ line: i + 1, session, command: calls.get(c.tool_use_id), exit });
+      }
+    }
+  });
+  return out;
+}
+
+// A review's call through desk-codex for a finder or a refutation, any path before it.
+const CODEX_CALL = /(?:^|[\s/;&|])desk-codex(?:\.mjs)?\s+(?:finder|refuter)(?:\s|$)/;
+export const codexCalls = (text) => bashCalls(text).filter((c) => CODEX_CALL.test(c.command));
