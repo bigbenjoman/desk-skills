@@ -87,9 +87,8 @@ t('AC2 its line', r1.stdout.trim(), `levers decide: override recorded in ai-agen
 const s3 = leverStatesIn(events(AA)).codex;
 t('AC3 the lever reads overridden off', [s3.state, s3.value], ['overridden', 'off']);
 t('AC4 needs-you no longer lists it', codexItems(), 0);
-// codex is quality-risk, which admission never arms, so its pin reads the same with or without the
-// call; the pin is shown on wrappers, a lever it does arm: on trial it draws an arm, and once set off
-// by levers decide it is out of the set with no arm.
+// codex, paused, is out of the set with no arm before the call too, so the pin is shown on wrappers,
+// a lever on trial: it draws an arm, and once set off by levers decide it is out of the set with no arm.
 t('AC3 wrappers on trial draws an arm before the call', Object.hasOwn(admit('AA-2').arms, 'wrappers'), true);
 levers('decide', 'ai-agents', 'wrappers', 'off');
 const p3w = admit('AA-3');
@@ -106,14 +105,14 @@ t('AC11 its needs-you item is listed again', codexItems(), 1);
 t('AC11 it prints the lever, the repo and the state it is back in', r11.stdout.trim(), `Put codex back to frozen in ai-agents, undoing your decision ${e1.decision_id}. Its needs-you item is listed again.`);
 t('AC11 the undo is logged with its own id', decisions(AA).at(-1).id, o11.decision_id);
 
-// Undo back to a plain state is that state, not a call by hand: a quality-risk lever that was simply off
-// reads off again, unpinned, as it did before Ben's call.
+// Undo back to a plain state is that state, not a call by hand: codex, on its initial trial before
+// Ben's call, reads on that trial again, unpinned, as it did.
 reset(AA);
 const rOff = levers('decide', 'ai-agents', 'codex', 'off');
-t('undo to plain off: the call pins codex off', [rOff.status, leverStatesIn(events(AA)).codex.state], [0, 'overridden']);
+t('undo to a plain state: the call pins codex off', [rOff.status, leverStatesIn(events(AA)).codex.state], [0, 'overridden']);
 const rBack = levers('undo', 'ai-agents', 'codex');
 const oBack = events(AA).at(-1);
-t('undo to plain off: the override goes back to off with no value, and the lever reads plain off as it did', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'off', false, { state: 'off', at: null, id: null }]);
+t('undo to a plain state: the override goes back to its initial trial with no value, and the lever reads that trial as it did', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'trial', false, { state: 'trial', at: null, id: null }]);
 
 // Undo back to a trial keeps the trial: the next ticket draws under the trial id it had before the call.
 reset(AA);
@@ -148,8 +147,13 @@ writeFileSync(join(state(AA), 'decisions.jsonl'), `${JSON.stringify(decisions(AA
 const rReU = levers('undo', 'ai-agents', 'wrappers');
 t('an undo re-run after a lost decision line finishes it, and does not undo the undo', [rReU.status, events(AA).length, decisions(AA).at(-1).id, leverStatesIn(events(AA)).wrappers.state], [0, n2, undoId, 'trial']);
 
-// ---- AC5: trial, on a low-risk lever admission draws ----------------------------------------------------
-t('AC5 wrappers is a low-risk lever in the registry', REGISTRY.wrappers.layer, 'low-risk');
+// ---- AC5: trial, on a quality-risk lever and a low-risk one ----------------------------------------------
+paused();
+const r5c = levers('decide', 'ai-agents', 'codex', 'trial');
+const e5c = events(AA).at(-1);
+t('AC5 codex: exits 0, and the override records to trial', [r5c.status, e5c.kind, e5c.to, e5c.lever], [0, 'override', 'trial', 'codex']);
+const p5c = admit('AA-4');
+t('AC5 codex: the next ticket admitted is assigned a codex arm under the new trial, as any lever on trial is', [['on', 'off'].includes(p5c.arms.codex), p5c.trial_ids.codex], [true, `${AA}/codex/${e5c.id}`]);
 paused('wrappers');
 const r5 = levers('decide', 'ai-agents', 'wrappers', 'trial');
 const e5 = events(AA).at(-1);
@@ -157,13 +161,6 @@ t('AC5 exits 0, and the override records to trial', [r5.status, e5.kind, e5.to, 
 t('AC5 the lever reads on trial', leverStatesIn(events(AA)).wrappers.state, 'trial');
 const p5 = admit('AA-5');
 t('AC5 the next ticket admitted draws a wrappers arm under the new trial', [['on', 'off'].includes(p5.arms.wrappers), p5.trial_ids.wrappers], [true, `${AA}/wrappers/${e5.id}`]);
-
-// Trial on a lever admission draws no arm for (codex is quality-risk) is refused, saying why, and writes nothing.
-paused();
-const s5 = [raw(AA), decisions(AA).length];
-const r5q = levers('decide', 'ai-agents', 'codex', 'trial');
-t('trial on a quality-risk lever exits 2 and writes nothing', [r5q.status, raw(AA), decisions(AA).length], [2, ...s5]);
-t('it says admission draws trial arms only for low-risk levers', r5q.stderr.includes('codex is a quality-risk lever, and admission draws trial arms only for low-risk levers'), true);
 
 // ---- AC6 to AC8: refusals that write nothing --------------------------------------------------------------
 paused();

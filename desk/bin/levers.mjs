@@ -11,8 +11,7 @@
 //
 // <repo> is the repo's name as desk-q shows it, or its slug. The override is read by admission and
 // the levers view as any other (levers-auto.mjs leverStatesIn): `off` pins the lever off, `trial` puts it
-// on trial with a fresh trial id, and is refused for a lever admission draws no arm for (any but the
-// low-risk layer). An undo back to an earlier state names it in `restores`, so a trial keeps its trial
+// on trial with a fresh trial id. An undo back to an earlier state names it in `restores`, so a trial keeps its trial
 // id and an adopt its holdback. Both refuse a lever the repo's Phase 0 levers row does not leave to
 // `auto`, since admission never reads the lever log for it. A run that wrote its override but not its
 // decision line is finished by running it again, not repeated. Exits 0 once recorded (or with nothing
@@ -107,11 +106,6 @@ export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now
   const r = resolveRepo(repo, configRoot);
   checkLever(lever);
   if (!CHOICES.includes(choice)) refuse(`levers decide: the choice is ${CHOICES.join(' or ')}, not "${choice}"`);
-  // Admission draws trial arms for the low-risk layer alone (levers-auto.mjs draw), so a quality-risk
-  // lever set to trial would sit on trial with no ticket ever drawn on it.
-  if (choice === 'trial' && REGISTRY[lever].layer !== 'low-risk') {
-    refuse(`levers decide: ${lever} is a ${REGISTRY[lever].layer} lever, and admission draws trial arms only for low-risk levers, so no ticket would ever be drawn on it; set it off, or put a low-risk lever on trial`);
-  }
   checkRow(r, lever, configRoot);
   const state = batchPaths(r.slug).state;
   let pending = null;
