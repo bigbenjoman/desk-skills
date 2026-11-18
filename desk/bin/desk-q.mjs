@@ -3529,9 +3529,15 @@ export function interactive({
   // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
   // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
   // change, read every repo, so the first move there loads every repo, and so does every reread after.
+  // Once loaded, the scope is the repo's slug, which names its standing batch (always listed) whichever
+  // named batches come and go. A scoped reread that still fails reads every repo, which says what is gone.
   let scope = word;
-  const reload = () => loadOrRefuse(clock(), scope);
+  const reload = () => {
+    if (scope == null) return loadOrRefuse(clock());
+    try { return loadOrRefuse(clock(), scope); } catch { scope = null; return loadOrRefuse(clock()); }
+  };
   let repos = reload();
+  if (scope != null) scope = repos[0].slug;
   const inScope = () => view?.slug != null && !['costs', 'usage'].includes(tab) && repos.some((x) => x.id === view.slug);
   function widen(always = false) {
     if (scope == null || (!always && inScope())) return;

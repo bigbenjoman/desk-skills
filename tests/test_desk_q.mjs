@@ -2382,6 +2382,18 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   await S.press('\x1b');
   t('DS-792 AC3 Esc to home from a scoped start lists every repo', `${S.crumbs()} ${S.frame().some((l) => l.includes('pr-ninja'))}`, 'desk-q true');
   S.ui.finish(0);
+  // A screen opened on a named batch keeps rereading once that batch is archived, and says it is gone.
+  const named = join(dirname(qPath(I, 'voicepa')), 'batches', 'x792');
+  mkdirSync(named, { recursive: true });
+  writeFileSync(join(named, 'queue.json'), JSON.stringify({ version: 1, batch: 'x792', concurrency: 1, tickets: { 'VPL-79': { key: 'VPL-79', state: 'triaged', open_questions: 0 } } }));
+  const N = screen({ kind: 'repo', slug: 'acme__voicepa:x792', refreshMs: 50 }, 120, Date.now, Q, 'voicepa:x792');
+  await sleep(20);
+  const before = N.frame().some((l) => l.includes('VPL-79'));
+  rmSync(named, { recursive: true, force: true });
+  await sleep(200);
+  t('DS-792 a scoped screen on a named batch says so once the batch is archived',
+    `${before} ${N.frame().some((l) => l.includes('That repo is no longer set up here.'))}`, 'true true');
+  N.ui.finish(0);
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
