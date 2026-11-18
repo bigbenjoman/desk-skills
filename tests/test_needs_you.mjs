@@ -2504,8 +2504,8 @@ put('ds742', { port: 5742, beat: 1, tickets: {
   t('DS-742 AC3 start makes it triaged with its branch and stage kept, so the next pass starts it there', `${st.ok} ${p1.state} ${p1.park} ${p1.branch} ${p1.last_round?.stage}`, 'true triaged null fix/P-1 5/9');
 }
 
-// A batch held as a chain of 30, each ticket behind every one before it as collision holds once left a
-// batch, lists in under a second more than the same 30 tickets unheld. What `needs-you list` runs, in
+// A batch held as a chain of 30, each ticket behind every one before it as plan-batch holds tickets
+// sharing a file, lists in under a second more than the same 30 tickets unheld. What `needs-you list` runs, in
 // this process, timed against the unheld batch so the many fixture repos above are not counted.
 {
   const listMs = (tickets) => {
