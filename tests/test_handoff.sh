@@ -15,7 +15,7 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 : > "$GIT_CONFIG_GLOBAL"
 mkdir -p "$T/desk"; ln -s "$SRC/desk/bin" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_CONFIG="$T/config.md" DESK_MACHINE="$T/machine.md"
-unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE
+unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT
 HOOK="$SRC/hooks/desk-handoff.py"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -152,21 +152,41 @@ check "DS-199 AC3: past 200k of 1M fires at 20"           '[[ "$(ctx)" == *"cont
 # ---- SessionStart's model id has no [1m]; the user's chosen model says it ----
 config '`45`' '`10`'
 mkdir -p "$HOME/.claude"; printf '{"model":"opus[1m]"}\n' > "$HOME/.claude/settings.json"
-hook SessionStart s50 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+hook SessionStart s50 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-4-6"'
 hook PostToolUse s50 "$T/high.jsonl"
-check "DS-270 AC1: settings opus[1m], id claude-opus-5-5: 1M" '[[ "$(ctx)" == *"context is at 10% of a 1,000,000-token window (threshold 10%)"* ]]'
-hook SessionStart s51 "$T/high.jsonl" ',"source":"startup","model":"claude-sonnet-5-5"'
+check "DS-270 AC1: settings opus[1m], id claude-opus-4-6: 1M" '[[ "$(ctx)" == *"context is at 10% of a 1,000,000-token window (threshold 10%)"* ]]'
+hook SessionStart s51 "$T/high.jsonl" ',"source":"startup","model":"claude-sonnet-4-6"'
 hook PostToolUse s51 "$T/high.jsonl"
 check "DS-270: settings opus[1m], a sonnet session: 200k"  '[[ "$(ctx)" == *"context is at 50% of a 200,000-token window (threshold 45%)"* ]]'
 out=$(printf '{"hook_event_name":"PostToolUse","session_id":"s52","transcript_path":"%s","cwd":"%s"}' "$T/low.jsonl" "$R" | DESK_CONTEXT_WINDOW=100000 python3 "$HOOK")
 check "DS-270 AC3: DESK_CONTEXT_WINDOW wins over settings" '[[ "$(ctx)" == *"context is at 50% of a 100,000-token window (threshold 45%)"* ]]'
 printf '{"model":"opus"}\n' > "$HOME/.claude/settings.json"
-hook SessionStart s53 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+hook SessionStart s53 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-4-6"'
 hook PostToolUse s53 "$T/high.jsonl"
 check "DS-270 AC2: no [1m] anywhere: 200k"                 '[[ "$(ctx)" == *"context is at 50% of a 200,000-token window (threshold 45%)"* ]]'
-hook SessionStart s54 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-5-5"'
+hook SessionStart s54 "$T/high.jsonl" ',"source":"startup","model":"claude-opus-4-6"'
 out=$(printf '{"hook_event_name":"PostToolUse","session_id":"s54","transcript_path":"%s","cwd":"%s"}' "$T/high.jsonl" "$R/sub" | ANTHROPIC_MODEL='claude-opus-5-5[1m]' python3 "$HOOK")
 check "DS-270 AC1: ANTHROPIC_MODEL [1m] wins over settings" '[[ "$(ctx)" == *"of a 1,000,000-token window (threshold 10%)"* ]]'
+rm -f "$HOME/.claude/settings.json"
+config '`45`'
+
+# ---- a model whose default window is 1M needs no [1m] (Claude Code's model docs: Fable, Sonnet 5+,
+# Haiku 5.5+, Opus 4.7+); one that reaches 1M only through [1m] stays 200k; CLAUDE_CODE_DISABLE_1M_CONTEXT
+# holds every model to 200k ----
+config '`45`' '`10`'
+win(){ s="w-$1${2:+-off}"; hook SessionStart "$s" "$T/high.jsonl" ",\"source\":\"startup\",\"model\":\"$1\""
+  out=$(printf '{"hook_event_name":"PostToolUse","session_id":"%s","transcript_path":"%s","cwd":"%s"}' "$s" "$T/high.jsonl" "$R" | env ${2:+$2} python3 "$HOOK")
+  case "$(ctx)" in *"1,000,000-token window"*) echo 1M ;; *"200,000-token window"*) echo 200k ;; *) echo none ;; esac; }
+for m in claude-opus-5-5 claude-sonnet-5-5 claude-haiku-5-5 claude-fable-5-2 claude-opus-4-7; do
+  check "#745: $m, no [1m] anywhere, is 1M" '[ "$(win '"$m"')" = 1M ]'
+done
+for m in claude-opus-4-6 claude-sonnet-4-6 claude-haiku-4-5-20251001; do
+  check "#745: $m, no [1m] anywhere, is 200k" '[ "$(win '"$m"')" = 200k ]'
+done
+check "#745: CLAUDE_CODE_DISABLE_1M_CONTEXT holds a default-1M model to 200k" '[ "$(win claude-opus-5-5 CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
+check "#745: CLAUDE_CODE_DISABLE_1M_CONTEXT holds a [1m] model to 200k" '[ "$(win claude-opus-4-6[1m] CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
+printf '{"model":"opus[1m]"}\n' > "$HOME/.claude/settings.json"
+check "#745: and a chosen [1m] model too" '[ "$(win claude-opus-4-6 CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
 rm -f "$HOME/.claude/settings.json"
 config '`45`'
 

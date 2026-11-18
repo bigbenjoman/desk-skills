@@ -15,6 +15,7 @@
 // The supervisor runner, its status reader and turnOn are desk-q's too (`desk-q <repo> supervisor`).
 // DESK_SUPERVISOR_MJS and DESK_PLATFORM stand in for the script and the platform in tests.
 import { spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -125,7 +126,10 @@ export function offer() {
   return { ask: true, recommended: 'supervisor', options: VALUES };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+const isMain = () => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+};
+if (isMain()) {
   const [cmd] = process.argv.slice(2);
   const out = { offer, ensure, stage4 }[cmd];
   if (!out) { console.error('usage: run-by.mjs offer | ensure | stage4'); process.exit(2); }

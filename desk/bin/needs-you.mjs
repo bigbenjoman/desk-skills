@@ -53,7 +53,10 @@
 //                           item until its head moves. On a session item, the ticket finished outside
 //                           desk: its PR merged, or no PR, records it done; an unmerged PR is refused.
 //                           On a step the person approved that no worker can run, that step is done:
-//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done)
+//                           the ticket goes back to a worker with it in its briefing (queue.mjs step-done).
+//                           On a stopped ticket, or one held outside its batch, whose own PR merged in
+//                           another configured repo (that repo's queue, else a merged PR on GitHub whose
+//                           branch names it), recommended first: recorded done here with that PR, merged
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
@@ -84,11 +87,11 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
+import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -209,7 +212,59 @@ export const READS = {
     } catch { return null; }
   },
   git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
+  // The newest PR merged in repo `slug` whose branch names `key` (a title is not enough: another
+  // ticket's PR often names it), read once per process: { pr, mergedAt }, or null, also when unread.
+  merged: (slug, key) => {
+    const id = `${slug}\t${key}`;
+    if (!mergedRead.has(id)) {
+      let hit = null;
+      try {
+        const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--repo', ghRepoOf({ slug }), '--state', 'merged', '--search', key, '--limit', '30', '--json', 'number,headRefName,mergedAt'], quiet));
+        const re = new RegExp(keyPattern(key));
+        const p = (Array.isArray(prs) ? prs : []).filter((x) => Number.isFinite(Number(x?.number)) && re.test(String(x.headRefName ?? '')))
+          .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
+        if (p) hit = { pr: Number(p.number), mergedAt: p.mergedAt ?? null };
+      } catch { /* unread: no PR found */ }
+      mergedRead.set(id, hit);
+    }
+    return mergedRead.get(id);
+  },
 };
+const mergedRead = new Map();
+// The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
+// queue record of it first (a PR it records merged), then GitHub (READS.merged) where `reads` is given.
+// Only a tracker key both repos share is the same ticket there: an issue-<n> or ticket-file slug names
+// a different ticket in each repo. A ticket requeued after a merge here counts only a later merge, as
+// the pass's shippedElsewhere does. -> { slug, repo, pr, mergedAt }, or null.
+function mergedElsewhere(r, t, reads) {
+  const key = t.key;
+  if (!trackerTicket(r, key)) return null;
+  const own = Date.parse(t.merged_at);
+  const later = (e) => (Number.isNaN(own) || Date.parse(e.mergedAt) > own ? e : null);
+  let others;
+  try { others = repoPortClaims().map((c) => c.slug).filter((s) => s !== r.slug && trackerTicket({ slug: s }, key)); } catch { return null; }
+  for (const slug of others) {
+    let batches;
+    try { batches = listBatches(slug); } catch { continue; }
+    for (const b of batches) {
+      let o;
+      try { o = existsSync(b.queue) ? readQueue(b.queue).tickets?.[key] : null; } catch { continue; }
+      const s = prStatusOf(o);
+      const hit = o?.result?.pr != null && (o.merged_at || s?.state === 'MERGED') && later({ slug, repo: ghRepoOf({ slug }), pr: Number(o.result.pr), mergedAt: o.merged_at ?? s?.merged_at ?? null });
+      if (hit) return hit;
+    }
+  }
+  for (const slug of reads?.merged ? others : []) {
+    const hit = reads.merged(slug, key);
+    if (hit && later(hit)) return { slug, repo: ghRepoOf({ slug }), ...hit };
+  }
+  return null;
+}
+// An item's actions once its PR is found merged in another repo: done first, and every other action
+// kept, its recommendation said as a note.
+const shippedFirst = (actions, e) => (!e ? actions : [
+  ['done', `its PR #${e.pr} merged in ${e.repo}: done records it done here from that PR, and the tickets held behind it can start`],
+  ...actions.map(([name, why, note]) => (note ?? why ? [name, null, note ?? why] : [name]))]);
 // Whether a key is a ticket in the repo's tracker, by its §4 Ticket key pattern.
 function trackerTicket(r, key) {
   const pattern = repoConfigValue(r.slug, 'ticket-pattern');
@@ -937,7 +992,9 @@ function pageItems(batches, { home = false } = {}) {
 
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
-function itemOf(r, x, reads = null) {
+// `finds` (READS) lets a stopped or outside-held ticket's merged PR in another repo be looked for on
+// GitHub; without it only those repos' queues are read.
+function itemOf(r, x, reads = null, finds = reads) {
   const t = x.t;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
   if (x.subOff) {
@@ -1002,11 +1059,14 @@ function itemOf(r, x, reads = null) {
   // already, so a resume only records what the next worker should know.
   if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return { kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) };
+  // A stopped or outside-held ticket whose PR merged in another repo, where it was built, is done.
+  const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t, finds) : null;
+  const shipped = (item) => (elsewhere ? { ...item, elsewhere, actions: shippedFirst(item.actions, elsewhere) } : item);
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
   if (x.k === 'failed') {
     // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
     const actions = [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']];
-    return { kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] };
+    return shipped({ kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
@@ -1022,12 +1082,12 @@ function itemOf(r, x, reads = null) {
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
     const need = `held by ${andList(outside.map(holdWords))}, outside this batch`;
     if (notYours.length) {
-      return { kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
-        ['admit', null, admitWhy], ['answer', null, answerWhy]] };
+      return shipped({ kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
+        ['admit', null, admitWhy], ['answer', null, answerWhy]] });
     }
     const admit = free.length ? [['admit', admitWhy]] : [];
-    return { kind: 'held', need,
-      actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] };
+    return shipped({ kind: 'held', need,
+      actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] });
   }
   // A held ticket with a question of its own is asked that question, below.
   if (isHeld(t) && !heldAsks(t)) {
@@ -1146,7 +1206,7 @@ export const heldPutOff = (r, t) => ['put_off', 'holding'].includes(judged(r, { 
 export function stampActions({ stateDir, ticket, question, now = Date.now(), repos = loadRepos(now) }) {
   const r = repos.find((b) => b.q && resolve(b.stateDir) === resolve(stateDir));
   const x = r && needsRows(r).find((y) => y.t.key === ticket);
-  const item = x && itemOf(r, x);
+  const item = x && itemOf(r, x, null, READS);
   return item && questionKey(putOffKey(r, x.t, item).question) === questionKey(question) ? stampItem(r, x, item) : null;
 }
 function stampItem(r, x, item) {
@@ -1347,7 +1407,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
   const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
   if (!x) return movedOn(r, ticket, verb, text, now);
-  const item = itemOf(r, x);
+  const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
   // refused naming those that are.
   const allowed = [...item.actions.map(([a]) => a.split(' ')[0]), ...(MOVABLE.includes(item.kind) ? ['move'] : [])];
@@ -1458,6 +1518,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     const how = `you said done; ${mergedWords(pr, v)}${trackerTicket(r, ticket) ? `; ${ticketWords(ticket, reads.ticket(r, ticket))}` : ''}`;
     const m = recordShipped(r, x.t, how, pr, v);
     return m.ok ? say(true, `recorded done (${how}), so it is off your list.`) : say(false, `recording it done was refused: ${m.out}`);
+  };
+  // Done on a ticket whose PR merged in another repo: recorded done here with that PR, read as merged
+  // (pr_status and merged_at), so no pass reads its number as one of this repo's PRs and the tickets
+  // held behind it are released as behind any merge.
+  const elsewhereDone = ({ repo, pr, mergedAt }) => {
+    const at = mergedAt && !String(mergedAt).startsWith('0001-') ? new Date(mergedAt).toISOString() : new Date(now).toISOString();
+    const how = `you said done; PR #${pr} merged in ${repo}${mergedAt ? ` at ${at.slice(0, 16).replace('T', ' ')} UTC` : ''}`;
+    const status = { pr, state: 'MERGED', merged_at: at, url: `https://github.com/${repo}/pull/${pr}` };
+    const m = queueCmd(r, [...shippedSet(x.t, how, pr, at), `pr_status=${JSON.stringify(status)}`]);
+    if (!m.ok) return say(false, `recording it done was refused: ${m.out}`);
+    const g = queueCmd(r, ['merged', ticket, at]);
+    if (!g.ok) return say(true, `recorded done (${how}), so it is off your list; its merge time was not recorded (${g.out}), which the next pass records.`);
+    return say(true, `recorded done (${how}), so it is off your list and the tickets held behind it can start.`);
   };
   switch (verb) {
     case 'answer': {
@@ -1582,6 +1655,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       return say(true, `nothing recorded. Run /desk-admit ${free.join(' ')} in ${root ?? r.name}; ${ticket} stays held until ${free.length === 1 ? 'it is' : 'they are'} Done, or you answer that it can start without ${free.length === 1 ? 'it' : 'them'}.`);
     }
     case 'done': {
+      if (item.elsewhere) return elsewhereDone(item.elsewhere);
       if (x.t.park?.session_step) {
         const d = queueCmd(r, ['step-done', ticket]);
         return d.ok ? say(true, 'the step is recorded done and the ticket requeued, with it in its briefing; the next pass can spawn it.') : say(false, `not sent back: ${d.out}`);

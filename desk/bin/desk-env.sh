@@ -65,6 +65,8 @@ desk_tool_args() {
   DESK_TOOL_ARGS=()
   [ -n "${AUTOPILOT_DEFAULT_TOOLS:-}" ] && return 0
   list="$(node "$DESK_ENV_DIR/worker-tools.mjs" "$1")" || return 1
+  # An empty list launches a session with no tools at all; only none means that.
+  [ -n "$list" ] || [ "$1" = none ] || { echo "desk: worker-tools.mjs $1 printed an empty tool list" >&2; return 1; }
   # shellcheck disable=SC2034  # read by the scripts that source this file
   DESK_TOOL_ARGS=(--tools "$list")
 }
