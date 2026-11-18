@@ -48,6 +48,7 @@ on its feature branch while the standing batch carries on.
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
+| `desk-resume` | After a context handoff's `/clear`: reads the handoff and carries on from its next step | `/desk-resume` |
 | `desk-reboot` | Before a reboot: every session, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
 | `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget, and holds an autopilot batch's red rate to that baseline; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
 
@@ -711,7 +712,8 @@ repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at ses
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
 **`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
-context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it.
+context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
+you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.

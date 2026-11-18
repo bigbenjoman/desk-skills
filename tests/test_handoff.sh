@@ -56,6 +56,7 @@ check "it says finish the step and start no new work"     '[[ "$c" == *"Finish t
 check "it names .handoffs/<date>.md in the repo root"     '[[ "$c" == *"$R/.handoffs/$DAY.md"* ]]'
 check "it lists the handoff sections and paste-in line"   '[[ "$c" == *"where things stand"* ]] && [[ "$c" == *"next step"* ]] && [[ "$c" == *"decisions made"* ]] && [[ "$c" == *"open questions"* ]] && [[ "$c" == *"paste-in line"* ]]'
 check "#811: it says to record each action left for the person with needs-you.mjs ask" '[[ "$c" == *"needs-you.mjs ask <SLUG from desk-env where>"* ]]'
+check "#835: it asks for /clear, then /desk-resume, which carries on from the next step" '[[ "$c" == *"type /clear, then /desk-resume"* ]]'
 check "AC3: .handoffs/ is in .git/info/exclude"           'grep -qx ".handoffs/" "$R/.git/info/exclude"'
 hook PostToolUse s1 "$T/high.jsonl"
 check "a second PostToolUse injects nothing"              '[ -z "$out" ]'
@@ -231,6 +232,7 @@ config '`45`'
 # ---- AC2: one Stop block until the handoff exists ----
 hook Stop s1 "$T/high.jsonl" ',"stop_hook_active":false'
 check "Stop blocks once with write the handoff first"     '[[ "$out" == *"\"decision\": \"block\""* ]] && [[ "$out" == *"write the handoff first"* ]]'
+check "#835: the Stop block asks for /clear, then /desk-resume" '[[ "$out" == *"type /clear, then /desk-resume"* ]]'
 hook Stop s1 "$T/high.jsonl" ',"stop_hook_active":false'
 check "the marker stops a second block"                   '[ -z "$out" ]'
 hook Stop s3 "$T/side.jsonl"
