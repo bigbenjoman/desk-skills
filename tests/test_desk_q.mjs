@@ -242,6 +242,30 @@ t('DS-116 AC7 a raise past the machine total is made', `${raised.code} ${readQ(q
 t('DS-116 AC7 and warns that live batches now allow 11', /Live batches now allow 11, over this machine's 10/.test(lines(raised.out)[0]), true);
 t('a workers count that is not a whole number is refused', X.run('voicepa', 'workers', 'two').code !== 0 && readQ(qPath(X, 'voicepa')).concurrency === 5, true);
 
+// DS-792: a named repo loads alone. pr-ninja's batch is a dense chain of held tickets, one running,
+// too slow to walk, and pranicuk's queue cannot be read; voicepa still lists at once, and its machine
+// count is the unscoped listing's: pr-ninja's worker and pranicuk at its cap of 2 still count.
+{
+  const chain = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`PN-${i + 1}`, i ? { state: 'parked', held_by: `PN-${i}`, park: { question: `held by orchestrator: blocked by PN-${i}` } } : { state: 'running', stage: '3/9' }]));
+  const two = (n) => {
+    const w = world({ 'pr-ninja': { port: 3200, conc: '2 / 3', beat: 1, queue: { batch: 'pn', concurrency: 2, tickets: chain(n) } } });
+    writeFileSync(qPath(w, 'pranicuk'), '{ not json');
+    return w;
+  };
+  const timed = (run) => { const at = Date.now(); const r = run(); return { ...r, ms: Date.now() - at }; };
+  const dense = two(4000);
+  const scoped = timed(() => dense.run('--plain', 'voicepa'));
+  t('DS-792 AC1 the named repo lists beside a dense and an unreadable batch', `${scoped.code} ${/VPL-3/.test(scoped.out)}`, '0 true');
+  t('DS-792 AC1 and in under a second', scoped.ms < 1000 || scoped.ms, true);
+  const ny = timed(() => { const r = spawnSync('node', [join(dirname(BIN), 'needs-you.mjs'), 'list', 'voicepa'], { encoding: 'utf8', env: dense.env, cwd: dense.T }); return { code: r.status, out: r.stdout }; });
+  t('DS-792 AC1 needs-you list <repo> lists the named repo alone, in under a second', `${ny.code} ${/pr-ninja|pranicuk/.test(ny.out)} ${ny.ms < 1000 || ny.ms}`, '0 false true');
+  const small = two(3);
+  const unscoped = small.run('--plain');
+  t('DS-792 AC2 the scoped machine count is the unscoped listing\'s: 2 + 1 + pranicuk at its cap',
+    `${/· machine (\d+) of 10/.exec(scoped.out)?.[1]} ${/· machine (\d+) of 10/.exec(small.run('--plain', 'voicepa').out)?.[1]} ${/● (\d+) workers running/.exec(unscoped.out)?.[1]}`, '5 5 5');
+  t('DS-792 AC3 with no repo named, every batch is listed', ['voicepa', 'pr-ninja', 'pranicuk'].every((n) => rowOf(unscoped.out, n)), true);
+}
+
 // ---- the interactive screen, driven in-process through an injected key stream and an 80-column
 // output. desk-env reads HOME when it is first imported, so the module loads after the env is set.
 const LONG = 'Rebook the client automatically when the gap between two bookings is longer than the salon allows';

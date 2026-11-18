@@ -642,19 +642,42 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
-export function loadRepos(now = Date.now()) {
+// With `word`, only the repo it names (resolveRepo) is loaded: every other batch is read only for its
+// names and its running workers (lightBatch), so a slow batch elsewhere never holds up its listing.
+export function loadRepos(now = Date.now(), word = null) {
   const claims = repoPortClaims();
   const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
-  const all = claims.flatMap((c, i) => {
+  const listed = claims.flatMap((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
-    return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
+    return listBatches(c.slug).map((b) => ({ c, name, batch: b.name, limits }));
   });
+  const light = word ? listed.map((x) => lightBatch(x.c, x.name, x.batch, x.limits)) : [];
+  const slug = word && light.length ? resolveRepo(light, word).slug : null;
+  const all = listed.filter((x) => !slug || x.c.slug === slug).map((x) => loadBatch(x.c, x.name, x.batch, x.limits, now));
+  const others = light.filter((x) => x.slug !== slug);
   // Every batch carries the machine's load, so a repo's screen can say when the machine cap, not the
-  // batch's own workers, is what holds its ready tickets back.
-  const machine = { running: machineRunning(all), cap: machineCap() };
+  // batch's own workers, is what holds its ready tickets back. `others` are the batches not loaded.
+  const machine = { running: machineRunning([...all, ...others]), cap: machineCap(), others };
   for (const r of all) r.machine = machine;
   return all;
+}
+
+// A batch's names, as loadBatch gives them: its repo's for the standing batch, else its own with its base.
+function batchNames(c, repoName, batch, q) {
+  if (!batch) return { name: repoName, repo: repoName, word: repoName, id: c.slug };
+  const base = typeof q?.base === 'string' && q.base.trim() ? ` (${q.base.trim()})` : '';
+  return { name: `${repoName} · ${batch}${base}`, repo: repoName, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` };
+}
+
+// A batch read only for its names and its running workers, shaped as machineRunning and runningOn read
+// a loaded one. An unreadable queue keeps its error, so it counts at its cap.
+function lightBatch(c, repoName, batch, limits) {
+  const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
+  let q = null, error = null;
+  if (existsSync(queuePath)) { try { q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { error = describeCrash(e); } }
+  const rows = Object.values(q?.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => ({ t, k: 'running' }));
+  return { ...batchNames(c, repoName, batch, q), slug: c.slug, batch, stateDir, cap: limits.cap, error, rows, prs: [], q: q && { base: q.base, base_fix: q.base_fix } };
 }
 
 function loadBatch(c, repoName, batch, limits, now) {
@@ -664,10 +687,7 @@ function loadBatch(c, repoName, batch, limits, now) {
     // Archived tickets are found by key behind the live ones (queue-store.mjs attachArchive).
     try { r.q = attachArchive(readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'), queuePath); } catch (e) { r.error = describeCrash(e); }
   }
-  if (batch) {
-    const base = typeof r.q?.base === 'string' && r.q.base.trim() ? ` (${r.q.base.trim()})` : '';
-    Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
-  }
+  Object.assign(r, batchNames(c, repoName, batch, r.q));
   const beat = lastBeat(stateDir, queuePath);
   // The last pass, not the last beat: a supervisor's idle tick refreshes the beat and runs no pass.
   r.last = beat?.pass ?? null;
@@ -776,13 +796,15 @@ const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b
 const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
-export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+// A scoped load's other batches (loadRepos `others`) count too.
+const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
+export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // The workers running on one Claude login, by the login spawn-worker.sh recorded for each
 // (claude-logins.mjs), a worker with no record on the default. A batch whose queue cannot be read
 // counts at its repo's cap.
 export function runningOn(repos, login) {
   let n = 0;
-  for (const r of repos) {
+  for (const r of withOthers(repos)) {
     if (r.error) { n += r.cap ?? 0; continue; }
     for (const b of r.batches ?? [r]) {
       const keys = (b.rows ?? []).filter((x) => groupOf(x.k) === 'running').map((x) => x.t.key);
@@ -3300,8 +3322,8 @@ function checkFlags(argv) {
   if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
 }
 
-function loadOrRefuse(now) {
-  const repos = loadRepos(now);
+function loadOrRefuse(now, word = null) {
+  const repos = loadRepos(now, word);
   if (!repos.length) throw new Usage('No repo is set up for desk on this machine. Run /desk-setup in a repo first.');
   return repos;
 }
@@ -3311,7 +3333,11 @@ export function run(argv, { now = Date.now() } = {}) {
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
-  const repos = loadOrRefuse(now);
+  // `desk-q <repo> …` loads only that repo. Costs, ships and days read every repo, and so does a workers
+  // change, which is weighed against every live batch's workers and every repo's ports.
+  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
+  const word = first && !['costs', ...SHIPS, 'days'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
+  const repos = loadOrRefuse(now, word);
   const v = target(repos, argv);
   if (v.kind === 'supervisor') return apply(repos, v);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
@@ -3321,7 +3347,7 @@ export function run(argv, { now = Date.now() } = {}) {
   if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    const after = loadOrRefuse(now);
+    const after = loadOrRefuse(now, word);
     return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);

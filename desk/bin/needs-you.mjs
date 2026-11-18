@@ -264,7 +264,7 @@ function worktreeClean(r, t, reads) {
 
 // What list settles before it lists, in the batches `word` names: a parked or session item that shipped
 // is recorded done, and a worktree hold found clean is dropped. -> one line for each.
-export function refresh({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const lines = [];
   for (const r of scopeOf(repos, word).scope.filter((x) => !x.error && x.q)) {
     for (const x of needsRows(r)) {
@@ -1129,7 +1129,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 // A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
-export function collect({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
@@ -1263,7 +1263,7 @@ function namedFixturesText(r, ticket, text) {
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
-export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
+export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
   if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
@@ -1586,7 +1586,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
 // stopped, needing the person or not: one just answered no longer does, and still waits on a pass.
-export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
+export function leftText({ word = null, now = Date.now(), repos = loadRepos(now, word) } = {}) {
   const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
   const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
