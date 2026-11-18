@@ -24,7 +24,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX } from './batch-state.mjs';
+import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promotedAt } from './batch-state.mjs';
 import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
@@ -184,20 +184,16 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   }
   // A merged ticket whose follow-on steps the person has not run keeps a batch its last promotion took
   // to the default branch: needs-you held them until now (needs-you.mjs outAt) and reads no archived
-  // batch, so archiving would drop them unseen. Each is stamped with that merge, which needs-you lists
-  // it from, and the batch is archived once every one is done.
+  // batch, so archiving would drop them unseen. Each is stamped with the promotion merge that took it
+  // out, which needs-you lists it from, and the batch is archived, below, once every one is done.
   const follows = last ? rows.filter(followOnPending) : [];
-  if (follows.length) {
-    const at = mergedAt(p) ?? now.toISOString();
-    const stamped = [];
-    for (const t of follows.filter((x) => !x.promoted_at)) {
-      const r = mark(b, t.key, `promoted_at=${at}`);
-      if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be marked promoted (${r}), so needs-you does not list its follow-on steps yet; the next tick tries again`);
-      else stamped.push(t.key);
-    }
-    if (stamped.length) lines.push(`archive: batch ${b.name} waits on the follow-on steps of ${stamped.join(', ')}, which needs-you now lists; it is archived once each is done`);
-    return { ...none, lines };
+  const stamped = [];
+  for (const t of follows.filter((x) => !x.promoted_at)) {
+    const r = mark(b, t.key, `promoted_at=${promotedAt(q, t) ?? mergedAt(p) ?? now.toISOString()}`);
+    if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be marked promoted (${r}), so needs-you does not list its follow-on steps yet; the next tick tries again`);
+    else stamped.push(t.key);
   }
+  if (stamped.length) lines.push(`archive: batch ${b.name} waits on the follow-on steps of ${stamped.join(', ')}, which needs-you now lists; it is archived once each is done`);
   const busy = holder(b);
   // A shut batch leaves its merge driver nothing to merge, so it is stopped; a driver mid-merge finishes
   // that merge first. The archive waits for the lock to go, on a later tick.
@@ -247,6 +243,9 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     }
     return { ...none, lines };
   }
+  // Every ticket left behind has moved or been parked by now, so a batch kept for follow-on steps runs
+  // nothing more.
+  if (follows.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);

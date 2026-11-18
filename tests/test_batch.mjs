@@ -315,6 +315,12 @@ writeQ('X-12', { ...readQ('X-12'), tickets: { 'X-13': { ...readQ('X-12').tickets
 t('DS-784 once they are done, it is archived', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
 t('DS-784 a closed promotion never took them out, so it archives as before', res(archive('X-12', { 9: 'CLOSED', 13: 'MERGED' })).archived, true);
+// A child an earlier slice promoted is stamped with that slice's merge, not the last one's.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9, merged: [{ pr: 7, slice: 1, merged_at: '2026-10-29T12:00:00Z' }] },
+  tickets: { 'X-13': { ...stepsLeft, merged_at: '2026-10-29T11:00:00Z' } } });
+res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 an earlier slice\'s child keeps the age that slice gave it', readQ('X-12').tickets['X-13'].promoted_at, '2026-10-29T12:00:00.000Z');
+rmSync(dirname(namedQ('X-12')), { recursive: true, force: true });
 
 // DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
 // promotion a pass recorded, one admitted since moves to the standing batch, and the archive line names it.
@@ -332,6 +338,19 @@ t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.
 t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
 t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
 t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// DS-784: a batch kept for follow-on steps still moves a ticket left behind, so no pass starts it there.
+writeQ('X-17', { epic: 'X-17', base: 'feat/x-17', promotion: lastRecorded, tickets: {
+  'X-18': { key: 'X-18', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] },
+  'X-19': { key: 'X-19', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-17'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-17'), 'triage', 'X-19.json'), JSON.stringify({ ticket: 'X-19', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-19', files_in_scope: ['f/X-19'], unknowns: [], blockers: [] }));
+a = res(archive('X-17', { 9: 'MERGED', 10: 'MERGED' }));
+t('DS-784 kept for its follow-on steps: not archived', a.archived === false && existsSync(namedQ('X-17')), true);
+t('DS-784 the ticket left behind is moved to the standing batch all the same', `${JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-19']?.state} ${readQ('X-17').tickets['X-19']}`, 'triaged undefined');
+t('DS-784 and the report says so', (a.lines ?? []).join(' ').includes('moved X-19 to the standing batch, and waits on follow-on steps'), true);
+rmSync(dirname(namedQ('X-17')), { recursive: true, force: true });
+rmSync(namedS('X-17'), { recursive: true, force: true });
 // DS-568: moved into a batch where its open blocker is parked as the person's step, a ticket merges after
 // that step rather than losing the hold: nothing builds the step, so it is no build hold either.
 const withStep = JSON.parse(readFileSync(standingQ, 'utf8'));
