@@ -11,10 +11,11 @@ const EXIT = /^Exit code (\d+)/;
 export const textOf = (c) => (typeof c === 'string' ? c : Array.isArray(c) ? c.map((x) => x?.text ?? '').join('\n') : '');
 const firstLine = (s) => String(s ?? '').split('\n').map((l) => l.trim()).find(Boolean) ?? '';
 
-// Each call refused (a permission_denied event, or an errored result whose text says denied) or ending
-// in a non-zero exit, in order, once per tool_use id, with the 1-based line its outcome is on and the
-// session of the start that line is in. `text` is the result's first line after any `Exit code` line.
-export function toolOutcomes(text) {
+// Every tool call's outcome in a stream-json log, in order, once per tool_use id: a permission_denied
+// event, or a tool result. `line` is the 1-based line it is on, `session` the start that line is in,
+// `body` the result's text (null for a permission_denied event), `error` whether it errored and
+// `denied` whether it was refused.
+function outcomes(text) {
   const out = [];
   const calls = new Map();
   const seen = new Set();
@@ -32,19 +33,28 @@ export function toolOutcomes(text) {
     if (d?.type === 'assistant') {
       for (const c of d.message?.content ?? []) if (c?.type === 'tool_use') calls.set(c.id, { name: c.name, input: c.input });
     } else if (d?.type === 'system' && d.subtype === 'permission_denied') {
-      push(d.tool_use_id, d.tool_name, { denied: true, exit: null, text: null });
+      push(d.tool_use_id, d.tool_name, { error: true, denied: true, body: null });
     } else if (d?.type === 'user') {
       for (const c of d.message?.content ?? []) {
-        if (c?.type !== 'tool_result' || !c.is_error) continue;
+        if (c?.type !== 'tool_result') continue;
         const body = textOf(c.content);
-        if (DENIED.test(body)) push(c.tool_use_id, null, { denied: true, exit: null, text: firstLine(body) });
-        else {
-          const m = EXIT.exec(body.trim());
-          if (m && Number(m[1]) !== 0) push(c.tool_use_id, null, { denied: false, exit: Number(m[1]), text: firstLine(body.trim().split('\n').slice(1).join('\n')) });
-        }
+        push(c.tool_use_id, null, { error: !!c.is_error, denied: !!c.is_error && DENIED.test(body), body });
       }
     }
   });
+  return out;
+}
+
+// Each call refused (a permission_denied event, or an errored result whose text says denied) or ending
+// in a non-zero exit, in order, once per tool_use id, with the 1-based line its outcome is on and the
+// session of the start that line is in. `text` is the result's first line after any `Exit code` line.
+export function toolOutcomes(text) {
+  const out = [];
+  for (const { line, session, tool, input, error, denied, body } of outcomes(text)) {
+    if (denied) { out.push({ line, session, tool, input, denied: true, exit: null, text: body == null ? null : firstLine(body) }); continue; }
+    const m = error ? EXIT.exec(body.trim()) : null;
+    if (m && Number(m[1]) !== 0) out.push({ line, session, tool, input, denied: false, exit: Number(m[1]), text: firstLine(body.trim().split('\n').slice(1).join('\n')) });
+  }
   return out;
 }
 
@@ -52,28 +62,10 @@ export function toolOutcomes(text) {
 // result: `exit` is the result's `Exit code` (0 for one that did not error), null for a refused call or
 // an error with no exit code.
 export function bashCalls(text) {
-  const out = [];
-  const calls = new Map();
-  const seen = new Set();
-  let session = null;
-  String(text ?? '').split('\n').forEach((raw, i) => {
-    let d;
-    try { d = JSON.parse(raw); } catch { return; }
-    if (d?.type === 'system' && d.subtype === 'init') { session = d.session_id ?? null; return; }
-    if (d?.type === 'assistant') {
-      for (const c of d.message?.content ?? []) if (c?.type === 'tool_use' && c.name === 'Bash') calls.set(c.id, String(c.input?.command ?? ''));
-    } else if (d?.type === 'user') {
-      for (const c of d.message?.content ?? []) {
-        if (c?.type !== 'tool_result' || !calls.has(c.tool_use_id) || seen.has(c.tool_use_id)) continue;
-        seen.add(c.tool_use_id);
-        const body = textOf(c.content).trim();
-        const m = EXIT.exec(body);
-        const exit = !c.is_error ? 0 : DENIED.test(body) ? null : m ? Number(m[1]) : null;
-        out.push({ line: i + 1, session, command: calls.get(c.tool_use_id), exit });
-      }
-    }
+  return outcomes(text).filter((o) => o.tool === 'Bash').map(({ line, session, input, error, denied, body }) => {
+    const m = error && !denied ? EXIT.exec(body.trim()) : null;
+    return { line, session, command: String(input?.command ?? ''), exit: !error ? 0 : m ? Number(m[1]) : null };
   });
-  return out;
 }
 
 // A review's call through desk-codex for a finder or a refutation, any path before it.

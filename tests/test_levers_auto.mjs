@@ -76,9 +76,9 @@ const admitMany = (slug, n, { size = 'S', seed = 7, frozen = null, prefix = 'K' 
 const share = (pins, pred) => pins.filter((r) => pred(r.pin)).length / pins.length;
 const byHand = (slug, lever, to, at) => append(slug, { kind: 'override', lever, to, actor: 'ben', reason_code: 'ben_override', reason: `set ${lever} ${to} by hand`, at });
 
-t('no state recorded: every trialled low-risk lever is on trial, every quality-risk lever off',
+t('no state recorded: every trialled lever is on trial, whatever its layer',
   Object.fromEntries(Object.entries(leverStatesIn([])).map(([n, s]) => [n, s.state])),
-  Object.fromEntries(Object.keys(REGISTRY).map((n) => [n, TRIAL.includes(n) ? 'trial' : 'off'])));
+  Object.fromEntries(Object.keys(REGISTRY).map((n) => [n, REGISTRY[n].trialled ? 'trial' : 'off'])));
 
 // ---- AC1: blocks of four per size keep each arm at exactly two ----------------------------------
 {
@@ -114,8 +114,11 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   const { pin, assigned } = assignPin('P-1', { slug: 'ac3', size: 'M', random: seededRandom(3), now: NOW });
   t('AC3 assigned', assigned, true);
   t('AC3 the pin holds the set, the arms, the trial ids, the fingerprints, the block and the time', Object.keys(pin), ['set', 'arms', 'trial_ids', 'fp', 'block', 'at']);
-  t('AC3 an arm per lever on trial', Object.keys(pin.arms).sort(), [...TRIAL].sort());
-  t('AC3 a trial id per lever on trial', Object.keys(pin.trial_ids).sort(), [...TRIAL].sort());
+  // A quality-risk lever on trial too: with nothing else in flight the cap leaves it the off arm.
+  const onTrial = [...TRIAL, ...QUALITY].sort();
+  t('AC3 an arm per lever on trial', Object.keys(pin.arms).sort(), onTrial);
+  t('AC3 a trial id per lever on trial', Object.keys(pin.trial_ids).sort(), onTrial);
+  t('AC3 a quality-risk lever is drawn off while it would be the only ticket in flight', QUALITY.map((l) => pin.arms[l]), QUALITY.map(() => 'off'));
   t('AC3 the trial id names the repo, the lever and the trial', pin.trial_ids.wrappers, 'ac3/wrappers/initial');
   t('AC3 a fingerprint entry per registry lever', Object.keys(pin.fp).sort(), Object.keys(REGISTRY).sort());
   t('AC3 the time it was pinned', pin.at, NOW.toISOString());
@@ -171,13 +174,17 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
 {
   const quality = (pin) => QUALITY.filter((l) => pin.set.includes(l));
   const LOCAL = { 'worker-location': 'local' };
-  const admitQ = (slug, n, { seed = 46, inFlight = [], values = LOCAL, prefix = 'Q', random = seededRandom(seed) } = {}) =>
-    Array.from({ length: n }, (_, i) => assignPin(`${prefix}-${i + 1}`, { slug, size: 'S', random, now: NOW, inFlight, values }).pin);
+  // Ten tickets in flight carrying none, so the 30% cap leaves room for the one admitted.
+  const IDLE = Array.from({ length: 10 }, () => ({ set: [], arms: {} }));
+  const admitQ = (slug, n, { seed = 46, inFlight = IDLE, merged = [], values = LOCAL, prefix = 'Q', random = seededRandom(seed) } = {}) =>
+    Array.from({ length: n }, (_, i) => assignPin(`${prefix}-${i + 1}`, { slug, size: 'S', random, now: NOW, inFlight, merged, values }).pin);
+  // Only `levers` of the quality-risk layer left on trial in `slug`: the others are set off by hand.
+  const only = (slug, ...levers) => { for (const l of QUALITY) if (!levers.includes(l)) byHand(slug, l, 'off', daysAgo(2)); };
   t('the registry marks every quality-risk lever trialled', QUALITY.every((l) => REGISTRY[l].trialled === true), true);
-  t('with no state recorded a quality-risk lever is off: a trial is begun by a transition', QUALITY.map((l) => leverStatesIn([])[l].state), QUALITY.map(() => 'off'));
+  t('with no state recorded a quality-risk lever is on trial, so desk begins it', QUALITY.map((l) => leverStatesIn([])[l].state), QUALITY.map(() => 'trial'));
 
   // AC1: two on trial, at most one per ticket.
-  for (const l of ['codex', 'review-reuse']) byHand('q1', l, 'trial', daysAgo(1));
+  only('q1', 'codex', 'review-reuse');
   const p1 = admitQ('q1', 300);
   t('AC1 codex and review-reuse on trial: no ticket carries both', p1.every((p) => !(p.set.includes('codex') && p.set.includes('review-reuse'))), true);
   t('AC1 each is carried by some tickets', ['codex', 'review-reuse'].every((l) => p1.some((p) => p.set.includes(l))), true);
@@ -188,11 +195,13 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   t('AC1 a carried quality-risk lever is the ticket\'s arm `on`', p1.every((p) => quality(p).every((l) => p.arms[l] === 'on')), true);
   t('AC1 the quality-risk arms keep the low-risk block', p1.every((p) => typeof p.block === 'string'), true);
 
-  // AC2 and AC11: 10%, then 25% after 15 clean tickets, then 50% after 15 more.
-  byHand('q2', 'codex', 'trial', daysAgo(1));
+  // AC2 and AC11: 10%, then 25% after 15 clean tickets, then 50% after 15 more. A carrier counts once
+  // it has merged: every ticket here has.
+  const MERGED = { has: () => true };
+  only('q2', 'codex');
   const random = seededRandom(2);
   let i = 0;
-  const admitOne = () => assignPin(`R-${++i}`, { slug: 'q2', size: 'S', random, now: NOW, inFlight: [], values: LOCAL }).pin;
+  const admitOne = () => assignPin(`R-${++i}`, { slug: 'q2', size: 'S', random, now: NOW, inFlight: IDLE, merged: MERGED, values: LOCAL }).pin;
   const ramps = () => read('q2', { kinds: ['ramp'] }).events;
   let on = 0;
   while (on < 15 && i < 2000) if (admitOne().set.includes('codex')) on++;
@@ -200,7 +209,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   t('AC2 at the first share, about 10% carry it', before > 80 && before < 300, true);
   t('AC2 no step while only 15 tickets have carried it', ramps().length, 0);
   const sixteenth = admitOne();
-  t('AC11 the next admission appends one ramp event, the share before and after', ramps().map((e) => [e.lever, e.from, e.to, e.reason_code, e.trial_id]), [['codex', 0.1, 0.25, 'ramp_clean', 'q2/codex/' + read('q2', { kinds: ['override'] }).events[0].id]]);
+  t('AC11 the next admission appends one ramp event, the share before and after', ramps().map((e) => [e.lever, e.from, e.to, e.reason_code, e.trial_id]), [['codex', 0.1, 0.25, 'ramp_clean', 'q2/codex/initial']]);
   t('AC11 the ramp event names the ticket it was written for', ramps()[0].ticket, `R-${i}`);
   on = sixteenth.set.includes('codex') ? 1 : 0;
   const stepAt = i;
@@ -213,41 +222,51 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   t(`AC2 at 50%, about half carry it (${half})`, half > 0.4 && half < 0.6, true);
   t('AC2 the share stops at the ramp\'s last step', ramps().length, 2);
 
-  // AC3: a hard trip in its first 15 tickets: no step.
-  byHand('q3', 'codex', 'trial', daysAgo(1));
-  const r3 = seededRandom(3);
+  // A carrier that has not merged yet has not had every hard trip's chance to fire: no step.
+  only('q2u', 'codex');
+  const ru = seededRandom(2);
+  let ku = 0;
+  let nu = 0;
+  while (nu < 30 && ku < 4000) if (assignPin(`U-${++ku}`, { slug: 'q2u', size: 'S', random: ru, now: NOW, inFlight: IDLE, merged: [], values: LOCAL }).pin.set.includes('codex')) nu++;
+  t('AC2 30 carriers admitted, none merged: still no step', read('q2u', { kinds: ['ramp'] }).events.length, 0);
+
+  // AC3: a hard trip in its first 15 tickets: no step. The same draws as AC2's, which stepped at the
+  // admission after its 15th carrier; here the 15th carrier trips.
+  only('q3', 'codex');
+  const r3 = seededRandom(2);
   let n3 = 0;
   let k3 = 0;
-  while (n3 < 3) if (assignPin(`T-${++k3}`, { slug: 'q3', size: 'S', random: r3, now: NOW, inFlight: [], values: LOCAL }).pin.set.includes('codex')) n3++;
+  while (n3 < 15 && k3 < 2000) if (assignPin(`T-${++k3}`, { slug: 'q3', size: 'S', random: r3, now: NOW, inFlight: IDLE, merged: MERGED, values: LOCAL }).pin.set.includes('codex')) n3++;
+  t('AC3 its 15 carriers admitted with no step yet', [n3, read('q3', { kinds: ['ramp'] }).events.length], [15, 0]);
   append('q3', { kind: 'trip', lever: 'codex', from: 'trial', to: 'reverted', actor: 'trip', reason_code: 'post_merge_revert', reason: 'reverted', ticket: `T-${k3}`, evidence_file: '/x/post-merge.jsonl', evidence_line: 1, trip: 'post-merge-revert', at: NOW.toISOString() });
-  const after = Array.from({ length: 300 }, (_, j) => assignPin(`T2-${j}`, { slug: 'q3', size: 'S', random: r3, now: NOW, inFlight: [], values: LOCAL }).pin);
+  const after = Array.from({ length: 300 }, (_, j) => assignPin(`T2-${j}`, { slug: 'q3', size: 'S', random: r3, now: NOW, inFlight: IDLE, merged: MERGED, values: LOCAL }).pin);
   t('AC3 a trip in its first 15 tickets: no ramp event', read('q3', { kinds: ['ramp'] }).events.length, 0);
   t('AC3 and the tripped lever reaches no more tickets', after.every((p) => !p.set.includes('codex') && p.arms.codex == null), true);
-  const { exposureOf } = await import('../desk/bin/levers-auto.mjs');
-  const trial = { key: 'codex', id: 'x/codex/1', levers: ['codex'] };
-  const ev = [...Array.from({ length: 16 }, () => ({ kind: 'assign', arms: { codex: 'on' }, trial_ids: { codex: 'x/codex/1' } })), { kind: 'trip', lever: 'codex' }];
-  t('AC3 exposure: 16 carriers but a trip since the first, so it is held', [exposureOf(ev, trial, REGISTRY.codex.ramp).carried, exposureOf(ev, trial, REGISTRY.codex.ramp).tripped], [16, true]);
 
   // AC4: 30% of the repo's tickets in flight already carry an unproven one.
-  byHand('q4', 'codex', 'trial', daysAgo(1));
-  const flight = (carrying) => Array.from({ length: 10 }, (_, j) => ({ set: [], arms: j < carrying ? { codex: 'on' } : { codex: 'off' }, at: NOW.toISOString() }));
+  only('q4', 'codex');
+  const flight = (carrying, of = 10) => Array.from({ length: of }, (_, j) => ({ set: [], arms: j < carrying ? { codex: 'on' } : { codex: 'off' }, at: NOW.toISOString() }));
   const full = admitQ('q4', 100, { inFlight: flight(3), prefix: 'F' });
   t('AC4 at 30% in flight, a ticket carries no quality-risk lever', full.every((p) => quality(p).length === 0), true);
   t('AC4 and is the off arm', full.every((p) => p.arms.codex === 'off'), true);
-  byHand('q4b', 'codex', 'trial', daysAgo(1));
+  only('q4b', 'codex');
   const room = admitQ('q4b', 100, { inFlight: flight(2), prefix: 'H' });
-  t('AC4 below 30% in flight, some tickets carry it', room.some((p) => p.set.includes('codex')), true);
-  const { inFlightPins } = await import('../desk/bin/levers-auto.mjs');
-  t('AC4 a repo with no batch has none in flight', inFlightPins('q4-none'), []);
+  t('AC4 below 30% with this ticket counted (3 of 11), some tickets carry it', room.some((p) => p.set.includes('codex')), true);
+  const over = admitQ('q4b', 100, { inFlight: flight(2, 7), prefix: 'O' });
+  t('AC4 2 of 7 in flight carry one: this ticket would make 3 of 8, over 30%, so none carries it', over.every((p) => quality(p).length === 0), true);
+  t('AC4 alone in flight, a ticket would be 100%: none carries it', admitQ('q4b', 50, { inFlight: [], prefix: 'E' }).every((p) => quality(p).length === 0), true);
+  const { repoTickets } = await import('../desk/bin/levers-auto.mjs');
+  t('AC4 a repo with no batch has none in flight and none merged', [repoTickets('q4-none').inFlight, [...repoTickets('q4-none').merged]], [[], []]);
 
   // AC5: effort is never trialled where Worker location is not local.
-  byHand('q5', 'effort', 'trial', daysAgo(1));
+  only('q5', 'effort');
   const cloud = admitQ('q5', 150, { values: { 'worker-location': 'cloud' }, prefix: 'C' });
   t('AC5 Worker location cloud: no ticket on an effort trial', cloud.every((p) => !p.set.includes('effort') && p.arms.effort == null), true);
   const local = admitQ('q5', 150, { prefix: 'L' });
   t('AC5 Worker location local: effort is drawn', local.some((p) => p.set.includes('effort')) && local.every((p) => ['on', 'off'].includes(p.arms.effort)), true);
 
-  // AC9: two kept alone, past their holdbacks: the next tickets are drawn into a trial of the pair.
+  // AC9: two kept alone: the next tickets are drawn into a trial of the pair.
+  only('q9', 'codex', 'review-reuse');
   byHand('q9', 'codex', 'adopted', daysAgo(60));
   byHand('q9', 'review-reuse', 'settled', daysAgo(40));
   const PAIR = 'codex+review-reuse';
@@ -260,14 +279,22 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   append('q9', { kind: 'pair', levers: ['codex', 'review-reuse'], from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'pair adopted', trial_id: p9[0].trial_ids[PAIR], at: NOW.toISOString() });
   const proven = admitQ('q9', 20, { prefix: 'PP' });
   t('AC10 once the pair is adopted, every ticket carries both, with no arm', proven.every((p) => quality(p).join() === 'codex,review-reuse' && p.arms[PAIR] == null), true);
+  // The second adopted three days ago, still in its holdback: the pair trial starts at once, and a ticket
+  // off the pair trial draws that lever's holdback arm against the lever kept before it.
+  only('q9h', 'codex', 'review-reuse');
   byHand('q9h', 'codex', 'adopted', daysAgo(60));
   byHand('q9h', 'review-reuse', 'adopted', daysAgo(3));
-  const held = admitQ('q9h', 100, { prefix: 'HB' });
-  t('AC9 no pair trial while one of them is in its holdback, and still one lever per ticket', held.every((p) => p.arms[PAIR] == null && quality(p).length <= 1), true);
+  const held = admitQ('q9h', 400, { prefix: 'HB' });
+  t('AC9 the pair trial starts while one of them is in its holdback', ['on', 'off'].every((a) => held.some((p) => p.arms[PAIR] === a)), true);
+  const offPair = held.filter((p) => p.arms[PAIR] === 'off');
+  t('holdback with two kept: every ticket off the pair trial draws the newer lever\'s holdback arm', offPair.every((p) => ['holdback', 'adopted'].includes(p.arms['review-reuse'])), true);
+  t('holdback with two kept: `adopted` carries the newer lever alone, `holdback` the one kept before it', offPair.every((p) => quality(p).join() === (p.arms['review-reuse'] === 'adopted' ? 'review-reuse' : 'codex')), true);
+  t('holdback with two kept: both arms are drawn', ['holdback', 'adopted'].every((a) => offPair.some((p) => p.arms['review-reuse'] === a)), true);
 
-  // Frozen: kept levers only, still one quality-risk lever per ticket.
-  const frozen = Array.from({ length: 20 }, (_, j) => assignPin(`Z-${j}`, { slug: 'q9', size: 'S', random: seededRandom(j), now: NOW, frozen: { at: NOW.toISOString() }, inFlight: [], values: LOCAL }).pin);
-  t('frozen: no quality-risk arm', frozen.every((p) => !Object.keys(p.arms).length), true);
+  // Frozen: kept levers only, no quality-risk arm, whether a trial is running or a holdback.
+  const frozenIn = (slug) => Array.from({ length: 20 }, (_, j) => assignPin(`Z-${j}`, { slug, size: 'S', random: seededRandom(j), now: NOW, frozen: { at: NOW.toISOString() }, inFlight: IDLE, values: LOCAL }).pin);
+  t('frozen: with codex and review-reuse on trial, no quality-risk arm and none carried', frozenIn('q1').every((p) => !Object.keys(p.arms).length && quality(p).length === 0), true);
+  t('frozen: in a holdback, no holdback arm, one kept lever carried', frozenIn('q9h').every((p) => !Object.keys(p.arms).length && quality(p).length === 1), true);
 }
 
 // ---- AC9: a lever log that cannot be read ------------------------------------------------------
@@ -303,7 +330,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   let r = node([join(BIN, 'queue.mjs'), 'admit', 'Q-1', '--by', 'intake']);
   t('admit in an auto repo succeeds', r.status, 0);
   const pin = queue().tickets['Q-1']?.levers;
-  t('admit pins the ticket with its trial arms', Object.keys(pin?.arms ?? {}).sort(), [...TRIAL].sort());
+  t('admit pins the ticket with its trial arms', Object.keys(pin?.arms ?? {}).sort(), [...TRIAL, ...QUALITY].sort());
   t('admit: the block is the repo\'s, by triage size', pin?.block, 'acme__widgets/S/1');
   const logged = read('acme__widgets', { kinds: ['assign'] }).events;
   t('admit writes the assign event', logged.map((e) => [e.ticket, e.block]), [['Q-1', 'acme__widgets/S/1']]);
@@ -316,7 +343,7 @@ t('no state recorded: every trialled low-risk lever is on trial, every quality-r
   q.tickets['Q-3'] = { key: 'Q-3', state: 'queued' };
   writeFileSync(QUEUE, JSON.stringify(q));
   r = node([join(BIN, 'levers-auto.mjs'), 'assign', 'Q-3']);
-  t('assign pins a queued ticket that has none', [r.status, Object.keys(queue().tickets['Q-3']?.levers?.arms ?? {}).length], [0, TRIAL.length]);
+  t('assign pins a queued ticket that has none', [r.status, Object.keys(queue().tickets['Q-3']?.levers?.arms ?? {}).length], [0, TRIAL.length + QUALITY.length]);
   r = node([join(BIN, 'levers-auto.mjs'), 'assign', 'Q-9']);
   t('assign on a ticket not in the queue fails, naming it', [r.status, /no such ticket in the queue: Q-9/.test(r.stderr)], [1, true]);
   r = node([join(BIN, 'queue.mjs'), 'add', 'Q-4', 'Story', 'A'], { DESK_CONFIG: ROW });

@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, trialId, pairTrial, isPairKey } from './levers-auto.mjs';
+import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
 import { REVERTIBLE, applyTrips, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
@@ -81,13 +81,9 @@ const mergedPr = (t) => {
 // The quality-risk trials running in a repo, a pair trial's included (levers-auto.mjs): each with the key
 // its tickets' arms are under, the lever its log events name (a pair's first) and its pair key.
 //   -> [{ key, lever, id, pair? }]
-export function liveTrials({ slug, events, states, registry = REGISTRY, now = Date.now() }) {
-  const byLever = leverStatesIn(events, registry);
-  const out = Object.entries(registry).filter(([name, l]) => l.layer === 'quality-risk' && states?.[name] === 'auto' && byLever[name].state === 'trial')
-    .map(([name]) => ({ key: name, lever: name, id: trialId(slug, name, byLever[name]) }));
-  const p = pairTrial({ slug, events, states, values: null, registry, now });
-  if (p?.state === 'trial') out.push({ key: p.key, lever: p.levers[0], id: p.id, pair: p.key });
-  return out;
+export function liveTrials({ slug, events, states, registry = REGISTRY }) {
+  return qualityTrials({ slug, events, states, values: null, registry })
+    .map((t) => ({ key: t.key, lever: t.levers[0], id: t.id, ...(isPairKey(t.key) ? { pair: t.key } : {}) }));
 }
 
 export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY, now = Date.now() }) {

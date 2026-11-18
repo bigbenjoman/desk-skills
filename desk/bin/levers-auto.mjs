@@ -62,7 +62,7 @@ const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 export function leverStatesIn(events, registry = REGISTRY) {
   const out = {};
   for (const [name, l] of Object.entries(registry)) {
-    out[name] = { state: l.layer === 'low-risk' && l.trialled ? 'trial' : 'off', at: null, id: null };
+    out[name] = { state: l.trialled ? 'trial' : 'off', at: null, id: null };
   }
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
@@ -145,16 +145,15 @@ function keptSince(events, lever) {
   return kept ? id : null;
 }
 
-// The pair trial a repo runs, or null: its first two kept quality-risk levers once both are past their
-// holdbacks. Its id names the event each lever was kept from, so a lever reverted and kept again starts
-// a new one. `state` is the latest `pair` event's `to` for that id, `trial` with none.
+// The pair trial a repo runs, or null: its first two kept quality-risk levers, from the moment both are
+// kept. Its id names the event each lever was kept from, so a lever reverted and kept again starts a new
+// one. `state` is the latest `pair` event's `to` for that id, `trial` with none.
 //   -> { key, id, levers, state, at } | null
-export function pairTrial({ slug, events, states, values = repoValues(), registry = REGISTRY, now = Date.now() }) {
+export function pairTrial({ slug, events, states, values = repoValues(), registry = REGISTRY }) {
   const byLever = leverStatesIn(events, registry);
   const kept = qualityLevers({ states, values, byLever, registry }).kept;
   if (kept.length < 2) return null;
   const [a, b] = kept;
-  if ([a, b].some((n) => inHoldback(byLever[n], registry[n], now))) return null;
   const key = pairKey(a, b);
   const id = `${slug}/${key}/${keptSince(events, a) ?? 'initial'}+${keptSince(events, b) ?? 'initial'}`;
   const last = events.filter((e) => e.kind === 'pair' && e.trial_id === id && e.to != null).at(-1);
@@ -172,33 +171,32 @@ export function qualityTrials({ slug, events, states, values = repoValues(), reg
   return out;
 }
 
-// A quality-risk trial's exposure from the repo's log events: its share now, and how many tickets have
-// carried it since it reached that share (its last ramp, or the trial's start).
-//   -> { share, step, carried, tripped }
-export function exposureOf(events, trial, ramp) {
+// A quality-risk trial's exposure from the repo's log events: its share now, and how many tickets that
+// carried it since it reached that share (its last ramp, or the trial's start) have merged, so ran to
+// the end with every hard trip able to fire. `merged` holds the repo's merged ticket keys.
+//   -> { share, step, carried }
+export function exposureOf(events, trial, ramp, merged = new Set()) {
   const ramps = events.filter((e) => e.kind === 'ramp' && e.trial_id === trial.id && Number.isFinite(e.to));
   const share = ramps.at(-1)?.to ?? ramp.ramp[0];
   const from = ramps.length ? events.indexOf(ramps.at(-1)) : -1;
-  const carried = events.slice(from + 1).filter((e) => e.kind === 'assign' && e.arms?.[trial.key] === 'on' && e.trial_ids?.[trial.key] === trial.id).length;
-  // A hard trip on any of the trial's levers since its first ticket stops the ramp.
-  const first = events.findIndex((e) => e.kind === 'assign' && e.trial_ids?.[trial.key] === trial.id);
-  const tripped = first >= 0 && events.slice(first).some((e) => e.kind === 'trip' && trial.levers.includes(e.lever));
-  return { share, step: ramp.ramp.indexOf(share), carried, tripped };
+  const carried = new Set(events.slice(from + 1).filter((e) => e.kind === 'assign' && e.arms?.[trial.key] === 'on' && e.trial_ids?.[trial.key] === trial.id && merged.has(e.ticket)).map((e) => e.ticket)).size;
+  return { share, step: ramp.ramp.indexOf(share), carried };
 }
 
 // The next ramp event due among the repo's quality-risk trials, or null: a trial whose `step_after`
-// tickets at its current share ran with no hard trip steps to the ramp's next share.
-function rampDue({ slug, key, events, states, values, registry, now }) {
-  for (const t of qualityTrials({ slug, events, states, values, registry, now: now.getTime() })) {
+// merged tickets at its current share ran with no hard trip steps to the ramp's next share. A hard trip
+// reverts its lever (levers-trips.mjs), which ends the trial, so a trial still running has had none.
+function rampDue({ slug, key, events, states, values, registry, now, merged }) {
+  for (const t of qualityTrials({ slug, events, states, values, registry })) {
     const ramp = registry[t.levers[0]].ramp;
-    const x = exposureOf(events, t, ramp);
-    if (x.tripped || x.step < 0 || x.step >= ramp.ramp.length - 1 || x.carried < ramp.step_after) continue;
+    const x = exposureOf(events, t, ramp, merged);
+    if (x.step < 0 || x.step >= ramp.ramp.length - 1 || x.carried < ramp.step_after) continue;
     const to = ramp.ramp[x.step + 1];
     const pct = (v) => `${Math.round(v * 100)}%`;
     return {
       kind: 'ramp', ...(isPairKey(t.key) ? { pair: t.key, levers: t.levers } : { lever: t.key }), actor: ACTOR, reason_code: 'ramp_clean',
       at: now.toISOString(), from: x.share, to, trial_id: t.id, ticket: key,
-      reason: `${x.carried} tickets carried ${t.levers.join(' with ')} at ${pct(x.share)} with no hard trip, so it now reaches ${pct(to)} of ${slug}'s tickets`,
+      reason: `${x.carried} merged tickets carried ${t.levers.join(' with ')} at ${pct(x.share)} with no hard trip, so it now reaches ${pct(to)} of ${slug}'s tickets`,
     };
   }
   return null;
@@ -207,17 +205,20 @@ function rampDue({ slug, key, events, states, values, registry, now }) {
 // Whether a pin carries an unproven quality-risk lever: drawn `on` for a quality-risk trial.
 const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(([k, a]) => a === 'on' && QUALITY_KEY(k, registry));
 
-// The pins of the repo's tickets in flight: every live ticket of its batches not merged or failed.
-export function inFlightPins(slug) {
-  const out = [];
+// The repo's tickets across its batches: the pins of those in flight (not merged or failed), and the
+// keys of those merged.  -> { inFlight: [pin], merged: Set<key> }
+export function repoTickets(slug) {
+  const out = { inFlight: [], merged: new Set() };
   let batches = [];
   try { batches = listBatches(slug); } catch { return out; }
   for (const b of batches) {
     let q;
     try { if (!existsSync(b.queue)) continue; q = readQueue(b.queue); } catch { continue; }
     for (const t of Object.values(q.tickets ?? {})) {
-      if (!t || t.merged_at || t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
-      out.push(t.levers);
+      if (!t) continue;
+      if (t.merged_at) { if (t.key) out.merged.add(t.key); continue; }
+      if (t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
+      out.inFlight.push(t.levers);
     }
   }
   return out;
@@ -227,14 +228,15 @@ export function inFlightPins(slug) {
 function qualityDraw({ slug, events, byLever, states, frozen, values, random, now, registry, inFlight }) {
   const q = qualityLevers({ states, values, byLever, registry });
   const out = { set: [], arms: {}, trialIds: {} };
-  const pair = pairTrial({ slug, events, states, values, registry, now: now.getTime() });
-  const trials = frozen ? [] : qualityTrials({ slug, events, states, values, registry, now: now.getTime() });
+  const pair = pairTrial({ slug, events, states, values, registry });
+  const trials = frozen ? [] : qualityTrials({ slug, events, states, values, registry });
   let picked = null;
   if (trials.length) {
+    // Drawn on only while the repo's tickets in flight, this one counted, stay within the cap.
     const live = inFlight.filter((p) => p && typeof p === 'object');
-    const used = live.length ? live.filter((p) => carriesUnproven(p, registry)).length / live.length : 0;
+    const carrying = live.filter((p) => carriesUnproven(p, registry)).length;
     const cap = registry[trials[0].levers[0]].ramp.cap;
-    if (used < cap) {
+    if ((carrying + 1) / (live.length + 1) <= cap) {
       const shares = trials.map((t) => exposureOf(events, t, registry[t.levers[0]].ramp).share);
       const total = shares.reduce((n, s) => n + s, 0);
       const scale = total > 1 ? 1 / total : 1;
@@ -253,17 +255,18 @@ function qualityDraw({ slug, events, byLever, states, frozen, values, random, no
   }
   if (picked) { out.set.push(...picked.levers); return out; }
   // Not drawn on for a trial: the kept set, exclusive unless its pair is proven.
-  if (pair && KEPT_STATES.includes(pair.state)) out.set.push(...pair.levers);
-  else if (q.kept.length === 1) {
-    const name = q.kept[0];
-    const l = registry[name];
-    const s = byLever[name];
-    if (!frozen && inHoldback(s, l, now.getTime())) {
-      out.arms[name] = random() < l.ramp.holdback ? 'holdback' : 'adopted';
-      out.trialIds[name] = trialId(slug, name, s);
-      if (out.arms[name] === 'adopted') out.set.push(name);
-    } else out.set.push(name);
-  } else if (q.kept.length > 1) out.set.push(q.kept[Math.min(q.kept.length - 1, Math.floor(random() * q.kept.length))]);
+  if (pair && KEPT_STATES.includes(pair.state)) { out.set.push(...pair.levers); return out; }
+  const pick = (names) => (names.length === 1 ? names[0] : names[Math.min(names.length - 1, Math.floor(random() * names.length))]);
+  // A lever adopted lately draws its holdback arm: `adopted` carries it, `holdback` what the repo kept
+  // before it, the other kept levers (one, at random).
+  const held = frozen ? null : q.kept.find((n) => inHoldback(byLever[n], registry[n], now.getTime()));
+  if (held) {
+    out.arms[held] = random() < registry[held].ramp.holdback ? 'holdback' : 'adopted';
+    out.trialIds[held] = trialId(slug, held, byLever[held]);
+    const before = q.kept.filter((n) => n !== held);
+    if (out.arms[held] === 'adopted') out.set.push(held);
+    else if (before.length) out.set.push(pick(before));
+  } else if (q.kept.length) out.set.push(pick(q.kept));
   return out;
 }
 
@@ -329,7 +332,7 @@ function draw({ slug, key, size, events, states, frozen, values, random, now, re
 //   -> { pin, assigned: bool, warning: text | null }
 export function assignPin(key, {
   size = null, slug, states = leverStates({}).states, frozen, random = systemRandom,
-  now = new Date(), registry = REGISTRY, values = null, inFlight = null,
+  now = new Date(), registry = REGISTRY, values = null, inFlight = null, merged = null,
 } = {}) {
   const rowPin = () => pinAtAdmission({ on: Object.keys(states).filter((n) => states[n] === 'pinned') }, now);
   if (!Object.values(states).includes('auto')) return { pin: rowPin(), assigned: false, warning: null };
@@ -339,18 +342,23 @@ export function assignPin(key, {
     slug ??= repoSlug();
     if (frozen === undefined) frozen = leversFrozen();
     values ??= repoValues();
+    // The repo's tickets, read under the lever log's lock with the draw, so two admissions at once
+    // count each other's pins once each is saved.
+    const tickets = () => {
+      const r = inFlight && merged ? null : repoTickets(slug);
+      return { inFlight: inFlight ?? r.inFlight, merged: typeof merged?.has === 'function' ? merged : new Set(merged ?? r.merged) };
+    };
     // Each exposure step due is written first, one event a time under the log's lock, so the draw
     // below reads the share it set. Never more than one step per trial per admission.
     if (!frozen) {
       for (let i = 0; i < Object.keys(registry).length + 1; i++) {
         const e = appendWith(slug, () => {
           const log = read(slug);
-          return log.bad.length ? null : rampDue({ slug, key, events: log.events, states, values, registry, now });
+          return log.bad.length ? null : rampDue({ slug, key, events: log.events, states, values, registry, now, merged: tickets().merged });
         });
         if (!e) break;
       }
     }
-    inFlight ??= inFlightPins(slug);
     appendWith(slug, () => {
       let log;
       try { log = read(slug); } catch (e) { unreadable = e.message; }
@@ -361,7 +369,7 @@ export function assignPin(key, {
         if (last?.kind === 'needs_you' && last.reason_code === 'state_unreadable') return null;
         return { kind: 'needs_you', actor: ACTOR, reason_code: 'state_unreadable', reason: unassignableText(slug, unreadable), ticket: key };
       }
-      result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight });
+      result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight: tickets().inFlight });
       return result.event;
     });
   } catch (e) {

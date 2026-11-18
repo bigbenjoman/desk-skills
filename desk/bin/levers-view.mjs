@@ -35,7 +35,7 @@ export const POINT_MIN_N = 10;
 const WEEK_DAYS = 7;
 const DAY_MS = 86_400_000;
 // Events the change list shows: every automatic or manual change, not the per-ticket assignments.
-const CHANGE_KINDS = Object.freeze(['transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete']);
+const CHANGE_KINDS = Object.freeze(['transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'pair']);
 const TESTING = Object.freeze(['trial']);
 
 export const autopilotRoot = () => join(HOME, '.desk-autopilot');

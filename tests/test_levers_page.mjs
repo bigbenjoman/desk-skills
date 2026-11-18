@@ -179,7 +179,7 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC4 one row per lever', count(lev, /<tr data-lever=/g), 7);
   t('AC4 preflight is on by hand, first', /<tr data-lever="preflight">.*?On by hand/.test(lev) && lev.indexOf('data-lever="preflight"') < lev.indexOf('data-lever="wrappers"'), true);
   t('AC4 its next step', lev.includes('Pinned by hand in desk-skills, so this is a before-and-after, not a test.'), true);
-  t('AC4 the others are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 3);
+  t('AC4 the others, quality-risk ones included, are off until a repo is on auto', count(lev, /Testing starts once a repo is set to auto\.|Testing starts when a repo is set to auto\./g), 6);
   t('AC4 this week\'s changes', section(hToday, 'ch-h').includes('>What changed this week</h2>'), true);
   t('AC4 with nothing changed', section(hToday, 'ch-h').includes('No lever changed this week.'), true);
   t('AC4 no How desk decides', hToday.includes('How desk decides'), false);

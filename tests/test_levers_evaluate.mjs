@@ -104,7 +104,7 @@ t('AC14 the row holds the evidence file\'s sha256', a1.evidence_sha256, createHa
 t('AC14 the transition cites the same evaluation and file', [e.eval_id, e.evidence_file, e.evidence_sha256], [a1.eval_id, a1.evidence_file, a1.evidence_sha256]);
 const a1all = evalsOf(A1);
 t('AC13 every trialled lever gets one row, holds included', a1all.map((x) => x.lever).sort(), ['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
-t('AC13 a quality-risk lever with no state recorded is off and not weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['off', 'not_evaluated'], ['off', 'not_evaluated'], ['off', 'not_evaluated']]);
+t('AC13 a quality-risk lever with no state recorded is on trial and weighed', a1all.filter((x) => x.layer === 'quality-risk').map((x) => [x.state, x.reason_code]), [['trial', 'below_min_sample'], ['trial', 'below_min_sample'], ['trial', 'below_min_sample']]);
 const pre = a1all.find((x) => x.lever === 'preflight');
 t('AC13 a hold carries its reason code and what would change it next', [pre.decision, pre.reason_code, pre.next.needs], ['hold', 'below_min_sample', '30 more tickets in the smaller arm']);
 t('AC13 the row is in the view\'s schema', ['v', 'eval_id', 'at', 'repo', 'lever', 'layer', 'state', 'arm_share_7d', 'n', 'min_n', 'max_n', 'mechanism', 'cost', 'guardrails', 'decision', 'reason_code', 'next', 'evidence_file', 'evidence_sha256', 'lever_fp', 'claude_versions', 'inputs_age_s'].filter((k) => !(k in a1)), []);
@@ -463,6 +463,30 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   evalQ([r7b]);
   t('AC7 with the audits recorded and none due, the quality-risk lever adopts', [rowOf(Q7b, 'review-reuse').decision, transitionOf(Q7b, 'review-reuse').map((e) => [e.from, e.to])], ['adopt', [['trial', 'adopted']]]);
 
+  // A quality-risk lever reverted from its trial is weighed under the same audit gate, on the trial its
+  // tickets drew under; one a blind audit's P0 reverted never adopts again.
+  const revertedFrom = (slug, reasonCode, kind = 'transition') => {
+    const tr = byHand(slug, 'review-reuse', 'trial', at(-60));
+    const tid = `${slug}/review-reuse/${tr.id}`;
+    append(slug, { kind, lever: 'review-reuse', from: 'trial', to: 'reverted', actor: kind === 'trip' ? 'audit' : 'levers-auto', reason_code: reasonCode, reason: 'reverted', at: at(-20),
+      ...(kind === 'trip' ? { ticket: 'T-p0', trip: 'audit-p0', evidence_file: '/x/audit.jsonl', evidence_line: 1 } : { eval_id: 'evl_r', evidence_file: 'levers-evidence/evl_r.jsonl' }) });
+    return { tid, r: repo(slug, qarms(slug, 'review-reuse', tid, 40)) };
+  };
+  const QR1 = 'acme__qr1';
+  const r1 = revertedFrom(QR1, 'max_sample_no_adopt');
+  evalQ([r1.r]);
+  t('reverted quality-risk lever, no audit recorded: it does not adopt', [rowOf(QR1, 'review-reuse').decision, rowOf(QR1, 'review-reuse').reason_code, rowOf(QR1, 'review-reuse').audits], ['hold', 'audit_missing', { recorded: 0, pending: 0 }]);
+  const QR2 = 'acme__qr2';
+  const r2 = revertedFrom(QR2, 'max_sample_no_adopt');
+  audit(QR2, r2.tid);
+  evalQ([r2.r]);
+  t('reverted quality-risk lever, its trial audited: it adopts', [rowOf(QR2, 'review-reuse').decision, transitionOf(QR2, 'review-reuse').map((e) => [e.from, e.to]).at(-1)], ['adopt', ['reverted', 'adopted']]);
+  const QR3 = 'acme__qr3';
+  const r3 = revertedFrom(QR3, 'audit_p0', 'trip');
+  audit(QR3, r3.tid);
+  evalQ([r3.r]);
+  t('reverted by a blind audit\'s P0: it never adopts again', [rowOf(QR3, 'review-reuse').decision, /blind audit found a P0/.test(rowOf(QR3, 'review-reuse').reason)], ['hold', true]);
+
   // AC12: arm_share_7d is the share of the repo's last 7 days of admitted tickets that carried it.
   const assign = (slug, key, set, when) => append(slug, { kind: 'assign', actor: 'levers-auto', reason_code: 'assigned_at_admission', reason: `${key} drew`, ticket: key, set, arms: {}, trial_ids: {}, at: when });
   for (let i = 0; i < 10; i++) assign(Q6b, `A-${i}`, i < 3 ? ['review-reuse'] : ['memory'], at(-1));
@@ -499,6 +523,9 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   const pin = assignPin('N-1', { slug: Q10b, size: 'S', states: AUTO, random: seededRandom(1), now: new Date(NOW), inFlight: [], values: { 'worker-location': 'local' }, registry: QR }).pin;
   t('AC10 the next ticket carries both, with no pair arm', [['codex', 'review-reuse'].every((l) => pin.set.includes(l)), pin.arms[ptb.key] ?? null], [true, null]);
   t('AC10 a pair adopt needs no mechanism of its own', decide({ ...base, ...good, mechanism: null, pair: true, audits: { recorded: 1, pending: 0 } }).decision, 'adopt');
+  const { leverChanges: pairChanges } = await import('../desk/bin/digest.mjs');
+  const pairLines = pairChanges({ list: [{ slug: Q10b, state: stateOf(Q10b) }], now: new Date(NOW + 3_600_000) }).changes.map((c) => c.line);
+  t('AC10 the digest lists the pair adopt as the repo\'s new default', pairLines.some((l) => l.startsWith('adopted codex with review-reuse together in q10b, now its default')), true);
 }
 
 rmSync(T, { recursive: true, force: true });

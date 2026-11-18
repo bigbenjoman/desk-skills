@@ -258,10 +258,11 @@ export const frozenText = (lever, name, why) => `${lever} is frozen in ${name} a
 // What the evaluation does with one lever in one repo. `n` is the repo's arms, `priorReverts` how many
 // times the repo's log has reverted it before, `changedAt` when it last changed state there (ms or
 // null). A quality-risk trial passes `audits`, its blind audits in the repo: it adopts only once one is
-// recorded and none due is still waiting. A pair trial (`pair`) is weighed on the rule's cost bound and
+// recorded and none due is still waiting; `auditP0`, one reverted by a blind audit's P0, never adopts.
+// A pair trial (`pair`) is weighed on the rule's cost bound and
 // guardrails alone, each lever's mechanism having been proven when it was adopted alone.
 //   -> { decision, to, reason_code, reason, next }
-export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, pair = false }) {
+export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, frozen = false, incomplete = [], changedAt = null, priorReverts = 0, now, holdbackWeeks, audits = null, auditP0 = false, pair = false }) {
   const R = DECISION_RULE;
   const smaller = Math.min(n.on, n.off);
   const earliest = changedAt == null ? now : changedAt + R.cooldown_days * DAY_MS;
@@ -299,6 +300,7 @@ export function decide({ state, n, minN, maxN, mechanism, cost, guardrails, froz
   if (notOk.length) unmet.push(`guardrails not within margin: ${notOk.map((g) => `${g.name} ${g.status}`).join(', ')}`);
   const noAudit = !!audits && !(audits.recorded > 0);
   if (noAudit) unmet.push('no blind audit of its merged PRs is recorded in this repo yet');
+  if (auditP0) unmet.push('a blind audit found a P0 in a merged PR drawn on for it, which reverted it');
 
   if (!unmet.length && audits?.pending > 0) {
     return hold('audits_pending', `every other adopt condition holds, but ${audits.pending} blind audit(s) due are not yet recorded`, `the ${audits.pending} due audit(s) to be recorded`);
@@ -411,23 +413,18 @@ export function evaluate({
       const incomplete = [...new Set(used.flatMap((x) => x.outcome_missing ?? []))].sort();
       const priorReverts = priorRevertsOf(r.log.events, lever);
       const changedAt = s.at ? Date.parse(s.at) : null;
-      // A quality-risk lever on trial adopts only on audit evidence from this repo.
-      const audits = reg.layer === 'quality-risk' && s.state === 'trial' ? auditCount(r.audits, trialId(r.slug, lever, s)) : null;
-      const d = decide({ state: s.state, n, minN, maxN: DECISION_RULE.max_per_arm, mechanism, cost, guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits });
+      // A quality-risk lever on trial, or reverted from one, adopts only on audit evidence from this repo
+      // for the trial its tickets drew under; one reverted by a blind audit's P0 never adopts again here.
+      const quality = reg.layer === 'quality-risk' && ['trial', 'reverted'].includes(s.state);
+      const audits = quality ? auditCount(r.audits, s.state === 'trial' ? trialId(r.slug, lever, s) : p.rows[0]?.pin?.trial_ids?.[lever] ?? null) : null;
+      const auditP0 = quality && s.state === 'reverted' && (r.log.events ?? []).filter((e) => e.lever === lever && e.id === s.id).some((e) => e.reason_code === 'audit_p0');
+      const d = decide({ state: s.state, n, minN, maxN: DECISION_RULE.max_per_arm, mechanism, cost, guardrails, frozen, incomplete, changedAt, priorReverts, now, holdbackWeeks: reg.ramp.holdback_weeks, audits, auditP0 });
 
       // The evidence this evaluation used: the pooled rows for a lever on trial, else the repo's.
-      const evidenceRows = pooled ? pooled.rows : p.rows;
-      const body = evidenceRows.map(({ on, excluded, ...row }) => `${JSON.stringify(excluded ? { ...row, excluded } : row)}\n`).join('');
-      const evidenceFile = `levers-evidence/${evalId}.jsonl`;
-      mkdirSync(evidenceDir(r.state), { recursive: true });
-      writeFileSync(join(r.state, evidenceFile), body);
-      const evidenceSha = sha256(body);
-
+      const evidence = writeEvidence(r.state, evalId, pooled ? pooled.rows : p.rows);
       const share = shareOf(r.log.events, [lever], now);
       const versions = [...new Set(used.flatMap((x) => (x.start_records ?? []).map((st) => st.claude_version)).filter(Boolean))].sort();
-      const age = (ms) => (ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)));
       const range = commitRange(used);
-      const evidence = { eval_id: evalId, evidence_file: evidenceFile, evidence_sha256: evidenceSha };
       const append = (event) => {
         const e = appendWith(r.slug, () => event);
         if (e) written.events.push(e);
@@ -475,8 +472,7 @@ export function evaluate({
         ...base, state: to ?? s.state, ...(to ? { from: s.state } : {}), arm_share_7d: share, n, mechanism, cost, guardrails,
         decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the lever changed state while it was evaluated` : d.reason, next: d.next,
         ...(incomplete.length ? { missing: incomplete } : {}), ...(audits ? { audits } : {}),
-        ...evidence, desk_commit_range: range, claude_versions: versions,
-        inputs_age_s: { outcomes: 0, findings: age(r.outcomes.newest.findings), post_merge: age(r.outcomes.newest.post_merge), audit: age(r.audits.newest) },
+        ...evidence, desk_commit_range: range, claude_versions: versions, inputs_age_s: inputsAge(r, now),
       });
     }
     // The repo's pair trial, once two quality-risk levers are kept alone.
@@ -504,7 +500,6 @@ export function evaluate({
 // guardrail and the audit evidence, at the quality-risk minimum per arm; a breach or the maximum
 // sample reverts it. A change is one `pair` event, and the row's `lever` is the pair's key.
 function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
-  const age = (ms) => (ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)));
   const key = pt.key;
   const evalId = `evl_${today}_${r.slug}_${key}`;
   const minN = DECISION_RULE.min_per_arm['quality-risk'];
@@ -519,11 +514,7 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
   const kept = pt.levers.map((l) => Date.parse(r.byLever[l]?.at)).filter(Number.isFinite);
   const d = decide({ state: 'trial', n, minN, maxN: DECISION_RULE.max_per_arm, mechanism: null, cost, guardrails, frozen, incomplete,
     changedAt: kept.length ? Math.max(...kept) : null, now, holdbackWeeks: registry[pt.levers[0]].ramp.holdback_weeks, audits, pair: true });
-  const body = rows.map(({ on, excluded, ...row }) => `${JSON.stringify(excluded ? { ...row, excluded } : row)}\n`).join('');
-  const evidenceFile = `levers-evidence/${evalId}.jsonl`;
-  mkdirSync(evidenceDir(r.state), { recursive: true });
-  writeFileSync(join(r.state, evidenceFile), body);
-  const evidence = { eval_id: evalId, evidence_file: evidenceFile, evidence_sha256: sha256(body) };
+  const evidence = writeEvidence(r.state, evalId, rows);
   let to = null;
   if (d.to) {
     const e = appendWith(r.slug, () => {
@@ -538,9 +529,24 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
     v: 1, eval_id: evalId, at, repo: r.slug, lever: key, pair: pt.levers, layer: 'quality-risk', min_n: minN, max_n: DECISION_RULE.max_per_arm, lever_fp: null,
     state: to ?? 'trial', ...(to ? { from: 'trial' } : {}), trial_id: pt.id, arm_share_7d: shareOf(r.log.events, pt.levers, now), n, mechanism: null, cost, guardrails,
     decision: to ? d.decision : 'hold', reason_code: d.reason_code, reason: d.to && !to ? `${d.reason}; not written, as the pair trial changed while it was evaluated` : d.reason, next: d.next,
-    ...(incomplete.length ? { missing: incomplete } : {}), audits, ...evidence, desk_commit_range: commitRange(used), claude_versions: [],
-    inputs_age_s: { outcomes: 0, findings: age(r.outcomes.newest.findings), post_merge: age(r.outcomes.newest.post_merge), audit: age(r.audits.newest) },
+    ...(incomplete.length ? { missing: incomplete } : {}), audits, ...evidence, desk_commit_range: commitRange(used), claude_versions: [], inputs_age_s: inputsAge(r, now),
   };
+}
+
+// Writes an evaluation's evidence rows to its file in the repo's state folder.
+//   -> { eval_id, evidence_file, evidence_sha256 }
+function writeEvidence(state, evalId, rows) {
+  const body = rows.map(({ on, excluded, ...row }) => `${JSON.stringify(excluded ? { ...row, excluded } : row)}\n`).join('');
+  const evidenceFile = `levers-evidence/${evalId}.jsonl`;
+  mkdirSync(evidenceDir(state), { recursive: true });
+  writeFileSync(join(state, evidenceFile), body);
+  return { eval_id: evalId, evidence_file: evidenceFile, evidence_sha256: sha256(body) };
+}
+
+// How old, in seconds at `now`, the newest of each input an evaluation of repo `r` read is.
+function inputsAge(r, now) {
+  const age = (ms) => (ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)));
+  return { outcomes: 0, findings: age(r.outcomes.newest.findings), post_merge: age(r.outcomes.newest.post_merge), audit: age(r.audits.newest) };
 }
 
 // Removes evidence files older than EVIDENCE_KEEP_DAYS.
