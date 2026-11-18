@@ -2673,14 +2673,14 @@ function readEpicPr(qx) {
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null };
 }
 
-// A feature batch's promotion PR as GitHub has it: { pr, state, isDraft, head, checks }, or null with
-// none recorded, one merged, or one that could not be read.
+// A feature batch's promotion PR as GitHub has it: { pr, state, isDraft, head, checks }, or
+// { pr, unreadable }, or null with none recorded or one merged.
 function readPromotionPr(qx) {
   const p = qx.promotion;
   if (p?.pr == null || p.merged_at) return null;
   let v = null;
   try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', 'state,isDraft,headRefOid,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
-  if (!v?.state) return null;
+  if (!v?.state) return { pr: p.pr, unreadable: true };
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
 // The checks an open promotion PR fails, by name, or null when it fails none. A draft with children
@@ -3751,7 +3751,8 @@ if (!DRY) {
 // Every worker started under the lock is recorded running in this queue, so other passes count it,
 // and so is when, so the repo's batches take the shared cap's free slots in turn (repoBudget).
 if (!DRY && report.spawned.length > spawnedBefore) q('set-batch', `last_start=${new Date().toISOString()}`);
-// An epic review try starts in epicStep, which releases the lock once the slot it counted is taken.
+// An epic review or promotion check try starts in epicStep or promotionChecksStep, after which the lock
+// is released once the slot it counted is taken.
 if (!((epicReviewDue || promotionChecksDue) && baseFixRoom && !baseFix)) borrowLock?.release();
 // The batch's hold on the usage limit, for desk-q, needs-you and the next pass: one record, kept from
 // the first pass that held until the one that finds it lifted. Saved again after the epic PR's review
@@ -5384,6 +5385,8 @@ const gatePending = featureBase ? baseGate(queue()) : false;
 async function promotionChecksStep(qx) {
   const p = qx.promotion ?? {};
   const clear = () => { if (p.red && !DRY) q('set-batch', 'promotion.red=null'); };
+  // Unread, what was recorded stands until a pass can read it.
+  if (promoPr?.unreadable && p.pr === promoPr.pr) { out.push(`promotion PR #${promoPr.pr}: its checks could not be read; the next pass tries again`); return !!p.red; }
   if (!promoRed || p.pr !== promoPr?.pr || p.merged_at) { clear(); return false; }
   const n = promoPr.pr;
   const link = p.url ?? `https://github.com/${GH_REPO}/pull/${n}`;
