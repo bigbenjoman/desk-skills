@@ -886,6 +886,15 @@ runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory e
 output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
 when nothing differs, 1 when something does, and 2 when a run was not compared.
 
+`pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
+is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
+PR bodies it needs included) and returns actions such as `{ type: 'set', key, fields }`. It starts no
+process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it through `runPhase`
+(`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
+actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
+`pass.mjs` as a handler. Each phase has its own unit suite, `tests/test_pass_<phase>.mjs`; the first
+is crashed uploads.
+
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
 shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a

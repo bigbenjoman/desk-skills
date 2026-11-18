@@ -1247,15 +1247,10 @@ say "AUTOPILOT_IMAGES: $T/state-s/images/P-1/" "AUTOPILOT_DONE: pr=771 jira=Done
 # P-2: its upload already crashed once, on its own PR: the retry crashes too, and that is the last try.
 q add P-2; q set P-2 state=done lane=A branch=fix/P-2 result.pr=772 'upload_crash={"pr":772,"dir":"'"$T/state-s/images/P-2/"'","tries":1,"log":"x"}'
 frx 772 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 772 '_drag p-2.png_'; mkdir -p "$T/state-s/images/P-2"; : > "$T/state-s/images/P-2/p-2.png"
-# P-3: its upload crashed once, but its body has no cell left (the crash came after the uploader's edit).
-q add P-3; q set P-3 state=done lane=A branch=fix/P-3 result.pr=773 'upload_crash={"pr":773,"dir":"'"$T/state-s/images/P-3/"'","tries":1,"log":"x"}'
-frx 773 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 773 '<img alt="p-3" src="https://github.com/user-attachments/assets/3">'; mkdir -p "$T/state-s/images/P-3"; : > "$T/state-s/images/P-3/p-3.png"
 # P-5: its upload crashed once, and its retry finds the shared browser profile in use.
 q add P-5; q set P-5 state=done lane=A branch=fix/P-5 result.pr=775 'upload_crash={"pr":775,"dir":"'"$T/state-s/images/P-5/"'","tries":1,"log":"x"}'
 frx 775 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 775 '_drag p-5.png_'; mkdir -p "$T/state-s/images/P-5"; : > "$T/state-s/images/P-5/p-5.png"; : > "$T/upload-busy-775"
 : > "$T/upload-crash"; : > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-429 a crashed upload whose body has no cell left is not uploaded again, and its record is cleared" \
-  '! grep -q "^773 " "$T/uploads" && [ "$(field P-3 upload_crash)" = null ] && [ "$(field P-3 images_uploaded)" = true ]'
 check "DS-429 the shared profile in use spends no try, and its cells wait for the next pass" \
   'grep -q "^775 " "$T/uploads" && [ "$(field P-5 upload_crash.tries)" = 1 ] && [ "$(field P-5 upload_crash.busy)" = true ] && [ "$(field P-5 undraft.call)" = "\"wait\"" ]'
 check "DS-429 AC1 a crashed upload's whole output is saved, not just its last two lines" \
