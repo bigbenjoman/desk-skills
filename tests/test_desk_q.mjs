@@ -1071,7 +1071,9 @@ Hb.ui.finish(0);
 // ready ticket, so its QUEUE DONE reads passes stopped.
 const needsOne = (b) => ({ batch: b, concurrency: 1, tickets: { [`${b.toUpperCase()}-1`]: { state: 'parked', park: { question: 'which copy?' } } } });
 put(I.T, I.env, 'ontime', { port: 4800, conc: '1 / 2', beat: 1, queue: needsOne('ontime') });
-dated('hours', 4810, { hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
+// Its history ends at the real clock, as this screen reads it: dated at FIXED, it ages out of the
+// 30-day window once the real date is a month past FIXED, and reads "no history".
+dated('hours', 4810, { at: NOW, hours: [2, 3, 4, 5, 2, 3, 4, 5, 2, 3, 4, 5], tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } });
 put(I.T, I.env, 'hours', { port: 4810, conc: '1 / 2', beat: 200, queue: { batch: 'hours', concurrency: 1, tickets: { ...needsOne('hours').tickets, 'HOURS-2': ready } } });
 put(I.T, I.env, 'longgone', { port: 4820, conc: '1 / 2', beat: 3000, queue: needsOne('longgone') });
 const Lp = screen({ kind: 'overview', all: false }, 200);
@@ -2366,8 +2368,10 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
 // DS-792: `desk-q voicepa` in a terminal draws voicepa beside pr-ninja's dense held chain without
 // walking it, and reads every repo once it goes home.
 {
-  const pn = qPath(I, 'pr-ninja');
-  const was = readFileSync(pn, 'utf8');
+  const pn = qPath(I, 'pr-ninja'), vp = qPath(I, 'voicepa');
+  const was = readFileSync(pn, 'utf8'), vpWas = readFileSync(vp, 'utf8');
+  // voicepa's own ticket, written here: earlier checks rewrite its queue.
+  writeFileSync(vp, JSON.stringify({ version: 1, batch: 'vp', concurrency: 3, tickets: { 'VPL-792': { key: 'VPL-792', state: 'triaged', open_questions: 0 } } }));
   // 1000 tickets, not 4000: this screen runs in-process with no timeout, so a full load must still end.
   const chain = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`PN-${i + 1}`, i ? { key: `PN-${i + 1}`, state: 'parked', held_by: `PN-${i}`, park: { question: `held by orchestrator: blocked by PN-${i}` } } : { key: 'PN-1', state: 'running', stage: '3/9' }]));
   writeFileSync(pn, JSON.stringify({ version: 1, batch: 'pn', concurrency: 2, tickets: chain }));
@@ -2376,9 +2380,12 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   const ms = Date.now() - at;
   await sleep(20);
   t('DS-792 AC1 desk-q <repo> in a terminal draws the named repo beside a dense batch, in under a second',
-    `${S.crumbs().includes('voicepa')} ${S.frame().some((l) => l.includes('VPL-4'))} ${ms < 1000 || ms}`, 'true true true');
-  // Home reads every repo: pr-ninja's queue, small again, is listed there.
+    `${S.crumbs().includes('voicepa')} ${S.frame().some((l) => l.includes('VPL-792'))} ${ms < 1000 || ms}`, 'true true true');
+  // Home reads every repo: pr-ninja's queue, small again, is listed there. The terminal is tall enough
+  // to show every repo this world has set up by now.
   writeFileSync(pn, was);
+  writeFileSync(vp, vpWas);
+  S.output.rows = 300;
   await S.press('\x1b');
   t('DS-792 AC3 Esc to home from a scoped start lists every repo', `${S.crumbs()} ${S.frame().some((l) => l.includes('pr-ninja'))}`, 'desk-q true');
   S.ui.finish(0);
