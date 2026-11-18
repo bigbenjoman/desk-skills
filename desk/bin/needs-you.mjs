@@ -86,7 +86,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -741,7 +741,17 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+// A child of a feature or epic batch merged into the base, not the default branch: its code is out once
+// a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
+// archive check stamps it on the ticket before archiving the batch (promoted_at, batch.mjs). Null until
+// then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
+// batch, are judged by the ticket's own merge.
+function outAt(q, t) {
+  if (t.promoted_at) return t.promoted_at;
+  if (!(q?.feature === true || epicBatch(q)) || !q.base || 'carried_from' in t) return t.merged_at;
+  return promotedAt(q, t);
+}
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
 function followItems(r) {
   return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
 }
@@ -757,20 +767,20 @@ function followItem(r, t) {
   return { kind: 'follow', ticket: t.key,
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
-    since: timeOf(t.merged_at) };
+    since: timeOf(outAt(r.q, t)) };
 }
 
 // ---- a feature batch's red promotion PR (pass.mjs promotion.red) ---------------------------------
 // A promotion PR still red once its check tries are spent is one `pr` item, `promotion:<n>`, naming the
 // checks it fails and what desk tried. The follow steps of every child merged into the base since the
-// last promotion wait on it reaching the default branch, so it ranks above those follow items, by their
-// count. done records nothing: the next pass reads the PR again and clears it once it is not red.
+// last promotion wait on it reaching the default branch: outAt holds their follow items off the list
+// until it merges, so this item names them and ranks above any follow item, by their count. done
+// records nothing: the next pass reads the PR again and clears it once it is not red.
 const PROMOTION = 'promotion:';
 function promotionItems(r) {
   const p = r.q?.promotion, red = p?.red;
   if (!red || red.pr == null || red.pr !== p.pr || p.merged_at) return [];
-  const since = timeOf(p.since);
-  const follows = followsOf(r).filter((t) => since == null || (timeOf(t.merged_at) ?? 0) > since).map((t) => t.key);
+  const follows = Object.values(r.q.tickets ?? {}).filter((t) => followOnPending(t) && t.merged_at && !outAt(r.q, t)).map((t) => t.key);
   const base = r.q.base ?? 'the base';
   const checks = Array.isArray(red.checks) ? red.checks : [];
   // `why` (base-fix.mjs promotionChecksCall) says how many check tries desk made and how the last ended.

@@ -1,6 +1,6 @@
 // suite: base conflict fix (a batch base in conflict with the default branch goes to a worker, twice)
 import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from '../desk/bin/base-fix.mjs';
-import { epicDue } from '../desk/bin/batch-state.mjs';
+import { epicDue, epicCarry } from '../desk/bin/batch-state.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -125,6 +125,12 @@ t('DS-508 AC1 feature mode is the base gate\'s, not this',epicDue(eq({ feature: 
 t('DS-508 AC1 no epic: not an epic batch', epicDue(eq({ epic: null })), false);
 t('DS-508 AC6 merged epic PR: not due', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-07T00:00:00Z' } })), false);
 t('DS-508 AC6 a child merged after it: due again', epicDue(eq({ promotion: { pr: 9, merged_at: '2026-11-05T00:00:00Z' } })), true);
+// DS-784: the next epic PR keeps every earlier merge, through a retry that failed to open it too.
+t('DS-784 no epic PR merged yet: nothing carried', JSON.stringify(epicCarry({ pr: null, why: 'x' })), '{}');
+const carried = epicCarry({ pr: 9, merged_at: '2026-11-07T00:00:00Z' });
+t('DS-784 a merged epic PR is carried as since and in merged', JSON.stringify(carried), '{"since":"2026-11-07T00:00:00Z","merged":[{"pr":9,"merged_at":"2026-11-07T00:00:00Z"}]}');
+t('DS-784 a failed reopen\'s record keeps both for the retry', JSON.stringify(epicCarry({ ...carried, pr: null, why: 'refused' })), JSON.stringify(carried));
+t('DS-784 a second merge adds to the first', epicCarry({ ...carried, pr: 12, merged_at: '2026-11-09T00:00:00Z' }).merged.map((m) => m.pr).join(), '9,12');
 t('DS-508 the review task posts the review and never undrafts or merges', etask.includes('Post the final review on PR #300 at its head') && etask.includes('Never mark the PR ready, merge it'), true);
 
 const pv = { pr: 400, head: H1, failing: ['flows-image', 'portal (1/3)'] };
