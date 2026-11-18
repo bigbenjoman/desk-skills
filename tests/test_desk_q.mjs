@@ -2402,5 +2402,55 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   N.ui.finish(0);
 }
 
+// ---- One listing walks each hold pair once: a second reading of the same queue object reuses every
+// walk, and a fresh copy of the queue (the next listing) walks them again.
+const ticketGets = (q) => {
+  let n = 0;
+  const tickets = new Proxy(q.tickets, { get: (o, k) => { n++; return o[k]; } });
+  return { q: { ...q, tickets }, n: () => n };
+};
+const once = ticketGets(dense);
+Object.values(dense.tickets).forEach((x) => Q.shownState(once.q, x));
+const firstGets = once.n();
+Object.values(dense.tickets).forEach((x) => Q.shownState(once.q, x));
+const again = ticketGets(structuredClone(dense));
+Object.values(dense.tickets).forEach((x) => Q.shownState(again.q, x));
+t('DS-795 AC2 asked again within one listing, holdsReach reuses its answer', once.n() - firstGets < firstGets, true);
+t('DS-795 AC2 a new listing walks the holds again', again.n(), firstGets);
+
+// ---- One listing reads each triage record from disk once (AC1), and the next listing reads it afresh
+// (AC3). Each held ticket in a 30-ticket batch waits on a step outside it that its triage record names.
+const { createRequire, syncBuiltinESMExports } = await import('node:module');
+const fsCjs = createRequire(import.meta.url)('node:fs');
+const realReadFileSync = fsCjs.readFileSync;
+const triageReads = new Map();
+fsCjs.readFileSync = function (p, ...rest) {
+  const s = String(p);
+  if (s.includes(join('acme__big', 'triage'))) triageReads.set(s, (triageReads.get(s) ?? 0) + 1);
+  return realReadFileSync.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+const bigTickets = { 'B-1': { state: 'running', stage: '3/9' } };
+const bigTriage = { 'B-1': { summary: 'big ticket 1', lane: 'A' } };
+for (let i = 2; i <= 30; i++) {
+  bigTickets[`B-${i}`] = { state: 'parked', held_by: `B-${i - 1}|OUT-${i}`, held_outside: `OUT-${i}`, lane: 'A',
+    park: { question: `held by orchestrator: blocked by B-${i - 1}, OUT-${i} — starts once their PRs merge` } };
+  bigTriage[`B-${i}`] = { summary: `big ticket ${i}`, lane: 'A', blockers: [{ key: `OUT-${i}`, category: 'indeterminate', summary: `outside ${i}` }] };
+}
+put(I.T, I.env, 'big', { port: 3700, conc: '2 / 3', beat: 4, queue: { batch: 'big', concurrency: 2, tickets: bigTickets }, triage: bigTriage });
+try {
+  Q.run(['--plain', 'big']);
+  const counts = [...triageReads.values()];
+  t('DS-795 AC1 one listing of a 30-ticket batch reads all 30 triage records', triageReads.size, 30);
+  t('DS-795 AC1 and reads each from disk once', Math.max(...counts), 1);
+  writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__big', 'triage', 'B-5.json'), JSON.stringify({ ticket: 'B-5', epic: null, summary: 'rewritten by another process' }));
+  const next = Q.run(['--plain', 'big']);
+  t('DS-795 AC3 the next listing reads the rewritten record', next.includes('rewritten by another process'), true);
+  t('DS-795 AC3 and reads each record once more', Math.max(...triageReads.values()), 2);
+} finally {
+  fsCjs.readFileSync = realReadFileSync;
+  syncBuiltinESMExports();
+}
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

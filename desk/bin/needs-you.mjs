@@ -684,7 +684,7 @@ const waitingOn = (slug, key) => listBatches(slug)
   .flatMap((b) => {
     let q;
     try { q = readQueue(b.queue); } catch { return []; /* no queue there */ }
-    const stepOf = personStepOf(b.state, slug);
+    const stepOf = personStepOf({ stateDir: b.state }, slug);
     return Object.values(q.tickets ?? {}).filter((t) => keysOf(t.merge_after).includes(key) || startSteps(q, t, stepOf).includes(key));
   })
   .filter((t) => !t.merged_at && t.state !== 'failed').map((t) => t.key).sort();
@@ -692,7 +692,7 @@ const waitingOn = (slug, key) => listBatches(slug)
 // only to merge (batch-state.mjs triageGate): another ticket's code, which the pass lifts once it is Done
 // and landed, with nothing for the person to do.
 const mergeGate = (b, t, k) => {
-  const rec = triageOf(b.stateDir, t.key);
+  const rec = triageOf(b, t.key);
   const bl = (Array.isArray(rec?.blockers) ? rec.blockers : []).find((x) => x?.key === k);
   return triageGate(bl, rec, personStepLabels(b.slug), personInputLabels(b.slug));
 };
@@ -717,7 +717,7 @@ function stepItems(batches) {
   });
 }
 function stepItem(key, ws) {
-  const summary = ws.map(({ b, t }) => (triageOf(b.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
+  const summary = ws.map(({ b, t }) => (triageOf(b, t.key)?.blockers ?? []).find((x) => x?.key === key)?.summary).find(Boolean);
   const what = ({ t }) => (t.state === 'done' && t.result?.pr != null ? `PR #${t.result.pr} (${t.key})` : `${t.key} (${t.state === 'running' ? 'being built' : t.state === 'done' ? 'no PR' : 'not built yet'})`);
   const starts = ws.filter((w) => w.start).map(({ t }) => t.key), mw = ws.filter((w) => !w.start);
   const n = mw.length, merges = mw.filter(({ b }) => b.ctx?.merges).length;
@@ -805,7 +805,7 @@ const freeCommand = (x, b) => {
   return `queue.mjs set ${x.key} ${shellArg(`held_by=${rest.join('|') || 'null'}`)} ${shellArg(`freed_from=${freed}`)}`;
 };
 function linkItem(r, t, b, kind = 'wontDo') {
-  const rec = (triageOf(r.stateDir, t.key)?.blockers ?? []).find((x) => x?.key === b);
+  const rec = (triageOf(r, t.key)?.blockers ?? []).find((x) => x?.key === b);
   const about = `${b}${rec?.summary ? ` ("${one(rec.summary)}")` : ''}`;
   const fixed = 'If not, remove it in Jira; the next pass that reads it lifts any hold and clears this';
   let need;
@@ -1000,7 +1000,7 @@ function itemOf(r, x, reads = null) {
     if (step) return { kind: 'parked', personOnly: step, need: `a step only you or another account takes: ${step}${one(parkText(r, t)) === step ? '' : ` (${need})`}`, note,
       actions: [['resume', null, PERSON_RESUME_NOTE], ['drop', null, DROP_NOTE], ['not-now'], ...moveAction(r), ...offer] };
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r.stateDir, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions(digestList(r)[0]).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;

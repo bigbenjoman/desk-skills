@@ -46,7 +46,7 @@ import { listBatches } from './batches.mjs';
 import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
+import { readHistory, recentHistory, sizeIn, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
@@ -165,12 +165,12 @@ const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // How an open blocker `b` of ticket `key` holds it when the blocker is a step only the person takes,
-// as `key`'s triage record in `stateDir` last read it and repo `slug`'s label rows judge it (personStep:
+// as `key`'s triage record in `at` (triageOf) last read it and repo `slug`'s label rows judge it (personStep:
 // 'build' or 'merge'), else null. A Done blocker holds nothing as a step.
-export function personStepOf(stateDir, slug) {
+export function personStepOf(at, slug) {
   const labels = [personStepLabels(slug), personInputLabels(slug)];
   return (key, b) => {
-    const rec = triageOf(stateDir, key);
+    const rec = triageOf(at, key);
     const x = (rec?.blockers ?? []).find((y) => y?.key === b);
     return x && x.category !== 'done' ? personStep(x, rec, ...labels) : null;
   };
@@ -187,7 +187,7 @@ function holdContext(r) {
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
-  const blockerCategory = (key, b) => (triageOf(r.stateDir, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
+  const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
   let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
   if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
@@ -200,7 +200,7 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r.stateDir, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -547,13 +547,22 @@ function draftWhy(u) {
 }
 
 // Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
-// A triage park keeps its holds in held_by (heldBehindOf), so a cycle can run through one.
-function holdsReach(q, from, key, seen = new Set()) {
+// A triage park keeps its holds in held_by (heldBehindOf), so a cycle can run through one. Each pair is
+// walked once per queue object, so once per listing.
+const reaches = new WeakMap();
+function holdsReach(q, from, key) {
+  let m = reaches.get(q);
+  if (!m) reaches.set(q, (m = new Map()));
+  const pair = `${from}\n${key}`;
+  if (!m.has(pair)) m.set(pair, reachWalk(q, from, key, new Set()));
+  return m.get(pair);
+}
+function reachWalk(q, from, key, seen) {
   if (from === key) return true;
   const ft = q.tickets?.[from];
   if (seen.has(from) || !ft || !holdsKept(ft)) return false;
   seen.add(from);
-  return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
+  return unmergedBlockers(q, ft).some((p) => reachWalk(q, p, key, seen));
 }
 
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
@@ -592,10 +601,20 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
-export function triageOf(stateDir, key) {
+function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
   try { return readJsonOrRefuse(p, `re-run triage.sh ${key}`); } catch { return { summary: '(triage record unreadable)' }; }
+}
+// Ticket `key`'s triage record in `at`'s state folder: `at` a listing's repo object, which reads each
+// record once and drops them with the listing, or a state folder path, which reads it from disk.
+const triageRead = new WeakMap();
+export function triageOf(at, key) {
+  if (typeof at === 'string') return readTriageRecord(at, key);
+  let m = triageRead.get(at);
+  if (!m) triageRead.set(at, (m = new Map()));
+  if (!m.has(key)) m.set(key, readTriageRecord(at.stateDir, key));
+  return m.get(key);
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
 export const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
@@ -907,13 +926,13 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const at = Math.floor(now / MINUTE) * MINUTE;
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
-  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])),
+  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r, k)])),
     { jira: /^jira\b/i.test(String(repoConfigValue(r.slug, 'tracker') ?? '').trim()) });
   // A ticket held behind a PR that needs the user waits on them, and one held behind a blocker in no
   // batch waits until a pass lifts it, so neither is run forward; nor is anything held behind them.
   const behindYou = (t) => isHeld(t) && unmergedBlockers(r.q, t).some((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key])).you);
   const heldOutside = (t) => isHeld(t) && keysOf(t.held_outside).some((b) => !r.q.tickets?.[b]);
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeIn(triageOf(r, t.key)), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
@@ -1245,7 +1264,7 @@ const whyCell = (s, cell, tw) => {
 };
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.id, key: i.x.t.key, ...(epic ? { epic } : {}) });
-const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
+const summaryOf = (i) => triageOf(i.r, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
 // The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
@@ -1409,7 +1428,7 @@ const EP_BAR = 16;
 function epicReadAt(r, F, key) {
   let at = -Infinity;
   for (const k of Object.keys(r.q?.tickets ?? {})) {
-    if (F.of[k] !== key && triageOf(r.stateDir, k)?.epic?.key !== key) continue;
+    if (F.of[k] !== key && triageOf(r, k)?.epic?.key !== key) continue;
     try { at = Math.max(at, statSync(join(r.stateDir, 'triage', `${k}.json`)).mtimeMs); } catch { /* no record */ }
   }
   return at;
@@ -2955,7 +2974,7 @@ function blockerRow(r, key, b, kw, now) {
     const at = text.lastIndexOf(': ');
     return segRow(b, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], [text.slice(0, at + 2), null], [text.slice(at + 2), BOLD]], open);
   }
-  const what = prRow(bt) ? prSegs(r, bt, now) : [[cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]];
+  const what = prRow(bt) ? prSegs(r, bt, now) : [[cut(triageOf(r, b)?.summary ?? '', 70), null]];
   return segRow(b, [[`  ${LABEL[bk][0]} ${pad(b, kw)}  `, STATE_SGR[bk] ?? null], [pad(LABEL[bk].slice(2), STATE_W - 2), STATE_SGR[bk] ?? null], ...what], open);
 }
 
@@ -3015,7 +3034,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const t = r.q.tickets[key];
   const k = shownState(r.q, t, r.ctx);
   const row = r.rows.find((x) => x.t.key === key) ?? r.prs.find((x) => x.t.key === key);
-  const tr = triageOf(r.stateDir, key) ?? {};
+  const tr = triageOf(r, key) ?? {};
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
   const lane = laneOf(t, tr);
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
@@ -3055,7 +3074,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     can.a = merged.length > 0 || outside.length > fits;
     if (merged.length) {
       head.push(segLine([[`  ✓ ${merged.length}`, GOOD], [` ${outside.length ? 'in this batch ' : ''}merged`, null], ...(open && !shows('a') ? [['  · a shows them', DIM]] : [])]));
-      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.id, key: b }));
+      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.id, key: b }));
     }
     for (const b of unmerged) {
       rows.push(blockerRow(r, key, b, kw, now));
