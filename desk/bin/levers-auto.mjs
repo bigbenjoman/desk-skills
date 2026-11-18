@@ -44,7 +44,7 @@ import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, un
 import { appendWith, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
-import { listBatches } from './batches.mjs';
+import { repoTickets } from './batches.mjs';
 import { SIZES, sizeOf } from './desk-q-eta.mjs';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
@@ -205,21 +205,18 @@ function rampDue({ slug, key, events, states, values, registry, now, merged }) {
 // Whether a pin carries an unproven quality-risk lever: drawn `on` for a quality-risk trial.
 const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(([k, a]) => a === 'on' && QUALITY_KEY(k, registry));
 
-// The repo's tickets across its batches: the pins of those in flight (not merged or failed), and the
-// keys of those merged.  -> { inFlight: [pin], merged: Set<key> }
-export function repoTickets(slug) {
+// The repo's tickets across its batches, archived ones included (batches.mjs repoTickets): the pins of
+// those in flight (not merged or failed), and the keys of those merged.
+//   -> { inFlight: [pin], merged: Set<key> }
+export function ticketsOf(slug) {
   const out = { inFlight: [], merged: new Set() };
-  let batches = [];
-  try { batches = listBatches(slug); } catch { return out; }
-  for (const b of batches) {
-    let q;
-    try { if (!existsSync(b.queue)) continue; q = readQueue(b.queue); } catch { continue; }
-    for (const t of Object.values(q.tickets ?? {})) {
-      if (!t) continue;
-      if (t.merged_at) { if (t.key) out.merged.add(t.key); continue; }
-      if (t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
-      out.inFlight.push(t.levers);
-    }
+  let all = [];
+  try { all = repoTickets(slug); } catch { return out; }
+  for (const t of all) {
+    if (!t) continue;
+    if (t.merged_at) { out.merged.add(t.key); continue; }
+    if (t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
+    out.inFlight.push(t.levers);
   }
   return out;
 }
@@ -345,7 +342,7 @@ export function assignPin(key, {
     // The repo's tickets, read under the lever log's lock with the draw, so two admissions at once
     // count each other's pins once each is saved.
     const tickets = () => {
-      const r = inFlight && merged ? null : repoTickets(slug);
+      const r = inFlight && merged ? null : ticketsOf(slug);
       return { inFlight: inFlight ?? r.inFlight, merged: typeof merged?.has === 'function' ? merged : new Set(merged ?? r.merged) };
     };
     // Each exposure step due is written first, one event a time under the log's lock, so the draw

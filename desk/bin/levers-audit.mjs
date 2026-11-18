@@ -40,7 +40,7 @@ import { logUsage, ticketCost } from './worker-cost.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readQueue } from './batch-state.mjs';
 import { everyTicket } from './queue-store.mjs';
-import { allBatches } from './phase0-report.mjs';
+import { allBatches, repoTickets } from './batches.mjs';
 import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 
 export const ACTOR = 'audit';
@@ -165,12 +165,8 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
   return usd / 4;
 }
 
-// Every queue ticket of the repo's batches, archived ones included (a merged ticket is archived), for the sample.
-export function repoTickets(slug, batches = allBatches(slug)) {
-  return batches.flatMap((b) => {
-    try { return Object.entries(everyTicket(readQueue(b.queue))).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
-  });
-}
+// Every queue ticket of the repo's batches, archived ones included, for the sample (batches.mjs).
+export { repoTickets };
 
 // When the audit worker of `item` ended, from the exit file spawn-worker.sh writes: { at } or null.
 export function endedFromExit(item) {

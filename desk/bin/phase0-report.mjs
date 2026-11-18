@@ -20,11 +20,11 @@
 // figure a run never recorded (a quota reading, a desk commit, the levers) is "not recorded", never a
 // zero or a guess.
 import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { listBatches } from './batches.mjs';
+import { archivedBatches, allBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
 import { workerLogs, ticketCost, logUsage, spawnEvent, startFields } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
@@ -516,19 +516,7 @@ export function figureLines(f, { ci, quotaMissing, perStart = false }) {
   return lines;
 }
 
-// The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
-// batches/.done/ under the same name, so a batch archived inside the window still counts.
-export function archivedBatches({ queueRoot, stateRoot }) {
-  const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
-  let names = [];
-  try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
-  return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
-    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
-}
-export const allBatches = (slug) => {
-  const standing = E.batchPaths(slug);
-  return [...listBatches(slug), ...archivedBatches({ queueRoot: dirname(standing.queue), stateRoot: standing.state })];
-};
+export { archivedBatches, allBatches };
 
 // The whole report, as lines. Every input is a parameter so a test can point it at fixtures.
 export function report({

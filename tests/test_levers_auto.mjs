@@ -255,8 +255,32 @@ t('no state recorded: every trialled lever is on trial, whatever its layer',
   const over = admitQ('q4b', 100, { inFlight: flight(2, 7), prefix: 'O' });
   t('AC4 2 of 7 in flight carry one: this ticket would make 3 of 8, over 30%, so none carries it', over.every((p) => quality(p).length === 0), true);
   t('AC4 alone in flight, a ticket would be 100%: none carries it', admitQ('q4b', 50, { inFlight: [], prefix: 'E' }).every((p) => quality(p).length === 0), true);
-  const { repoTickets } = await import('../desk/bin/levers-auto.mjs');
-  t('AC4 a repo with no batch has none in flight and none merged', [repoTickets('q4-none').inFlight, [...repoTickets('q4-none').merged]], [[], []]);
+  const { ticketsOf } = await import('../desk/bin/levers-auto.mjs');
+  t('AC4 a repo with no batch has none in flight and none merged', [ticketsOf('q4-none').inFlight, [...ticketsOf('q4-none').merged]], [[], []]);
+
+  // AC2 against a real queue: a pass archives each ticket once its PR merges, and an archived carrier
+  // still counts toward the step.
+  {
+    const { batchPaths } = await import('../desk/bin/desk-env.mjs');
+    const { archivePath } = await import('../desk/bin/queue-store.mjs');
+    const qf = batchPaths('q2a').queue;
+    mkdirSync(dirname(qf), { recursive: true });
+    writeFileSync(qf, JSON.stringify({ version: 1, batch: null, concurrency: 1, tickets: {} }));
+    only('q2a', 'codex');
+    const ra = seededRandom(2);
+    const carriers = [];
+    let ka = 0;
+    while (carriers.length < 15 && ka < 2000) {
+      const key = `A-${++ka}`;
+      if (assignPin(key, { slug: 'q2a', size: 'S', random: ra, now: NOW, inFlight: IDLE, values: LOCAL }).pin.set.includes('codex')) carriers.push(key);
+    }
+    assignPin(`A-${++ka}`, { slug: 'q2a', size: 'S', random: ra, now: NOW, inFlight: IDLE, values: LOCAL });
+    t('AC2 real queue: 15 carriers, none merged yet: no step', read('q2a', { kinds: ['ramp'] }).events.length, 0);
+    writeFileSync(archivePath(qf), JSON.stringify({ tickets: Object.fromEntries(carriers.map((k) => [k, { key: k, state: 'done', merged_at: NOW.toISOString(), pr_status: { pr: 1 } }])) }));
+    assignPin(`A-${++ka}`, { slug: 'q2a', size: 'S', random: ra, now: NOW, inFlight: IDLE, values: LOCAL });
+    t('AC2 real queue: the 15 merged and archived carriers step the share', read('q2a', { kinds: ['ramp'] }).events.map((e) => [e.from, e.to]), [[0.1, 0.25]]);
+    t('AC4 real queue: an archived merged ticket is not in flight', ticketsOf('q2a').inFlight.length, 0);
+  }
 
   // AC5: effort is never trialled where Worker location is not local.
   only('q5', 'effort');
