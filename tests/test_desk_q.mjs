@@ -242,6 +242,37 @@ t('DS-116 AC7 a raise past the machine total is made', `${raised.code} ${readQ(q
 t('DS-116 AC7 and warns that live batches now allow 11', /Live batches now allow 11, over this machine's 10/.test(lines(raised.out)[0]), true);
 t('a workers count that is not a whole number is refused', X.run('voicepa', 'workers', 'two').code !== 0 && readQ(qPath(X, 'voicepa')).concurrency === 5, true);
 
+// DS-792: a named repo loads alone. pr-ninja's batch is a dense chain of held tickets, one running,
+// too slow to walk, and pranicuk's queue cannot be read; voicepa still lists at once, and its machine
+// count is the unscoped listing's: pr-ninja's worker and pranicuk at its cap of 2 still count.
+{
+  const chain = (n) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`PN-${i + 1}`, i ? { state: 'parked', held_by: `PN-${i}`, park: { question: `held by orchestrator: blocked by PN-${i}` } } : { state: 'running', stage: '3/9' }]));
+  const two = (n) => {
+    const w = world({ 'pr-ninja': { port: 3200, conc: '2 / 3', beat: 1, queue: { batch: 'pn', concurrency: 2, tickets: chain(n) } } });
+    writeFileSync(qPath(w, 'pranicuk'), '{ not json');
+    return w;
+  };
+  // Each run is cut off at 10 seconds, so a load that walks the dense batch fails here, not by hanging the suite.
+  const timed = (w, bin, ...args) => {
+    const at = Date.now();
+    const r = spawnSync('node', [bin, ...args], { encoding: 'utf8', env: w.env, cwd: w.T, timeout: 10000 });
+    return { code: r.status, out: r.stdout, ms: Date.now() - at };
+  };
+  const dense = two(4000);
+  const scoped = timed(dense, BIN, '--plain', 'voicepa');
+  t('DS-792 AC1 the named repo lists beside a dense and an unreadable batch', `${scoped.code} ${/VPL-3/.test(scoped.out)}`, '0 true');
+  t('DS-792 AC1 and in under a second', scoped.ms < 1000 || scoped.ms, true);
+  const ny = timed(dense, join(dirname(BIN), 'needs-you.mjs'), 'list', 'voicepa');
+  // What it prints names voicepa: its items, or "Nothing needs you in voicepa."
+  const NY792 = /\bvoicepa\b/;
+  t('DS-792 AC1 needs-you list <repo> lists the named repo, in under a second', `${ny.code} ${NY792.test(ny.out)} ${ny.ms < 1000 || ny.ms}`, '0 true true');
+  const small = two(3);
+  const unscoped = small.run('--plain');
+  t('DS-792 AC2 the scoped machine count is the unscoped listing\'s: 2 + 1 + pranicuk at its cap',
+    `${/· machine (\d+) of 10/.exec(scoped.out)?.[1]} ${/· machine (\d+) of 10/.exec(small.run('--plain', 'voicepa').out)?.[1]} ${/● (\d+) workers running/.exec(unscoped.out)?.[1]}`, '5 5 5');
+  t('DS-792 AC3 with no repo named, every batch is listed', ['voicepa', 'pr-ninja', 'pranicuk'].every((n) => rowOf(unscoped.out, n)), true);
+}
+
 // ---- the interactive screen, driven in-process through an injected key stream and an 80-column
 // output. desk-env reads HOME when it is first imported, so the module loads after the env is set.
 const LONG = 'Rebook the client automatically when the gap between two bookings is longer than the salon allows';
@@ -270,14 +301,14 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-function screen(start, columns = 80, clock = Date.now, M = Q) {
+function screen(start, columns = 80, clock = Date.now, M = Q, word = null) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
   // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
-  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
+  const ui = M.interactive({ input, output, start, word, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
     loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })) });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
@@ -2332,6 +2363,44 @@ const denseStart = Date.now();
 const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
 t('a 30-ticket transitively held chain reads every state in well under a second', Date.now() - denseStart < 1000, true);
 t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
+
+// DS-792: `desk-q voicepa` in a terminal draws voicepa beside pr-ninja's dense held chain without
+// walking it, and reads every repo once it goes home.
+{
+  const pn = qPath(I, 'pr-ninja'), vp = qPath(I, 'voicepa');
+  const was = readFileSync(pn, 'utf8'), vpWas = readFileSync(vp, 'utf8');
+  // voicepa's own ticket, written here: earlier checks rewrite its queue.
+  writeFileSync(vp, JSON.stringify({ version: 1, batch: 'vp', concurrency: 3, tickets: { 'VPL-792': { key: 'VPL-792', state: 'triaged', open_questions: 0 } } }));
+  // 1000 tickets, not 4000: this screen runs in-process with no timeout, so a full load must still end.
+  const chain = Object.fromEntries(Array.from({ length: 1000 }, (_, i) => [`PN-${i + 1}`, i ? { key: `PN-${i + 1}`, state: 'parked', held_by: `PN-${i}`, park: { question: `held by orchestrator: blocked by PN-${i}` } } : { key: 'PN-1', state: 'running', stage: '3/9' }]));
+  writeFileSync(pn, JSON.stringify({ version: 1, batch: 'pn', concurrency: 2, tickets: chain }));
+  const at = Date.now();
+  const S = screen({ kind: 'repo', slug: 'acme__voicepa' }, 120, Date.now, Q, 'voicepa');
+  const ms = Date.now() - at;
+  await sleep(20);
+  t('DS-792 AC1 desk-q <repo> in a terminal draws the named repo beside a dense batch, in under a second',
+    `${S.crumbs().includes('voicepa')} ${S.frame().some((l) => l.includes('VPL-792'))} ${ms < 1000 || ms}`, 'true true true');
+  // Home reads every repo: pr-ninja's queue, small again, is listed there. The terminal is tall enough
+  // to show every repo this world has set up by now.
+  writeFileSync(pn, was);
+  writeFileSync(vp, vpWas);
+  S.output.rows = 300;
+  await S.press('\x1b');
+  t('DS-792 AC3 Esc to home from a scoped start lists every repo', `${S.crumbs()} ${S.frame().some((l) => l.includes('pr-ninja'))}`, 'desk-q true');
+  S.ui.finish(0);
+  // A screen opened on a named batch keeps rereading once that batch is archived, and says it is gone.
+  const named = join(dirname(qPath(I, 'voicepa')), 'batches', 'x792');
+  mkdirSync(named, { recursive: true });
+  writeFileSync(join(named, 'queue.json'), JSON.stringify({ version: 1, batch: 'x792', concurrency: 1, tickets: { 'VPL-79': { key: 'VPL-79', state: 'triaged', open_questions: 0 } } }));
+  const N = screen({ kind: 'repo', slug: 'acme__voicepa:x792', refreshMs: 50 }, 120, Date.now, Q, 'voicepa:x792');
+  await sleep(20);
+  const before = N.frame().some((l) => l.includes('VPL-79'));
+  rmSync(named, { recursive: true, force: true });
+  await sleep(200);
+  t('DS-792 a scoped screen on a named batch says so once the batch is archived',
+    `${before} ${N.frame().some((l) => l.includes('That repo is no longer set up here.'))}`, 'true true');
+  N.ui.finish(0);
+}
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
