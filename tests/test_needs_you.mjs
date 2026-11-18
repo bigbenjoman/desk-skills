@@ -1981,9 +1981,10 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001 }) });
   t('DS-786 AC4 AC5 negative: no red recorded, no item', items().map((i) => i.t.key).join(), '');
   // A child promoted by an earlier slice is out: its follow item is listed, and it does not wait on this PR.
-  put('chi786', { port: 4796, beat: 1, supervised: true, ...batch({ pr: 1001, red, since: minsAgo(600) }),
+  // Its own repo, so the not-now above does not reach it.
+  put('omega786', { port: 4797, beat: 1, supervised: true, ...batch({ pr: 1001, red, since: minsAgo(600) }),
     tickets: { 'P-1': kids['P-1'], 'P-2': merged(92, { follow_on: [STEP786], merged_at: minsAgo(60) }) } });
-  const split = items();
+  const split = N.collect({ word: 'omega786' }).items;
   t('DS-786 AC3 only the child merged since the last promotion is named as waiting, and it ranks above a listed follow item',
     `${split.map((i) => i.t.key).join()} ${split[0]?.need.endsWith('The follow steps of P-2 wait on it reaching the default branch')}`, 'promotion:1001,follow:P-1 true');
   put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red, merged_at: minsAgo(1) }) });
