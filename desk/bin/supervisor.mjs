@@ -344,11 +344,12 @@ function toPush(v) {
 }
 
 // One notification: -> { err, said }. `err` is why it failed, so the next tick tries again; `said` is
-// what the log says went out. A computer with no notifier shows none and the log is the record, so that
-// counts as told: retrying could never succeed, and a batch is recorded idle only once it is told.
+// what the log says went out. A computer with no notifier that works shows none and the log is the
+// record, so that counts as told: retrying could never succeed, and a batch is recorded idle only once
+// it is told.
 function notify(title, body) {
   const n = show(title, body);
-  if (!n.via) return { err: null, said: `none shown, this computer has no notifier (${n.error})` };
+  if (!n.via) return { err: null, said: `none shown, no notifier here could show one (${n.error})` };
   return { err: n.error, said: 'sent' };
 }
 // A notification's title names the repo, and the batch where it is a named one.

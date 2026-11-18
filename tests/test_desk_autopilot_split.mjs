@@ -59,6 +59,9 @@ const REWRITTEN = [
   ['DS-719', '(recorded; released on its merge) node ~/.claude/desk/bin/queue.mjs admit ABC-125', 1], // backfill-holds is listed among the commands
   ['DS-754', 'A pending check, or a Stage 7 worker it names, makes it wait.', 1], // a head not yet green installs the newest green commit before it
   ['DS-755', 'say what that costs and ask. A released ticket\'s `collides_with` still', 1], // sharing a file holds nothing at admission: the per-file budget decides at spawn
+  ['#735', '`supervisor.mjs` runs passes from launchd with no model in the loop', 1], // the supervisor runs from a systemd user timer on Linux too
+  ['#735', '- sends one macOS notification, titled with the repo', 1], // notifications go out off macOS too (notify.mjs)
+  ['#735', 'macOS the row reads as `session`, since the supervisor needs launchd.', 1],
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

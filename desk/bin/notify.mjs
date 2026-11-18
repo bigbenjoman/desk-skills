@@ -1,8 +1,9 @@
 // A desktop notification for the supervisor, on whatever this computer can show one with: osascript on
-// macOS; on Linux notify-send where it is on PATH, else, under WSL, a Windows toast through
-// powershell.exe. A computer with none of them shows nothing, and says why.
-//   notify(title, body) -> { via, error }: via names what showed it (null when nothing could), and
-//                          error is null once it was shown
+// macOS; on Linux notify-send where it is on PATH, then, under WSL, a Windows toast through
+// powershell.exe, each tried in turn. A computer with none of them, or on Linux none that works (no
+// notification daemon on the session bus is a lasting state), shows nothing, and says why.
+//   notify(title, body) -> { via, error }: via names what showed it, or on macOS what failed to (null
+//                          when nothing could), and error is null once it was shown
 // DESK_PLATFORM stands in for the platform in tests, as in run-by.mjs.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -26,19 +27,25 @@ export function toastScript(title, body) {
   ].join('\n');
 }
 
-// -> [command, args] for this computer, or null with nothing that can show one.
-export function notifier(title, body, { plat = platform(), has = onPath } = {}) {
-  if (plat === 'darwin') return ['osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body]];
-  if (plat !== 'linux') return null;
-  if (has('notify-send')) return ['notify-send', ['--app-name=desk', title, body]];
-  if (has('powershell.exe')) return ['powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(toastScript(title, body), 'utf16le').toString('base64')]];
-  return null;
+// -> [[command, args], ...] for this computer, in the order to try them; empty with nothing that can show one.
+export function notifiers(title, body, { plat = platform(), has = onPath } = {}) {
+  if (plat === 'darwin') return [['osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body]]];
+  if (plat !== 'linux') return [];
+  return [
+    ...(has('notify-send') ? [['notify-send', ['--app-name=desk', title, body]]] : []),
+    ...(has('powershell.exe') ? [['powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(toastScript(title, body), 'utf16le').toString('base64')]]] : []),
+  ];
 }
 
 export function notify(title, body) {
-  const n = notifier(title, body);
-  if (!n) return { via: null, error: platform() === 'linux' ? 'neither notify-send nor powershell.exe is on PATH' : `nothing shows one on ${platform()}` };
-  const [cmd, args] = n;
-  const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 30_000 });
-  return { via: cmd, error: r.status === 0 ? null : (r.error?.message ?? (r.stderr || `${cmd} exited ${r.status}`).trim()) };
+  const tries = notifiers(title, body);
+  if (!tries.length) return { via: null, error: platform() === 'linux' ? 'neither notify-send nor powershell.exe is on PATH' : `nothing shows one on ${platform()}` };
+  const failed = [];
+  for (const [cmd, args] of tries) {
+    const r = spawnSync(cmd, args, { encoding: 'utf8', timeout: 30_000 });
+    if (r.status === 0) return { via: cmd, error: null };
+    failed.push(`${cmd}: ${r.error?.message ?? (String(r.stderr ?? '').trim() || `exited ${r.status}`)}`);
+  }
+  // A failed osascript is retried by the next tick, as before; on Linux one that fails keeps failing.
+  return { via: platform() === 'darwin' ? 'osascript' : null, error: failed.join('; ') };
 }

@@ -614,14 +614,15 @@ n=$(count "$T/notify.calls")
 out=$(tick)
 check "#735 AC3: on Linux the push goes out through notify-send, naming the repo" 'grep -q "desk: acme__widgets|Check-in 09:00: 1 question(s)|$" "$T/notify-send.calls" && grep -q "^notification: sent for digest:2026-11-18T09:00$" "$LLOG"'
 check "#735 AC3: and not through osascript" '[ "$(count "$T/notify.calls")" = "$n" ]'
-# With no notifier on this computer the log is the record: the push counts as told, so the batch can go idle.
-rm "$T/fakes/notify-send"
+# A notify-send that cannot show one (no notification daemon) keeps failing: with nothing else to try,
+# the log is the record, so the push counts as told and the batch can go idle.
+printf '#!/bin/sh\necho "Cannot autolaunch D-Bus without X11 \\$DISPLAY" >&2; exit 1\n' > "$T/fakes/notify-send"
 NOPATH="$(printf %s "$PATH" | tr : '\n' | grep -v '^/mnt/' | paste -sd: -)"
-if PATH="$NOPATH" command -v notify-send >/dev/null 2>&1; then echo "SKIP #735 AC3 no notifier: this computer has notify-send"
+if PATH="$NOPATH" command -v powershell.exe >/dev/null 2>&1; then echo "SKIP #735 AC3 failing notifier: this computer has powershell.exe outside /mnt"
 else
   verdict '{"status":"idle","code":0,"message":"idle","waiting":[],"parked":[],"notify":true,"push":[{"key":"digest:2026-11-18T20:00","text":"Check-in 20:00"}]}'
   out=$(PATH="$NOPATH" tick)
-  check "#735 AC3: with no notifier the push is logged as not shown, and the batch still goes idle" 'grep -q "^notification: none shown, this computer has no notifier (.*) for digest:2026-11-18T20:00$" "$LLOG" && grep -q "^supervisor: batch b1 is idle" "$LLOG"'
+  check "#735 AC3: a notify-send that fails is logged as not shown, with its error, and the batch still goes idle" 'grep -q "^notification: none shown, no notifier here could show one (notify-send: Cannot autolaunch D-Bus.*) for digest:2026-11-18T20:00$" "$LLOG" && grep -q "^supervisor: batch b1 is idle" "$LLOG"'
 fi
 waitlines "$T/driver.calls" "$(started)"
 

@@ -1477,11 +1477,11 @@ Sy.ui.finish(0);
 const unsetNote = '4 repos have no "Batches run by" setting, so they run in a session. /desk-setup sets it.';
 t('DS-215 AC8 4 repos with a batch and no row: one grey note on home, none on a repo screen',
   `${lines(ov.out).filter((l) => l.endsWith(`  setup         ${unsetNote}`)).length} ${W.run('--plain', 'voicepa').out.includes('Batches run by')}`, '1 false');
-process.env.DESK_PLATFORM = 'linux';
+process.env.DESK_PLATFORM = 'win32';
 const ov215l = Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30 });
 const halt215l = Q.repoScreen(at215('halt'), { now: NOW });
 process.env.DESK_PLATFORM = 'darwin';
-t('DS-215 AC9 not macOS: every repo reads session, with no supervisor state, band or note',
+t('DS-215 AC9 neither macOS nor Linux: every repo reads session, with no supervisor state, band or note',
   `${/^ {2}sup +● session · 2m ago /.test(rowOf(ov215l, 'sup') ?? '')} ${/^ {2}off +● session · 3m ago /.test(rowOf(ov215l, 'off') ?? '')} ${/supervisor|Batches run by/.test(ov215l)} ${/✕/.test(ov215l)}`, 'true true false false');
 t('DS-215 AC9 and a repo screen offers no supervisor fix', /Supervisor's last log line|supervisor on/.test(halt215l), false);
 const plain215 = I.run('--plain').out;
