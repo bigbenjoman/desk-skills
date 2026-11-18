@@ -1987,9 +1987,13 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const split = N.collect({ word: 'omega786' }).items;
   t('DS-786 AC3 only the child merged since the last promotion is named as waiting, and it ranks above a listed follow item',
     `${split.map((i) => i.t.key).join()} ${split[0]?.need.endsWith('The follow steps of P-2 wait on it reaching the default branch')}`, 'promotion:1001,follow:P-1 true');
-  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red, merged_at: minsAgo(1) }) });
+  // A head the not-now above never saw, so only each guard can keep the item off the list.
+  const redD = { ...red, head: 'd'.repeat(40) };
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD }) });
+  t('DS-786 control: that red record on the open promotion PR is listed', items().some((i) => i.t.key === 'promotion:1001'), true);
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: redD, merged_at: minsAgo(1) }) });
   t('DS-786 negative: a merged promotion PR is not listed', items().some((i) => i.t.key === 'promotion:1001'), false);
-  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1002, red }) });
+  put('chi786', { port: 4796, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1002, red: redD }) });
   t('DS-786 negative: a red record for an earlier promotion PR is not listed', items().some((i) => i.t.key.startsWith('promotion:')), false);
 }
 
