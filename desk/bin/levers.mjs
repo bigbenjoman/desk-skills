@@ -27,7 +27,7 @@ import { leverStatesIn } from './levers-auto.mjs';
 import { CATEGORY, VALUES } from './lever-changes.mjs';
 import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
-import { resolveRepo as resolveShown, shownNames, Usage } from './desk-q.mjs';
+import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q.mjs';
 
 export const CHOICES = Object.freeze(['off', 'trial']);
 const BY_HAND = 'ben';
@@ -35,8 +35,6 @@ const STATE_KINDS = Object.freeze(['transition', 'override', 'trip']);
 
 export class LeversRefusal extends Error {}
 const refuse = (why) => { throw new LeversRefusal(why); };
-
-const shortOf = (slug) => slug.split('__').slice(1).join('__') || slug;
 
 // The configured repo `want` names, as desk-q resolves its repos (desk-q.mjs resolveRepo, over each
 // repo's name as desk-q shows it), or by its GitHub `owner/name`. Refuses a name no repo has, naming the
@@ -50,7 +48,7 @@ export function resolveRepo(want, root = deskConfigRoot()) {
   const pick = (r) => ({ slug: r.slug, ghRepo: r.ghRepo, name: r.name });
   const byGh = rows.filter((r) => String(r.ghRepo).toLowerCase() === lw);
   if (byGh.length === 1) return pick(byGh[0]);
-  const sharing = rows.filter((r) => shortOf(r.slug).toLowerCase() === lw && r.name.toLowerCase() !== lw);
+  const sharing = rows.filter((r) => shortName(r.slug).toLowerCase() === lw && r.name.toLowerCase() !== lw);
   if (sharing.length > 1) refuse(`levers: ${w} names ${sharing.length} configured repos (${sharing.map((r) => r.slug).join(', ')}): give the slug`);
   if (!rows.length) refuse(`levers: no configured repo is called ${w}; configured: none (run /desk-setup in the repo)`);
   try { return pick(resolveShown(rows, w)); } catch (e) {

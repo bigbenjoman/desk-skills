@@ -647,9 +647,12 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
+// A slug's name without its owner: the part after the first `__`, or the slug with none.
+export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+
 // Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
 export function shownNames(slugs) {
-  const short = slugs.map((s) => s.split('__').slice(1).join('__') || s);
+  const short = slugs.map(shortName);
   return slugs.map((s, i) => (short.filter((n) => n === short[i]).length > 1 ? s.replace('__', '/') : short[i]));
 }
 
