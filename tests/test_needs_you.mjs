@@ -1701,6 +1701,12 @@ t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind =
   t('DS-790 AC2 desk-q counts it once, in that repo', `${N.needsCount(rvBatch()).shown - rvBefore} ${N.needsCount(alphaBatch()).shown - alphaBefore}`, '1 0');
   const done = N.record({ word: 'rv', ticket: 'upload-page', action: 'done' });
   t('DS-790 done records nothing and says an upload after desk is installed again clears it', `${done.ok} ${/once desk is installed again/.test(done.line)}`, 'true true');
+  // Put off from the other repo, where it is listed in alpha's batch, it is put off for the machine.
+  const off = N.record({ word: 'alpha', ticket: 'upload-page', action: 'not-now' });
+  const offFile = join(env.DESK_HOME, 'not-now.jsonl');
+  t('DS-790 put off from alpha, it is in the machine\'s register, and off both lists and rv\'s count', `${off.ok} ${off.line.endsWith(`put off (${offFile}).`)} ${pageOf('alpha').length} ${pageOf('rv').length} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'true true 0 0 0');
+  rmSync(offFile, { force: true });
+  t('DS-790 its put-off cleared, it is listed again', pageOf('alpha').length, 1);
   writeFileSync(uq, JSON.stringify({ jobs: [], page: null }));
   t('DS-790 AC4 the pause cleared, the item is gone', `${N.collect().items.some((i) => i.kind === 'upload-page')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
   rmSync(uq);

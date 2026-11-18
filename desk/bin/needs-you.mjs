@@ -84,7 +84,7 @@ import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots 
 import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -912,8 +912,9 @@ function signinItems(batches, only = null) {
 // ---- the machine's upload queue paused on GitHub's PR page (upload-queue.mjs page): one item --------
 // While the uploader finds no comment composer, no repo's screenshot upload runs, so it is one desk
 // fault for the machine, not a drag-it-in item per PR. It is listed in a batch of the repo whose upload
-// found it, else of a repo with an upload waiting; desk-q counts it only in the first (`home`). done
-// records nothing: the first upload after desk is installed again that finds the composer drops it.
+// found it, else of a repo with an upload waiting; desk-q counts it only in the first (`home`). It is
+// put off for the machine, in desk's home, whichever repo lists it. done records nothing: the first
+// upload after desk is installed again that finds the composer drops it.
 const PAGE = 'upload-page';
 function pageItems(batches, { home = false } = {}) {
   let q;
@@ -921,12 +922,11 @@ function pageItems(batches, { home = false } = {}) {
   const p = q.page;
   if (!p) return [];
   const live = batches.filter((x) => !x.error && x.q);
-  const repoOf = (b) => b.slug.replace('__', '/');
   const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
-  const r = first(live.filter((b) => repoOf(b) === p.repo)) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => j.repo === repoOf(b)))));
+  const r = first(live.filter((b) => ghRepoOf(b) === p.repo)) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => j.repo === ghRepoOf(b)))));
   if (!r) return [];
   const prs = [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))];
-  return [{ r, dir: r.stateDir, t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
+  return [{ r, dir: deskHome(), t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
     need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue`,
     note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
     actions: [['done', 'once desk is installed again with a fix, the next pass uploads what waits and drops this item'], ['not-now']],

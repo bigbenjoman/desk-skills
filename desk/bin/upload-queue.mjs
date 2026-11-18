@@ -22,18 +22,18 @@
 //                                             uploader's exit 6), until the file is written again (signedIn)
 //     page:    { at, why, repo, pr, install } | null }   the uploader found no comment composer on
 //                                             GitHub's PR page (its exit 7 saying "GitHub's PR page changed")
-//                                             under the desk install `install` (deskInstall)
+//                                             from the desk release `install` (deskInstall)
 //
 // While a job's browser profile's saved GitHub login is not signed in (signedIn), no job uploading with
 // it runs, from any repo: each keeps its place and spends no try, and one health item per login asks
 // for the sign-in. Jobs with another login still run.
-// While `page` is set and desk is installed as it was then, no job runs, from any repo: each keeps its
-// place and spends no try, and needs-you lists one item for the machine. Once desk is installed again,
-// jobs run, and the first that gets past the composer clears it.
+// While `page` is set, no pass running that release runs a job, from any repo: each keeps its place and
+// spends no try, and needs-you lists one item for the machine. A pass on a release installed since runs
+// them, and the first that gets past the composer clears it.
 import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive, lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { binDir, browserProfile, deskHome } from './desk-env.mjs';
+import { browserProfile, deskHome, runBin } from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { UPLOAD_PACE } from './desk-design.mjs';
 import { readUploadLog, uploadsBefore } from './upload-log.mjs';
@@ -54,12 +54,14 @@ export function readUploadQueue(file = uploadQueueFile()) {
 }
 
 // The uploader's exit 7 when it found no comment composer on the PR page, as against GitHub's rate limit.
-export const PAGE_CHANGED = /GitHub's PR page changed/;
-// Which desk release is installed: the folder desk's bin resolves to (install.sh swaps it per release).
-export function deskInstall() {
-  try { return realpathSync(binDir()); } catch { return binDir(); }
+const PAGE_CHANGED = /GitHub's PR page changed/;
+// Which desk release this process runs, and so whose uploader its pass starts: runBin's real path (a
+// release folder per install). Never the live bin, which an install mid-run moves to a release that
+// has not tried the page.
+function deskInstall() {
+  try { return realpathSync(runBin()); } catch { return runBin(); }
 }
-export const pageWhy = (p) => `desk's screenshot uploader is broken: ${p.why} (an upload for ${p.repo} #${p.pr} at ${p.at}), so no repo's upload runs until desk is installed again with a fix`;
+const pageWhy =(p) => `desk's screenshot uploader is broken: ${p.why} (an upload for ${p.repo} #${p.pr} at ${p.at}), so no repo's upload runs until desk is installed again with a fix`;
 
 export const SIGNIN_CMD = 'node ~/.claude/desk/bin/github-signin.mjs';
 const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return 0; } };
