@@ -20,23 +20,23 @@
 // figure a run never recorded (a quota reading, a desk commit, the levers) is "not recorded", never a
 // zero or a guess.
 import { appendFileSync, existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { listBatches } from './batches.mjs';
+import { archivedBatches, allBatches } from './batches.mjs';
 import { readLogFile, saidIn, markersIn } from './harvest.mjs';
 import { workerLogs, ticketCost, logUsage, spawnEvent, startFields } from './worker-cost.mjs';
 import { windowEvents, probeLog } from './usage-pace.mjs';
 import { readInstalled } from './installed.mjs';
 import { digestDir } from './digest.mjs';
 import { triesMade } from './fix-tries.mjs';
-import { leverFingerprints } from './lever-registry.mjs';
+import { leverFingerprints, REGISTRY } from './lever-registry.mjs';
 import { parkClass } from './failure-class.mjs';
 import { sizeOf } from './desk-q-eta.mjs';
 import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
-import { toolOutcomes } from './log-tool-calls.mjs';
+import { toolOutcomes, codexCalls } from './log-tool-calls.mjs';
 import { everyTicket, readQueueFile } from './queue-store.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -103,7 +103,14 @@ export function commandKey(tool, input) {
 // start it holds (one init event per `claude -p` start, a resume's under the same session), and
 // whether anything but preflights ran in it at all.
 export function logFacts(text) {
-  const out = { parks: 0, parkClasses: {}, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false };
+  const out = { parks: 0, parkClasses: {}, reviewRounds: 0, denials: {}, readings: windowEvents(text), badReadings: 0, starts: [], ran: false, codexCalls: 0, codexDead: 0 };
+  // The review's desk-codex calls, and those whose seat died (the codex lever's dead-seat trip's exits).
+  const deadExits = REGISTRY.codex.trips.find((x) => x.id === 'codex-dead-seats')?.exits ?? [];
+  for (const c of codexCalls(text)) {
+    if (c.exit == null) continue;
+    out.codexCalls += 1;
+    if (deadExits.includes(c.exit)) out.codexDead += 1;
+  }
   for (const o of toolOutcomes(text)) {
     if (!o.denied) continue;
     const k = commandKey(o.tool, o.input);
@@ -162,7 +169,7 @@ function ticketFacts(state, t, from, records) {
   const logs = workerLogs(state, t.key, from);
   const c = logs.length ? ticketCost(state, { ...t, added_at: from }) : null;
   const x = { logs, c, input: 0, output: 0, cost: c?.preflight.cost ?? 0, parks: 0, parkClasses: {}, reviewRounds: 0, denials: {},
-    readings: [], badReadings: 0, starts: [] };
+    readings: [], badReadings: 0, starts: [], codexCalls: 0, codexDead: 0 };
   const starts = {};
   for (const file of logs) {
     let text = '';
@@ -173,6 +180,8 @@ function ticketFacts(state, t, from, records) {
     x.parks += l.parks;
     add(x.parkClasses, l.parkClasses);
     x.reviewRounds += l.reviewRounds;
+    x.codexCalls += l.codexCalls;
+    x.codexDead += l.codexDead;
     add(x.denials, l.denials);
     x.readings.push(...l.readings);
     x.badReadings += l.badReadings;
@@ -335,7 +344,7 @@ export function ticketRows({ queue, state, slug, batch = null, since, until = In
       cost: x.cost, cost_complete: !x.c || (!x.c.cloud && !x.c.unknown), input: x.input, output: x.output,
       preflight_cost: x.c?.preflight.cost ?? 0, runs: x.c?.runs ?? 0, unknown_runs: x.c?.unknown ?? 0,
       starts: starts.length, fix_tries: triesMade(t.fix_tries), parks: x.parks, parks_by_class: x.parkClasses,
-      review_rounds: x.reviewRounds, denials: Object.values(x.denials).reduce((n, v) => n + v, 0), denials_by_command: x.denials,
+      review_rounds: x.reviewRounds, codex_calls: x.codexCalls, codex_dead: x.codexDead, denials: Object.values(x.denials).reduce((n, v) => n + v, 0), denials_by_command: x.denials,
       ci_reds: ciRuns ? reds.length : null, ci_reds_by_job: ciRuns ? ciCounts(reds) : null,
       desk_commits: [...new Set(starts.map((s) => s.desk_commit).filter(Boolean))],
       start_records: starts, login: t.login?.name ?? null, pin: pinOf(t.levers),
@@ -507,19 +516,7 @@ export function figureLines(f, { ci, quotaMissing, perStart = false }) {
   return lines;
 }
 
-// The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
-// batches/.done/ under the same name, so a batch archived inside the window still counts.
-export function archivedBatches({ queueRoot, stateRoot }) {
-  const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
-  let names = [];
-  try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
-  return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
-    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
-}
-export const allBatches = (slug) => {
-  const standing = E.batchPaths(slug);
-  return [...listBatches(slug), ...archivedBatches({ queueRoot: dirname(standing.queue), stateRoot: standing.state })];
-};
+export { archivedBatches, allBatches };
 
 // The whole report, as lines. Every input is a parameter so a test can point it at fixtures.
 export function report({

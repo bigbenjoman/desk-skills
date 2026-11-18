@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, trialId } from './levers-auto.mjs';
+import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
 import { REVERTIBLE, applyTrips, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
@@ -40,7 +40,7 @@ import { logUsage, ticketCost } from './worker-cost.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readQueue } from './batch-state.mjs';
 import { everyTicket } from './queue-store.mjs';
-import { allBatches } from './phase0-report.mjs';
+import { allBatches, repoTickets } from './batches.mjs';
 import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 
 export const ACTOR = 'audit';
@@ -78,17 +78,23 @@ const mergedPr = (t) => {
 //   [{ ticket, pr, merged_at, lever, arm, trial_id, arms }]
 // `arms` is every quality-risk trial arm the ticket drew. A ticket two trials sample is listed once,
 // under the first.
-export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY }) {
-  const byLever = leverStatesIn(events, registry);
+// The quality-risk trials running in a repo, a pair trial's included (levers-auto.mjs): each with the key
+// its tickets' arms are under, the lever its log events name (a pair's first) and its pair key.
+//   -> [{ key, lever, id, pair? }]
+export function liveTrials({ slug, events, states, registry = REGISTRY }) {
+  return qualityTrials({ slug, events, states, values: null, registry })
+    .map((t) => ({ key: t.key, lever: t.levers[0], id: t.id, ...(isPairKey(t.key) ? { pair: t.key } : {}) }));
+}
+
+export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY, now = Date.now() }) {
   const merged = tickets.filter((t) => t?.key && mergedPr(t) != null && t.levers && typeof t.levers === 'object');
-  const trials = Object.entries(registry).filter(([name, l]) => l.layer === 'quality-risk' && states?.[name] === 'auto' && byLever[name].state === 'trial')
-    .map(([name]) => ({ lever: name, id: trialId(slug, name, byLever[name]) }));
-  const armsOf = (t) => Object.fromEntries(trials.filter((x) => t.levers.trial_ids?.[x.lever] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.lever]))
-    .map((x) => [x.lever, t.levers.arms[x.lever]]));
+  const trials = liveTrials({ slug, events, states, registry, now });
+  const armsOf = (t) => Object.fromEntries(trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]))
+    .map((x) => [x.key, t.levers.arms[x.key]]));
   const out = [];
   const seen = new Set();
-  for (const { lever, id } of trials) {
-    const arm = (a) => merged.filter((t) => t.levers.trial_ids?.[lever] === id && t.levers.arms?.[lever] === a)
+  for (const { key, lever, id, pair } of trials) {
+    const arm = (a) => merged.filter((t) => t.levers.trial_ids?.[key] === id && t.levers.arms?.[key] === a)
       .sort((x, y) => Date.parse(x.merged_at) - Date.parse(y.merged_at) || (x.key < y.key ? -1 : 1));
     const on = arm('on');
     const off = arm('off');
@@ -98,7 +104,7 @@ export function sampleAudits({ slug, events, tickets, states, registry = REGISTR
         const t = list[k * EVERY - 1];
         if (seen.has(t.key)) continue;
         seen.add(t.key);
-        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, arm: a, trial_id: id, arms: armsOf(t) });
+        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, ...(pair ? { pair } : {}), arm: a, trial_id: id, arms: armsOf(t) });
       }
     }
   }
@@ -159,12 +165,8 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
   return usd / 4;
 }
 
-// Every queue ticket of the repo's batches, archived ones included (a merged ticket is archived), for the sample.
-export function repoTickets(slug, batches = allBatches(slug)) {
-  return batches.flatMap((b) => {
-    try { return Object.entries(everyTicket(readQueue(b.queue))).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
-  });
-}
+// Every queue ticket of the repo's batches, archived ones included, for the sample (batches.mjs).
+export { repoTickets };
 
 // When the audit worker of `item` ended, from the exit file spawn-worker.sh writes: { at } or null.
 export function endedFromExit(item) {
@@ -262,6 +264,17 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
     .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
   events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));
+  // A P0 on a ticket drawn on for a pair trial ends that trial: the levers stay kept alone.
+  for (const [key, a] of Object.entries(item.arms ?? {})) {
+    if (a !== 'on' || !isPairKey(key)) continue;
+    const e = appendWith(slug, () => {
+      const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now: Date.parse(at) });
+      if (p?.key !== key || p.id !== item.trial_id || p.state !== 'trial') return null;
+      return { kind: 'pair', levers: p.levers, pair: key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket: item.ticket,
+        reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}`, evidence_file: file, evidence_line: line };
+    });
+    if (e) events.push(e);
+  }
   return { row: written?.rec ?? row, events };
 }
 
@@ -314,9 +327,8 @@ export async function runAudits({
   const rows = rowsOf(auditFile(slug));
   const audited = new Set(rows.map((r) => r.rec.ticket));
   const events = read(slug).events;
-  const sample = sampleAudits({ slug, events, tickets: all, states, registry });
-  const byLever = leverStatesIn(events, registry);
-  const live = new Set(Object.keys(registry).filter((n) => registry[n].layer === 'quality-risk' && states?.[n] === 'auto' && byLever[n].state === 'trial').map((n) => trialId(slug, n, byLever[n])));
+  const sample = sampleAudits({ slug, events, tickets: all, states, registry, now });
+  const live = new Set(liveTrials({ slug, events, states, registry, now }).map((x) => x.id));
   const next = withQueue(slug, (q) => {
     // A trial's audit model is the review model when the trial is first seen running, fixed for its life.
     for (const id of live) q.trials[id] ??= { model: model(), at: new Date(now).toISOString() };

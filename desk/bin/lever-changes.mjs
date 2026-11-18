@@ -95,6 +95,13 @@ export function changeLine(e, { decision = null, overridden = false, cmd = 'dige
     const ev = evidenceText(e);
     const why = e.to === 'adopted' || e.to === 'settled' ? '' : ` (${reasonWording(e.reason_code) ?? e.reason_code})`;
     line = `${verb} ${e.lever} in ${name}${why}${ev ? `: ${ev}` : ''}`;
+  } else if (e.kind === 'pair' && e.to) {
+    // A pair trial's end: adopted, both levers are on together for every ticket.
+    const levers = (e.levers ?? []).join(' with ');
+    const ev = evidenceText(e);
+    line = e.to === 'adopted'
+      ? `adopted ${levers} together in ${name}, now its default${ev ? `: ${ev}` : ''}`
+      : `${e.to === 'reverted' ? 'ended' : `moved to ${e.to}`} the trial of ${levers} together in ${name}, each kept alone (${reasonWording(e.reason_code) ?? e.reason_code})${ev ? `: ${ev}` : ''}`;
   } else return null;
   if (decision && !overridden) {
     const other = decision.options.find((o) => o !== decision.chose);

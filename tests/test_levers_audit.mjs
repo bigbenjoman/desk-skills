@@ -270,5 +270,23 @@ await h11.pass(NOW);
 h11.model = () => 'sonnet';
 t('AC3 the audit model is recorded on the trial when it is first seen running, before any audit is due', [queueOf(S11).trials[tid11]?.model, h11.spawns.length], ['opus', 0]);
 
+// ---- DS-646: a pair trial of two kept quality-risk levers is audited too -----------------------------------------------
+{
+  const { pairTrial } = await import('../desk/bin/levers-auto.mjs');
+  const SP = 'acme__pair';
+  for (const [lever, to, days] of [['codex', 'adopted', 60], ['review-reuse', 'settled', 40]]) append(SP, { kind: 'override', lever, to, actor: 'ben', reason_code: 'ben_override', reason: `${lever} ${to}`, at: iso(NOW - days * DAY) });
+  const pt = pairTrial({ slug: SP, events: read(SP).events, states: AUTO, values: null, now: NOW });
+  const KEY = 'codex+review-reuse';
+  const pairTickets = tickets('x', 5, 5, 'P').map((x) => ({ ...x, levers: { ...x.levers, set: x.levers.arms.codex === 'on' ? ['codex', 'review-reuse'] : ['codex'], arms: { [KEY]: x.levers.arms.codex }, trial_ids: { [KEY]: pt.id } } }));
+  const s = A.sampleAudits({ slug: SP, events: read(SP).events, tickets: pairTickets, states: AUTO, now: NOW });
+  t('the pair trial\'s merged PRs are sampled like a lever\'s, every 5th per arm', s.map((x) => [x.ticket, x.pair, x.lever, x.arm, x.trial_id === pt.id]), [['P-on5', KEY, 'codex', 'on', true], ['P-off5', KEY, 'codex', 'off', true]]);
+  const hp = harness(SP, pairTickets);
+  await hp.pass(NOW);
+  const done = await hp.finish('P-on5', NOW + 10 * MIN, workerLog({ head: sha(105), p0: 1, defects: ['src/a.js:3: drops the error'] }));
+  const pe = read(SP).events.filter((e) => e.kind === 'pair');
+  t('a P0 on the pair\'s on arm ends the pair trial, the levers kept alone', [pe.map((e) => [e.from, e.to, e.reason_code, e.trial_id === pt.id]), pairTrial({ slug: SP, events: read(SP).events, states: AUTO, values: null, now: NOW + 11 * MIN }).state], [[['trial', 'reverted', 'audit_p0', true]], 'reverted']);
+  t('and trips neither lever alone', read(SP).events.filter((e) => e.kind === 'trip').length + (done.events.some((e) => e.kind === 'trip') ? 1 : 0), 0);
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

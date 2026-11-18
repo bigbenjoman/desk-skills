@@ -41,11 +41,12 @@ export const GUARDRAILS = Object.freeze({
 
 // How much of a repo's tickets a lever reaches. The low-risk layer is a factorial, each lever drawn on
 // for half the tickets; the quality-risk layer is exclusive (one such lever per ticket), steps through
-// `ramp` and never reaches more than `cap` of a repo's tickets while unproven. After an adopt,
-// `holdback` of tickets stay off for `holdback_weeks`.
+// `ramp` and never reaches more than `cap` of a repo's tickets in flight while unproven. A trial steps
+// to the ramp's next share once `step_after` tickets have carried it at its current share with no hard
+// trip. After an adopt, `holdback` of tickets stay off for `holdback_weeks`.
 const RAMPS = Object.freeze({
   'low-risk': Object.freeze({ on_share: 0.5, exclusive: false, holdback: 0.1, holdback_weeks: 4 }),
-  'quality-risk': Object.freeze({ ramp: Object.freeze([0.1, 0.25, 0.5]), cap: 0.3, exclusive: true, holdback: 0.1, holdback_weeks: 4 }),
+  'quality-risk': Object.freeze({ ramp: Object.freeze([0.1, 0.25, 0.5]), step_after: 15, cap: 0.3, exclusive: true, holdback: 0.1, holdback_weeks: 4 }),
 });
 
 // Hard trips: a condition that reverts the lever in that repo within one pass, with no statistics.
@@ -54,6 +55,9 @@ const POST_MERGE_REVERT = Object.freeze({ id: 'post-merge-revert', when: 'a post
 // A quality-risk lever's blind post-merge audit finding a P0 on an on-arm PR. `by` names the module that
 // applies it, where it is not one of levers-trips.mjs's detectors.
 const AUDIT_P0 = Object.freeze({ id: 'audit-p0', by: 'levers-audit.mjs', when: 'the blind audit of a merged PR drawn on for the lever finds a P0' });
+// The codex lever's dead seats: a desk-codex review call that timed out (exit 124) or found no Codex
+// login to take it (75). More than `rate` of the last `calls` such calls on on-arm tickets trips it.
+const CODEX_DEAD_SEATS = Object.freeze({ id: 'codex-dead-seats', exits: Object.freeze([124, 75]), calls: 10, rate: 0.2, when: 'more than 20% of the last 10 desk-codex calls on on-arm tickets died (exit 124 or 75)' });
 const ownStepError = (step) => Object.freeze({ id: 'own-step-error', step, when: `a start on an on-arm ticket records ${step} exiting non-zero` });
 
 const code = (path, part) => Object.freeze(part ? { path, part } : { path });
@@ -91,21 +95,21 @@ export const ENTRIES = Object.freeze({
     preconditions: [],
   },
   codex: {
-    layer: 'quality-risk', trialled: false,
+    layer: 'quality-risk', trialled: true,
     mechanism: metric('codex seats died per review', null),
-    trips: [POST_MERGE_REVERT, ownStepError('desk-codex'), AUDIT_P0],
+    trips: [POST_MERGE_REVERT, ownStepError('desk-codex'), CODEX_DEAD_SEATS, AUDIT_P0],
     code: [code('desk/bin/desk-codex.mjs')],
     preconditions: [],
   },
   'review-reuse': {
-    layer: 'quality-risk', trialled: false,
+    layer: 'quality-risk', trialled: true,
     mechanism: metric('review runs per ticket', null),
     trips: [POST_MERGE_REVERT, ownStepError('undraft.mjs'), AUDIT_P0],
     code: [code('desk/bin/undraft.mjs'), code('desk/bin/review-threads.mjs')],
     preconditions: [],
   },
   effort: {
-    layer: 'quality-risk', trialled: false,
+    layer: 'quality-risk', trialled: true,
     mechanism: metric('dollars per start', null),
     trips: [POST_MERGE_REVERT, ownStepError('desk-env effort'), AUDIT_P0],
     code: [code('desk/bin/desk-env.mjs', 'effort')],
@@ -148,6 +152,10 @@ export const REASON_CODES = Object.freeze({
   audit_recorded: 'a blind audit of a merged PR was recorded',
   audit_p0: 'a blind audit found a P0 in a merged PR drawn on for the lever',
   state_unreadable: 'the repo\'s lever log could not be read, so its tickets cannot be assigned arms',
+  codex_dead_seats: 'more than 20% of the last 10 codex calls on its tickets died',
+  ramp_clean: 'its tickets so far ran with no hard trip, so it reaches more tickets',
+  audit_missing: 'no blind audit has been recorded in this repo yet',
+  audits_pending: 'blind audits are due and not yet recorded',
 });
 
 // The wording for a reason code, or null for a code not in the list.
