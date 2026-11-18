@@ -116,7 +116,7 @@ check "AC3: files in both repos spawn as today" 'spawned SV-3001 && ! admitted S
 check "AC4: a repo with no config here: no worker, parked naming it, nothing admitted" \
   '! spawned SV-3002 && ! admitted SV-3002 && [ "$(qg SV-3002 .state)" = parked ] && qg SV-3002 .park.question | grep -qF "its files in scope are all in studia-mobile, and studia-mobile is no repo configured on this computer, so no worker was spawned: which repo does it run in?"'
 check "AC5: the admit there fails: no worker, parked with the failure and the command that admits it" \
-  '! spawned SV-3003 && [ "$(qg SV-3003 .state)" = parked ] && qg SV-3003 .park.question | grep -qF "admitting it into acme/studia-web failed (not admitted SV-3003: the queue is locked). Admit it there: cd $T/studia-web && node $T/desk/bin/intake.mjs admit SV-3003 --by pass"'
+  '! spawned SV-3003 && [ "$(qg SV-3003 .state)" = parked ] && qg SV-3003 .park.question | grep -qF "admitting it into acme/studia-web failed (not admitted SV-3003: the queue is locked). Admit it there: cd $T/studia-web && DESK_ADMIT_FROM=acme__zendesk node $T/desk/bin/intake.mjs admit SV-3003 --by pass"'
 # The batch runs three workers at once: those finish, and a second pass reaches the rest.
 while read -r k; do q set "$k" state=done; done < "$T/spawned"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -125,6 +125,6 @@ check "a scope call that keeps it in this repo spawns" 'spawned SV-3005 && ! adm
 check "a call outside the scope category spawns" 'spawned SV-3006 && ! admitted SV-3006'
 check "a ticket with a PR in this repo already stays here" 'spawned SV-3007 && ! admitted SV-3007'
 check "a ticket another is held behind here: no worker, nothing admitted, parked naming the one held" \
-  '! spawned SV-3008 && ! admitted SV-3008 && [ "$(qg SV-3008 .state)" = parked ] && qg SV-3008 .park.question | grep -qF "but SV-3009 is held behind it here: release or drop it, then admit SV-3008 in acme/studia-web"'
+  '! spawned SV-3008 && ! admitted SV-3008 && [ "$(qg SV-3008 .state)" = parked ] && qg SV-3008 .park.question | grep -qF "but SV-3009 is held behind it here: release or drop it, then admit SV-3008 in acme/studia-web'"'"'s checkout with DESK_ADMIT_FROM=acme__zendesk node intake.mjs admit SV-3008 and queue.mjs drop SV-3008 here"'
 
 echo "pass other repo: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

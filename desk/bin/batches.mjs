@@ -160,17 +160,20 @@ const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 // The tracker a repo's keys name tickets in: its §4 Jira site, where §4 Tracker is jira, else null. A
 // key is one ticket across repos only on the same site; an issue number or slug is the repo's own.
 // Read again only once the config file changes.
+// `get` reads a config row by id: this repo's, or another's by its slug.
+function siteFrom(get) {
+  try {
+    const s = String(get('jira-site') ?? '').trim().toLowerCase();
+    return get('tracker') === 'jira' && s ? s : null;
+  } catch { return null; /* an unreadable config names no tracker */ }
+}
 const sites = new Map();
 function siteOf(slug) {
   const path = join(E.deskConfigRoot(), 'repos', slug, 'config.md');
   let at;
   try { at = statSync(path).mtimeMs; } catch { return null; /* no config: no tracker */ }
   if (sites.get(path)?.at === at) return sites.get(path).site;
-  let site = null;
-  try {
-    const s = String(E.repoConfigValue(slug, 'jira-site') ?? '').trim().toLowerCase();
-    site = E.repoConfigValue(slug, 'tracker') === 'jira' && s ? s : null;
-  } catch { /* an unreadable config names no tracker */ }
+  const site = siteFrom((id) => E.repoConfigValue(slug, id));
   sites.set(path, { at, site });
   return site;
 }
@@ -204,13 +207,6 @@ export function queuedCopies() {
 // The copies of `key` queued in configured repos other than `slug`, on its Jira site `site`.
 export function copiesElsewhere(key, slug, copies = queuedCopies(), site = slug ? siteOf(slug) : null) {
   return site ? (copies.get(key) ?? []).filter((c) => c.slug !== slug && c.site === site) : [];
-}
-// This repo's Jira site, from its own config, as siteOf reads another's.
-function ownSite() {
-  try {
-    const s = String(E.configValue('jira-site') ?? '').trim().toLowerCase();
-    return E.configValue('tracker') === 'jira' && s ? s : null;
-  } catch { return null; /* no config here names a tracker */ }
 }
 export const copyWhere = (c) => (c.name ? `batch ${c.name} of ${c.ghRepo}` : `${c.ghRepo}'s standing batch`);
 
@@ -257,7 +253,7 @@ export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
   // drops its own copy once this admit is made.
   let slug = null;
   try { slug = E.repoSlug(); } catch { /* outside a repo: no Jira site to match a key on */ }
-  const there = slug && copiesElsewhere(key, slug, queuedCopies(), ownSite()).find((c) => c.slug !== process.env.DESK_ADMIT_FROM);
+  const there = slug && copiesElsewhere(key, slug, queuedCopies(), siteFrom(E.configValue)).find((c) => c.slug !== process.env.DESK_ADMIT_FROM);
   if (there) {
     return { batch: `${there.ghRepo}:${label(there)}`, repo: there.ghRepo,
       why: `${key} is already queued in ${copyWhere(there)} (${there.t.state}): a ticket is queued in one repo at most; if it belongs here, drop it there first (queue.mjs drop ${key}, in ${there.ghRepo}'s checkout)` };

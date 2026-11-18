@@ -1419,8 +1419,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
   if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
   const row = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
-  // A copy queued in another repo too is its duplicate item, which a drop answers whatever its own row offers.
-  const x = (!row || verb === 'drop') && r.q ? duplicateRow(r, ticket) ?? row : row;
+  // A copy queued in another repo too is its duplicate item, which a drop answers whatever its own row
+  // offers, and a not-now puts off beside its own row's item.
+  const dup = r.q ? duplicateRow(r, ticket) : null;
+  const x = !row || verb === 'drop' ? dup ?? row : row;
   if (!x) return movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is
@@ -1623,6 +1625,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'not-now': {
       // A park is put off by answer.mjs, keyed to its inputs, and its entry then records the actions it
       // offers; anything else here, as putOffKey keys it.
+      if (dup && x !== dup) addPutOff(putOffEntry({ ...putOffKey(r, dup.t, dup.dup), ticket, at: new Date(now).toISOString(), actions: verbsOf(dup.dup) }), r.stateDir);
       const still = stillListed(r, ticket);
       if (PARK_KINDS.includes(item.kind)) {
         const a = answer({ slug: r.slug, ticket, text: 'not now', list: digestList(r), now: new Date(now) });

@@ -2179,14 +2179,22 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     const it = N.collect({ word: w }).items.find((i) => i.t.key === 'SV-95');
     t(`DS-800 neither copy held on the other: ${w} lists it, drop not recommended`, `${it?.kind} ${it?.actions.map(([a]) => a).join()} ${it?.actions[0][1]}`, 'duplicate drop,not-now null');
   }
+  // A copy parked on its own question lists that park beside its duplicate item; not-now puts off both.
+  put('zen800n', { port: 4870, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'triaged', lane: 'A' } } });
+  put('web800n', { port: 4880, beat: 1, supervised: true, site, tickets: { 'SV-97': { state: 'parked', lane: 'A', park: { question: 'Which colour is the button?', since: minsAgo(30) } } } });
+  const kinds = () => N.collect({ word: 'web800n' }).items.filter((i) => i.t.key === 'SV-97').map((i) => i.kind).sort().join();
+  t('a parked copy lists its park and its duplicate item', kinds(), 'duplicate,parked');
+  const nn = N.record({ word: 'web800n', ticket: 'SV-97', action: 'not-now' });
+  t('not-now on it puts off its park and its duplicate item', `${nn.ok} ${kinds()}`, 'true ');
   // The same key on another Jira site, or a repo with no tracker, is another ticket.
+
   put('other800', { port: 4840, beat: 1, supervised: true, site: 'other.atlassian.net', tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
   put('none800', { port: 4850, beat: 1, supervised: true, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
   put('zen800c', { port: 4860, beat: 1, supervised: true, site, tickets: { 'SV-96': { state: 'triaged', lane: 'A' } } });
   t('DS-800 a key on another Jira site or in a repo with no tracker is no duplicate',
     ['other800', 'none800', 'zen800c'].some((w) => N.collect({ word: w }).items.some((i) => i.kind === 'duplicate')), false);
   // Their items are these checks' alone: later ones list every repo.
-  for (const w of ['zen800', 'web800', 'zen800b', 'web800b', 'other800', 'none800', 'zen800c']) {
+  for (const w of ['zen800', 'web800', 'zen800b', 'web800b', 'zen800n', 'web800n', 'other800', 'none800', 'zen800c']) {
     for (const d of [join(env.DESK_CONFIG_ROOT, 'repos', `acme__${w}`), join(env.DESK_HOME, 'repos', `acme__${w}`)]) rmSync(d, { recursive: true, force: true });
   }
 }

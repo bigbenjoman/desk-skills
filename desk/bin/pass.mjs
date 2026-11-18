@@ -3434,9 +3434,11 @@ function handAway(t, p) {
     if (!DRY) q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
-  if (p.unknown) return park(`${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with intake.mjs admit ${t.key}, then queue.mjs drop ${t.key} here`);
+  // This copy would refuse that admit until it is dropped, unless the admit names this repo as handing it over.
+  const admit = `DESK_ADMIT_FROM=${E.currentRepo().slug ?? ''} node intake.mjs admit ${t.key}`;
+  if (p.unknown) return park(`${p.why}, so no worker was spawned: which repo does it run in? Admit it in that repo's checkout with ${admit}, then queue.mjs drop ${t.key} here`);
   const behind = Object.values(queue().tickets).filter((o) => o.key !== t.key && keysOf(o.held_by).includes(t.key)).map((o) => o.key);
-  if (behind.length) return park(`${p.why}, so no worker was spawned, but ${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind it here: release or drop ${behind.length === 1 ? 'it' : 'them'}, then admit ${t.key} in ${p.ghRepo}'s checkout with intake.mjs admit ${t.key} and queue.mjs drop ${t.key} here`);
+  if (behind.length) return park(`${p.why}, so no worker was spawned, but ${behind.join(', ')} ${behind.length === 1 ? 'is' : 'are'} held behind it here: release or drop ${behind.length === 1 ? 'it' : 'them'}, then admit ${t.key} in ${p.ghRepo}'s checkout with ${admit} and queue.mjs drop ${t.key} here`);
   if (DRY) {
     report.waiting.push(`${t.key}: ${p.why}: would be admitted into ${p.ghRepo} and taken out of this queue (dry run)`);
     return;
