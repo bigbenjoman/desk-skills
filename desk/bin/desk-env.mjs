@@ -656,7 +656,8 @@ export function admitInRepo(p, key, { by }) {
   if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
   const env = otherRepoEnv();
   for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
-  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
+  // This repo's copy is dropped once the admit is made, so it does not refuse it (batches.mjs belongsElsewhere).
+  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root, DESK_ADMIT_FROM: currentRepo().slug ?? '' });
   const x = spawnSync(process.execPath, [intake, 'admit', key, '--by', by, '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
   let out = null;
   try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }

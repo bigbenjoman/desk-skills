@@ -96,7 +96,7 @@ import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
-import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
+import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending } from './harvest.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
@@ -853,6 +853,44 @@ function promotionItems(r) {
       since: timeOf(red.since) } }];
 }
 
+// ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
+// A ticket is queued in one repo at most, so a copy here beside one in another configured repo's batch
+// is one item on this copy, keyed by its ticket. The copy held behind blockers its own batch lacks and
+// the other copy's batch has is the extra one: its item recommends drop, and the other copy lists none.
+// Where neither copy is held so, or both are, each lists the other, drop offered but not recommended.
+const awayHolds = (q, t, there) => (holdsKept(t) ? keysOf(t.held_by).filter((k) => !q?.tickets?.[k] && there?.tickets?.[k]) : []);
+function duplicateOf(r, t, copies = queuedCopies()) {
+  if (!r.q || t.state === 'done' || t.merged_at) return null;
+  const o = copiesElsewhere(t.key, r.slug, copies)[0];
+  if (!o) return null;
+  const mine = awayHolds(r.q, t, o.q), theirs = awayHolds(o.q, o.t, r.q);
+  if (theirs.length && !mine.length) return null;
+  return { o, mine: theirs.length ? [] : mine };
+}
+function duplicateItems(r) {
+  const copies = queuedCopies();
+  return Object.values(r.q?.tickets ?? {}).flatMap((t) => {
+    const d = duplicateOf(r, t, copies);
+    return d ? [{ r, t, item: duplicateItem(t, d) }] : [];
+  });
+}
+// The duplicate row of ticket `key` in r, as record takes it: null where its copy is the only one.
+function duplicateRow(r, key) {
+  const t = r.q?.tickets?.[key], d = t && duplicateOf(r, t);
+  return d ? { t, dup: duplicateItem(t, d) } : null;
+}
+function duplicateItem(t, { o, mine }) {
+  const there = `${copyWhere(o)} (${o.t.state})`;
+  const is = mine.length === 1 ? 'is' : 'are';
+  const need = mine.length
+    ? `${t.key} is queued here and in ${there}, and a ticket is queued in one repo at most. This copy is the extra one: it is held behind ${andList(mine)}, which ${is} in that batch and not this one, so nothing here releases it. Drop it; the copy in ${o.ghRepo} goes on as it is`
+    : `${t.key} is queued here and in ${there}, and a ticket is queued in one repo at most. Neither copy waits only on the other's batch, so which repo it belongs to is your call: drop the copy in the repo it does not belong to, and the other goes on as it is`;
+  const drop = mine.length
+    ? ['drop', `${andList(mine)} ${is} queued beside the copy in ${o.ghRepo}, so this copy is the extra one; drop takes it out of this batch and leaves that one as it is`]
+    : ['drop', null, `takes this copy out of this batch; the copy in ${o.ghRepo} stays`];
+  return { kind: 'duplicate', ticket: t.key, need, actions: [drop, ['not-now']], since: timeOf(t.added_at) };
+}
+
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
 // A blocker Done under a resolution that ships nothing (Won't Do, Duplicate), in no batch or in this one
 // with its PR unmerged, never lands, a blocker dropped from the batch is released by nothing, and two
@@ -864,10 +902,13 @@ function promotionItems(r) {
 const LINK = 'link:';
 const LINK_KINDS = [['wont_do_link', 'wontDo'], ['dropped_link', 'dropped'], ['cycle_link', 'cycle']];
 function linkItems(r) {
+  const copies = queuedCopies();
   return Object.values(r.q?.tickets ?? {}).filter((t) => !t.merged_at && !(t.state === 'done' && !keysOf(t.merge_after).length))
     .flatMap((t) => {
+      // A hold on a ticket the other repo's copy has beside it is the duplicate's item (duplicateItems).
+      const dup = duplicateOf(r, t, copies);
       const seen = new Set();
-      return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b))
+      return LINK_KINDS.flatMap(([field, kind]) => keysOf(t[field]).filter((b) => !seen.has(b) && seen.add(b) && !(kind === 'dropped' && dup?.o.q.tickets?.[b]))
         .map((b) => ({ r, t: { key: `${LINK}${t.key}:${b}` }, item: linkItem(r, t, b, kind), behind: linkBehind(r, t, b, kind) })));
     });
 }
@@ -968,6 +1009,7 @@ function signinItems(batches, only = null) {
 // GitHub; without it only those repos' queues are read.
 function itemOf(r, x, reads = null, finds = reads) {
   const t = x.t;
+  if (x.dup) return x.dup;
   if (x.usage) return { kind: 'usage', need: usageHoldOf(r), actions: [['done', 'it lifts by itself; switch subscription to lift it sooner, then say done'], ['not-now']] };
   if (x.subOff) {
     const s = r.q.subscription_off;
@@ -1210,7 +1252,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...promotionItems(b)])) {
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...promotionItems(b), ...duplicateItems(b)])) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -1275,7 +1317,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
@@ -1376,7 +1418,9 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const queued = r.q?.tickets?.[ticket], status = prStatusOf(queued);
   const shut = verb === 'resume' && status ? prShut(status.pr, queued.merged_at ? 'MERGED' : status.state) : null;
   if (shut) return { ok: false, line: `${r.name} ${ticket}: ${shut}` };
-  const x = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
+  const row = !r.q ? null : [...batchRows(r), ...needsRows(r)].find((y) => y.t.key === ticket);
+  // A copy queued in another repo too is its duplicate item, which a drop answers whatever its own row offers.
+  const x = (!row || verb === 'drop') && r.q ? duplicateRow(r, ticket) ?? row : row;
   if (!x) return movedOn(r, ticket, verb, text, now);
   const item = itemOf(r, x, null, reads);
   // move is taken on any parked or stopped item, listed or not, so one naming no running batch is

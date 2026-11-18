@@ -63,7 +63,7 @@ cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 const e = process.env;
 const key = process.argv[3];
-appendFileSync('$T/intake.log', JSON.stringify({ key, cwd: process.cwd(), args: process.argv.slice(2), dir: e.DESK_REPO_DIR ?? null, state: e.DESK_AUTOPILOT_STATE ?? null, queue: e.DESK_QUEUE ?? null }) + '\n');
+appendFileSync('$T/intake.log', JSON.stringify({ key, cwd: process.cwd(), args: process.argv.slice(2), dir: e.DESK_REPO_DIR ?? null, state: e.DESK_AUTOPILOT_STATE ?? null, queue: e.DESK_QUEUE ?? null, from: e.DESK_ADMIT_FROM ?? null }) + '\n');
 if (existsSync('$T/refuse') && readFileSync('$T/refuse', 'utf8').split('\n').includes(key)) {
   console.log(JSON.stringify({ ran: true, lines: [\`not admitted \${key}: the queue is locked\`], admitted: [], refused: [key] }));
   process.exitCode = 11;
@@ -106,6 +106,8 @@ check "AC1: files all in another configured repo: no worker, admitted there, out
   '! spawned SV-3986 && admitted SV-3986 && [ "$(qg SV-3986 "")" = null ]'
 check "AC1: intake.mjs admit ran in the other repo's checkout, with none of this batch's state or queue" \
   '[ "$(jq -r "select(.key == \"SV-3986\") | [.cwd, .dir, (.args | join(\" \")), (.state | tostring), (.queue | tostring)] | join(\",\")" "$T/intake.log")" = "$(cd "$T/studia-web" && pwd -P),$T/studia-web,admit SV-3986 --by pass --json,null,null" ]'
+check "DS-800: the admit there names this repo as the one handing it over, so this repo's copy does not refuse it" \
+  '[ "$(jq -r "select(.key == \"SV-3986\") | .from" "$T/intake.log")" = acme__zendesk ]'
 check "AC1: the report names the repo it went to" \
   'grep -qF "SV-3986: its files in scope are all in acme/studia-web, so it was admitted into acme/studia-web (admitted SV-3986 by pass into batch the standing batch (lane A, size S)) and taken out of this queue, no worker spawned" <<< "$out"'
 check "AC2: a scope call to run it in the other repo hands it over the same way" \
