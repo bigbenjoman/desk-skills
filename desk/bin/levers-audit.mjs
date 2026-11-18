@@ -31,9 +31,9 @@ import { mkdirSync, readFileSync, appendFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
-import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
-import { REVERTIBLE, applyTrips, lines as rowsOf } from './levers-trips.mjs';
+import { appendWith, read, stampAfter } from './lever-log.mjs';
+import { leverStatesIn, pairTrial, qualityTrials, isPairKey, trialId } from './levers-auto.mjs';
+import { REVERTIBLE, applyTrips, tripEvents, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
 import { logUsage, ticketCost } from './worker-cost.mjs';
@@ -89,8 +89,10 @@ export function liveTrials({ slug, events, states, registry = REGISTRY }) {
 export function sampleAudits({ slug, events, tickets, states, registry = REGISTRY, now = Date.now() }) {
   const merged = tickets.filter((t) => t?.key && mergedPr(t) != null && t.levers && typeof t.levers === 'object');
   const trials = liveTrials({ slug, events, states, registry, now });
-  const armsOf = (t) => Object.fromEntries(trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]))
-    .map((x) => [x.key, t.levers.arms[x.key]]));
+  const drawn = (t) => trials.filter((x) => t.levers.trial_ids?.[x.key] === x.id && ['on', 'off'].includes(t.levers.arms?.[x.key]));
+  const armsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, t.levers.arms[x.key]]));
+  // The trial each of those arms was drawn under, so a P0 trips only that trial and not a fresh one.
+  const idsOf = (t) => Object.fromEntries(drawn(t).map((x) => [x.key, x.id]));
   const out = [];
   const seen = new Set();
   for (const { key, lever, id, pair } of trials) {
@@ -104,7 +106,7 @@ export function sampleAudits({ slug, events, tickets, states, registry = REGISTR
         const t = list[k * EVERY - 1];
         if (seen.has(t.key)) continue;
         seen.add(t.key);
-        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, ...(pair ? { pair } : {}), arm: a, trial_id: id, arms: armsOf(t) });
+        out.push({ ticket: t.key, pr: mergedPr(t), merged_at: t.merged_at, lever, ...(pair ? { pair } : {}), arm: a, trial_id: id, arms: armsOf(t), trial_ids: idsOf(t) });
       }
     }
   }
@@ -258,24 +260,64 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   if (!(f?.p0 > 0)) return { row: written?.rec ?? row, events };
   // A P0 trips every lever the ticket was drawn on for, while it is still in a state a trip reverts.
   const defect = p0s.length ? p0s.join('; ') : `${f.p0} P0 at ${String(item.sha).slice(0, 12)}; the review is in ${join(item.state_dir, 'logs', `${item.key}.log`)}`;
-  const byLever = leverStatesIn(read(slug).events, registry);
+  // Read under the log's lock, so a levers undo restoring a trial either lands first (and this trips
+  // it) or reads the audit row written above (and its replay trips it).
+  let byLever = {};
+  appendWith(slug, () => { byLever = leverStatesIn(read(slug).events, registry); return null; });
+  // A lever on trial trips only while it is the trial the arm was drawn under: a fresh trial levers
+  // decide started since is another one, and a trial an undo restored keeps its id. A lever kept since
+  // trips as before. An item queued before it carried trial_ids is checked on its own lever's trial_id.
+  const drawnUnder = (lever) => item.trial_ids?.[lever] ?? (lever === item.lever && !item.pair ? item.trial_id : null);
+  const sameTrial = (lever) => byLever[lever]?.state !== 'trial' || drawnUnder(lever) == null || trialId(slug, lever, byLever[lever]) === drawnUnder(lever);
   const trips = Object.entries(item.arms ?? {})
-    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
-    .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
+    .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state) && sameTrial(lever))
+    .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, from_id: byLever[lever].id, file, line,
       why: `the blind audit of PR #${item.pr} found ${f.p0} P0`, defect }));
   events.push(...applyTrips({ slug, name, repo, trips, registry, now: Date.parse(at) }));
   // A P0 on a ticket drawn on for a pair trial ends that trial: the levers stay kept alone.
   for (const [key, a] of Object.entries(item.arms ?? {})) {
     if (a !== 'on' || !isPairKey(key)) continue;
     const e = appendWith(slug, () => {
-      const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now: Date.parse(at) });
+      const evs = read(slug).events;
+      const p = pairTrial({ slug, events: evs, states, values: null, registry, now: Date.parse(at) });
       if (p?.key !== key || p.id !== item.trial_id || p.state !== 'trial') return null;
-      return { kind: 'pair', levers: p.levers, pair: key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket: item.ticket,
-        reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}`, evidence_file: file, evidence_line: line };
+      // After whatever the log holds, so a revert read past an undo's restore replays after it.
+      return pairRevert(p, { at: stampAfter(evs, at), ticket: item.ticket, file, line, reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}` });
     });
     if (e) events.push(e);
   }
   return { row: written?.rec ?? row, events };
+}
+
+// The event that ends pair trial `p` (levers-auto.mjs pairTrial) for an audit P0.
+const pairRevert = (p, { at, ticket, file, line, reason }) => ({
+  kind: 'pair', levers: p.levers, pair: p.key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket,
+  reason, evidence_file: file, evidence_line: line,
+});
+
+// A blind audit's P0 on a trial's on arm, recorded while that trial was not running (a lever set off by
+// hand, so neither a trip nor a pair revert could be written), answered for each trial running in
+// `events`: the lever log as it stands once a levers undo restores the trial, under its trial id. Pure:
+// levers undo appends these in the same locked write as the restore, so no ticket is drawn into the
+// restored trial first. -> [event]: a pair trial's revert, or the lever's trip and its needs_you.
+export function auditP0Replay({ slug, name = slug, events, states, at, registry = REGISTRY }) {
+  const file = auditFile(slug);
+  const rows = rowsOf(file).filter((r) => r.rec.p0 > 0 && r.rec.arm === 'on');
+  if (!rows.length) return [];
+  const out = [];
+  for (const t of liveTrials({ slug, events, states, registry })) {
+    const r = rows.find((x) => x.rec.trial_id === t.id);
+    if (!r) continue;
+    const why = `the blind audit of PR #${r.rec.pr} found ${r.rec.p0} P0 while its trial was not running`;
+    const defect = `${r.rec.p0} P0 at ${String(r.rec.merge_commit).slice(0, 12)}`;
+    if (t.pair) {
+      const p = pairTrial({ slug, events, states, values: null, registry });
+      out.push(pairRevert(p, { at, ticket: r.rec.ticket, file, line: r.line, reason: `${why}, on the ${p.levers.join(' with ')} pair: ${defect}` }));
+    } else {
+      out.push(...tripEvents({ events, name, at, registry, x: { lever: t.lever, trip: TRIP, ticket: r.rec.ticket, from: 'trial', file, line: r.line, why, defect } }));
+    }
+  }
+  return out;
 }
 
 // One pass's audits for repo `slug`: records each audit that ended, queues what the sample adds, and

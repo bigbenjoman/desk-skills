@@ -43,7 +43,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, stat
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REGISTRY, KEPT_STATES } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId } from './levers-auto.mjs';
 import { runsPath } from './findings.mjs';
 import { postMergePath } from './post-merge.mjs';
@@ -101,14 +101,18 @@ export function recordWait(state, key, wait, at) {
 
 // ---- which tickets a lever's trips read ---------------------------------------------------------------
 // When `lever`'s latest unbroken run of revertible states (trial, adopted, settled) began, so the trial
-// an adopted lever was kept from counts with it: null when that run is the registry's initial trial.
+// an adopted lever was kept from counts with it: null when that run is the registry's initial trial. An
+// undo that restores a state (levers undo) puts back the run as it stood before the call it undoes.
 function liveSince(events, lever, registry) {
   const l = registry[lever];
   let live = l?.layer === 'low-risk' && !!l.trialled;
   let since = null;
+  const before = new Map();
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
-    if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
+    before.set(e.id, { live, since });
+    if (e.restores && before.has(e.undoes_event)) ({ live, since } = before.get(e.undoes_event));
+    else if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
     else { live = false; since = null; }
   }
   return since;
@@ -315,7 +319,7 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
       if (!detect || hit) continue;
       let r = null;
       try { r = detect({ state, tickets, trip, cache }); } catch { r = null; }
-      if (r && !cited.has(`${lever}|${r.file}|${r.line}`)) hit = { lever, trip: trip.id, from: s.state, ...r };
+      if (r && !cited.has(`${lever}|${r.file}|${r.line}`)) hit = { lever, trip: trip.id, from: s.state, from_id: s.id, ...r };
     }
     for (const t of hit ? [] : tickets) {
       for (const trip of reg.trips) {
@@ -324,7 +328,7 @@ export function findTrips({ slug, state, queue, states, events, now = Date.now()
         let recs = [];
         try { recs = detect({ state, t, queue, lever, trip, now, cache, registry }); } catch { recs = []; }
         const r = recs.find((x) => !cited.has(`${lever}|${x.file}|${x.line}`));
-        if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, ...r }; break; }
+        if (r) { hit = { lever, trip: trip.id, ticket: t.key, from: s.state, from_id: s.id, ...r }; break; }
       }
       if (hit) break;
     }
@@ -341,36 +345,48 @@ export function applyTrips({ slug, name = slug, repo = null, decisionsState = ba
   const written = [];
   const at = new Date(now).toISOString();
   for (const x of trips) {
-    const e = appendWith(slug, () => {
-      const events = read(slug).events;
-      const s = leverStatesIn(events, registry)[x.lever];
-      if (s.state !== x.from) return null;
-      if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return null;
-      return {
-        kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
-        reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
-        evidence_file: x.file, evidence_line: x.line, ...(x.error ? { error: x.error } : {}),
-      };
+    const lines = appendWith(slug, () => {
+      const evs = tripEvents({ events: read(slug).events, name, x, at, registry });
+      return evs.length ? evs : null;
     });
-    if (!e) continue;
-    written.push(e);
-    recordLeverDecision([e], { slug, repo, state: decisionsState });
-    const frozen = e.to === 'frozen';
-    if (frozen || x.error || x.defect) {
-      const detail = x.error ?? x.defect;
-      const n = appendWith(slug, () => ({
-        kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : x.error ? 'own_step_error' : snake(x.trip), at, ticket: x.ticket,
-        evidence_file: x.file, evidence_line: x.line,
-        reason: frozen
-          ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${detail ? `: ${detail}` : ''}`)
-          : x.error
-            ? `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`
-            : `${x.lever} was reverted in ${name}: ${x.why} on ${x.ticket}, a defect that merged: ${x.defect}`,
-      }));
-      if (n) written.push(n);
-    }
+    if (!lines) continue;
+    written.push(...lines);
+    recordLeverDecision([lines[0]], { slug, repo, state: decisionsState });
   }
   return written;
+}
+
+// The events trip `x` writes on the lever log `events` (read under its lock): the trip, then its
+// needs_you where it froze the lever or names an error or a defect. None while the lever is no longer in
+// the state `x.from` the trip was read in, or, where `x` carries `from_id`, no longer in that same run of
+// it (leverStatesIn's `id`: a fresh trial levers decide started since has a new one, and a trial an undo
+// restored keeps its own), or once a trip cites the same evidence.
+//   -> [event] (applyTrips appends them; the caller logs the trip's decision)
+export function tripEvents({ events, name, x, at, registry = REGISTRY }) {
+  const s = leverStatesIn(events, registry)[x.lever];
+  if (s.state !== x.from) return [];
+  if (Object.hasOwn(x, 'from_id') && (s.id ?? null) !== (x.from_id ?? null)) return [];
+  if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return [];
+  // Stamped no earlier than what the log already holds (lever-log.mjs stampAfter): a trip read before a
+  // levers undo restored the lever, and written after it, would otherwise replay before the restore.
+  at = stampAfter(events, at);
+  const e = {
+    kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
+    reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
+    evidence_file: x.file, evidence_line: x.line, ...(x.error ? { error: x.error } : {}),
+  };
+  const frozen = e.to === 'frozen';
+  if (!(frozen || x.error || x.defect)) return [e];
+  const detail = x.error ?? x.defect;
+  return [e, {
+    kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : x.error ? 'own_step_error' : snake(x.trip), at, ticket: x.ticket,
+    evidence_file: x.file, evidence_line: x.line,
+    reason: frozen
+      ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${detail ? `: ${detail}` : ''}`)
+      : x.error
+        ? `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`
+        : `${x.lever} was reverted in ${name}: ${x.why} on ${x.ticket}, a defect that merged: ${x.defect}`,
+  }];
 }
 
 // The trips as a pass runs them, for its batch state folder and queue. -> { events, line }, `line`

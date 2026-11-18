@@ -12,7 +12,7 @@ import { existsSync, readFileSync, realpathSync, statSync, mkdirSync } from 'nod
 import { basename, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deskConfigRoot } from './desk-env.mjs';
-import { autopilotRoot, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
+import { autopilotRoot, buildLock, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
 import { renderPage } from './levers-page.mjs';
 import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
@@ -25,7 +25,7 @@ const STALE_MS = 30 * 60 * 1000;
 // How long a refresh waits for another one's build before leaving the page to it.
 const LOCK_WAIT_MS = 10_000;
 
-const filesIn = (dir) => ({ page: join(dir, 'index.html'), view: join(dir, 'view.json'), build: join(dir, 'build.json'), lock: join(dir, 'build.lock') });
+const filesIn = (dir) => ({ page: join(dir, 'index.html'), view: join(dir, 'view.json'), build: join(dir, 'build.json'), lock: buildLock(dir) });
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
 
 // The inputs' names, sizes and modification times, hashed.
@@ -43,13 +43,15 @@ export function whereOf(error, repos = [], root = autopilotRoot()) {
 }
 
 // What the last refresh left: the page, the view it was rendered from and build.json's failure.
-// `builtAt` is the page's build time in ms, null with no page; `old` says opening it rebuilds it
-// first (older than REBUILD_MS), and `stale` that no supervisor has rebuilt it (older than STALE_MS).
+// `builtAt` is the page's build time in ms, null with no page: the view's, or the page file's own
+// time where that is older (a `levers-view build` rewrote view.json without rendering the page).
+// `old` says opening it rebuilds it first (older than REBUILD_MS), and `stale` that no supervisor
+// has rebuilt it (older than STALE_MS).
 export function pageState({ dir = leversDir(), now = Date.now() } = {}) {
   const f = filesIn(dir);
   const view = readJson(f.view);
   const page = existsSync(f.page) ? f.page : null;
-  const at = page && view ? Date.parse(view.generated_at) : NaN;
+  const at = page && view ? Math.min(Date.parse(view.generated_at), statSync(f.page).mtimeMs) : NaN;
   const builtAt = Number.isNaN(at) ? null : at;
   const age = builtAt == null ? Infinity : now - builtAt;
   return { file: f.page, page, view, failed: readJson(f.build)?.failed ?? null, builtAt, old: age > REBUILD_MS, stale: age > STALE_MS };

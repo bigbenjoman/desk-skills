@@ -58,7 +58,11 @@ const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
 //   -> { <lever>: { state, at, id, value? } }, `at` and `id` those of the event that set it, null with
-//   none. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to.
+//   none. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to. An
+//   override whose `to` is `on` or `off` with that same `value` (levers.mjs decide) is overridden to it;
+//   one with no value (levers.mjs undo, back to a plain state) is that state. An override carrying
+//   `restores: { id, at }` (levers.mjs undo) takes the restored state's `id` and `at`, so a trial keeps its
+//   trial id and an adopt its holdback start.
 export function leverStatesIn(events, registry = REGISTRY) {
   const out = {};
   for (const [name, l] of Object.entries(registry)) {
@@ -66,8 +70,11 @@ export function leverStatesIn(events, registry = REGISTRY) {
   }
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
-    const state = STATES.includes(e.to) ? e.to : 'off';
-    out[e.lever] = { state, at: e.at, id: e.id ?? null, ...(state === 'overridden' ? { value: e.value === 'on' ? 'on' : 'off' } : {}) };
+    const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
+    const state = pinned ? 'overridden' : STATES.includes(e.to) ? e.to : 'off';
+    const value = pinned ? e.to : e.value;
+    const from = e.kind === 'override' && e.restores && typeof e.restores === 'object' ? e.restores : { at: e.at, id: e.id };
+    out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : {}) };
   }
   return out;
 }
@@ -132,12 +139,16 @@ function qualityLevers({ states, values, byLever, registry }) {
 }
 
 // The id of the event that began `lever`'s latest unbroken run of kept states (adopted, then settled),
-// so settling an adopted lever does not start its pair trial again.
+// so settling an adopted lever does not start its pair trial again. An undo that restores a state
+// (levers undo) puts back the run as it stood before the call it undoes, so the pair keeps its trial id.
 function keptSince(events, lever) {
   let id = null;
   let kept = false;
+  const before = new Map();
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
+    before.set(e.id, { id, kept });
+    if (e.kind === 'override' && e.restores && before.has(e.undoes_event)) { ({ id, kept } = before.get(e.undoes_event)); continue; }
     const now = KEPT_STATES.includes(e.to);
     if (now && !kept) id = e.id ?? null;
     kept = now;

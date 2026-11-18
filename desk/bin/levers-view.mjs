@@ -3,7 +3,9 @@
 // figure the Levers page, the desk-q Levers line and the digest show, with the age of each input and
 // the honesty rules already applied, so no renderer words a result on its own.
 //
-//   node levers-view.mjs build      writes view.json and build.json, and prints where
+//   node levers-view.mjs build      writes view.json and build.json, and prints where; a build
+//                                   another process is running is waited for first
+//                                   (`levers-view build` on PATH runs the same)
 //   node levers-view.mjs render     writes the Levers page, index.html, from view.json beside it
 //
 // It only reads its sources: every configured repo's levers row (config §3b "Phase 0 levers"), and
@@ -25,7 +27,8 @@ import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignab
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
-import { writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
+import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
+import { spendsNeedsYou } from './lever-log.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -347,7 +350,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
     let unassignable = false;
     evs.forEach((e, i) => {
       if (e.kind !== 'needs_you') return;
-      const spent = evs.slice(i + 1).some((x) => ['transition', 'override', 'thaw', 'trip'].includes(x.kind) && (e.lever == null || x.lever === e.lever));
+      const spent = evs.slice(i + 1).some((x) => spendsNeedsYou(e, x));
       if (spent) return;
       leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
       if (e.reason_code === 'state_unreadable') unassignable = true;
@@ -523,16 +526,25 @@ export function buildRecord(view, ms) {
   };
 }
 
-// Builds the view and writes view.json and build.json into `out`. -> { view, record, files }
-export function build({ out = leversDir(), ...opts } = {}) {
-  const t0 = Date.now();
-  const view = buildView(opts);
-  const record = buildRecord(view, Date.now() - t0);
+// The machine-wide lock every build of the view in `out` takes (levers-refresh.mjs's too), so two
+// builders never write at once.
+export const buildLock = (out = leversDir()) => join(out, 'build.lock');
+const BUILD_WAIT_MS = 60_000;
+
+// Builds the view and writes view.json and build.json into `out`, under the build lock: a build
+// already running is waited for, up to `waitMs`, then this one runs. -> { view, record, files }
+export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {}) {
   mkdirSync(out, { recursive: true });
-  const files = { view: join(out, 'view.json'), build: join(out, 'build.json') };
-  writeJsonAtomic(files.view, view);
-  writeJsonAtomic(files.build, record);
-  return { view, record, files };
+  const held = buildLock(out);
+  return withDirLock(held, () => {
+    const t0 = Date.now();
+    const view = buildView(opts);
+    const record = buildRecord(view, Date.now() - t0);
+    const files = { view: join(out, 'view.json'), build: join(out, 'build.json') };
+    writeJsonAtomic(files.view, view);
+    writeJsonAtomic(files.build, record);
+    return { view, record, files };
+  }, { waitMs, timeoutError: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
 }
 
 // Renders the Levers page from the view.json in `dir` into index.html beside it. -> { file, view }

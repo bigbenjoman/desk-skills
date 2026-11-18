@@ -370,5 +370,42 @@ const evidence = (slug, rows, name = 'evl_2026-11-15_x.jsonl') => ({ [`${slug}/l
 // The quality-risk cap is the registry's.
 t('overhead: the quality-risk cap', view(machine()).panels.overhead.quality_risk_cap, 0.3);
 
+// DS-709 AC14: a build run while another holds the Levers build lock waits for it, then builds.
+{
+  const { tryLock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const { spawn } = await import('node:child_process');
+  const { existsSync } = await import('node:fs');
+  const out = V.leversDir();
+  mkdirSync(out, { recursive: true });
+  t('AC14 the lock is taken as a supervisor\'s build would', tryLock(V.buildLock(out)), true);
+  const child = spawn('node', [join(dirname(new URL(import.meta.url).pathname), '..', 'desk', 'bin', 'levers-view.mjs'), 'build'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  let said = '';
+  child.stdout.on('data', (d) => { said += d; });
+  const exited = new Promise((res) => child.on('exit', (code) => res(code)));
+  await new Promise((res) => setTimeout(res, 1500));
+  t('AC14 nothing is written while the other build holds the lock', existsSync(join(out, 'view.json')), false);
+  unlock(V.buildLock(out));
+  const code = await exited;
+  t('AC14 once it lets go, the build runs and exits 0', j([code, existsSync(join(out, 'view.json')), existsSync(join(out, 'build.json'))]), j([0, true, true]));
+  t('AC14 and says where it wrote', said.startsWith(`levers-view: wrote ${join(out, 'view.json')} and ${join(out, 'build.json')}`), true);
+}
+
+// DS-709 AC14, in this process (where no exit handler stands in for build letting go): build takes the
+// lock, so one held here makes it wait and give up, and a build that ran has let go of it before returning.
+{
+  const { tryLock, unlock } = await import('../desk/bin/dir-lock.mjs');
+  const { existsSync } = await import('node:fs');
+  const m = machine({ repos: autoRepos });
+  const out = join(m.out, 'inproc');
+  mkdirSync(out, { recursive: true });
+  tryLock(V.buildLock(out));
+  let refused = '';
+  try { V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out, waitMs: 200 }); } catch (e) { refused = e.message; }
+  t('AC14 a build waits on the lock another build holds, then gives up writing nothing', j([refused.startsWith('another Levers build'), existsSync(join(out, 'view.json'))]), j([true, false]));
+  unlock(V.buildLock(out));
+  V.build({ root: m.root, configRoot: m.configRoot, now: NOW, tz: 'UTC', out });
+  t('AC14 a build that ran has let go of the lock before it returns', j([existsSync(join(out, 'view.json')), existsSync(V.buildLock(out))]), j([true, false]));
+}
+
 console.log(fails ? `${fails} check(s) failed` : 'all checks passed');
 process.exit(fails ? 1 : 0);

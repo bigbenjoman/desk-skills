@@ -650,11 +650,20 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
+// A slug's name without its owner: the part after the first `__`, or the slug with none.
+export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+
+// Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
+export function shownNames(slugs) {
+  const short = slugs.map(shortName);
+  return slugs.map((s, i) => (short.filter((n) => n === short[i]).length > 1 ? s.replace('__', '/') : short[i]));
+}
+
 export function loadRepos(now = Date.now()) {
   const claims = repoPortClaims();
-  const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
+  const names = shownNames(claims.map((c) => c.slug));
   const all = claims.flatMap((c, i) => {
-    const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
+    const name = names[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
     return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
   });
@@ -3167,7 +3176,7 @@ export const ticketScreen = (r, key, opts) => joined(ticketParts(r, key, opts));
 
 // ---- the command -------------------------------------------------------------------------------
 
-class Usage extends Error {}
+export class Usage extends Error {}
 
 // Exact name first, then a unique prefix of the short name; owner/name and the slug match too. A
 // repo's name is its standing batch; a named batch is `<repo>:<name>`, its `word`.
