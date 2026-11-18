@@ -196,8 +196,10 @@ or every child is through, a check that fails on it (§4 State checks aside: no 
 clears those) sends a check try to the base worktree, as a child PR's red check sends a fix try. It is
 a task worker under `base-<branch>`, recorded on `base_fix` as a try of kind `checks`, and it fixes
 what fails on the base and pushes it. A draft still waiting on children gets none: the gate has not
-taken it out of draft yet. It gets two tries per promotion PR, one per head. After two, or a try that
-left the head where it was, the PR is recorded as `promotion.red`. It goes under `WAITING ON YOU`, and
+taken it out of draft yet. It gets two tries per promotion PR, one per head. What a try commits and
+does not push is kept on a ref and dropped from the worktree, so the next sync is not refused. After
+two tries, or a try that left the head where it was, or at once where §3 `batch-base-push` does not
+let a worker push the base, the PR is recorded as `promotion.red`. It goes under `WAITING ON YOU`, and
 `/desk-needs-you` lists it as a `promotion:<n>` item, naming the failing checks and what the last try
 did, ranked above the follow items that wait on it. The next pass that finds it green, merged or
 closed clears it, and while it is red the batch is not idle.

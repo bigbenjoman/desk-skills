@@ -1951,7 +1951,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
-// DS-786: a feature batch's promotion PR still red once its check tries are spent (pass.mjs
+// A feature batch's promotion PR still red once its check tries are spent (pass.mjs
 // promotion.red) is one pr item, listed above the follow items of the children waiting on it.
 {
   const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(900), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(900) }, ...more });

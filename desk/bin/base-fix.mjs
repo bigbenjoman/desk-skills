@@ -22,6 +22,10 @@ const short = (sha) => String(sha ?? '?').slice(0, 12);
 // A try that merges the default branch into the base (a conflict or merged-tree fix), rather than one
 // on a PR of the base's: the epic PR's review (kind `review`) or the promotion PR's red checks (`checks`).
 export const mergeTry = (x) => !x?.kind;
+// A try whose unpushed work is kept on a ref and dropped from the base worktree when it ends: a merge try,
+// and a promotion check try, which commits on the base before it pushes. Either, left in place, leaves a
+// worktree every later sync refuses, and in feature mode a refused sync holds every spawn.
+export const cleanedTry = (x) => mergeTry(x) || x?.kind === 'checks';
 const fileList = (files) => (files?.length ? files.join(', ') : 'not listed');
 
 // rec: the queue's base_fix, or null. c: { head (origin's base), source (origin's default branch),
@@ -162,13 +166,23 @@ export function baseFixTask({ base, source, fix }) {
 //   rec: base_fix · v: { pr, head } · alive: the running try's worker is live
 //   -> wait | stuck (why) | spawn (fix)
 export function epicReviewCall(rec, v, { alive }) {
-  const done = (rec?.tries ?? []).filter((x) => x.kind === 'review' && x.pr === v.pr);
+  return prTryCall(rec, v, { alive, kind: 'review', lead: `no clean review at ${short(v.head)}` });
+}
+
+// The tries on one PR of the base's (kind `review` or `checks`): at most FIX_TRIES_MAX per PR and one per
+// head. This PR's running try is waited on while its worker is live. Once its tries are spent it is
+// stuck, even while another kind's worker holds the worktree, so a spent PR stays the person's.
+//   -> wait | stuck (why, tried) | spawn (fix)
+function prTryCall(rec, v, { alive, kind, lead }) {
+  const done = (rec?.tries ?? []).filter((x) => x.kind === kind && x.pr === v.pr);
   const last = done[done.length - 1] ?? null;
-  if (rec?.running && alive) return { call: 'wait', try: last };
+  const live = rec?.running && alive ? (rec.tries?.[rec.tries.length - 1] ?? {}) : null;
+  if (live && live.kind === kind && live.pr === v.pr) return { call: 'wait', try: last };
   if (done.some((x) => x.head === v.head) || done.length >= FIX_TRIES_MAX) {
-    return { call: 'stuck', why: `no clean review at ${short(v.head)} after ${done.length} review ${done.length === 1 ? 'try' : 'tries'}${last?.outcome ? `; the last try ${last.outcome}` : ''}` };
+    return { call: 'stuck', why: `${lead} after ${done.length} ${kind === 'review' ? 'review' : 'check'} ${done.length === 1 ? 'try' : 'tries'}${last?.outcome ? `; the last try ${last.outcome}` : ''}`, tried: done.length };
   }
-  return { call: 'spawn', fix: { kind: 'review', try: done.length + 1, of: FIX_TRIES_MAX, head: v.head, pr: v.pr } };
+  if (live) return { call: 'wait', try: last };
+  return { call: 'spawn', fix: { kind, try: done.length + 1, of: FIX_TRIES_MAX, head: v.head, pr: v.pr } };
 }
 
 export function epicReviewTicket({ key, base, source, epic, fix }) {
@@ -202,17 +216,17 @@ export function epicReviewTask({ base, source, fix }) {
 // child PR's red checks get fix tries: a worker in the base worktree, recorded on base_fix as a try of
 // kind `checks`, at most FIX_TRIES_MAX per promotion PR and one per head. Once they are spent, or a try
 // leaves the head where it was, the PR is the person's (pass.mjs records it as promotion.red).
+// A worker that may not push the base could only park, so without that grant no try starts.
 //   rec: base_fix · v: { pr, head, failing: [check names] } · alive: the running try's worker is live
-//   -> wait | stuck (why, tried) | spawn (fix)
-export function promotionChecksCall(rec, v, { alive }) {
-  const done = (rec?.tries ?? []).filter((x) => x.kind === 'checks' && x.pr === v.pr);
-  const last = done[done.length - 1] ?? null;
-  if (rec?.running && alive) return { call: 'wait', try: last };
-  if (done.some((x) => x.head === v.head) || done.length >= FIX_TRIES_MAX) {
-    const why = `still failing ${v.failing.join(', ')} at ${short(v.head)} after ${done.length} check ${done.length === 1 ? 'try' : 'tries'}${last?.outcome ? `; the last try ${last.outcome}` : ''}`;
-    return { call: 'stuck', why, tried: done.length };
+//   push: { ok, perm, key }, as baseFixCall's
+//   -> wait | stuck (why, tried) | person (why, tried) | spawn (fix)
+export function promotionChecksCall(rec, v, { alive, push }) {
+  if (push && !push.ok) {
+    const tried = (rec?.tries ?? []).filter((x) => x.kind === 'checks' && x.pr === v.pr).length;
+    return { call: 'person', why: `${v.failing.join(', ')} ${v.failing.length === 1 ? 'fails' : 'fail'}, and config §3 ${push.key} is "${push.perm}", so no worker may push a fix to the base${push.perm === 'ask' ? ' (run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 to let one)' : ''}`, tried };
   }
-  return { call: 'spawn', fix: { kind: 'checks', try: done.length + 1, of: FIX_TRIES_MAX, head: v.head, pr: v.pr, failing: v.failing } };
+  const c = prTryCall(rec, v, { alive, kind: 'checks', lead: `still failing ${v.failing.join(', ')} at ${short(v.head)}` });
+  return c.call === 'spawn' ? { ...c, fix: { ...c.fix, failing: v.failing } } : c;
 }
 
 export function promotionChecksTicket({ key, base, source, fix }) {
