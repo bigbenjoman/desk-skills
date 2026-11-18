@@ -199,6 +199,54 @@ function machine({ step = 5000 } = {}) {
   t('DS-675 and the pass names that login', mixed.stop.startsWith(`the GitHub login in ${own}.github-session.json expired`), true);
 }
 
+// ---- DS-790: GitHub's PR page changed (exit 7 naming it) pauses every repo's uploads till desk is installed again
+{
+  const m = machine();
+  let installed = '/desk/releases/aaa/bin';
+  const install = () => installed;
+  const CHANGED = "[upload] GitHub's PR page changed: no comment composer found by role, placeholder or legacy id";
+  m.add('acme/a', 'a-1', 1); m.add('acme/b', 'b-1', 1);
+  m.code['a-1'] = () => ({ code: EXIT_THROTTLED, out: `[upload] #1 opening the PR\n${CHANGED}` });
+  const r = m.pump({ install });
+  const q1 = readUploadQueue(m.file);
+  t('DS-790 AC1 a page change stops the pass there: no other repo is tried', m.calls.map((c) => c.key), ['a-1']);
+  t('DS-790 AC1 the job keeps its place and spends no try: no result, no rate-limit back-off', `${isQueued(q1, '/q/acme/a.json', 'a-1')} ${q1.results.length} ${q1.backoff}`, 'true 0 null');
+  t('DS-790 AC1 the queue records the pause for the machine, under the install that found it', `${q1.page?.repo} ${q1.page?.pr} ${q1.page?.install} ${q1.page?.why}`, `acme/a 1 ${installed} ${CHANGED.slice('[upload] '.length)}`);
+  t('DS-790 AC1 the pass says the uploader is broken, not rate limited', r.stop.startsWith("desk's screenshot uploader is broken: GitHub's PR page changed"), true);
+  delete m.code['a-1'];
+  m.clock += 60 * 60_000;
+  const still = m.pump({ install });
+  t('DS-790 AC1 a later pass under the same install runs no repo\'s upload', `${m.calls.length} ${still.ran.length} ${still.stop === r.stop}`, '1 0 true');
+  installed = '/desk/releases/bbb/bin';
+  m.code['b-1'] = () => ({ code: EXIT_THROTTLED, out: CHANGED });
+  m.clock += 120_000;
+  const again = m.pump({ install });
+  t('DS-790 AC4 desk installed again but the composer still missing: one try, then paused under the new install', `${m.calls.slice(1).map((c) => c.key)} ${readUploadQueue(m.file).page?.install} ${readUploadQueue(m.file).page?.repo}`, `b-1 ${installed} acme/b`);
+  t('DS-790 AC4 and that pass says so', again.stop.startsWith("desk's screenshot uploader is broken: GitHub's PR page changed"), true);
+  delete m.code['b-1'];
+  installed = '/desk/releases/ccc/bin';
+  m.clock += 120_000;
+  m.pump({ install });
+  const q4 = readUploadQueue(m.file);
+  t('DS-790 AC4 installed again and the upload finds the composer: the pause clears and the queue goes on', `${m.calls.slice(2).map((c) => c.key).join(',')} ${q4.page} ${q4.jobs.length}`, 'a-1,b-1 null 0');
+  // A rate-limit stall is still exit 7's back-off, and sets no pause.
+  m.add('acme/a', 'a-2', 1);
+  m.code['a-2'] = () => ({ code: EXIT_THROTTLED, out: '[upload] throttled: batch 1 filled no image for 180s, which is GitHub\'s rate limit' });
+  m.clock += 120_000;
+  m.pump({ install });
+  const q5 = readUploadQueue(m.file);
+  t('DS-790 a rate-limit exit 7 still backs off and is its job\'s result, with no pause', `${q5.backoff?.stalls} ${q5.results.at(-1)?.key} ${q5.page}`, '1 a-2 null');
+}
+// AC5: exit 6 is untouched: GitHub refusing the login still holds the job and sets no page pause.
+{
+  const m = machine();
+  m.add('acme/a', 'a-1', 1);
+  m.code['a-1'] = () => ({ code: 6, out: '[upload] the saved GitHub login has expired: GitHub no longer accepts /p.github-session.json.' });
+  const r = m.pump({ login: () => ({ ok: true, file: '/p.github-session.json' }), install: () => '/x' });
+  const q = readUploadQueue(m.file);
+  t('DS-790 AC5 an exit 6 still records the sign-in refusal and keeps the job, with no page pause', `${Object.keys(q.signin)} ${isQueued(q, '/q/acme/a.json', 'a-1')} ${q.page} ${r.stop.startsWith('GitHub turned away the saved login')}`, '/p.github-session.json true null true');
+}
+
 // ---- the lock: a dead holder's lock is cleared, a live one's is not --------------------------------
 {
   const dir = join(ROOT, 'held.lock');

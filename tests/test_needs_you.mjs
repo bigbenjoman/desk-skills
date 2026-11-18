@@ -1683,6 +1683,41 @@ t('DS-577 AC4 a passing reviewer check lists no item', rv().some((i) => i.kind =
   rmSync(uq); rmSync(join(rvState, 'handed.json')); rmSync(signinDir, { recursive: true });
 }
 
+// ---- DS-790: GitHub's PR page changing pauses the upload queue: one desk item, not one per PR -------
+{
+  const uq = join(env.DESK_HOME, 'upload-queue.json');
+  const rvBatch = () => N.collect({ word: 'rv' }).scope[0];
+  const alphaBatch = () => N.collect({ word: 'alpha' }).scope[0];
+  const [rvBefore, alphaBefore] = [N.needsCount(rvBatch()).shown, N.needsCount(alphaBatch()).shown];
+  const why = "GitHub's PR page changed: no comment composer found by role, placeholder or legacy id";
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'acme/rv', pr: 301, key: 'RV-1' }, { repo: 'acme/alpha', pr: 9, key: 'A-9' }],
+    page: { at: minsAgo(20), why, repo: 'acme/rv', pr: 301, install: '/desk/releases/aaa/bin' } }));
+  const pageOf = (word) => N.collect({ word }).items.filter((i) => i.kind === 'upload-page');
+  for (const word of ['rv', 'alpha']) {
+    const items = pageOf(word);
+    t(`DS-790 AC2 listing ${word}: one item saying the uploader is broken by a GitHub page change, naming how many PRs wait`,
+      `${items.length} ${items[0]?.need.startsWith(`desk's screenshot uploader is broken by a GitHub page change (${why}), so no repo's screenshot upload runs and 2 PR(s) wait in draft`)}`, '1 true');  }
+  const all = N.collect().items.filter((i) => i.kind === 'upload-page');
+  t('DS-790 AC2 one item for the machine, in the repo whose upload found it, naming every upload waiting', `${all.length} ${all[0]?.r.slug} ${all[0]?.note}`, '1 acme__rv Waiting in the upload queue: acme/rv #301 and acme/alpha #9.');
+  t('DS-790 AC2 desk-q counts it once, in that repo', `${N.needsCount(rvBatch()).shown - rvBefore} ${N.needsCount(alphaBatch()).shown - alphaBefore}`, '1 0');
+  const done = N.record({ word: 'rv', ticket: 'upload-page', action: 'done' });
+  t('DS-790 done records nothing and says an upload after desk is installed again clears it', `${done.ok} ${/once desk is installed again/.test(done.line)}`, 'true true');
+  // Put off from the other repo, where it is listed in alpha's batch, it is put off for the machine.
+  const off = N.record({ word: 'alpha', ticket: 'upload-page', action: 'not-now' });
+  const offFile = join(env.DESK_HOME, 'not-now.jsonl');
+  t('DS-790 put off from alpha, it is in the machine\'s register, and off both lists and rv\'s count', `${off.ok} ${off.line.endsWith(`put off (${offFile}).`)} ${pageOf('alpha').length} ${pageOf('rv').length} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'true true 0 0 0');
+  rmSync(offFile, { force: true });
+  t('DS-790 its put-off cleared, it is listed again', pageOf('alpha').length, 1);
+  // The queue holds the repo as the pass's origin spells it, which GitHub does not care about.
+  writeFileSync(uq, JSON.stringify({ jobs: [{ repo: 'Acme/RV', pr: 301, key: 'RV-1' }],
+    page: { at: minsAgo(20), why, repo: 'Acme/RV', pr: 301, install: '/desk/releases/aaa/bin' } }));
+  const cased = N.collect().items.filter((i) => i.kind === 'upload-page');
+  t('DS-790 a repo spelled in other case is still its repo: listed and counted there', `${cased.length} ${cased[0]?.r.slug} ${N.needsCount(rvBatch()).shown - rvBefore}`, '1 acme__rv 1');
+  writeFileSync(uq, JSON.stringify({ jobs: [], page: null }));
+  t('DS-790 AC4 the pause cleared, the item is gone', `${N.collect().items.some((i) => i.kind === 'upload-page')} ${N.needsCount(rvBatch()).shown - rvBefore}`, 'false 0');
+  rmSync(uq);
+}
+
 // ---- DS-396: an idle batch the loaded supervisor runs is not stopped; one with no agent is
 // Each last passed 20 minutes ago. omicron's supervisor has ticked idle since, refreshing its heartbeat as
 // supervisor.mjs idleBeat does (test_supervisor.sh proves the tick writes it); pi's agent is not loaded.
