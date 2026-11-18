@@ -117,6 +117,10 @@ prints nothing. The merge driver runs this itself after its own move to Done.
   Branch protection (`desk-env get branch-protection`) `none`, nothing on GitHub stops a red merge, so the check is entirely yours.
   Read check state with `gh pr checks <n> --json name,state,bucket`, or `awk -F'\t'` on the plain
   output: it is tab-separated, and a check name carrying an emoji breaks whitespace splitting.
+- **Wait for checks with `node ~/.claude/desk/bin/pr-watch.mjs checks <n>`** in the background, never
+  a loop over `gh pr checks`: GitHub runs no checks on a PR that conflicts with its base, so such a
+  loop never settles. The watch ends on that too, with a line `PR #<n> conflicts with <base>`: that
+  is `DIRTY`, below.
 - **A review gate can fail on a fresh PR's first run when the review posts late.** Where a required
   check reads the posted verdict: CI typically runs only on open, reopen and push, so posting a review
   starts nothing. If the gate polls for the verdict briefly after the run starts, a review posted
