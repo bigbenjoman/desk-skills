@@ -5208,7 +5208,7 @@ async function epicStep(qx) {
   const merger = spineMerger(qx);
   if (!merger.driver) report.waiting.push(`EPIC PR: #${n} is out of draft, but no merge driver merges it (${merger.rows}): merge it yourself once it is green, pinned to its head (gh pr merge ${n} --repo ${GH_REPO} --match-head-commit <sha>). ${link}`);
   else if (p.merge_blocked) report.waiting.push(`EPIC PR: #${n} is out of draft, but the merge driver holds it: ${p.merge_blocked}. ${link}`);
-  else if (promotionHolds(Object.values(qx.tickets), p.since ?? null).length) { /* said by reportPromotionHolds */ }
+  else if (promotionHolds(Object.values(qx.tickets), p.since ?? null).length) { /* said by promotionHoldLine (pass/report.mjs) */ }
   else if (E.mergeDriverHolder(STATE) == null) report.waiting.push(`EPIC PR: #${n} is out of draft, and no merge driver is running to merge it: start one, or merge it yourself once it is green. ${link}`);
   else out.push(`epic PR #${n}: out of draft; the merge driver merges it once it is green`);
   return true;
