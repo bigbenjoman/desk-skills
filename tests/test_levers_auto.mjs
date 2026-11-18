@@ -282,6 +282,22 @@ t('no state recorded: every trialled lever is on trial, whatever its layer',
     t('AC4 real queue: an archived merged ticket is not in flight', ticketsOf('q2a').inFlight.length, 0);
   }
 
+  // AC4 against a real queue: a carrier whose PR closed unmerged is archived, as is every ticket of an
+  // archived batch; neither is in flight, so neither counts toward the cap.
+  {
+    const { batchPaths, BATCHES_DIR } = await import('../desk/bin/desk-env.mjs');
+    const { archivePath } = await import('../desk/bin/queue-store.mjs');
+    const qf = batchPaths('q4a').queue;
+    mkdirSync(dirname(qf), { recursive: true });
+    const carrier = { state: 'running', levers: { set: ['codex'], arms: { codex: 'on' }, trial_ids: {} } };
+    writeFileSync(qf, JSON.stringify({ version: 1, batch: null, concurrency: 1, tickets: { 'L-1': { key: 'L-1', ...carrier } } }));
+    writeFileSync(archivePath(qf), JSON.stringify({ tickets: { 'C-1': { key: 'C-1', ...carrier, state: 'done', pr_status: { pr: 2, state: 'CLOSED' }, archived_at: NOW.toISOString() } } }));
+    const done = join(dirname(qf), BATCHES_DIR, '.done', 'DS-1');
+    mkdirSync(done, { recursive: true });
+    writeFileSync(join(done, 'queue.json'), JSON.stringify({ version: 1, batch: 'DS-1', concurrency: 1, tickets: { 'B-1': { key: 'B-1', ...carrier } } }));
+    t('AC4 real queue: only the live carrier is in flight, not an archived closed one or an archived batch\'s', ticketsOf('q4a').inFlight.length, 1);
+  }
+
   // AC5: effort is never trialled where Worker location is not local.
   only('q5', 'effort');
   const cloud = admitQ('q5', 150, { values: { 'worker-location': 'cloud' }, prefix: 'C' });

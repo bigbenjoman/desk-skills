@@ -44,7 +44,7 @@ import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, un
 import { appendWith, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
-import { repoTickets } from './batches.mjs';
+import { listBatches, repoTickets } from './batches.mjs';
 import { SIZES, sizeOf } from './desk-q-eta.mjs';
 import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
 
@@ -205,19 +205,20 @@ function rampDue({ slug, key, events, states, values, registry, now, merged }) {
 // Whether a pin carries an unproven quality-risk lever: drawn `on` for a quality-risk trial.
 const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(([k, a]) => a === 'on' && QUALITY_KEY(k, registry));
 
-// The repo's tickets across its batches, archived ones included (batches.mjs repoTickets): the pins of
-// those in flight (not merged or failed), and the keys of those merged.
+// The repo's tickets: the keys of those merged, from every batch with archived tickets and archived
+// batches included (batches.mjs repoTickets), so the ramp counts a carrier a pass archived; and the pins
+// of those in flight, from the live tickets of the live batches only (not merged or failed), since an
+// archived ticket is done, its PR merged or closed, and an archived batch is finished.
 //   -> { inFlight: [pin], merged: Set<key> }
 export function ticketsOf(slug) {
   const out = { inFlight: [], merged: new Set() };
-  let all = [];
-  try { all = repoTickets(slug); } catch { return out; }
-  for (const t of all) {
-    if (!t) continue;
-    if (t.merged_at) { out.merged.add(t.key); continue; }
-    if (t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
-    out.inFlight.push(t.levers);
-  }
+  try {
+    for (const t of repoTickets(slug)) if (t?.merged_at) out.merged.add(t.key);
+    for (const t of repoTickets(slug, listBatches(slug))) {
+      if (!t || t.archived_at || t.merged_at || t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
+      out.inFlight.push(t.levers);
+    }
+  } catch { return { inFlight: [], merged: new Set() }; }
   return out;
 }
 
