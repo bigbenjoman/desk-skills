@@ -98,10 +98,13 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //   apply(args)  one queue.mjs command, in memory: { ok, out } | { ok: false, why } | { direct: true }
 //                for one it does not apply here (any other command, the batch base, a claim, or a
 //                ticket not live in this queue), which the caller runs as queue.mjs
+//   apply(['set', key, …], { when })  that set, only while `when(ticket)` holds, now and when written;
+//                { ok: true, skipped: true } when it does not hold now
 //   flush({ archive })  writes every change applied since the last flush, under the queue lock, and
 //                with `archive` (a pass's last write, once it has handled every ticket) moves done
 //                tickets whose PR merged or closed to the archive:
-//                { ok: true, wrote, version, conflicts, archived, archiveError, ops }, or, when the lock
+//                { ok: true, wrote, version, conflicts, skipped, archived, archiveError, ops }, `skipped`
+//                naming the tickets whose conditional set no longer held, or, when the lock
 //                is not taken within its wait, { ok: false, why, lost } with nothing written
 export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
   // The file's text as last read or written, so an unchanged file costs one read and no parse.
@@ -110,6 +113,8 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
   let mine = structuredClone(base);
   let ops = [];
   let conflicts = [];
+  // The `set`s applied on a condition, { key, fields, when }, checked again under the lock at flush.
+  let guards = [];
 
   // Takes in what other writers have written since: their changes stay, and where one changed a field
   // this writer changed too, theirs stays and the field is named at the next flush.
@@ -128,8 +133,9 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
 
   const view = () => { rebase(); return attachArchive(structuredClone(mine), file); };
 
-  function apply(args) {
+  function apply(args, { when } = {}) {
     const [cmd, ...rest] = args;
+    if (when) return applyIf(args, when);
     if (cmd === 'set-batch') {
       if (rest.some((p) => p.startsWith('base='))) return { direct: true };
       rebase();
@@ -152,25 +158,56 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return { ok: true, out };
   }
 
+  // A `set` made only while `when(ticket)` holds: now, and again under the lock when it is written. A
+  // ticket it no longer holds for, or not live in this queue, is left as it is: { ok, skipped: true }.
+  function applyIf(args, when) {
+    const [cmd, key, ...pairs] = args;
+    if (cmd !== 'set') throw new Error(`a condition applies only to set, not ${cmd}`);
+    rebase();
+    const t = Object.hasOwn(mine.tickets ?? {}, key) ? mine.tickets[key] : null;
+    if (!t || !when(t)) return { ok: true, skipped: true, out: `${key}: not written, it changed since it was read` };
+    try { applySet(t, pairs); } catch (e) { return { ok: false, why: e.message }; }
+    ops.push(args);
+    guards.push({ key, fields: pairs.map((p) => p.split('=')[0].split('.')[0]), when });
+    return { ok: true, out: `${key}: ${pairs.join(' ')}` };
+  }
+
+  // Under the lock, after the rebase: each conditional `set` whose ticket no longer meets its condition
+  // takes back the fields it wrote, as the file has them. -> [{ key, fields }] taken back.
+  function undoUnmet() {
+    const undone = [];
+    for (const g of guards) {
+      const t = Object.hasOwn(mine.tickets ?? {}, g.key) ? mine.tickets[g.key] : null;
+      if (!t || g.when(t)) continue;
+      const disk = base.tickets?.[g.key] ?? {};
+      for (const f of g.fields) { if (Object.hasOwn(disk, f)) t[f] = structuredClone(disk[f]); else delete t[f]; }
+      undone.push(g);
+    }
+    return undone;
+  }
+
   function flush({ archive = false } = {}) {
-    if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], archived: [], archiveError: null, ops: [] };
+    if (!ops.length) return { ok: true, wrote: false, version: versionOf(base), conflicts: [], skipped: [], archived: [], archiveError: null, ops: [] };
     const dir = `${file}.lock`;
     try {
       lock(dir, { waitMs, timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '? (no pid written yet)'}, which has held it past the ${waitMs / 1000}s wait`) });
     } catch (e) {
       const lost = ops;
-      ops = []; conflicts = []; mine = structuredClone(base);
+      ops = []; conflicts = []; guards = []; mine = structuredClone(base);
       return { ok: false, why: e.message, lost };
     }
     try {
       rebase();
+      const skipped = undoUnmet();
+      // A field a skipped set took back is not one this writer lost to another.
+      const kept = conflicts.filter((c) => !skipped.some((s) => s.key === c.ticket && s.fields.includes(c.field)));
       const out = structuredClone(mine);
       let archived = []; let archiveError = null;
       if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
       out.version = versionOf(base);
       const version = writeQueueFile(file, out);
-      const r = { ok: true, wrote: true, version, conflicts, archived, archiveError, ops };
-      base = out; baseText = readFileSync(file, 'utf8'); mine = structuredClone(out); ops = []; conflicts = [];
+      const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops };
+      base = out; baseText = readFileSync(file, 'utf8'); mine = structuredClone(out); ops = []; conflicts = []; guards = [];
       return r;
     } finally { unlock(dir); }
   }
