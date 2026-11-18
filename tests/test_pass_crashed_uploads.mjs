@@ -1,11 +1,7 @@
 // suite: pass phase: crashed uploads (the decision, and the runner every phase goes through)
-import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { runPhase } from '../desk/bin/pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from '../desk/bin/pass/crashed-uploads.mjs';
-// The built-in modules' own objects: patched, and synced, every ES import of them sees the patch.
-const require = createRequire(import.meta.url);
-const cp = require('node:child_process');
-const fs = require('node:fs');
+import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -55,19 +51,10 @@ t('a body that could not be read waits for the next pass, naming why',
 
 // AC5: the decision starts no process, calls no git, gh or Jira, and writes nothing, the queue included.
 {
-  const calls = [];
-  const trap = (mod, names) => names.filter((n) => typeof mod[n] === 'function').map((n) => { const orig = mod[n]; mod[n] = (...a) => { calls.push(n); throw new Error(`${n} called`); }; return () => { mod[n] = orig; }; });
-  const undo = [...trap(cp, ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']),
-    ...trap(fs, ['writeFileSync', 'appendFileSync', 'renameSync', 'mkdirSync', 'openSync', 'unlinkSync', 'rmSync', 'writeFile', 'appendFile'])];
-  syncBuiltinESMExports();
-  let out;
-  let threw = null;
-  try {
+  const { out, threw, calls } = withNoIo(() => {
     const s = snap([ticket('A', { result: { pr: 1 }, upload_crash: crash(1) }), ticket('B', { result: { pr: 5 }, upload_crash: crash(4) }), ticket('C', { result: { pr: 6 }, upload_crash: crash(6) })], { bodies: { 1: { body: CELL }, 6: { body: null, why: 'x' } } });
-    out = [crashedUploadBodies(s), decideCrashedUploads(s)];
-  } catch (e) { threw = e.message; }
-  for (const u of undo) u();
-  syncBuiltinESMExports();
+    return [crashedUploadBodies(s), decideCrashedUploads(s)];
+  });
   t('AC5 the decision returns its actions', j(out?.[1].map((a) => `${a.key}:${a.type}`)), '["A:upload","B:set","C:report"]');
   t('AC5 and starts no process and writes no file on the way', j([threw, calls]), '[null,[]]');
 }

@@ -66,6 +66,9 @@ import { listBatches, lastPromotion, prState as batchPrState } from './batches.m
 import { queueWriter } from './queue-writer.mjs';
 import { runPhase } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
+import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
+  isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, ownWords, LINK_STEP, linkSteps, parkFollowOn, gateListsOf,
+  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed } from './pass/shared.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -261,13 +264,11 @@ function exitCodeOf(key, sid) {
 const exitText = (code) => (code == null ? 'exit code not recorded' : `exit code ${code}`);
 
 // ---- liveness ------------------------------------------------------------
-// A failed registry read must never look like "everything finished" — that would
-// re-spawn work already in flight — so a command that fails reads as no registry, not an empty one.
-// It covers every Claude login (claude-logins.mjs), and one login's failed read fails it.
-const REGISTRY = readRegistry();
-const { live } = REGISTRY;
-const registryOk = Array.isArray(live);
-const liveSids = new Set((registryOk ? live : []).map((a) => a.sessionId));
+// The session registry, read once a pass for every phase's snapshot (pass/shared.mjs registryView): a
+// failed read is unread, never empty, and leaves `live` and `liveSids` null. It covers every Claude
+// login (claude-logins.mjs), and one login's failed read fails it.
+const REGISTRY = registryView(readRegistry());
+const { read: registryOk, sessions: live, liveSids } = REGISTRY;
 
 const Q = queue();
 const rows = Object.values(Q.tickets);
@@ -278,6 +279,8 @@ const PHASE_HANDLERS = {
   set: (a) => q('set', a.key, ...a.fields),
   report: (a) => report[a.list].push(a.line),
 };
+// The snapshot every phase starts from, read as the phase starts.
+const baseSnapshot = () => phaseSnapshot({ tickets: queue().tickets, registry: REGISTRY, now: Date.now() });
 
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
@@ -291,8 +294,7 @@ const putOff = (t) => t.state === 'parked' && !!t.park?.question && !isHeld(t)
 // every spawn and resume, and a worker that ended its session at the limit stays running, paused, until
 // the limit lifts: at its reset time, or sooner when the one probe call a held pass makes succeeds, as
 // it does once the person switches subscription. A paused worker whose session is still live is quiet,
-// not wedged, until this long after the reset; then the stall check runs as before.
-const LIMIT_GRACE_MS = 30 * 60 * 1000;
+// not wedged, until LIMIT_GRACE_MS after the reset; then the stall check runs as before.
 // The probe runs on the login the hold is on, its reading kept as that login's (usage-probe.mjs): a
 // worker's login is the one its session lives in, and a preflight's the one it ran on.
 const OWN_LOGIN = loginOf(process.env.CLAUDE_CONFIG_DIR);
@@ -310,14 +312,12 @@ const INHERITS = !SUBS.exists && REPO_SUB.source === 'default';
 // Only a limit on the repo's own login holds the batch. One on another login, where a worker started
 // before the subscription changed, holds that worker alone.
 const REPO_LOGIN = INHERITS ? OWN_LOGIN : REPO_SUB.login;
-const onRepoLogin = (login) => !!REPO_LOGIN && !!login && login.dir === REPO_LOGIN.dir;
+const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
 // A repo's row pinned to a subscription set off is one item for the person (needs-you subscription-off)
-// while it stands: the queue's subscription_off, dropped by the first pass that finds the pin resolving
-// again. DESK_SUBSCRIPTION naming one only stalls the run: the row is what the item tells them to move.
+// while it stands: the queue's subscription_off (pass/shared.mjs subscriptionOffWrite).
 {
-  const was = queue().subscription_off ?? null;
-  const off = REPO_SUB.off && REPO_SUB.fix === 'the row' ? { email: REPO_SUB.email, login: REPO_SUB.off.name } : null;
-  if (!DRY && (off ? was?.email !== off.email || was?.login !== off.login : was)) q('set-batch', `subscription_off=${off ? JSON.stringify({ since: PASS_AT, ...off }) : 'null'}`);
+  const off = subscriptionOffWrite(queue().subscription_off ?? null, REPO_SUB, PASS_AT);
+  if (!DRY && off != null) q('set-batch', `subscription_off=${off}`);
 }
 const PROBES = new Map();
 // At most one probe a login a pass, made only when something on that login is held on the limit.
@@ -327,21 +327,9 @@ const probeOnce = (login = OWN_LOGIN) => {
   return PROBES.get(k);
 };
 const lifted = (l, login) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000) || probeOnce(login).ok;
-const liftedHow = (l) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000 ? `its reset at ${resetText(l.resetsAt)} passed` : 'a probe call succeeded');
-const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.resetsAt)}` : '');
 // The limits that hold this pass's spawns: each paused worker's, and the batch's own from a preflight
 // the limit refused (the queue's usage_hold).
 const usageHolds = [];
-// A worker waiting at a usage limit until it lifts (or the grace after its reset) is paused, not quiet.
-// The limit passed in is one the worker has not answered since (usageLimit's `resumed` is false).
-const pausedOn = (limit) => !!limit && !limit.resumed && (limit.resetsAt == null || Date.now() < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
-// Passes with no log growth before a worker is reported quiet, and before it is stopped as wedged. Workers
-// log no partial messages, so a long model turn or a suite behind the test lock writes nothing until it ends.
-const QUIET_PASSES = 3;
-const WEDGE_PASSES = 6;
-// A worker past WEDGE_PASSES that is running its own suite under the test lock, or queued for it, is
-// quiet, not wedged, until it has been held that way for this long.
-const SUITE_WAIT_CEILING_MS = 30 * 60 * 1000;
 
 // Report only: the files a finished worker changed outside its triaged scope, kept on the ticket for
 // the batch total. The ticket proceeds as it would anyway. A malformed §4 Incidental paths row is said
@@ -367,15 +355,12 @@ const uploadPerm = E.permission('pr-images');
 
 // A feature spine that finishes is checked, then parked for the person rather than left done: its PR
 // stays draft, and nothing held behind it is released until they approve it (queue.mjs approve).
-const isSpine = (t) => Q.feature === true && Q.spine === t.key;
-// §4 Acceptance specs: the spec directory and the command taking {ids}. Unset or unreadable, both are
-// null, and each check names what is missing.
+const isSpine = (t) => isSpineOf(Q, t);
+// §4 Acceptance specs (pass/shared.mjs acceptanceSpecsOf). Unreadable reads as unset.
 const acceptanceSpecs = () => {
-  try {
-    const s = E.configValues('acceptance-specs');
-    if (s && !E.isNone(s)) return { specDir: s[0], cmd: s.find((x) => x.includes('{ids}')) ?? null };
-  } catch { /* named where it is used */ }
-  return { specDir: null, cmd: null };
+  let row = null;
+  try { row = E.configValues('acceptance-specs'); } catch { /* named where it is used */ }
+  return acceptanceSpecsOf(row);
 };
 function parkSpine(t, pr) {
   const { specDir } = acceptanceSpecs();
@@ -394,8 +379,7 @@ function parkSpine(t, pr) {
 // with every spec it owns unmarked and passing, and no other child's spec changed; otherwise it parks
 // naming the spec, and its PR stays draft. Only its own ids run here; the base gate runs them all.
 // Children that own nothing run as before.
-const ownsSpecs = (t) => Q.feature === true && !isSpine(t) && ownedIds(Q.owners, t.key).length > 0;
-const SPEC_RUN_MS = 30 * 60 * 1000;
+const ownsSpecs = (t) => ownsSpecsOf(Q, t);
 function checkOwned(t, pr) {
   if (pr == null) return;
   const { specDir, cmd } = acceptanceSpecs();
@@ -477,14 +461,11 @@ function settleLinks(t, log) {
   }
   return needs;
 }
-const LINKS_HEAD = 'Issue links not made: ';
-const linksLine = (needs) => `${LINKS_HEAD}${needs.map((n) => n.why ?? n).join('; ')}`;
 // A ticket recorded done (its DONE, or a park the pass records done) with links settleLinks did not make
 // parks naming why, with each command. Where each is a link a person can make with its command, the park
 // clears once all are on Jira and the ticket goes back to done on its PR (settleClear, links-made), so
 // its PR does not stay in draft for want of a way back; otherwise it waits for an answer. A ticket
 // recordDone left parked itself (a spine) keeps them as follow-on steps instead (keepLinks).
-const LINKS_MADE = 'links-made';
 function parkLinks(t, needs, pr) {
   if (!needs.length) return;
   if (queue().tickets[t.key]?.state !== 'done') { keepLinks(t, needs.map((n) => n.why), pr); return; }
@@ -501,14 +482,10 @@ function parkLinks(t, needs, pr) {
   q('set', t.key, `park.clears_when=${JSON.stringify(auto ? { kind: LINKS_MADE, links, pr: pr ? Number(pr) : null } : { kind: 'none' })}`);
   report.parked.push(`${t.key}: ${question}`);
 }
-// A park question without the links line the park path adds to it, which its link steps already hold.
-const ownWords = (question) => String(question ?? '').split(`. ${LINKS_HEAD}`)[0];
 // A worker's own park keeps each link settleLinks could not make as a follow-on step under §3
 // jira-edit too, which needs-you lists with its command once the PR merges: kept on the ticket, so a
 // park the pass settles itself (settleClear, a requeue) does not drop it, and a later round's
 // follow-ons keep it.
-const LINK_STEP = 'Issue link not made: ';
-const linkSteps = (steps) => (Array.isArray(steps) ? steps : []).filter((s) => String(s?.step ?? '').startsWith(LINK_STEP));
 function keepLinks(t, needs, pr) {
   if (!needs.length) return;
   const have = queue().tickets[t.key]?.follow_on ?? [];
@@ -582,9 +559,6 @@ function refuseUnnamedLease(t, question) {
 // or names no criteria parks it, naming which, and spawns nothing. One that is not JSON is kept aside
 // and replaced by a briefing that has the session read the criteria from the ticket, and the report
 // names it: parking it would only park again on every requeue.
-// In stage order: Object.keys lists an integer-like key (7) before '4b'.
-const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
-const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
 function handoffRefusal(t, stage) {
   const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
   if (missing) return `handoff to Stage ${stage}: ${missing}, so no session was spawned. ${FROM_ZERO(t)}`;
@@ -747,48 +721,18 @@ function recordUpload(t, prNo, imgDir, run, before) {
 
 // A worker killed before it finished (no result event, no marker, no open PR) is resumed in its own
 // session, worktree and branch by the spawn below, up to config §3b "Resume a killed worker (times)"
-// per ticket. Unset is 2; anything but a whole number is said and read as 0, which marks a killed
-// worker failed.
+// per ticket (pass/shared.mjs resumeSetting).
 const RESUME_ROW = E.CONFIG_ROWS['resume-killed'].row;
-const RESUME = (() => {
-  const raw = E.configValue('resume-killed');
-  if (raw == null || E.isNone(raw)) return { limit: raw == null ? 2 : 0, bad: null };
-  if (/^\d+$/.test(String(raw).trim())) return { limit: Number(raw), bad: null };
-  return { limit: 0, bad: `config §3b "${RESUME_ROW}" is "${raw}" — want a whole number; read as 0, so a killed worker is marked failed` };
-})();
+const RESUME = resumeSetting(E.configValue('resume-killed'), RESUME_ROW);
 // When this computer last started, for telling a reboot from a crash. DESK_BOOT_TIME (ISO, or epoch
 // seconds) stands in for it in tests.
-const bootMs = (() => {
-  const v = process.env.DESK_BOOT_TIME;
-  if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
-  return Date.now() - uptime() * 1000;
-})();
+const bootMs = bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
 const REBOOT = 'the computer restarted after its last log write';
 const killedBy = (log) => (statSync(log).mtimeMs < bootMs ? REBOOT : 'its process died while the computer stayed up');
-// A worker stopped for a planned reboot (resume=reboot) waits for the computer to restart after its
-// stop, or, when none comes, for config §3b "Maintenance drain limit (minutes)" from the stop, then
-// resumes anyway. -> {why} once it may resume, else {wait}.
-const rebootReady = (t) => {
-  const at = Date.parse(t.reboot_stop_at ?? '');
-  const stop = (t.resume_why ?? 'stopped for a planned reboot').replace(/^stopped/, 'it stopped');
-  if (!Number.isFinite(at) || bootMs > at) {
-    return { why: `the computer restarted at ${new Date(bootMs).toISOString().replace(/\.\d+Z$/, 'Z')} after ${stop}` };
-  }
-  const mins = drainLimit(E.configValue('maintenance-drain')).minutes;
-  const until = at + mins * 60000;
-  if (Date.now() >= until) return { why: `no reboot was seen within ${mins} min (config §3b "${DRAIN_ROW}") of when ${stop}` };
-  return { wait: `${stop.replace(/^it /, '')}, resumed after the computer restarts, or at ${new Date(until).toISOString().replace(/\.\d+Z$/, 'Z')} if it does not` };
-};
-// Where a killed worker's resume stops: off, or this ticket has had as many as the row allows.
-const resumeRefusal = (t, why) => {
-  const n = t.resumes ?? 0;
-  if (RESUME.limit <= 0) return { fail: `Resuming is off (${RESUME.bad ?? `config §3b "${RESUME_ROW}" is 0`}), so it is marked failed` };
-  if (n >= RESUME.limit) {
-    return { park: `killed again (${why}) after ${n} resume(s), the most config §3b "${RESUME_ROW}" allows (${RESUME.limit}), so it is not resumed. ` +
-      `Session ${t.session_id}, worktree ${t.worktree}. Requeue it for a fresh worker with queue.mjs requeue ${t.key}` };
-  }
-  return null;
-};
+// A worker stopped for a planned reboot waits for a restart, or for config §3b "Maintenance drain
+// limit (minutes)" from its stop (pass/shared.mjs rebootReady).
+const rebootReady = (t) => rebootReadyOf(t, { bootMs, drainMins: drainLimit(E.configValue('maintenance-drain')).minutes, drainRow: DRAIN_ROW });
+const resumeRefusal = (t, why) => resumeRefusalOf(RESUME, t, why);
 
 // A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
 // it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
@@ -816,10 +760,7 @@ function advanceCloud(t) {
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
 const buildRow = parseOperatorChecks(E.configValues('check-builds'));
 // What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
-const gateLists = () => {
-  const list = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v : []; };
-  return { required: list('required-checks'), advisory: list('advisory-checks') };
-};
+const gateLists = () => gateListsOf({ required: E.configValues('required-checks'), advisory: E.configValues('advisory-checks') });
 // A park whose only blocker is a red check §4 Check builds names (undraft.mjs buildPark): the ticket's
 // open draft PR on its branch, read from GitHub only once the park names a build. Null when none.
 function buildParkOf(t, question) {
@@ -858,9 +799,6 @@ function mergeParkOf(t, cond, { grantedOnly = false } = {}) {
   };
   return mergePark(cond, readPr, { ...gateLists(), verdict, ready, merge });
 }
-// A park's own words, kept as the one follow-on step a merge-only park leaves for after its merge, after
-// any link steps an earlier round kept (`had`, the ticket's follow_on; keepLinks).
-const parkFollowOn = (park, had) => `follow_on=${JSON.stringify([...linkSteps(had), { step: park.trim().slice(0, FOLLOW_ON_MAX), row: null }])}`;
 
 // §4 Live reads (live-read.mjs): run on this computer for a park that asks for nothing but entries the
 // row names, once per ticket head and entry, from the pass's own clean checkout of origin's default
@@ -877,7 +815,10 @@ const TREE_DIR = join(STATE, 'check-trees');
 // into a batch base unreviewed as one change, so its scripts are not the merged code a read may run.
 const READ_BRANCH = E.configValue('default-branch') || 'main';
 const FIXTURES = join(STATE, 'fixtures');
-if (readRow.errors.length) report.waiting.push(`live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`);
+{
+  const unparsed = liveReadsUnparsed(readRow);
+  if (unparsed) report.waiting.push(unparsed);
+}
 // The reads a park asks for: { reads: [name], head (the ticket's) }, or null, which leaves the park as
 // it is. An entry already read at this head is not run again: a worker that parks on it again after
 // its requeue is the person's.
@@ -1199,7 +1140,7 @@ pumpUploads();
 runPhase({
   name: 'crashed uploads',
   snapshot: () => {
-    const s = { tickets: queue().tickets, allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, uploaded: new Set(uploadedThisPass), now: Date.now() };
+    const s = { ...baseSnapshot(), allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, uploaded: new Set(uploadedThisPass) };
     s.bodies = Object.fromEntries(crashedUploadBodies(s).map((pr) => [pr, prBody(pr)]));
     return s;
   },
