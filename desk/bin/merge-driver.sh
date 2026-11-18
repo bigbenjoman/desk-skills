@@ -233,6 +233,7 @@ if ! GRANT="$(node "$DESK_ENV_MJS" merge-grant 2>&1)"; then
   exit 1
 fi
 GRANT_BY="${GRANT%%"$TAB"*}"
+desk_load_config
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -1115,7 +1116,7 @@ EOF_RESOLVE
   # Last before the merge, so a routine never runs for a PR that would not merge after it. The row is
   # read again here, as the grant is, so revoking it stops a driver that is already running.
   if [ -n "$routines" ]; then
-    ROUTINE_PERM="$(desk_perm merge-hold-routine)"
+    ROUTINE_PERM="$(desk_perm_fresh merge-hold-routine)"
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now $ROUTINE_PERM"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"; rm -f "$SD/green-$n"; return 1

@@ -70,6 +70,17 @@ jq '."121".state = "open"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/p
 mloop "$T/config-ask.md"
 check "DS-203 AC6: a new batch carries no approval, so it is asked again" '[ $rc -eq 1 ] && echo "$out" | grep -qF "with no batch approval" && [ "$(merged)" = 121 ]'
 
+# ---- DS-791: the grant is read again before each merge, so revoking it stops a running driver ------
+SHA24=b444444444444444444444444444444444444444
+printf '{ "124": { "head": "fix/T-24", "base": "main", "sha": "%s", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }\n' "$SHA24" > "$T/prs.json"
+q init merge-revoke
+q add T-24 Task A; q set T-24 branch=fix/T-24 state=done result.pr=124
+cp "$T/config.md" "$T/config-live.md"; : > "$T/merges.log"
+mloop "$T/config-live.md"
+printf '%s' "cp '$T/config-no.md' '$T/config-live.md'" > "$T/gh.midloop"
+mloop "$T/config-live.md"
+check "DS-791 AC2: the grant revoked while the driver runs stops it before the merge" '[ $rc -eq 1 ] && [ ! -e "$T/gh.midloop" ] && [ ! -s "$T/merges.log" ] && echo "$out" | grep -qF "FAIL: config §3 autopilot-merge is \"no\" — not merging #124; stopping"'
+
 # ---- DS-336: a ticket whose last open PR the driver merges goes to §4 Done state -------------------
 sed -e 's/| Tracker | `none` |/| Tracker | `jira` |/' "$T/config.md" \
   | awk '{ print } /^\| `pr-ready`/ { print "| `jira-close-own-merged` | Close own merged | `yes` | `yes` |"; print "| `gh-close-linked-issue` | Close linked issue | `yes` | `yes` |" } /^\| Tracker/ { print "| Done state | `Done` |"; print "| Jira project | `T` |" }' > "$T/config-close.md"
