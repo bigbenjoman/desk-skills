@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<!-- GitHub's React PR page as served from 18 Nov 2026 (desk-skills#838), cut to what the composer
+     finder reads: the textarea is as in react.html, but no input[type=file] is ever mounted, focused
+     or not. The composer's "Paste, drop, or click to add files" button opens a file chooser, through
+     a detached input that is never in the document. A review-thread reply box above has its own. -->
+<html>
+<head><meta name="user-login" content="octocat"><title>Fix the widget by octocat · Pull Request #7 · acme/widgets</title></head>
+<body>
+<main>
+  <div class="timeline" id="thread-root"></div>
+  <div id="composer-root"></div>
+</main>
+<script>
+const picker = (box) => {
+  const input = document.createElement('input');
+  input.type = 'file'; input.multiple = true;
+  input.addEventListener('change', () => {
+    box.querySelector('textarea').value += [...input.files].map((f) => `<img alt="${f.name}" src="https://github.com/user-attachments/assets/${box.dataset.composer}-${f.name}" />`).join('\n');
+  });
+  input.click();
+};
+setTimeout(() => {
+  document.getElementById('thread-root').innerHTML = '<div data-composer="reply"><textarea id="_r_9_" aria-label="Markdown value" placeholder="Reply"></textarea>'
+    + '<button type="button" class="add">Paste, drop, or click to add files</button></div>';
+  document.querySelector('[data-composer=reply] .add').addEventListener('click', (e) => picker(e.target.closest('[data-composer]')));
+  const root = document.getElementById('composer-root');
+  root.innerHTML = '<fieldset data-composer="new"><div><textarea id="_r_24_" aria-label="Markdown value" placeholder="Leave a comment"></textarea></div>'
+    + '<button type="button" class="add">Paste, drop, or click to add files</button><button type="button">Comment</button></fieldset>';
+  const box = root.querySelector('[data-composer]');
+  box.querySelector('.add').addEventListener('click', () => picker(box));
+}, 300);
+</script>
+</body>
+</html>

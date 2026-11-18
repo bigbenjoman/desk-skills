@@ -4,7 +4,7 @@
 // page with no composer and on a signed-out one: against a fake Playwright, and, with desk's
 // Playwright, against the fixtures served in a real browser. No network, no real profile or GitHub.
 // DESK_COMPOSER_SMOKE=<owner/repo>#<pr> opts in to a run against that live PR in the signed-in
-// profile: it finds the composer and its file input, and uploads nothing.
+// profile: it finds the composer and its file input or add-files button, and uploads nothing.
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -89,6 +89,18 @@ if (!pw.entry) {
   c = await findComposer(page, opts);
   t('AC3: a reply box\'s mounted file input is never taken for the composer\'s', c ? `${await which(c.textarea)} ${c.input ? await which(c.input) : 'no input'}` : 'null', 'new no input');
 
+  // desk-skills#838: GitHub's React page now mounts no file input; its add-files button opens a chooser.
+  await open('react-add-files');
+  c = await findComposer(page, opts);
+  t('#838: with no file input, the composer is still found', c ? `${await c.textarea.getAttribute('id')} ${await which(c.textarea)}` : 'null', '_r_24_ new');
+  t('#838: with no input, and a setFiles through the add-files button', c ? `${c.input} ${typeof c.setFiles}` : 'null', 'null function');
+  if (c?.setFiles) {
+    const png = join(T, 'shot.png'); writeFileSync(png, 'png');
+    await c.setFiles([png]);
+    t('#838: setFiles uploads into the composer, not the reply box', `${await c.textarea.inputValue()} | ${await page.locator('#_r_9_').inputValue()}`, '<img alt="shot.png" src="https://github.com/user-attachments/assets/new-shot.png" /> | ');
+  }
+  t('#838: the React page with an input still uses it', (await (async () => { await open('react'); const r = await findComposer(page, opts); return r?.input ? typeof r.setFiles : 'no input'; })()), 'function');
+
   await open('no-composer');
   const t0 = Date.now();
   c = await findComposer(page, opts);
@@ -145,7 +157,7 @@ if (!smoke) {
       const desc = c ? await c.textarea.evaluate((el) => `${el.id} placeholder="${el.placeholder}" aria-label="${el.getAttribute('aria-label')}"`) : 'none';
       console.log(`smoke: composer textarea: ${desc}`);
       t(`smoke: ${repo}#${pr} has a composer`, !!c, true);
-      t(`smoke: ${repo}#${pr}'s composer has a file input once focused (nothing is uploaded)`, !!c?.input, true);
+      t(`smoke: ${repo}#${pr}'s composer has a way to add files once focused (nothing is uploaded)`, !!c?.setFiles, true);
     } finally { await ctx.close(); }
   }
 }

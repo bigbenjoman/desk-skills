@@ -19,7 +19,8 @@
 //   - The alt it writes DROPS the extension: before-desktop.png -> alt="before-desktop".
 //   - The comment box is found by role and placeholder, the classic id only as a fallback
 //     (pr-composer.mjs): GitHub's React PR page has no textarea#new_comment_field.
-//   - The file input is hidden (state:'attached', not 'visible') and IS multiple.
+//   - The file input is hidden (state:'attached', not 'visible') and IS multiple; so is the add-files
+//     button's file chooser, which the React page uses in its place (pr-composer.mjs).
 //   - The box must be focused first or no POST to /upload/policies/assets ever fires.
 //   - Capture the URLs BEFORE clearing the box; there is no API to list these assets after.
 //   - Never delete a SingletonLock in the profile: it is very likely a peer's upload in flight.
@@ -130,10 +131,10 @@ async function openPage() {
   // Signed in with no composer is GitHub changing its page, not a flake: said once, with no trace.
   const composer = await findComposer(page);
   if (!composer) throw new UploadStop(EXIT_PAGE_CHANGED, NO_COMPOSER);
-  if (!composer.input) throw new UploadStop(EXIT_PAGE_CHANGED, NO_FILE_INPUT);
-  const { textarea: ta, input } = composer;
+  if (!composer.setFiles) throw new UploadStop(EXIT_PAGE_CHANGED, NO_FILE_INPUT);
+  const { textarea: ta, setFiles } = composer;
   return {
-    setFiles: (paths) => input.setInputFiles(paths),
+    setFiles,
     value: () => ta.inputValue(),
     clear: () => ta.fill(''),
   };
