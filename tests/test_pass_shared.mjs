@@ -1,22 +1,12 @@
 // suite: pass phase: the shared snapshot and helpers (the registry read, logins, specs, link parks, resumes)
-import { createRequire, syncBuiltinESMExports } from 'node:module';
 import * as S from '../desk/bin/pass/shared.mjs';
-// The built-in modules' own objects: patched, and synced, every ES import of them sees the patch.
-const require = createRequire(import.meta.url);
-const cp = require('node:child_process');
-const fs = require('node:fs');
+import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
 
-// AC4: every helper below runs with process starts and file writes trapped.
-const calls = [];
-const trap = (mod, names) => names.filter((n) => typeof mod[n] === 'function').map((n) => { const orig = mod[n]; mod[n] = () => { calls.push(n); throw new Error(`${n} called`); }; return () => { mod[n] = orig; }; });
-const undo = [...trap(cp, ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork']),
-  ...trap(fs, ['writeFileSync', 'appendFileSync', 'renameSync', 'mkdirSync', 'openSync', 'unlinkSync', 'rmSync', 'writeFile', 'appendFile'])];
-syncBuiltinESMExports();
-let threw = null;
-try {
+// AC4: every helper below runs with process starts and file writes trapped (pass_phase_trap.mjs).
+const { threw, calls } = withNoIo(() => {
   const NOW = Date.parse('2026-11-17T12:00:00.000Z');
   const AT = (iso) => Date.parse(iso) / 1000;
 
@@ -119,9 +109,7 @@ try {
   t('a §4 Live reads row that parses says nothing', S.liveReadsUnparsed({ errors: [], reads: [] }), null);
   t('one that does not names what does not parse', S.liveReadsUnparsed({ errors: ['"x"'], reads: [] }),
     'live reads: none run this pass, since config §4 Live reads does not parse: "x" (want `<name>: <command>`). Run /desk-setup');
-} catch (e) { threw = e.stack ?? e.message; }
-for (const u of undo) u();
-syncBuiltinESMExports();
+});
 t('AC4 the helpers start no process and write no file, the queue included',j([threw, calls]), '[null,[]]');
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

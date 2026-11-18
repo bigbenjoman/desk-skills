@@ -31,6 +31,7 @@ import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
+import { bootTime } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -49,11 +50,8 @@ const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
 
 export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
-const bootMs = () => {
-  const v = process.env.DESK_BOOT_TIME;
-  if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
-  return Date.now() - uptime() * 1000;
-};
+// When this computer last started (pass/shared.mjs bootTime), read the way the pass reads it.
+const bootMs = () => bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
 const stamp = (d) => d.toISOString().replace(/\.\d+Z$/, 'Z');
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 
