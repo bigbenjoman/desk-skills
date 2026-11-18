@@ -1,7 +1,7 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -2338,11 +2338,12 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
 const LV = join(I.env.HOME, '.desk-autopilot', 'levers');
 const WHERE = 'studia-web lever-evals.jsonl line 214';
 const FAILED654 = { at: minsAgo(1), error: { file: '/x/acme__studia-web/lever-evals.jsonl', line: 214, message: 'Unexpected token' }, where: WHERE };
-function levers654({ line = null, age = 5, page = true, failed = null } = {}) {
+function levers654({ line = null, age = 5, page = true, pageAge = null, failed = null } = {}) {
   rmSync(LV, { recursive: true, force: true });
   mkdirSync(LV, { recursive: true });
   if (line) writeFileSync(join(LV, 'view.json'), JSON.stringify({ v: 1, generated_at: minsAgo(age), repos: [], line }));
   if (page) writeFileSync(join(LV, 'index.html'), '<!doctype html>');
+  if (page && pageAge != null) utimesSync(join(LV, 'index.html'), new Date(minsAgo(pageAge)), new Date(minsAgo(pageAge)));
   writeFileSync(join(LV, 'build.json'), JSON.stringify({ v: 1, attempted_at: minsAgo(failed ? 1 : age), ...(failed ? { failed } : {}) }));
 }
 const TODAY654 = { state: 'today', on_auto: 0, repos: 4, pinned: [{ lever: 'preflight', repo: 'desk-skills' }], needs_you: 0 };
@@ -2413,6 +2414,9 @@ t('DS-654 AC15 a page 3 hours old: Updating Levers… while it rebuilds, then th
 P654 = await press654({ line: WORKING654, age: 180 }, { rebuilt: { line: WORKING654, age: 180, failed: FAILED654 } });
 t('DS-654 AC16 a rebuild that fails opens the last good page and says so', `${P654.said} | ${P654.opened.length}`,
   `Couldn't update Levers: ${WHERE}. Opened the last good page, built ${at654(180)}. | 1`);
+// levers-view build rewrites view.json but not the page: a page older than its view is that old, and is rebuilt first.
+P654 = await press654({ line: WORKING654, age: 1, pageAge: 180 }, { rebuilt: { line: WORKING654, age: 0 } });
+t('DS-709 a fresh view.json over a 3-hour-old page: v rebuilds it before opening', `${P654.calls} | ${P654.said}`, '1 | Opened Levers in your browser. Built just now.');
 P654 = await press654({ line: null, page: false }, { rebuilt: { line: null, page: false, failed: FAILED654 } });
 t('DS-654 AC20 no page ever built and the build fails: no browser, and what to do', `${P654.said} | ${P654.opened.length}`,
   `Couldn't build Levers: ${WHERE}. There's no earlier page to open. Fix that line, then press v again. | 0`);

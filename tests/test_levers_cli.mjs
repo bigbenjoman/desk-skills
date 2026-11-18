@@ -1,5 +1,5 @@
 // suite: levers cli (levers decide and levers undo: Ben's own call on a lever, and the undo of a lever change)
-// covers: desk/bin/levers.mjs desk/bin/levers-auto.mjs desk/bin/lever-changes.mjs desk/bin/lever-log.mjs
+// covers: desk/bin/levers.mjs desk/bin/levers-auto.mjs desk/bin/lever-changes.mjs desk/bin/lever-log.mjs desk/bin/levers-trips.mjs
 // `levers.mjs` runs as a subprocess on a scratch HOME and desk config root holding two repos; admission
 // (assignPin), each lever's state (leverStatesIn) and the needs-you items (the levers view) read the
 // lever log it writes through the same readers the pass uses.
@@ -41,6 +41,7 @@ const { read, logFile } = await import('../desk/bin/lever-log.mjs');
 const { REGISTRY } = await import('../desk/bin/lever-registry.mjs');
 const { recordLeverDecision } = await import('../desk/bin/lever-changes.mjs');
 const { buildView, autopilotRoot } = await import('../desk/bin/levers-view.mjs');
+const { onArm } = await import('../desk/bin/levers-trips.mjs');
 
 const state = (slug) => join(process.env.HOME, '.desk-autopilot', slug);
 const decisions = (slug) => (existsSync(join(state(slug), 'decisions.jsonl')) ? readFileSync(join(state(slug), 'decisions.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
@@ -85,11 +86,10 @@ t('AC2 exits 0', r1.status, 0);
 t('AC2 its line', r1.stdout.trim(), `levers decide: override recorded in ai-agents/levers.jsonl (codex → off, actor ben, decision ${e1.decision_id}) · decision logged in decisions.jsonl`);
 const s3 = leverStatesIn(events(AA)).codex;
 t('AC3 the lever reads overridden off', [s3.state, s3.value], ['overridden', 'off']);
-const p3 = admit('AA-1');
-t('AC3 the next ticket admitted has codex pinned off, with no arm', [p3.set.includes('codex'), Object.hasOwn(p3.arms, 'codex')], [false, false]);
 t('AC4 needs-you no longer lists it', codexItems(), 0);
-// codex is quality-risk, which admission never arms, so the pin is shown on wrappers, a lever it does:
-// on trial it draws an arm, and once set off by levers decide it is out of the set with no arm.
+// codex is quality-risk, which admission never arms, so its pin reads the same with or without the
+// call; the pin is shown on wrappers, a lever it does arm: on trial it draws an arm, and once set off
+// by levers decide it is out of the set with no arm.
 t('AC3 wrappers on trial draws an arm before the call', Object.hasOwn(admit('AA-2').arms, 'wrappers'), true);
 levers('decide', 'ai-agents', 'wrappers', 'off');
 const p3w = admit('AA-3');
@@ -131,6 +131,8 @@ levers('decide', 'ai-agents', 'wrappers', 'off');
 levers('undo', 'ai-agents', 'wrappers');
 const sAd = leverStatesIn(events(AA)).wrappers;
 t('undo back to adopted: the holdback runs from the adopt, not the undo', [sAd.state, sAd.at, sAd.id], ['adopted', adAt, 'ad1']);
+const pinnedBefore = { levers: { set: ['wrappers'], arms: {}, at: at(2) } };
+t('undo back to adopted: a ticket pinned on before the call still counts toward its trips', onArm(pinnedBefore, 'wrappers', sAd, AA, events(AA)), true);
 
 // A run that wrote its override but stopped before its decision line is finished by running it again.
 reset(AA);

@@ -101,14 +101,18 @@ export function recordWait(state, key, wait, at) {
 
 // ---- which tickets a lever's trips read ---------------------------------------------------------------
 // When `lever`'s latest unbroken run of revertible states (trial, adopted, settled) began, so the trial
-// an adopted lever was kept from counts with it: null when that run is the registry's initial trial.
+// an adopted lever was kept from counts with it: null when that run is the registry's initial trial. An
+// undo that restores a state (levers undo) puts back the run as it stood before the call it undoes.
 function liveSince(events, lever, registry) {
   const l = registry[lever];
   let live = l?.layer === 'low-risk' && !!l.trialled;
   let since = null;
+  const before = new Map();
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
-    if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
+    before.set(e.id, { live, since });
+    if (e.restores && before.has(e.undoes_event)) ({ live, since } = before.get(e.undoes_event));
+    else if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
     else { live = false; since = null; }
   }
   return since;

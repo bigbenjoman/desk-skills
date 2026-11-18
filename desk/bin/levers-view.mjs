@@ -27,7 +27,7 @@ import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignab
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
-import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
+import { withDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 import { spendsNeedsYou } from './lever-log.mjs';
 
 export const VERSION = 1;
@@ -529,15 +529,14 @@ export function buildRecord(view, ms) {
 // The machine-wide lock every build of the view in `out` takes (levers-refresh.mjs's too), so two
 // builders never write at once.
 export const buildLock = (out = leversDir()) => join(out, 'build.lock');
-export const BUILD_WAIT_MS = 60_000;
+const BUILD_WAIT_MS = 60_000;
 
 // Builds the view and writes view.json and build.json into `out`, under the build lock: a build
 // already running is waited for, up to `waitMs`, then this one runs. -> { view, record, files }
 export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {}) {
   mkdirSync(out, { recursive: true });
   const held = buildLock(out);
-  takeDirLock(held, { waitMs, timeoutError: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
-  try {
+  return withDirLock(held, () => {
     const t0 = Date.now();
     const view = buildView(opts);
     const record = buildRecord(view, Date.now() - t0);
@@ -545,7 +544,7 @@ export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {
     writeJsonAtomic(files.view, view);
     writeJsonAtomic(files.build, record);
     return { view, record, files };
-  } finally { releaseDirLock(held); }
+  }, { waitMs, timeoutError: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
 }
 
 // Renders the Levers page from the view.json in `dir` into index.html beside it. -> { file, view }
