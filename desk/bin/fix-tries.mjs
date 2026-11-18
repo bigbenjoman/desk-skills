@@ -765,7 +765,7 @@ const CLASSED = 'classed runner or resource';
 const OUTSIDE = 'its failed log names no file this PR changes';
 // Whether a check's error lines or annotation paths name a changed file: its full path, or that path less
 // leading folders while two segments are left, as a runner working in a package folder prints it.
-export function namesChanged(c, changed) {
+function namesChanged(c, changed) {
   const text = [...errorLines(c), ...(c?.error_paths ?? [])];
   const tails = changed.flatMap((p) => { const s = p.split('/'); return [p, ...s.slice(1, -1).map((_, i) => s.slice(i + 1).join('/'))]; });
   return text.some((l) => tails.some((p) => l.includes(p)));
