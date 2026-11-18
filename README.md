@@ -899,7 +899,8 @@ actions out in order. The `set` and `report` handlers are shared, and anything t
 probe), or the result of a write (the issue links it made), is a generator run by `runSteps` instead:
 it yields each read or write as an action and gets the handler's answer back, so each is made only
 where, and in the order, the pass made it before. Advancing running tickets and the usage limit
-(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time. Each phase has its
+(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time, and so is the base
+gate (`desk/bin/pass/base-gate.mjs`), whose last action says whether it keeps the batch from idle. Each phase has its
 own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
 fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
 the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
