@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 // Who runs this repo's batches once Stage 3 has asked: config §3b "Batches run by", `supervisor`
-// (launchd runs the passes and the merge driver, supervisor.mjs) or `session` (this session, through
-// /loop). Unset is `session`, so a repo set up before the row keeps running batches in the session.
+// (launchd on macOS, or a systemd user timer on Linux, runs the passes and the merge driver,
+// supervisor.mjs) or `session` (this session, through /loop). Unset is `session`, so a repo set up before the row keeps running batches in the session.
 // Run it from inside the repo, as supervisor.mjs is. Each command prints one JSON object.
-//   node run-by.mjs offer     /desk-setup §3b: on macOS {ask: true, recommended, options}; elsewhere
-//                             {ask: false, value: 'session', line}, the value to record and why
+//   node run-by.mjs offer     /desk-setup §3b: on macOS, or Linux where systemctl --user answers,
+//                             {ask: true, recommended, options}; elsewhere {ask: false, value:
+//                             'session', line}, the value to record and why
 //   node run-by.mjs ensure    the supervisor installed and loaded for this repo, installing it if not:
 //                             {ok, installed, error, retry}. Exit 0 when ok, 11 otherwise
 //   node run-by.mjs stage4    Stage 4: {by: 'supervisor' | 'session', note, installed, error, retry}.
@@ -23,16 +24,31 @@ const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(HERE, 'super
 export const platform = () => process.env.DESK_PLATFORM || process.platform;
 const ROW = () => E.CONFIG_ROWS['batches-run-by'].row;
 export const VALUES = ['supervisor', 'session'];
-export const NO_LAUNCHD = 'the supervisor needs macOS launchd, so batches run in the session on this computer';
+export const NO_LAUNCHD = 'the supervisor needs macOS launchd or Linux systemd, so batches run in the session on this computer';
+export const NO_SYSTEMD = 'systemctl --user does not answer here (on WSL, set systemd=true under [boot] in /etc/wsl.conf), so batches run in the session on this computer';
 const RETRY = 'node ~/.claude/desk/bin/supervisor.mjs install';
 
-// The repo's launchd agent: its label, its domain, and whether launchd has it loaded. supervisor.mjs
-// installs under this label and desk-q reads it with one launchctl print per refresh.
+// What runs the supervisor here: launchd on macOS, a systemd user timer on Linux, else nothing.
+export const backend = () => ({ darwin: 'launchd', linux: 'systemd' })[platform()] ?? null;
+// Whether this computer's systemd user manager answers (WSL without systemd=true does not).
+export const systemdReady = () => spawnSync('systemctl', ['--user', 'show-environment'], { encoding: 'utf8' }).status === 0;
+const ready = () => (backend() === 'systemd' ? (systemdReady() ? null : NO_SYSTEMD) : backend() ? null : NO_LAUNCHD);
+
+// The repo's agent: its label (the systemd units' names add .service and .timer), launchd's domain, and
+// whether it is loaded. supervisor.mjs installs under this label and desk-q reads it once per refresh.
 export const supervisorLabel = (slug) => `com.desk-skills.supervisor.${slug}`;
 export const launchdDomain = () => `gui/${process.getuid()}`;
+export const systemctl = (...args) => spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
 // `exit` is a loaded agent's last run's exit, as { code, why } with launchctl's name for the code
-// where it prints one, when that was not 0 and the agent is not running now; otherwise null.
+// where it prints one (systemd's Result), when that was not 0 and the agent is not running now; otherwise null.
 export function supervisorAgent(slug) {
+  if (backend() === 'systemd') {
+    if (systemctl('is-active', '--quiet', `${supervisorLabel(slug)}.timer`).status !== 0) return { loaded: false, exit: null };
+    const show = systemctl('show', `${supervisorLabel(slug)}.service`, '-p', 'ActiveState', '-p', 'Result', '-p', 'ExecMainStatus');
+    const p = Object.fromEntries(String(show.stdout ?? '').split('\n').filter((l) => l.includes('=')).map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+    const failed = p.Result && p.Result !== 'success' && p.ActiveState !== 'activating';
+    return { loaded: true, exit: failed ? { code: Number(p.ExecMainStatus) || 1, why: p.Result } : null };
+  }
   const r = spawnSync('launchctl', ['print', `${launchdDomain()}/${supervisorLabel(slug)}`], { encoding: 'utf8' });
   if (r.status !== 0) return { loaded: false, exit: null };
   const out = r.stdout ?? '';
@@ -83,26 +99,29 @@ export function turnOn(was, run = supervisorRun) {
 const retryIn = () => { try { return `${RETRY} (run in ${E.repoRoot()})`; } catch { return `${RETRY} (run inside the repo)`; } };
 
 export function ensure() {
-  if (platform() !== 'darwin') return { ok: false, installed: false, error: NO_LAUNCHD, retry: null };
+  const no = ready();
+  if (no) return { ok: false, installed: false, error: no, retry: null };
   const was = supervisorState();
   if (was.state === 'loaded') return { ok: true, installed: false, error: null, retry: null };
   const i = turnOn(was);
   if (i.code !== 0) return { ok: false, installed: false, error: i.err, retry: retryIn() };
-  if (supervisorState().state !== 'loaded') return { ok: false, installed: false, error: `installed, but launchd has not loaded it: ${i.out.join(' ')}`, retry: retryIn() };
+  if (supervisorState().state !== 'loaded') return { ok: false, installed: false, error: `installed, but ${backend()} has not loaded it: ${i.out.join(' ')}`, retry: retryIn() };
   return { ok: true, installed: true, error: null, retry: null };
 }
 
 export function stage4() {
   const { value, note } = runBySetting();
   if (value === 'session') return { by: 'session', note, installed: false, error: null, retry: null };
-  if (platform() !== 'darwin') return { by: 'session', note: `config §3b "${ROW()}" is supervisor, but ${NO_LAUNCHD}`, installed: false, error: null, retry: null };
+  const no = ready();
+  if (no) return { by: 'session', note: `config §3b "${ROW()}" is supervisor, but ${no}`, installed: false, error: null, retry: null };
   const r = ensure();
   if (!r.ok) return { by: 'session', note: null, installed: false, error: r.error, retry: r.retry };
   return { by: 'supervisor', note: r.installed ? 'the supervisor was not installed and loaded for this repo, so it was installed' : null, installed: r.installed, error: null, retry: null };
 }
 
 export function offer() {
-  if (platform() !== 'darwin') return { ask: false, value: 'session', line: `${ROW()}: session, because ${NO_LAUNCHD}.` };
+  const no = ready();
+  if (no) return { ask: false, value: 'session', line: `${ROW()}: session, because ${no}.` };
   return { ask: true, recommended: 'supervisor', options: VALUES };
 }
 

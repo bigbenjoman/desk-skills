@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: installed version and restart (install.sh moves running autopilot onto new code)
 # installed.mjs with fake merge drivers (detached, as a supervisor tick leaves them) and a fake
-# launchctl: `record` writes the commit installed from, `restart` restarts a driver waiting between
+# launchctl and systemctl: `record` writes the commit installed from, `restart` restarts a driver waiting between
 # loops with the same tickets, leaves one mid-loop, rewrites and reloads each loaded supervisor agent
 # with this node, and says so in one line when nothing runs. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -20,7 +20,7 @@ trap cleanup EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/desk"
 export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_QUEUE DESK_AUTOPILOT_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO DESK_BATCH
-export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" DESK_RESTART_WAIT_MS=5000
+export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" DESK_RESTART_WAIT_MS=5000 DESK_PLATFORM=darwin
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
@@ -224,6 +224,50 @@ check "AC5: the plist records the installed version the agent was loaded at" 'gr
 n=$(grep -c "^bootstrap" "$T/launchctl.calls")
 out=$(restart)
 check "AC3: an unchanged agent is still reloaded" '[ "$(grep -c "^bootstrap" "$T/launchctl.calls")" = $((n + 1)) ]'
+
+# ---- #735: a loaded systemd supervisor is rewritten with this node and restarted, as on Linux -----
+cat > "$T/fakes/systemctl" <<EOF
+#!/bin/sh
+echo "\$@" >> "$T/systemctl.calls"
+case "\$2" in
+  is-active) [ -f "$T/active" ] ;;
+  enable) touch "$T/active" ;;
+  disable) rm -f "$T/active" ;;
+  restart) [ -f "$T/active" ] ;;
+esac
+EOF
+printf '#!/bin/sh\necho Linger=yes\n' > "$T/fakes/loginctl"
+chmod +x "$T/fakes/systemctl" "$T/fakes/loginctl"
+# The launchd agent above goes, so nothing below can read it.
+rm -f "$PL" "$T/loaded"
+export DESK_PLATFORM=linux XDG_CONFIG_HOME="$T/xdg"
+UD="$T/xdg/systemd/user"; SV="$UD/com.desk-skills.supervisor.acme__widgets.service"; TM="$UD/com.desk-skills.supervisor.acme__widgets.timer"
+mkdir -p "$UD"
+cat > "$SV" <<EOF
+[Unit]
+Description=desk-skills supervisor for acme__widgets
+
+[Service]
+Type=oneshot
+ExecStart="/gone/node" "$T/bin/supervisor.mjs" tick
+WorkingDirectory=$T/repo
+Environment="PATH=/usr/bin:/bin"
+Environment="DESK_REPO_DIR=$T/repo"
+Environment="DESK_HOME=$T/desk"
+KillMode=process
+EOF
+printf '[Unit]\nDescription=x\n\n[Timer]\nOnActiveSec=0\nOnUnitActiveSec=240s\nAccuracySec=1s\n\n[Install]\nWantedBy=timers.target\n' > "$TM"
+rm -f "$T/active"
+out=$(restart)
+check "#735: a timer that is not active is left alone" '[ "$out" = "nothing to restart: no merge driver or supervisor agent is running" ] && grep -q "/gone/node" "$SV"'
+touch "$T/active"
+out=$(restart); rc=$?
+check "#735: restart exits 0 and says the unit was reloaded" '[ $rc -eq 0 ] && grep -q "^supervisor com.desk-skills.supervisor.acme__widgets: rewritten with node $NODE and reloaded$" <<< "$out"'
+check "#735: the service names this node, not the stale one, and keeps its working directory" 'grep -qF "ExecStart=\"$NODE\"" "$SV" && ! grep -q "/gone/node" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
+check "#735: the timer keeps its interval and is restarted" 'grep -qx "OnUnitActiveSec=240s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+out=$(node --input-type=module -e "import { agentVersion } from '$T/bin/installed.mjs'; console.log(agentVersion('acme__widgets'))")
+check "#735 AC5: the service records the installed version the timer was loaded at" '[ "$out" = "$head_sha" ]'
+unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin
 
 # ---- the --tickets and --deps a driver's command line gives -------------------------------------
 out=$(node --input-type=module -e "

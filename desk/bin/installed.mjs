@@ -19,11 +19,14 @@ import { dirname, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { namedBatches } from './batches.mjs';
-import { supervisorLabel } from './run-by.mjs';
+import { supervisorLabel, backend, systemctl } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const AGENTS = join(E.HOME, 'Library', 'LaunchAgents');
 export const plistPath = (slug) => join(AGENTS, `${supervisorLabel(slug)}.plist`);
+// The systemd user units, `<label>.service` and `<label>.timer`, where systemd reads a user's own.
+export const unitDir = () => join(process.env.XDG_CONFIG_HOME || join(E.HOME, '.config'), 'systemd', 'user');
+export const unitPath = (slug, kind) => join(unitDir(), `${supervisorLabel(slug)}.${kind}`);
 const WAIT_MS = Number(process.env.DESK_RESTART_WAIT_MS) || 10_000;
 
 export const installedFile = (home = E.deskHome()) => join(home, 'installed.json');
@@ -219,21 +222,55 @@ export function readPlist(text) {
   const every = Number(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(text)?.[1]) || null;
   return { label: str('Label'), cwd: str('WorkingDirectory'), env, every };
 }
-// The desk version a repo's agent was loaded at, or null with none recorded. The plist is only written
-// as the agent reloads, so this is what launchd runs next, whatever a pass still going started on.
+// A supervisor's service and timer units, as supervisor.mjs writes them: { cwd, env, every }.
+const unquote = (s) => s.replace(/\\(.)/g, '$1').replace(/%%/g, '%');
+export function readUnit(service, timer = '') {
+  const cwd = /^WorkingDirectory=(.*)$/m.exec(service)?.[1];
+  const env = {};
+  for (const [, v] of service.matchAll(/^Environment="((?:[^"\\]|\\.)*)"$/gm)) {
+    const kv = unquote(v);
+    env[kv.slice(0, kv.indexOf('='))] = kv.slice(kv.indexOf('=') + 1);
+  }
+  const every = Number(/^OnUnitActiveSec=(\d+)s$/m.exec(timer)?.[1]) || null;
+  return { cwd: cwd == null ? null : unquote(cwd), env, every };
+}
+// The desk version a repo's agent was loaded at, or null with none recorded. The plist or service is
+// only written as the agent reloads, so this is what launchd or systemd runs next, whatever a pass
+// still going started on.
 export function agentVersion(slug) {
-  try { return readPlist(readFileSync(plistPath(slug), 'utf8')).env.DESK_AGENT_VERSION ?? null; } catch { return null; }
+  try {
+    if (backend() === 'systemd') return readUnit(readFileSync(unitPath(slug, 'service'), 'utf8')).env.DESK_AGENT_VERSION ?? null;
+    return readPlist(readFileSync(plistPath(slug), 'utf8')).env.DESK_AGENT_VERSION ?? null;
+  } catch { return null; }
 }
 
 // One line per loaded agent, rewritten through `supervisor.mjs install --reload` from its own working
-// directory and environment, so its plist names this node. An agent not loaded is not running.
-function reloadAgents(dir) {
-  const lines = [];
+// directory and environment, so its plist or service names this node. An agent not loaded (a timer
+// not active) is not running.
+const UNIT = /^(com\.desk-skills\.supervisor\..+)\.service$/;
+function loadedAgents(dir, units) {
+  const found = [];
+  if (backend() === 'systemd') {
+    for (const f of existsSync(units) ? readdirSync(units).sort() : []) {
+      const label = UNIT.exec(f)?.[1];
+      if (!label || systemctl('is-active', '--quiet', `${label}.timer`).status !== 0) continue;
+      const timer = join(units, `${label}.timer`);
+      found.push({ label, ...readUnit(readFileSync(join(units, f), 'utf8'), existsSync(timer) ? readFileSync(timer, 'utf8') : '') });
+    }
+    return found;
+  }
   for (const f of existsSync(dir) ? readdirSync(dir).sort() : []) {
     if (!AGENT.test(f)) continue;
     const p = readPlist(readFileSync(join(dir, f), 'utf8'));
     const label = p.label ?? f.replace(/\.plist$/, '');
     if (spawnSync('launchctl', ['print', `gui/${process.getuid()}/${label}`]).status !== 0) continue;
+    found.push({ ...p, label });
+  }
+  return found;
+}
+function reloadAgents(dir, units) {
+  const lines = [];
+  for (const { label, ...p } of loadedAgents(dir, units)) {
     if (!p.cwd || !existsSync(p.cwd)) { lines.push(`supervisor ${label}: not reloaded, its working directory ${p.cwd ?? '(none)'} is gone`); continue; }
     const env = { ...process.env, ...p.env, PATH: process.env.PATH };
     const r = spawnSync(process.execPath, [join(HERE, 'supervisor.mjs'), 'install', '--reload', ...(p.every ? ['--interval', String(p.every)] : [])], { cwd: p.cwd, env, encoding: 'utf8' });
@@ -243,9 +280,9 @@ function reloadAgents(dir) {
   return lines;
 }
 
-export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS } = {}) {
+export function restart({ stateRoot = join(E.HOME, '.desk-autopilot'), agents = AGENTS, units = unitDir() } = {}) {
   // A fresh ps for each driver: restarting the one before can take seconds, in which this one wakes.
-  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d)), ...reloadAgents(agents)];
+  const lines = [...runningDrivers(stateRoot).map((d) => restartDriver(d)), ...reloadAgents(agents, units)];
   return lines.length ? lines : ['nothing to restart: no merge driver or supervisor agent is running'];
 }
 
