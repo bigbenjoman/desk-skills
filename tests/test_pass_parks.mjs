@@ -1,7 +1,7 @@
 // suite: pass phase: parks and holds (the clears-when, person-step, date, outside and merge hold decisions)
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
-  decideMergeHolds, BASE_CONTAINS } from '../desk/bin/pass/parks.mjs';
+  decideMergeHolds } from '../desk/bin/pass/parks.mjs';
 import { HELD_PREFIX, badLabelText } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
@@ -39,6 +39,7 @@ const settles = (as) => as.filter((a) => SETTLES.has(a.type));
 const clearsSnap = (tickets, more = {}) => ({ tickets, onBase: false, dry: false, putOff: new Set(), ...more });
 const clears = (s, answers) => drive(decideClears, s, answers);
 const PR_MERGED = { kind: 'pr-merged', pr: 41 };
+const BASE_CONTAINS = 'base-contains';
 
 // ---- parks whose condition cleared ----
 // AC1: a park whose clears-when check could not run gets no action that settles it.
@@ -93,7 +94,9 @@ const PR_MERGED = { kind: 'pr-merged', pr: 41 };
   const keysChecked = (onBase) => clears(clearsSnap(tickets, { onBase })).filter((a) => a.type === 'check').map((a) => a.key);
   t('a park on "base contains" waits for the base step', j(keysChecked(false)), '["A"]');
   t('and only it is checked there', j(keysChecked(true)), '["B"]');
-  const notClearable = byKey(parked('N', { kind: 'none' }), parked('L', { kind: 'live-read' }), held('H', 'X-1'), parked('C', PR_MERGED, { park: { question: 'q', clears_when: PR_MERGED, claim: { session: 's' } } }));
+  const notClearable = byKey(parked('N', { kind: 'none' }), parked('L', { kind: 'live-read' }),
+    // A held ticket with a recorded clears-when, so only its hold keeps it from being checked.
+    held('H', 'X-1', { park: { question: `${HELD_PREFIX}: blocked by X-1`, clears_when: PR_MERGED } }), parked('C', PR_MERGED, { park: { question: 'q', clears_when: PR_MERGED, claim: { session: 's' } } }));
   t('none, live reads, holds and claimed parks are never checked', j(clears(clearsSnap(notClearable))), '[]');
 }
 // ---- lapsed restates ----

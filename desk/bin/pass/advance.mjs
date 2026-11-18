@@ -60,7 +60,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -432,7 +432,4 @@ export function* decideUsageLimit(s) {
   else if (pre) yield say(null, 'advanced', `${limitName(pre.limit.type)} lifted (${liftedHow(pre.limit, s.now)}): spawns and resumes go ahead`);
 }
 
-// The shared actions (pass.mjs PHASE_HANDLERS).
-const set = (key, ...fields) => ({ type: 'set', key, fields });
-const say = (key, list, line) => ({ type: 'report', ...(key ? { key } : {}), list, line });
 function* setAndSay(key, fields, list, line) { yield set(key, ...fields); yield say(key, list, line); }

@@ -33,7 +33,7 @@ import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-whe
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
-import { LINKS_MADE, ownWords, linkSteps, parkFollowOn } from './shared.mjs';
+import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
 
 // ---- parks whose condition cleared ---------------------------------------------
 // A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
@@ -43,13 +43,13 @@ import { LINKS_MADE, ownWords, linkSteps, parkFollowOn } from './shared.mjs';
 // A claimed ticket is released only by the claims loop, once its session is idle and its worktree
 // clean, so a condition that holds never hands it to a worker under a live session. A ticket left in a
 // finished feature batch is the person's to move, whatever its earlier park waited on.
-export const clearable = (t) => {
+const clearable = (t) => {
   const c = t.park?.clears_when;
   return !(t.state !== 'parked' || isHeld(t) || spinePark(t) || leftPark(t) || t.park?.claim?.session || !recorded(c) || c.kind === LIVE_READ);
 };
 // "base contains <branch>" is checked after the base sync, so the pass that syncs the base also
 // requeues what waited on it ("parks waiting on the base").
-export const BASE_CONTAINS = 'base-contains';
+const BASE_CONTAINS = 'base-contains';
 
 // A park whose unreadable clears-when no restate reached in time (a decider that never came, or a
 // session that left it) is the person's: recorded none, so the digest and needs-you list it. Not while
@@ -255,7 +255,7 @@ function blockerViews(tickets, epic) {
   };
 }
 // A ticket waiting to merge on the person's steps (merge_after).
-export const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
+const waitsOnStep =(t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 
 // A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
 // `blockers`, kept on the ticket as outside_blockers [{key, category, assignee?}] for desk-q and
@@ -400,8 +400,6 @@ export function* decideMergeHolds(s) {
   }
 }
 
-// The shared actions (pass.mjs PHASE_HANDLERS), and the report's date-hold and epic lists.
-const set = (key, ...fields) => ({ type: 'set', key, fields });
-const say = (key, list, line) => ({ type: 'report', ...(key ? { key } : {}), list, line });
+// The report's date-hold and epic lists.
 const dateLine = (line) => ({ type: 'date-line', line });
 const epicLine = (line) => ({ type: 'epic-line', line });
