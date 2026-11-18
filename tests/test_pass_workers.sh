@@ -425,6 +425,7 @@ check "DS-143 a real answer to a put-off question ends the deferral" 'echo "$out
 q set N-2 state=done
 # N-5 and N-6 are put off on a question with a pr-head input, then both branches move. N-5 is asked
 # again with the new head; N-6 is requeued while the pass reads its head from origin, and stays so.
+# N-7 is requeued after its set, while the pass reads N-8's head: the write takes the set back.
 RG=$(command -v git); mkdir -p "$T/lsr"
 cat > "$T/stub/git" <<EOF
 #!/bin/sh
@@ -436,18 +437,20 @@ exec "$RG" "\$@"
 EOF
 chmod +x "$T/stub/git"
 HQ='Ship it behind the flag?'
-for k in N-5 N-6; do
+for k in N-5 N-6 N-7 N-8; do
   { say "AUTOPILOT_PARK: $HQ" 'AUTOPILOT_PARK_INPUTS: {"pr-head":"h1"}'; result_event; } > "$T/state-d/logs/$k.log"
   q add "$k"; q set "$k" state=running lane=A "branch=fix/$k" "session_id=run-$k"
 done
 node "$B/pass.mjs" >/dev/null 2>&1
-for k in N-5 N-6; do node "$B/answer.mjs" "$k" "not now" >/dev/null 2>&1; echo h2 > "$T/lsr/$k"; done
+for k in N-5 N-6 N-7 N-8; do node "$B/answer.mjs" "$k" "not now" >/dev/null 2>&1; echo h2 > "$T/lsr/$k"; done
 printf '"%s" "%s" requeue N-6 >/dev/null 2>&1\n' "$NODE" "$B/queue.mjs" > "$T/lsr/N-6.then"
+printf '"%s" "%s" requeue N-7 >/dev/null 2>&1\n' "$NODE" "$B/queue.mjs" > "$T/lsr/N-8.then"
 out=$(node "$B/pass.mjs" 2>&1)
 rm -rf "$T/lsr" "$T/stub/git"
 check "DS-801 AC2 a put-off park whose branch moved gets the new head, and is listed under PARKED" '[ "$(field N-5 park.inputs)" = "{\"pr-head\":\"h2\"}" ] && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-5: $HQ — Changed since it was put off on"'
 check "DS-801 AC1 a requeue landing while the pass reads the head stands, and is not listed under PARKED" '[ "$(field N-6 state)" = "\"triaged\"" ] && [ "$(field N-6 park)" = null ] && ! echo "$out" | grep -qF "N-6: $HQ — Changed since"'
-q set N-5 state=done; q set N-6 state=done
+check "DS-801 AC1 a requeue landing after the set and before the write stands, and is not listed under PARKED" '[ "$(field N-7 state)" = "\"triaged\"" ] && [ "$(field N-7 park)" = null ] && ! echo "$out" | grep -qF "N-7: $HQ — Changed since" && echo "$out" | awk "/^PARKED/,0" | grep -qF "N-8: $HQ — Changed since it was put off on"'
+for k in N-5 N-6 N-7 N-8; do q set "$k" state=done; done
 # N-3 names its inputs with a list; N-4's inputs hold an object, which cannot be read.
 { say 'AUTOPILOT_PARK: Resolve the conflict in the lockfile?' 'AUTOPILOT_PARK_INPUTS: {"conflict_files":["a.ts","b.ts"]}'; result_event; } > "$T/state-d/logs/N-3.log"
 { say 'AUTOPILOT_PARK: Which steps are left?' 'AUTOPILOT_PARK_INPUTS: {"steps":{"pr":true}}'; result_event; } > "$T/state-d/logs/N-4.log"

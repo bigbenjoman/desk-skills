@@ -5553,6 +5553,7 @@ const bootWaits = Object.values(qNow.tickets).filter((r) => r.state === 'triaged
 if (bootWaits.length) out.push(`waiting for the reboot: ${bootWaits.map((r) => `${r.key} (${rebootReady(r).wait})`).join(', ')}`);
 // A put-off park whose `pr-head` or `config:<id>` input has changed since is asked again, saying what
 // changed: the refreshed inputs go on the park, where the verdict below and the digest read them.
+const askedAgain = [];
 for (const t of Object.values(queue().tickets)) {
   if (!putOff(t)) continue;
   const now = refreshInputs(t.park.inputs ?? {}, {
@@ -5564,8 +5565,13 @@ for (const t of Object.values(queue().tickets)) {
   const args = ['set', t.key, `park.inputs=${JSON.stringify(now)}`];
   const w = QW.apply(args, { when: (x) => x.state === 'parked' && x.park?.question === t.park.question });
   if (!w.ok) { report.failed.push(refusedLine(args, 'not recorded', w.why)); continue; }
-  if (w.skipped) continue;
-  report.parked.push(`${t.key}: ${t.park.question} — ${lookup(REGISTER, { question: t.park.question, inputs: now }).line}`);
+  if (!w.skipped) askedAgain.push({ t, now });
+}
+// Written before PARKED is built: a requeue landing after a set above takes it back under the lock,
+// and that ticket is not listed.
+const takenBack = askedAgain.length ? flushQueue().skipped ?? [] : [];
+for (const { t, now } of askedAgain) {
+  if (!takenBack.includes(t.key)) report.parked.push(`${t.key}: ${t.park.question} — ${lookup(REGISTER, { question: t.park.question, inputs: now }).line}`);
 }
 if (report.parked.length) out.push(`PARKED:\n  ${report.parked.join('\n  ')}`);
 if (report.clears.length) out.push(`clears-when:\n  ${report.clears.join('\n  ')}`);
