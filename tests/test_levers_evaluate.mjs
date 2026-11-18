@@ -21,6 +21,7 @@ const { reasonWording, DECISION_RULE } = await import('../desk/bin/lever-registr
 const { seededRandom } = await import('../desk/bin/seeded-random.mjs');
 const { LEVERS } = await import('../desk/bin/desk-env.mjs');
 const { tFit, costRatio } = await import('../desk/bin/lever-stats.mjs');
+const { refresh: refreshLevers } = await import('../desk/bin/levers-refresh.mjs');
 
 const DAY = 86_400_000;
 const NOW = Date.parse('2026-12-02T08:00:00.000Z');
@@ -346,7 +347,16 @@ t('red CI for the evaluation is one list call, no per-run view', [ghCalls, liste
 
   // An adopt that lands in the log after a digest passed its time, with no decision written for it.
   append(TRIPS, { kind: 'transition', lever: 'wrappers', from: 'trial', to: 'adopted', actor: 'levers-auto', reason_code: 'adopt_all_conditions', reason: 'every adopt condition held', eval_id: 'late', evidence_file: 'late.json', at: new Date(NOW + 59.5 * HOUR).toISOString() });
+  // A failed build a supervisor's refresh recorded moments ago: the digest's own refresh skips it on
+  // unchanged inputs, and the digest still says the page could not be rebuilt.
+  refreshLevers();
+  const buildFile = join(T, 'home', '.desk-autopilot', 'levers', 'build.json');
+  const goodBuild = readFileSync(buildFile, 'utf8');
+  writeFileSync(buildFile, JSON.stringify({ ...JSON.parse(goodBuild), attempted_at: new Date().toISOString(), failed: { at: new Date().toISOString(), error: { file: null, line: null, message: 'x' }, where: 'adopts lever-evals.jsonl line 3' } }));
   const l4 = leversOf(readFileSync((await dig(84)).page, 'utf8'));
+  t('DS-654 a build failure a recent refresh recorded is still named in the digest',
+    l4?.some((l) => l.includes('the Levers page could not be rebuilt, so it may be out of date: adopts lever-evals.jsonl line 3')), true);
+  writeFileSync(buildFile, goodBuild);
   const late = decisionsOf(TRIPS).find((d) => d.chose === 'on');
   t('DS-644 an event that landed after the last digest passed its time is listed by the next, with its decision recorded then',
     [!!late, l4?.some((l) => l.startsWith('- [ ] adopted wrappers in trips') && l.includes(`id \`${late?.id}\``))], [true, true]);

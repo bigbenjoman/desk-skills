@@ -36,7 +36,7 @@ import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promot
 import { read as readLeverLog, appendWith as appendLeverLog } from './lever-log.mjs';
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
-import { refresh as refreshLevers } from './levers-refresh.mjs';
+import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
 
 export const DEFAULT_TIMES = ['08:00', '17:00'];
 export { PRODUCTION_BROKEN };
@@ -283,9 +283,15 @@ export function leverChanges({ list, since = null, now = new Date(), seen = null
 }
 
 // Brings the Levers page the digest links up to date (levers-refresh.mjs), keeping the last good page
-// when a build fails. -> null, or why it could not be.
+// when a build fails. -> null, or why it could not be: this refresh's failure, else one a recent
+// refresh recorded (a refresh skips a failed build while its inputs are unchanged), else no page.
 const buildLeversPage = () => {
-  try { const r = refreshLevers(); return r.ran && !r.ok ? r.where : null; } catch (e) { return e.message; }
+  try {
+    const r = refreshLevers();
+    if (r.ran && !r.ok) return r.where;
+    const p = leversPageState();
+    return p.failed?.where ?? (p.page ? null : 'no Levers page has been built yet');
+  } catch (e) { return e.message; }
 };
 
 // The page: every repo with something to answer or something taken, questions first.
