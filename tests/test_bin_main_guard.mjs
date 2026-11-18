@@ -2,7 +2,7 @@
 // covers: desk/bin/*.mjs desk/bin/desk-env.sh skills/*/bin/*.mjs
 // install.sh links ~/.claude/desk/bin through current/ to releases/<commit>/bin. Node runs the real
 // file, so import.meta.url is the real path while process.argv[1] keeps the linked one: a guard that
-// compares them unresolved never fires, and the script exits 0 having printed nothing (#765).
+// compares them unresolved never fires, and the script exits 0 having printed nothing.
 // Scratch directories only.
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
