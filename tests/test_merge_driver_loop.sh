@@ -113,6 +113,18 @@ check "AC3: the red PR is never merged"                              '! grep -q 
 check "AC5: every merge went into the default branch"                '[ "$(cut -d" " -f2 "$T/merges.log" | sort -u)" = main ]'
 check "AC5: a PR on another base is never the batch'\''s"            '! grep -q "^105 " "$T/merges.log" && ! echo "$out" | grep -q "#105"'
 
+# A collision chain as plan-batch seeds it, each ticket held behind the one before it only, releases in order.
+q add T-21 Task A; q set T-21 state=done branch=fix/T-21 pr_status.pr=431; q merged T-21 2026-11-02T03:00:00.000Z
+for k in T-22 T-23; do q add "$k" Task A; q set "$k" state=triaged "branch=fix/$k"; done
+q hold T-22 T-21; q hold T-23 T-22
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-22:T-21 T-23:T-22" 2>&1)
+check "DS-793 AC2: the chain's head merged releases the second ticket, and the third stays behind it" \
+  '[ "$(qf T-22 .state)" = triaged ] && echo "$out" | grep -q "merged: T-21#431 -> RELEASED T-22" && [ "$(qf T-23 .state)" = parked ] && [ "$(qf T-23 .held_by)" = T-22 ]'
+q set T-22 state=done pr_status.pr=432; q merged T-22 2026-11-02T04:00:00.000Z
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-1 T-2 T-4 T-5" --deps "T-22:T-21 T-23:T-22" 2>&1)
+check "DS-793 AC2: the second merged releases the third" '[ "$(qf T-23 .state)" = triaged ] && echo "$out" | grep -q "merged: T-22#432 -> RELEASED T-23"'
+q drop T-21; q drop T-22; q drop T-23
+
 # ---- a feature spine: only an approved spine releases, and approved it merges like any other ------
 SHA7=7777777777777777777777777777777777777777
 jq --arg s "$SHA7" '. + { "107": { head: "fix/T-7", base: "main", sha: $s, state: "merged", draft: true, checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"

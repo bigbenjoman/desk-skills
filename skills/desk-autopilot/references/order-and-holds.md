@@ -12,7 +12,8 @@ does not hold, that is in the core or in the file the core's reference table nam
 radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
 radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
 entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
-never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
+never chained. Each ticket in a chain is held behind the one before it only, not every one ahead:
+that one waits on the rest, so the order holds. A Jira link the chain also implies is kept. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 

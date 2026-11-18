@@ -85,7 +85,17 @@ check "AC4: the ticket sharing nothing runs beside them, unheld" '[ "$(qg KAN-13
 rec KAN-21 shared src/s '[]' M; rec KAN-22 shared src/s '[]' XS; rec KAN-23 shared src/s '[]' XS
 plan KAN-21 KAN-22 KAN-23
 check "two of a kind: the smaller merges first, a tie goes to the order named" \
-  '[ "$(qg KAN-22 .held_by)" = null ] && [ "$(qg KAN-23 .held_by)" = KAN-22 ] && [ "$(qg KAN-21 .held_by)" = "KAN-22|KAN-23" ] && printf "%s" "$out" | grep -q "both shared, KAN-22 is smaller" && printf "%s" "$out" | grep -q "both shared, KAN-22 named first"'
+  '[ "$(qg KAN-22 .held_by)" = null ] && [ "$(qg KAN-23 .held_by)" = KAN-22 ] && [ "$(qg KAN-21 .held_by)" = KAN-23 ] && printf "%s" "$out" | grep -q "both shared, KAN-23 is smaller" && printf "%s" "$out" | grep -q "both shared, KAN-22 named first"'
+
+# ---- a collision chain holds each ticket behind the one before it only -----------------------------
+rec KAN-61 shared src/k; rec KAN-62 shared src/k; rec KAN-63 shared src/k
+plan KAN-61 KAN-62 KAN-63
+check "DS-793 AC2: three tickets sharing a file are held as a chain, each behind the one before it only" \
+  '[ "$(qg KAN-61 .held_by)" = null ] && [ "$(qg KAN-62 .held_by)" = KAN-61 ] && [ "$(qg KAN-63 .held_by)" = KAN-62 ] && printf "%s\n" "$out" | grep -qx -- "--deps \"KAN-62:KAN-61 KAN-63:KAN-62\"" && [ "$(qg KAN-63 .collides_with)" = "KAN-61|KAN-62" ]'
+# A Jira link the chain also implies is kept: only the chain's own holds are dropped.
+rec KAN-63 shared src/k "$(nb KAN-61)"
+plan KAN-61 KAN-62 KAN-63
+check "DS-793 a Jira-link hold the chain implies is kept beside the chain hold" '[ "$(qg KAN-63 .held_by)" = "KAN-61|KAN-62" ] && [ "$(qg KAN-62 .held_by)" = KAN-61 ]'
 
 # ---- AC5: Jira Blocks links win, and the plan names the contradiction -----------------------------
 rec KAN-31 relocate src/m "$(nb KAN-32)"; rec KAN-32 surface src/m; rec KAN-33 schema src/n "$(nb KAN-34)"; rec KAN-34 surface src/o

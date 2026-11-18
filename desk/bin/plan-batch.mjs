@@ -386,6 +386,7 @@ for (const r of admitted) {
   }
 }
 const liveKeys = new Set(admitted.map((r) => r.ticket));
+const chainHolds = [];  // [then, first]: the holds this merge chain adds
 for (const c of collisions) {
   if (!liveKeys.has(c.a) || !liveKeys.has(c.b)) continue;
   const [a, b] = [byKey[c.a], byKey[c.b]];
@@ -400,6 +401,16 @@ for (const c of collisions) {
     : sizeRank(first) !== sizeRank(then) ? `both ${kindLabel(first)}, ${first.ticket} is smaller`
       : `both ${kindLabel(first)}, ${first.ticket} named first`;
   holdBehind(then.ticket, first.ticket, `${files}; ${why}`);
+  chainHolds.push([then.ticket, first.ticket]);
+}
+// A chain hold another hold already implies is dropped, so C sharing a file with A and B waits on B
+// alone: the driver releases B only once A merges, so C still merges after both. Kept, every ticket
+// in a shared-file batch is held by every one before it, and each hold walk meets that many paths.
+// Jira-link and feature-plan holds are never dropped.
+for (const [t, p] of chainHolds) {
+  if (!(preds[t] ?? []).some((w) => w !== p && waitsOn(w, p))) continue;
+  preds[t] = preds[t].filter((x) => x !== p);
+  delete holdWhy[t][p];
 }
 const holdsOf = (t) => [...(preds[t] ?? []), ...(outsideHolds[t] ?? [])];
 const held = (t) => holdsOf(t).length > 0;

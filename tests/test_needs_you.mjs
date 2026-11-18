@@ -2504,6 +2504,29 @@ put('ds742', { port: 5742, beat: 1, tickets: {
   t('DS-742 AC3 start makes it triaged with its branch and stage kept, so the next pass starts it there', `${st.ok} ${p1.state} ${p1.park} ${p1.branch} ${p1.last_round?.stage}`, 'true triaged null fix/P-1 5/9');
 }
 
+// A batch held as a chain of 30, each ticket behind every one before it as collision holds once left a
+// batch, lists in under a second more than the same 30 tickets unheld. What `needs-you list` runs, in
+// this process, timed against the unheld batch so the many fixture repos above are not counted.
+{
+  const listMs = (tickets) => {
+    put('ds793', { port: 4793, beat: 1, supervised: true, tickets });
+    const start = Date.now();
+    const repos = loadRepos();
+    N.refresh({ word: 'ds793', repos });
+    N.listText(N.collect({ word: 'ds793', repos }));
+    return Date.now() - start;
+  };
+  const flat = { 'H-0': { state: 'running', lane: 'A' } };
+  const chain = { ...flat };
+  for (let i = 1; i <= 30; i++) {
+    flat[`H-${i}`] = { state: 'triaged', lane: 'A' };
+    chain[`H-${i}`] = behind(`H-${i}`, Array.from({ length: i }, (_, j) => `H-${j}`).join('|'));
+  }
+  const unheld = listMs(flat);
+  const held = listMs(chain);
+  t('DS-793 AC3 needs-you list on a batch held as a chain of 30 takes under a second more than unheld', held - unheld < 1000, true);
+}
+
 // Refusals.
 t('an item desk-q does not count records nothing', N.record({ word: 'alpha', ticket: 'A-5', action: 'requeue', text: 'try again' }).ok, false);
 t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 11);
