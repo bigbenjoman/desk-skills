@@ -121,6 +121,14 @@ check "DS-411 AC2: a routine that failed is not run again at the same head" '[ "
 rloop config-routine.md T-93; rloop config-routine.md T-93
 check "DS-411: a PR that also touches a hold with no routine is the person'\''s, and no routine runs" '! grep -q "^193 " "$T/routine.ran" && [ "$(merged)" = 191 ] && echo "$out" | grep -q "#193 HELD by §4 Merge holds — a person merges it, after its step: apply the migration"'
 check "DS-411 AC3: its record still leads with the routine hold'\''s step, and names the hold with no routine" '[ "$(qf T-93 .merge_blocked)" = "merge hold: apply the migration to staging and production first — db/**, 1 file(s), e.g. db/up.sql; routine \`bash $T/routine.sh\` not run: it also touches a hold no routine clears: deploys the infrastructure on merge — infra/**, 1 file(s), e.g. infra/main.tf" ]'
+# The row is read when the PR is about to merge, not from the config as the driver started.
+jq --arg s "$SHA92" '. + { "194": { head: "fix/T-94", base: "main", sha: $s, state: "open", draft: false, files: ["db/up.sql"], checks: [["test", "SUCCESS"]] } }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+q add T-94 Bug A; q set T-94 branch=fix/T-94 state=done result.pr=194
+cp "$T/config-routine.md" "$T/config-routine-live.md"
+rloop config-routine-live.md T-94
+printf '%s' "cp '$T/config-routine-off.md' '$T/config-routine-live.md'" > "$T/gh.midloop"
+rloop config-routine-live.md T-94
+check "DS-791 AC2: merge-hold-routine revoked while the driver runs, the routine is not run and the PR not merged" '[ ! -e "$T/gh.midloop" ] && [ "$(merged)" = 191 ] && ! grep -q "^194 " "$T/routine.ran" && echo "$out" | grep -q "#194 HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now no"'
 
 # ---- DS-407: the person's step in no batch holds a green PR's merge, and lifting it lets it merge --
 SHA61=f111111111111111111111111111111111111111

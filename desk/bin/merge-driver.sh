@@ -233,6 +233,7 @@ if ! GRANT="$(node "$DESK_ENV_MJS" merge-grant 2>&1)"; then
   exit 1
 fi
 GRANT_BY="${GRANT%%"$TAB"*}"
+desk_load_config
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -240,17 +241,17 @@ case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *) echo "FAIL: config §4 Merge method is '${MERGE_METHOD:-unset}' — want squash, merge or rebase. Run /desk-setup." >&2; exit 1 ;;
 esac
-if ! REQUIRED="$(node "$DESK_ENV_MJS" list required-checks 2>/dev/null)"; then
+if ! REQUIRED="$(desk_list required-checks 2>/dev/null)"; then
   echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` when nothing is required; every non-advisory check must still pass)." >&2; exit 1
 fi
-node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
+desk_list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
 UPDATE_PERM="$(desk_perm pr-update-branch)"
 # Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
 ROUTINE_PERM="$(desk_perm merge-hold-routine)"
 # Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
-FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
+FEEDBACK_RAW="$(desk_perm_or_unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
 desk_apply_batch_base || exit 1
@@ -269,6 +270,15 @@ JIRA_CREATE_PERM="$(desk_perm jira-create)"
 CLOSE_PERM="$(desk_perm jira-close-own-merged)"
 DONE_STATE="$(desk_cfg done-state 2>/dev/null || true)"
 SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
+# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
+# Read here, before the cd below, so it comes from the snapshot taken in this directory.
+CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
@@ -331,14 +341,6 @@ Q="$DESK_RUN_BIN/queue.mjs"
 GATE="$DESK_RUN_BIN/gate.mjs"
 THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
-# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
-CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
-# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
-REVIEW_HOLD=""
-case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
-  ''|todo|none) ;;
-  *) REVIEW_HOLD=1 ;;
-esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 # The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
@@ -1115,7 +1117,7 @@ EOF_RESOLVE
   # Last before the merge, so a routine never runs for a PR that would not merge after it. The row is
   # read again here, as the grant is, so revoking it stops a driver that is already running.
   if [ -n "$routines" ]; then
-    ROUTINE_PERM="$(desk_perm merge-hold-routine)"
+    ROUTINE_PERM="$(desk_perm_fresh merge-hold-routine)"
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now $ROUTINE_PERM"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"; rm -f "$SD/green-$n"; return 1
