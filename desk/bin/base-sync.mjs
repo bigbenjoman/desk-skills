@@ -202,10 +202,10 @@ export function syncBase({ path, base, branch, push = true, dry = false, check =
       git(path, ['clean', '-fdq']);
       if (failed) return { ok: false, reason: 'check', files: [], check: failed, merged };
     }
-    // --no-verify: the repo's pre-push hook is for authored work, and this push adds none. It holds
-    // commits the default branch's CI has already checked, and `check` above ran on the merged tree.
-    // The base worktree has no installed deps, so the hook could only fail there: `turbo: command
-    // not found` came back as a format:check failure (desk-skills#837).
+    // --no-verify: the repo's pre-push hook is for authored work, and this push adds none: it holds
+    // commits the default branch's CI has already checked (and `check`, where §4 Merged-tree check
+    // is set, has run on the merged tree). The base worktree has no installed dependencies, so a
+    // hook that runs the repo's own checks could only fail there, on the worktree, not the code.
     const p = git(path, ['push', '-q', '--no-verify', 'origin', `HEAD:refs/heads/${base}`]);
     if (p.ok) return { ok: true, merged, pushed: true, retried: attempt > 0 };
     // Never leave a merge origin does not have: the next sync starts from origin's base again.
