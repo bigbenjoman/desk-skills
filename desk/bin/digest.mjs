@@ -33,7 +33,7 @@ import { readWarnings } from './pass-metrics.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
-import { read as readLeverLog, appendWith as appendLeverLog } from './lever-log.mjs';
+import { read as readLeverLog, appendChecked as appendCheckedLeverLog, stampAfter } from './lever-log.mjs';
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
@@ -550,30 +550,24 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
   if (d.lever) {
     let why = null;
     try {
-      appendLeverLog(slug, () => {
-        const log = readLeverLog(slug);
-        // Admission reads a log with an unreadable line as no log at all, so an override there would never pin.
-        if (log.bad.length) { why = `${slug}'s lever log has ${log.bad.length} unreadable line(s), so admission would not read the override: repair the log first`; return null; }
+      ({ why } = appendCheckedLeverLog(slug, (events) => {
         // An override this decision already has (a run that stopped before its decision log entry, or
         // one alongside this) is finished, never written twice; one to the other value is refused.
-        const had = log.events.find((e) => e.kind === 'override' && e.decision_id === id);
+        const had = events.find((e) => e.kind === 'override' && e.decision_id === id);
         if (had) {
-          if (had.value !== choice) { why = `decision ${id} is already overridden ${had.value} in ${slug}'s lever log`; return null; }
+          if (had.value !== choice) return { why: `decision ${id} is already overridden ${had.value} in ${slug}'s lever log` };
           leverEvent = had;
           at = had.at;
           // A state change written after it (another decision's override, a trip) is what admission reads now.
-          superseded = log.events.slice(log.events.indexOf(had) + 1).some((e) => e.lever === d.lever && ['transition', 'override', 'trip'].includes(e.kind) && e.to != null);
+          superseded = events.slice(events.indexOf(had) + 1).some((e) => e.lever === d.lever && ['transition', 'override', 'trip'].includes(e.kind) && e.to != null);
           return null;
         }
-        // The log is read in time order, so an override stamped before an event written ahead of it
-        // under this lock (a trip) would replay first and be undone: it is never earlier than the last.
-        const last = Math.max(-Infinity, ...log.events.map((e) => Date.parse(e.at)).filter(Number.isFinite));
-        if (last > Date.parse(at)) at = new Date(last).toISOString();
-        const o = overrideEvent(d, choice, log.events, { at });
-        if (o.why) { why = o.why; return null; }
+        at = stampAfter(events, at);
+        const o = overrideEvent(d, choice, events, { at });
+        if (o.why) return { why: o.why };
         leverEvent = o.event;
         return o.event;
-      });
+      }));
     } catch (e) { why = `${slug}'s lever log refused it: ${e.message}`; }
     if (why) return { ok: false, why };
   }

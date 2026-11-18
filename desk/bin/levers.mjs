@@ -19,7 +19,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { batchPaths, configuredRepos, deskConfigRoot } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendChecked, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
 import { CATEGORY, VALUES } from './lever-changes.mjs';
 import { decisionsPath } from './decisions.mjs';
@@ -27,8 +27,6 @@ import { decisionsPath } from './decisions.mjs';
 export const CHOICES = Object.freeze(['off', 'trial']);
 const BY_HAND = 'ben';
 const STATE_KINDS = Object.freeze(['transition', 'override', 'trip']);
-// What spends a needs-you item in the levers view: a later change to its lever.
-const SPENDS = Object.freeze(['transition', 'override', 'thaw', 'trip']);
 const ADOPTED = Object.freeze(['adopted', 'settled']);
 
 export class LeversRefusal extends Error {}
@@ -53,30 +51,13 @@ function checkLever(lever) {
 
 const decisionId = (...parts) => createHash('sha256').update(['levers', ...parts].join('\0')).digest('hex').slice(0, 16);
 
-// The time an event written now carries: never earlier than the log's latest, which is read in time
-// order, so it replays after everything before it.
-const stamp = (events, now) => {
-  const last = Math.max(-Infinity, ...events.map((e) => Date.parse(e.at)).filter(Number.isFinite));
-  return new Date(Math.max(now.getTime(), last)).toISOString();
-};
-
-// Appends one event built from the repo's log under its lock. `build(events)` returns the event, or
-// {why} to write nothing and refuse, or null to write nothing. -> the event as written, or null.
+// Appends one event built from the repo's log under its lock (lever-log.mjs appendChecked). -> the
+// event as written, or null; throws on a refusal, which writes nothing.
 function appendFrom(slug, build) {
-  let why = null;
-  let written;
-  try {
-    written = appendWith(slug, () => {
-      const log = read(slug);
-      // Admission reads a log with an unreadable line as no log at all, so an override there would never pin.
-      if (log.bad.length) { why = `${slug}'s lever log has ${log.bad.length} unreadable line(s) (line ${log.bad.map((b) => b.line).join(', ')}), so admission would not read it: repair the log first`; return null; }
-      const r = build(log.events);
-      if (r?.why) { why = r.why; return null; }
-      return r;
-    });
-  } catch (e) { throw new Error(`levers: ${slug}'s lever log refused it: ${e.message}`); }
-  if (why) throw new Error(`levers: nothing written: ${why}`);
-  return written;
+  let r;
+  try { r = appendChecked(slug, build); } catch (e) { throw new Error(`levers: ${slug}'s lever log refused it: ${e.message}`); }
+  if (r.why) throw new Error(`levers: nothing written: ${r.why}`);
+  return r.event;
 }
 
 function logDecision(state, entry) {
@@ -114,7 +95,7 @@ export function decide({ repo, lever, choice, configRoot = deskConfigRoot(), now
 // The needs-you items for `lever` still listed just before event `i` of `events`, which that event spent.
 function spentBy(events, i, lever) {
   return events.slice(0, i).filter((e, k) => e.kind === 'needs_you' && e.lever === lever
-    && !events.slice(k + 1, i).some((x) => SPENDS.includes(x.kind) && x.lever === lever));
+    && !events.slice(k + 1, i).some((x) => spendsNeedsYou(e, x)));
 }
 
 // Reverses `lever`'s latest change in `repo`. -> { event, entry, relisted, repo, text } (event null
@@ -137,10 +118,12 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
       restored = leverStatesIn(events.slice(0, i))[lever];
       undone = last;
       relist = spentBy(events, i, lever);
+      // Back to an earlier call by hand, pinned to its value again; back to a plain state (a lever that
+      // was simply off, or paused) with no value, so it reads as that state and is not pinned.
       const to = restored.state === 'overridden' ? restored.value : restored.state;
       return {
         kind: 'override', lever, actor: BY_HAND, reason_code: 'ben_override', at, from: cur.state, to,
-        ...(VALUES.includes(to) ? { value: to } : {}), decision_id: id, ...(last.decision_id ? { undoes: last.decision_id } : {}),
+        ...(restored.state === 'overridden' ? { value: to } : {}), decision_id: id, ...(last.decision_id ? { undoes: last.decision_id } : {}),
         reason: `undid ${last.decision_id ? `decision ${last.decision_id}` : 'the last change by hand'} with levers undo: back to ${to}`,
       };
     }

@@ -59,7 +59,8 @@ const systemRandom = () => randomBytes(4).readUInt32LE(0) / 2 ** 32;
 // Each registry lever's state in a repo, from its lever log's events (oldest first):
 //   -> { <lever>: { state, at, id, value? } }, `at` and `id` those of the event that set it, null with
 //   none. An overridden lever (lever-changes.mjs) carries the `value`, `on` or `off`, it was set to. An
-//   override whose `to` is `on` or `off` (levers.mjs decide) is overridden to that value.
+//   override whose `to` is `on` or `off` with that same `value` (levers.mjs decide) is overridden to it;
+//   one with no value (levers.mjs undo, back to a plain state) is that state.
 export function leverStatesIn(events, registry = REGISTRY) {
   const out = {};
   for (const [name, l] of Object.entries(registry)) {
@@ -67,7 +68,7 @@ export function leverStatesIn(events, registry = REGISTRY) {
   }
   for (const e of events) {
     if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
-    const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off');
+    const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
     const state = pinned ? 'overridden' : STATES.includes(e.to) ? e.to : 'off';
     const value = pinned ? e.to : e.value;
     out[e.lever] = { state, at: e.at, id: e.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : {}) };

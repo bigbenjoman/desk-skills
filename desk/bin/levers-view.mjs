@@ -28,6 +28,7 @@ import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
 import { reworkSummary } from './rework.mjs';
 import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
+import { spendsNeedsYou } from './lever-log.mjs';
 
 export const VERSION = 1;
 const HOUR_S = 3600;
@@ -349,7 +350,7 @@ export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(
     let unassignable = false;
     evs.forEach((e, i) => {
       if (e.kind !== 'needs_you') return;
-      const spent = evs.slice(i + 1).some((x) => ['transition', 'override', 'thaw', 'trip'].includes(x.kind) && (e.lever == null || x.lever === e.lever));
+      const spent = evs.slice(i + 1).some((x) => spendsNeedsYou(e, x));
       if (spent) return;
       leverItems.push({ kind: 'lever', repo: r.name, lever: e.lever ?? null, at: e.at, text: e.reason ?? null, command: `needs-you list ${r.name}` });
       if (e.reason_code === 'state_unreadable') unassignable = true;

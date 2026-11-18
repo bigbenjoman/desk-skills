@@ -105,6 +105,40 @@ export function appendWith(slug, build) {
   });
 }
 
+// The time an event written now carries: `at` (an ISO string or a Date), never earlier than the
+// latest of `events`. The log is read in time order, so an event stamped before one already written
+// (a trip under the same lock) would replay first and be undone.
+export function stampAfter(events, at = new Date()) {
+  const last = Math.max(-Infinity, ...events.map((e) => Date.parse(e.at)).filter(Number.isFinite));
+  const t = at instanceof Date ? at.getTime() : Date.parse(at);
+  return new Date(Math.max(t, last)).toISOString();
+}
+
+// As appendWith, for an event decided from what the log holds: `build(events)` runs under the lock on
+// the log's events and returns the event, null to write nothing, or { why } to refuse. A log with an
+// unreadable line is refused before `build` runs: admission reads it as no log at all, so an override
+// written there would never pin. -> { event: the event as written, or null; why: the refusal, or null }
+export function appendChecked(slug, build) {
+  let why = null;
+  const event = appendWith(slug, () => {
+    const log = read(slug);
+    if (log.bad.length) {
+      why = `${slug}'s lever log has ${log.bad.length} unreadable line(s) (line ${log.bad.map((b) => b.line).join(', ')}), so admission would not read it: repair the log first`;
+      return null;
+    }
+    const r = build(log.events);
+    if (r?.why) { why = r.why; return null; }
+    return r;
+  });
+  return { event, why };
+}
+
+// What spends a needs-you event `item`: a later change to its lever, or to any lever for an item that
+// names none. The levers view lists an item until one follows it; levers undo relists the ones a
+// decision it reverses spent.
+const SPENDS = Object.freeze(['transition', 'override', 'thaw', 'trip']);
+export const spendsNeedsYou = (item, later) => SPENDS.includes(later.kind) && (item.lever == null || later.lever === item.lever);
+
 // The log's events, oldest first, narrowed to `kinds` and to those at or after `since` when given. A
 // line that does not parse as an event is skipped and named in `bad` by its 1-based line number.
 export function read(slug, { kinds, since } = {}) {

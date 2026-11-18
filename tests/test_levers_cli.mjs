@@ -99,6 +99,15 @@ t('AC11 its needs-you item is listed again', codexItems(), 1);
 t('AC11 it prints the lever, the repo and the state it is back in', r11.stdout.trim(), `Put codex back to frozen in ai-agents, undoing your decision ${e1.decision_id}. Its needs-you item is listed again.`);
 t('AC11 the undo is logged with its own id', decisions(AA).at(-1).id, o11.decision_id);
 
+// Undo back to a plain state is that state, not a call by hand: a quality-risk lever that was simply off
+// reads off again, unpinned, as it did before Ben's call.
+reset(AA);
+const rOff = levers('decide', 'ai-agents', 'codex', 'off');
+t('undo to plain off: the call pins codex off', [rOff.status, leverStatesIn(events(AA)).codex.state], [0, 'overridden']);
+const rBack = levers('undo', 'ai-agents', 'codex');
+const oBack = events(AA).at(-1);
+t('undo to plain off: the override goes back to off with no value, and the lever reads plain off', [rBack.status, oBack.to, Object.hasOwn(oBack, 'value'), leverStatesIn(events(AA)).codex], [0, 'off', false, { state: 'off', at: oBack.at, id: oBack.id }]);
+
 // ---- AC5: trial -----------------------------------------------------------------------------------------
 paused();
 const r5 = levers('decide', 'ai-agents', 'codex', 'trial');
