@@ -270,7 +270,7 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-function screen(start, columns = 80, clock = Date.now, M = Q) {
+function screen(start, columns = 80, clock = Date.now, M = Q, opts = {}) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
@@ -278,7 +278,7 @@ function screen(start, columns = 80, clock = Date.now, M = Q) {
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
   const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
-    loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })) });
+    loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })), ...opts });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,
@@ -1506,9 +1506,9 @@ Rs.ui.finish(0);
 // on the One Dark window, the selected row and black. The band's text is the window's colour on red.
 const sgrOf = (bufs) => new Set(bufs.flatMap((b) => [...b.matchAll(/\x1b\[([0-9;]+)m/g)].map((m) => m[1])));
 const RESETS = ['0', '22', '23', '24', '27', '39', '49', '22;39', '22;27;39'];
-// The foreground each code draws text in, bold alone in the default colour; reverse video and
-// backgrounds are not text colours.
-const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && !c.startsWith('1;7;'));
+// The foreground each code draws text in, bold alone in the default colour; reverse video, underline
+// and backgrounds are not text colours.
+const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && c !== '4' && !c.startsWith('1;7;'));
 const textFg = (c) => fgOf(c === '1' ? '39' : c.replace(/^1;/, ''));
 const drawn215 = sgrOf([S215, Rs, Sy].map((s) => s.output.buf));
 const sel215 = grey256(Number([...drawn215].find((c) => c.startsWith('48;5;'))?.split(';')[2]));
@@ -2331,6 +2331,105 @@ const denseStart = Date.now();
 const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, x));
 t('a 30-ticket transitively held chain reads every state in well under a second', Date.now() - denseStart < 1000, true);
 t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
+
+// ---- DS-654: home's Levers line, and v, a click and `desk-q levers` opening the page ---------------
+// The page's files under the screen's HOME: view.json holding `line`, built `age` minutes before NOW,
+// index.html unless `page` is false, and build.json with `failed` where given.
+const LV = join(I.env.HOME, '.desk-autopilot', 'levers');
+const WHERE = 'studia-web lever-evals.jsonl line 214';
+const FAILED654 = { at: minsAgo(1), error: { file: '/x/acme__studia-web/lever-evals.jsonl', line: 214, message: 'Unexpected token' }, where: WHERE };
+function levers654({ line = null, age = 5, page = true, failed = null } = {}) {
+  rmSync(LV, { recursive: true, force: true });
+  mkdirSync(LV, { recursive: true });
+  if (line) writeFileSync(join(LV, 'view.json'), JSON.stringify({ v: 1, generated_at: minsAgo(age), repos: [], line }));
+  if (page) writeFileSync(join(LV, 'index.html'), '<!doctype html>');
+  writeFileSync(join(LV, 'build.json'), JSON.stringify({ v: 1, attempted_at: minsAgo(failed ? 1 : age), ...(failed ? { failed } : {}) }));
+}
+const TODAY654 = { state: 'today', on_auto: 0, repos: 4, pinned: [{ lever: 'preflight', repo: 'desk-skills' }], needs_you: 0 };
+const WORKING654 = { state: 'working', on_auto: 1, repos: 4, pinned: [], cheaper_pct: 4.1, kept: 3, testing: 2, needs_you: 0 };
+const at654 = (m) => new Date(NOW - m * 60000).toTimeString().slice(0, 5);
+// Home's Levers line, drawn: as plain text, and as written with its SGR codes.
+async function leversLine654(opts) {
+  levers654(opts);
+  const s = screen({ kind: 'overview', all: false }, 200, () => NOW);
+  await sleep(20);
+  s.ui.finish(0);
+  const raw = lastFrame(s).find((l) => /^[○●▼▲] Levers /.test(l.replace(ANSI, ''))) ?? '';
+  return { text: raw.replace(ANSI, ''), raw, under: lines(lastFrame(s).map((l) => l.replace(ANSI, '')).join('\n')) };
+}
+let L654 = await leversLine654({ line: TODAY654 });
+t('DS-654 AC5 today: the line under the workers line', `${L654.text} | ${/^● \d+ workers? running/.test(L654.under[L654.under.indexOf(L654.text) - 1] ?? '')}`,
+  '○ Levers not running yet │ repos on auto 0 of 4 · preflight pinned in desk-skills │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: { state: 'early', on_auto: 1, repos: 4, pinned: [], testing: 2, smaller_arm: { n: 18, min: 30 } } });
+t('DS-654 AC6 too early', L654.text, '○ Levers too early to say │ testing 2 · smaller arm 18 of 30 tickets │ Open Levers ↗');
+L654 = await leversLine654({ line: WORKING654 });
+t('DS-654 AC7 working: the headline in the workers line\'s running colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;108m▼ Levers 4.1% cheaper per ticket\x1b[39m')}`,
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗ | true');
+t('DS-654 AC11 the link is underlined, and the underline ends with it', `${L654.raw.endsWith('\x1b[4mOpen Levers ↗\x1b[24m')} ${L654.raw.split('\x1b[4m').length}`, 'true 2');
+L654 = await leversLine654({ line: { ...WORKING654, state: 'needs_you', needs_you: 1 } });
+t('DS-654 AC8 one lever needs you, in the needs-you magenta', `${L654.text} | ${L654.raw.includes('\x1b[1;38;5;176m1 needs you\x1b[22;39m')}`,
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: WORKING654, age: 180 });
+t('DS-654 AC9 a page built 3 hours ago, the headline in the warning colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;180m● Levers page built 3h ago\x1b[39m')}`,
+  '● Levers page built 3h ago │ the supervisor may be stopped │ Rebuild and open ↗ | true');
+t('DS-654 AC11 every state\'s link ends its underline', L654.raw.endsWith('\x1b[4mRebuild and open ↗\x1b[24m'), true);
+L654 = await leversLine654({ line: WORKING654, age: 180, failed: FAILED654 });
+t('DS-654 AC10 a last build that failed, the headline in red', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;210m● Levers couldn\'t update\x1b[39m')}`,
+  `● Levers couldn't update │ ${WHERE} │ Open the last good page ↗ | true`);
+L654 = await leversLine654({ line: { ...WORKING654, cheaper_pct: -2.3 } });
+t('DS-654 AC19 dearer than the baseline, the headline in the warning colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;180m▲ Levers 2.3% dearer per ticket\x1b[39m')}`,
+  '▲ Levers 2.3% dearer per ticket │ kept 3 · testing 2 │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: null, page: false });
+t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Build and open ↗');
+// A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
+L654 = await leversLine654({ line: WORKING654, age: 15 });
+t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
+
+// v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves.
+async function press654(opts, { rebuilt = null, how = 'v' } = {}) {
+  levers654(opts);
+  const calls = [];
+  const s = screen({ kind: 'overview', all: false }, 200, () => NOW, Q, { leversWith: (done) => { calls.push(1); setTimeout(() => { if (rebuilt) levers654(rebuilt); done(); }, 400); } });
+  await sleep(20);
+  const keys = s.frame().some((l) => /(^|· )v levers( ·|$)/.test(l));
+  if (how === 'v') await s.press('v');
+  else await s.click(10, s.frame().findIndex((l) => /^[○●▼▲] Levers /.test(l)) + 1);
+  const during = s.frame().some((l) => l === 'Updating Levers…');
+  await sleep(rebuilt ? 600 : 20);
+  const said = s.frame().filter((l) => /Levers|last good page|press v again/.test(l) && !/^[○●▼▲] Levers /.test(l)).join(' ');
+  const codes = s.codes.length;
+  s.ui.finish(0);
+  return { keys, during, said, opened: s.opened, calls: calls.length, codes };
+}
+let P654 = await press654({ line: WORKING654 });
+t('DS-654 AC12 home\'s key hint includes v levers', P654.keys, true);
+t('DS-654 AC13 v on a page built 5 minutes ago opens it, no rebuild, desk-q stays open', `${P654.said} | ${P654.opened.join()} ${P654.calls} ${P654.codes}`,
+  `Opened Levers in your browser. Built ${at654(5)}. | ${join(LV, 'index.html')} 0 0`);
+P654 = await press654({ line: WORKING654 }, { how: 'click' });
+t('DS-654 AC14 a click on the Levers line opens it as v does', `${P654.said} | ${P654.opened.join()} ${P654.calls}`, `Opened Levers in your browser. Built ${at654(5)}. | ${join(LV, 'index.html')} 0`);
+P654 = await press654({ line: WORKING654, age: 180 }, { rebuilt: { line: WORKING654, age: 0 } });
+t('DS-654 AC15 a page 3 hours old: Updating Levers… while it rebuilds, then the rebuilt page opens', `${P654.during} ${P654.calls} | ${P654.said} | ${P654.opened.length}`,
+  'true 1 | Opened Levers in your browser. Built just now. | 1');
+P654 = await press654({ line: WORKING654, age: 180 }, { rebuilt: { line: WORKING654, age: 180, failed: FAILED654 } });
+t('DS-654 AC16 a rebuild that fails opens the last good page and says so', `${P654.said} | ${P654.opened.length}`,
+  `Couldn't update Levers: ${WHERE}. Opened the last good page, built ${at654(180)}. | 1`);
+P654 = await press654({ line: null, page: false }, { rebuilt: { line: null, page: false, failed: FAILED654 } });
+t('DS-654 AC20 no page ever built and the build fails: no browser, and what to do', `${P654.said} | ${P654.opened.length}`,
+  `Couldn't build Levers: ${WHERE}. There's no earlier page to open. Fix that line, then press v again. | 0`);
+
+// `desk-q levers` in a terminal, and with --plain.
+const run654 = (argv, opts, rebuilt = null) => {
+  levers654(opts);
+  const opened = [], said = [];
+  const out = Q.run(argv, { now: NOW, opener: (u) => opened.push(u), rebuild: () => { if (rebuilt) levers654(rebuilt); }, say: (x) => said.push(x) });
+  return `${[...said, out].join(' ')} | ${opened.length}`;
+};
+t('DS-654 AC17 desk-q levers opens the page as v does and prints the same message', run654(['levers'], { line: WORKING654 }), `Opened Levers in your browser. Built ${at654(5)}. | 1`);
+t('DS-654 AC17 and rebuilds an old page first, saying so', run654(['levers'], { line: WORKING654, age: 180 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
+t('DS-654 AC17 a page over 10 minutes old is rebuilt first too', run654(['levers'], { line: WORKING654, age: 15 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
+t('DS-654 AC18 desk-q levers --plain prints the line without its arrow, then the page\'s path', run654(['levers', '--plain'], { line: WORKING654 }),
+  `▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers\n${join(LV, 'index.html')} | 0`);
+rmSync(LV, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
