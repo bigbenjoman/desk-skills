@@ -308,7 +308,7 @@ t('DS-327 AC3 still red after the build and its re-run: the person, naming the c
   `person | "Flows image" is still red at ${HEAD.slice(0, 9)} after its check build \`./scripts/ensure-flows-image.sh\` ran and the check was re-run`);
 t('DS-327 AC3 a build at another head is not this head\'s', buildPr([FLOWS], null, { built: (h) => (h === OLD ? ok : null) })?.call, 'build');
 t('DS-327 AC4 a red check the row does not name beside it is handled as before', buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.why,
-  'its checks are not green: "Flows image" failure; "lint" failure');
+  'its checks are not green: "Flows image" failure; "lint" failure; none of them is a §4 Required check');
 t('DS-327 AC4 so is any red check with no row', buildPr([FLOWS], null, { builds: [] })?.call, 'checks');
 // DS-647: the build starts whatever else is running; only its re-run waits, and only on its own run.
 const LINT_OTHER = { name: 'Lint, Type Check & Build', status: 'in_progress', conclusion: null, runId: 31 };
@@ -935,6 +935,24 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('DS-576 verdict-logins: the handle alone with no row', logins(''), '0 ben');
   t('DS-576 verdict-logins: the handle alone with a malformed row', logins('`agent pullbot`'), '0 ben');
   rmSync(ra, { recursive: true, force: true });
+}
+
+// #806: a red check that is neither §4 Required nor §4 Advisory still holds the draft, and says the row is the fix.
+{
+  const optPr = (checks, more = {}) => undraftCall(tk, { number: 806, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks },
+    { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], ...more });
+  const report = { name: 'test-report', status: 'completed', conclusion: 'failure', runId: 31 };
+  const lint = { name: 'lint', status: 'completed', conclusion: 'failure', runId: 32 };
+  const opt = optPr([...green, report]);
+  t('#806 a red non-required check still goes to a fix worker', opt?.call, 'checks');
+  t('#806 its why says it is not a §4 Required check', opt?.why, 'its checks are not green: "test-report" failure; it is not a §4 Required check');
+  t('#806 its action names §4 Advisory checks as the fix', opt?.action, 'list "test-report" under §4 Advisory checks (/desk-setup) to let #806 through without it, or fix it on #806: any red check holds the draft unless that row names it');
+  t('#806 named under §4 Advisory checks, it undrafts', optPr([...green, report], { advisory: ['test-report'] })?.call, 'ready');
+  t('#806 two of them are named together', optPr([...green, report, lint])?.action, 'list "test-report", "lint" under §4 Advisory checks (/desk-setup) to let #806 through without them, or fix them on #806: any red check holds the draft unless that row names it');
+  const req = optPr([{ ...green[0], conclusion: 'failure' }, report]);
+  t('#806 negative control: beside a red required check the words are unchanged', `${req?.call} | ${req?.action}`, 'checks | fix or re-run the checks on #806');
+  const missing = optPr([{ name: 'types', status: 'completed', conclusion: 'success' }, report]);
+  t('#806 negative control: nor beside a required check that has not reported', missing?.action, 'fix or re-run the checks on #806');
 }
 
 process.exit(fails ? 1 : 0);
