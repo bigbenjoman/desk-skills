@@ -60,6 +60,8 @@
 //   needs-you.mjs move <repo> <TICKET> <batch>        record's move alone: the one action the decider is
 //                                                     allowed, so its allow rule names no other
 //   needs-you.mjs left [<repo>]                       how many items desk-q still counts, and where passes stopped
+//   needs-you.mjs ask <repo> "<what to do>"           an action a session hands the person, as an item
+//                                                     `ask:<n>` of the repo's until they say done (asks.mjs)
 //
 // Two items are the repo's rather than a ticket's, and are named in place of one: `unset:<key>`, every
 // ticket parked naming a §3 row the repo's config does not set (done requeues them once it is set), and
@@ -73,6 +75,7 @@
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
+// `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
 // less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
@@ -101,6 +104,7 @@ import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, 
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending } from './harvest.mjs';
 import { saveAnswer } from './briefing.mjs';
+import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 
 // The decisions a parked item offers to override, newest first.
@@ -1031,6 +1035,11 @@ function pageItems(batches, { home = false } = {}) {
     since: timeOf(p.at) } }];
 }
 
+// ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
+const ASK = 'ask:';
+const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
+  item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
 // `finds` (READS) lets a stopped or outside-held ticket's merged PR in another repo be looked for on
@@ -1290,6 +1299,9 @@ export function needsCount(r) {
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
+  for (const s of askItems(r.batches ?? [r])) {
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+  }
   return { shown: rows.length + steps, putOff, rows, stepRows };
 }
 
@@ -1353,6 +1365,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   }
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1438,7 +1451,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1750,6 +1763,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
+  if (i.kind === 'ask') {
+    try { removeAsk(i.r.stateDir, i.id); } catch (e) { return say(false, `it could not be taken off the list (${one(e.message)}).`); }
+    return say(true, 'done, so it is off your list.');
+  }
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
@@ -1784,13 +1801,22 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
 export function leftText({ word = null, now = Date.now(), repos = loadRepos(now, word) } = {}) {
   const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
-  const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
+  const counts = c.scope.filter((x) => !x.error && (x.q || x.asks?.length)).map(needsCount);
   const n = counts.reduce((a, y) => a + y.shown, 0);
   const lines = [`desk-q counts ${n} item${n === 1 ? '' : 's'} needing you${where}.${putOffLine({ putOff: counts.reduce((a, y) => a + y.putOff, 0) })}`];
   for (const r of (c.named ? c.scope : repos).filter((x) => !x.error && x.q && !x.live && (x.rows.length || x.prs.length))) {
     lines.push(`Passes are stopped in ${r.name}, so nothing acts on its answers yet. To resume: ${resumeOf(r)}.`);
   }
   return lines.join('\n');
+}
+
+// Records an action a session hands the person on the repo `word` names: { ok, line }.
+export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word) }) {
+  const what = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!what) return { ok: false, line: 'say what the person is to do: needs-you.mjs ask <repo> "<what to do>"' };
+  const r = standingOf(repos, batchesNamed(repos, word).named);
+  const { id, added } = addAsk(r.stateDir, what, now);
+  return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
 }
 
 const isMain = (() => {
@@ -1819,6 +1845,10 @@ if (isMain) {
       const res = record({ word, ticket, action: 'move', text: to });
       console.log(res.line);
       if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>]');
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      console.log(res.line);
+      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
+    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"');
   } catch (e) { refuse(e.message); }
 }

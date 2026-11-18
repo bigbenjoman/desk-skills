@@ -55,6 +55,7 @@ check "50% of 200k: PostToolUse injects"                  '[[ "$c" == *"context 
 check "it says finish the step and start no new work"     '[[ "$c" == *"Finish the step you are on"* ]] && [[ "$c" == *"start no new work"* ]]'
 check "it names .handoffs/<date>.md in the repo root"     '[[ "$c" == *"$R/.handoffs/$DAY.md"* ]]'
 check "it lists the handoff sections and paste-in line"   '[[ "$c" == *"where things stand"* ]] && [[ "$c" == *"next step"* ]] && [[ "$c" == *"decisions made"* ]] && [[ "$c" == *"open questions"* ]] && [[ "$c" == *"paste-in line"* ]]'
+check "#811: it says to record each action left for the person with needs-you.mjs ask" '[[ "$c" == *"needs-you.mjs ask <SLUG from desk-env where>"* ]]'
 check "AC3: .handoffs/ is in .git/info/exclude"           'grep -qx ".handoffs/" "$R/.git/info/exclude"'
 hook PostToolUse s1 "$T/high.jsonl"
 check "a second PostToolUse injects nothing"              '[ -z "$out" ]'

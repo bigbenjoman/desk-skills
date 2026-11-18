@@ -336,6 +336,9 @@ def on_context(event, data, session, root):
         "exists, with these sections: where things stand; the task in progress and its next step; "
         "decisions made; open questions; and last, the paste-in line "
         f"(`Read {rel} and continue from its next step.`). "
+        "Record each action it leaves for the person (file this, merge that, run this) with "
+        "`node ~/.claude/desk/bin/needs-you.mjs ask <SLUG from desk-env where> \"<what to do>\"`, "
+        "so desk-q lists it. "
         "Then tell the user to type /clear: the next session reads the handoff on its own."))
 
 
