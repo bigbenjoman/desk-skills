@@ -67,7 +67,7 @@ export const REBOOT = 'the computer restarted after its last log write';
 const DIED = 'its process died while the computer stayed up';
 // A log written this recently is a worker the registry has not caught up with, not a dead one.
 const FRESH_LOG_MS = 120_000;
-const exitText =(code) => (code == null ? 'exit code not recorded' : `exit code ${code}`);
+const exitText = (code) => (code == null ? 'exit code not recorded' : `exit code ${code}`);
 
 // How the worker's log says it ended, from its harvested output `h`: each marker read so that the last
 // one written describes it, and `t` for the reboot stops already acted on.
