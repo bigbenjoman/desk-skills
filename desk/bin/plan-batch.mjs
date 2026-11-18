@@ -361,8 +361,8 @@ admitted = admitted.filter((r) => !onCycle.has(r.ticket));
 // named in. Tickets that share no files are never chained, whatever their kinds. A Jira link (or the
 // feature plan) that already orders a pair wins, and the plan names where it contradicts the kinds,
 // except the spine hold, which every child has by design.
-// Holds are only added between two tickets neither of which already waits on the other, so the chain
-// cannot close a cycle.
+// A pair one of which already waits on the other is held in that order, and any other pair in the
+// order the kinds give, so the chain cannot close a cycle.
 const waitsOn = (t, p) => {
   const seen = new Set(); const stack = [t];
   while (stack.length) {
@@ -397,7 +397,10 @@ for (const c of collisions) {
   const files = `shares ${c.shared.join(', ')}`;
   if (waitsOn(c.a, c.b) || waitsOn(c.b, c.a)) {
     const [first, then] = waitsOn(c.a, c.b) ? [b, a] : [a, b];
-    if (!preds[then.ticket]?.includes(first.ticket)) contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+    if (!preds[then.ticket]?.includes(first.ticket)) {
+      contradicts(first, then, `they share files, and its dependencies already put ${first.ticket} first, which wins`);
+      holdBehind(then.ticket, first.ticket, `${files}; its other holds already put ${first.ticket} first`);
+    }
     continue;
   }
   const [first, then] = mergesFirst(a, b) < 0 ? [a, b] : [b, a];

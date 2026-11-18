@@ -93,6 +93,12 @@ rec KAN-61 shared src/k; rec KAN-62 shared src/k; rec KAN-63 shared src/k
 plan KAN-61 KAN-62 KAN-63
 check "DS-793 AC2: the third of three tickets sharing a file is held behind both before it, in the queue and in --deps" \
   '[ "$(qg KAN-61 .held_by)" = null ] && [ "$(qg KAN-62 .held_by)" = KAN-61 ] && [ "$(qg KAN-63 .held_by)" = "KAN-61|KAN-62" ] && printf "%s\n" "$out" | grep -qx -- "--deps \"KAN-62:KAN-61 KAN-63:KAN-61,KAN-62\""'
+# Named out of merge order (XS, then M, then L merge), the last pair is already ordered through the
+# middle ticket, and is held directly all the same.
+rec KAN-71 shared src/z '[]' M; rec KAN-72 shared src/z '[]' L; rec KAN-73 shared src/z '[]' XS
+plan KAN-71 KAN-72 KAN-73
+check "DS-793 AC2: a ticket named out of merge order is held behind every ticket it shares a file with that merges before it" \
+  '[ "$(qg KAN-73 .held_by)" = null ] && [ "$(qg KAN-71 .held_by)" = KAN-73 ] && [ "$(qg KAN-72 .held_by)" = "KAN-71|KAN-73" ]'
 
 # ---- AC5: Jira Blocks links win, and the plan names the contradiction -----------------------------
 rec KAN-31 relocate src/m "$(nb KAN-32)"; rec KAN-32 surface src/m; rec KAN-33 schema src/n "$(nb KAN-34)"; rec KAN-34 surface src/o
