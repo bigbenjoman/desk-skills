@@ -6,6 +6,7 @@ import { resetText } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 import { ownedIds } from '../spine-check.mjs';
+import { evaluateGate, stateFailing } from '../gate.mjs';
 
 // ---- the snapshot ---------------------------------------------------------
 // The session registry (claude-logins.mjs readRegistry) as a phase reads it. A failed read must never
@@ -86,6 +87,17 @@ export const parkFollowOn = (park, had) => `follow_on=${JSON.stringify([...linkS
 export function gateListsOf({ required, advisory }) {
   const list = (v) => (v && !isNone(v) ? v : []);
   return { required: list(required), advisory: list(advisory) };
+}
+// Whether PR status s is held by a failing reviewer check (`reviewer`, health.mjs: the account desk posts
+// verdicts from is not one §4 Gate reviewers counts, or cannot be read): red only on a §4 State check of
+// kind verdict (`stateChecks`), with nothing pending, under `gate` (gateListsOf). A review or fix try
+// there posts a verdict the gate does not count. Undraft and the fix tries both read it.
+export function reviewerGated(s, { reviewer, gate, stateChecks }) {
+  if (!reviewer || s?.state !== 'OPEN') return false;
+  const g = evaluateGate(s.checks ?? [], gate);
+  if (g.state !== 'fail' || g.pending.length) return false;
+  const verdict = new Set(stateFailing(g.failing, stateChecks).filter((f) => f.kind === 'verdict').map((f) => f.name));
+  return verdict.size > 0 && g.failing.every((f) => verdict.has(f.name));
 }
 
 // ---- handoffs and resumes --------------------------------------------------
