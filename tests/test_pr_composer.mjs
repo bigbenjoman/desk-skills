@@ -5,12 +5,12 @@
 // Playwright, against the fixtures served in a real browser. No network, no real profile or GitHub.
 // DESK_COMPOSER_SMOKE=<owner/repo>#<pr> opts in to a run against that live PR in the signed-in
 // profile: it finds the composer and its file input, and uploads nothing.
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findComposer, NO_COMPOSER } from '../desk/bin/pr-composer.mjs';
+import { uploadSandbox } from './upload_harness.mjs';
 import { findPlaywright, importPlaywright, loadSessionCookies } from '../desk/bin/find-playwright.mjs';
 import { browserProfile, psRows } from '../desk/bin/desk-env.mjs';
 
@@ -20,29 +20,15 @@ const t = (name, got, want) => {
   const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`);
 };
 const HERE = dirname(fileURLToPath(import.meta.url));
-const BIN = join(HERE, '..', 'desk', 'bin');
 const FIX = join(HERE, 'fixtures', 'github-pr');
 const fixture = (name) => join(FIX, `${name}.html`);
 const T = mkdtempSync(join(tmpdir(), 'desk-pr-composer-'));
 
 // ---- upload-images.mjs on a stub gh, a scratch config and a saved login ------------------------
-mkdirSync(join(T, 'images')); mkdirSync(join(T, 'fakes')); mkdirSync(join(T, 'home'));
-writeFileSync(join(T, 'images', 'after-desktop.png'), 'png');
-writeFileSync(join(T, 'profile.github-session.json'),
-  '{"user":"octocat","cookies":[{"name":"user_session","value":"v","domain":"github.com","path":"/"}],"origins":[]}\n');
-writeFileSync(join(T, 'fakes', 'gh'), '#!/bin/sh\necho "| _drag after-desktop.png_ |"\n');
-chmodSync(join(T, 'fakes', 'gh'), 0o755);
-mkdirSync(join(T, 'cfg', 'repos', 'acme__widgets'), { recursive: true });
-writeFileSync(join(T, 'cfg', 'repos', 'acme__widgets', 'config.md'), '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n');
-const upload = (env) => {
-  const start = Date.now();
-  const r = spawnSync('node', [join(BIN, 'upload-images.mjs'), '7', join(T, 'images')], { cwd: T, encoding: 'utf8', timeout: 90000, env: {
-    ...process.env, HOME: join(T, 'home'), PATH: `${join(T, 'fakes')}:${process.env.PATH}`, DESK_HOME: join(T, 'desk'),
-    DESK_UPLOAD_APPROVED: '1', DESK_BROWSER_PROFILE: join(T, 'profile'), DESK_GH_REPO: 'acme/widgets',
-    DESK_REPO_OVERRIDE: 'acme/widgets', DESK_CONFIG_ROOT: join(T, 'cfg'), ...env,
-  } });
-  return { ...r, ms: Date.now() - start, out: `${r.stdout}${r.stderr}` };
-};
+const { images, fakes, upload } = uploadSandbox(T, { user: 'octocat' });
+writeFileSync(join(images, 'after-desktop.png'), 'png');
+writeFileSync(join(fakes, 'gh'), '#!/bin/sh\necho "| _drag after-desktop.png_ |"\n');
+chmodSync(join(fakes, 'gh'), 0o755);
 const SIGN_IN = 'the saved GitHub login has expired';
 const noTrace = (out) => !/TimeoutError|locator\.|waitFor|^\s+at /m.test(out);
 
@@ -86,11 +72,22 @@ if (!pw.entry) {
   c = await findComposer(page, opts);
   t('AC2: the classic page gives textarea#new_comment_field', c ? await c.textarea.getAttribute('id') : 'null', 'new_comment_field');
   t('AC2: and its form\'s file input', c?.input ? await c.input.evaluate((el) => el.closest('form')?.querySelector('textarea')?.id ?? 'none') : 'null', 'new_comment_field');
+  // Without the placeholder only the legacy id can find it: the fallback itself, not the placeholder.
+  await page.evaluate(() => document.querySelector('#new_comment_field').removeAttribute('placeholder'));
+  c = await findComposer(page, opts);
+  t('AC2: by the legacy id alone, with no role or placeholder to match', c ? await c.textarea.getAttribute('id') : 'null', 'new_comment_field');
+  t('AC2: and still its form\'s file input', c?.input ? await which(c.input) : 'null', 'new');
 
   await open('react-threads');
   c = await findComposer(page, opts);
   t('AC3: with review threads, the bottom new-comment composer is found, not a reply box', c ? `${await c.textarea.getAttribute('id')} ${await which(c.textarea)}` : 'null', '_r_24_ new');
   t('AC3: and the file input is the composer\'s own', c?.input ? await which(c.input) : 'null', 'new');
+  // A reply box already focused has its file input; a composer that never mounts one must not take it.
+  await open('react-threads');
+  await page.focus('#_r_9_');
+  await page.evaluate(() => { const ta = document.querySelector('#_r_24_'); ta.replaceWith(ta.cloneNode()); });
+  c = await findComposer(page, opts);
+  t('AC3: a reply box\'s mounted file input is never taken for the composer\'s', c ? `${await which(c.textarea)} ${c.input ? await which(c.input) : 'no input'}` : 'null', 'new no input');
 
   await open('no-composer');
   const t0 = Date.now();

@@ -3,8 +3,9 @@
 # bash it runs under. Written for bash 3.2 as well as 4+.
 # A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
 # some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
-# the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck.
-keep_env=" DESK_REQUIRE_SHELLCHECK "
+# the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck,
+# and DESK_COMPOSER_SMOKE opts test_pr_composer.mjs in to its live smoke test.
+keep_env=" DESK_REQUIRE_SHELLCHECK DESK_COMPOSER_SMOKE "
 for v in $(compgen -e); do
   case "$v" in DESK_*) case "$keep_env" in *" $v "*) ;; *) unset "$v" ;; esac ;; esac
 done

@@ -2,19 +2,17 @@
 // upload-log.mjs on its own: a fake upload's line, and a fake stall's counting the uploads in the
 // minute and the hour before it. Then upload-images.mjs against a fake Playwright and a stub gh: each
 // file uploaded is logged, and a stall is logged as throttled for the file it was waiting on.
-import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { logUpload, readUploadLog, uploadsBefore } from '../desk/bin/upload-log.mjs';
+import { uploadSandbox } from './upload_harness.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
   const g = typeof got === 'string' ? got : JSON.stringify(got); const w = typeof want === 'string' ? want : JSON.stringify(want);
   const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`);
 };
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const T = mkdtempSync(join(tmpdir(), 'desk-upload-log-'));
 
 // ---- the module: a fake upload, then a fake stall ---------------------------------------------
@@ -36,10 +34,8 @@ t('a torn line is skipped, the rest still read', readUploadLog(log).length, 4);
 t('no log yet reads as none', readUploadLog(join(T, 'nowhere.jsonl')).length, 0);
 
 // ---- upload-images: a fake Playwright, a stub gh, the log under DESK_HOME ---------------------
-mkdirSync(join(T, 'images')); mkdirSync(join(T, 'fakes')); mkdirSync(join(T, 'home'));
-for (const f of ['after-desktop.png', 'after-mobile.png']) writeFileSync(join(T, 'images', f), f);
-writeFileSync(join(T, 'profile.github-session.json'),
-  '{"user":"me","cookies":[{"name":"user_session","value":"v","domain":"github.com","path":"/"}],"origins":[]}\n');
+const sandbox = uploadSandbox(T, { user: 'me' });
+for (const f of ['after-desktop.png', 'after-mobile.png']) writeFileSync(join(sandbox.images, f), f);
 // GitHub writes an <img> tag into the textarea's value for each file; FAKE_STALL names one it never
 // finishes, and while it waits each read of the box moves the clock on past the stall limit.
 writeFileSync(join(T, 'pw.mjs'), `
@@ -59,23 +55,18 @@ const ctx = { addCookies: async () => {}, pages: () => [page], newPage: async ()
 export const chromium = { launchPersistentContext: async () => ctx };
 `);
 const body = join(T, 'body.md');
-writeFileSync(join(T, 'fakes', 'gh'), `#!/usr/bin/env node
+writeFileSync(join(sandbox.fakes, 'gh'), `#!/usr/bin/env node
 const fs = require('fs');
 if (process.argv[3] === 'edit') fs.writeFileSync(${JSON.stringify(body)}, fs.readFileSync(0, 'utf8'));
 else process.stdout.write(fs.readFileSync(${JSON.stringify(body)}, 'utf8'));
 `);
-chmodSync(join(T, 'fakes', 'gh'), 0o755);
-const deskHome = join(T, 'desk');
+chmodSync(join(sandbox.fakes, 'gh'), 0o755);
+const { deskHome } = sandbox;
 const upload = (stall = '') => {
   rmSync(join(T, 'images.tags.json'), { force: true });   // each run uploads afresh, not from the last run's links
   writeFileSync(body, '| _drag after-desktop.png_ | _drag after-mobile.png_ |\n');
-  const env = { ...process.env, HOME: join(T, 'home'), PATH: `${join(T, 'fakes')}:${process.env.PATH}`, DESK_HOME: deskHome,
-    DESK_UPLOAD_APPROVED: '1', DESK_BROWSER_PROFILE: join(T, 'profile'), DESK_PLAYWRIGHT: join(T, 'pw.mjs'),
-    DESK_GH_REPO: 'acme/widgets', DESK_REPO_OVERRIDE: 'acme/widgets', DESK_CONFIG_ROOT: join(T, 'cfg'), FAKE_STALL: stall };
-  return spawnSync('node', [join(BIN, 'upload-images.mjs'), '7', join(T, 'images')], { cwd: T, env, encoding: 'utf8' });
+  return sandbox.upload({ DESK_PLAYWRIGHT: join(T, 'pw.mjs'), FAKE_STALL: stall });
 };
-mkdirSync(join(T, 'cfg', 'repos', 'acme__widgets'), { recursive: true });
-writeFileSync(join(T, 'cfg', 'repos', 'acme__widgets', 'config.md'), '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n');
 
 const machineLog = join(deskHome, 'upload-log.jsonl');
 const shape = (e) => `${e.repo} #${e.pr} ${e.file} ${e.result}${'uploads_last_minute' in e ? ` minute=${e.uploads_last_minute} hour=${e.uploads_last_hour}` : ''}`;

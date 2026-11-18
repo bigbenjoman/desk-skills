@@ -56,7 +56,8 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
    its page: stop and say so (`upload-images.mjs` exits 7 with "GitHub's PR page changed"), never
    retry.
 4. **The file input is hidden.** It is the `input[type=file]` in the composer's nearest ancestor that
-   holds one (the classic page's form), and on the React page appears only after step 3's focus.
+   holds one and no other textarea (the classic page's form), so a reply box's input is never taken
+   for it, and on the React page appears only after step 3's focus.
    Wait for it with `{ state: 'attached' }` — the default `visible` times out with the element right there.
    It is `multiple`; setting up to 15 files in one `setInputFiles` works **provided the wait in
    step 5 is per file**. Set only the files the cells name, 15 at a time, and record each batch's
