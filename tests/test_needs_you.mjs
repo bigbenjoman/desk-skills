@@ -1,5 +1,5 @@
 // suite: needs-you (every item desk-q counts as needing the person, and recording each answer)
-// covers: desk/bin/needs-you.mjs desk/bin/decider.mjs skills/desk-needs-you/**
+// covers: desk/bin/needs-you.mjs desk/bin/asks.mjs desk/bin/decider.mjs skills/desk-needs-you/**
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
@@ -2797,6 +2797,30 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-799 AC2 a PR found on GitHub is recorded the same way', `${d4.ok} ${zq()['S-4'].result.pr} ${prStatusOf(zq()['S-4'])?.state}`, 'true 77 MERGED');
   const d2 = N.record({ word: 'zen799', ticket: 'S-2', action: 'done', reads });
   t('DS-799 AC4 done on a stopped ticket with no merged PR anywhere is refused, naming its actions', `${d2.ok} ${/done is not an action for a stopped item \(requeue, not-now/.test(d2.line)} ${zq()['S-2'].state}`, 'false true failed');
+}
+
+// ---- #811: an action a session hands the person is recorded with `ask`, and listed until done
+{
+  put('ask811', { port: 4811 });
+  const asks = () => N.collect({ word: 'ask811' }).items.filter((i) => i.kind === 'ask');
+  const a1 = cli('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
+  t('#811 ask records it and says so', `${a1.code} ${a1.out.trim()}`, '0 ask811 ask:1: recorded; /desk-needs-you and desk-q list it until you say done.');
+  cli('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
+  cli('ask', 'ask811', 'Merge PR #12 once its checks are green');
+  const items = asks();
+  t('#811 a repo with no batch lists each ask once, as its own item', items.map((i) => `${i.t.key}|${i.need}|${i.actions.map((a) => a[0]).join()}`).join(' ; '),
+    'ask:1|File the follow-up issue drafted in the handoff|done,not-now ; ask:2|Merge PR #12 once its checks are green|done,not-now');
+  t('#811 the list shows it', cli('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
+  const standing = loadRepos(Date.now(), 'ask811').find((r) => r.slug === 'acme__ask811' && r.batch == null);
+  t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
+  const { shownRepos } = await import('../desk/bin/desk-q.mjs');
+  t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
+  t('#811 left counts them', cli('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
+  const off = N.record({ word: 'ask811', ticket: 'ask:2', action: 'not-now' });
+  t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
+  const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
+  t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
+  t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');

@@ -60,6 +60,7 @@ import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
+import { readAsks } from './asks.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 
 export { LIVE_MS };
@@ -700,7 +701,7 @@ function lightBatch(c, repoName, batch, limits) {
 
 function loadBatch(c, repoName, batch, limits, now) {
   const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
-  const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
+  const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null, asks: batch == null ? readAsks(stateDir) : [] };
   if (existsSync(queuePath)) {
     // Archived tickets are found by key behind the live ones (queue-store.mjs attachArchive).
     try { r.q = attachArchive(readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'), queuePath); } catch (e) { r.error = describeCrash(e); }
@@ -867,8 +868,9 @@ export function probesDue(repos, { now } = {}) {
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
-const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
-const hasBatch = (r) => r.q != null || r.error != null;
+const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : needsCount(r).shown);
+// A repo with no batch still has a row while a session's ask waits on the person (asks.mjs).
+const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
 // supervisor to turn back on or that cannot start, failing passes, or an unfinished batch to hand
