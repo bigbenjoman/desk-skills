@@ -87,6 +87,19 @@ plan KAN-21 KAN-22 KAN-23
 check "two of a kind: the smaller merges first, a tie goes to the order named" \
   '[ "$(qg KAN-22 .held_by)" = null ] && [ "$(qg KAN-23 .held_by)" = KAN-22 ] && [ "$(qg KAN-21 .held_by)" = "KAN-22|KAN-23" ] && printf "%s" "$out" | grep -q "both shared, KAN-22 is smaller" && printf "%s" "$out" | grep -q "both shared, KAN-22 named first"'
 
+# ---- a collision chain holds each ticket behind every earlier one it shares a file with -----------
+# The one just before it is not enough: dropping or freeing that one by hand would let it start early.
+rec KAN-61 shared src/k; rec KAN-62 shared src/k; rec KAN-63 shared src/k
+plan KAN-61 KAN-62 KAN-63
+check "DS-793 AC2: the third of three tickets sharing a file is held behind both before it, in the queue and in --deps" \
+  '[ "$(qg KAN-61 .held_by)" = null ] && [ "$(qg KAN-62 .held_by)" = KAN-61 ] && [ "$(qg KAN-63 .held_by)" = "KAN-61|KAN-62" ] && printf "%s\n" "$out" | grep -qx -- "--deps \"KAN-62:KAN-61 KAN-63:KAN-61,KAN-62\""'
+# Named out of merge order (XS, then S, then M merge), the last pair is already ordered through the
+# middle ticket, and is held directly all the same. No L: an L ticket is size-parked before chaining.
+rec KAN-71 shared src/z '[]' S; rec KAN-72 shared src/z '[]' M; rec KAN-73 shared src/z '[]' XS
+plan KAN-71 KAN-72 KAN-73
+check "DS-793 AC2: a ticket named out of merge order is held behind every ticket it shares a file with that merges before it" \
+  '[ "$(qg KAN-73 .held_by)" = null ] && [ "$(qg KAN-71 .held_by)" = KAN-73 ] && [ "$(qg KAN-72 .held_by)" = "KAN-71|KAN-73" ]'
+
 # ---- AC5: Jira Blocks links win, and the plan names the contradiction -----------------------------
 rec KAN-31 relocate src/m "$(nb KAN-32)"; rec KAN-32 surface src/m; rec KAN-33 schema src/n "$(nb KAN-34)"; rec KAN-34 surface src/o
 plan KAN-31 KAN-32 KAN-33 KAN-34

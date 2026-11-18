@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # suite: run.sh starts every suite without the caller's DESK_* environment
 # A desk worker runs tests/run.sh with its own DESK_* variables exported, which some suites read.
-# run.sh clears every DESK_* variable but DESK_REQUIRE_SHELLCHECK (CI's), and DATABASE_URL and
+# run.sh clears every DESK_* variable but DESK_REQUIRE_SHELLCHECK (CI's) and DESK_COMPOSER_SMOKE (an
+# opt-in), and DATABASE_URL and
 # DIRECT_DATABASE_URL, before any suite runs; tests/related.sh runs through run.sh, so its suites get
 # the same. A copy of both runners in a scratch repo runs a probe suite that records its environment.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.

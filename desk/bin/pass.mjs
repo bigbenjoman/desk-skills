@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
+import { batchIdle, batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, dateHoldOf, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicCarry,epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, unnamedForcePush, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -2580,8 +2580,11 @@ if (BASE && SOURCE && BASE !== SOURCE) {
   else if (wt.ok && featureMode && !fixOwns && fresh.promotion?.pr != null && !gateBusy) nextPromotion(wt.path, fresh.promotion);
   // An epic batch not in feature mode opens its epic PR once every child has merged into the base, and
   // tries again each pass until one is open.
+  // Each one opened after an earlier merged keeps that merge as `since`, and every earlier merge in
+  // `merged`, through a retry too: needs-you ages a child's follow-on steps from the epic PR that
+  // promoted it (needs-you.mjs outAt), so a reopen must not drop one.
   const ep = fresh.promotion;
-  if (wt.ok && epicOn && !fixOwns && epicDue(fresh) && (ep?.pr == null || ep.merged_at)) openPromotion(wt.path, ep?.merged_at ? { since: ep.merged_at } : {});
+  if (wt.ok && epicOn && !fixOwns && epicDue(fresh) && (ep?.pr == null || ep.merged_at)) openPromotion(wt.path, epicCarry(ep));
   if (wt.ok) baseWt = wt.path;
 }
 

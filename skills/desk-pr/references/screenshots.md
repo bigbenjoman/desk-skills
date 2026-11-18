@@ -230,7 +230,7 @@ already uploaded is never uploaded again.
 | 4 | uploaded, but placeholders still left (a file no folder holds is named) |
 | 5 | not permitted (§3 `pr-images` not `yes`) |
 | 6 | setup: Playwright not installed, or no saved GitHub login or it has expired (it names `github-signin.mjs`) |
-| 7 | throttled: a batch stalled, which is GitHub's rate limit, so it stopped without retrying; it refuses to run again before the time it prints (15 minutes, doubling with each stall in a row) |
+| 7 | throttled: a batch stalled, which is GitHub's rate limit, so it stopped without retrying; it refuses to run again before the time it prints (15 minutes, doubling with each stall in a row). Or, its line starting "GitHub's PR page changed": signed in, but no comment composer was found, so nothing was uploaded; a desk fault, not a retry (`image-upload.md`, step 3) |
 
 On 4 or 7 just run it again later: what was uploaded is in the tags file and its cells are filled.
 Never retry a 7 sooner than the time it printed: retrying into the rate limit risks GitHub blocking

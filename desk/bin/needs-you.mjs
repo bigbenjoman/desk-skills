@@ -84,7 +84,7 @@ import { expandHome, repoConfigValue, repoConfigValues, parseLevers, releaseComm
 import { fixClass } from './failure-class.mjs';
 import { describeCond, personClears } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -264,7 +264,7 @@ function worktreeClean(r, t, reads) {
 
 // What list settles before it lists, in the batches `word` names: a parked or session item that shipped
 // is recorded done, and a worktree hold found clean is dropped. -> one line for each.
-export function refresh({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const lines = [];
   for (const r of scopeOf(repos, word).scope.filter((x) => !x.error && x.q)) {
     for (const x of needsRows(r)) {
@@ -739,7 +739,17 @@ function stepItem(key, ws) {
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
 // records them run (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter(followOnPending);
+// A child of a feature or epic batch merged into the base, not the default branch: its code is out once
+// a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
+// archive check stamps it on the ticket before archiving the batch (promoted_at, batch.mjs). Null until
+// then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
+// batch, are judged by the ticket's own merge.
+function outAt(q, t) {
+  if (t.promoted_at) return t.promoted_at;
+  if (!(q?.feature === true || epicBatch(q)) || !q.base || 'carried_from' in t) return t.merged_at;
+  return promotedAt(q, t);
+}
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
 function followItems(r) {
   return followsOf(r).map((t) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t) }));
 }
@@ -755,7 +765,7 @@ function followItem(r, t) {
   return { kind: 'follow', ticket: t.key,
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes the item off your list`], ['not-now']],
-    since: timeOf(t.merged_at) };
+    since: timeOf(outAt(r.q, t)) };
 }
 
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
@@ -1129,7 +1139,7 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 // A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
-export function collect({ word = null, now = Date.now(), repos = loadRepos(now), reads = READS } = {}) {
+export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
@@ -1263,7 +1273,7 @@ function namedFixturesText(r, ticket, text) {
 }
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
-export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
+export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
   if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
@@ -1586,7 +1596,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
 
 // What is left: desk-q's NEEDS YOU count in scope (needsCount's rule), then a line for each unfinished batch there whose passes are
 // stopped, needing the person or not: one just answered no longer does, and still waits on a pass.
-export function leftText({ word = null, now = Date.now(), repos = loadRepos(now) } = {}) {
+export function leftText({ word = null, now = Date.now(), repos = loadRepos(now, word) } = {}) {
   const c = scopeOf(repos, word);
   const where = c.named ? ` in ${c.named.name}` : '';
   const counts = c.scope.filter((x) => !x.error && x.q).map(needsCount);
