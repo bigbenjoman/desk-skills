@@ -788,7 +788,15 @@ export function undraftCall(t, pr, cfg) {
   }
   if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
-    const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
+    // Red only on code checks §4 Required checks does not name: the gate passes once §4 Advisory checks names them.
+    const optional = codeRed.length === gate.failing.length && evaluateGate(pr.checks ?? [],
+      { required: cfg.required ?? [], advisory: [...(cfg.advisory ?? []), ...codeRed.map((f) => f.name)] }).state === 'pass'
+      ? [...new Set(codeRed.map((f) => `"${f.name}"`))] : [];
+    const one = optional.length === 1;
+    const notGreen = optional.length
+      ? person(`its checks are not green: ${gate.reasons.join('; ')}${spent}; ${one ? 'it is not' : 'none of them is'} a §4 Required check`,
+        `list ${optional.join(', ')} under §4 Advisory checks (/desk-setup) to let #${n} through without ${one ? 'it' : 'them'}, or fix ${one ? 'it' : 'them'} on #${n}: any red check holds the draft unless that row names it`)
+      : person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
     if (!spent && codeRed.length && codeRed.every((f) => INTERRUPTED.has(f.conclusion))) return notGreen;
     // Beside a red code check, the red §4 State checks go with it, for the fix try to name as not its
