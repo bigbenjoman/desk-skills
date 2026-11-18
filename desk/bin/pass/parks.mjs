@@ -255,7 +255,7 @@ function blockerViews(tickets, epic) {
   };
 }
 // A ticket waiting to merge on the person's steps (merge_after).
-const waitsOnStep =(t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
+const waitsOnStep = (t) => keysOf(t.merge_after).length > 0 && !t.merged_at;
 
 // A ticket's open "is blocked by" links to tickets outside this queue, from its triage record's
 // `blockers`, kept on the ticket as outside_blockers [{key, category, assignee?}] for desk-q and
