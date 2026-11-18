@@ -160,6 +160,15 @@ t('undo back to adopted: a ticket pinned on before the call still counts toward 
   writeFileSync(auditFile(AA), `${JSON.stringify({ v: 1, at: at(0), repo: AA, ticket: 'AA-9', pr: 9, merge_commit: 'a'.repeat(40), lever: 'codex', arm: 'on', trial_id: p0.id, p0: 1, p1: 0, p2: 0 })}\n`);
   const rP = levers('undo', 'ai-agents', 'codex');
   t('undo back to a pair with a P0 recorded while it was off: the pair trial is reverted in the same call, and it says so', [rP.status, pair().id, pair().state, / so that trial is reverted now\.$/.test(rP.stdout.trim())], [0, p0.id, 'reverted', true]);
+
+  // The same for a lever on trial alone: the undo that restores its trial trips it in the same write.
+  reset(AA);
+  levers('decide', 'ai-agents', 'codex', 'off');
+  writeFileSync(auditFile(AA), `${JSON.stringify({ v: 1, at: at(0), repo: AA, ticket: 'AA-8', pr: 8, merge_commit: 'b'.repeat(40), lever: 'codex', arm: 'on', trial_id: `${AA}/codex/initial`, p0: 1, p1: 0, p2: 0 })}\n`);
+  const rT = levers('undo', 'ai-agents', 'codex');
+  const tripped = events(AA).filter((e) => e.kind === 'trip');
+  t('undo back to a trial with a P0 recorded while it was off: the trial is tripped in the same call, and the trip is logged', [rT.status, leverStatesIn(events(AA)).codex.state, tripped.map((e) => [e.from, e.to, e.trip]), decisions(AA).some((d) => d.lever_event != null && d.lever_event === tripped[0]?.id)], [0, 'reverted', [['trial', 'reverted', 'audit-p0']], true]);
+  t('a trial with no such P0 is restored as it was', (() => { reset(AA); levers('decide', 'ai-agents', 'codex', 'off'); levers('undo', 'ai-agents', 'codex'); return [leverStatesIn(events(AA)).codex.state, events(AA).some((e) => e.kind === 'trip')]; })(), ['trial', false]);
 }
 
 // A run that wrote its override but stopped before its decision line is finished by running it again.

@@ -33,7 +33,7 @@ import { batchPaths, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read } from './lever-log.mjs';
 import { leverStatesIn, pairTrial, qualityTrials, isPairKey } from './levers-auto.mjs';
-import { REVERTIBLE, applyTrips, lines as rowsOf } from './levers-trips.mjs';
+import { REVERTIBLE, applyTrips, tripEvents, lines as rowsOf } from './levers-trips.mjs';
 import { reviewRounds } from './findings.mjs';
 import { readLog, readLogFile } from './harvest.mjs';
 import { logUsage, ticketCost } from './worker-cost.mjs';
@@ -258,7 +258,10 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
   if (!(f?.p0 > 0)) return { row: written?.rec ?? row, events };
   // A P0 trips every lever the ticket was drawn on for, while it is still in a state a trip reverts.
   const defect = p0s.length ? p0s.join('; ') : `${f.p0} P0 at ${String(item.sha).slice(0, 12)}; the review is in ${join(item.state_dir, 'logs', `${item.key}.log`)}`;
-  const byLever = leverStatesIn(read(slug).events, registry);
+  // Read under the log's lock, so a levers undo restoring a trial either lands first (and this trips
+  // it) or reads the audit row written above (and its replay trips it).
+  let byLever = {};
+  appendWith(slug, () => { byLever = leverStatesIn(read(slug).events, registry); return null; });
   const trips = Object.entries(item.arms ?? {})
     .filter(([lever, a]) => a === 'on' && states?.[lever] === 'auto' && REVERTIBLE.includes(byLever[lever]?.state))
     .map(([lever]) => ({ lever, trip: TRIP, ticket: item.ticket, from: byLever[lever].state, file, line,
@@ -270,41 +273,40 @@ function recordAudit({ slug, name, repo = null, item, ended, text, states, now, 
     const e = appendWith(slug, () => {
       const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now: Date.parse(at) });
       if (p?.key !== key || p.id !== item.trial_id || p.state !== 'trial') return null;
-      return { kind: 'pair', levers: p.levers, pair: key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket: item.ticket,
-        reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}`, evidence_file: file, evidence_line: line };
+      return pairRevert(p, { at, ticket: item.ticket, file, line, reason: `the blind audit of PR #${item.pr} found ${f.p0} P0 on the ${p.levers.join(' with ')} pair: ${defect}` });
     });
     if (e) events.push(e);
   }
   return { row: written?.rec ?? row, events };
 }
 
+// The event that ends pair trial `p` (levers-auto.mjs pairTrial) for an audit P0.
+const pairRevert = (p, { at, ticket, file, line, reason }) => ({
+  kind: 'pair', levers: p.levers, pair: p.key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket,
+  reason, evidence_file: file, evidence_line: line,
+});
+
 // A blind audit's P0 on a trial's on arm, recorded while that trial was not running (a lever set off by
-// hand, so no trip or pair revert could be written), is applied once the trial runs again under the same
-// trial id (levers undo restores it): the pair trial is reverted, or the lever on trial tripped.
-//   -> [event] as written
-export function replayAuditP0s({ slug, name = slug, repo = null, states, registry = REGISTRY, now = Date.now() }) {
+// hand, so neither a trip nor a pair revert could be written), answered for each trial running in
+// `events`: the lever log as it stands once a levers undo restores the trial, under its trial id. Pure:
+// levers undo appends these in the same locked write as the restore, so no ticket is drawn into the
+// restored trial first. -> [event]: a pair trial's revert, or the lever's trip and its needs_you.
+export function auditP0Replay({ slug, name = slug, events, states, at, registry = REGISTRY }) {
   const file = auditFile(slug);
   const rows = rowsOf(file).filter((r) => r.rec.p0 > 0 && r.rec.arm === 'on');
   if (!rows.length) return [];
-  const at = new Date(now).toISOString();
   const out = [];
-  for (const t of liveTrials({ slug, events: read(slug).events, states, registry })) {
+  for (const t of liveTrials({ slug, events, states, registry })) {
     const r = rows.find((x) => x.rec.trial_id === t.id);
     if (!r) continue;
     const why = `the blind audit of PR #${r.rec.pr} found ${r.rec.p0} P0 while its trial was not running`;
     const defect = `${r.rec.p0} P0 at ${String(r.rec.merge_commit).slice(0, 12)}`;
-    if (!t.pair) {
-      const s = leverStatesIn(read(slug).events, registry)[t.lever];
-      out.push(...applyTrips({ slug, name, repo, trips: [{ lever: t.lever, trip: TRIP, ticket: r.rec.ticket, from: s.state, file, line: r.line, why, defect }], registry, now }));
-      continue;
+    if (t.pair) {
+      const p = pairTrial({ slug, events, states, values: null, registry });
+      out.push(pairRevert(p, { at, ticket: r.rec.ticket, file, line: r.line, reason: `${why}, on the ${p.levers.join(' with ')} pair: ${defect}` }));
+    } else {
+      out.push(...tripEvents({ events, name, at, registry, x: { lever: t.lever, trip: TRIP, ticket: r.rec.ticket, from: 'trial', file, line: r.line, why, defect } }));
     }
-    const e = appendWith(slug, () => {
-      const p = pairTrial({ slug, events: read(slug).events, states, values: null, registry, now });
-      if (p?.id !== t.id || p.state !== 'trial') return null;
-      return { kind: 'pair', levers: p.levers, pair: p.key, trial_id: p.id, from: 'trial', to: 'reverted', actor: ACTOR, reason_code: 'audit_p0', at, ticket: r.rec.ticket,
-        reason: `${why}, on the ${p.levers.join(' with ')} pair: ${defect}`, evidence_file: file, evidence_line: r.line };
-    });
-    if (e) out.push(e);
   }
   return out;
 }
@@ -353,7 +355,6 @@ export async function runAudits({
     try { cleanup(item); } catch { /* a worktree left behind is not the audit's result */ }
     withQueue(slug, (q) => { delete q.items[item.ticket]; });
   }
-  out.events.push(...replayAuditP0s({ slug, name, repo, states, registry, now }));
 
   // The sample adds what is newly due; a ticket audited already, or queued, is not added again.
   const rows = rowsOf(auditFile(slug));

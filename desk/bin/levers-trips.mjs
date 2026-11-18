@@ -345,36 +345,42 @@ export function applyTrips({ slug, name = slug, repo = null, decisionsState = ba
   const written = [];
   const at = new Date(now).toISOString();
   for (const x of trips) {
-    const e = appendWith(slug, () => {
-      const events = read(slug).events;
-      const s = leverStatesIn(events, registry)[x.lever];
-      if (s.state !== x.from) return null;
-      if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return null;
-      return {
-        kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
-        reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
-        evidence_file: x.file, evidence_line: x.line, ...(x.error ? { error: x.error } : {}),
-      };
+    const lines = appendWith(slug, () => {
+      const evs = tripEvents({ events: read(slug).events, name, x, at, registry });
+      return evs.length ? evs : null;
     });
-    if (!e) continue;
-    written.push(e);
-    recordLeverDecision([e], { slug, repo, state: decisionsState });
-    const frozen = e.to === 'frozen';
-    if (frozen || x.error || x.defect) {
-      const detail = x.error ?? x.defect;
-      const n = appendWith(slug, () => ({
-        kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : x.error ? 'own_step_error' : snake(x.trip), at, ticket: x.ticket,
-        evidence_file: x.file, evidence_line: x.line,
-        reason: frozen
-          ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${detail ? `: ${detail}` : ''}`)
-          : x.error
-            ? `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`
-            : `${x.lever} was reverted in ${name}: ${x.why} on ${x.ticket}, a defect that merged: ${x.defect}`,
-      }));
-      if (n) written.push(n);
-    }
+    if (!lines) continue;
+    written.push(...lines);
+    recordLeverDecision([lines[0]], { slug, repo, state: decisionsState });
   }
   return written;
+}
+
+// The events trip `x` writes on the lever log `events` (read under its lock): the trip, then its
+// needs_you where it froze the lever or names an error or a defect. None while the lever is no longer in
+// the state `x.from` the trip was read in, or once a trip cites the same evidence.
+//   -> [event] (applyTrips appends them; the caller logs the trip's decision)
+export function tripEvents({ events, name, x, at, registry = REGISTRY }) {
+  const s = leverStatesIn(events, registry)[x.lever];
+  if (s.state !== x.from) return [];
+  if (events.some((y) => y.kind === 'trip' && y.lever === x.lever && y.evidence_file === x.file && y.evidence_line === x.line)) return [];
+  const e = {
+    kind: 'trip', lever: x.lever, from: s.state, to: revertTarget(priorRevertsOf(events, x.lever)), actor: ACTOR, reason_code: snake(x.trip), at,
+    reason: `${x.trip} on ${x.ticket}: ${x.why} (${x.file}:${x.line})`, trip: x.trip, ticket: x.ticket,
+    evidence_file: x.file, evidence_line: x.line, ...(x.error ? { error: x.error } : {}),
+  };
+  const frozen = e.to === 'frozen';
+  if (!(frozen || x.error || x.defect)) return [e];
+  const detail = x.error ?? x.defect;
+  return [e, {
+    kind: 'needs_you', lever: x.lever, actor: ACTOR, reason_code: frozen ? 'frozen_second_revert' : x.error ? 'own_step_error' : snake(x.trip), at, ticket: x.ticket,
+    evidence_file: x.file, evidence_line: x.line,
+    reason: frozen
+      ? frozenText(x.lever, name, `${x.trip} on ${x.ticket}${detail ? `: ${detail}` : ''}`)
+      : x.error
+        ? `${x.lever} was reverted in ${name}: its own step failed on ${x.ticket}: ${x.error}`
+        : `${x.lever} was reverted in ${name}: ${x.why} on ${x.ticket}, a defect that merged: ${x.defect}`,
+  }];
 }
 
 // The trips as a pass runs them, for its batch state folder and queue. -> { events, line }, `line`

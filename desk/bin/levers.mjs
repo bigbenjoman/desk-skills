@@ -19,12 +19,13 @@
 import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues, rowStates } from './desk-env.mjs';
-import { replayAuditP0s } from './levers-audit.mjs';
+import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
+import { auditP0Replay } from './levers-audit.mjs';
+import { rowStates } from './levers-evaluate.mjs';
 import { KEPT_STATES, REGISTRY } from './lever-registry.mjs';
 import { appendChecked, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
-import { CATEGORY, VALUES } from './lever-changes.mjs';
+import { CATEGORY, VALUES, recordLeverDecision } from './lever-changes.mjs';
 import { appendDecisions } from './decisions.mjs';
 import { readDecisions } from './digest.mjs';
 import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './desk-q.mjs';
@@ -159,6 +160,7 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
   let adopt = null;
   let relisted = [];
   let pending = null;
+  let replays = 0;
   const written = appendFrom(r.slug, (events) => {
     const last = latestChange(events, lever);
     // An undo whose decision line was never written is finished, not undone in its turn.
@@ -187,7 +189,10 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
       };
       // The items Ben's call cleared are listed again, after the undo that brings them back, in the same write.
       const relist = spentBy(events, i, lever).map(({ v, id: itemId, at: _at, repo: _repo, ...rest }) => ({ ...rest, at, relisted_from: itemId, relisted_by: id }));
-      return [override, ...relist];
+      // A trial the undo restores answers a blind audit P0 recorded while it was off, in this same write.
+      const replay = auditP0Replay({ slug: r.slug, name: r.name, events: [...events, override], states: rowStates(repoConfigValues(r.slug, 'levers', configRoot)), at });
+      replays = replay.length;
+      return [override, ...relist, ...replay];
     }
     if (last && last.kind === 'transition' && KEPT_STATES.includes(last.to)) {
       undone = last;
@@ -205,7 +210,9 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     return null;
   });
   if (!written && !pending) return { event: null, entry: null, relisted: [], repo: r, text: nothing };
-  const [event, ...items] = written ? [written].flat() : [pending, ...relisted];
+  const lines = written ? [written].flat() : [pending, ...relisted];
+  const replayed = lines.splice(lines.length - replays, replays);
+  const [event, ...items] = lines;
 
   // An adopt desk logged as a taken call is overridden by this undo, so the digest stops offering it.
   const adoptCall = adopt ? readDecisions(state).taken.find((d) => d.lever_event === adopt.id || d.lever_event === undone.id) : null;
@@ -217,10 +224,7 @@ export function undo({ repo, lever, configRoot = deskConfigRoot(), now = new Dat
     by: BY_HAND, slug: r.slug, lever, ...(event.undoes ? { undoes: event.undoes } : {}),
   };
   logDecision(state, entry);
-  // A trial this undo restores answers for a blind audit P0 recorded while it was off, at once.
-  const replayed = event.restores
-    ? replayAuditP0s({ slug: r.slug, name: r.name, repo: r.ghRepo, states: rowStates(leverRow(repoConfigValues(r.slug, 'levers', configRoot))), now: Date.parse(event.at) })
-    : [];
+  recordLeverDecision(replayed.filter((e) => e.kind === 'trip'), { slug: r.slug, repo: r.ghRepo, state });
   const text = undone?.kind === 'transition'
     ? `Turned off ${lever} in ${r.name}. It stays off until you set it back.`
     : `Put ${lever} back to ${event.to} in ${r.name}, undoing your decision ${event.undoes ?? '(no id)'}.${items.length ? ` Its needs-you item${items.length === 1 ? ' is' : 's are'} listed again.` : ''}${replayed.length ? ' A blind audit found a P0 on its trial while it was off, so that trial is reverted now.' : ''}`;
