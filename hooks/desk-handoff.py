@@ -182,10 +182,7 @@ def version(model):
 
 
 def default_1m(model):
-    """Whether the model runs on a 1M window with no [1m]. CLAUDE_CODE_DISABLE_1M_CONTEXT holds every
-    model to 200k."""
-    if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT"):
-        return False
+    """Whether the model runs on a 1M window with no [1m]."""
     since, v = DEFAULT_1M_SINCE.get(family(model)), version(model)
     return since is not None and v is not None and v >= since
 
@@ -193,7 +190,10 @@ def default_1m(model):
 def is_1m(state):
     """Whether the session runs on a 1M window: a model that is 1M by default, or one with `[1m]`.
     SessionStart's model id carries no `[1m]` even on a 1M session, so a `[1m]` the user chose counts
-    too, for the same model family."""
+    too, for the same model family. CLAUDE_CODE_DISABLE_1M_CONTEXT removes the [1m] variants and holds
+    every model to 200k."""
+    if os.environ.get("CLAUDE_CODE_DISABLE_1M_CONTEXT"):
+        return False
     model = str(state.get("model") or "")
     if "[1m]" in model.lower() or default_1m(model):
         return True

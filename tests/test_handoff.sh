@@ -184,6 +184,10 @@ for m in claude-opus-4-6 claude-sonnet-4-6 claude-haiku-4-5-20251001; do
   check "#745: $m, no [1m] anywhere, is 200k" '[ "$(win '"$m"')" = 200k ]'
 done
 check "#745: CLAUDE_CODE_DISABLE_1M_CONTEXT holds a default-1M model to 200k" '[ "$(win claude-opus-5-5 CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
+check "#745: CLAUDE_CODE_DISABLE_1M_CONTEXT holds a [1m] model to 200k" '[ "$(win claude-opus-4-6[1m] CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
+printf '{"model":"opus[1m]"}\n' > "$HOME/.claude/settings.json"
+check "#745: and a chosen [1m] model too" '[ "$(win claude-opus-4-6 CLAUDE_CODE_DISABLE_1M_CONTEXT=1)" = 200k ]'
+rm -f "$HOME/.claude/settings.json"
 config '`45`'
 
 # ---- /desk-update offers to lower a 1M threshold of 45 to 20, once ----
