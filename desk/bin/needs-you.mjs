@@ -1226,9 +1226,10 @@ export function listText(c, now = Date.now()) {
 
 // What an item waits on, as a key items with the same cause share, so one answer can settle them all:
 // the approval, check or gate holding a PR, the tickets outside the batch holding a ticket, the step
-// only the person takes, a usage hold or a subscription that is off. Null where the item is its own.
-const PR_CAUSES = { red: (w) => [...w.names].sort().join('|'), trigger: (w) => [...w.names].sort().join('|'), gate: (w) => one(w.text),
-  behind: (w) => w.base ?? '', green: () => '', running: () => '', skipped: () => '', hold: (w) => one(w.why ?? w.text) };
+// only the person takes, a usage hold or a subscription that is off. Null where the item is its own,
+// as a failing check or a skipped draft is: each PR's is cleared on its own branch.
+const PR_CAUSES = { trigger: (w) => [...w.names].sort().join('|'), gate: (w) => one(w.text),
+  behind: (w) => w.base ?? '', green: () => '', running: () => '', hold: (w) => one(w.why ?? w.text) };
 export function causeOf(i) {
   const at = (...parts) => [i.r.slug, ...parts].join(':');
   if (i.kind === 'usage') return at('usage');
