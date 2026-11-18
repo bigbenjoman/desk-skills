@@ -66,6 +66,8 @@
 // machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
 // (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
+// `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
+// listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
 // less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
@@ -758,6 +760,29 @@ function followItem(r, t) {
     since: timeOf(t.merged_at) };
 }
 
+// ---- a feature batch's red promotion PR (pass.mjs promotion.red) ---------------------------------
+// A promotion PR still red once its check tries are spent is one `pr` item, `promotion:<n>`, naming the
+// checks it fails and what desk tried. The follow steps of every child merged into the base since the
+// last promotion wait on it reaching the default branch, so it ranks above those follow items, by their
+// count. done records nothing: the next pass reads the PR again and clears it once it is not red.
+const PROMOTION = 'promotion:';
+function promotionItems(r) {
+  const p = r.q?.promotion, red = p?.red;
+  if (!red || red.pr == null || red.pr !== p.pr || p.merged_at) return [];
+  const since = timeOf(p.since);
+  const follows = followsOf(r).filter((t) => since == null || (timeOf(t.merged_at) ?? 0) > since).map((t) => t.key);
+  const base = r.q.base ?? 'the base';
+  const checks = Array.isArray(red.checks) ? red.checks : [];
+  // `why` (base-fix.mjs promotionChecksCall) says how many check tries desk made and how the last ended.
+  const what = `it is ${plainWords(red.why ?? `still red after ${Number(red.tried) || 0} check tries`)}`;
+  const waits = follows.length ? `. The follow steps of ${andList(follows)} wait on it reaching the default branch` : '';
+  return [{ r, t: { key: `${PROMOTION}${red.pr}` }, behind: follows.length,
+    item: { kind: 'pr', promotion: red.pr, head: red.head ?? '', checks,
+      need: `promotion PR #${red.pr} (${base} into the default branch) is red, failing ${andList(checks)}; ${what}, so no more workers go to it. Fix what fails on ${base} and push it, then say done; merging it stays yours${waits}`,
+      actions: [['done', 'once it is fixed on the base, the next pass reads its checks again and this item goes while they pass'], ['not-now']],
+      since: timeOf(red.since) } }];
+}
+
 // ---- links that no hold settles (pass.mjs wont_do_link, dropped_link, cycle_link) -----------------
 // A blocker Done under a resolution that ships nothing (Won't Do, Duplicate), in no batch or in this one
 // with its PR unmerged, never lands, a blocker dropped from the batch is released by nothing, and two
@@ -1009,6 +1034,7 @@ function putOffKey(r, t, item) {
   if (item.kind === 'step') return { question: `${t.key} step`, inputs: { ticket: t.key, waiting: item.waiting.join(', ') } };
   if (item.kind === 'follow') return { question: `${t.key} follow-on`, inputs: { ticket: item.ticket, steps: item.need } };
   if (item.blocker) return { question: `${t.key} link`, inputs: { ticket: item.ticket, blocker: item.blocker } };
+  if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
   else inputs.need = item.need;
@@ -1109,7 +1135,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b)])) {
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...promotionItems(b)])) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -1175,6 +1201,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now),
     }
   }
   for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  // Its need names the follow items waiting on it, so it ranks by them without saying the count.
+  for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
@@ -1264,7 +1292,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1530,7 +1558,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
 function recordRepoItem({ word, ticket, action, now, repos }) {
   const c = collect({ word, now, repos, reads: null });
-  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker) && y.t.key === ticket);
+  let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
     const key = ticket.slice(UNSET.length);
@@ -1554,6 +1582,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     const m = queueCmd(i.r, ['set', i.ticket, `follow_on_done=${new Date(now).toISOString()}`]);
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
+  if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');

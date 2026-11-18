@@ -190,3 +190,14 @@ the end of the batch:
   only because merging §0 Default branch in conflicted is not yours: the pass hands the conflict to
   the base's conflict fix worker (`feature-branch.md`), the gate waits while it runs, and the conflict
   reaches `WAITING ON YOU` only once that worker may not take it or its tries are spent.
+
+**A red promotion PR gets check tries before it comes to you.** Once the promotion PR is out of draft,
+or every child is through, a check that fails on it (§4 State checks aside: no change on the base
+clears those) sends a check try to the base worktree, as a child PR's red check sends a fix try. It is
+a task worker under `base-<branch>`, recorded on `base_fix` as a try of kind `checks`, and it fixes
+what fails on the base and pushes it. A draft still waiting on children gets none: the gate has not
+taken it out of draft yet. It gets two tries per promotion PR, one per head. After two, or a try that
+left the head where it was, the PR is recorded as `promotion.red`. It goes under `WAITING ON YOU`, and
+`/desk-needs-you` lists it as a `promotion:<n>` item, naming the failing checks and what the last try
+did, ranked above the follow items that wait on it. The next pass that finds it green, merged or
+closed clears it, and while it is red the batch is not idle.

@@ -1951,6 +1951,40 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// DS-786: a feature batch's promotion PR still red once its check tries are spent (pass.mjs
+// promotion.red) is one pr item, listed above the follow items of the children waiting on it.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(900), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(900) }, ...more });
+  const STEP786 = { step: 'build the Flows image', row: 'staging-write' };
+  const red = { pr: 1001, head: 'e'.repeat(40), checks: ['flows-image', 'portal (1/3)'], tried: 2, since: minsAgo(30),
+    why: `still failing flows-image, portal (1/3) at ${'e'.repeat(12)} after 2 check tries; the last try parked: the Flows image is missing` };
+  const batch = (promotion) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion } });
+  const kids = { 'P-1': merged(91, { follow_on: [STEP786] }), 'P-2': merged(92, { follow_on: [STEP786] }) };
+  put('chi786', { port: 4786, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red }) });
+  const items = () => N.collect({ word: 'chi786' }).items;
+  const ci = items();
+  const pi = ci.find((i) => i.t.key === 'promotion:1001');
+  t('DS-786 AC2 a promotion PR red once its tries are spent is listed as a pr item', pi?.kind, 'pr');
+  t('DS-786 AC2 it names the failing checks and what desk tried',
+    /^promotion PR #1001 \(feat\/VPL-842 into the default branch\) is red, failing flows-image and portal \(1\/3\); it is still failing flows-image, portal \(1\/3\) after 2 check tries; the last try parked: the Flows image is missing, so no more workers go to it\. /.test(pi?.need ?? ''), true);
+  t('DS-786 AC3 it names the follow items waiting on it', (pi?.need ?? '').endsWith('The follow steps of P-1 and P-2 wait on it reaching the default branch'), true);
+  t('DS-786 AC3 it is listed above the follow items waiting on it, though they waited longer', ci.map((i) => i.t.key).join(), 'promotion:1001,follow:P-1,follow:P-2');
+  t('DS-786 AC2 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi786')).shown, 3);
+  const done786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'done' });
+  t('DS-786 done records nothing: the next pass reads its checks again', `${done786.ok} ${queueOf('chi786').promotion.red.pr} ${items().length}`, 'true 1001 3');
+  const off786 = N.record({ word: 'chi786', ticket: 'promotion:1001', action: 'not-now' });
+  t('DS-786 not-now puts it off', `${off786.ok} ${items().some((i) => i.t.key === 'promotion:1001')}`, 'true false');
+  put('chi786', { port: 4786, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red: { ...red, head: 'f'.repeat(40) } }) });
+  t('DS-786 a new head brings it back', items().some((i) => i.t.key === 'promotion:1001'), true);
+  // AC4 and AC5: the pass records no red while the PR is draft waiting on children, or green; nor once it merged.
+  put('chi786', { port: 4786, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001 }) });
+  t('DS-786 AC4 AC5 negative: no red recorded, no item, and the follow items stay', items().map((i) => i.t.key).join(), 'follow:P-1,follow:P-2');
+  put('chi786', { port: 4786, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1001, red, merged_at: minsAgo(1) }) });
+  t('DS-786 negative: a merged promotion PR is not listed', items().some((i) => i.t.key === 'promotion:1001'), false);
+  put('chi786', { port: 4786, beat: 1, supervised: true, tickets: kids, ...batch({ pr: 1002, red }) });
+  t('DS-786 negative: a red record for an earlier promotion PR is not listed', items().some((i) => i.t.key.startsWith('promotion:')), false);
+}
+
 // A link to a blocker in no batch closed as Won't Do (pass.mjs wont_do_link) is one triage
 // item naming both tickets, beside the ticket's own hold or park, until the pass clears the marker.
 {

@@ -19,6 +19,9 @@ import { FIX_TRIES_MAX, tries, triesSpent } from './fix-tries.mjs';
 export { FIX_TRIES_MAX };
 
 const short = (sha) => String(sha ?? '?').slice(0, 12);
+// A try that merges the default branch into the base (a conflict or merged-tree fix), rather than one
+// on a PR of the base's: the epic PR's review (kind `review`) or the promotion PR's red checks (`checks`).
+export const mergeTry = (x) => !x?.kind;
 const fileList = (files) => (files?.length ? files.join(', ') : 'not listed');
 
 // rec: the queue's base_fix, or null. c: { head (origin's base), source (origin's default branch),
@@ -30,8 +33,9 @@ export function baseFixCall(rec, c) {
   if (c.push && !c.push.ok) {
     return { call: 'person', why: `config §3 ${c.push.key} is "${c.push.perm}", so no worker may push the resolved base${c.push.perm === 'ask' ? ' (run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 to let one)' : ''}` };
   }
-  // The epic PR's review tries (kind `review`) share the record and the worktree, not the count.
-  const done = (rec?.tries ?? []).filter((x) => x.kind !== 'review');
+  // The epic PR's review tries and the promotion PR's check tries (mergeTry false) share the record and
+  // the worktree, not the count.
+  const done = (rec?.tries ?? []).filter(mergeTry);
   const last = done[done.length - 1] ?? null;
   if (rec?.running && c.alive) return { call: 'wait', try: last };
   // A try that parked only on the busy test lock spends nothing.
@@ -191,5 +195,49 @@ export function epicReviewTask({ base, source, fix }) {
     taskWorktree(base) +
     `Your task is review try ${fix.try} of ${fix.of}: the "Epic PR review" section of your briefing says what it covers. Start at desk-ticket Stage 4: git fetch origin and bring HEAD to origin/${base} (git merge --ff-only origin/${base}), verify it (Stage 4), then run the review desk-env review-cmd prints over origin/${source}..HEAD (Stage 4b). ` +
     `Fix every P0 to P2 finding it confirms on ${base}, commit, push with ${basePush(base)}, and review the new head. Post the final review on PR #${fix.pr} at its head (§3 pr-self-review-comment). ` +
+    `Never mark the PR ready, merge it, rebase or force-push ${base}, or touch any ticket's Jira. End with AUTOPILOT_DONE: pr=${fix.pr} jira=none.`;
+}
+
+// A feature batch's promotion PR (base → default branch) whose checks fail gets check tries, as a
+// child PR's red checks get fix tries: a worker in the base worktree, recorded on base_fix as a try of
+// kind `checks`, at most FIX_TRIES_MAX per promotion PR and one per head. Once they are spent, or a try
+// leaves the head where it was, the PR is the person's (pass.mjs records it as promotion.red).
+//   rec: base_fix · v: { pr, head, failing: [check names] } · alive: the running try's worker is live
+//   -> wait | stuck (why, tried) | spawn (fix)
+export function promotionChecksCall(rec, v, { alive }) {
+  const done = (rec?.tries ?? []).filter((x) => x.kind === 'checks' && x.pr === v.pr);
+  const last = done[done.length - 1] ?? null;
+  if (rec?.running && alive) return { call: 'wait', try: last };
+  if (done.some((x) => x.head === v.head) || done.length >= FIX_TRIES_MAX) {
+    const why = `still failing ${v.failing.join(', ')} at ${short(v.head)} after ${done.length} check ${done.length === 1 ? 'try' : 'tries'}${last?.outcome ? `; the last try ${last.outcome}` : ''}`;
+    return { call: 'stuck', why, tried: done.length };
+  }
+  return { call: 'spawn', fix: { kind: 'checks', try: done.length + 1, of: FIX_TRIES_MAX, head: v.head, pr: v.pr, failing: v.failing } };
+}
+
+export function promotionChecksTicket({ key, base, source, fix }) {
+  return [
+    `# ${key}`, '',
+    `Source: the autopilot pass, which found checks failing on promotion PR #${fix.pr} (${base} → ${source})`, '',
+    `Promotion PR #${fix.pr} lands ${base} on ${source}. At its head ${short(fix.head)} these checks fail: ${fix.failing.join(', ')}.`, '',
+    'Acceptance criteria:',
+    `- Every check named above passes on PR #${fix.pr} at its new head, with the fix committed on ${base}.`,
+    `- The batch's tests pass on ${base}.`, '',
+  ].join('\n');
+}
+
+export function promotionChecksBrief({ base, source, fix }) {
+  return [
+    `## Promotion PR check try ${fix.try} of ${fix.of}: #${fix.pr}`, '',
+    `Promotion PR #${fix.pr} merges ${base} (at ${short(fix.head)}) into ${source}. These checks fail at that head: ${fix.failing.join(', ')}.`,
+    `This is try ${fix.try} of ${fix.of}. A head still red after a try, or after try ${fix.of}, goes to the person.`, '',
+  ].join('\n');
+}
+
+export function promotionChecksTask({ base, source, fix }) {
+  return `Follow the autopilot worker contract in your system prompt exactly. Your ticket is $TICKET. It is promotion PR #${fix.pr}, which merges this batch's base ${base} into ${source}. ` +
+    taskWorktree(base) +
+    `Your task is check try ${fix.try} of ${fix.of}: the "Promotion PR check" section of your briefing names the failing checks. Start at desk-ticket Stage 2: git fetch origin and bring HEAD to origin/${base} (git merge --ff-only origin/${base}), then read each failing check's log (gh pr checks ${fix.pr}, gh run view) and fix what fails it on ${base}. ` +
+    `Verify it (Stage 4) and self-review the change (Stage 4b), then commit and push with ${basePush(base)}. A check no change on ${base} can clear (a runner fault, a missing secret or image, a step only a person takes) is not yours: push nothing for it and park naming the check and what it needs. ` +
     `Never mark the PR ready, merge it, rebase or force-push ${base}, or touch any ticket's Jira. End with AUTOPILOT_DONE: pr=${fix.pr} jira=none.`;
 }
