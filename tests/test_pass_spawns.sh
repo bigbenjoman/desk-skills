@@ -1302,6 +1302,25 @@ printf '%s\n' "$signed" > "$T/profile.github-session.json"
 check "DS-675 AC2 signed in again, the next pass uploads what waited" 'grep -qx "776 $T/state-s/images/P-6/" "$T/uploads" && [ "$(field P-6 images_uploaded)" = true ]'
 rm -f "$T/upload-fills"
 
+# ---- DS-790: GitHub's PR page changed (exit 7 naming it): the upload spends no try, the PR stays in
+# draft and is not put to the person, and no later upload runs till desk is installed again.
+q add P-7; q set P-7 state=running session_id=gone lane=A branch=fix/P-7 result.pr=777; frx 777 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 777 '_drag p-7.png_'
+mkdir -p "$T/state-s/images/P-7"; : > "$T/state-s/images/P-7/p-7.png"; : > "$T/upload-page-777"
+say "AUTOPILOT_IMAGES: $T/state-s/images/P-7/" "AUTOPILOT_DONE: pr=777 jira=Done" > "$T/state-s/logs/P-7.log"
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-790 AC1 a page change spends no try and leaves the job in the queue" 'grep -q "^777 " "$T/uploads" && [ "$(field P-7 upload_crash)" = null ] && grep -qE "\"key\": ?\"P-7\"" "$T/desk/upload-queue.json"'
+check "DS-790 AC3 the PR stays in draft, waiting on the uploader, and is not put to the person" \
+  '! grep -q "^pr ready 777" "$T/gh-calls" && echo "$out" | grep -qF "P-7 images → #777 wait in the machine'"'"'s upload queue: desk'"'"'s screenshot uploader is broken: GitHub'"'"'s PR page changed" && ! echo "$out" | grep -q "P-7: DRAFT"'
+: > "$T/uploads"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-790 AC3 the next pass under the same install tries no upload and still leaves it in draft" '! grep -q "^777 " "$T/uploads" && ! grep -q "^pr ready 777" "$T/gh-calls" && [ "$(field P-7 upload_crash)" = null ]'
+# desk installed again with the fix: the install the pause recorded is no longer the one installed.
+rm -f "$T/upload-page-777"; : > "$T/upload-fills"
+node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileSync(f, "utf8")); q.page.install = "/an/earlier/release/bin"; require("fs").writeFileSync(f, JSON.stringify(q))' "$T/desk/upload-queue.json"
+: > "$T/uploads"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-790 AC4 installed again and the composer found: what waited is uploaded" 'grep -qE "^777 $T/state-s/images/P-7/?$" "$T/uploads" && [ "$(field P-7 images_uploaded)" = true ]'
+check "DS-790 AC4 and the pause clears" 'grep -qE "\"page\": ?null" "$T/desk/upload-queue.json"'
+rm -f "$T/upload-fills"
+
 # ---- DS-674: a crash that filled cells spends no try, and a throttled stop spends none and waits for
 # its retry_after. UC-1: one filled crash already recorded, three cells left, and each retry fills one
 # then crashes. UC-2: one try spent, and its retry is throttled.

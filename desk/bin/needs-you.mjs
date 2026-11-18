@@ -64,7 +64,9 @@
 // checks them again). `reviewer` is the repo's too: its failing reviewer health check, naming every PR
 // the pass holds on it (done records nothing; the next pass checks again). `browser-signin:<id>` is the
 // machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
-// (done records nothing; the next pass checks again). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// (done records nothing; the next pass checks again). `upload-page` is the machine's too: the upload queue
+// paused because the uploader found no comment composer on GitHub's PR page, a desk fault every repo's
+// screenshot uploads wait on (done records nothing; an upload after desk is installed again clears it). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
@@ -907,6 +909,30 @@ function signinItems(batches, only = null) {
   });
 }
 
+// ---- the machine's upload queue paused on GitHub's PR page (upload-queue.mjs page): one item --------
+// While the uploader finds no comment composer, no repo's screenshot upload runs, so it is one desk
+// fault for the machine, not a drag-it-in item per PR. It is listed in a batch of the repo whose upload
+// found it, else of a repo with an upload waiting; desk-q counts it only in the first (`home`). done
+// records nothing: the first upload after desk is installed again that finds the composer drops it.
+const PAGE = 'upload-page';
+function pageItems(batches, { home = false } = {}) {
+  let q;
+  try { q = readUploadQueue(); } catch { return []; }
+  const p = q.page;
+  if (!p) return [];
+  const live = batches.filter((x) => !x.error && x.q);
+  const repoOf = (b) => b.slug.replace('__', '/');
+  const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
+  const r = first(live.filter((b) => repoOf(b) === p.repo)) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => j.repo === repoOf(b)))));
+  if (!r) return [];
+  const prs = [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))];
+  return [{ r, dir: r.stateDir, t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
+    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue`,
+    note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
+    actions: [['done', 'once desk is installed again with a fix, the next pass uploads what waits and drops this item'], ['not-now']],
+    since: timeOf(p.at) } }];
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
 function itemOf(r, x, reads = null) {
@@ -1157,7 +1183,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
   const own = (r.batches ?? [r]).filter((x) => x.q);
-  for (const s of signinItems(own, own)) {
+  for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
   return { shown: rows.length + steps, putOff, rows, stepRows };
@@ -1222,6 +1248,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1307,7 +1334,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -1601,6 +1628,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
   if (i.kind === REVIEWER) return say(true, 'noted: the next pass checks the account again, and lifts the hold on every PR it names once the check passes.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
+  if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
     let rec;
