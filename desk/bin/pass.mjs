@@ -46,7 +46,7 @@ import { parseClearsWhen, describeCond, checkCond, condPath, queuedIn, recorded,
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureMessages, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -4116,6 +4116,11 @@ const driverReruns = (n, head) => ({
   cancels: (name) => driverLines(`cancels-${n}-${head}`).filter((l) => l === name).length,
   cooledDown: Date.now() / 1000 - (Number(driverLines(`cooldown-${n}`)[0]) || 0) >= RERUN_COOLDOWN_S,
 });
+// The files PR n changes at head (renames by both names), read once per pass, or null unread.
+const prFiles = (n, head) => cached(`pr-files:${n}:${head}`, () => {
+  const o = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  return o ? o.split('\n').filter(Boolean) : null;
+});
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
 // tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
 // when the head or a check result last changed, kept from the last read while neither has.
@@ -4143,9 +4148,12 @@ function withErrors(s, was) {
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
     const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    const errors = old && 'error' in old ? old.errors ?? (old.error == null ? [] : [old.error]) : failureMessages(GH_REPO, c.jobId);
+    const notes = old && 'error' in old ? null : jobAnnotations(GH_REPO, c.jobId);
+    const errors = old && 'error' in old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
     if (errors === undefined) return c;
-    return { ...c, error: old && 'error' in old ? old.error : errors[0] ?? null, errors, ...(errors.length ? {} : logErrors(c, old)) };
+    // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
+    const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
+    return { ...c, error: old && 'error' in old ? old.error : errors[0] ?? null, errors, ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, old)) };
   });
   return { ...s, checks };
 }
@@ -4474,7 +4482,7 @@ if (drafts.length) {
     markGateHold(t, s, gated);
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
-      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), ...(FAILURE_CLASS ? { classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid) } } : {}) })
+      : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid), classes: FAILURE_CLASS, changed: prFiles(n, v.headRefOid) } })
         : c.call === 'review' ? reviewTry(t, { pr: n, head: v.headRefOid, why: c.why, base: DEFAULT_BRANCH, baseMerge, targeted: c.targeted })
           : c.call === 'conflict' ? conflictFix(t, { pr: n, head: v.headRefOid, base: DEFAULT_BRANCH, files: conflictFiles(t.branch), baseAt: baseAtOf(v.headRefOid) })
             // A check build that failed behind the base goes to a worker that merges it.
@@ -4864,8 +4872,8 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
     waived: (names) => {
       if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
-      const files = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
-      return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files: files.split('\n').filter(Boolean) })?.applies === true;
+      const files = prFiles(n, s.head);
+      return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files })?.applies === true;
     },
     conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
