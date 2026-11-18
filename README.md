@@ -233,11 +233,14 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
-**`supervisor.mjs`** runs autopilot passes from launchd, with no Claude session in the loop. Install
-it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a batch
-the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. It keeps
-the batch's merge driver running, sends one macOS notification for each new set of items that need
-you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
+**`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
+Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Claude session in the loop.
+Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
+batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
+Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
+off. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
+log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
 named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
 PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under

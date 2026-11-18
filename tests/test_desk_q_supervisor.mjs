@@ -1,7 +1,7 @@
 // suite: desk-q supervisor on, off and status (command and s key)
 // desk-q's supervisor command against fixture repos under a temporary HOME, DESK_HOME and
 // DESK_CONFIG_ROOT, with a fake supervisor.mjs (DESK_SUPERVISOR_MJS) that keeps each repo's agent
-// state in a file and a fake platform (DESK_PLATFORM). Nothing touches launchd or your real state.
+// state in a file and a fake platform (DESK_PLATFORM). Nothing touches launchd, systemd or your real state.
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -128,11 +128,16 @@ rmSync(join(SUP, 'pins'), { force: true });
 run(['forewatt', 'supervisor'], { DESK_REPO_OVERRIDE: 'acme/voicepa', GIT_DIR: join(T, 'elsewhere', '.git') });
 t('the calling repo\'s overrides are not passed on', readFileSync(join(SUP, 'pins'), 'utf8').trim(), '- -');
 
-// ---- AC8: not macOS
+// ---- AC8: neither macOS nor Linux
 clearCalls();
-const linux = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'linux' });
-t('AC8 on a computer that is not macOS, one line saying it needs launchd', `${linux.code !== 0} ${linux.err}`, 'true The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.');
+const other = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'win32' });
+t('AC8 on a computer that is neither macOS nor Linux, one line saying it needs launchd or systemd', `${other.code !== 0} ${other.err}`, 'true The supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer. Nothing changed.');
 t('AC8 and nothing changes: supervisor.mjs is never run', `${calls().length} ${stateOf('pr-ninja')}`, '0 none');
+// #735: on Linux the supervisor is a systemd timer, turned on and off as on macOS.
+const linux = run(['pr-ninja', 'supervisor', 'on'], { DESK_PLATFORM: 'linux' });
+t('#735 on Linux, on turns the supervisor on', `${linux.code} ${stateOf('pr-ninja')}`, '0 loaded');
+t('#735 on Linux, status reads it', /^pr-ninja: the supervisor is on: installed and loaded/.test(run(['pr-ninja', 'supervisor'], { DESK_PLATFORM: 'linux' }).out), true);
+setState('pr-ninja', 'none');
 
 // ---- AC9: on changes no §3 row and no batch approval
 const cfgBefore = readFileSync(cfgPath('pr-ninja'), 'utf8'), qBefore = readFileSync(qPath('pr-ninja'), 'utf8');
@@ -183,9 +188,9 @@ t('pr-ninja is selected', /^› pr-ninja\s/.test(frame().find((l) => l.startsWit
 await press('s');
 t('AC6 s on a repo with none loaded turns it on with no question', `${stateOf('pr-ninja')} ${frame().some((l) => l.startsWith('Turn off'))}`, 'loaded false');
 t('AC6 and says so', frame().some((l) => l.startsWith('pr-ninja: supervisor on.')), true);
-process.env.DESK_PLATFORM = 'linux';
+process.env.DESK_PLATFORM = 'win32';
 await press('s');
-t('AC8 s on a computer that is not macOS says it needs launchd', frame().some((l) => l.startsWith('The supervisor needs macOS launchd')), true);
+t('AC8 s on a computer that is neither macOS nor Linux says it needs launchd or systemd', frame().some((l) => l.startsWith('The supervisor needs macOS launchd or Linux systemd')), true);
 ui.finish(0);
 
 console.log(fails ? `${fails} failed` : 'all desk-q supervisor checks passed');

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-// The autopilot supervisor: launchd runs a pass in this repo every few minutes while a batch is live,
-// keeps the batch's merge driver running, and starts both again at login. No model is in the loop.
+// The autopilot supervisor: launchd on macOS, or a systemd user timer on Linux, runs a pass in this
+// repo every few minutes while a batch is live, keeps the batch's merge driver running, and starts both
+// again at login. No model is in the loop.
 // Run it from inside the repo (or with DESK_REPO_DIR set): the repo decides which config applies.
 //   node supervisor.mjs install [--interval <s>] [--reload]
-//                                                  install or update this repo's launchd agent (default
-//                                                  180s); --reload reloads it even when unchanged
+//                                                  install or update this repo's launchd agent, or its
+//                                                  systemd service and timer (default 180s); --reload
+//                                                  reloads it even when unchanged
 //   node supervisor.mjs uninstall                  remove it: no further passes run for this repo
 //   node supervisor.mjs status                     the agent, then each batch: whether it is handed over, its log's tail
-//   node supervisor.mjs tick [--foreground]        one interval; launchd runs this at login and every interval.
+//   node supervisor.mjs tick [--foreground]        one interval; launchd or systemd runs this at login and every interval.
 //                                                  It starts the work detached and returns; --foreground does it here
 //
 // A tick acts only on a batch the orchestrator handed over at Stage 4 (`queue.mjs set-batch
@@ -19,7 +21,7 @@
 //     becomes AUTOPILOT_USER_APPROVED=1, `approved.base_push` AUTOPILOT_BASE_PUSH_APPROVED=1, and either
 //     one inherited from the environment is dropped, so the supervisor never grants what it was not given;
 //   - appends the report to <state>/supervisor.log;
-//   - sends one macOS notification for the pass's `push` entries the last notification did not carry
+//   - sends one desktop notification (notify.mjs) for the pass's `push` entries the last notification did not carry
 //     (the check-in digest, a production-broken park, a failing health check), or for a pass that
 //     refused or failed;
 //   - starts the merge driver (where §3 autopilot-merge and pr-merge-green are both `yes`, or the batch's
@@ -75,8 +77,9 @@ import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, restartDriver } from './installed.mjs';
-import { supervisorLabel, launchdDomain, supervisorLoaded } from './run-by.mjs';
+import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, unitDir, unitPath, readUnit, restartDriver } from './installed.mjs';
+import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } from './run-by.mjs';
+import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
 import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys } from './decider.mjs';
@@ -84,7 +87,7 @@ import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, prune
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
-// A pass takes seconds; one still going after this is hung, and launchd starts no tick while one runs.
+// A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
 // How long an idle batch with anything parked or failed goes without a pass: each pass checks what
 // clears its parks, and is script-only.
@@ -99,9 +102,15 @@ const domain = launchdDomain;
 // ---- launchd ---------------------------------------------------------------------------------
 const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = supervisorLoaded;
-// The installed agent's interval in seconds: '?' for a plist without one, null when not installed.
-const installedInterval = (slug) => (existsSync(plistPath(slug))
-  ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null);
+// The installed agent's interval in seconds: '?' for a plist or timer without one, null when not installed.
+function installedInterval(slug) {
+  if (backend() === 'systemd') {
+    if (!existsSync(unitPath(slug, 'service')) || !existsSync(unitPath(slug, 'timer'))) return null;
+    return String(readUnit('', readFileSync(unitPath(slug, 'timer'), 'utf8')).every ?? '?');
+  }
+  return existsSync(plistPath(slug))
+    ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null;
+}
 
 const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 function plistValue(v, pad) {
@@ -118,8 +127,55 @@ function plist(job) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
 }
 
+// ---- systemd -----------------------------------------------------------------------------------
+// A value inside a unit's double quotes: systemd reads C escapes there and % as a specifier.
+const unitQuote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
+// The service runs one tick; the timer runs it at once when started (at install and at login) and an
+// interval after each run, and systemd starts no second run while one is still active.
+function units(slug, job) {
+  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, '', '[Service]', 'Type=oneshot',
+    `ExecStart=${[process.execPath, job.script].map(unitQuote).join(' ')} tick`,
+    `WorkingDirectory=${job.cwd.replace(/%/g, '%%')}`,
+    ...Object.entries(job.env).map(([k, v]) => `Environment=${unitQuote(`${k}=${v}`)}`),
+    `StandardOutput=append:${job.log.replace(/%/g, '%%')}`, `StandardError=append:${job.log.replace(/%/g, '%%')}`,
+    // The tick leaves the merge driver behind it; systemd would otherwise kill it when the tick exits.
+    'KillMode=process', ''].join('\n');
+  const timer = ['[Unit]', `Description=desk-skills supervisor for ${slug}, every ${job.interval}s`, '', '[Timer]',
+    'OnActiveSec=0', `OnUnitActiveSec=${job.interval}s`, 'AccuracySec=1s', '', '[Install]', 'WantedBy=timers.target', ''].join('\n');
+  return { service, timer };
+}
+const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim()}`);
+// Without lingering, systemd stops a user's timers once their last session ends.
+function lingerNote() {
+  const r = spawnSync('loginctl', ['show-user', String(process.env.USER || process.getuid()), '-p', 'Linger'], { encoding: 'utf8' });
+  return /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+}
+
+function installSystemd(slug, job, reload) {
+  const { service, timer } = units(slug, job);
+  const timerName = `${label(slug)}.timer`;
+  const same = existsSync(unitPath(slug, 'service')) && existsSync(unitPath(slug, 'timer'))
+    && readFileSync(unitPath(slug, 'service'), 'utf8') === service && readFileSync(unitPath(slug, 'timer'), 'utf8') === timer;
+  if (!reload && same && loaded(slug)) {
+    console.log(`supervisor: ${label(slug)} is already installed and loaded, unchanged (every ${job.interval}s, log ${join(job.state, 'supervisor.log')})`);
+    return;
+  }
+  mkdirSync(unitDir(), { recursive: true });
+  writeFileSync(unitPath(slug, 'service'), service);
+  writeFileSync(unitPath(slug, 'timer'), timer);
+  let r = systemctl('daemon-reload');
+  if (r.status !== 0) sysFail('daemon-reload', r);
+  const was = loaded(slug);
+  r = was ? systemctl('restart', timerName) : systemctl('enable', '--now', timerName);
+  if (r.status !== 0) sysFail(`${was ? 'restart' : 'enable --now'} ${timerName}`, r);
+  // `enable` covers the next login; a timer restarted while loaded may still be disabled.
+  if (was) systemctl('enable', timerName);
+  console.log(`supervisor: installed ${label(slug)}: a pass every ${job.interval}s and at login for a batch handed over at Stage 4 (queue.mjs set-batch supervised=true); log ${join(job.state, 'supervisor.log')}.${lingerNote()}`);
+}
+
 function install(interval, reload = false) {
   const slug = E.repoSlug();
+  if (!backend()) die('the supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer');
   let root;
   try { root = E.repoRoot(); } catch (e) { die(e.message); }
   if (!existsSync(root)) die(`§2 Primary repo root ${root} does not exist here`);
@@ -127,12 +183,16 @@ function install(interval, reload = false) {
   mkdirSync(state, { recursive: true });
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin', DESK_REPO_DIR: root };
   for (const k of PASS_ON) if (process.env[k]) env[k] = process.env[k];
-  // The desk version the agent was loaded at, so a tick can tell its plist predates the install.
+  // The desk version the agent was loaded at, so a tick can tell its plist or service predates the install.
   const version = readInstalled()?.commit;
   if (version) env.DESK_AGENT_VERSION = version;
   // Loaded from a release folder, the agent runs through ~/.claude/desk/bin, so each tick loads the
   // release current then and never one an install has since pruned.
   const dir = E.runBin() === HERE ? E.binDir() : HERE;
+  if (backend() === 'systemd') {
+    installSystemd(slug, { script: join(dir, 'supervisor.mjs'), cwd: root, env, interval, state, log: join(state, 'supervisor.agent.log') }, reload);
+    return;
+  }
   const job = {
     Label: label(slug),
     ProgramArguments: [process.execPath, join(dir, 'supervisor.mjs'), 'tick'],
@@ -162,6 +222,22 @@ function install(interval, reload = false) {
 
 function uninstall() {
   const slug = E.repoSlug();
+  if (backend() === 'systemd') {
+    const timerName = `${label(slug)}.timer`;
+    const was = loaded(slug);
+    if (was) {
+      const r = systemctl('disable', '--now', timerName);
+      if (r.status !== 0) sysFail(`disable --now ${timerName}`, r);
+    }
+    const had = existsSync(unitPath(slug, 'service')) || existsSync(unitPath(slug, 'timer'));
+    rmSync(unitPath(slug, 'service'), { force: true });
+    rmSync(unitPath(slug, 'timer'), { force: true });
+    if (had) systemctl('daemon-reload');
+    console.log(was || had
+      ? `supervisor: removed ${label(slug)}: no further passes run for this repo. A merge driver it started keeps running until it is stopped`
+      : `supervisor: ${label(slug)} was not installed`);
+    return;
+  }
   const file = plistPath(slug);
   const was = loaded(slug);
   if (was) {
@@ -267,16 +343,20 @@ function toPush(v) {
   return (Array.isArray(v.push) ? v.push : []).filter((p) => p?.key && p.text);
 }
 
+// One notification: -> { err, said }. `err` is why it failed, so the next tick tries again; `said` is
+// what the log says went out. A computer with no notifier shows none and the log is the record, so that
+// counts as told: retrying could never succeed, and a batch is recorded idle only once it is told.
 function notify(title, body) {
-  const r = spawnSync('osascript', ['-e', 'on run argv', '-e', 'display notification (item 2 of argv) with title (item 1 of argv)', '-e', 'end run', title, body], { encoding: 'utf8' });
-  return r.status === 0 ? null : (r.error?.message ?? (r.stderr || `osascript exited ${r.status}`).trim());
+  const n = show(title, body);
+  if (!n.via) return { err: null, said: `none shown, this computer has no notifier (${n.error})` };
+  return { err: n.error, said: 'sent' };
 }
 // A notification's title names the repo, and the batch where it is a named one.
 const title = () => `desk: ${E.repoSlug()}${E.batchName() ? ` ${E.batchName()}` : ''}`;
 
 // ---- one interval ----------------------------------------------------------------------------
-// launchd runs `tick`, which starts the interval's work detached and returns at once: launchd starts
-// no tick while one runs, so a pass still going at the next interval could not otherwise be logged.
+// launchd or systemd runs `tick`, which starts the interval's work detached and returns at once: neither
+// starts a tick while one runs, so a pass still going at the next interval could not otherwise be logged.
 function tick() {
   const child = spawn(process.execPath, [join(HERE, 'supervisor.mjs'), 'tick', '--foreground'], { cwd: process.cwd(), env: process.env, detached: true, stdio: 'inherit' });
   child.unref();
@@ -507,8 +587,8 @@ function idleCheckin(state, s, log, stamp, { maintenance = true } = {}) {
 function pushOnce(state, s, log, stamp, what, p) {
   if (!p?.key || !p.text || s.notified.includes(p.key)) return;
   if (sentElsewhere(state, p.key)) { s.notified.push(p.key); writeState(state, s); return; }
-  const err = notify(title(), p.text);
-  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification sent for ${p.key}`}`]);
+  const { err, said } = notify(title(), p.text);
+  log([`== ${stamp()} ${what}: ${err ? `notification failed (${err}) for ${p.key}; the next tick tries again` : `notification ${said} for ${p.key}`}`]);
   if (!err) { s.notified.push(p.key); sentThisTick.add(p.key); writeState(state, s); }
 }
 
@@ -589,10 +669,10 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const fresh = pushes.filter((p) => !s.notified.includes(p.key) && !sentElsewhere(state, p.key));
   let sent = true;
   if (fresh.length) {
-    const err = notify(title(), fresh.map((p) => p.text).join(' · '));
+    const { err, said } = notify(title(), fresh.map((p) => p.text).join(' · '));
     sent = !err;
     if (sent) fresh.forEach((p) => sentThisTick.add(p.key));
-    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: sent for ${fresh.map((p) => p.key).join(', ')}`);
+    out.push(err ? `notification: failed (${err}) for ${fresh.map((p) => p.key).join(', ')}; the next pass tries again` : `notification: ${said} for ${fresh.map((p) => p.key).join(', ')}`);
   } else if (items.length) out.push(`notification: not sent, the last one already named ${items.join(', ')}`);
   // A failed notification records nothing new, so the next pass sends it again. A pass that refused
   // or failed checked nothing, so it keeps the keys already sent rather than dropping them.
@@ -657,9 +737,9 @@ function watchDriver(state, s, holder) {
   }
   // Retried each tick until it is out, so a notification that failed is not lost.
   if (d.failures >= DRIVER_NOTIFY_AFTER && !d.notified) {
-    const err = notify(title(), `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
+    const { err, said } = notify(title(), `The merge driver failed ${d.failures} starts in a row: ${d.reason}`);
     d.notified = !err;
-    lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: sent for the merge driver (${d.failures} failed starts in a row)`);
+    lines.push(err ? `notification: failed (${err}) for the merge driver; the next tick tries again` : `notification: ${said} for the merge driver (${d.failures} failed starts in a row)`);
   }
   return lines;
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# suite: supervisor (launchd passes, the merge driver, notifications)
-# supervisor.mjs with a fake pass.mjs, a fake merge driver, a fake launchctl and a fake osascript:
+# suite: supervisor (launchd and systemd passes, the merge driver, notifications)
+# supervisor.mjs with a fake pass.mjs, a fake merge driver, a fake launchctl and a fake osascript, as
+# on macOS (DESK_PLATFORM=darwin), then a fake systemctl and a fake notify-send, as on Linux:
 # install writes a RunAtLoad agent with the interval, a tick runs one pass for a handed-over batch and
 # logs its report, starts one merge driver while tickets are still to merge, skips while a pass runs,
 # notifies once per new set of items, passes on only the approvals recorded with the batch, runs
@@ -17,7 +18,7 @@ export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
   AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
-  DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills"
+  DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills" DESK_PLATFORM=darwin
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
@@ -46,7 +47,7 @@ config yes yes
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 # installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
 cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -561,6 +562,74 @@ check "AC10: the agent is booted out" 'grep -q "^bootout gui/[0-9]*/com.desk-ski
 check "AC10: the agent's plist is removed" '[ ! -f "$PL" ]'
 out=$(sup status); rc=$?
 check "status says not installed" '[ $rc -eq 1 ] && grep -q "not installed" <<< "$out"'
+
+# ---- #735: the systemd backend, as on Linux and WSL ---------------------------------------------
+# A fake systemctl keeps the timer's state in $T/active and the service's last run in $T/result, and a
+# fake loginctl says lingering is off. The batch gets its own state folder.
+waitlines "$T/driver.calls" "$(started)"
+export DESK_PLATFORM=linux XDG_CONFIG_HOME="$T/xdg" DESK_AUTOPILOT_STATE="$T/lstate" DESK_QUEUE="$T/lqueue.json"
+cat > "$T/fakes/systemctl" <<EOF
+#!/bin/sh
+echo "\$@" >> "$T/systemctl.calls"
+case "\$2" in
+  is-active) [ -f "$T/active" ] ;;
+  enable) touch "$T/active" ;;
+  disable) rm -f "$T/active" ;;
+  restart) [ -f "$T/active" ] ;;
+  show) r=\$(cat "$T/result" 2>/dev/null || echo success)
+        printf 'ActiveState=inactive\nResult=%s\nExecMainStatus=%s\n' "\$r" "\$([ "\$r" = success ] && echo 0 || echo 3)" ;;
+esac
+EOF
+printf '#!/bin/sh\necho Linger=no\n' > "$T/fakes/loginctl"
+printf '#!/bin/sh\nprintf "%%s|" "$@" >> "%s/notify-send.calls"; echo >> "%s/notify-send.calls"\n' "$T" "$T" > "$T/fakes/notify-send"
+chmod +x "$T/fakes/systemctl" "$T/fakes/loginctl" "$T/fakes/notify-send"
+UD="$T/xdg/systemd/user"; SV="$UD/com.desk-skills.supervisor.acme__widgets.service"; TM="$UD/com.desk-skills.supervisor.acme__widgets.timer"
+out=$(sup install); rc=$?
+check "#735 AC1: install on Linux exits 0 and writes no launchd agent" '[ $rc -eq 0 ] && [ ! -f "$PL" ]'
+check "#735 AC1: the service runs a tick of this supervisor in the repo root" 'grep -qxF "ExecStart=\"$(node -p process.execPath)\" \"$T/bin/supervisor.mjs\" tick" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
+check "#735 AC1: the service leaves the merge driver running and passes the repo on" 'grep -qx "KillMode=process" "$SV" && grep -qxF "Environment=\"DESK_REPO_DIR=$T/repo\"" "$SV"'
+check "#735 AC1: the timer runs it at once and every 180s by default" 'grep -qx "OnActiveSec=0" "$TM" && grep -qx "OnUnitActiveSec=180s" "$TM" && grep -qx "WantedBy=timers.target" "$TM"'
+check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735 AC1: with lingering off, install says ticks stop at logout and how to keep them" 'grep -q "loginctl enable-linger" <<< "$out"'
+out=$(sup install)
+check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
+out=$(sup install --interval 300)
+check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+out=$(sup status); rc=$?
+check "#735 AC2: status names the timer as loaded, with its interval" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
+agent(){ node --input-type=module -e "import { supervisorAgent } from '$T/bin/run-by.mjs'; console.log(JSON.stringify(supervisorAgent('acme__widgets')))"; }
+out=$(agent)
+check "#735 AC2: a loaded timer whose last run succeeded reports no failed exit" '[ "$out" = "{\"loaded\":true,\"exit\":null}" ]'
+echo exit-code > "$T/result"
+out=$(agent)
+check "#735 AC2: a failed last run is read as launchctl print is: its code and why" '[ "$out" = "{\"loaded\":true,\"exit\":{\"code\":3,\"why\":\"exit-code\"}}" ]'
+rm -f "$T/result"
+
+# ---- #735 AC3: notifications off macOS ----------------------------------------------------------
+rm -f "$T"/verdict.*.json "$T/driver.mode"
+LLOG="$T/lstate/supervisor.log"
+queue true '{}' "$RUNNING"
+verdict '{"status":"show_person","code":11,"message":"x","waiting":[],"parked":[],"notify":true,"push":[{"key":"digest:2026-11-18T09:00","text":"Check-in 09:00: 1 question(s)"}]}'
+n=$(count "$T/notify.calls")
+out=$(tick)
+check "#735 AC3: on Linux the push goes out through notify-send, naming the repo" 'grep -q "desk: acme__widgets|Check-in 09:00: 1 question(s)|$" "$T/notify-send.calls" && grep -q "^notification: sent for digest:2026-11-18T09:00$" "$LLOG"'
+check "#735 AC3: and not through osascript" '[ "$(count "$T/notify.calls")" = "$n" ]'
+# With no notifier on this computer the log is the record: the push counts as told, so the batch can go idle.
+rm "$T/fakes/notify-send"
+NOPATH="$(printf %s "$PATH" | tr : '\n' | grep -v '^/mnt/' | paste -sd: -)"
+if PATH="$NOPATH" command -v notify-send >/dev/null 2>&1; then echo "SKIP #735 AC3 no notifier: this computer has notify-send"
+else
+  verdict '{"status":"idle","code":0,"message":"idle","waiting":[],"parked":[],"notify":true,"push":[{"key":"digest:2026-11-18T20:00","text":"Check-in 20:00"}]}'
+  out=$(PATH="$NOPATH" tick)
+  check "#735 AC3: with no notifier the push is logged as not shown, and the batch still goes idle" 'grep -q "^notification: none shown, this computer has no notifier (.*) for digest:2026-11-18T20:00$" "$LLOG" && grep -q "^supervisor: batch b1 is idle" "$LLOG"'
+fi
+waitlines "$T/driver.calls" "$(started)"
+
+out=$(sup uninstall); rc=$?
+check "#735 AC4: uninstall disables the timer and removes both units" '[ $rc -eq 0 ] && grep -qx -- "--user disable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls" && [ ! -f "$SV" ] && [ ! -f "$TM" ] && [ ! -f "$T/active" ]'
+out=$(sup status); rc=$?
+check "#735 AC4: status then says not installed" '[ $rc -eq 1 ] && grep -q "not installed" <<< "$out"'
+unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin
 
 # Let any detached fake driver finish before the scratch directory goes.
 waitlines "$T/driver.calls" "$(started)"

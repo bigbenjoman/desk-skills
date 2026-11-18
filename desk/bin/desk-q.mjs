@@ -43,7 +43,7 @@ import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
-import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
 import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
@@ -695,10 +695,10 @@ const unfinished = (r) => r.rows.length > 0 || r.prs.length > 0;
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
 // `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
-// print per refresh, and `exit` the loaded agent's failed last run, when it cannot start. Off macOS
-// there is no supervisor, so every batch is a session's.
+// print (or systemctl call) per refresh, and `exit` the loaded agent's failed last run, when it cannot
+// start. With neither launchd nor systemd there is no supervisor, so every batch is a session's.
 function whoRuns(r) {
-  if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
+  if (!backend()) return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
@@ -3243,7 +3243,7 @@ function apply(repos, v) {
 
 // ---- the supervisor ----------------------------------------------------------------------------
 
-export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
+export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer. Nothing changed.';
 
 // The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
 // config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
@@ -3268,7 +3268,7 @@ function supervisorState(r, run = supervisorRunner(r)) {
 
 // `on` and `off` say what changed in one line; a refusal or a failure says nothing changed.
 function supervisor(r, op) {
-  if (platform() !== 'darwin') {
+  if (!backend()) {
     if (op === 'status') return `${r.name}: no supervisor. ${NEEDS_LAUNCHD.replace(' Nothing changed.', '')}`;
     throw new Usage(NEEDS_LAUNCHD);
   }
@@ -4088,7 +4088,7 @@ export function interactive({
       if (!r) return;
       const v = { kind: 'supervisor', slug: r.slug };
       let state = null;
-      if (platform() !== 'darwin') msg = NEEDS_LAUNCHD;
+      if (!backend()) msg = NEEDS_LAUNCHD;
       else { try { ({ state } = supervisorState(r)); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); } }
       if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });
