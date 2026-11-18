@@ -74,7 +74,7 @@
 // offered, that offers none it did not offer then; one put off is listed anyway while three or more
 // held tickets wait behind it. Exits 0, or 11
 // (show the person) on anything it refuses.
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -90,7 +90,7 @@ import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, ses
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord } from './batches.mjs';
@@ -1228,7 +1228,7 @@ export function listText(c, now = Date.now()) {
 // the approval, check or gate holding a PR, the tickets outside the batch holding a ticket, the step
 // only the person takes, a usage hold or a subscription that is off. Null where the item is its own,
 // as a failing check or a skipped draft is: each PR's is cleared on its own branch.
-const PR_CAUSES = { trigger: (w) => [...w.names].sort().join('|'), gate: (w) => one(w.text),
+const PR_CAUSES = { trigger: (w) => [w.base ?? '', ...[...w.names].sort()].join('|'), gate: (w) => one(w.text),
   behind: (w) => w.base ?? '', green: () => '', running: () => '', hold: (w) => one(w.why ?? w.text) };
 export function causeOf(i) {
   const at = (...parts) => [i.r.slug, ...parts].join(':');
@@ -1243,15 +1243,12 @@ export function causeOf(i) {
   return PR_CAUSES[w.code] ? at(`pr-${w.code}`, PR_CAUSES[w.code](w)) : null;
 }
 
-const isoOf = (t) => (t == null || !Number.isFinite(t) ? null : new Date(t).toISOString());
-const ageOf = (t, now) => ({ as_of: isoOf(t), age_s: t == null || !Number.isFinite(t) ? null : Math.max(0, Math.round((now - t) / 1000)) });
-const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
 // One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
 // behind it. `id` is stable while the item is the same item: its batch, key and kind.
 function itemJson(i, now) {
   const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
   return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
-    since: isoOf(i.since), waited_s: i.since == null ? null : Math.max(0, Math.round((now - i.since) / 1000)),
+    ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
     question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
     actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
 }
@@ -1263,7 +1260,7 @@ export function listItems({ word = null, settle = false, now = Date.now(), repos
   const c = collect({ word, now, repos: settle || !repos ? loadRepos(now) : repos, reads });
   const batches = [...new Set(c.scope.filter((x) => !x.error && x.q))];
   return { v: 1, generated_at: new Date(now).toISOString(), settled: settle, settled_lines: settled,
-    inputs: { queues: batches.map((b) => ({ batch: b.word, ...ageOf(mtimeOf(b.queuePath), now) })) },
+    inputs: { queues: batches.map((b) => ({ batch: b.word, ...inputAge(mtimeOf(b.queuePath), now) })) },
     scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)) };
 }
 

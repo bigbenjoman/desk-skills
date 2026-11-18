@@ -1929,6 +1929,8 @@ function leversLine(p, now) {
   }
   return { ...segLine(segs), link: 'levers' };
 }
+// The Levers line as plain text, less its arrow.
+const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
 
 // What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
 // time before the rebuild (undefined when none ran). Opens the page where there is one.
@@ -3381,7 +3383,7 @@ function loadOrRefuse(now) {
 // is updating. --plain prints the Levers line, less its arrow, and the page's path.
 function leversCommand(argv, { now, opener, rebuild, say }) {
   const p = pageState({ now });
-  if (argv.includes('--plain')) return `${leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '')}\n${p.file}`;
+  if (argv.includes('--plain')) return `${leversText(p, now)}\n${p.file}`;
   if (!leversDue(p)) return openLeversPage(p, opener);
   say('Updating Levers…');
   rebuild();
@@ -3423,7 +3425,7 @@ const msOf = (t) => (typeof t === 'number' ? (Number.isFinite(t) ? t : null) : t
 const isoOf = (t) => ((ms) => (ms == null ? null : new Date(ms).toISOString()))(msOf(t));
 // When an input was read, and how many seconds old that is now.
 export const inputAge = (t, now) => ((ms) => ({ as_of: isoOf(ms), age_s: ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)) }))(msOf(t));
-const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
+export const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
 const plainParts = (s) => ({ head: s.head.map(textOf), rows: s.rows.map((x) => ({ id: x.id ?? null, line: textOf(x), open: x.open ?? null })), foot: s.foot.map(textOf) });
 const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, generated_at: new Date(now).toISOString(), inputs, ...body, lines: plainParts(parts) });
 // Each batch's queue, by its file's last write.
@@ -3441,11 +3443,11 @@ function repoFigures(r, needs, now, checkin) {
 }
 
 // The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
-// `figures` the view.json line it reads (DS-652's), `text` the line as home shows it.
+// `figures` the view.json line it reads, `text` the line as home shows it.
 export function leversJson(p, now) {
   const fault = leversFault(p);
   const state = fault ? 'fault' : !p.page ? 'unbuilt' : p.stale ? 'stale' : p.view.line.state;
-  return { state, text: leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), ''), fault: fault ?? null,
+  return { state, text: leversText(p, now), fault: fault ?? null,
     page: p.page ? p.file : null, built: inputAge(p.builtAt, now), figures: p.view?.line ?? null };
 }
 

@@ -822,7 +822,7 @@ t('DS-701 two PRs held by the same approval share a cause', `${phi701['V-1'] != 
 t('DS-701 a different approval is another cause', phi701['V-2'] !== phi701['V-1'] && phi701['V-2'] != null, true);
 t('DS-701 a PR held by a failing check beside the approval has no shared cause', phi701['V-6'], null);
 t('DS-701 the cause is keyed to its repo', phi701['V-1']?.startsWith('acme__phi:approval:'), true);
-const TAIL ='No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
+const TAIL = 'No code change clears it, only an approving review on GitHub at its latest commit; desk then merges it once its checks are green.';
 t('DS-499 AC1 protected files: the reason in plain words and the approver, not "fix it on its branch"', v1['V-1']?.need, `PR #121 needs Chris Anthony's approval: it changes a database migration and the database schema. ${TAIL}`);
 t('DS-499 AC1 the file limit', v1['V-2']?.need, `PR #122 needs Chris Anthony's approval: it has 37 changed files, over the 30-file limit. ${TAIL}`);
 t('DS-499 AC1 another protected file is named, and an approval of an older commit is said', v1['V-3']?.need, `PR #123 needs Chris Anthony's approval: it changes \`apps/web/package.json\`. mousedown approved an earlier commit, so it needs approving again. ${TAIL}`);
@@ -871,6 +871,12 @@ t('DS-410 AC1 a ready PR whose required check never runs on its base names the t
   `PR #111 is not green: required check "${LINT}" ${why410}. Re-running cannot help, as no run exists: add feat/E-1 (or a pattern such as feat/**) to the pull_request branches of the workflow that runs "${LINT}", a change to the repo; its next push then runs the check, and desk then merges it once its checks are green. | false`);
 t('DS-410 negative control: with no untriggered record it still says the check has not reported',
   u410['U-2']?.need, `PR #112 is not green: required check "${LINT}" has not reported. Fix that check, or §4 Required checks if it should not be required; desk then merges it once its checks are green.`);
+// DS-701: a check no workflow triggers on a base is settled per base, so PRs into two bases are two causes.
+const onBase701 = (pr, base) => ((x) => ({ ...x, pr_status: { ...x.pr_status, base } }))(ready410(pr, { [LINT]: why410 }));
+put('tau701', { port: 4710, beat: 1, supervised: true, merge: 'yes', required: [LINT], tickets: { 'U-1': onBase701(113, 'feat/E-1'), 'U-2': onBase701(114, 'feat/E-1'), 'U-3': onBase701(115, 'feat/E-2') } });
+const c701 = Object.fromEntries(N.listItems({ word: 'tau701', reads: null }).items.map((i) => [i.key, i.cause]));
+t('DS-701 PRs whose check never runs on the same base share a cause; another base is another cause',
+  `${c701['U-1'] != null} ${c701['U-1'] === c701['U-2']} ${c701['U-3'] != null && c701['U-3'] !== c701['U-1']}`, 'true true true');
 const sr = loadRepos().find((x) => x.slug === 'acme__sigma');
 t('DS-375 AC1 the ticket page reads it the same way', /For you +still red after 1 fix try: Lint, Type Check & Build \(failed step: Run eslint\)$/m.test(ticketScreen(sr, 'S-1')), true);
 
