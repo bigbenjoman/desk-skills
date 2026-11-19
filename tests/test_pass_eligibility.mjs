@@ -1,6 +1,7 @@
 // suite: pass phase: eligibility, the batch budget and slots (the candidates, what holds every spawn, the slot count)
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { PACE_HELD, usageHeldText, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
+import { PACE_HELD, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
+import { usageHeldText } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };

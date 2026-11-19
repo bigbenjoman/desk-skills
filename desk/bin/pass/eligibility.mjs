@@ -18,15 +18,13 @@
 //   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine}
 //                      what decideSlots decided
 import { parseBudget } from '../desk-env.mjs';
-import { limitName } from '../usage-limit.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
-import { say, untilText } from './shared.mjs';
+import { say, usageHeldText } from './shared.mjs';
 
 const stall = (line) => ({ type: 'stall', line });
 
 export const PACE_HELD = '7-day usage ahead of pace holds every spawn';
-export const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
 
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every new
 // ticket.

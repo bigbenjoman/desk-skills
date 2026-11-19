@@ -240,10 +240,16 @@ export function postMergeIn(body) {
 // Those criteria as the follow-on steps a merged ticket keeps for the person (pass.mjs follow_on,
 // needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system. What a
 // criterion needs is its gate (harvest.mjs FOLLOW_GATES): production waits on the production ref,
-// staging and a deploy on the default branch, anything else on the merge.
-const POST_MERGE_STEP ='Check after the merge: ';
+// staging and a deploy on the default branch, anything else on the merge. Each keeps the criterion's
+// own step as written, marked `from: 'review'` so the pass tells it from a step the worker declared.
+// POST_MERGE_STEP opens a step an older pass recorded with the criterion's name and needs before it,
+// which reviewStep drops.
+const POST_MERGE_STEP = 'Check after the merge: ';
+const OLD_PREFIX = new RegExp(`^${POST_MERGE_STEP}.*? \\(needs [^)]*\\): `);
+export const fromReview = (s) => s?.from === 'review' || String(s?.step ?? '').startsWith(POST_MERGE_STEP);
+export const reviewStep = (step) => String(step ?? '').replace(OLD_PREFIX, '');
 const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
-export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null,
+export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: p.step, row: null, from: 'review',
   ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
 
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
