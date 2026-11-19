@@ -245,14 +245,15 @@ export function ticketsOf(slug) {
 // otherwise each draw against a count missing the other's; a draw whose queue write failed stops
 // counting once this has passed.
 export const PENDING_MS = 10 * 60_000;
-// The pins of draws written to the log in the PENDING_MS to `now` for tickets other than `key` that no
-// queue holds yet (`saved`) and that have not merged: the latest assign of each, as a pin's arms.
+// The pins of draws written to the log less than PENDING_MS before `now`, or after it, for tickets other
+// than `key` that no queue holds yet (`saved`) and that have not merged: the latest assign of each, as a
+// pin's arms. A draw stamped after `now` counts: an admission that started later can take the lock first.
 export function pendingPins(events, { saved, merged, key, now }) {
   const latest = new Map();
   for (const e of events ?? []) {
     if (e?.kind !== 'assign' || !e.ticket || e.ticket === key) continue;
     const at = Date.parse(e.at);
-    if (!(at <= now && now - at < PENDING_MS) || saved.has(e.ticket) || merged.has(e.ticket)) continue;
+    if (!(now - at < PENDING_MS) || saved.has(e.ticket) || merged.has(e.ticket)) continue;
     latest.set(e.ticket, { arms: e.arms ?? {} });
   }
   return [...latest.values()];

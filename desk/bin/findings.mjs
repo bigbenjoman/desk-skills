@@ -50,7 +50,7 @@ export function parseFindings(raw) {
 
 // What a worker log's own words show of its review rounds, in order: `lines` it printed, `unreadable`
 // [{why, raw}] it printed that do not read, and `missing` rounds that ended with no line, each
-// {head, round} for a verdict marker or {reviewer: 'self', stage: <n>} for the n-th Stage 4b.
+// {head, round, reviewer} for a verdict marker or {reviewer: 'self', stage: <n>} for the n-th Stage 4b.
 export function reviewRounds(logText) {
   const lines = [];
   const unreadable = [];
@@ -82,7 +82,8 @@ export function reviewRounds(logText) {
         lines.push(p.line);
         if (open) open.rounds++;
       } else if (e.kind === 'verdict') {
-        if (!verdicts.some((v) => v.head === e.head && v.round === e.round)) verdicts.push({ head: e.head, round: e.round });
+        // A verdict first printed in a Stage 4b is the self-review's; anywhere else it is a PR review's.
+        if (!verdicts.some((v) => v.head === e.head && v.round === e.round)) verdicts.push({ head: e.head, round: e.round, reviewer: open ? 'self' : 'pr' });
         if (open) open.rounds++;
       }
     }
@@ -92,9 +93,7 @@ export function reviewRounds(logText) {
     if (s.skipped || doneSkipped) continue;
     if (!lines.slice(s.after).some((l) => l.reviewer === 'self')) missing.push({ reviewer: 'self', stage: s.n });
   }
-  for (const v of verdicts) {
-    if (!lines.some((l) => v.head.startsWith(l.head) && l.round === v.round)) missing.push(v);
-  }
+  for (const v of verdicts) if (stillMissing(lines, v)) missing.push(v);
   return { lines, unreadable, missing };
 }
 
@@ -104,9 +103,12 @@ const readJsonl = (path) => {
 };
 const lineKey = (l) => `${l.reviewer}|${l.head}|${l.round}`;
 // Whether a round noted missing (reviewRounds' `missing`) is still missing given the `recorded` lines:
-// a Stage 4b with no line always is, and a verdict is until a line at its head and round is recorded
-// (not one recordCarry wrote). The recorder and the levers evaluation both read a gap through this.
-export const stillMissing = (recorded, m) => !m?.head || !recorded.some((l) => l && !l.from && l.round === m.round && m.head.startsWith(String(l.head)));
+// a Stage 4b with no line always is, and a verdict is until a line at its head and round, by the same
+// reviewer where the note names one, is recorded (not one recordCarry wrote): a self-review and a PR
+// review can both run round 1 at one head. The recorder and the levers evaluation both read a gap
+// through this.
+export const stillMissing = (recorded, m) => !m?.head || !recorded.some((l) => l && !l.from && l.round === m.round
+  && m.head.startsWith(String(l.head)) && (!m.reviewer || l.reviewer === m.reviewer));
 const noteKey = (n) => JSON.stringify([n.run ?? null, n.findings_missing ?? n.findings_unreadable]);
 
 // Records what one worker log shows: its rounds' lines in the findings file and its missing or

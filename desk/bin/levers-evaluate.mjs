@@ -91,9 +91,11 @@ export function auditsOf(state) {
   const ats = rows.map((r) => Date.parse(r.at)).filter(Number.isFinite);
   return { rows, items, newest: ats.length ? Math.max(...ats) : null };
 }
-// A quality-risk trial's audits in one repo: how many are recorded, and how many are due and not.
+// A quality-risk trial's audits in one repo: how many are recorded with their review's counts, and how
+// many are due and not. An audit that ended with no findings line (levers-audit.mjs findings_missing)
+// measured nothing, so it is not counted as recorded.
 const auditCount = (a, id) => ({
-  recorded: a.rows.filter((x) => x.trial_id === id).length,
+  recorded: a.rows.filter((x) => x.trial_id === id && !x.findings_missing && Number.isInteger(x.p0)).length,
   pending: a.items.filter((i) => i.trial_id === id && AUDIT_PENDING.includes(i.state)).length,
 });
 // The share of the repo's tickets admitted in the 7 days to `now` that carried every one of `levers`.

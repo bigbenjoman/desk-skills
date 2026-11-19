@@ -345,15 +345,15 @@ export async function runAudits({
   spawn, mergeCommit, mergeMethod = 'merge', ended = endedFromExit, log = logOf, cleanup = () => {}, pace = () => usagePace(), spend = weeklySpend, room = () => null,
 }) {
   const out = { recorded: [], deferred: [], started: [], failed: [], events: [], line: null };
-  if (!Object.values(states ?? {}).includes('auto')) return out;
   // A log that does not parse is the assignment's to report; nothing is sampled on a partial read.
+  // An audit already started is recorded below whether or not `auto` is still in the row, so turning it
+  // off never strands one (a move or archive of the folder it runs in waits for it).
   if (read(slug).bad.length) return out;
-  const all = tickets ?? repoTickets(slug);
 
   // Each running audit that ended is claimed under the queue's lock, so two passes never record one
   // twice, then recorded, and leaves the queue.
   // A recording a pass left part way (it died, or a write failed) is claimed again once it is stale.
-  const ending = withQueue(slug, (q) => Object.values(q.items).flatMap((i) => {
+  const ending = !existsSync(auditQueueFile(slug)) ? [] : withQueue(slug, (q) => Object.values(q.items).flatMap((i) => {
     let e = null;
     if (i.state === 'recording' && !(now - Date.parse(i.recording_at) < RECORDING_MS)) e = i.ended ?? ended(i);
     else if (i.state === 'running') e = ended(i);
@@ -374,6 +374,9 @@ export async function runAudits({
     try { cleanup(item); } catch { /* a worktree left behind is not the audit's result */ }
     withQueue(slug, (q) => { delete q.items[item.ticket]; });
   }
+  // Nothing new is sampled or started where the row has no `auto`.
+  if (!Object.values(states ?? {}).includes('auto')) return summarise(out);
+  const all = tickets ?? repoTickets(slug);
 
   // The sample adds what is newly due; a ticket audited already, or queued, is not added again.
   const rows = rowsOf(auditFile(slug));
@@ -479,6 +482,11 @@ export async function runAudits({
       }
     }
   }
+  return summarise(out);
+}
+
+// runAudits' result with its one-line summary for the pass's report, or null when nothing happened.
+function summarise(out) {
   const parts = [
     ...out.recorded.map((r) => `${r.ticket} audited (${r.p0 == null ? 'no findings line' : `P0 ${r.p0}, P1 ${r.p1}`}${r.usd == null ? '' : `, $${r.usd.toFixed(2)}`})`),
     ...out.events.filter((e) => e.kind === 'trip').map((e) => `${e.lever} ${e.from} → ${e.to} (${TRIP} on ${e.ticket})`),

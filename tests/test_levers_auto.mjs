@@ -320,9 +320,17 @@ t('no state recorded: every trialled lever is on trial, whatever its layer',
     t('AC4 a draw never saved stops counting once PENDING_MS has passed', freed.arms.codex, 'on');
     const ev = (ticket, at, arms = { codex: 'on' }) => ({ kind: 'assign', ticket, at: new Date(at).toISOString(), arms });
     const T0 = NOW.getTime();
-    t('pendingPins: the latest unsaved, unmerged draw of each other ticket in the window', pendingPins([
-      ev('A', T0 - 1000, { codex: 'off' }), ev('A', T0 - 500), ev('B', T0 - 1000), ev('C', T0 - 1000), ev('D', T0 - 1000), ev('K', T0 - 1000), ev('E', T0 - PENDING_MS), ev('F', T0 + 1000),
-    ], { saved: new Set(['B']), merged: new Set(['C']), key: 'K', now: T0 }), [{ arms: { codex: 'on' } }, { arms: { codex: 'on' } }]);
+    t('pendingPins: the latest unsaved, unmerged draw of each other ticket in the window, or stamped after now', pendingPins([
+      ev('A', T0 - 1000, { codex: 'off' }), ev('A', T0 - 500), ev('B', T0 - 1000), ev('C', T0 - 1000), ev('D', T0 - 1000), ev('K', T0 - 1000), ev('E', T0 - PENDING_MS), ev('F', T0 + 1000, { codex: 'off' }),
+    ], { saved: new Set(['B']), merged: new Set(['C']), key: 'K', now: T0 }), [{ arms: { codex: 'on' } }, { arms: { codex: 'on' } }, { arms: { codex: 'off' } }]);
+    // An admission that started later took the lock first: its draw is stamped after this one's `now`.
+    const qr = batchPaths('q4r').queue;
+    mkdirSync(dirname(qr), { recursive: true });
+    writeFileSync(qr, JSON.stringify({ version: 1, batch: null, concurrency: 1, tickets: idle }));
+    only('q4r', 'codex');
+    append('q4r', { kind: 'assign', actor: 'levers-auto', reason_code: 'assigned_at_admission', reason: 'drew', at: new Date(NOW.getTime() + 5_000).toISOString(), ticket: 'P-4', size: 'S', block: null, arms: { codex: 'on' }, trial_ids: {}, set: ['codex'] });
+    const raced = assignPin('P-5', { slug: 'q4r', size: 'S', random: always, now: NOW, values: LOCAL }).pin;
+    t('AC4 an unsaved draw stamped after this admission\'s own time still counts toward the cap', [raced.arms.codex, raced.set.includes('codex')], ['off', false]);
   }
 
   // AC5: effort is never trialled where Worker location is not local.

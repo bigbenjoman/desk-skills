@@ -312,6 +312,13 @@ t('DS-784 the child is stamped with the promotion merge', readQ('X-12').tickets[
 t('DS-784 the report says what the batch waits on', (a.lines ?? []).join(' ').includes('waits on the follow-on steps of X-13'), true);
 t('DS-784 a second check stamps nothing new and says nothing', (res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).lines ?? []).length, 0);
 writeQ('X-12', { ...readQ('X-12'), tickets: { 'X-13': { ...readQ('X-12').tickets['X-13'], follow_on_done: '2026-10-30T14:00:00Z' } } });
+// A blind audit its pass spawned into the batch's folder, not yet recorded, holds the archive.
+const auditQ = join(HOME, '.desk-autopilot', SLUG, 'audit-queue.json');
+mkdirSync(dirname(auditQ), { recursive: true });
+writeFileSync(auditQ, JSON.stringify({ items: { 'X-13': { ticket: 'X-13', key: 'audit.X-13', state: 'running', state_dir: namedS('X-12') } } }));
+a = res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('a blind audit running from the batch\'s folder: not archived, naming it', a.archived === false && existsSync(namedQ('X-12')) && (a.lines ?? []).join(' ').includes('the blind audit of X-13, not yet recorded'), true);
+rmSync(auditQ, { force: true });
 t('DS-784 once they are done, it is archived', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
 writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
 t('DS-784 a closed promotion never took them out, so it archives as before', res(archive('X-12', { 9: 'CLOSED', 13: 'MERGED' })).archived, true);

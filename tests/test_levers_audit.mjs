@@ -309,5 +309,18 @@ t('AC3 the audit model is recorded on the trial when it is first seen running, b
   t('and trips neither lever alone', read(SP).events.filter((e) => e.kind === 'trip').length + (done.events.some((e) => e.kind === 'trip') ? 1 : 0), 0);
 }
 
+// An audit already started is recorded though the row no longer has `auto`, and none new starts.
+{
+  const SO = 'acme__autooff';
+  const tidO = repo(SO);
+  const hO = harness(SO, tickets(tidO, 5, 5, 'O'));
+  t('auto off: an audit had started', (await hO.pass(NOW)).started.length, 1);
+  hO.ended.set('O-on5', { at: iso(NOW + MIN) });
+  hO.logs.set('O-on5', workerLog({ head: sha(105), p0: 0, p1: 1 }));
+  const off = await hO.pass(NOW + 2 * MIN, { states: Object.fromEntries(LEVERS.map((n) => [n, 'off'])) });
+  t('auto off: the started audit is still recorded, and nothing new starts', [off.recorded.map((r) => r.ticket), off.started.length, 'O-on5' in queueOf(SO).items], [['O-on5'], 0, false]);
+  t('auto off: its line says so', /O-on5 audited/.test(off.line ?? ''), true);
+}
+
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

@@ -471,6 +471,13 @@ t('the rule: frozen trials hold', decide({ ...base, ...good, frozen: true }).rea
   audit(Q6b, `${Q6}/review-reuse/other`);
   evalQ([r6b]);
   t('AC6 an audit of another trial is not this one\'s evidence', rowOf(Q6b, 'review-reuse').reason_code, 'audit_missing');
+  const Q6c = 'acme__q6c';
+  const tr6c = byHand(Q6c, 'review-reuse', 'trial', at(-30));
+  const tid6c = `${Q6c}/review-reuse/${tr6c.id}`;
+  const r6c = repo(Q6c, qarms(Q6c, 'review-reuse', tid6c, 40));
+  audit(Q6c, tid6c, { p0: null, p1: null, findings_missing: true });
+  evalQ([r6c]);
+  t('AC6 an audit that ended with no findings line measured nothing: it stays on trial', [rowOf(Q6c, 'review-reuse').reason_code, rowOf(Q6c, 'review-reuse').audits.recorded], ['audit_missing', 0]);
 
   // AC7: audits due and deferred hold the adopt until they are recorded.
   const Q7 = 'acme__q7';
