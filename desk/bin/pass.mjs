@@ -52,7 +52,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -72,10 +72,11 @@ import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInpu
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
-  isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf,
+  isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
   usageHeldText, tryWhat, tryNo } from './pass/shared.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
+import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -3638,13 +3639,7 @@ const stateRow = parseStateChecks(E.configValues('state-checks'));
 // reviewers counts, or cannot be read) holds every PR red only on a §4 State check of kind verdict,
 // with nothing pending: a review or fix try there posts a verdict the gate does not count. The PR
 // records the hold as gate_hold, which needs-you lists once for the repo; build workers still start.
-function gatedByReviewer(s) {
-  if (!HEALTH.reviewer || s?.state !== 'OPEN') return false;
-  const gate = evaluateGate(s.checks ?? [], gateLists());
-  if (gate.state !== 'fail' || gate.pending.length) return false;
-  const verdict = new Set(stateFailing(gate.failing, stateRow.checks).filter((f) => f.kind === 'verdict').map((f) => f.name));
-  return verdict.size > 0 && gate.failing.every((f) => verdict.has(f.name));
-}
+const gatedByReviewer = (s) => reviewerGated(s, { reviewer: HEALTH.reviewer, gate: gateLists(), stateChecks: stateRow.checks });
 function markGateHold(t, s, on) {
   if (!on) { if (t.gate_hold && !DRY) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; } return; }
   const h = HEALTH.reviewer;
@@ -4085,18 +4080,10 @@ function reviewComments(id) {
 }
 
 // ---- fix tries -----------------------------------------------------------
-// A ready PR the merge driver cannot merge, red after its two reruns, in conflict with its base, held
-// for review feedback, or with a review at its head that is not clean, goes back to a fix worker on
-// the same branch, at most twice (fix-tries.mjs); one whose §4 State check reading its verdict is red,
-// which the driver never reruns, or that it holds for want of a clean verdict at its head, to a review
-// worker (verdictTry). What no worker can
-// fix, a check a person clears (§4 Checks workers can't fix or Pre-merge steps, or Check builds where
-// the pass builds none) or a third failure, is recorded on the ticket as `stuck`
-// and put to the person. A §4 Check builds check gets its build here as a draft's does (startCheckBuild),
-// once nothing a worker fixes is red. The driver's per-head rerun record is read from its state directory.
-if (fixRowErrors.length && undrafted.length) {
-  out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')}. Run /desk-setup`);
-}
+// Which ready PRs the merge driver cannot merge go back to a fix or review worker, and which are
+// recorded as stuck and put to the person: pass/fix-tries.mjs decides, and the handlers below read
+// git, gh and the driver's per-head rerun record, and write the queue. A §4 Check builds check gets its
+// build here as a draft's does (startCheckBuild).
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
 function conflictFiles(branch) {
@@ -4117,32 +4104,11 @@ function humanSeen(n) {
   if (!v || typeof v !== 'object') return true;
   return humanReviewed(v, conflictHandle);
 }
-for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
+// The reads fix-tries.mjs's calls make for ready PR s of ticket t, each run only when a call makes it:
+// fixCall's ctx, the head against the base (baseMerge, and moves() read afresh for the verdict try), a
+// review's inline comments, and the verdict at the head.
+function fixReads(t, s, dirty, dirtyFiles) {
   const n = s.pr;
-  // A conflict goes to a fix worker only under the §3 row the base's conflict reads too, and so does a
-  // head the merge driver held for failing §4 Merged-tree check merged into the base.
-  const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
-  const tree = dirty ? null : treeHeld(t, s);
-  // Each file a ready PR conflicts on goes on the conflict record, whoever then resolves it.
-  const dirtyFiles = dirty ? conflictFiles(t.branch) : null;
-  const noted = dirty ? noteConflict(`PR #${n} (${t.key})`, { files: dirtyFiles, ticket: t.key, pr: n, head: s.head }) : null;
-  if (noted) out.push(noted);
-  // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
-  // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
-  // only on the gate, so it still goes to its own fix below.
-  const gated = !dirty && !tree && gatedByReviewer(s);
-  markGateHold(t, s, gated);
-  if (gated) continue;
-  if (dirty || tree) {
-    const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
-    const perm = E.permission(row);
-    if (perm !== 'yes') {
-      const what = tree ? `merged into ${DEFAULT_BRANCH}, fails §4 Merged-tree check \`${tree.command}\`` : `conflicts with ${DEFAULT_BRANCH}`;
-      const fix = tree ? `merge ${DEFAULT_BRANCH} into the PR's branch, fix what the check names, and push` : "resolve it on the PR's branch and push";
-      report.waiting.push(`${t.key}: CONFLICT — PR #${n} is out of draft and ${what}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker ${tree ? 'fixes' : 'resolves'} it: ${fix}`);
-      continue;
-    }
-  }
   const { baseMerge, behind } = baseMoves(t, s.head);
   const ctx = {
     // Out of draft, a §4 Check builds check is built as a draft's is, where §3 ci-rerun lets the pass.
@@ -4159,63 +4125,47 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
   };
-  // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
-  // worker before anything is put to the person.
-  let c = gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
-  if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
-  if (c.call === 'wait') { out.push(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); continue; }
-  // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
-  const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
-  if (b) {
-    const r = b.call === 'build' ? startCheckBuild(t, n, s.head, b, null, true) : rerunBuilt(t, n, s.head, b, null, true);
-    // One that could not start or whose re-run was refused is the person's step, with what to run.
-    const person = r?.call === 'person';
-    if (b === c && !person) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
-    if (person) {
-      const beside = b === c ? null : c;
-      c = { ...beside, ...builtStuck(beside?.lead ?? r.lead, b.checks, { command: r.action }, beside?.checks ?? []) };
-    }
-  }
-  applyFix(t, n, s.head, c);
-}
-// A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
-// head that is not clean goes to a review fix (reviewFix), and, where §3 merge-feedback-first holds
-// the merge for them, threads left unresolved or changes requested to a feedback fix (feedbackFix).
-// The threads a finished feedback try worked are replied on and resolved first, once its worker has
-// pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
-// any new try until a later pass settles it: a new try would replace the record of what was worked.
-function feedbackCall(t, s, waived) {
-  if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
-  const n = s.pr;
-  const fb = readFeedback(n);
-  if (!fb) { out.push(`fix tries: PR #${n} (${t.key}): its review threads could not be read; the next pass tries again`); return null; }
-  if (fb.head !== s.head) return null;
-  const open = new Set(fb.left.map((x) => x.id));
-  const worked = resolvable(t, s.head).filter((x) => open.has(x.id));
-  const settled = worked.length ? settleWorked(t, n, s.head, worked) : [];
-  if (settled.length < worked.length && !DRY) return null;
-  const judgement = E.permission('autopilot-judgement');
-  if (fb.review) {
-    const comments = () => {
-      const r = reviewComments(fb.review.id);
+  return {
+    ctx,
+    baseMerge,
+    moves: () => baseMoves(t, s.head),
+    comments: (id) => {
+      const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
-    };
-    const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement });
-    if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
-  }
-  const ff = E.permissionOrUnset('merge-feedback-first') === 'no' ? null
-    : feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
-  if (ff) return ff;
-  // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
-  const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
-  if (gaps) return gaps;
-  // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
-  // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
-  const { carry, scope, baseMerge } = baseMoves(t, s.head);
-  const atHead = () => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
-    ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null);
-  return verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks, settled: !!fb.review, atHead, waived, base: DEFAULT_BRANCH, baseMerge });
+    },
+    atHead: (payload, carry, scope) => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
+      ? readVerdict(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null),
+  };
+}
+{
+  const fixTicket = (k) => undrafted.find((e) => e.t.key === k);
+  runSteps({
+    name: 'fix tries',
+    snapshot: () => ({
+      undrafted, rowErrors: fixRowErrors, dry: DRY, base: DEFAULT_BRANCH, reviewer: HEALTH.reviewer ?? null, gate: gateLists(), stateChecks: stateRow.checks,
+      conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
+      feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
+      judgement: E.permission('autopilot-judgement'),
+    }),
+    decide: decideFixTries,
+    report,
+    handlers: {
+      ...OUT_HANDLERS,
+      'conflict-files': (a) => conflictFiles(a.branch),
+      'note-conflict': (a) => noteConflict(a.what, a.entry),
+      'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
+      'human-seen': (a) => humanSeen(a.pr),
+      reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
+      feedback: (a) => readFeedback(a.pr),
+      'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
+      'check-build': (a) => {
+        const { t } = fixTicket(a.key);
+        return a.call.call === 'build' ? startCheckBuild(t, a.pr, a.head, a.call, null, true) : rerunBuilt(t, a.pr, a.head, a.call, null, true);
+      },
+      apply: (a) => applyFix(fixTicket(a.key).t, a.pr, a.head, a.call),
+    },
+  });
 }
 function readFeedback(n) {
   const [owner, name] = GH_REPO.split('/');
@@ -4299,12 +4249,8 @@ function applyFix(t, n, head, c) {
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
   out.push(`${tryLabel(f)}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
-// How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".
-function tryLabel(f) {
-  if (f.kind === 'capture') return 'capture try';
-  if (f.extra) return `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try`;
-  return `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`;
-}
+
+// ---- held tickets and releases -------------------------------------------
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
   const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });

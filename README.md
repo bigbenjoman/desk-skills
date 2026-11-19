@@ -905,7 +905,9 @@ where, and in the order, the pass made it before. Advancing running tickets and 
 loop (`desk/bin/pass/spawn-loop.mjs`), one candidate at a time: its last action is the verdict (skip,
 record-done, park, hand-away or start), and starting the worker stays in `pass.mjs`. So are failed
 evidence runs on drafts (`desk/bin/pass/evidence-failures.mjs`), which yield filing a fix and starting
-a run again and settle each PR on what came back. Every park and
+a run again and settle each PR on what came back, and the fix tries (`desk/bin/pass/fix-tries.mjs`),
+one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the reads they make only
+where they need them. Every park and
 hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
 base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
 runs, each called there. Each phase has its
