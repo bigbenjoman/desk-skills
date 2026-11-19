@@ -206,10 +206,15 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   t('DS-815 AC3 one not Done is asked once per pass only whether it landed through its epic PR', j(reads), j(['epic X-1', 'epic X-2']));
   reads.length = 0;
   const openLater = drive(decideOutsideHolds, { ...three, triage: { A: open, B: open, C: open }, tickets: byKey(readAt(60_000), { ...readAt(60_000), key: 'B' }, { ...readAt(60_000), key: 'C' }) }, gh);
-  t('DS-815 AC3 and, like whether it landed, not again within the recheck interval', j(reads), '[]');
-  t('so nothing is written for it either', j(sets(openLater)), '[]');
-  drive(decideOutsideHolds, { ...three, triage: { A: open }, tickets: byKey(readAt(IDLE_RECHECK_MS)) }, gh);
-  t('DS-815 AC1 once the interval has passed, it is asked again', j(reads), j(['epic X-1', 'epic X-2']));
+  t('DS-815 its own batch landing through its epic PR is read from disk on every pass, within the interval too (its GitHub read keeps its own interval, pass.mjs epicMerged)', j(reads), j(['epic X-1', 'epic X-2']));
+  t('and asking it moves no ticket\'s clock', j(sets(openLater)), '[]');
+  reads.length = 0;
+  // A, not read within the interval, asks X-1; B, read a minute ago, picks up that answer, but X-2 is
+  // B's alone and was not asked, so B's clock stays where it was, and X-2 is asked once B's interval passes.
+  const sharedFirst = { ...tk, held_by: 'X-1', held_outside: 'X-1' };
+  const shared = drive(decideOutsideHolds, { ...three, tickets: byKey(sharedFirst, { ...readAt(60_000), key: 'B' }), triage: { A: { blockers: [rec.blockers[0]] }, B: both } }, gh);
+  t('DS-815 an answer another ticket fetched does not restart the clock of one whose blockers were not all asked', j(reads), j(['landed X-1']));
+  t('so only the ticket that asked is stamped', j(shared.filter((a) => a.type === 'set').map((a) => a.key)), j(['A']));
   reads.length = 0;
   const fresh = drive(decideOutsideHolds, { ...s, tickets: byKey(readAt(60_000)), triage: { A: { blockers: [rec.blockers[0]] } } }, { ...gh, 'other-repo': (a) => a.key === 'X-1' });
   t('a blocker that needs no GitHub read still lifts within the interval', lines(fresh, 'epic-line')[0], 'outside hold: A: X-1 Done in Jira, in another repo; X-2 no longer linked as a blocker; RELEASED');

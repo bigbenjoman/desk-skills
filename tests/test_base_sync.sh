@@ -811,6 +811,17 @@ node "$B/queue.mjs" set T-3 state=parked 'park={"question":"held by orchestrator
 pass
 check "DS-508 AC6 a ticket held behind an epic whose batch was archived with its epic PR merged is released" \
   '[[ "$out" == *"outside hold: T-3: E-9 landed on main through its epic PR"* ]] && [ "$(jq -r ".tickets[\"T-3\"].state" "$DESK_QUEUE")" != parked ]'
+# DS-815: an archived epic batch whose epic PR closed unmerged is read from GitHub once, and kept beside
+# the archive, not read again on every pass the ticket behind it stays held.
+mkdir -p "$(dirname "$SQ")/batches/.done/E-10"
+echo '{"epic":"E-10","base":"feat/w","feature":false,"promotion":{"pr":901},"tickets":{}}' > "$(dirname "$SQ")/batches/.done/E-10/queue.json"
+echo '{"state":"CLOSED"}' > "$T/ep/901.json"
+node "$B/queue.mjs" add T-5 >/dev/null
+node "$B/queue.mjs" set T-5 state=parked 'park={"question":"held by orchestrator: behind E-10"}' held_by=E-10 held_outside=E-10 >/dev/null
+pass; pass
+check "DS-815 an archived epic PR that closed unmerged is read from GitHub once, and kept beside the archive" \
+  '[ "$(grep -c "^pr view 901 " "$T/ghlog")" = 1 ] && [ "$(jq -r .state "$(dirname "$SQ")/batches/.done/E-10/promotion-read.json")" = CLOSED ] && [ "$(jq -r ".tickets[\"T-5\"].state" "$DESK_QUEUE")" = parked ]'
+node "$B/queue.mjs" drop T-5 >/dev/null
 # Held behind the epic of another batch, whose epic PR could not be opened: said as that, not as a merge.
 mkdir -p "$(dirname "$SQ")/batches/E-7"
 echo '{"epic":"E-7","base":"feat/z","feature":false,"promotion":{"pr":null,"why":"gh pr create failed: nope"},"tickets":{"T-70":{"key":"T-70","state":"done","merged_at":"2026-11-06T10:00:00Z","result":{"pr":700}}}}' > "$(dirname "$SQ")/batches/E-7/queue.json"
