@@ -44,7 +44,8 @@ cat > "$T/fixture.json" <<EOF
             {"id": "customfield_10208", "name": "Size", "custom": true, "schema": {"type": "option"}}],
  "remotelinks": {"KAN-5": [{"id": 1, "relationship": "mentioned in",
    "object": {"url": "https://github.com/acme/alpha/pull/7", "title": "PR 7"}}]},
- "remotelink_fail": ["KAN-7"]}
+ "remotelink_fail": ["KAN-7"],
+ "create_drop": {"dropped": ["customfield_10207"], "dropped-labels": ["labels"]}}
 EOF
 # shellcheck source=stub_jira.sh
 . "$S/stub_jira.sh"
@@ -254,6 +255,11 @@ err=$(cd "$C" && "$J" create Task s body.md customfield_10208= customfield_10207
 check "create with a required field empty is refused" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "needs customfield_10208" && [ "$(creates)" -eq "$n0" ]'
 out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
 check "create with every required field goes, options wrapped by name" '[ $rc -eq 0 ] && [ "$(sent_fields)" = "{\"s\":{\"value\":\"M\"},\"p\":{\"value\":\"P2\"}}" ]'
+check "create reads back every field it sent" 'printf "%s" "$out" | grep -q "^  customfield_10208: M$" && printf "%s" "$out" | grep -q "^  customfield_10207: P2$"'
+out=$(cd "$C" && "$J" create Story dropped body.md customfield_10208=M customfield_10207=P2 --no-lint 2>&1); rc=$?
+check "create names a field that came back empty" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  customfield_10207: (empty - the write did not stick)$" && printf "%s" "$out" | grep -q "^  customfield_10208: M$"'
+out=$(cd "$C" && "$J" create Story dropped-labels body.md customfield_10208=M customfield_10207=P2 'labels=["a"]' --no-lint 2>&1); rc=$?
+check "create names a list field that came back as []" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  labels: (empty - the write did not stick)$"'
 out=$(cd "$C" && "$J" create Subtask s body.md --no-lint 2>&1); rc=$?
 check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
 

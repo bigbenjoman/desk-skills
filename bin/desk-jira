@@ -149,6 +149,14 @@ JQ_VAL='def val: if . == null then "-"
   elif type == "object" then (.value // .name // .displayName // .accountId // tojson)
   else tostring end;'
 
+# jq helper (needs JQ_VAL): one line per field in $sent but not in $skip, read back from an issue's
+# .fields. A field sent with a value that reads back blank did not stick.
+JQ_READBACK='def blank: . == null or . == "" or . == [] or . == {}
+    or (type == "object" and (keys == ["value"] or keys == ["name"]) and ((.value // .name // "") == ""));
+  def readback($sent; $skip): .fields as $got | $sent | keys[] | select(. as $x | $skip | any(. == $x) | not) as $k
+    | if ($got[$k] | blank) and ($sent[$k] | blank | not) then "  \($k): (empty - the write did not stick)"
+      else "  \($k): " + ($got[$k] | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end) end;'
+
 # jq helper: one issue link as get prints it, from the side of the issue it was read from:
 # "<the verb> KEY (type, status) summary".
 JQ_LINK='def brief: "\(.key) (\(.fields.issuetype.name // "-"), \(.fields.status.name // "-")) \(.fields.summary // "")";
@@ -1005,7 +1013,8 @@ desk-jira <command> [args]
   create <type> <summary> <desc-file|text> [field=value ...] [--route] [--approved <text>] [--no-lint] [--check]
                                   linted first, and refused on a blocking finding unless --no-lint;
                                   assigned to you when §3 jira-assign-self is yes and no assignee
-                                  is given; anyone else needs --route; the assignee is read back;
+                                  is given; anyone else needs --route; the assignee and every field
+                                  given are read back, and one that came back empty is named;
                                   --check runs every check and sends nothing
   create-batch <file.tsv> [--route]
                                   files a set of tickets: a line per ticket, tab-separated,
@@ -1368,13 +1377,16 @@ case "$cmd" in
       '{fields: ({project:{key:$p}, issuetype:{name:$t}, summary:$s, description:$d} + $e)}')
     key=$(json POST 'api/2/issue' -d "$payload" | jq -r '.key')
     echo "created $key  https://$SITE/browse/$key"
-    # A 201 is not proof the assignee landed (a project can drop it), so read it back.
-    if back=$(api GET "api/2/issue/$key?fields=assignee"); then
-      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL"'
-        if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
-        else "  assignee: \(.fields.assignee | val)" end'
+    # A 201 is not proof a field landed (a project can drop one), so read back the assignee and
+    # every field given but the description.
+    names=$(printf '%s' "$extra" | jq -r '[keys[] | select(. != "description" and . != "assignee")] + ["assignee"] | join(",")')
+    if back=$(api GET "api/2/issue/$key?fields=$names"); then
+      printf '%s' "$back" | jq -r --argjson sent "$extra" "$JQ_VAL$JQ_READBACK"'
+        (if .fields.assignee == null and ($sent.assignee // null) != null then "  assignee: (empty - the assignment did not stick)"
+         else "  assignee: \(.fields.assignee | val)" end),
+        readback($sent; ["description", "assignee"])'
     else
-      echo "  assignee: (could not read back)"
+      echo "  fields: (could not read back)"
     fi
     if [[ -n "$APPROVED" ]]; then record_approval "$key" "$extra" "$APPROVED"; fi
     ;;
@@ -1522,12 +1534,7 @@ case "$cmd" in
     names=$(printf '%s' "$f" | jq -r 'keys | join(",")')
     back=$(api GET "api/2/issue/$key?fields=$names")
     echo "updated $key - read back:"
-    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL"'
-      .fields as $got | $sent | keys[] as $k
-      | ($got[$k]) as $v
-      | if $v == null and $sent[$k] != null then "  \($k): (empty - the write did not stick)"
-        else "  \($k): " + ($v | val | gsub("\n"; " ") | if length > 120 then .[0:120] + "..." else . end)
-        end'
+    printf '%s' "$back" | jq -r --argjson sent "$f" "$JQ_VAL$JQ_READBACK"'readback($sent; [])'
     # A parent that does not stick files the issue under the wrong epic or none, so it fails; so does
     # a cleared parent that is still there.
     if printf '%s' "$f" | jq -e 'has("parent")' >/dev/null; then

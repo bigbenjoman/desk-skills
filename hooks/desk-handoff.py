@@ -339,7 +339,8 @@ def on_context(event, data, session, root):
         "Record each action it leaves for the person (file this, merge that, run this) with "
         "`node ~/.claude/desk/bin/needs-you.mjs ask <SLUG from desk-env where> \"<what to do>\"`, "
         "so desk-q lists it. "
-        "Then tell the user to type /clear: the next session reads the handoff on its own."))
+        "Then tell the user to type /clear, then /desk-resume: the cleared session reads the handoff "
+        "and /desk-resume carries on from its next step."))
 
 
 def on_stop(data, session, root):
@@ -361,7 +362,7 @@ def on_stop(data, session, root):
     print(json.dumps({"decision": "block", "reason": (
         f"desk handoff: write the handoff first. Context passed the threshold; write {path} "
         "(where things stand, the task in progress and its next step, decisions made, open "
-        "questions, the paste-in line), then end the turn and tell the user to type /clear.")}))
+        "questions, the paste-in line), then end the turn and tell the user to type /clear, then /desk-resume.")}))
 
 
 def recorded_handoff(state, session, root, source):

@@ -78,9 +78,9 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <div class="wrap">
 
 <header style="display:flex;flex-direction:column;gap:12px">
-  <div class="eyebrow">desk-skills · as of Mon 9 Nov 2026, 12:05</div>
+  <div class="eyebrow">desk-skills · as of Fri 13 Nov 2026, 14:30</div>
   <h1>Desk roadmap</h1>
-  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscription rotation</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, starting with Kimi K3.1 Pro, and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only.</p>
+  <p class="lede">The goal from the 6 Nov throughput review: more tickets on the subscriptions you already pay for, at the same review quality and with less of your time. Your priorities, in order: <b>subscriptions</b>, because batches kept stopping when one login ran out; <b>fewer tokens per ticket</b>; and <b>more autonomy</b>, meaning fewer stops that need you. Sentry intake waits. <b>Changed on 9 Nov:</b> instead of spending more on ChatGPT, desk evaluates other models one at a time on the test bench, all four candidates on one month of OpenCode Go Plus ($40), and keeps whichever gives the most accepted tickets per pound. Codex stays as a reviewer only. <b>Changed on 13 Nov:</b> epic <span class="k">DS-616</span> replaces rotation. Desk no longer moves work between subscriptions on its own. Each repo runs on one subscription you choose, and waits for the reset at its limit.</p>
   <div class="legend">
     <span class="chip c-done">Done</span><span class="chip c-filed">In Jira or in a batch</span><span class="chip c-none">Not drafted</span><span class="chip c-wait">Waiting on a gate</span><span class="chip c-you">Needs you</span>
   </div>
@@ -89,19 +89,19 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <section aria-labelledby="where">
   <h2 id="where">Where we are</h2>
   <div class="now">
-    <div><span>Top priority</span><b>Rotation is live on main</b><span>Epic PR #519 merged at 06:42 today, and this Mac has installed it. You added <span class="k">login-2</span> as standby at 07:26. No worker has run on it yet, so rotation hasn't been seen working on two real logins.</span></div>
-    <div><span>Fewer tokens</span><b>Phase 0 built, not measured</b><span>Every <span class="k">DS-443</span> child has merged. <span class="k">preflight</span> is the only lever on, and the others stay off until it has been measured against the baseline.</span></div>
-    <div><span>Shipped since Sun 09:12</span><b>21 PRs merged</b><span>18 to <span class="k">main</span>, including rotation's epic PR, and 3 bench tickets to its feature branch before that. Both queues are empty: the standing batch has 123 done, and rotation's batch has been archived.</span></div>
-    <div><span>Waiting on you</span><b>3 items</b><span>Starting the Kimi evaluation needs a subscription and your OK on its terms. Listed at the bottom.</span></div>
+    <div><span>Top priority</span><b>Rotation replaced by DS-616</b><span>Rotation never ran on a second login: every worker since 9 Nov has started on <span class="k">default</span>. <span class="k">DS-616</span> (opened today) gives each repo one chosen subscription instead: 1 of 14 merged to its feature branch. <span class="k">DS-528</span>'s 6 children are all merged to <span class="k">feat/usage-accounts</span>, which isn't on <span class="k">main</span> yet.</span></div>
+    <div><span>Batch running</span><b>9 running, 40 waiting</b><span>The standing batch from 11 Nov has finished all 17 tickets it started with. Today's review of the 9–13 Nov runs filed 54 new tickets under <span class="k">DS-241</span> and <span class="k">DS-237</span>, and those are what's running now. The machine-wide test lock (1 slot for 9 workers) is the bottleneck.</span></div>
+    <div><span>Shipped since Mon 12:05</span><b>40 PRs merged</b><span>33 to <span class="k">main</span>: 4 bench PRs, 24 batch and needs-you fixes, <span class="k">desk-design</span> and desk-jira's parent clearing. 6 to <span class="k">feat/usage-accounts</span> (DS-528, all done) and 1 to DS-616's branch.</span></div>
+    <div><span>Correction</span><b>No Phase 0 lever is on</b><span>The 9 and 11 Nov pages said <span class="k">preflight</span> was on. It isn't: desk-skills' config has no levers row, and all 646 worker starts since 6 Nov recorded <span class="k">levers: []</span>. Those runs are the baseline, and nothing has been measured against it.</span></div>
   </div>
 </section>
 
 <section aria-labelledby="priorities">
   <h2 id="priorities">Your priorities</h2>
   <ol class="next">
-    <li><div><b>Subscription rotation (<span class="k">DS-461</span>, P1).</b> Built and on <span class="k">main</span>: 13 rotation tickets, then <span class="k">DS-521</span>, <span class="k">DS-522</span> and <span class="k">DS-524</span> today. What's left is seeing it work: a batch that hits <span class="k">default</span>'s limit should carry on on <span class="k">login-2</span>. The other Mac still needs <span class="k">/desk-update</span>.</div></li>
-    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> All children have merged, including <span class="k">DS-446</span> (#496), <span class="k">DS-488</span> (#520) and <span class="k">DS-513</span> (#513). The next step is measuring the preflight lever.</div></li>
-    <li><div><b>More autonomy: fewer stops that need you.</b> <span class="k">DS-241</span> is down to 1 open ticket, <span class="k">DS-431</span>, which waits on your live check. <span class="k">DS-429</span>, <span class="k">DS-441</span>, <span class="k">DS-493</span>, <span class="k">DS-509</span>, <span class="k">DS-514</span>, <span class="k">DS-517</span> and <span class="k">DS-518</span> have merged.</div></li>
+    <li><div><b>Subscriptions: one per repo, no switching (<span class="k">DS-616</span>, P2).</b> It replaces <span class="k">DS-461</span>'s rotation and <span class="k">DS-528</span>'s "most room" choice, and keeps DS-528's pinning of each account to its own folder. There's one default per tool, chosen in desk-q view 6, and a repo either follows it or names its own subscription. <span class="k">DS-617</span> merged to the feature branch (#582, 14:21). <span class="k">DS-618</span> to <span class="k">DS-630</span> are held behind their blockers. DS-528 (6 of 6 merged) needs to reach <span class="k">main</span> first; see the order below.</div></li>
+    <li><div><b>Fewer tokens per ticket (Phase 0, <span class="k">DS-443</span>).</b> Every lever has merged, but none is switched on. 392 worker starts since 9 Nov ran with no levers, so the baseline exists. <span class="k">phase0-report.mjs</span> hasn't been run to record it.</div></li>
+    <li><div><b>More autonomy: fewer stops that need you.</b> All 17 tickets the 11 Nov batch started with have merged. Today's review filed 52 more under <span class="k">DS-241</span>, and 3 of them have already merged. DS-241 now has 51 open: 11 in progress and 40 to do. <span class="k">DS-237</span> has 3: <span class="k">DS-546</span>, <span class="k">DS-567</span> and <span class="k">DS-572</span>. <span class="k">DS-431</span> still waits on your live check, and <span class="k">DS-550</span> isn't admitted.</div></li>
     <li><div><b>Not now: Sentry intake (<span class="k">DS-206</span>).</b> P3 in Jira, at the bottom of the backlog.</div></li>
   </ol>
 </section>
@@ -112,20 +112,22 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <div class="track">
 
     <div class="phase here">
-      <div class="phead"><h3>Phase 0 · Low-risk changes, each measured</h3><span class="when">now</span><span class="chip c-filed">Built, to measure · DS-443</span></div>
+      <div class="phead"><h3>Phase 0 · Low-risk changes, each measured</h3><span class="when">now</span><span class="chip c-filed">Preflight on 13 Nov, measuring · DS-443</span></div>
       <div class="card">
-        <p>Epic <span class="k">DS-443</span>, "For Ben, a ticket costs fewer tokens and fewer interruptions, without losing review quality". Every change ships switched off, controlled by one config row, and you turn them on one at a time against the baseline. Only <span class="k">preflight</span> is on so far.</p>
+        <p>Epic <span class="k">DS-443</span>, "For Ben, a ticket costs fewer tokens and fewer interruptions, without losing review quality". <b>Off is on purpose.</b> All 7 levers are written and merged, but each one only works once it's named in the "Phase 0 levers" config row. The plan is to switch them on one at a time and compare each against the runs before it. With two on at once, we couldn't tell which one saved tokens or which one hurt quality. None has been switched on yet. That's the step that was missed, not unfinished code.</p>
+        <p><b>Three steps, then repeat:</b> (1) <b>Done 13 Nov:</b> the baseline over 6–13 Nov, all with no levers, is 24 accepted tickets at $17.52 API-equivalent, 38.9M input and 175k output tokens per ticket, 0.13 fix tries per ticket, and 374 permission denials. It's saved at <span class="k">~/.desk-autopilot/bigbenjoman__desk-skills/phase0-baseline-2026-11-13.txt</span>. (2) <b>Done 13 Nov:</b> <span class="k">preflight</span> is on in desk-skills' config (<span class="k">desk-env levers</span> prints <span class="k">on: preflight</span>). Preflight goes first because it's the safest: it only skips a preflight check when nothing has changed since the last one. (3) Once about a batch's worth of tickets has run, rerun the report. If tokens per ticket fell and fix tries didn't rise, keep it and add the next lever.</p>
         <ul>
           <li><span class="k">DS-444</span> Baseline report and the levers row <span class="chip c-done">merged, #448</span></li>
           <li><span class="k">DS-450</span> Effort set per session <span class="chip c-done">merged, #457</span> · <span class="k">DS-452</span> Auto-memory off for workers, with a 6 KB digest <span class="chip c-done">merged, #451</span></li>
-          <li><span class="k">DS-451</span> Skip a preflight on an unchanged fingerprint <span class="chip c-done">merged, #470 · lever on</span></li>
+          <li><span class="k">DS-451</span> Skip a preflight on an unchanged fingerprint <span class="chip c-done">merged, #470 · lever off</span></li>
           <li><span class="k">DS-448</span> → <span class="k">DS-449</span> Review carry-over after a rebase or base merge, then a targeted re-review <span class="chip c-done">merged, #455 and #499</span></li>
           <li><span class="k">DS-445</span> Codex harness: captures the verdict, times out, closes stdin, sets effort per role <span class="chip c-done">merged, #479</span></li>
           <li><span class="k">DS-447</span> Single-command wrappers for denied commands <span class="chip c-done">merged, #492</span></li>
           <li><span class="k">DS-446</span> → <span class="k">DS-488</span> Failure class on every park, then one rerun for a runner or resource red <span class="chip c-done">merged, #496 and #520</span></li>
           <li><span class="k">DS-513</span> A requirement gap only you can settle stops spending review fix tries <span class="chip c-done">merged, #513</span></li>
+          <li><span class="k">DS-631</span> desk picks its own levers: each ticket gets a random lever set at admission, kept for its whole run, and a lever is adopted or reverted on its own numbers. All 4 repos take part. 15 children, DS-632 to DS-646 <span class="chip c-filed">admitted 13 Nov · plan waits for you</span></li>
         </ul>
-        <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. Preflight is the first lever being measured. The queue is empty, so this batch has to be admitted first.</p>
+        <p class="gate"><b>Gate:</b> one batch about the size of last week's, compared on tokens per ticket and fix tries per ticket. The 9–13 Nov runs are the no-lever baseline. Next: run <span class="k">phase0-report.mjs</span> to record it, add <span class="k">| Phase 0 levers | preflight |</span> to desk-skills' config, and compare the next batch.</p>
       </div>
     </div>
 
@@ -143,32 +145,33 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
     </div>
 
     <div class="phase">
-      <div class="phead"><h3>Phase 2 · Evaluate other models, one at a time, on cost per accepted ticket</h3><span class="when">weeks 2–5</span><span class="chip c-none">Not drafted · changed 9 Nov</span></div>
+      <div class="phead"><h3>Phase 2 · Evaluate other models, one at a time, on cost per accepted ticket</h3><span class="when">weeks 2–5</span><span class="chip c-filed">Harness built · baseline needs DS-547</span></div>
       <div class="card">
-        <p>This replaces buying ChatGPT Pro 200. Each candidate runs on the same frozen tasks as Opus, through the same harness, and is judged on one figure: <b>accepted tasks per pound of subscription</b>, as long as quality holds. Leaderboard scores pick the order to test them in (see <a href="#models">How the candidates compare</a>), but they don't decide anything. Codex stays as a reviewer on your current plan.</p>
+        <p>This replaces buying ChatGPT Pro 200. <b>Changed at 14:00 on 9 Nov:</b> all four candidates now run on one month of <b>OpenCode Go Plus</b> ($40), not four separate plans. Go serves every candidate to Claude Code on its Anthropic-compatible endpoint, says none of them is used for training and keeps 0 days of data, and doesn't ban scripted use. The direct plans couldn't offer that: Kimi bans scripts without written permission, Z.ai's terms don't mention training, and Google trains on Antigravity code and lets reviewers read it unless telemetry is off. Only the winner's direct plan is bought afterwards, and the bench measures whether it gives more per £ than Go. Each candidate runs on the same frozen tasks as Opus, through the same harness, and is judged on one figure: <b>accepted tasks per pound of subscription</b>, as long as quality holds. Leaderboard scores pick the order to test them in (see <a href="#models">How the candidates compare</a>), but they don't decide anything. Codex stays as a reviewer on your current plan.</p>
         <div class="tbl"><table>
-          <thead><tr><th>#</th><th>Candidate</th><th>Plan</th><th>How the bench runs it</th><th>Why this place</th></tr></thead>
+          <thead><tr><th>#</th><th>Candidate</th><th>Allowance on Go Plus, a month</th><th>Direct plan, if it wins</th><th>Why this place</th></tr></thead>
           <tbody>
-            <tr><td>1</td><td><b>Kimi K3.1 Pro</b></td><td>Kimi Code Plus, $19 a month ($15 a month billed annually). Pro, $39, adds K3.1 Pro Highspeed</td><td>Claude Code pointed at Kimi's own Anthropic-compatible endpoint</td><td>Top Terminal-Bench 4.0 score of all seven compared below: 67.2%, against 63.6% for Sonnet 5.5 and 59.6% for Opus 5.5. Your choice to go first</td></tr>
-            <tr><td>2</td><td><b>DeepSeek V4.1 Flash</b></td><td>OpenCode Go, $10 a month</td><td><span class="k">opencode run --format json</span></td><td>The cheapest by far, at $0.60 per Artificial Analysis task. 33.8% on the same benchmark, so it's for routine fixes</td></tr>
-            <tr><td>3</td><td><b>Gemini 4 Argon</b>, if AI Pro includes it in the CLI. 3.8 Flash otherwise</td><td>Google AI Pro, £18.99 a month</td><td><span class="k">agy -p --output-format json --sandbox</span></td><td>Argon has the strongest Intelligence Index of the four (50.4) and a 4.3% hallucination rate. 3.8 Flash scores only 19.7% on Terminal-Bench 4.0. Antigravity has the best sandbox, but needs a fix for a known bug in headless output</td></tr>
-            <tr><td>4</td><td><b>GLM‑5.3</b></td><td>Z.ai Pro, about $80 a month</td><td>Claude Code pointed at Z.ai's Anthropic-compatible endpoint</td><td>Moved to last place. It trails Kimi on almost every row (41.9% on Terminal-Bench 4.0), its plan costs the most, and Z.ai's assistant uploaded users' repos without consent this year</td></tr>
+            <tr><td>1</td><td><b>Kimi K3.1 Pro</b></td><td>$60 of usage at API prices ($2 / $10 per 1M)</td><td>Kimi Code Plus, $19 a month. Needs Moonshot's written OK for scripted use</td><td>Top Terminal-Bench 4.0 score of all seven compared below: 67.2%, against 63.6% for Sonnet 5.5 and 59.6% for Opus 5.5. Your choice to go first</td></tr>
+            <tr><td>2</td><td><b>DeepSeek V4.1 Flash</b></td><td>$200 of usage. Needs Global regions on in Go's privacy settings; the no-retention deal runs to 30 Nov and renews monthly</td><td>OpenCode Go itself</td><td>The cheapest by far, at $0.60 per Artificial Analysis task. 33.8% on the same benchmark, so it's for routine fixes</td></tr>
+            <tr><td>3</td><td><b>Gemini 4 Argon</b></td><td>$120 of usage, at half price until 30 Nov</td><td>Google AI Pro, £18.99 a month, if it gives Argon to the CLI. Trains on your code unless telemetry is off</td><td>Argon has the strongest Intelligence Index of the four (50.4) and a 4.3% hallucination rate</td></tr>
+            <tr><td>4</td><td><b>GLM‑5.3</b></td><td>$120 of usage</td><td>Z.ai Pro, about $80 a month (third-party figure)</td><td>Moved to last place. It trails Kimi on almost every row (41.9% on Terminal-Bench 4.0), its plan costs the most, and Z.ai's assistant uploaded users' repos without consent this year</td></tr>
           </tbody>
         </table></div>
         <ul>
-          <li><b>Same scaffold where possible.</b> Kimi and Z.ai both accept Claude Code's API format, so they run through the bench's existing Claude runner, with only the endpoint and key changed. The comparison then measures the model and not the CLI around it. It also keeps the bench's sandbox, which Kimi's own CLI doesn't have: its <span class="k">-p</span> mode approves every action.</li>
-          <li><b>What's measured for each run:</b> whether the hidden tests pass, a blind 1–5 quality score, tokens, and how much of the plan's allowance the run used. From those, the report gives <b>£ per accepted task</b> and <b>accepted tasks per 5-hour window</b>. The second figure matters because Kimi, OpenCode, Google and Z.ai all cap each 5 hours, and Ultra doesn't.</li>
+          <li><b>Same scaffold for all four.</b> Every candidate runs through the bench's existing Claude Code runner, with only the endpoint, key and model changed (<span class="k">DS-536</span>). The comparison then measures the model and not the CLI around it, and keeps the bench's sandbox. One risk: Go translates Claude Code's requests for non-Anthropic models, which could cost them some reliability with tools. One task per model end to end shows whether it does.</li>
+          <li><b>What's measured for each run:</b> whether the hidden tests pass, a blind 1–5 quality score, tokens, and how much of the plan's allowance the run used. From those, the report gives <b>£ per accepted task</b> and <b>accepted tasks per 5-hour window</b>. The second figure matters because Go caps each model at 20% of its monthly allowance per 5 hours and 50% per week, and Ultra has no 5-hour cap.</li>
           <li><b>A concurrency check for each candidate:</b> two tasks at once, recording any queueing, rate-limit errors or failed runs.</li>
-          <li><b>Your code only.</b> The non-Anthropic arms run on frozen <span class="k">desk-skills</span> tasks only. None of the four confirms in writing that subscription code isn't used for training, and Kimi's and Google's consumer terms allow it. Client repos stay on Claude and Codex.</li>
+          <li><b>Your code only.</b> The non-Anthropic arms run on frozen <span class="k">desk-skills</span> tasks only, even though Go says none of these models trains on your data. Client repos stay on Claude and Codex.</li>
         </ul>
-        <p class="gate"><b>Gate for each candidate:</b> on the same tasks as Opus, at least as many accepted, a blind score no lower, and a lower £ per accepted task. About 24 tasks only shows big differences, so this is a screen. A candidate that passes then shadows a few live <span class="k">desk-skills</span> tickets, its PRs going through the full review, before it gets a worker. One that fails is cancelled after its first month.</p>
+        <p class="gate"><b>Gate for each candidate:</b> on the same tasks as Opus, at least as many accepted, a blind score no lower, and a lower £ per accepted task. About 24 tasks only shows big differences, so this is a screen. A candidate that passes then shadows a few live <span class="k">desk-skills</span> tickets, its PRs going through the full review, before it gets a worker. Go Plus is cancelled after its first month unless a candidate is still being measured.</p>
+        <p class="gate"><b>Found on 10 Nov:</b> Opus had 2 of 24 tasks accepted on its baseline run. 10 of the 21 rejected tasks failed 3 checks or fewer, and many hidden checks pin the merged PR's exact wording, which no ticket states. Comparing accepted counts near zero says nothing. <span class="k">DS-547</span> adds each arm's pass rate on the checks a PR added or changed, beside accepted. That figure, rather than accepted alone, is what the first part of the gate should compare. It's your call, once DS-547 has merged. <b>Checked 13 Nov:</b> DS-547 is still To Do and not in a batch. The frozen set and the run's results aren't on this Mac: <span class="k">~/desk-bench/ds-535</span> doesn't exist, and no <span class="k">bench-out</span> was found. DS-535's comment is the only record of the 2 of 24. Since DS-547 rescores from those logs, find them (or rerun) first.</p>
       </div>
     </div>
     <div class="phase">
       <div class="phead"><h3>Phase 3 · Decide the subscriptions</h3><span class="when">at renewal</span><span class="chip c-wait">Waits on Phase 2's numbers</span></div>
       <div class="card">
         <p>Buy capacity where accepted tickets per pound, at equal quality, are highest. Claude Ultra (£180) stays the main builder, and ChatGPT stays on its current plan for review. No upgrade to Pro 200. A candidate that passes gets a worker in rotation, restricted to the lanes and sizes it cleared. Move it to a longer billing period, or a larger plan, only if its 5-hour cap is what's slowing the batch.</p>
-        <p class="gate">Prices here come from each provider's page where it publishes one (Google, OpenCode, Kimi). Z.ai's price is only from third parties. Check every price at checkout.</p>
+        <p class="gate">Prices here come from each provider's page where it publishes one (OpenCode, Google, Kimi). Z.ai's price is only from third parties. Check every price at checkout.</p>
       </div>
     </div>
   </div>
@@ -191,7 +194,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       <h3>Why these don't settle it</h3>
       <ul>
         <li><b>The cost rows use API prices.</b> We pay through subscriptions, and each provider sets its allowance differently. Low token use per task (Kimi uses about half of Opus's output tokens) suggests an allowance lasts longer, but only a bench run measures it.</li>
-        <li><b>The figure that decides it</b> is accepted desk tasks per pound of subscription, on our own frozen tasks, at a blind quality score no lower than Opus's. The table sets the order of the trials, and the bench makes the decision.</li>
+        <li><b>The figure that decides it</b> is accepted desk tasks per pound of subscription (first on Go Plus, then on the winner's direct plan), on our own frozen tasks, at a blind quality score no lower than Opus's. The table sets the order of the trials, and the bench makes the decision.</li>
         <li><b>A check for each trial:</b> Kimi's slow output and its pricing page's warning that K3.1 Pro "may queue or fail at launch" both cut tasks per 5-hour window. The bench measures queueing and failed runs too.</li>
       </ul>
     </div>
@@ -236,13 +239,13 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 <tr><th scope="row">Context window</th><td class="t">1M</td><td class="t">1M</td><td class="t">1M</td><td class="t">1M</td><td class="t">1M</td><td class="t">1M</td><td class="t">1M</td></tr>
 <tr><th scope="row">Released</th><td class="t">23 Oct 2026</td><td class="t">17 Oct 2026</td><td class="t">2 Sep 2026</td><td class="t">30 Sep 2026</td><td class="t">18 Aug 2026</td><td class="t">28 Sep 2026</td><td class="t">22 Sep 2026</td></tr>
 <tr><th scope="row">Open weights</th><td class="t">Yes</td><td class="t">Yes</td><td class="t">No</td><td class="t">No</td><td class="t">Yes</td><td class="t">No</td><td class="t">No</td></tr>
-<tr class="grp"><th colspan="8">What we would actually pay: the subscription</th></tr>
-<tr><th scope="row">Plan</th><td class="t">Kimi Code Plus</td><td class="t">OpenCode Go</td><td class="t">Google AI Pro</td><td class="t">Google AI Pro, if Argon is included in the CLI</td><td class="t">Z.ai GLM Coding Pro</td><td class="t">Claude Ultra (yours)</td><td class="t">Claude Ultra (yours)</td></tr>
-<tr><th scope="row">Monthly price</th><td class="t">$19 ($15 billed annually)</td><td class="t">$10</td><td class="t">£18.99</td><td class="t">£18.99</td><td class="t">about $80 (third-party figure)</td><td class="t">£180</td><td class="t">£180</td></tr>
+<tr class="grp"><th colspan="8">What we would actually pay: the subscription (trials: OpenCode Go Plus, $40 a month, for all four)</th></tr>
+<tr><th scope="row">Plan</th><td class="t">Go Plus for trials; Kimi Code Plus direct</td><td class="t">Go Plus for trials; Go direct</td><td class="t">Google AI Pro (not on Go)</td><td class="t">Go Plus for trials; Google AI Pro direct</td><td class="t">Go Plus for trials; Z.ai GLM Coding Pro direct</td><td class="t">Claude Ultra (yours)</td><td class="t">Claude Ultra (yours)</td></tr>
+<tr><th scope="row">Direct plan, monthly price</th><td class="t">$19 ($15 billed annually)</td><td class="t">$10 (Go), $40 (Go Plus)</td><td class="t">£18.99</td><td class="t">£18.99</td><td class="t">about $80 (third-party figure)</td><td class="t">£180</td><td class="t">£180</td></tr>
 <tr><th scope="row">Limits that can stop a batch</th><td class="t">Rolling 5 h and a monthly pool</td><td class="t">5 h, weekly and monthly, in $ per model</td><td class="t">5 h refills up to a weekly limit</td><td class="t">Weekly Argon quota (reported)</td><td class="t">5 h and weekly credits</td><td class="t">Weekly only</td><td class="t">Weekly only</td></tr>
-<tr><th scope="row">How the bench runs it</th><td class="t">Claude Code on Kimi's endpoint</td><td class="t">opencode run</td><td class="t">agy -p --sandbox</td><td class="t">agy -p --sandbox</td><td class="t">Claude Code on Z.ai's endpoint</td><td class="t">Claude Code</td><td class="t">Claude Code</td></tr>
+<tr><th scope="row">How the bench runs it</th><td class="t">Claude Code on Go's endpoint</td><td class="t">Claude Code on Go's endpoint</td><td class="t">not trialled</td><td class="t">Claude Code on Go's endpoint</td><td class="t">Claude Code on Go's endpoint</td><td class="t">Claude Code</td><td class="t">Claude Code</td></tr>
 </tbody></table></div>
-  <p class="foot">Source: artificialanalysis.ai model pages for each model, read on 9 Nov 2026 (Intelligence Index v5.0.1). AA publishes no SWE-bench, LiveCodeBench or IFBench results for these models. Subscription prices: kimi.ai/membership/pricing, opencode.ai/pricing and gemini.google/gb/subscriptions. Z.ai's price comes from third parties only.</p>
+  <p class="foot">Source: artificialanalysis.ai model pages for each model, read on 9 Nov 2026 (Intelligence Index v5.0.1). AA publishes no SWE-bench, LiveCodeBench or IFBench results for these models. Subscription prices: kimi.ai/membership/pricing, opencode.ai/pricing and gemini.google/gb/subscriptions. Go Plus allowances, training and retention: opencode.ai/docs/console/go, read 9 Nov. Z.ai's price comes from third parties only.</p>
 </section>
 
 <section aria-labelledby="parallel">
@@ -250,34 +253,36 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
   <div class="grid2">
 
     <div class="card">
-      <div class="phead"><h3>Subscription rotation</h3><span class="chip c-done">Top priority · P1 · on main</span></div>
-      <p>Workers spread across your Claude logins, and later your Codex logins. A login at its limit is benched until it resets, and the batch holds only when every login is out.</p>
+      <div class="phead"><h3>Subscriptions</h3><span class="chip c-filed">Top priority · DS-616 replaces rotation</span></div>
+      <p>The model changed on 13 Nov. Before, a login at its limit was benched and its work moved to another. Now each computer has one default per tool, each repo follows it or names its own, and a repo at its subscription's limit waits for the reset while repos on other subscriptions keep running.</p>
       <ul>
-        <li><span class="chip c-done">on main, #519</span> <span class="k">DS-462</span> to <span class="k">DS-474</span>, all 13, plus the 9 bench tickets that were on the feature branch. It merged at 06:42 after a clean round 5 review.</li>
-        <li><span class="chip c-done">follow-ups merged today</span> <span class="k">DS-524</span> (#528) names the new account in the add-a-login panel. <span class="k">DS-521</span> (#530) lets a base worker that hits one login's limit carry on on another. <span class="k">DS-522</span> (#531) means a sole Codex login set to <span class="k">off</span> runs no codex.</li>
-        <li><span class="chip c-wait">not yet seen working</span> This Mac has <span class="k">default</span> in rotation and <span class="k">login-2</span> on standby, so <span class="k">login-2</span> runs only when <span class="k">default</span> is at its limit. All 5 tickets today ran on <span class="k">default</span>.</li>
-        <li><span class="chip c-you">other Mac</span> Run <span class="k">/desk-update</span> there and add its logins in desk-q (press 6).</li>
-        <li>Design: the <a href="https://claude.ai/artifact/G72NSJFg5MqFPiuVoehtkv">Usage view canvas</a>, saved at <span class="k">docs/design/DS-461/</span>.</li>
+        <li><span class="chip c-done">on main, #519 to #531</span> <span class="k">DS-461</span>'s rotation: all 13 children, then DS-521, 522 and 524. It never ran on a second login. Every worker since 9 Nov started on <span class="k">default</span>, and no login was ever benched.</li>
+        <li><span class="chip c-done">DS-528 · 6 of 6, not on main</span> <span class="k">DS-529</span> to <span class="k">DS-534</span> merged to <span class="k">feat/usage-accounts</span> on 11 Nov (#550 to #553, #555, #562). It's 23 commits ahead of <span class="k">main</span>, with no promotion PR. DS-616 keeps its pinning and drops its "most room" choice (DS-531).</li>
+        <li><span class="chip c-filed">DS-616 · 1 of 14</span> <span class="k">DS-617</span> (#582) merged to <span class="k">feat/DS-616-subscription-default-no-switching</span> at 14:21. DS-618 to DS-630 are held on blockers. Its plan says DS-528's branch touches "same files, opposite intent", and the DS-616 branch doesn't contain it yet.</li>
+        <li><span class="chip c-you">logins out of date</span> <span class="k">subscriptions.md</span> (last changed 9 Nov) still lists <span class="k">login-2</span>, whose folder is gone. <span class="k">login-3</span> and <span class="k">login-4</span> were created at 11:50 today, are signed in, and have 0% of their week used, but they aren't listed, so desk can't use them. login-4 reports <span class="k">out_of_credits</span> for overage.</li>
+        <li><span class="chip c-you">other Mac</span> Run <span class="k">/desk-update</span> there once DS-616 is on main.</li>
       </ul>
     </div>
 
     <div class="card">
-      <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-filed">Built, never run · DS-475</span></div>
-      <p>All 12 tickets are on <span class="k">main</span>: frozen past tasks with hidden tests, blind scoring, a report and a weekly-allowance guard. It has never been run, though. No task set is built, so there's no Opus baseline to compare a candidate with.</p>
+      <div class="phead"><h3>Test bench: the evaluation harness</h3><span class="chip c-wait">Waits on DS-547 · DS-475</span></div>
+      <p>The Go arm, its meter and the £ figures are on <span class="k">main</span>. Nothing has run since the 10 Nov baseline, and its files can't be found on this Mac.</p>
       <ul>
-        <li><span class="chip c-none">1 · build the set</span> Freeze about 24 merged <span class="k">desk-skills</span> PRs with <span class="k">bench-build.mjs</span>, and run the Opus arm as the baseline.</li>
-        <li><span class="chip c-none">2 · endpoint arm</span> An arm that runs Claude Code against another provider's Anthropic-compatible endpoint, with the key kept in a chmod 600 file. It refuses to start if a run could bill your Claude login instead. This covers Kimi and Z.ai.</li>
-        <li><span class="chip c-none">3 · allowance meters</span> The quota guard only reads Claude's and Codex's weekly windows. It needs readers for each provider's own windows (5-hour, weekly and monthly). Kimi and Z.ai only have undocumented usage endpoints, so the guard stops on any reading it can't trust.</li>
-        <li><span class="chip c-none">4 · £ in the report</span> £ per accepted task and accepted tasks per 5-hour window for each arm, priced from a table of plan prices and windows.</li>
-        <li><span class="chip c-none">later</span> Runners for OpenCode and Antigravity, before candidates 2 and 3.</li>
+        <li><span class="chip c-filed">DS-535 · in progress</span> The baseline ran on 10 Nov: 2 accepted, 21 rejected and 1 failed (per its Jira comment). Its blind scores (AC3) are still to do. <span class="k">~/desk-bench/ds-535</span> doesn't exist now, and no frozen set or <span class="k">bench-out</span> was found under the usual folders.</li>
+        <li><span class="chip c-none">DS-547 · P2 · not in a batch</span> Each arm's pass rate on the checks a PR added or changed, beside accepted. It rescores existing run logs, so it needs DS-535's logs found or the baseline rerun.</li>
+        <li><span class="chip c-done">merged 10 Nov</span> <span class="k">DS-536</span> endpoint arm (#548), <span class="k">DS-537</span> quota guard (#547), <span class="k">DS-538</span> £ report (#546), and DS-535's bench-build fixes (#544, #545).</li>
+        <li><span class="chip c-done">closed</span> <span class="k">DS-539</span> and <span class="k">DS-540</span>, the OpenCode and Antigravity runners. Go serves every candidate to Claude Code, so neither is needed.</li>
       </ul>
     </div>
+
     <div class="card">
-      <div class="phead"><h3>Batch reliability</h3><span class="chip c-done">Today's bugs merged · DS-237</span></div>
-      <p>Rotation's archive showed up two bugs. Both are fixed.</p>
+      <div class="phead"><h3>Batch reliability and autonomy</h3><span class="chip c-filed">9 running · DS-237, DS-241</span></div>
+      <p>The 11 Nov batch's 17 tickets all merged (#554 to #581). Today's review of the week's parks filed 54 more, so this is now most of the open work.</p>
       <ul>
-        <li><span class="k">DS-523</span> (#529): a ticket admitted after a feature batch's promotion PR has merged now goes to the standing batch, and isn't archived along with the feature batch.</li>
-        <li><span class="k">DS-525</span> (#532): a finished feature batch now stops its idle merge driver and archives. DS-461's batch had been held open since 07:15.</li>
+        <li><span class="chip c-done">merged 11–13 Nov</span> <span class="k">DS-552</span> (P1, two migration heads), <span class="k">DS-503</span>, 527, 548, 549, 551, 553 to 561, and today <span class="k">DS-584</span>, <span class="k">DS-594</span> and <span class="k">DS-562</span>.</li>
+        <li><span class="chip c-filed">running</span> <span class="k">DS-576</span> (P1: a worker posts review verdicts from your gh login), 565, 588, 590, 596, 598, 600, 602, 604 and 612. <span class="k">DS-577</span> is held behind DS-576. <span class="k">DS-598</span>'s PR #580 is red.</li>
+        <li><span class="chip c-you">DS-546 · failed</span> 5 runs ($27) spent. Its draft PR #575 conflicts with <span class="k">main</span>. The decider handed it to you: requeue, finish by hand, or drop.</li>
+        <li><span class="chip c-filed">bottleneck</span> The machine has 1 test-lock slot for 9 workers, and DS-617 waited 14+ minutes behind 30 runs. <span class="k">DS-588</span> (lock slots) and <span class="k">DS-590</span> (slow Postgres) are running. <span class="k">DS-587</span> and <span class="k">DS-589</span> are the rest of that group.</li>
       </ul>
     </div>
 
@@ -285,8 +290,7 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
       <div class="phead"><h3>Live reads and check builds</h3><span class="chip c-filed">Desk side done · VPL-793 left</span></div>
       <ul>
         <li><span class="k">DS-426</span> (P1) and <span class="k">DS-489</span> (P1): live reads and check builds run from a clean default-branch checkout. <span class="chip c-done">merged, #433 and #486</span></li>
-        <li><span class="k">VPL-793</span> (P2, To Do): VoicePA's <span class="k">ensure-flows-image.sh</span> builds that tree. It's now the only thing between VoicePA and its check builds.</li>
-        <li><span class="k">VPL-794</span> (P3, To Do): stop pushing the floating <span class="k">:staging</span> image tags. Nothing in the repo deploys them.</li>
+        <li><span class="k">VPL-793</span>: VoicePA's <span class="k">ensure-flows-image.sh</span> builds that tree. <span class="k">VPL-794</span>: stop pushing the floating <span class="k">:staging</span> tags. <b>Not re-checked:</b> VPL isn't on the benlavender1 Jira site, so the token used here can't read it. Last known status: both To Do.</li>
       </ul>
     </div>
 
@@ -295,37 +299,42 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 
 <section aria-labelledby="backlog">
   <h2 id="backlog">The backlog by epic</h2>
-  <p>The open DS epics in your order: rotation first, then fewer tokens and more autonomy, then the rest. Sentry intake (DS-206) is at the bottom. The status column shows each epic's Jira status and priority. Nothing is admitted at the moment.</p>
+  <p>The open DS epics in your order. Status and priority come from Jira (the priority is the P field, not Jira's default Priority). 85 DS tickets are open in all.</p>
   <div class="tbl">
     <table>
       <thead><tr><th>Epic</th><th>Outcome</th><th>Status</th><th class="n">Open</th><th>Notes</th></tr></thead>
       <tbody>
-        <tr class="grp"><th colspan="5">Top priority: rotation, fewer tokens and more autonomy</th></tr>
-        <tr><td class="k">DS-461</td><td>A batch keeps running on another Claude or Codex subscription when one reaches its limit</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">0</td><td>On main (#519) with DS-521, 522 and 524. Ready to close once it's been seen working on two logins</td></tr>
-        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All merged; preflight still to be measured</td></tr>
-        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">1</td><td>DS-431 waits on your live check</td></tr>
-        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All 12 on main. Keep it open for the GLM‑5.3 arm</td></tr>
-        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">0</td><td>DS-523 (#529) and DS-525 (#532) merged today. Ready to close</td></tr>
-        <tr><td class="k">DS-515</td><td>A repo's desk-q views show the work of every batch it has</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-516 merged (#509). Ready to close</td></tr>
+        <tr class="grp"><th colspan="5">Top priority: subscriptions, fewer tokens and more autonomy</th></tr>
+        <tr><td class="k">DS-616</td><td>Desk runs each repo on one chosen subscription and never switches on its own</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">13</td><td>New today. DS-617 merged to its branch, and DS-618 to 630 are held on blockers</td></tr>
+        <tr><td class="k">DS-528</td><td>Desk lists and rotates Claude accounts, not folders</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>All 6 merged to feat/usage-accounts, not to main. Close it once its branch reaches main</td></tr>
+        <tr><td class="k">DS-461</td><td>A batch keeps running on another subscription when one reaches its limit</td><td><span class="chip c-you">To do · P1</span></td><td class="n">0</td><td>Replaced by DS-616. Close as superseded, with your OK</td></tr>
+        <tr><td class="k">DS-443</td><td>Phase 0: fewer tokens and fewer interruptions per ticket</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>Every lever merged, none on. DS-559 also merged under it (#554)</td></tr>
+        <tr><td class="k">DS-241</td><td>A ticket parks only for a step that needs you</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">51</td><td>52 filed today, 3 already merged. 11 in progress, including DS-431, which waits on your check</td></tr>
+        <tr><td class="k">DS-475</td><td>A model, brief or review change is adopted only after it holds quality on frozen tasks</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">2</td><td>DS-535 (blind scores; results not found on this Mac) and DS-547 (not in a batch)</td></tr>
+        <tr><td class="k">DS-237</td><td>A batch finishes without false stops or flaky reds</td><td><span class="chip c-filed">In progress · P2</span></td><td class="n">3</td><td>DS-546 (failed, yours to decide), DS-567 and DS-572</td></tr>
         <tr class="grp"><th colspan="5">Next</th></tr>
-        <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress · P1</span></td><td class="n">1</td><td>DS-442 (desk-ci split), not in a batch yet</td></tr>
-        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">4</td><td>DS-259, 261, 262, 263</td></tr>
-        <tr><td class="k">DS-455</td><td>Prompt-audit drift fixes for desk skills and agents</td><td><span class="chip c-filed">To do · P2</span></td><td class="n">0</td><td>DS-511 merged (#493). Ready to close</td></tr>
+        <tr><td class="k">DS-228</td><td>Every desk SKILL.md is 20 KB or less</td><td><span class="chip c-filed">In progress · P1</span></td><td class="n">1</td><td>DS-442 (desk-ci split, now P2), not in a batch yet</td></tr>
+        <tr><td class="k">DS-260</td><td>CI runs on short-lived EC2 runners, GitHub-hosted as fallback</td><td><span class="chip c-filed">To do · P1</span></td><td class="n">4</td><td>DS-259 and 261 (P1), 262 and 263 (P2), not in a batch yet</td></tr>
         <tr><td class="k">DS-284</td><td>A README that explains desk, kept accurate by tests</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">1</td><td>Waits until the backlog features ship</td></tr>
         <tr class="grp"><th colspan="5">Later: not a priority for now</th></tr>
         <tr><td class="k">DS-206</td><td>Production events raise investigated tickets that jump the queue</td><td><span class="chip c-filed">To do · P3</span></td><td class="n">6</td><td>Sentry intake, DS-207 to DS-212</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="foot">Open counts are each epic's children not in Done, read from Jira at 12:05. Outside these epics: DS-503 (To Do) has no epic, and DS-65, 66, 68 and 72 (To Do, P3) are still open under DS-236, which is Done. Batch states come from both queues at 12:05.</p>
+  <p class="foot">Read from Jira's REST API at 14:25 on 13 Nov. Every ticket whose PR has merged is Done, except DS-535, which is waiting on AC3. Closed since 9 Nov: DS-455 and DS-515 (epics), and 38 tickets. Outside these epics, DS-65, 66, 68 and 72 (To Do) are still open under DS-236, which is Done.</p>
 </section>
 
 <section aria-labelledby="you">
   <h2 id="you">Waiting on you</h2>
   <div class="card">
     <ul>
-      <li><span class="chip c-you">Decide</span> <b>Start with Kimi.</b> Subscribe to Kimi Code Plus on monthly billing ($19 a month, before tax; annual billing is $180 a year, so wait until it has passed the gate). Kimi's pricing page warns that K3.1 Pro requests "may queue or fail at launch", so the bench records queueing and failed runs. Then confirm you accept that frozen <span class="k">desk-skills</span> code goes to Moonshot. Two points on that: its consumer terms forbid scripted use "unless explicitly authorized in writing", and only its API platform says code isn't used for training. You may want to ask Moonshot about both first. The harness tickets don't need the subscription, so Claude can file them now.</li>
-      <li><span class="chip c-you">Check</span> <b>DS-431's live worker run.</b> Run one worker on an ai-agents ticket with studia-web listed, and confirm it reads the clone without parking. Its scope is accepted, and this is all that's left.</li>
+      <li><span class="chip c-you">Decide</span> <b>How DS-528 reaches main.</b> Recommended: merge <span class="k">feat/usage-accounts</span> into DS-616's branch now and promote them together (see step 1 below).</li>
+      <li><span class="chip c-you">Decide</span> <b>Close DS-461 as superseded by DS-616.</b> Its code stays on main until DS-630 removes it.</li>
+      <li><span class="chip c-you">Decide</span> <b>DS-546:</b> requeue, finish by hand, or drop. 5 runs and $27 spent, and PR #575 conflicts with main.</li>
+      <li><span class="chip c-you">Fix</span> <b>Logins in <span class="k">subscriptions.md</span>.</b> Take out <span class="k">login-2</span> (its folder is gone). Add <span class="k">login-3</span> and <span class="k">login-4</span> in desk-q view 6 if you want desk to use them before DS-616 lands.</li>
+      <li><span class="chip c-you">Fix</span> <b>studia-web's Review gate.</b> 8 parks say your Sophos-Education membership is private again. 5 more want <span class="k">gh pr ready</span>, which workers aren't allowed to run.</li>
+      <li><span class="chip c-you">Buy, later</span> <b>OpenCode Go Plus, $40.</b> Still worth waiting for DS-547. Gemini 4 Argon's half price on Go and DeepSeek's no-retention agreement both end 30 Nov.</li>
+      <li><span class="chip c-you">Check</span> <b>DS-431's live worker run.</b> Run one worker on an ai-agents ticket with studia-web listed, and confirm it reads the clone without parking.</li>
       <li><span class="chip c-you">Check</span> <b>VPL-794.</b> Confirm that nothing outside the repo pulls <span class="k">:staging</span>.</li>
     </ul>
   </div>
@@ -333,17 +342,20 @@ tr.grp th{background:var(--bg);color:var(--fg);font-size:12px;letter-spacing:.06
 
 <section aria-labelledby="next">
   <h2 id="next">Next, in order</h2>
+  <p>Reviewed on 13 Nov. The 11 Nov order had steps that no longer apply: rotation is gone, so signing in login-2 no longer closes anything, and the standing batch has finished. It also missed the clash between DS-528 and DS-616.</p>
   <ol class="next">
-    <li><div><b>Admit the next batch.</b> The queue is empty. DS-442 (P1) and DS-260's 4 children (P1) are next. A batch about the size of last week's also serves as Phase 0's preflight measurement, and as the first real run of rotation on two logins.</div></li>
-    <li><div><b>Phase 0 is measured:</b> preflight first, the other levers one at a time, and a measured batch decides Phase 1.</div></li>
-    <li><div><b>The harness gets built and run on Opus:</b> Claude files the four bench tickets under DS-475. Freezing the task set and running the Opus baseline don't depend on any new subscription.</div></li>
-    <li><div><b>Kimi, then the rest in order:</b> the Kimi arm runs once you've subscribed and the endpoint arm has merged. Then DeepSeek on OpenCode Go, Gemini on Google AI Pro, and GLM‑5.3 on Z.ai, each only if the one before leaves a reason to keep looking.</div></li>
-    <li><div><b>Claude tidies Jira:</b> closes DS-237, DS-455 and DS-515, closes DS-461 once rotation has been seen working, puts DS-503 under an epic, and moves DS-236's 4 open children to an open epic.</div></li>
+    <li><div><b>Merge DS-528 into DS-616's branch now, and promote the two together</b> (you agreed on 13 Nov). DS-616 keeps DS-528's pinning but removes its "most room" choice. Shipping DS-528 to main alone would put a rotation rule on main that DS-616 then deletes. Its first desk-q check would also migrate a <span class="k">subscriptions.md</span> that lists the missing login-2 and not login-3 or login-4, and DS-531 waits rather than falling back to <span class="k">~/.claude</span>, so workers could be left with no account to start on. That last risk is unconfirmed: test it on a copy of the file. Merging now means resolving the conflicts against one merged child (DS-617) instead of fourteen. The cost: DS-528's view 6 rows reach main only when DS-616 does.</div></li>
+    <li><div><b>Done 13 Nov: baseline recorded, preflight on.</b> Next, approve DS-631's plan in <span class="k">/desk-needs-you</span>. Its measurement tickets (DS-632 to DS-638, DS-640) start at once; the rest wait for DS-630. No repo goes to <span class="k">auto</span> until DS-643 and DS-644 have landed.</div></li>
+    <li><div><b>Let the running batch clear its throughput blockers first.</b> <span class="k">DS-588</span> and <span class="k">DS-590</span> (test lock and Postgres) are running. Raise <span class="k">DS-587</span> and <span class="k">DS-589</span> ahead of the other 40 waiting: until the lock has more than 1 slot, every other ticket waits behind it. <span class="k">DS-576</span> (P1) is running, with DS-577 behind it.</div></li>
+    <li><div><b>DS-616's children, after step 1:</b> DS-618 to DS-630 in their blocker order, then promote. Run <span class="k">/desk-update</span> on the other Mac after that.</div></li>
+    <li><div><b>Bench:</b> find DS-535's run logs or rerun the baseline, admit <span class="k">DS-547</span>, and rescore. Then buy Go Plus and run Kimi K3.1 Pro, DeepSeek V4.1 Flash, Gemini 4 Argon and GLM‑5.3 in that order. If DS-547 isn't merged by about 23 Nov, decide whether to buy before Argon's half price ends on 30 Nov.</div></li>
+    <li><div><b>The next admitted tickets:</b> DS-259 and DS-261 (P1, CI on AWS), then DS-442, DS-262, DS-263 and DS-550.</div></li>
+    <li><div><b>Claude tidies Jira:</b> closes DS-461 (you OK'd it on 13 Nov), closes DS-528 when its branch reaches main, and moves DS-236's 4 open children to an open epic.</div></li>
     <li><div><b>When VPL-793 merges,</b> you restore VoicePA's §4 Check builds.</div></li>
   </ol>
 </section>
 
-<p class="foot">Sources: live Jira, queue, supervisor-log and GitHub reads at 12:00–12:05 on 9 Nov; <span class="k">~/.config/desk/subscriptions.md</span>; and your ChatGPT conversation of 7–8 Nov on subscription coding plans. Its claims were checked on 9 Nov against provider docs, Artificial Analysis and BenchLM. Its benchmark figures match Artificial Analysis. Kimi's '2 or 4 concurrent tasks' is a figure for its web agent, not for CLI sessions. This page is a snapshot; Jira is the record.</p>
+<p class="foot">Sources: Jira REST reads, the desk-skills queues, supervisor logs, <span class="k">health.json</span>, the worker run records and <span class="k">~/.config/desk/subscriptions.md</span>, all read at 13:30–14:30 on 13 Nov; GitHub (PRs #533 to #582); and DS-535's comment of 10 Nov. Model and price figures are unchanged from 9 Nov. This page is a snapshot; Jira is the record.</p>
 </div>
 
 </html>

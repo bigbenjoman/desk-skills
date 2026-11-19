@@ -343,7 +343,10 @@ t('DS-570 the body section names each criterion, its need and its step', pmSec[2
 t('DS-570 the section is empty when none is left for after the merge', postMergeSection(base()), '')
 t('DS-570 no post-merge line when none is left for after the merge', render(base({ post_merge: [] })).includes('desk-review:post-merge'), false)
 t('DS-570 AC2 the pass reads back each criterion from the posted body', JSON.stringify(postMergeIn(laterBody)), JSON.stringify(later.post_merge))
-t('DS-570 AC2 each one is a follow-on step naming no §3 row', JSON.stringify(postMergeSteps(laterBody)[1]), JSON.stringify({ step: 'Check after the merge: AC8 (needs staging): place a test call on staging -> it rings', row: null }))
+t('DS-570 AC2 DS-785 AC2 DS-788 AC5 each one is a follow-on step naming no §3 row, its step alone, a staging one gated on main', JSON.stringify(postMergeSteps(laterBody)[1]), JSON.stringify({ step: 'place a test call on staging -> it rings', row: null, from: 'review', after: 'main' }))
+t('DS-785 AC2 a production criterion is gated on production', postMergeSteps(laterBody)[0]?.after, 'production')
+const gateFor = (needs) => postMergeSteps(render(base({ gaps: 0, post_merge: [pm({ needs })] })))[0]?.after ?? 'none'
+t('DS-785 AC2 deployed is gated on main; device and third-party on the merge alone', ['deployed', 'device', 'third-party'].map(gateFor).join(), 'main,none,none')
 t('DS-570 AC2 a body with no post-merge line keeps none', JSON.stringify(postMergeSteps(render(base()))), '[]')
 t('DS-570 AC2 a post-merge line whose count disagrees with its items keeps none', postMergeIn(laterBody.replace('post-merge v=1 gaps=2', 'post-merge v=1 gaps=3')).length, 0)
 const pmAndGap = base({ gaps: 1, post_merge: [pm()] })

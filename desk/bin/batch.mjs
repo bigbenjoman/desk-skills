@@ -28,7 +28,7 @@ import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promoted
 import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
-import { followOnPending } from './harvest.mjs';
+import { followOnPending, postMergeUnmade } from './harvest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -187,6 +187,10 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // batch, so archiving would drop them unseen. Each is stamped with the promotion merge that took it
   // out, which needs-you lists it from, and the batch is archived, below, once every one is done.
   const follows = last ? rows.filter(followOnPending) : [];
+  // So does one whose review's post-merge criteria a pass has not made follow-on steps yet: the batch
+  // is not idle while one is owed (batch-state.mjs batchIdle), so a pass adds them, and they are stamped
+  // above on a later tick.
+  const owedSteps = last ? rows.filter(postMergeUnmade) : [];
   const stamped = [];
   for (const t of follows.filter((x) => !x.promoted_at)) {
     const r = mark(b, t.key, `promoted_at=${promotedAt(q, t) ?? mergedAt(p) ?? now.toISOString()}`);
@@ -245,7 +249,7 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   }
   // Every ticket left behind has moved or been parked by now, so a batch kept for follow-on steps runs
   // nothing more.
-  if (follows.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
+  if (follows.length || owedSteps.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);

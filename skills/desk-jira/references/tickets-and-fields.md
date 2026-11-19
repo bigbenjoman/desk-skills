@@ -48,6 +48,15 @@ Fill **every field §4 Priority and §4 Other fields ask for on a create, in the
 Nothing flags a blank one later, so a ticket created without them stays unfinished until someone
 sweeps for blanks. `desk-jira meta <type>` lists the fields Jira itself requires.
 
+**A ticket drafted for the user to file carries the same fields.** Where the ticket is handed over
+as text rather than created (§3 `jira-create` is `no`, or the user files it themselves), the draft's
+`fields` line names every field §4 Required fields gives its type (`desk-env required-fields
+<type>`), §4 Priority, and each §4 Other fields value that applies to it, each with the value to
+choose or the question that settles it. The user files what they are given, so a field the draft
+leaves out is the one a bot flags afterwards. Where desk-jira is set up, run the draft through
+`desk-jira create <type> <summary> <body> field=value ... --check`, which runs every check `create`
+would and sends nothing, and show its result with the draft.
+
 | Field | Where it comes from |
 |---|---|
 | Priority | §4 Priority: the built-in field, or a custom field id with its allowed values. If it says the built-in field is not used for ranking (it stays at one fixed value), leave it at that value |

@@ -116,6 +116,21 @@ pr 31 CLOSED $SHA1 "[]"
 wait_exit
 check "AC3 closed: one line, exit 0" '[ $rc -eq 0 ] && [[ "$out" == "PR #31 closed without merging" ]]'
 
+# #849: a PR that conflicts with its base gets no checks, so the checks watch ends on the conflict.
+# mergeable <n> <mergeable> <mergeStateStatus>: set them on the fake PR, with base main.
+mergeable(){ jq -c --arg m "$2" --arg s "$3" '. + {mergeable: $m, mergeStateStatus: $s, baseRefName: "main"}' "$T/pr-$1.json" > "$T/pr-$1.json.tmp" && mv "$T/pr-$1.json.tmp" "$T/pr-$1.json"; }
+pr 50 OPEN $SHA1 '[]'; mergeable 50 UNKNOWN UNKNOWN
+watch_bg checks 50
+sleep 0.8
+out=$(cat "$T/watch.out")
+check "#849 no checks and mergeable not yet known: the watch keeps waiting" 'running && [ -z "$out" ]'
+mergeable 50 CONFLICTING DIRTY
+wait_exit
+check "#849 conflicting with its base: one line naming the base, exit 0" '[ $rc -eq 0 ] && [ "$(printf "%s\n" "$out" | grep -c .)" = 1 ] && [[ "$out" == "PR #50 conflicts with main at 1111111: no checks run until the branch is updated" ]]'
+pr 51 OPEN $SHA1 "[$(cr test COMPLETED SUCCESS 301)]"; mergeable 51 CONFLICTING DIRTY
+watch_bg checks 51; wait_exit
+check "#849 checks from before the conflict do not read as done: it names the conflict" '[ $rc -eq 0 ] && [[ "$out" == "PR #51 conflicts with main"* ]]'
+
 # AC4: no such PR, for each watch.
 for w in "checks 999" "head 999 $SHA1" "merged 999"; do
   : > "$GH_LOG"

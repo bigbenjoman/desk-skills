@@ -14,6 +14,7 @@
 //             could not be read, why the read's last line of output
 import { dragCells } from '../evidence.mjs';
 import { UPLOAD_TRIES } from '../undraft.mjs';
+import { set, say } from './shared.mjs';
 
 // What t's crash calls for before its PR body is read: null for nothing, 'moved' when the ticket's PR
 // is no longer the one that crashed, 'body' when the body decides.
@@ -42,17 +43,17 @@ export function decideCrashedUploads(s) {
     const step = screen(t, s);
     if (!step) continue;
     const c = t.upload_crash;
-    if (step === 'moved') { out.push({ type: 'set', key: t.key, fields: ['upload_crash=null'] }); continue; }
+    if (step === 'moved') { out.push(set(t.key, 'upload_crash=null')); continue; }
     // A body with no cell left was filled after all (the crash came after the uploader's edit, or the
     // evidence workflow filled it): uploading again would duplicate its assets and read as incomplete.
     const { body, why } = s.bodies?.[c.pr] ?? { body: null, why: 'its body was not read' };
     if (body == null) {
-      out.push({ type: 'report', key: t.key, list: 'failed', line: `${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${why})` });
+      out.push(say(t.key, 'failed', `${t.key}: the crashed upload to PR #${c.pr} waits for the next pass, since its body could not be read (${why})`));
       continue;
     }
     if (!dragCells(body)) {
-      out.push({ type: 'set', key: t.key, fields: ['upload_crash=null', 'images_uploaded=true'] },
-        { type: 'report', key: t.key, list: 'advanced', line: `${t.key} #${c.pr} has no screenshot cell left, so its crashed upload is not tried again` });
+      out.push(set(t.key, 'upload_crash=null', 'images_uploaded=true'),
+        say(t.key, 'advanced', `${t.key} #${c.pr} has no screenshot cell left, so its crashed upload is not tried again`));
       continue;
     }
     out.push({ type: 'upload', key: t.key, pr: String(c.pr), dir: c.dir });

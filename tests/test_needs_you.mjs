@@ -69,6 +69,7 @@ function put(name, r) {
     (r.site ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Tracker | \`jira\` |\n| Jira site | \`${r.site}\` |\n` : '') +
     (r.project ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Jira project | \`${r.project}\` |\n` : '') +
     (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
+    (r.promotionRef ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Promotion ref | \`${r.promotionRef}\` |\n` : '') +
     (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
@@ -1980,11 +1981,174 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const fi = () => N.collect({ word: 'upsilon509' }).items.filter((i) => i.kind === 'follow');
   const f1 = fi();
   t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
-  t('DS-509 AC5 it names that one step and the §3 row it needs, and says the PR is merged',
-    /^PR #81 \(F-1\) is merged, and a step waits on it that no worker runs after a merge: \(1\) run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)/.test(f1[0]?.need ?? ''), true);
+  t('DS-509 AC5 DS-788 AC2 AC4 AC6 it says the code is on the default branch since the merge, and names the step and its §3 row and value once',
+    `${/^F-1 is on main since \d{4}-\d\d-\d\d\. Check: run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)\. Then say done\.$/.test(f1[0]?.need ?? '')} ${(f1[0]?.need ?? '').split('§3').length - 1}`, 'true 1');
   t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
+}
+
+// A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it
+// reaching config §4 Promotion ref. Each repo root holds a real origin/main and origin/production.
+{
+  const git = (root, ...a) => spawnSync('git', ['-C', root, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).stdout.trim();
+  // The repo root with a deployed commit and, on top, PR #95's merge commit: origin/main at the merge,
+  // origin/production at the deployed commit, and a merge commit no remote ref reaches.
+  const commits = (name) => {
+    const root = join(T, 'repos', name);
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'deployed');
+    const deployed = git(root, 'rev-parse', 'HEAD');
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #95 from acme/x');
+    const merge = git(root, 'rev-parse', 'HEAD');
+    git(root, 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #96 from acme/y');
+    const unpushed = git(root, 'rev-parse', 'HEAD');
+    git(root, 'update-ref', 'refs/remotes/origin/main', merge);
+    git(root, 'update-ref', 'refs/remotes/origin/production', deployed);
+    return { root, merge, unpushed };
+  };
+  const merged = (pr, sha, follow_on) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5), merge_commit: sha }, follow_on });
+  const PROD = { step: 'open Osteopaths in the production portal', row: null, after: 'production' };
+  const STAGING = { step: 'place a test call on staging', row: null, after: 'main' };
+  const PLAIN = { step: 'start the staging crons', row: null };
+  const cfg = { port: 4785, beat: 1, supervised: true, merge: 'yes', promotionRef: 'origin/production' };
+  put('prod785', { ...cfg, tickets: {} });
+  const c = commits('prod785');
+  put('prod785', { ...cfg, tickets: {
+    'G-1': merged(95, c.merge, [PROD, STAGING, PLAIN]),
+    'G-2': merged(95, c.merge, [PROD]),
+    'G-3': merged(96, c.unpushed, [STAGING]),
+  } });
+  const fi = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
+  const byKey = (word) => Object.fromEntries(fi(word).map((i) => [i.t.key, i]));
+  let g = byKey('prod785');
+  t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed; the merge and main steps are, one item per gate',
+    Object.keys(g).join(), 'follow:G-1,follow:G-1:main');
+  t('DS-785 AC3 the merge item names its merge step, and the main item its main step, neither the production one',
+    / Check: start the staging crons\./.test(g['follow:G-1']?.need ?? '') && /^G-1 is on main since \d{4}-\d\d-\d\d\. Check: place a test call on staging\. Then say done\.$/.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
+  t('DS-785 AC3 it says the production step waits until production runs the merge',
+    (g['follow:G-1']?.need ?? '').endsWith('Check: start the staging crons. Another step waits until production runs its merge, and is listed then. Then say done.'), true);
+  t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
+  t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
+  t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
+  const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
+  const g1 = queueOf('prod785').tickets['G-1'];
+  t('DS-785 done on the merge item records its step run and keeps the main and production ones',
+    `${done785.ok} ${g1.follow_on_done ?? 'unset'} ${JSON.stringify(g1.follow_on)} ${Object.keys(byKey('prod785')).join()}`, `true unset ${JSON.stringify([PROD, STAGING])} follow:G-1:main`);
+  // Production moves after the main item was listed: done on that item records only the step it showed.
+  git(c.root, 'update-ref', 'refs/remotes/origin/production', c.merge);
+  const doneMain = N.record({ word: 'prod785', ticket: 'follow:G-1:main', action: 'done' });
+  t('DS-785 done on the main item, once production has moved, keeps the production step it never showed',
+    `${doneMain.ok} ${queueOf('prod785').tickets['G-1'].follow_on_done ?? 'unset'} ${JSON.stringify(queueOf('prod785').tickets['G-1'].follow_on)}`, `true unset ${JSON.stringify([PROD])}`);
+  g = byKey('prod785');
+  t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1:production,follow:G-2:production');
+  t('DS-785 AC4 DS-788 the listed production step says nothing about an unchecked gate, nor a date production fast-forwarded on, which git does not keep',
+    /^G-2 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(g['follow:G-2:production']?.need ?? ''), true);
+  const doneProd = N.record({ word: 'prod785', ticket: 'follow:G-1:production', action: 'done' });
+  t('DS-785 done on the last step records the ticket\'s follow-on run', `${doneProd.ok} ${typeof queueOf('prod785').tickets['G-1'].follow_on_done}`, 'true string');
+
+  // AC5: no Promotion ref, so production is judged by the default branch and says it was not checked.
+  const unset = { port: 4786, beat: 1, supervised: true, merge: 'yes' };
+  put('noprod785', { ...unset, tickets: {} });
+  const u = commits('noprod785');
+  put('noprod785', { ...unset, tickets: { 'H-1': merged(95, u.merge, [PROD]), 'H-2': merged(96, u.unpushed, [PROD]) } });
+  const h = byKey('noprod785');
+  t('DS-785 AC5 with the Promotion ref row unset, a production step on the default branch is listed, and one not on it is not', Object.keys(h).join(), 'follow:H-1:production');
+  t('DS-785 AC5 the item says production could not be checked because the row is unset, and claims only the default branch',
+    /^H-1 is on main since \d{4}-\d\d-\d\d\. Production could not be checked: config §4 "Promotion ref" is unset\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(h['follow:H-1:production']?.need ?? ''), true);
+
+  // A merge commit not read yet waits, never listed early: none recorded (the pass reads the PR again for
+  // it), or one the repo root has not fetched (the pass fetches origin while a gated step waits).
+  put('nosha785', { ...cfg, port: 4787, tickets: {} });
+  commits('nosha785');
+  put('nosha785', { ...cfg, port: 4787, tickets: { 'J-1': merged(97, null, [PROD, STAGING]), 'J-2': merged(98, 'f'.repeat(40), [PROD, STAGING]) } });
+  t('DS-785 a gated step whose merge commit is not recorded, or not fetched, waits', Object.keys(byKey('nosha785')).join(), '');
+
+  // A feature batch child promoted by a squash: its own merge commit is on no remote ref, so its main
+  // gate is the promotion and production is judged by the default branch's commit from the promotion.
+  const feat = { ...cfg, port: 4788 };
+  put('feat785', { ...feat, tickets: {} });
+  const f = commits('feat785');
+  const promoted = { batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1002, merged_at: new Date().toISOString() } } };
+  // origin/production already has origin/main's head, but not the promotion, which origin/main lacks too.
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', f.merge);
+  put('feat785', { ...feat, tickets: { 'K-1': merged(97, f.unpushed, [PROD, STAGING]) }, ...promoted });
+  t('DS-785 a squash-promoted child lists its main step and holds its production step while the promotion is not on the default branch it read',
+    Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  // The promotion squashed: its commit sits on origin/main's head, without the child's own merge commit.
+  const promo = git(f.root, 'commit-tree', `${f.merge}^{tree}`, '-p', f.merge, '-m', 'Merge pull request #1002 from acme/feat/VPL-842');
+  git(f.root, 'update-ref', 'refs/remotes/origin/main', promo);
+  t('DS-785 and while production does not have the promotion', Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', promo);
+  t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
+    `${Object.keys(byKey('feat785')).join()} ${/^K-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
+
+  // A promotion rebase-merged: its commit names no PR, and the child's own merge commit is rewritten, so
+  // production is judged by the promotion's merge commit as recorded, which list's refresh reads.
+  const reb = { ...cfg, port: 4792 };
+  put('reb785', { ...reb, tickets: {} });
+  const rb = commits('reb785');
+  const rebased = git(rb.root, 'commit-tree', `${rb.merge}^{tree}`, '-p', rb.merge, '-m', 'VPL-842: add the portal page');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/main', rebased);
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rebased);
+  const rebBatch = (merge_commit) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1003, merged_at: new Date(Date.now() + 1000).toISOString(), ...(merge_commit ? { merge_commit } : {}) } } });
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(null) });
+  t('DS-785 fix try: a rebase-promoted child with no promotion merge commit recorded waits', Object.keys(byKey('reb785')).join(), '');
+  const promoReads = [];
+  N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
+  t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    'true true follow:R-1:production true');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
+  t('DS-785 fix try negative: with the recorded promotion commit not on production, the step waits', Object.keys(byKey('reb785')).join(), '');
+
+  // The same words under two gates are two steps: done on one keeps the other.
+  put('dup785', { ...cfg, port: 4789, tickets: {} });
+  const d = commits('dup785');
+  const twice = [{ step: 'check the portal', row: null, after: 'main' }, { step: 'check the portal', row: null, after: 'production' }];
+  put('dup785', { ...cfg, port: 4789, tickets: { 'L-1': merged(95, d.merge, twice) } });
+  const doneDup = N.record({ word: 'dup785', ticket: 'follow:L-1:main', action: 'done' });
+  t('DS-785 done on a main step keeps a production step worded the same', `${doneDup.ok} ${JSON.stringify(queueOf('dup785').tickets['L-1'].follow_on)}`, `true ${JSON.stringify([twice[1]])}`);
+
+  // Criteria its review left for after the merge that the pass has not made steps yet hold the item
+  // off the list, so they never join it after the person saw it.
+  const owed = (read) => ({ ...merged(95, d.merge, [PLAIN]), pr_status: { pr: 95, state: 'MERGED', merged_at: minsAgo(5), merge_commit: d.merge, post_merge: [{ step: 'x', needs: 'device' }] }, ...(read ? { post_merge_read: 95 } : {}) });
+  put('owe785', { ...cfg, port: 4790, tickets: { 'M-1': owed(false), 'M-2': owed(true) } });
+  t('DS-785 a merged PR still owed its review\'s post-merge steps is not listed until the pass adds them', Object.keys(byKey('owe785')).join(), 'follow:M-2');
+
+  // list's refresh fetches origin once in the repo root and reads a merge commit no record has, so an
+  // idle batch, which runs no pass, still moves its gated steps on.
+  put('idle785', { ...cfg, port: 4791, tickets: {} });
+  const i7 = commits('idle785');
+  put('idle785', { ...cfg, port: 4791, tickets: { 'N-1': merged(97, null, [STAGING]), 'N-2': merged(98, i7.merge, [PROD]) } });
+  const fetches = [];
+  N.refresh({ word: 'idle785', reads: { ...N.READS, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
+  t('DS-785 list\'s refresh fetches the repo root once and records the merge commit no record had',
+    `${fetches.length} ${queueOf('idle785').tickets['N-1'].pr_status?.merge_commit === i7.merge} ${Object.keys(byKey('idle785')).join()}`, '1 true follow:N-1:main');
+
+  // The date a follow item gives is when production first had the merge: the production line's merge of
+  // it, dated 2026-11-03, not the PR's merge on main two days before.
+  put('dated788', { ...cfg, port: 4793, tickets: {} });
+  const root788 = join(T, 'repos', 'dated788');
+  const dated = (when, ...a) => spawnSync('git', ['-C', root788, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a],
+    { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when } }).stdout.trim();
+  dated('2026-10-30T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'deployed');
+  const base788 = git(root788, 'rev-parse', 'HEAD');
+  dated('2026-11-01T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #95 from acme/x');
+  const merge788 = git(root788, 'rev-parse', 'HEAD');
+  const prod788 = dated('2026-11-03T12:00:00Z', 'commit-tree', `${merge788}^{tree}`, '-p', base788, '-p', merge788, '-m', 'release');
+  git(root788, 'update-ref', 'refs/remotes/origin/main', merge788);
+  git(root788, 'update-ref', 'refs/remotes/origin/production', prod788);
+  const LEGACY = { step: 'Check after the merge: Verification: manual production run (needs production): open the relay log', row: null, after: 'production' };
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-1': merged(95, merge788, [PROD, LEGACY]) } });
+  t('DS-788 AC1 a production item opens with the day production first had the merge, one Check per step, an older review prefix dropped',
+    byKey('dated788')['follow:Q-1:production']?.need,
+    'Q-1 is on production since 2026-11-03. Check: open Osteopaths in the production portal. Check: open the relay log. Then say done.');
+  // A step's own closing period gives way to the line's, but a command's last `.` is kept.
+  const DOTS = [{ step: 'open the relay log.', row: null }, { step: 'run git add .', row: null }];
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-2': merged(95, merge788, DOTS) } });
+  t('DS-788 a step ending a sentence gets one period, and one ending in a command keeps its dot',
+    byKey('dated788')['follow:Q-2']?.need?.replace(/^.*?\. Check/, 'Check'), 'Check: open the relay log. Check: run git add . Then say done.');
 }
 
 // A feature batch's promotion PR still red once its check tries are spent (pass.mjs

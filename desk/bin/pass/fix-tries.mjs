@@ -40,11 +40,10 @@
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
 import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, treeHeld, builtStuck } from '../fix-tries.mjs';
-import { reviewerGated } from './shared.mjs';
+import { reviewerGated, set, say } from './shared.mjs';
 
 const out = (line) => ({ type: 'out', line });
-const set = (key, ...fields) => ({ type: 'set', key, fields });
-const waiting = (key, line) => ({ type: 'report', key, list: 'waiting', line });
+const waiting = (key, line) => say(key, 'waiting', line);
 
 export function* decideFixTries(s) {
   if (s.rowErrors.length && s.undrafted.length) yield out(`fix tries: none this pass, since config ${s.rowErrors.join('; ')}. Run /desk-setup`);
