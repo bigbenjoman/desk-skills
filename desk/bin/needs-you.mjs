@@ -833,7 +833,7 @@ function stepItem(key, ws) {
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
-// records them run (follow_on_done) and the item leaves the list.
+// records them settled (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
 // A child of a feature or epic batch merged into the base, not the default branch: its code is out once
 // a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
@@ -973,7 +973,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const where = onProd ? 'production' : repoConfigValue(r.slug, 'default-branch') ?? 'main';
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
     need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
-    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
+    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or ${t.result?.pr != null ? `PR #${t.result.pr}'s` : "the PR's"} own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
 
@@ -1895,11 +1895,11 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
-  // Done on a follow item records the steps it lists as run, each by its text and gate, under the queue
+  // Done on a follow item records the steps it lists as settled (run, or closed on the PR's own evidence), each by its text and gate, under the queue
   // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
   if (i.kind === 'follow') {
     const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
-    return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
+    return m.ok ? say(true, 'recorded done, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);
