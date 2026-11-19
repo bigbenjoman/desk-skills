@@ -236,6 +236,16 @@ export const READS = {
     }
     return mergedRead.get(id);
   },
+  // The newest open PR whose title or branch names `key`: { pr, err }, pr null when none is open.
+  open: (r, key) => {
+    try {
+      const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--repo', ghRepoOf(r), '--state', 'open', '--search', key, '--limit', '30', '--json', 'number,title,headRefName'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) || '[]');
+      const re = new RegExp(keyPattern(key));
+      const p = (Array.isArray(prs) ? prs : []).filter((x) => Number.isFinite(Number(x?.number)) && (re.test(String(x.headRefName ?? '')) || re.test(String(x.title ?? ''))))
+        .sort((a, b) => Number(b.number) - Number(a.number))[0];
+      return { pr: p ? Number(p.number) : null, err: '' };
+    } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
+  },
 };
 const mergedRead = new Map();
 // The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
@@ -1706,10 +1716,19 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   };
   // Done on a session item: the person finished the ticket outside desk. Its PR and ticket are read now;
   // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
+  // Its PR is the one it recorded, else the one the last pass read (pr_status) unless that is the PR
+  // merged before a requeue, else an open PR on GitHub naming its key: "no PR" is never assumed.
   const sessionDone = () => {
     const links = linksPending(x.t);
     if (links) return say(false, `it waits on ${links}, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira.`);
-    const pr = ownPr(x.t);
+    const status = x.t.pr_status;
+    const earlier = x.t.merged_at != null && (status?.state === 'MERGED' || Number(status?.pr) === Number(x.t.result?.pr));
+    let pr = ownPr(x.t) ?? (status?.pr != null && !earlier ? Number(status.pr) : null);
+    if (pr == null && reads.open) {
+      const found = reads.open(r, ticket);
+      if (found.err) return say(false, `could not look on GitHub for an open PR naming ${ticket} (${found.err}), so it is not recorded done and stays on your list.`);
+      pr = found.pr;
+    }
     const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
     if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);
     if (pr != null && v.state !== 'MERGED') return say(false, `GitHub shows PR #${pr} ${prShows(v)}, so it is not recorded done and stays on your list. Say done once it has merged.`);
