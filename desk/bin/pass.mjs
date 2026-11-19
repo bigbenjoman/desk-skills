@@ -2359,13 +2359,15 @@ for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clear
 // The epic PR of an epic batch not in feature mode, as GitHub has it: { pr, state, isDraft, head }, or
 // { pr, unreadable }, or null with none open. One that merged is recorded as `promotion.merged_at`.
 function readEpicPr(qx) {
-  const r = readBasePr(qx, 'mergedAt');
+  const r = readBasePr(qx, 'mergedAt,mergeCommit');
   if (!r || r.unreadable) return r;
   const { p, v } = r;
   if (v.state === 'MERGED') {
     const at = v.mergedAt ?? new Date().toISOString();
-    if (!DRY) q('set-batch', `promotion.merged_at=${at}`);
-    qx.promotion = { ...p, merged_at: at };
+    // Its merge commit gates its children's production steps (needs-you.mjs gateHeld), whatever way it merged.
+    const oid = mergeOid(v);
+    if (!DRY) q('set-batch', `promotion.merged_at=${at}`, ...(oid ? [`promotion.merge_commit=${oid}`] : []));
+    qx.promotion = { ...p, merged_at: at, ...(oid ? { merge_commit: oid } : {}) };
     baseLines.push(`epic PR #${p.pr} merged ${BASE} into ${SOURCE}`);
   }
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null };
@@ -2379,6 +2381,9 @@ function readPromotionPr(qx) {
   const { p, v } = r;
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
+// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
+// A declaration, as readEpicPr runs above it.
+function mergeOid(v) { return /^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null; }
 // The batch's recorded promotion or epic PR read from GitHub with `extra` beside its state, draft and
 // head: { p (the record), v (gh's answer) }, or { pr, unreadable }, or null with none open.
 function readBasePr(qx, extra) {
@@ -2406,12 +2411,13 @@ function promotionRed(qx, v) {
 // from that merge. The ledger comment is written afresh on the new PR by the next ledger update.
 function nextPromotion(path, p) {
   if ((p.merged ?? []).some((m) => m.pr === p.pr)) return;
-  const raw = sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', 'state,mergedAt'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', 'state,mergedAt,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return; }
   if (v?.state !== 'MERGED') return;
   const slice = p.slice ?? 1;
-  const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null }];
+  const oid = mergeOid(v);
+  const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null, ...(oid ? { merge_commit: oid } : {}) }];
   if (lastPromotion(fresh.tickets, v.mergedAt)) {
     if (!DRY) q('set-batch', `promotion.merged=${JSON.stringify(merged)}`);
     return;

@@ -665,7 +665,8 @@ export function promotedAt(q, t) {
 // What the next epic PR's record carries from promotion `p`: the last merge as `since` and every merge
 // so far in `merged`, kept through a retry whose record has neither `pr` nor `merged_at`.
 export function epicCarry(p) {
-  const merged = [...(p?.merged ?? []), ...(p?.merged_at ? [{ pr: p.pr ?? null, merged_at: p.merged_at }] : [])];
+  // Its merge commit kept beside it: it gates the children's production steps (needs-you.mjs gateHeld).
+  const merged = [...(p?.merged ?? []), ...(p?.merged_at ? [{ pr: p.pr ?? null, merged_at: p.merged_at, ...(p.merge_commit ? { merge_commit: p.merge_commit } : {}) }] : [])];
   const since = p?.merged_at ?? p?.since ?? null;
   return { ...(since ? { since } : {}), ...(merged.length ? { merged } : {}) };
 }

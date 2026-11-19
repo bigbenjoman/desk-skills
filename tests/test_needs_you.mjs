@@ -2082,6 +2082,26 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
     `${Object.keys(byKey('feat785')).join()} ${/is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
 
+  // A promotion rebase-merged: its commit names no PR, and the child's own merge commit is rewritten, so
+  // production is judged by the promotion's merge commit as recorded, which list's refresh reads.
+  const reb = { ...cfg, port: 4792 };
+  put('reb785', { ...reb, tickets: {} });
+  const rb = commits('reb785');
+  const rebased = git(rb.root, 'commit-tree', `${rb.merge}^{tree}`, '-p', rb.merge, '-m', 'VPL-842: add the portal page');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/main', rebased);
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rebased);
+  const rebBatch = (merge_commit) => ({ batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1003, merged_at: new Date(Date.now() + 1000).toISOString(), ...(merge_commit ? { merge_commit } : {}) } } });
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(null) });
+  t('DS-785 fix try: a rebase-promoted child with no promotion merge commit recorded waits', Object.keys(byKey('reb785')).join(), '');
+  const promoReads = [];
+  N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
+  t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion?.merge_commit === rebased} ${Object.keys(byKey('reb785')).join()} ${/is merged and production runs it, .*\(it names no §3 row\) Run/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    'true true follow:R-1:production true');
+  git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
+  put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
+  t('DS-785 fix try negative: with the recorded promotion commit not on production, the step waits', Object.keys(byKey('reb785')).join(), '');
+
   // The same words under two gates are two steps: done on one keeps the other.
   put('dup785', { ...cfg, port: 4789, tickets: {} });
   const d = commits('dup785');

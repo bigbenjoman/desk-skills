@@ -68,7 +68,7 @@ const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by
-// `queue.mjs merged`) or closed, no follow-on steps waiting on the person, and nothing live still
+// `queue.mjs merged`) or closed, no follow-on steps waiting on the person or owed by the pass, and nothing live still
 // pointing at it (another ticket's hold or merge gate, or the batch's own key, spine or epic). A batch
 // with a base, an epic or feature mode counts its finished children, so it archives nothing.
 export function archivable(q, key) {
@@ -77,6 +77,10 @@ export function archivable(q, key) {
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
   const closed = Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
   if (!t.merged_at && !closed) return false;
+  // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
+  // steps yet (pass.mjs post_merge_read): an append it skipped is owed to the next pass, so the ticket stays.
+  const own = Number(t.pr_status?.pr) === Number(t.result.pr);
+  if (!closed && own && (t.pr_status?.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(t.result.pr)) return false;
   if ([q.batch, q.spine, q.epic].includes(key)) return false;
   return !Object.values(q.tickets).some((o) => o?.key !== key && HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key)));
 }

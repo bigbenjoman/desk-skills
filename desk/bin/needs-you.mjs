@@ -336,15 +336,25 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, 
   // A follow step gated on the default branch or production is judged from the repo root's remote refs
   // and its PR's merge commit (gateHeld), which no pass keeps fresh once the batch is idle: origin is
   // fetched once per repo root, and a PR whose merge was recorded with no merge commit (done here, a
-  // hand-ship) is read for it.
+  // hand-ship) is read for it. So is a promotion PR that took a child with a production step to the
+  // default branch with no merge commit recorded (the merge driver's read failed, or a record from before
+  // the pass kept one): a rebase merge leaves gateHeld nothing else to find it by.
   const fetched = new Set();
   for (const r of scope) {
+    const promos = new Set();
     for (const t of followsOf(r).filter(gatedFollow)) {
       const root = gitRootOf(r);
       if (root && !fetched.has(root)) { fetched.add(root); reads.fetch?.(root); }
-      if (t.pr_status?.merge_commit || t.result?.pr == null || !reads.pr) continue;
+      if (!reads.pr) continue;
+      const p = (t.promoted_at || viaBase(r.q, t)) && t.follow_on.some((s) => gateOf(s) === 'production') ? promotionOf(r.q, t) : null;
+      if (p && !SHA40.test(String(p.merge_commit ?? '')) && !promos.has(p.path)) {
+        promos.add(p.path);
+        const oid = reads.pr(r, p.pr, ',mergeCommit').v?.mergeCommit?.oid;
+        if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set-batch', `${p.path}=${oid}`]);
+      }
+      if (t.pr_status?.merge_commit || t.result?.pr == null) continue;
       const oid = reads.pr(r, t.result.pr, ',mergeCommit').v?.mergeCommit?.oid;
-      if (/^[0-9a-f]{40}$/.test(String(oid ?? ''))) queueCmd(r, ['set', t.key, `pr_status.merge_commit=${oid}`]);
+      if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set', t.key, `pr_status.merge_commit=${oid}`]);
     }
   }
   for (const r of scope) {
@@ -839,22 +849,26 @@ function outAt(q, t) {
 // saying why a gate was taken as held without being checked. A gate is git reachability in the repo
 // root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
 // a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
-// (pr_status.merge_commit), or for a batch child that a squash promotion left off it, the default
-// branch's commit of the promotion PR that took it there (promotionOf), found by its PR number. A batch
+// (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
+// merge commit of the promotion PR that took it there (promotionOf, merge_commit), else the default
+// branch's commit found by that PR's number. A batch
 // child's main gate is its promotion's merge, which outAt has already seen. A commit not read yet (no
 // merge commit recorded, or one not fetched) waits, as list's refresh and the pass fetch and record it;
 // only what no fetch brings (a ref the repo root does not have, a promotion desk has no record of) lists
 // the step saying it was not checked.
 const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
 // The promotion PR that took batch child `t` to the default branch: the first merged after it (batch-state
-// promotedAt), as { pr }, or null where the batch keeps no record of one.
+// promotedAt), as { pr, merge_commit, path }, `path` the set-batch field its merge commit is recorded
+// in, or null where the batch keeps no record of one.
 function promotionOf(q, t) {
   const own = Date.parse(t.merged_at);
   const p = q?.promotion ?? {};
-  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at }] : [])]
+  const all = [...(p.merged ?? []).map((m, i) => ({ ...m, path: `promotion.merged.${i}.merge_commit` })),
+    ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit, path: 'promotion.merge_commit' }] : [])]
     .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
   return all[0] ?? null;
 }
+const SHA40 = /^[0-9a-f]{40}$/;
 function gateHeld(r, t, s) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
@@ -876,14 +890,20 @@ function gateHeld(r, t, s) {
   const ref = promotionRef(repoConfigValue(r.slug, 'promotion-ref'));
   if (ref.why) return promoted || landed ? { held: true, note: `production could not be checked: ${ref.why}` } : wait;
   if (!landed && promoted) {
-    // A squash promotion: the promotion PR's own commit on the default branch, by its number in the subject
-    // GitHub writes ("Merge pull request #N from …", or "<title> (#N)").
+    // A squash or rebase promotion: the promotion PR's merge commit as the pass, the merge driver or list's
+    // refresh recorded it (promotionOf), which a rebase merge needs, as it writes no subject naming the PR.
+    // Until one is recorded, the default branch's commit by its number in the subject GitHub writes for a
+    // merge or squash ("Merge pull request #N from …", or "<title> (#N)"). Neither found yet waits, as an
+    // unread merge commit does: list's refresh reads the promotion PR for it.
     const p = promotionOf(r.q, t);
     if (!p) return { held: true, note: `production could not be checked: desk keeps no record of the promotion PR that took ${pr} to the default branch` };
-    const n = String(p.pr);
-    const hit = String(git(['log', '--first-parent', '-n', '2000', '--format=%H%x09%s', main]) ?? '').split('\n')
-      .find((l) => { const sub = l.split('\t')[1] ?? ''; return sub.startsWith(`Merge pull request #${n} `) || sub.endsWith(`(#${n})`); });
-    landed = hit ? hit.split('\t')[0] : null;
+    if (SHA40.test(String(p.merge_commit ?? ''))) landed = commit(p.merge_commit);
+    else {
+      const n = String(p.pr);
+      const hit = String(git(['log', '--first-parent', '-n', '2000', '--format=%H%x09%s', main]) ?? '').split('\n')
+        .find((l) => { const sub = l.split('\t')[1] ?? ''; return sub.startsWith(`Merge pull request #${n} `) || sub.endsWith(`(#${n})`); });
+      landed = hit ? hit.split('\t')[0] : null;
+    }
   }
   if (!landed) return wait;
   const prod = commit(ref.ref);
