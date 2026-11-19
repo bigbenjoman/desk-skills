@@ -92,9 +92,9 @@ import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, 
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
-import { describeCond, personClears } from './clears-when.mjs';
+import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -107,6 +107,7 @@ import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
+import { prsNaming } from './recoveries.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -226,15 +227,20 @@ export const READS = {
     if (!mergedRead.has(id)) {
       let hit = null;
       try {
-        const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--repo', ghRepoOf({ slug }), '--state', 'merged', '--search', key, '--limit', '30', '--json', 'number,headRefName,mergedAt'], quiet));
-        const re = new RegExp(keyPattern(key));
-        const p = (Array.isArray(prs) ? prs : []).filter((x) => Number.isFinite(Number(x?.number)) && re.test(String(x.headRefName ?? '')))
-          .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
+        const p = prsNaming(ghRepoOf({ slug }), 'merged', key, { fields: 'mergedAt' }).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
         if (p) hit = { pr: Number(p.number), mergedAt: p.mergedAt ?? null };
       } catch { /* unread: no PR found */ }
       mergedRead.set(id, hit);
     }
     return mergedRead.get(id);
+  },
+  // The newest open PR whose title or branch names `key`: { pr, err }, pr null when none is open. Every
+  // open PR is read, as GitHub's text search never reads a branch name.
+  open: (r, key) => {
+    try {
+      const p = prsNaming(ghRepoOf(r), 'open', key, { fields: 'title', inTitle: true, search: false, limit: 500 }).sort((a, b) => Number(b.number) - Number(a.number))[0];
+      return { pr: p ? Number(p.number) : null, err: '' };
+    } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
   },
 };
 const mergedRead = new Map();
@@ -280,9 +286,9 @@ function trackerTicket(r, key) {
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
-// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
-// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
-const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A park waiting on issue links only the person makes holds them in its clears_when alone: the pass
+// records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (t.park?.clears_when?.kind === 'links-made' ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
@@ -833,7 +839,7 @@ function stepItem(key, ws) {
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
 // that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
-// records them run (follow_on_done) and the item leaves the list.
+// records them settled (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
 // A child of a feature or epic batch merged into the base, not the default branch: its code is out once
 // a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
@@ -973,7 +979,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const where = onProd ? 'production' : repoConfigValue(r.slug, 'default-branch') ?? 'main';
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
     need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
-    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
+    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or ${t.result?.pr != null ? `PR #${t.result.pr}'s` : "the PR's"} own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
 
@@ -1706,11 +1712,24 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   };
   // Done on a session item: the person finished the ticket outside desk. Its PR and ticket are read now;
   // a merged PR, or none, is recorded done as list records one that shipped, and anything else is refused.
+  // Its PR is the one it recorded, else the one the last pass read (pr_status) unless that is the PR
+  // merged before a requeue or one GitHub shows closed unmerged (an earlier round's), else an open PR on
+  // GitHub naming its key: "no PR" is never assumed.
   const sessionDone = () => {
     const links = linksPending(x.t);
     if (links) return say(false, `it waits on ${links}, so it is not recorded done and stays on your list: the next pass records it done once each is on Jira.`);
-    const pr = ownPr(x.t);
-    const { v, err } = pr == null ? { v: null, err: '' } : readPr(pr);
+    const status = x.t.pr_status;
+    const earlier = x.t.merged_at != null && (status?.state === 'MERGED' || Number(status?.pr) === Number(x.t.result?.pr));
+    const own = ownPr(x.t);
+    let pr = own ?? (status?.pr != null && !earlier ? Number(status.pr) : null);
+    let read = pr == null ? null : readPr(pr);
+    if (own == null && read?.v?.state === 'CLOSED') { pr = null; read = null; }
+    if (pr == null && reads.open) {
+      const found = reads.open(r, ticket);
+      if (found.err) return say(false, `could not look on GitHub for an open PR naming ${ticket} (${found.err}), so it is not recorded done and stays on your list.`);
+      pr = found.pr;
+    }
+    const { v, err } = read ?? (pr == null ? { v: null, err: '' } : readPr(pr));
     if (pr != null && !v?.state) return say(false, `could not read PR #${pr}'s state from GitHub${err ? ` (${err})` : ''}, so it is not recorded done and stays on your list.`);
     if (pr != null && v.state !== 'MERGED') return say(false, `GitHub shows PR #${pr} ${prShows(v)}, so it is not recorded done and stays on your list. Say done once it has merged.`);
     const how = `you said done; ${mergedWords(pr, v)}${trackerTicket(r, ticket) ? `; ${ticketWords(ticket, reads.ticket(r, ticket))}` : ''}`;
@@ -1895,11 +1914,11 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
-  // Done on a follow item records the steps it lists as run, each by its text and gate, under the queue
+  // Done on a follow item records the steps it lists as settled (run, or closed on the PR's own evidence), each by its text and gate, under the queue
   // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
   if (i.kind === 'follow') {
     const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
-    return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
+    return m.ok ? say(true, 'recorded done, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);
   if (i.blocker) return say(true, `noted: the next pass that reads ${i.ticket}'s blockers clears this once ${i.blocker} is no longer linked, and lifts any hold on it.`);

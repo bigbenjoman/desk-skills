@@ -83,7 +83,7 @@ import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } 
 import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
-import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys } from './decider.mjs';
+import { DECIDER_TIMEOUT_MS, deciderItems, presort, freshItems, handItems, pruneHanded, readHanded, dropHanded, answered, startDecider, readResult, outcome, reportLine, noteOutcome, runningBatches, restateKeys, baseSyncLine } from './decider.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_INTERVAL = 180;
@@ -816,11 +816,19 @@ function reapDecider(state, s, now = new Date()) {
   return [reportLine(rec, o), ...(o.kept ? [] : restatedNone(rec.items))];
 }
 
+// origin's head of the batch base, as the pass fetched it, when the pass lists a base sync line: or null.
+function baseHead(q, v) {
+  const base = typeof q?.base === 'string' ? q.base.trim() : '';
+  if (!base || !(Array.isArray(v?.waiting) && v.waiting.some(baseSyncLine))) return null;
+  const r = spawnSync('git', ['rev-parse', '--verify', '-q', `refs/remotes/origin/${base}^{commit}`], { cwd: process.cwd(), encoding: 'utf8' });
+  return r.status === 0 ? r.stdout.trim() || null : null;
+}
+
 // After a pass that needs the person: hands on what no session may settle, and starts a decider for
 // the rest that is neither handed on and unanswered nor waiting on a decider already running.
 function decide(state, s, v, q, now = new Date()) {
   if (v.status === 'error') return [];
-  const items = deciderItems(v, q, state);
+  const items = deciderItems(v, q, state, { baseSha: baseHead(q, v) });
   pruneHanded(state, items);
   // What the last session settled, checked against this pass only.
   const settled = s.settled ?? [];

@@ -6,6 +6,7 @@ import { resetText, limitName } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 import { ownedIds } from '../spine-check.mjs';
+import { evaluateGate, stateFailing } from '../gate.mjs';
 
 // ---- the snapshot ---------------------------------------------------------
 // The session registry (claude-logins.mjs readRegistry) as a phase reads it. A failed read must never
@@ -60,6 +61,9 @@ export const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind
 // The last try's number, which a try that waited only on the test lock leaves for the next one too.
 export const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 
+// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
+export const mergeOid = (v) => (/^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null);
+
 // The queue's subscription_off value to write, or null when it stands as `was`: the repo's row pinned
 // to a subscription set off (`repoSub`, desk-env thisRepoSubscription) is recorded from `at`, and
 // dropped once the pin resolves again. DESK_SUBSCRIPTION naming one is not recorded: the row is what
@@ -101,6 +105,17 @@ export const parkFollowOn = (park, had) => `follow_on=${JSON.stringify([...linkS
 export function gateListsOf({ required, advisory }) {
   const list = (v) => (v && !isNone(v) ? v : []);
   return { required: list(required), advisory: list(advisory) };
+}
+// Whether PR status s is held by a failing reviewer check (`reviewer`, health.mjs: the account desk posts
+// verdicts from is not one §4 Gate reviewers counts, or cannot be read): red only on a §4 State check of
+// kind verdict (`stateChecks`), with nothing pending, under `gate` (gateListsOf). A review or fix try
+// there posts a verdict the gate does not count. Undraft and the fix tries both read it.
+export function reviewerGated(s, { reviewer, gate, stateChecks }) {
+  if (!reviewer || s?.state !== 'OPEN') return false;
+  const g = evaluateGate(s.checks ?? [], gate);
+  if (g.state !== 'fail' || g.pending.length) return false;
+  const verdict = new Set(stateFailing(g.failing, stateChecks).filter((f) => f.kind === 'verdict').map((f) => f.name));
+  return verdict.size > 0 && g.failing.every((f) => verdict.has(f.name));
 }
 
 // ---- handoffs and resumes --------------------------------------------------

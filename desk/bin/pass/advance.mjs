@@ -279,7 +279,7 @@ export function* decideAdvance(s) {
     // A park asking only for §4 Live reads waits on the pass, which starts them in its "live reads"
     // section and settles it there.
     const read = wedged ? null : yield { type: 'live-read', key: t.key, question };
-    const cleared = read ? { kind: LIVE_READ, ...read } : yield { type: 'clears-when', key: t.key };
+    const cleared = read ? { kind: LIVE_READ, ...read } : yield { type: 'clears-when', key: t.key, question };
     const reg = yield { type: 'register', key: t.key, question, cond: cleared };
     const recommends = yield { type: 'recommends', key: t.key, question };
     // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.

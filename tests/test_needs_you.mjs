@@ -21,12 +21,14 @@ mkdirSync(join(T, 'bin'));
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
-// A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none.
+// A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none, and
+// `pr list --repo <r> --state <s>` with prs/list-<s>.json, or nothing.
 const GH_LOG = join(T, 'gh.log');
 const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
-  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n`, { mode: 0o755 });
+  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n` +
+  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
@@ -480,6 +482,18 @@ const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
+
+// ---- A park on a file the person is asked to make is listed; one a script makes is not
+const fileQ = 'Please run bash tests/compare_pass.sh on the host and save its output to $DESK_STATE/fixtures/F-1/compare-pass.txt';
+const filePark = (question, cond) => { const p = parked('A', 30, question); return { ...p, park: { ...p.park, clears_when: { kind: 'file-exists', root: 'state', ...cond } } }; };
+put('file807', { port: 4807, beat: 1, supervised: true, tickets: {
+  'F-1': filePark(fileQ, { path: 'fixtures/F-1/compare-pass.txt', person: true }),
+  'F-2': filePark('waiting on the recall capture to write $DESK_STATE/fixtures/F-2/meet.json', { path: 'fixtures/F-2/meet.json' }),
+} });
+const f807 = Object.fromEntries(N.collect({ word: 'file807' }).items.map((i) => [i.t.key, i]));
+t('DS-807 AC1 a park on a file its question asks the person to make is listed with its question and resume',
+  `${f807['F-1']?.need === fileQ} ${f807['F-1']?.actions.map((a) => a[0])[0]}`, 'true resume');
+t('DS-807 AC3 one a script makes is still left out', 'F-2' in f807, false);
 
 // ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
 const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -2027,6 +2041,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     / Check: start the staging crons\./.test(g['follow:G-1']?.need ?? '') && /^G-1 is on main since \d{4}-\d\d-\d\d\. Check: place a test call on staging\. Then say done\.$/.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
   t('DS-785 AC3 it says the production step waits until production runs the merge',
     (g['follow:G-1']?.need ?? '').endsWith('Check: start the staging crons. Another step waits until production runs its merge, and is listed then. Then say done.'), true);
+  t('#808 the done action names the merged PR, whose checks a session reads before asking (references/follow.md)',
+    g['follow:G-1']?.actions.find(([a]) => a === 'done')?.[1].includes("PR #95's own checks"), true);
   t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
   t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
   t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
@@ -2454,6 +2470,71 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const db1 = N.record({ word: 'mu546b', ticket: 'MB-1', action: 'done', reads: unread });
   t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
     "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
+
+  // Done on a session item reads its PR from pr_status, then from GitHub by its key, before recording it
+  // done with no PR.
+  put('mu817', { port: 5817, beat: 1, supervised: true, pattern: 'AA-[0-9]+', tickets: {
+    // AA-88's shape: its open PR is known only from the last pass's pr_status.
+    'AA-88': { ...parked('B', 60, CURL), pr_status: { pr: 192, state: 'OPEN', isDraft: true } },
+    'AA-89': parked('B', 50, CURL),
+    'AA-90': parked('B', 40, CURL),
+    'AA-91': parked('B', 30, CURL),
+    // Its PR merged, then it was requeued and parked again: that merged PR is not its PR now.
+    'AA-92': { ...parked('B', 20, CURL), merged_at: '2026-11-01T10:00:00Z', result: { pr: 180 }, pr_status: { pr: 180, state: 'MERGED' } },
+    // An earlier round's PR closed unmerged, and a respawn cleared result and draft_pr but not pr_status.
+    'AA-93': { ...parked('B', 15, CURL), pr_status: { pr: 181, state: 'CLOSED' } },
+    'AA-94': { ...parked('B', 10, CURL), pr_status: { pr: 182, state: 'CLOSED' } },
+  } });
+  const gh817 = { 192: 'OPEN', 193: 'OPEN', 194: 'OPEN', 180: 'MERGED', 181: 'CLOSED', 182: 'CLOSED' };
+  const searched = [];
+  const reads817 = { ...reads, ticket: () => 'indeterminate',
+    pr: (_r, n) => ({ v: gh817[n] ? { state: gh817[n], mergedAt: gh817[n] === 'MERGED' ? '2026-11-01T10:00:00Z' : null, isDraft: gh817[n] === 'OPEN' } : null, err: gh817[n] ? '' : 'no such PR' }),
+    open: (_r, key) => { searched.push(key); return key === 'AA-91' ? { pr: null, err: 'HTTP 502' } : { pr: key === 'AA-89' ? 193 : key === 'AA-94' ? 194 : null, err: '' }; } };
+  const q817 = () => queueOf('mu817').tickets;
+  const a1 = N.record({ word: 'mu817', ticket: 'AA-88', action: 'done', reads: reads817 });
+  t('DS-817 AC1 done on a ticket whose open PR is only in pr_status refuses, naming it, and it stays on the list',
+    `${a1.ok} ${a1.line} ${q817()['AA-88'].state} ${q817()['AA-88'].result?.pr ?? null}`,
+    'false mu817 AA-88: GitHub shows PR #192 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked null');
+  t('DS-817 AC1 a PR in pr_status is read, not searched for', searched.includes('AA-88'), false);
+  const a2 = N.record({ word: 'mu817', ticket: 'AA-89', action: 'done', reads: reads817 });
+  t('DS-817 AC2 done on a ticket with no PR recorded and an open PR naming its key refuses, naming that PR',
+    `${a2.ok} ${a2.line} ${q817()['AA-89'].state}`,
+    'false mu817 AA-89: GitHub shows PR #193 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  const a3 = N.record({ word: 'mu817', ticket: 'AA-90', action: 'done', reads: reads817 });
+  t('DS-817 AC3 done on a ticket with no PR anywhere and none naming its key records it done with no PR',
+    `${a3.ok} ${a3.line} ${q817()['AA-90'].state} ${q817()['AA-90'].result?.pr ?? null}`,
+    'true mu817 AA-90: recorded done (you said done; it has no PR; AA-90 is not done in Jira yet), so it is off your list. done null');
+  const a4 = N.record({ word: 'mu817', ticket: 'AA-91', action: 'done', reads: reads817 });
+  t('DS-817 done when GitHub cannot be searched for its key refuses, naming why',
+    `${a4.ok} ${a4.line} ${q817()['AA-91'].state}`,
+    'false mu817 AA-91: could not look on GitHub for an open PR naming AA-91 (HTTP 502), so it is not recorded done and stays on your list. parked');
+  const a5 = N.record({ word: 'mu817', ticket: 'AA-92', action: 'done', reads: reads817 });
+  t('DS-817 a PR merged before a requeue is not taken from pr_status: it searches, and records no PR',
+    `${a5.ok} ${searched.includes('AA-92')} ${q817()['AA-92'].state} ${/it has no PR/.test(q817()['AA-92'].result?.summary)}`, 'true true done true');
+  const a6 = N.record({ word: 'mu817', ticket: 'AA-93', action: 'done', reads: reads817 });
+  t('DS-817 a PR in pr_status that GitHub shows closed unmerged is passed over: it searches, and records no PR',
+    `${a6.ok} ${searched.includes('AA-93')} ${q817()['AA-93'].state} ${/it has no PR/.test(q817()['AA-93'].result?.summary)}`, 'true true done true');
+  const a7 = N.record({ word: 'mu817', ticket: 'AA-94', action: 'done', reads: reads817 });
+  t('DS-817 AC2 a closed PR in pr_status does not hide the open one naming its key',
+    `${a7.ok} ${a7.line} ${q817()['AA-94'].state}`,
+    'false mu817 AA-94: GitHub shows PR #194 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  // Every open PR is read, not a text search, which never reads a branch; only a PR whose title or
+  // branch names the key itself counts.
+  const ghLogAt = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8').length : 0;
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([
+    { number: 201, title: 'AA-890 something else', headRefName: 'fix/AA-890-other' },
+    { number: 202, title: 'Fix the widget (AA-89)', headRefName: 'fix/widget' },
+    { number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' },
+  ]));
+  t('DS-817 AC2 the open PR found by key is the newest whose title or branch names the key', JSON.stringify(N.READS.open({ slug: 'acme__mu817' }, 'AA-89')), '{"pr":202,"err":""}');
+  t('DS-817 AC2 the open PRs are listed whole, not searched by text', /pr list .*--state open/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)) && !/--search/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)), true);
+  t('DS-817 AC2 a PR whose title and branch name another key is not taken', N.READS.open({ slug: 'acme__mu817' }, 'AA-88').pr, null);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify(Array.from({ length: 500 }, (_, i) => ({ number: i + 1, title: 'x', headRefName: `b${i}` }))));
+  t('DS-817 an open-PR list that may be cut short is a failure, not no PR', /cut short/.test(N.READS.open({ slug: 'acme__mu817' }, 'AA-89').err), true);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' }]));
+  t('DS-817 AC2 a PR whose branch alone names the key is found', N.READS.open({ slug: 'acme__mu817' }, 'AA-89').pr, 200);
+  rmSync(join(GH_PRS, 'list-open.json'));
+  t('DS-817 AC3 none open on GitHub reads as no PR, not a failure', JSON.stringify(N.READS.open({ slug: 'acme__mu817' }, 'AA-89')), '{"pr":null,"err":""}');
 
   // A park waiting on issue links only the person makes keeps them in clears_when alone: its PR merging
   // and its ticket going done close neither it nor its links, which the pass reads on Jira.

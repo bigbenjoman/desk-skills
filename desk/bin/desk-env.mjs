@@ -955,7 +955,9 @@ export function parseBudget(raw, label) {
   throw new DeskConfigError(`desk: ${label} is "${raw}" — want a positive number of USD, or none/off/no cap. Refusing to guess.`);
 }
 export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
-export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' }), 'the batch budget');
+export const BATCH_BUDGET_LABEL = 'the batch budget';
+export const batchBudgetRaw = () => resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' });
+export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABEL);
 
 // Config §3b "Worker models": `default` (no --model, the session default) or
 // `standard=<model> high=<model>`, each a `claude --model` alias or full name. Either may be followed
@@ -1194,9 +1196,13 @@ export const binDir = () => join(deskHome(), 'bin');
 // to a person or written into settings stay binDir(), which follows the current release.
 export function runBin() {
   const here = dirname(fileURLToPath(import.meta.url));
+  return releaseDirOf(here) ? here : binDir();
+}
+// The release folder a real bin path belongs to (<DESK_HOME>/releases/<name>/bin), or null outside one.
+export function releaseDirOf(bin, home = deskHome()) {
   let releases;
-  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
-  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+  try { releases = join(realpathSync(home), 'releases'); } catch { return null; }
+  return dirname(dirname(bin)) === releases && basename(bin) === 'bin' ? dirname(bin) : null;
 }
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
