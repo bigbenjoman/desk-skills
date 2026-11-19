@@ -31,7 +31,7 @@
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
-import { POST_MERGE_STEP } from '../undraft.mjs';
+import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP } from './shared.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
@@ -101,8 +101,8 @@ export function* decidePrStatus(s) {
     // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
     if (st.state === 'MERGED' && !s.dry && (st.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
       const have = t.follow_on_done ? [] : t.follow_on ?? [];
-      const declared = have.some((h) => ![LINK_STEP, POST_MERGE_STEP].some((p) => String(h?.step ?? '').startsWith(p)));
-      const later = declared ? [] : st.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
+      const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
+      const later = declared ? [] : st.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
       const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
       // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
       const expect = [followState(t), later.length ? followState({ follow_on: [...have, ...later], follow_on_done: null }) : followState(t)];

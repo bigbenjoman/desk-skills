@@ -87,7 +87,7 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
+import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
@@ -846,7 +846,8 @@ function outAt(q, t) {
   return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
 // Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
-// saying why a gate was taken as held without being checked. A gate is git reachability in the repo
+// saying why a gate was taken as held without being checked. A production gate read as held adds
+// `on: 'production'`, and `at` where a commit of production's own took it in: that commit's date. A gate is git reachability in the repo
 // root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
 // a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
 // (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
@@ -908,14 +909,22 @@ function gateHeld(r, t, s) {
   }
   if (!landed) return wait;
   const prod = commit(ref.ref);
-  return prod ? { held: within(landed, prod), note: null } : unread(`production (\`${ref.ref}\`)`);
+  if (!prod) return unread(`production (\`${ref.ref}\`)`);
+  if (!within(landed, prod)) return wait;
+  // Production has had it since the oldest commit on its first-parent line that holds `landed`. Where that
+  // is `landed` itself, production was fast-forwarded to it, and git keeps no date for that: none is given.
+  const lines = (x) => String(x ?? '').split('\n').filter(Boolean);
+  const line = new Set(lines(git(['rev-list', '--first-parent', '-n', '2000', prod])));
+  const entry = line.has(landed) ? null : lines(git(['rev-list', '--ancestry-path', `${landed}..${prod}`])).reverse().find((c) => line.has(c));
+  const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
+  return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
 // A ticket's steps split by their gates: `ready` listed now (each with its note), `waiting` not yet.
 function followSplit(r, t) {
   const ready = [], waiting = [];
   for (const s of t.follow_on) {
     const g = gateHeld(r, t, s);
-    if (g.held) ready.push({ s, note: g.note }); else waiting.push(s);
+    if (g.held) ready.push({ s, note: g.note, on: g.on, at: g.at }); else waiting.push(s);
   }
   return { ready, waiting };
 }
@@ -939,22 +948,31 @@ function followItems(r) {
   });
 }
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
-const GATE_SAID = { merge: 'is merged', main: 'is merged and on the default branch', production: 'is merged and production runs it' };
+// "<KEY> is on <where> since <date>.", then any gate left unchecked, then one "Check: <step>." per step,
+// a step's §3 row and its value named only where it has one.
 function followItem(r, t, { gate, ready, waiting }) {
   const rowSaid = (row) => {
-    if (!row) return 'it names no §3 row';
+    if (!row) return '';
     let v;
     try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
-    return `§3 ${row} is "${v}"`;
+    return ` (§3 ${row} is "${v}")`;
   };
-  const steps = ready.map(({ s, note }, i) => `(${i + 1}) ${one(s.step)} (${rowSaid(s.row)}${note ? `; ${note}` : ''})`).join(' ');
+  // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
+  const checks = ready.map(({ s }) => {
+    const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
+    return ` Check: ${said}${said.endsWith('.') ? '' : '.'}`;
+  }).join('');
+  const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
   const n = ready.length;
   const m = waiting.length;
-  const later = m ? `. ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then` : '';
-  // With production unchecked (no Promotion ref), its steps were judged by the default branch alone.
-  const said = GATE_SAID[gate === 'production' && ready.some((x) => x.note) ? 'main' : gate];
+  const later = m ? ` ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then.` : '';
+  // Production is named only where its ref was read; unchecked, its steps were judged by the default branch.
+  const onProd = gate === 'production' && ready.every((x) => x.on === 'production');
+  const at = onProd ? Math.min(...ready.map((x) => x.at ?? Infinity)) : timeOf(outAt(r.q, t));
+  const day = Number.isFinite(at) ? ` since ${new Date(at).toISOString().slice(0, 10)}` : '';
+  const where = onProd ? 'production' : repoConfigValue(r.slug, 'default-branch') ?? 'main';
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
-    need: `PR #${t.result?.pr ?? '?'} (${t.key}) ${said}, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
+    need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }

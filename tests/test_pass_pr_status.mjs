@@ -57,16 +57,25 @@ const lists = (acts) => acts.at(-1);
   t('a merged PR whose post-merge criteria were read for it already gets no action', j(read.filter((a) => !['prune-builds', 'lists'].includes(a.type))), '[]');
   const acts = run(snap([owedT]));
   t('a merged PR owed its post-merge steps is not read again', ofType(acts, 'read-pr').length, 0);
-  t('its criteria become follow-on steps in one write', j(ofType(acts, 'follow-on').map((a) => a.fields)), j([['follow_on=[{"step":"check prod","row":null}]', 'post_merge_read=15']]));
+  t('its criteria become follow-on steps in one write', j(ofType(acts, 'follow-on').map((a) => a.fields)), j([['follow_on=[{"step":"check prod","row":null,"from":"review"}]', 'post_merge_read=15']]));
   t('made only while the steps are as read, or as that write leaves them', j(ofType(acts, 'follow-on')[0].expect),
-    j([followState(owedT), followState({ follow_on: [{ step: 'check prod', row: null }], follow_on_done: null })]));
+    j([followState(owedT), followState({ follow_on: [{ step: 'check prod', row: null, from: 'review' }], follow_on_done: null })]));
   t('and a merge line names them', ofType(acts, 'out')[0].line, 'merge recorded: E (PR #15): 1 criterion its review left for after the merge, now follow-on steps');
   const refused = drive(decidePrStatus(snap([owedT])), (a) => (a.type === 'follow-on' ? { ok: false, why: 'no' } : undefined));
   t('a refused write names no follow-on steps', ofType(refused, 'out').length, 0);
   const skipped = drive(decidePrStatus(snap([owedT])), (a) => (a.type === 'follow-on' ? { ok: true, skipped: true } : undefined));
   t('a write skipped because the steps changed under it names none', ofType(skipped, 'out').length, 0);
   const gated = done('E2', 26, { merged_at: 'x', pr_status: status(26, 'MERGED', { merged_at: 'x', post_merge: [{ step: 'check live', after: 'production' }] }) });
-  t('a criterion gated on production keeps its gate', ofType(run(snap([gated])), 'follow-on')[0].fields[0], 'follow_on=[{"step":"check live","row":null,"after":"production"}]');
+  t('a criterion gated on production keeps its gate', ofType(run(snap([gated])), 'follow-on')[0].fields[0], 'follow_on=[{"step":"check live","row":null,"from":"review","after":"production"}]');
+  // DS-788: a kept criterion is that criterion only under the same gate, and an old pass's prefix is dropped.
+  // Its merge commit kept, so a gated kept step does not send the PR to be read again for it.
+  const committed = { ...gated, pr_status: { ...gated.pr_status, merge_commit: 'c' } };
+  const sameWords = { ...committed, key: 'E5', follow_on: [{ step: 'check live', row: null, from: 'review', after: 'main' }] };
+  t('DS-788 a kept criterion worded the same under another gate is another step',
+    ofType(run(snap([sameWords])), 'follow-on')[0].fields[0], `follow_on=${j([...sameWords.follow_on, { step: 'check live', row: null, from: 'review', after: 'production' }])}`);
+  const oldPrefix = { ...committed, key: 'E6', follow_on: [{ step: 'Check after the merge: AC1 (needs production): check live', row: null, after: 'production' }] };
+  t('DS-788 a kept criterion an older pass recorded with its prefix is not added again',
+    j(ofType(run(snap([oldPrefix])), 'follow-on').map((a) => a.fields)), j([['post_merge_read=26']]));
   // DS-787: steps the worker declared for after the merge win over its review's criteria.
   const declared = { ...owedT, key: 'E3', follow_on: [{ step: 'run the staging script', row: 'staging-write' }] };
   const dActs = run(snap([declared]));
@@ -74,7 +83,7 @@ const lists = (acts) => acts.at(-1);
   t('DS-787 and no merge line names criteria', ofType(dActs, 'out').length, 0);
   const notWorkers = { ...owedT, key: 'E4', follow_on: [{ step: 'Issue link not made: DS-1 relates-to DS-2', row: 'jira-edit' }, { step: 'Check after the merge: AC1 (needs production): old', row: null }] };
   t('DS-787 a kept link step and an earlier PR\'s criterion are not declared steps: the criteria are added',
-    ofType(run(snap([notWorkers])), 'follow-on')[0].fields[0], `follow_on=${j([...notWorkers.follow_on, { step: 'check prod', row: null }])}`);
+    ofType(run(snap([notWorkers])), 'follow-on')[0].fields[0], `follow_on=${j([...notWorkers.follow_on, { step: 'check prod', row: null, from: 'review' }])}`);
 }
 {
   // A follow step gated past the merge waits on its PR's merge commit: a merged PR recorded without one is read again.
