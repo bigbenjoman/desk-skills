@@ -1981,8 +1981,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const fi = () => N.collect({ word: 'upsilon509' }).items.filter((i) => i.kind === 'follow');
   const f1 = fi();
   t('DS-509 AC5 only the merged ticket with steps not yet run is listed', f1.map((i) => i.t.key).join(), 'follow:F-1');
-  t('DS-509 AC5 it names that one step and the §3 row it needs, and says the PR is merged',
-    /^PR #81 \(F-1\) is merged, and a step waits on it that no worker runs after a merge: \(1\) run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)/.test(f1[0]?.need ?? ''), true);
+  t('DS-509 AC5 DS-788 AC2 AC4 AC6 it says the code is on the default branch since the merge, and names the step and its §3 row and value once',
+    `${/^F-1 is on main since \d{4}-\d\d-\d\d\. Check: run provision-telnyx-assistant\.ts --env staging \(§3 staging-write is "[a-z]+"\)\. Then say done\.$/.test(f1[0]?.need ?? '')} ${(f1[0]?.need ?? '').split('§3').length - 1}`, 'true 1');
   t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
@@ -2024,9 +2024,10 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed; the merge and main steps are, one item per gate',
     Object.keys(g).join(), 'follow:G-1,follow:G-1:main');
   t('DS-785 AC3 the merge item names its merge step, and the main item its main step, neither the production one',
-    /\(1\) start the staging crons /.test(g['follow:G-1']?.need ?? '') && /^PR #95 \(G-1\) is merged and on the default branch, and a step waits on it that no worker runs after a merge: \(1\) place a test call on staging /.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
+    / Check: start the staging crons\./.test(g['follow:G-1']?.need ?? '') && /^G-1 is on main since \d{4}-\d\d-\d\d\. Check: place a test call on staging\. Then say done\.$/.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
   t('DS-785 AC3 it says the production step waits until production runs the merge',
-    (g['follow:G-1']?.need ?? '').endsWith('then say done. Another step waits until production runs its merge, and is listed then'), true);
+    (g['follow:G-1']?.need ?? '').endsWith('Check: start the staging crons. Another step waits until production runs its merge, and is listed then. Then say done.'), true);
+  t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
   t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
   t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
   const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
@@ -2041,7 +2042,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   g = byKey('prod785');
   t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1:production,follow:G-2:production');
   t('DS-785 AC4 the listed production step says nothing about an unchecked gate',
-    /^PR #95 \(G-2\) is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run it, then say done$/.test(g['follow:G-2:production']?.need ?? ''), true);
+    /^G-2 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(g['follow:G-2:production']?.need ?? ''), true);
   const doneProd = N.record({ word: 'prod785', ticket: 'follow:G-1:production', action: 'done' });
   t('DS-785 done on the last step records the ticket\'s follow-on run', `${doneProd.ok} ${typeof queueOf('prod785').tickets['G-1'].follow_on_done}`, 'true string');
 
@@ -2053,8 +2054,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const h = byKey('noprod785');
   t('DS-785 AC5 with the Promotion ref row unset, a production step on the default branch is listed, and one not on it is not', Object.keys(h).join(), 'follow:H-1:production');
   t('DS-785 AC5 the item says production could not be checked because the row is unset, and claims only the default branch',
-    (h['follow:H-1:production']?.need ?? '').includes('open Osteopaths in the production portal (it names no §3 row; production could not be checked: config §4 "Promotion ref" is unset)')
-      && (h['follow:H-1:production']?.need ?? '').startsWith('PR #95 (H-1) is merged and on the default branch, '), true);
+    /^H-1 is on main since \d{4}-\d\d-\d\d\. Production could not be checked: config §4 "Promotion ref" is unset\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(h['follow:H-1:production']?.need ?? ''), true);
 
   // A merge commit not read yet waits, never listed early: none recorded (the pass reads the PR again for
   // it), or one the repo root has not fetched (the pass fetches origin while a gated step waits).
@@ -2080,7 +2080,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-785 and while production does not have the promotion', Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
   git(f.root, 'update-ref', 'refs/remotes/origin/production', promo);
   t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
-    `${Object.keys(byKey('feat785')).join()} ${/is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
+    `${Object.keys(byKey('feat785')).join()} ${/^K-1 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
 
   // A promotion rebase-merged: its commit names no PR, and the child's own merge commit is rewritten, so
   // production is judged by the promotion's merge commit as recorded, which list's refresh reads.
@@ -2096,7 +2096,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const promoReads = [];
   N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
   t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
-    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/is merged and production runs it, .*\(it names no §3 row\) Run/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
     'true true follow:R-1:production true');
   git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
   put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
@@ -2125,6 +2125,25 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   N.refresh({ word: 'idle785', reads: { ...N.READS, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
   t('DS-785 list\'s refresh fetches the repo root once and records the merge commit no record had',
     `${fetches.length} ${queueOf('idle785').tickets['N-1'].pr_status?.merge_commit === i7.merge} ${Object.keys(byKey('idle785')).join()}`, '1 true follow:N-1:main');
+
+  // The date a follow item gives is when production first had the merge: the production line's merge of
+  // it, dated 2026-11-03, not the PR's merge on main two days before.
+  put('dated788', { ...cfg, port: 4793, tickets: {} });
+  const root788 = join(T, 'repos', 'dated788');
+  const dated = (when, ...a) => spawnSync('git', ['-C', root788, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a],
+    { encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_DATE: when, GIT_COMMITTER_DATE: when } }).stdout.trim();
+  dated('2026-10-30T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'deployed');
+  const base788 = git(root788, 'rev-parse', 'HEAD');
+  dated('2026-11-01T12:00:00Z', 'commit', '-q', '--allow-empty', '-m', 'Merge pull request #95 from acme/x');
+  const merge788 = git(root788, 'rev-parse', 'HEAD');
+  const prod788 = dated('2026-11-03T12:00:00Z', 'commit-tree', `${merge788}^{tree}`, '-p', base788, '-p', merge788, '-m', 'release');
+  git(root788, 'update-ref', 'refs/remotes/origin/main', merge788);
+  git(root788, 'update-ref', 'refs/remotes/origin/production', prod788);
+  const LEGACY = { step: 'Check after the merge: Verification: manual production run (needs production): open the relay log', row: null, after: 'production' };
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-1': merged(95, merge788, [PROD, LEGACY]) } });
+  t('DS-788 AC1 a production item opens with the day production first had the merge, one Check per step, an older review prefix dropped',
+    byKey('dated788')['follow:Q-1:production']?.need,
+    'Q-1 is on production since 2026-11-03. Check: open Osteopaths in the production portal. Check: open the relay log. Then say done.');
 }
 
 // A feature batch's promotion PR still red once its check tries are spent (pass.mjs

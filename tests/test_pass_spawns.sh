@@ -753,13 +753,15 @@ q add PM-13; q set PM-13 state=done result.pr=713 post_merge_read=709 \
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { followOnPending } from '$B/harvest.mjs'; console.log(followOnPending(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
 check "DS-570 AC2 DS-785 AC2 DS-787 AC2 a merged PR whose worker declared no follow step lists its post-merge criteria, naming no §3 row, gated on production or main as each needs" \
-  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"fill in the switch date at the production relay run\",null],[\"place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-788 AC5 a post-merge criterion is stored as its step alone, with no review prefix, marked as the review's" \
+  '! field PM-1 follow_on | grep -qE "Check after the merge|Verification:|\(needs " && [ "$(field PM-1 follow_on | jq -c "[.[] | .from]")" = "[\"review\",\"review\"]" ]'
 check "DS-787 AC1 a merged PR whose worker declared follow steps keeps only those, adding none of its review's post-merge criteria" \
   '[ "$(field PM-10 follow_on | jq -c "[.[].step]")" = "[\"after the promotion, open Osteopaths in the production portal\",\"after the promotion, delete AUTOMATED_TESTS_ENABLED from the staging portal Vercel project\"]" ] && [ "$(field PM-10 post_merge_read)" = 711 ] && ! echo "$out" | grep -qF "merge recorded: PM-10 (PR #711): 2 criteria"'
 check "DS-787 AC3 a ticket whose only follow steps are link steps gains the post-merge criteria after them" \
-  '[ "$(field PM-11 follow_on | jq -c "[.[].step]")" = "[\"Issue link not made: PM-11 blocks PM-12\",\"Check after the merge: AC5 (needs production): manual production run: open Osteopaths in the production portal\",\"Check after the merge: AC6 (needs staging): staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ]'
+  '[ "$(field PM-11 follow_on | jq -c "[.[].step]")" = "[\"Issue link not made: PM-11 blocks PM-12\",\"manual production run: open Osteopaths in the production portal\",\"staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ]'
 check "DS-787 a requeued ticket whose only kept steps are an earlier PR's unrun criteria gains the new PR's criteria after them" \
-  '[ "$(field PM-13 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC2 (needs device): play the clip on a phone\",\"Check after the merge: AC5 (needs production): manual production run: open Osteopaths in the production portal\",\"Check after the merge: AC6 (needs staging): staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ] && [ "$(field PM-13 post_merge_read)" = 713 ]'
+  '[ "$(field PM-13 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC2 (needs device): play the clip on a phone\",\"manual production run: open Osteopaths in the production portal\",\"staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ] && [ "$(field PM-13 post_merge_read)" = 713 ]'
 check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
 check "DS-785 the pass keeps the merged PR's merge commit, which needs-you judges a gated step by" \
   '[ "$(field PM-1 pr_status.merge_commit)" = "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"" ]'
@@ -806,11 +808,11 @@ check "DS-785 a merge recorded with no merge commit, owing a gated follow step, 
 check "DS-570 an open PR's kept status carries its post-merge criteria, and they are no follow-on step before the merge" \
   '[ "$(field PM-8 pr_status.post_merge.length)" = 2 ] && [ "$(field PM-8 follow_on)" = null ]'
 check "DS-570 AC2 a requeued ticket whose earlier follow-on item was run lists its new PR's post-merge steps alone" \
-  '[ "$(field PM-7 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-7 follow_on_done)" = null ] && [ "$(pending PM-7)" = true ]'
+  '[ "$(field PM-7 follow_on | jq -c "[.[].step]")" = "[\"fill in the switch date\"]" ] && [ "$(field PM-7 follow_on_done)" = null ] && [ "$(pending PM-7)" = true ]'
 check "DS-570 AC2 a PR the merge driver merged and recorded first still gains its post-merge steps" \
   '[ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-4 merged_at)" = "\"2026-11-10T09:00:00Z\"" ] && [ "$(pending PM-4)" = true ]'
 check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its kept status names, reading no PR" \
-  '[ "$(field PM-5 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-5 merged_at)" != null ] && [ "$(field PM-6 follow_on.length)" = 1 ] && ! grep -qE "pr view 70[67] " "$T/gh-calls"'
+  '[ "$(field PM-5 follow_on | jq -c "[.[].step]")" = "[\"fill in the switch date\"]" ] && [ "$(field PM-5 merged_at)" != null ] && [ "$(field PM-6 follow_on.length)" = 1 ] && ! grep -qE "pr view 70[67] " "$T/gh-calls"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view (70[4-8]|710) " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
