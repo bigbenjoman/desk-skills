@@ -53,6 +53,18 @@ export function readUploadQueue(file = uploadQueueFile()) {
   return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null, signin: q?.signin && typeof q.signin === 'object' ? q.signin : {}, page: q?.page ?? null };
 }
 
+// The PRs some jobs are for, once each, as "<repo> #<pr>".
+export const waitingPrs = (jobs) => [...new Set(jobs.map((j) => `${j.repo} #${j.pr}`))];
+// The queue paused on GitHub's PR page (`page`): { page, jobs, prs }, `prs` the PRs waiting in it, or
+// null while uploads run. A queue that cannot be read pauses nothing. Every screen that names the pause
+// reads it here and says how it ends with PAGE_RESUMES, so needs-you and desk-q never disagree.
+export function uploadPause(file = uploadQueueFile()) {
+  let q;
+  try { q = readUploadQueue(file); } catch { return null; }
+  return q.page ? { page: q.page, jobs: q.jobs, prs: waitingPrs(q.jobs) } : null;
+}
+export const PAGE_RESUMES = "It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue";
+
 // The uploader's exit 7 when it found no comment composer on the PR page, as against GitHub's rate limit.
 const PAGE_CHANGED = /GitHub's PR page changed/;
 // Which desk release this process runs, and so whose uploader its pass starts: runBin's real path (a
