@@ -63,6 +63,8 @@ if [ "${STUB_LIMIT:-}" = "$n" ]; then
   exit 1
 fi
 [ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
+# Call STUB_REFUSED answers with the file it names, a recorded run the API refused.
+[ "${STUB_REFUSED_AT:-}" = "$n" ] && { cat "$STUB_REFUSED"; exit 1; }
 if [ "$n" = 0 ]; then
   printf '{"ticket":"%s","lane":"%s","branch":"%s","change_kind":"%s"%s}' "${STUB_TICKET:-fix-thing}" "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/${STUB_TICKET:-fix-thing}.json"
 else
@@ -215,6 +217,12 @@ rm -f "$STUB_LOG".* "$TLOG"; stale
 out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: any other run that writes no record fails as before, though an earlier record was on disk" \
   '[ $rc -eq 1 ] && [ ! -f "$T/state/triage/fix-thing.json" ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
+# DS-812: a run the API refused with 403 (tests/fixtures/api-refused-403.jsonl, recorded from a real
+# triage behind a Cloudflare block) is named as that, not as the session limit.
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_REFUSED_AT=0 STUB_REFUSED="$S/fixtures/api-refused-403.jsonl" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-812 AC4: an empty run whose log holds a 403 names the 403, not the session limit" \
+  '[ $rc -eq 1 ] && grep -qF "FAIL: fix-thing produced no triage record: the Claude API refused the call with HTTP 403 (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare). That is the login, not the session limit" <<< "$out" && [[ "$out" != *"can also be the account session limit"* ]] && [[ "$out" != *"USAGE LIMIT"* ]]'
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
 out=$(STUB_LANE=C STUB_NOREC=1 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: a challenge that writes nothing for another reason keeps the first-pass lane, as before" \
