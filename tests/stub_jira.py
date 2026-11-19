@@ -5,7 +5,7 @@ DELAY = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
 # "page_size": n, "link_readback": "normal"|"drop", "remotelinks": {KEY: [...]}, "remotelink_fail": [KEY],
 # "page_fault": {KEY: "repeat"|"missing"|"endless"}, "edit_drop": [field], "fields": [field list GET /field
 # answers], "unlink_readback": "normal"|"keep", "projects": {KEY: id}, "create_seq": n,
-# "create_fail": [summary], "create_drop": {summary: [field]} (fields a create keeps empty), "search": [KEY] (what any search but `parent =` returns)}. Issue links posted are kept in memory, on both
+# "create_fail": [summary], "create_drop": {summary: [field]} (fields a create leaves empty: [] for a list, else null), "search": [KEY] (what any search but `parent =` returns)}. Issue links posted are kept in memory, on both
 # issues, the way Jira shows them: the other side, from each issue's point of view. A DELETE of a
 # link id removes it from both.
 FIX = {"issues": {}, "children": {}}
@@ -140,7 +140,7 @@ class H(BaseHTTPRequestHandler):
             if f.get("summary") in FIX.get("create_fail", []):
                 return self._send(400, {"errorMessages": [], "errors": {"summary": "rejected by the stub"}})
             for k in FIX.get("create_drop", {}).get(f.get("summary"), []):
-                f.pop(k, None)
+                f[k] = [] if isinstance(f.get(k), list) else None
             a = f.get("assignee")
             f["assignee"] = dict(a, displayName="Me") if isinstance(a, dict) and a.get("accountId") == "abc" else a
             key = "KAN-99"

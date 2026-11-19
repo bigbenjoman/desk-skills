@@ -75,9 +75,7 @@ desk-jira fields priority                               # a custom priority fiel
 desk-jira fields size                                   # a Size field (XS-XL); none: tell the user it is a manual
                                                         # per-project UI step (desk-jira Epics), record it in §4 Other fields if found
                                                         # and in §4 Size field (desk-jira refuses an XL outside an Epic)
-desk-jira meta                                          # per type, what Jira requires: propose §4 Required fields from it,
-                                                        # then ask which fields the team expects at creation that Jira does
-                                                        # not require (a house rule a bot enforces) and add them
+desk-jira meta                                          # per type, what Jira requires: propose §4 Required fields from it
                                                         # and the user's answer; the top priority values go in §4
                                                         # Priorities only you set only if the user says so
 # §4 people
@@ -140,6 +138,9 @@ How to turn what you find into rows:
   `none`. Such ids are then accepted as tickets whose text comes from a ticket file, never Jira.
 - **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
   user confirms. `none` for Review is fine.
+- **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on
+  a new ticket that Jira does not require (a house rule, often enforced by a bot after creation), and
+  add those to the row too: desk reads the row, not Jira, for the tickets it creates and drafts.
 - **Branch protection and Required checks.** Merge what classic protection and the rulesets
   (`rules/branches/<default>`: `required_status_checks` rules, `pull_request` rules for approvals,
   `required_linear_history`) say; name which source each check came from. A repo that answers 404

@@ -138,7 +138,11 @@ Find the config §3 row for the write:
 |---|---|
 | `yes` | Write it, print the block marked `posted` at the moment it goes, then read it back |
 | `ask` | Print the block marked `awaiting approval` and wait |
-| `no` or `TODO` | Don't write. Offer the block as a draft the user can paste themselves, a new ticket with every field *Fields* names (`references/tickets-and-fields.md`) |
+| `no` or `TODO` | Don't write. Offer the block as a draft the user can paste themselves |
+
+**A new ticket offered as a draft carries every field it would be created with.** Its `fields` line
+also names each §4 Required fields field for its type, with the value to choose or the question that
+settles it, as *Fields* in `references/tickets-and-fields.md` says.
 
 **These are decisions rather than records.** Their rows are recommended `ask` or `no`; read them
 rather than assuming a `yes` covers them:

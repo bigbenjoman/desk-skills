@@ -95,9 +95,8 @@ a value in §4 Priorities only you set: that one is the user's call (above).
 
 **Assignee.** The user, by default. With §3 `jira-assign-self` `yes`, `create` assigns the new
 ticket to the user when no `assignee=` is given; otherwise pass `assignee=me` (which waits on that
-row). `create` prints the assignee and every field it sent, read back from Jira; `(empty - the
-assignment did not stick)` or `(empty - the write did not stick)` means set it with `desk-jira
-edit`. Anyone else is routing (gate item 3): `create` refuses an
+row). `create` prints the assignee read back from Jira; `(empty - the assignment did not stick)`
+means set it with `desk-jira edit`. Anyone else is routing (gate item 3): `create` refuses an
 assignee other than the user unless `--route` is given.
 
 **Labels.** Use the vocabulary in §4 Labels (`any` means the project's existing labels: list them
