@@ -721,8 +721,8 @@ already there), nobody types anything: past §2 the session writes its
 handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
 handoff for the summary, and after the compaction the session is told to read it and carry on. Each
 later crossing refreshes that same handoff, and the turn cannot end until it has. A compaction does
-not mark it consumed, so the session's own later `/clear` still finds it, and no other session's
-`/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
+not mark it consumed, so the session's own later `/clear` still finds it, and from the moment it
+is named no other session's `/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
 
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background

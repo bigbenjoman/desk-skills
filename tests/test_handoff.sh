@@ -319,6 +319,20 @@ hook SessionStart x1 "$T/low.jsonl" ',"source":"clear"'
 check "#865 another session's /clear does not take the handoff a compacting session holds" '[[ "$(ctx)" != *"$(basename "$CP")"* ]] && ! grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=c1 hook SessionStart c2 "$T/low.jsonl" ',"source":"clear"'
 check "#865 a /clear after it still finds the handoff, and consumes it" '[[ "$(ctx)" == *"read .handoffs/$(basename "$CP")"* ]] && grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+# Between the handoff being written and the compaction, another session's /clear leaves it alone; a
+# second compaction with no crossing since does not hand over the handoff written before the first.
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook PostToolUse m1 "$T/high.jsonl"
+MP="$(ctx | grep -o "$R/.handoffs/[^ ]*\.md" | head -1)"; echo "# m1" > "$MP"
+hook SessionStart m9 "$T/low.jsonl" ',"source":"clear"'
+check "#865 before its compaction, another session's /clear does not take a compacting session's handoff" '[ -n "$MP" ] && [[ "$(ctx)" != *"$(basename "$MP")"* ]] && ! grep -qx "$(basename "$MP")" "$R/.handoffs/.consumed"'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook SessionStart m1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 and its own compaction still reads it"         '[[ "$(ctx)" == *"read .handoffs/$(basename "$MP")"* ]]'
+age "$MP" 30
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook PreCompact m1 "$T/low.jsonl" ',"trigger":"manual"'
+check "#865 a second compaction with no crossing since: PreCompact names no stale handoff" '[ -z "$out" ]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook SessionStart m1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 and the compaction injects none"               '[ -z "$out" ]'
+
 # A /clear straight after a compaction, with no crossing since, still finds the session's own handoff
 # when another session's is newer.
 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=k1 hook PostToolUse k1 "$T/high.jsonl"

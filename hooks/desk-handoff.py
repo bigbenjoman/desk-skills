@@ -16,7 +16,7 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
                                  to write (else, on `clear` with none recorded, the newest written
                                  one, skipping any a compacting session holds) when that file is
                                  written, under 24 hours old and not yet consumed. A `clear` then
-                                 marks it consumed; a `compact` marks it held instead (.held), so
+                                 marks it consumed; a `compact` holds it instead (.held), so
                                  the session's own later /clear still finds it and no other
                                  session's /clear takes it. Any source also records the session's
                                  model, which says whether the window is 1M.
@@ -28,7 +28,8 @@ One script, registered by install.sh on five events; it reads `hook_event_name` 
 Compaction mode: with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set (1-100), Claude Code compacts this session
 on its own and carries on, so nobody is asked to /clear. Past the threshold the session is told to
 write its handoff, or refresh the one it wrote before an earlier compaction, and keep working; the
-compaction then reads it back. Set the §2 handoff % below the override, so the handoff is written
+compaction then reads it back. The handoff is held (.held) from when it is named, so no other
+session's /clear takes it, and one not rewritten since it was last asked for is not handed over. Set the §2 handoff % below the override, so the handoff is written
 before the compaction that needs it; install.sh offers to set the override. Without it, the handoff
 asks for /clear as before.
 
@@ -304,6 +305,21 @@ def handoffs(root):
     return sorted(files, key=os.path.getmtime, reverse=True)
 
 
+def held_names(root):
+    """Handoffs a compacting session holds (.handoffs/.held): no other session's /clear takes them."""
+    try:
+        return open(os.path.join(handoff_dir(root), ".held")).read().split()
+    except Exception:
+        return []
+
+
+def hold(root, path):
+    name = os.path.basename(path)
+    if name not in held_names(root):
+        with open(os.path.join(handoff_dir(root), ".held"), "a") as f:
+            f.write(name + "\n")
+
+
 def compaction_mode():
     """Whether Claude Code compacts this session on its own: CLAUDE_AUTOCOMPACT_PCT_OVERRIDE holds a
     percentage from 1 to 100."""
@@ -354,6 +370,8 @@ def on_context(event, data, session, root):
     path = kept if kept and os.path.exists(kept) else next_handoff(root, session)
     state.update(fired_at=time.time(), handoff=path, blocked=False, pid=claude_pid())
     save_state(session, state)
+    if compacts:
+        hold(root, path)  # from now on, not only after its first compaction
     rel = os.path.relpath(path, root)
     where = f"{path} (repo-relative: {rel})"
     if is_placeholder(path):
@@ -451,8 +469,8 @@ def on_pre_compact(session, root):
     path = state.get("handoff") or state.get("kept")
     if not path or not os.path.exists(path) or is_placeholder(path):
         return
-    if os.path.getmtime(path) < float(state.get("fired_at") or 0) - 1:
-        return  # not yet refreshed since this firing: its next step is stale
+    if os.path.getmtime(path) < float(state.get("fired_at") or state.get("kept_at") or 0) - 1:
+        return  # not rewritten since it last fired, or since the compaction that kept it: stale
     # Stdout on a PreCompact hook is instructions for the compaction summary.
     print(f"This session's desk handoff is {path}. Name that file in the summary, and say the work "
           "carries on from its next step.")
@@ -465,7 +483,8 @@ def on_session_start(data, session, root):
         state["model"] = m.get("id") if isinstance(m, dict) else str(m)
     source = data.get("source")
     recorded = None
-    fired = float(state.get("fired_at") or 0)
+    # When the handoff was last asked for: the last firing, else the compaction that kept it.
+    fired = float(state.get("fired_at") or state.get("kept_at") or 0)
     if source in ("clear", "compact"):
         recorded = recorded_handoff(state, session, root, source)
         # The context just emptied, so the next threshold crossing is a new one. A compacted session
@@ -478,22 +497,18 @@ def on_session_start(data, session, root):
     save_state(session, state)
     if source not in ("clear", "compact") or not (pct or pct_1m):
         return
-    held_path = os.path.join(handoff_dir(root), ".held")
-    try:
-        held = open(held_path).read().split()
-    except Exception:
-        held = []
     if recorded:
         if not os.path.exists(recorded) or is_placeholder(recorded):
             return
         if source == "compact" and os.path.getmtime(recorded) < fired - 1:
-            return  # not refreshed since it last fired: its next step is stale
+            return  # not rewritten since it was last asked for: its next step is stale
         latest = recorded
     elif source == "compact":
         # A compaction carries on this session, so only its own handoff belongs in it.
         return
     else:
         # Another session's /clear never takes a handoff a compacting session still holds.
+        held = held_names(root)
         files = [f for f in handoffs(root) if os.path.basename(f) not in held]
         if not files:
             return
@@ -513,9 +528,8 @@ def on_session_start(data, session, root):
     if source == "clear":
         with open(consumed_path, "a") as f:
             f.write(name + "\n")
-    elif name not in held:
-        with open(held_path, "a") as f:
-            f.write(name + "\n")
+    else:
+        hold(root, latest)
     rel = os.path.relpath(latest, root)
     inject("SessionStart", (
         f"desk handoff: read {rel} (in {root}) and continue from its next step. "
