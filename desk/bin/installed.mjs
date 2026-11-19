@@ -36,16 +36,14 @@ export const installedFile = (home = E.deskHome()) => join(home, 'installed.json
 export function readInstalled(home = E.deskHome()) {
   try { const v = JSON.parse(readFileSync(installedFile(home), 'utf8')); return v?.commit ? v : null; } catch { return null; }
 }
-// The desk version a script in `bin` runs: its release folder's release.json commit (release-<name>
-// with none written, as rollback records it), so one started from an older release reads as old
-// whatever is installed since. Outside a release folder, the installed commit, or null.
-export function runningVersion(bin = HERE, home = E.deskHome()) {
-  let rels = null;
-  try { rels = realpathSync(releasesDir(home)); } catch { /* no releases */ }
-  const dir = dirname(bin);
-  if (!rels || basename(bin) !== 'bin' || dirname(dir) !== rels) return readInstalled(home)?.commit ?? null;
-  try { const v = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); if (v?.commit) return v.commit; } catch { /* none written */ }
-  return `release-${basename(dir)}`;
+// The desk version this script runs: its release folder's (releaseCommit), so one started from an older
+// release reads as old whatever is installed since. Outside a release folder, the installed commit, or null.
+export function runningVersion(home = E.deskHome()) {
+  const dir = E.releaseDirOf(HERE, home);
+  if (!dir) return readInstalled(home)?.commit ?? null;
+  let info = null;
+  try { info = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); } catch { /* none written */ }
+  return releaseCommit(basename(dir), info);
 }
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;
@@ -76,6 +74,9 @@ function record(src, release = null) {
 // A release's order is its release.json `at` (when it last went live), else its folder's mtime.
 export const KEEP_RELEASES = 3;
 const RELEASE_FILE = 'release.json';
+// A release's version: its release.json commit, else release-<name>. Rollback records it as installed and
+// a driver started from the release records it in its lock, so the two compare equal.
+const releaseCommit = (name, info) => info?.commit || `release-${name}`;
 export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
 export function currentRelease(home = E.deskHome()) {
   try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
@@ -119,7 +120,7 @@ export function rollback(home = E.deskHome()) {
   }
   const prev = list[at - 1];
   makeCurrent(prev.name, home);
-  const v = { commit: prev.info?.commit ?? `release-${prev.name}`, dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  const v = { commit: releaseCommit(prev.name, prev.info), dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
   writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
   return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
 }

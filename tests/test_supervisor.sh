@@ -419,7 +419,7 @@ setdriver(){ node -e 'const f = process.argv[1]; const s = JSON.parse(require("f
 driverrec(){ node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver; console.log(`${d.pid} ${d.started === "then"} ${d.from}`)' "$T/state/supervisor.json"; }
 stopdriver(){ p="$(held)"; [ -n "$p" ] && { kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null; }; i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; rm -rf "$T/state/merge-driver.lock.d"; }
 olddriver; old="$(held)"; n=$(count "$T/driver.calls")
-check "DS-810 AC1: a driver started from an older release records that release in its lock, not the installed one" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = old0 ]'
+check "DS-810: the supervisor's driver here, started from an older release, holds a lock naming that release (the real driver's write: test_merge_driver_loop.sh)" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = old0 ]'
 # A pass running holds supervisor.lock: the driver is not moved under it.
 sleep 30 & PASSPID=$!; printf '{"pid":%s}\n' "$PASSPID" > "$T/state/supervisor.lock"
 out=$(DESK_AGENT_VERSION=new1 tick)

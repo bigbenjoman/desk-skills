@@ -235,4 +235,15 @@ loops 2 --log
 check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
 rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
 
+# ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
+# A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.
+# The PR list hook reads the lock's version while the driver holds it.
+RH="$T/relhome"; mkdir -p "$RH/releases/old0"; cp -R "$B" "$RH/releases/old0/bin"
+printf '{"commit":"old0","release":"old0"}\n' > "$RH/releases/old0/release.json"
+printf '{"commit":"new1"}\n' > "$RH/installed.json"
+echo '{}' > "$T/prs.json"
+printf 'cp "%s/state/merge-driver.lock.d/version" "%s/seen-version"\n' "$T" "$T" > "$T/gh.atlist"
+out=$(DESK_HOME="$RH" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$RH/releases/old0/bin/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
+check "DS-810 AC1: a driver started from an older release writes that release's commit into its lock, not the installed one" '[ $rc -eq 0 ] && [ "$(cat "$T/seen-version" 2>/dev/null)" = old0 ]'
+
 finish loop
