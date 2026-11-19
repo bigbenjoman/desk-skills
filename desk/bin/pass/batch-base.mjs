@@ -1,6 +1,7 @@
 // The "batch base" step of a pass, and its "baseline checks", as decisions. A batch with a base keeps
 // its own worktree for it (every pass makes sure it exists), and the default branch is merged into the
-// base only before a pass that will spawn, so new workers start on a current tree. A sync that cannot
+// base before a pass that will spawn, so new workers start on a current tree, and on any pass where the
+// base is behind it, a child PR's CI waits on the base, or the epic PR is open. A sync that cannot
 // run is reported; in feature mode it also holds this pass's spawns, since the feature's children are
 // built and tested against the base as one. Outside feature mode it holds them only once the base lags
 // the default branch by more than it may.

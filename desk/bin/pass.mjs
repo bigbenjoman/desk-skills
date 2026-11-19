@@ -52,7 +52,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, treeHeld, builtStuck } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -271,10 +271,10 @@ function exitCodeOf(key, sid) {
 
 // ---- liveness ------------------------------------------------------------
 // The session registry, read once a pass for every phase's snapshot (pass/shared.mjs registryView): a
-// failed read is unread, never empty, and leaves `live` and `liveSids` null. It covers every Claude
+// failed read is unread, never empty, and leaves `live` null. It covers every Claude
 // login (claude-logins.mjs), and one login's failed read fails it.
 const REGISTRY = registryView(readRegistry());
-const { read: registryOk, sessions: live, liveSids } = REGISTRY;
+const { read: registryOk, sessions: live } = REGISTRY;
 
 const Q = queue();
 const rows = Object.values(Q.tickets);
