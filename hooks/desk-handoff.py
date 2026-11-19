@@ -307,24 +307,35 @@ def handoffs(root):
 
 
 def process_start(pid):
-    """When a process started (`ps -o lstart`, spaces dropped), so a pid the OS has given to a new
-    process is not taken for the one that held a handoff; "" when it cannot be read."""
+    """When a process started, as a value fixed for its life, so a pid the OS has given to a new
+    process is not taken for the one that held a handoff: on Linux the start in clock ticks since
+    boot (/proc/<pid>/stat field 22, which no clock step, TZ or locale moves); elsewhere
+    `ps -o lstart` read in UTC and the C locale. "" when it cannot be read."""
     try:
-        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True,
-                             text=True, timeout=5).stdout
+        pid = int(pid)
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                return "t" + f.read().rsplit(")", 1)[1].split()[19]
+        except FileNotFoundError:
+            if os.path.isdir("/proc/self"):
+                return ""  # Linux, and the process has gone
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=5, env={**os.environ, "LC_ALL": "C", "TZ": "UTC0"}).stdout
         return "".join(out.split())
     except Exception:
         return ""
 
 
 def process_alive(pid, start=None):
-    """Whether the Claude process a hold names still runs: its pid is live and, where the hold
-    recorded one, started when it did. A pid that is not a number (the test stand-in,
-    DESK_HANDOFF_PID) or a line with none counts as running."""
+    """Whether the Claude process a hold names still runs: its pid is live (another user's process
+    included) and, where the hold recorded one, started when it did. A pid that is not a number (the
+    test stand-in, DESK_HANDOFF_PID) or a line with none counts as running."""
     try:
         os.kill(int(pid), 0)
-    except (TypeError, ValueError, PermissionError):
+    except (TypeError, ValueError):
         return True
+    except PermissionError:
+        pass  # the process exists, under another user: its start time still says whether it is ours
     except OSError:
         return False
     if not start:

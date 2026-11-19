@@ -342,10 +342,16 @@ echo "# reused" > "$R/.handoffs/reused-865.md"
 printf 'reused-865.md %s Thu1Jan00:00:001970\n' "$$" >> "$R/.handoffs/.held"
 hook SessionStart o8 "$T/low.jsonl" ',"source":"clear"'
 check "#865 so is one whose pid now belongs to a process that started later" '[[ "$(ctx)" == *"read .handoffs/reused-865.md"* ]]'
+# fn <name> <args...>: call one of the hook's functions directly, printing its result
+printf 'import importlib.util as u, sys\ns = u.spec_from_file_location("h", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)\nprint(getattr(m, sys.argv[2])(*sys.argv[3:]))\n' > "$T/fn.py"
+fn(){ python3 "$T/fn.py" "$HOOK" "$@"; }
 echo "# live" > "$R/.handoffs/live-865.md"
-printf 'live-865.md %s %s\n' "$$" "$(ps -o lstart= -p $$ | tr -d ' ')" >> "$R/.handoffs/.held"
+printf 'live-865.md %s %s\n' "$$" "$(fn process_start $$)" >> "$R/.handoffs/.held"
 hook SessionStart o7 "$T/low.jsonl" ',"source":"clear"'
 check "#865 while one held by a running process, started when it did, is skipped" '[[ "$(ctx)" != *"live-865.md"* ]]'
+ST="$(TZ=Asia/Tokyo LC_ALL=C fn process_start $$)"
+check "#865 a start time read under another TZ and locale still matches" '[ "$(TZ=America/New_York fn process_alive $$ "$ST")" = True ]'
+check "#865 a pid held by another user's process that started at another time has lapsed" '[ "$(fn process_alive 1 t0)" = False ]'
 
 # A /clear straight after a compaction, with no crossing since, still finds the session's own handoff
 # when another session's is newer.
