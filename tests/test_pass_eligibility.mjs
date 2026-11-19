@@ -1,6 +1,6 @@
 // suite: pass phase: eligibility, the batch budget and slots (the candidates, what holds every spawn, the slot count)
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
-import { PACE_HELD, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
+import { PACE_HELD, usageHeldText, decideEligibility, decideSlots, ticketSlotsOf, toResume, toHandoff } from '../desk/bin/pass/eligibility.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -157,7 +157,7 @@ function slots(s) {
   for (const k of Object.keys(without)) { order.push(eligibility(s).held); s = { ...s, [k]: without[k] }; }
   order.push(eligibility(s).held);
   t('what holds every spawn is named in its order of precedence', j(order), j([
-    'the maintenance window holds every spawn', order[1], 'the batch budget holds every spawn', 'config §3b "Worker models" holds every spawn',
+    'the maintenance window holds every spawn', usageHeldText({ type: 'five_hour', resetsAt: null }), 'the batch budget holds every spawn', 'config §3b "Worker models" holds every spawn',
     'config §3b "Check-in times" holds every spawn', 'a failing health check (disk) holds every spawn', 'config §3 autopilot-workers is "no"',
     'config §3b "Usage pacing headroom (points)" holds every spawn', null]));
   t('every person stall is said, in the order the pass checks them', j(eligibility(all).stalls), j([

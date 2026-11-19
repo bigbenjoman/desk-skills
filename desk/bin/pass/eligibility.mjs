@@ -15,7 +15,7 @@
 //   finished {key}     -> whether the ticket's worker already printed AUTOPILOT_DONE
 //   reboot-wait {key}  -> why a worker stopped for a planned reboot still waits, or null once it may resume
 //   eligibility {eligible, spawnable, held, spawnHeld}   what decideEligibility decided
-//   slots {plan, wanted, machine, repo, repoBatches, repoUnlocked, slots, machineLine, repoLine}
+//   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine}
 //                      what decideSlots decided
 import { parseBudget } from '../desk-env.mjs';
 import { limitName } from '../usage-limit.mjs';
@@ -59,7 +59,7 @@ function budgetOf(budget) {
 //   pace          usage-pace.mjs's {bad, hold, line}, and paceProbe what a probe call for it read
 //   memory        {low, avail, hold, start, dropTo}: the spawn gate (config §3b "Spawn gate")
 //   lockQueue     suite-wait.mjs lockQueue's reading, or null where it is not read
-//   spawnGrant    {may, key, perm, approve}: config §3 autopilot-workers, and the queue.mjs path
+//   spawnGrant    {may, key, perm, queueBin}: config §3 autopilot-workers, and the queue.mjs path
 //   maintHold     whether the maintenance window holds
 //   usageHold     the usage limit holding the batch, or null, and probes each probe call's why
 //   pacingRow     config §3b's usage-pacing row name
@@ -130,7 +130,7 @@ export function* decideEligibility(s) {
 }
 
 // The borrow plan (borrow.mjs borrowPlan) for `workers` running, under decideSlots's snapshot `s`.
-export const planOf = (s, workers, on = s.borrowOn) => borrowPlan({
+const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
   on, share: s.concurrency, cap: s.cap, running: workers, wanted: s.spawnable,
   others: s.others, machine: s.machineCap, memory: s.memory, held: s.spawnHeld, lock: s.lockWhy,
 });
