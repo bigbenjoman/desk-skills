@@ -229,7 +229,7 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
     dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-12-01'] } })),
     drive(decidePersonSteps, { tickets: byKey(held('A', 'P-1', { held_outside: 'P-1' })), triage: { A: { blockers: [{ key: 'P-1', category: 'new', labels: ['s'] }] } }, stepLabels: ['s'], inputLabels: [], dry: false }, {}, false),
     drive(decideOutsideBlockers, { tickets: byKey({ key: 'DS-1', state: 'triaged' }), epic: null, onJira: true, trackerKeys: new Set(['DS-1']), triage: { 'DS-1': { blockers: [{ key: 'X-9', category: 'new' }] } }, now: NOW, dry: false }),
-    drive(decideOutsideHolds, { tickets: byKey(held('A', 'X-1', { held_outside: 'X-1' })), epic: null, triage: { A: { blockers: [{ key: 'X-1', category: 'done' }] } }, defaultBranch: 'main', repoDefault: 'main', dry: false }, { landed: true }),
+    drive(decideOutsideHolds, { tickets: byKey(held('A', 'X-1', { held_outside: 'X-1' })), epic: null, triage: { A: { blockers: [{ key: 'X-1', category: 'done' }] } }, defaultBranch: 'main', repoDefault: 'main', now: NOW, dry: false }, { landed: true }),
     drive(decideMergeHolds, { tickets: byKey({ key: 'A', state: 'running', merge_after: 'P-1' }), triage: { A: { blockers: [{ key: 'P-1', category: 'done' }] } }, stepLabels: [], inputLabels: [], dry: false }),
   ].map((as) => as.length));
   t('AC5 every decision returns its actions', out.every((n) => n > 0), true);
