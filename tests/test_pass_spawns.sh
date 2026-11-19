@@ -720,10 +720,10 @@ const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://githu
 writeFileSync('$T/pm-702.json', pr(702, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({ gaps: 2 })) }, { author: { login: 'ben' }, state: 'COMMENTED', body: body(later) }, { author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
 writeFileSync('$T/pm-703.json', pr(703, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({})) }]));
 writeFileSync('$T/pm-704.json', pr(704, [{ author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
-// DS-787: VPL-859's review, whose post-merge criteria word the worker's two follow steps differently.
-const vpl = results({ post_merge: [{ gap: 'AC5', needs: 'production', step: 'manual production run: open Osteopaths in the production portal' }, { gap: 'AC6', needs: 'staging', step: 'staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project' }] });
-writeFileSync('$T/pm-711.json', pr(711, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(vpl) }]));
-writeFileSync('$T/pm-712.json', pr(712, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(vpl) }]));
+// DS-787: a review whose post-merge criteria word the worker's two follow steps differently.
+const reworded =results({ post_merge: [{ gap: 'AC5', needs: 'production', step: 'manual production run: open Osteopaths in the production portal' }, { gap: 'AC6', needs: 'staging', step: 'staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project' }] });
+writeFileSync('$T/pm-711.json', pr(711, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(reworded) }]));
+writeFileSync('$T/pm-712.json', pr(712, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(reworded) }]));
 "
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
