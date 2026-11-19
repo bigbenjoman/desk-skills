@@ -41,7 +41,7 @@ import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
-import { findingsPath, runsPath } from './findings.mjs';
+import { findingsPath, runsPath, stillMissing } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
 import { everyTicket } from './queue-store.mjs';
@@ -130,20 +130,23 @@ export function withOutcomes(rows, batches) {
     const missing = [];
     let review = 0;
     const f = findingsPath(state, r.key);
+    const lines = [];
     if (existsSync(f)) {
       try { newestFindings = Math.max(newestFindings ?? 0, statSync(f).mtimeMs); } catch { /* age only */ }
-      const rounds = new Set();
       for (const line of readFileSync(f, 'utf8').split('\n')) {
         let d;
         try { d = JSON.parse(line); } catch { continue; }
-        if (d && !d.carried) review += fin(d.p0) + fin(d.p1);
-        if (d?.round != null) rounds.add(d.round);
+        if (!d || typeof d !== 'object') continue;
+        lines.push(d);
+        if (!d.carried) review += fin(d.p0) + fin(d.p1);
       }
-      // A round the recorder noted as missing or unreadable (findings.mjs recordFindings), and never
-      // recorded since, leaves the count partial: never read as clean.
-      const gaps = readJsonl(runsPath(state, r.key)).rows.filter((n) => n.findings_unreadable || (n.findings_missing && !rounds.has(n.findings_missing.round)));
-      if (gaps.length) { review = null; missing.push(runsPath(state, r.key)); }
-    } else if (r.merged_at) { review = null; missing.push(f); }
+    }
+    // A round the recorder noted as missing or unreadable (findings.mjs recordFindings), and never
+    // recorded since at its head and round, leaves the count partial: never read as clean. Read
+    // whether or not the findings file exists: a ticket whose only round was lost has none.
+    const gaps = readJsonl(runsPath(state, r.key)).rows.filter((n) => n.findings_unreadable || (n.findings_missing && stillMissing(lines, n.findings_missing)));
+    if (gaps.length) { review = null; missing.push(runsPath(state, r.key)); }
+    else if (!existsSync(f) && r.merged_at) { review = null; missing.push(f); }
     if (!postMerge.has(state)) {
       let recs = existsSync(postMergePath(state)) ? readPostMerge(state) : null;
       const scans = (recs ?? []).filter((s) => s.kind === 'scan' && Number.isFinite(Date.parse(s.at)));

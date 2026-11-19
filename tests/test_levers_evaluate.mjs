@@ -256,6 +256,32 @@ let ghCalls = 0;
 const listed = failedRuns({ repo: 'acme/x', since: NOW, jobs: false, gh: () => { ghCalls += 1; return { status: 0, stdout: JSON.stringify([{ databaseId: 1, headBranch: 'b1' }, { databaseId: 2, headBranch: 'b2' }]) }; } });
 t('red CI for the evaluation is one list call, no per-run view', [ghCalls, listed.runs.map((r) => r.branch)], [1, ['b1', 'b2']]);
 {
+  // A round the recorder noted missing stays a gap until a line at its head and round is recorded, and
+  // is read whether or not the ticket has a findings file at all.
+  const { withOutcomes } = await import('../desk/bin/levers-evaluate.mjs');
+  const st = join(T, 'gaps-state');
+  mkdirSync(join(st, 'workers'), { recursive: true });
+  writeFileSync(join(st, 'post-merge.jsonl'), `${JSON.stringify({ kind: 'scan', at: at(-1), complete: true })}\n`);
+  const H1 = 'a'.repeat(40);
+  const H2 = 'b'.repeat(40);
+  const put = (key, findings, notes) => {
+    if (findings) writeFileSync(join(st, 'workers', `${key}.findings.jsonl`), findings.map((l) => `${JSON.stringify({ ticket: key, ...l })}\n`).join(''));
+    writeFileSync(join(st, 'workers', `${key}.runs.jsonl`), notes.map((n) => `${JSON.stringify({ ticket: key, ...n })}\n`).join(''));
+  };
+  const line = (head, round, reviewer = 'self', extra = {}) => ({ round, reviewer, head, p0: 0, p1: 0, p2: 0, fixed: 0, carried: false, ...extra });
+  put('G-1', [line(H1.slice(0, 12), 1)], [{ findings_missing: { head: H2, round: 1 } }]);
+  put('G-2', [line(H2.slice(0, 12), 1, 'pr')], [{ findings_missing: { head: H2, round: 1 } }]);
+  put('G-3', null, [{ findings_missing: { head: H2, round: 1 } }]);
+  put('G-4', [line(H2, 1, 'pr', { from: H1, carried: true })], [{ findings_missing: { head: H2, round: 1 } }]);
+  put('G-5', null, []);
+  const rows = ['G-1', 'G-2', 'G-3', 'G-4', 'G-5'].map((key) => ({ key, batch: 'gaps', state: 'parked', merged_at: null }));
+  const got = withOutcomes(rows, [{ name: 'gaps', state: st }]).rows.map((r) => r.review_p0_p1);
+  t('a lost PR round is not cleared by a self-review line at the same round number, only by one at its head', got.slice(0, 2), [null, 0]);
+  t('a parked ticket whose only round was lost, with no findings file, is a gap, not clean', got[2], null);
+  t('a carried line does not clear a lost round', got[3], null);
+  t('a parked ticket with no rounds and no notes counts none', got[4], 0);
+}
+{
   // A finished, merged ticket moves to the queue's archive (queue-store.mjs archiveDone): it is still evidence.
   const { repoRows } = await import('../desk/bin/levers-evaluate.mjs');
   const dir = join(T, 'archived-batch');

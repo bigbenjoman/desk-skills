@@ -27,6 +27,7 @@ import { readCloseouts } from './closeout.mjs';
 import { slotFor, onlyKeptTriage } from './batches.mjs';
 import { lockPid, unlock, alive, tryLockFile } from './dir-lock.mjs';
 import { writeQueueFile, archivePath } from './queue-store.mjs';
+import { auditsIn } from './levers-audit.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
@@ -123,6 +124,15 @@ const images = Object.values(cur.tickets ?? {}).filter((t) => typeof t?.images_d
 for (const t of images) t.images_dir = join(to.state, E.expandHome(t.images_dir).slice(oldRoot.length));
 // A close-out note names the queue it was written for, and a pass applies only its own queue's.
 const notes = readCloseouts(from.state).filter((n) => n.queue === from.queue).map((n) => ({ file: n.file, was: readFileSync(n.file, 'utf8') }));
+
+// A blind audit spawned from this folder reads its log and exit record from it, and the repo's audit
+// queue stays here while its logs and workers move: one running or not yet recorded would be recorded
+// with no findings. Only this batch's pass spawns one into this folder, and its lock is held, so none
+// starts after the check.
+const inAudit = auditsIn(slug, from.state);
+if (!inAudit) refuse(`the repo's audit queue (${join(from.state, 'audit-queue.json')}) does not read, so a blind audit reading its log from the standing slot cannot be ruled out: run this again once a pass has rewritten it. Nothing was moved`);
+const audits = inAudit.map((i) => i.ticket);
+if (audits.length) refuse(`the blind audit of ${audits.join(', ')} is running or not yet recorded, and its log is read from the standing slot: run this again once a pass has recorded it. Nothing was moved`);
 
 const driver = E.mergeDriverHolder(from.state);
 if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');

@@ -296,6 +296,33 @@ t('no state recorded: every trialled lever is on trial, whatever its layer',
     mkdirSync(done, { recursive: true });
     writeFileSync(join(done, 'queue.json'), JSON.stringify({ version: 1, batch: 'DS-1', concurrency: 1, tickets: { 'B-1': { key: 'B-1', ...carrier } } }));
     t('AC4 real queue: only the live carrier is in flight, not an archived closed one or an archived batch\'s', ticketsOf('q4a').inFlight.length, 1);
+    t('AC4 real queue: every pinned ticket is saved, archived ones and archived batches\' included', [...ticketsOf('q4a').saved].sort(), ['B-1', 'C-1', 'L-1']);
+  }
+
+  // AC4 across batches: each batch saves its pin under its own queue lock after the draw, so a draw the
+  // lever log holds and no queue has saved yet counts as in flight, for PENDING_MS.
+  {
+    const { batchPaths } = await import('../desk/bin/desk-env.mjs');
+    const { PENDING_MS, pendingPins } = await import('../desk/bin/levers-auto.mjs');
+    const qf = batchPaths('q4p').queue;
+    mkdirSync(dirname(qf), { recursive: true });
+    // Two saved tickets carrying none: a third admitted alone would be 1 of 3, over 30%, so three idle.
+    const idle = Object.fromEntries(['S-1', 'S-2', 'S-3'].map((k) => [k, { key: k, state: 'running', levers: { set: [], arms: { codex: 'off' }, trial_ids: {} } }]));
+    writeFileSync(qf, JSON.stringify({ version: 1, batch: null, concurrency: 1, tickets: idle }));
+    only('q4p', 'codex');
+    // A carrier another batch drew a minute ago and has not saved: 1 + this one of 5 is 40%, over the cap.
+    append('q4p', { kind: 'assign', actor: 'levers-auto', reason_code: 'assigned_at_admission', reason: 'drew', at: new Date(NOW.getTime() - 60_000).toISOString(), ticket: 'P-1', size: 'S', block: null, arms: { codex: 'on' }, trial_ids: {}, set: ['codex'] });
+    const always = () => 0;
+    const held = assignPin('P-2', { slug: 'q4p', size: 'S', random: always, now: NOW, values: LOCAL }).pin;
+    t('AC4 an unsaved draw on the arm counts toward the cap: the next ticket is the off arm', [held.arms.codex, held.set.includes('codex')], ['off', false]);
+    const later = new Date(NOW.getTime() + PENDING_MS);
+    const freed = assignPin('P-3', { slug: 'q4p', size: 'S', random: always, now: later, values: LOCAL }).pin;
+    t('AC4 a draw never saved stops counting once PENDING_MS has passed', freed.arms.codex, 'on');
+    const ev = (ticket, at, arms = { codex: 'on' }) => ({ kind: 'assign', ticket, at: new Date(at).toISOString(), arms });
+    const T0 = NOW.getTime();
+    t('pendingPins: the latest unsaved, unmerged draw of each other ticket in the window', pendingPins([
+      ev('A', T0 - 1000, { codex: 'off' }), ev('A', T0 - 500), ev('B', T0 - 1000), ev('C', T0 - 1000), ev('D', T0 - 1000), ev('K', T0 - 1000), ev('E', T0 - PENDING_MS), ev('F', T0 + 1000),
+    ], { saved: new Set(['B']), merged: new Set(['C']), key: 'K', now: T0 }), [{ arms: { codex: 'on' } }, { arms: { codex: 'on' } }]);
   }
 
   // AC5: effort is never trialled where Worker location is not local.

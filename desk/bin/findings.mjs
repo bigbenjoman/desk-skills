@@ -103,6 +103,10 @@ const readJsonl = (path) => {
   return readFileSync(path, 'utf8').split('\n').flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
 };
 const lineKey = (l) => `${l.reviewer}|${l.head}|${l.round}`;
+// Whether a round noted missing (reviewRounds' `missing`) is still missing given the `recorded` lines:
+// a Stage 4b with no line always is, and a verdict is until a line at its head and round is recorded
+// (not one recordCarry wrote). The recorder and the levers evaluation both read a gap through this.
+export const stillMissing = (recorded, m) => !m?.head || !recorded.some((l) => l && !l.from && l.round === m.round && m.head.startsWith(String(l.head)));
 const noteKey = (n) => JSON.stringify([n.run ?? null, n.findings_missing ?? n.findings_unreadable]);
 
 // Records what one worker log shows: its rounds' lines in the findings file and its missing or
@@ -118,7 +122,7 @@ export function recordFindings(state, key, log, run = null, at = new Date().toIS
     const added = lines.filter((l) => !seen.has(lineKey(l)) && seen.add(lineKey(l)));
     if (added.length) appendFileSync(path, added.map((l) => `${JSON.stringify({ ticket: key, ...l, run, at })}\n`).join(''));
     // A verdict whose round an earlier log already recorded has its line.
-    const lost = missing.filter((m) => !m.head || !recorded.some((l) => !l.from && l.round === m.round && m.head.startsWith(String(l.head))));
+    const lost = missing.filter((m) => stillMissing(recorded, m));
     const runs = runsPath(state, key);
     const noted = new Set(readJsonl(runs).filter((r) => r.findings_missing || r.findings_unreadable).map(noteKey));
     const notes = [

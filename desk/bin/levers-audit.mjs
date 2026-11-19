@@ -27,9 +27,9 @@
 // tracker and PR write (worker-settings.mjs).
 //
 //   import { runAudits, sampleAudits, auditTask, auditBrief } from './levers-audit.mjs'
-import { mkdirSync, readFileSync, appendFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { batchPaths, workerModels } from './desk-env.mjs';
+import { existsSync, mkdirSync, readFileSync, appendFileSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { batchPaths, expandHome, workerModels } from './desk-env.mjs';
 import { REGISTRY } from './lever-registry.mjs';
 import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, pairTrial, qualityTrials, isPairKey, trialId } from './levers-auto.mjs';
@@ -218,6 +218,22 @@ function deferIn(due, reason, now, why = null) {
 // How many of the repo's audit workers are running or part way through starting, for the pass's worker
 // counts.
 export const auditsRunning = (slug) => Object.values(loadQueue(auditQueueFile(slug)).items).filter((i) => ['running', 'starting'].includes(i.state)).length;
+
+// The repo's audits running, or ended and not yet recorded, whose worker was spawned into state folder
+// `state`: its log and exit record are read from there (logOf, endedFromExit), so moving that folder's
+// logs and workers away loses the audit's findings. Read without the queue's lock: the file is written
+// whole (writeJsonAtomic), and only the pass of the batch in `state` makes an item run there, so a
+// caller holding that pass's lock reads a set that can only shrink. A queue file that does not read
+// gives null: it cannot show that none is running.
+export function auditsIn(slug, state) {
+  const file = auditQueueFile(slug);
+  if (!existsSync(file)) return [];
+  let items;
+  try { items = JSON.parse(readFileSync(file, 'utf8'))?.items ?? {}; } catch { return null; }
+  const here = resolve(expandHome(state));
+  return Object.values(items)
+    .filter((i) => ['running', 'recording'].includes(i.state) && typeof i.state_dir === 'string' && resolve(expandHome(i.state_dir)) === here);
+}
 
 // What an item's preflights cost: all of them, or those since `from` (ms).
 const preflightUsd = (item, from = -Infinity) => (item.preflights ?? []).filter((p) => Date.parse(p.at) >= from).reduce((n, p) => n + (Number(p.usd) || 0), 0);

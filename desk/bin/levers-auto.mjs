@@ -222,17 +222,40 @@ const carriesUnproven = (pin, registry) => Object.entries(pin?.arms ?? {}).some(
 // batches included (batches.mjs repoTickets), so the ramp counts a carrier a pass archived; and the pins
 // of those in flight, from the live tickets of the live batches only (not merged or failed), since an
 // archived ticket is done, its PR merged or closed, and an archived batch is finished.
-//   -> { inFlight: [pin], merged: Set<key> }
+// `saved` holds the key of every ticket whose pin a queue holds, so a draw the log records and no queue
+// has saved yet is told apart (pendingPins).
+//   -> { inFlight: [pin], merged: Set<key>, saved: Set<key> }
 export function ticketsOf(slug) {
-  const out = { inFlight: [], merged: new Set() };
+  const out = { inFlight: [], merged: new Set(), saved: new Set() };
   try {
-    for (const t of repoTickets(slug)) if (t?.merged_at) out.merged.add(t.key);
+    for (const t of repoTickets(slug)) {
+      if (t?.merged_at) out.merged.add(t.key);
+      if (t?.levers != null) out.saved.add(t.key);
+    }
     for (const t of repoTickets(slug, listBatches(slug))) {
       if (!t || t.archived_at || t.merged_at || t.state === 'failed' || !t.levers || typeof t.levers !== 'object') continue;
       out.inFlight.push(t.levers);
     }
-  } catch { return { inFlight: [], merged: new Set() }; }
+  } catch { return { inFlight: [], merged: new Set(), saved: new Set() }; }
   return out;
+}
+
+// How long a draw the lever log records counts as in flight before any queue has saved its pin. Each
+// batch saves its pin under its own queue lock after the draw, so two batches admitting at once would
+// otherwise each draw against a count missing the other's; a draw whose queue write failed stops
+// counting once this has passed.
+export const PENDING_MS = 10 * 60_000;
+// The pins of draws written to the log in the PENDING_MS to `now` for tickets other than `key` that no
+// queue holds yet (`saved`) and that have not merged: the latest assign of each, as a pin's arms.
+export function pendingPins(events, { saved, merged, key, now }) {
+  const latest = new Map();
+  for (const e of events ?? []) {
+    if (e?.kind !== 'assign' || !e.ticket || e.ticket === key) continue;
+    const at = Date.parse(e.at);
+    if (!(at <= now && now - at < PENDING_MS) || saved.has(e.ticket) || merged.has(e.ticket)) continue;
+    latest.set(e.ticket, { arms: e.arms ?? {} });
+  }
+  return [...latest.values()];
 }
 
 // The quality-risk part of a ticket's draw: { set, arms, trialIds }.
@@ -354,10 +377,12 @@ export function assignPin(key, {
     if (frozen === undefined) frozen = leversFrozen();
     values ??= repoValues();
     // The repo's tickets, read under the lever log's lock with the draw, so two admissions at once
-    // count each other's pins once each is saved.
+    // count each other's pins once each is saved, and each other's draws not yet saved (pendingPins).
     const tickets = () => {
       const r = inFlight && merged ? null : ticketsOf(slug);
-      return { inFlight: inFlight ?? r.inFlight, merged: typeof merged?.has === 'function' ? merged : new Set(merged ?? r.merged) };
+      // A caller's own in-flight pins are the whole set: draws not yet saved are counted only beside
+      // the pins read from the queues.
+      return { inFlight: inFlight ?? r.inFlight, merged: typeof merged?.has === 'function' ? merged : new Set(merged ?? r.merged), saved: inFlight ? null : r.saved };
     };
     // Each exposure step due is written first, one event a time under the log's lock, so the draw
     // below reads the share it set. Never more than one step per trial per admission.
@@ -380,7 +405,9 @@ export function assignPin(key, {
         if (last?.kind === 'needs_you' && last.reason_code === 'state_unreadable') return null;
         return { kind: 'needs_you', actor: ACTOR, reason_code: 'state_unreadable', reason: unassignableText(slug, unreadable), ticket: key };
       }
-      result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight: tickets().inFlight });
+      const t = tickets();
+      const pending = t.saved ? pendingPins(log.events, { saved: t.saved, merged: t.merged, key, now: now.getTime() }) : [];
+      result = draw({ slug, key, size: blockSize(size), events: log.events, states, frozen: !!frozen, values, random, now, registry, inFlight: [...t.inFlight, ...pending] });
       return result.event;
     });
   } catch (e) {
