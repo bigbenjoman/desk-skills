@@ -335,14 +335,23 @@ for (const k of ['git-force-with-lease', 'worktree-remove', 'pr-ready', 'pr-merg
   t(`AC1 ${k} is recommended yes`, `${fromRows[k]}/${fromTpl[k]}`, 'yes/yes');
 }
 
-// #810: rows for opening and commenting on a GitHub issue in the repo, recommended ask, that setup
-// offers (permission-rows.md) with the harness rule each grants, and desk-env reads by key.
+// Rows for opening and commenting on a GitHub issue in the repo: recommended ask, offered by setup
+// (permission-rows.md) with the harness rule each grants and a reach that says it is any repo, read by
+// desk-env by key, and named as missing from a config that predates them.
 const rowsText = readFileSync(join(ROOT, 'skills', 'desk-setup', 'references', 'permission-rows.md'), 'utf8');
 const { PERMISSION_KEYS } = await import('../desk/bin/desk-env.mjs');
 for (const [k, rule] of [['gh-issue-create', 'Bash(gh issue create *)'], ['gh-issue-comment', 'Bash(gh issue comment *)']]) {
   t(`#810 ${k} is recommended ask in both`, `${fromRows[k]}/${fromTpl[k]}`, 'ask/ask');
   t(`#810 ${k} grants ${rule} when set to yes`, rowsText.split('\n').some((l) => l.startsWith(`| \`${k}\` |`) && l.includes(`\`${rule}\``)), true);
   t(`#810 desk-env reads ${k} by its key`, PERMISSION_KEYS[k], k);
+  t(`#810 ${k}'s reach says the rule reaches any repo`, rowsText.split('\n').some((l) => l.startsWith(`| \`${k}\` |`) && l.includes('_Reach_: the rule') && l.includes('**any**')), true);
+}
+{
+  const c = join(T, 'drift-810.md');
+  writeFileSync(c, conf());
+  let out = '';
+  try { out = execFileSync('node', [BIN, 'drift'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c, DESK_CONFIG_TEMPLATE: join(ROOT, 'desk-config.md') }), stdio: 'pipe' }); } catch (e) { out = String(e.stdout); }
+  t('#810 a config without the rows has them named as missing', ['gh-issue-create', 'gh-issue-comment'].every((k) => out.includes(`MISSING  §3 ${k}`)), true);
 }
 
 // §1 Git author name / email, which spawn-worker.sh exports as GIT_AUTHOR_* and GIT_COMMITTER_*:
