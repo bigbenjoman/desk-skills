@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -3264,7 +3264,20 @@ runSteps({
 // whose PR merged, or is in another repo, are the handlers below.
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
-// recorded (a person merged it) is read from GitHub in the archived copy, under batches/.done/.
+// recorded (a person merged it) is read from GitHub in the archived copy, under batches/.done/. Each
+// read is kept beside that copy (promotion-read.json): a merged PR is not asked again, and an open or
+// closed one (the person may reopen it, as the epic PR step asks) only once IDLE_RECHECK_MS has passed,
+// however many tickets, passes or admissions wait on the epic.
+const PASS_NOW = Date.parse(process.env.DESK_PASS_AT ?? '') || Date.now();
+const archivedPrState = (dir, pr) => {
+  const file = join(dir, 'promotion-read.json');
+  let kept = null;
+  try { kept = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none kept yet */ }
+  if (kept && String(kept.pr) === String(pr) && (kept.state === 'MERGED' || PASS_NOW - Date.parse(kept.at) < IDLE_RECHECK_MS)) return kept.state;
+  const state = batchPrState(pr);
+  if (state) try { writeFileSync(file, `${JSON.stringify({ pr, state, at: new Date(PASS_NOW).toISOString() })}\n`); } catch { /* asked again next time */ }
+  return state;
+};
 const epicMerged = (qO, key) => {
   const merged = (x) => epicBatch(x) && x.epic === key && !!x.promotion?.merged_at;
   if (qO.epic === key) return merged(qO);
@@ -3278,7 +3291,7 @@ const epicMerged = (qO, key) => {
   return dirs.some((d) => {
     try {
       const x = readQueue(join(done, d, 'queue.json'));
-      return merged(x) || (epicBatch(x) && x.epic === key && x.promotion?.pr != null && batchPrState(x.promotion.pr) === 'MERGED');
+      return merged(x) || (epicBatch(x) && x.epic === key && x.promotion?.pr != null && archivedPrState(join(done, d), x.promotion.pr) === 'MERGED');
     } catch { return false; }
   });
 };
@@ -3286,7 +3299,7 @@ const epicMerged = (qO, key) => {
 const inOtherRepo = (key) => { const a = E.repoPlacement(triageRec(key)?.repository); return !!a && !a.unknown; };
 runSteps({
   name: 'outside holds',
-  snapshot: () => ({ ...holdsSnapshot({ defaultBranch: DEFAULT_BRANCH, repoDefault: REPO_DEFAULT, now: Date.now() }), q: queue() }),
+  snapshot: () => ({ ...holdsSnapshot({ defaultBranch: DEFAULT_BRANCH, repoDefault: REPO_DEFAULT, now: PASS_NOW }), q: queue() }),
   decide: decideOutsideHolds,
   handlers: {
     ...EPIC_HANDLERS,

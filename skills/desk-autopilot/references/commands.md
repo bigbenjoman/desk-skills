@@ -34,6 +34,7 @@ node ~/.claude/desk/bin/queue.mjs backfill-holds --dry-run           # once, by 
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
 node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
 node ~/.claude/desk/bin/intake.mjs admit ABC-128 --by ben --front     # /desk-admit: intake's checks on named tickets, into the supervisor's batch; exit 11 refused
+node ~/.claude/desk/bin/intake.mjs admit ABC-129 --session            # the same, into the batch this session runs (not handed to the supervisor)
 node ~/.claude/desk/bin/intake.mjs forget ABC-127                     # a ticket intake handed to the digest, once fixed: the next intake tries it again
 node ~/.claude/desk/bin/spine-review.mjs brief ABC-126                # the read-only reviewer's prompt for a spine awaiting approval
 node ~/.claude/desk/bin/spine-review.mjs questions ABC-126 <reply>    # one approval question per spec, with the review's findings

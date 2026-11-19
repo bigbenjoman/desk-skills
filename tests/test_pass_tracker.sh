@@ -332,7 +332,7 @@ esac
 EOF
 x7(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-7","fields":{"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-7.json"
   printf '[{"number":70,"state":"%s","title":"fix(x): X-7 a thing","headRefName":"fix/X-7-thing","baseRefName":"main","mergeCommit":null}]\n' "$2" > "$T/prs-x7.json"
-  q set J-7 outside_blockers_read=null; }
+  q set J-7 outside_blockers_read=null outside_read=null; }
 q add J-7; q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once their PRs merge"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new"}]}' > "$T/state-j/triage/J-7.json"
 x7 new MERGED; out=$(node "$B/pass.mjs" 2>&1)
@@ -415,7 +415,7 @@ q drop J-10; q drop J-11
 # item (wont_do_link) rather than held in silence; removing the link lifts the hold and clears it.
 # links <KEY> <BLOCKER> <category> <status> [<BLOCKER2> ...] writes the ticket's links; none with no blocker.
 links(){ k=$1; shift; s=''; while [ $# -ge 3 ]; do s="$s${s:+,}{\"type\":{\"inward\":\"is blocked by\"},\"inwardIssue\":{\"key\":\"$1\",\"fields\":{\"status\":{\"name\":\"$3\",\"statusCategory\":{\"key\":\"$2\"}}}}}"; shift 3; done
-  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null; }
+  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null outside_read=null; }
 resolved(){ printf '{"fields":{"assignee":null,"resolution":{"name":"%s"}}}\n' "$2" > "$T/jira/$1.json"; }
 q add J-13; q set J-13 state=parked held_by=X-13 held_outside=X-13 'park={"question":"held by orchestrator: blocked by X-13 — starts once X-13 is Done and on the base"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-13","category":"indeterminate"}]}' > "$T/state-j/triage/J-13.json"

@@ -125,6 +125,11 @@ export function crashShowsPerson(report = (e) => console.error(describeCrash(e))
   process.on('unhandledRejection', die);
 }
 
+// How long an idle batch with anything parked, failed or held outside goes without a pass
+// (supervisor.mjs), and how long a pass goes without asking GitHub again whether a ticket's outside
+// blockers landed (pass/parks.mjs decideOutsideHolds): a busy batch passes every tick.
+export const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
+
 export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;

@@ -2,7 +2,7 @@
 import { runPhase, runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds,
   decideMergeHolds } from '../desk/bin/pass/parks.mjs';
-import { HELD_PREFIX, badLabelText } from '../desk/bin/batch-state.mjs';
+import { HELD_PREFIX, badLabelText, IDLE_RECHECK_MS } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -171,17 +171,54 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
 {
   const tk = held('A', 'X-1|X-2', { held_outside: 'X-1|X-2' });
   const rec = { blockers: [{ key: 'X-1', category: 'done', resolution: 'Done' }, { key: 'X-2', category: 'new' }] };
-  const s = { tickets: byKey(tk), epic: null, triage: { A: rec }, defaultBranch: 'main', repoDefault: 'main', dry: false };
+  const s = { tickets: byKey(tk), epic: null, triage: { A: rec }, defaultBranch: 'main', repoDefault: 'main', now: NOW, dry: false };
+  const stamp = `outside_read=${new Date(NOW).toISOString()}`;
   const asked = [];
   const as = drive(decideOutsideHolds, s, { landed: (a) => { asked.push(a.key); return true; } });
   t('only a Done blocker is asked whether it landed', j(asked), '["X-1"]');
-  t('one that landed is lifted, the rest still hold', j(sets(as)), j(['held_by=X-2', 'held_outside=X-2']));
+  t('one that landed is lifted, the rest still hold, and when they were read is kept', j(sets(as)), j(['held_by=X-2', 'held_outside=X-2', stamp]));
   t('and it says so', lines(as, 'epic-line')[0], 'outside hold: A: X-1 Done and on main; still held behind X-2');
   const all = drive(decideOutsideHolds, { ...s, triage: { A: { blockers: [rec.blockers[0]] } } }, { landed: true });
   t('lifting the last releases it to the front', j(types(all.filter((a) => !['epic-merged', 'other-repo', 'landed'].includes(a.type)))), j(['set', 'front', 'epic-line']));
   const away = drive(decideOutsideHolds, s, { 'other-repo': (a) => a.key === 'X-1', landed: () => { throw new Error('asked'); } });
   t('Done in another repo lifts it with no landed read', lines(away, 'epic-line')[0], 'outside hold: A: X-1 Done in Jira, in another repo; still held behind X-2');
-  t('nothing lifted, nothing said', j(settles(drive(decideOutsideHolds, s))), '[]');
+  const none = drive(decideOutsideHolds, s);
+  t('nothing lifted, nothing said', j(lines(none, 'epic-line')), '[]');
+  t('only when they were read is kept', j(sets(none)), j([stamp]));
+  const both = { blockers: [rec.blockers[0], { key: 'X-2', category: 'done', resolution: 'Done' }] };
+  const three = { ...s, tickets: byKey(tk, { ...tk, key: 'B' }, { ...tk, key: 'C' }), triage: { A: both, B: both, C: both } };
+  const reads = [];
+  const gh = { landed: (a) => { reads.push(`landed ${a.key}`); return false; }, 'epic-merged': (a) => { reads.push(`epic ${a.key}`); return false; } };
+  drive(decideOutsideHolds, three, gh);
+  t('DS-815 AC3 three tickets held behind the same two blockers ask GitHub once per blocker, and a Done one only whether it landed', j(reads), j(['landed X-1', 'landed X-2']));
+  reads.length = 0;
+  const readAt = (ago) => ({ ...tk, outside_read: new Date(NOW - ago).toISOString() });
+  const later = drive(decideOutsideHolds, { ...three, tickets: byKey(readAt(60_000), { ...readAt(60_000), key: 'B' }, { ...readAt(60_000), key: 'C' }) }, gh);
+  t('DS-815 AC3 and not again within the recheck interval', j(reads), '[]');
+  t('so nothing is written', j(sets(later)), '[]');
+  drive(decideOutsideHolds, { ...three, tickets: byKey(readAt(IDLE_RECHECK_MS - 1000)) }, gh);
+  t('DS-815 AC3 not a second before the interval has passed', j(reads), '[]');
+  drive(decideOutsideHolds, { ...three, tickets: byKey(readAt(IDLE_RECHECK_MS)) }, gh);
+  t('DS-815 AC1 once the interval has passed, they are asked again', j(reads), j(['landed X-1', 'landed X-2']));
+  reads.length = 0;
+  const open = { blockers: [{ key: 'X-1', category: 'new' }, { key: 'X-2', category: 'new' }] };
+  drive(decideOutsideHolds, { ...three, triage: { A: open, B: open, C: open } }, gh);
+  t('DS-815 AC3 one not Done is asked once per pass only whether it landed through its epic PR', j(reads), j(['epic X-1', 'epic X-2']));
+  reads.length = 0;
+  const openLater = drive(decideOutsideHolds, { ...three, triage: { A: open, B: open, C: open }, tickets: byKey(readAt(60_000), { ...readAt(60_000), key: 'B' }, { ...readAt(60_000), key: 'C' }) }, gh);
+  t('DS-815 its own batch landing through its epic PR is read from disk on every pass, within the interval too (its GitHub read keeps its own interval, pass.mjs epicMerged)', j(reads), j(['epic X-1', 'epic X-2']));
+  t('and asking it moves no ticket\'s clock', j(sets(openLater)), '[]');
+  reads.length = 0;
+  // A, not read within the interval, asks X-1; B, read a minute ago, picks up that answer, but X-2 is
+  // B's alone and was not asked, so B's clock stays where it was, and X-2 is asked once B's interval passes.
+  const sharedFirst = { ...tk, held_by: 'X-1', held_outside: 'X-1' };
+  const shared = drive(decideOutsideHolds, { ...three, tickets: byKey(sharedFirst, { ...readAt(60_000), key: 'B' }), triage: { A: { blockers: [rec.blockers[0]] }, B: both } }, gh);
+  t('DS-815 an answer another ticket fetched does not restart the clock of one whose blockers were not all asked', j(reads), j(['landed X-1']));
+  t('so only the ticket that asked is stamped', j(shared.filter((a) => a.type === 'set').map((a) => a.key)), j(['A']));
+  reads.length = 0;
+  const fresh = drive(decideOutsideHolds, { ...s, tickets: byKey(readAt(60_000)), triage: { A: { blockers: [rec.blockers[0]] } } }, { ...gh, 'other-repo': (a) => a.key === 'X-1' });
+  t('a blocker that needs no GitHub read still lifts within the interval', lines(fresh, 'epic-line')[0], 'outside hold: A: X-1 Done in Jira, in another repo; X-2 no longer linked as a blocker; RELEASED');
+  t('and the release clears when they were read', sets(fresh).includes('outside_read=null'), true);
 }
 
 // DS-811: a DS-705-shaped hold. The blocker is Done, and its PR merged into a feature base that has no
@@ -244,7 +281,7 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
     dates(dateSnap(byKey({ key: 'A', state: 'triaged' }), { A: { labels: ['blocked-until-2026-12-01'] } })),
     drive(decidePersonSteps, { tickets: byKey(held('A', 'P-1', { held_outside: 'P-1' })), triage: { A: { blockers: [{ key: 'P-1', category: 'new', labels: ['s'] }] } }, stepLabels: ['s'], inputLabels: [], dry: false }, {}, false),
     drive(decideOutsideBlockers, { tickets: byKey({ key: 'DS-1', state: 'triaged' }), epic: null, onJira: true, trackerKeys: new Set(['DS-1']), triage: { 'DS-1': { blockers: [{ key: 'X-9', category: 'new' }] } }, now: NOW, dry: false }),
-    drive(decideOutsideHolds, { tickets: byKey(held('A', 'X-1', { held_outside: 'X-1' })), epic: null, triage: { A: { blockers: [{ key: 'X-1', category: 'done' }] } }, defaultBranch: 'main', repoDefault: 'main', dry: false }, { landed: true }),
+    drive(decideOutsideHolds, { tickets: byKey(held('A', 'X-1', { held_outside: 'X-1' })), epic: null, triage: { A: { blockers: [{ key: 'X-1', category: 'done' }] } }, defaultBranch: 'main', repoDefault: 'main', now: NOW, dry: false }, { landed: true }),
     drive(decideMergeHolds, { tickets: byKey({ key: 'A', state: 'running', merge_after: 'P-1' }), triage: { A: { blockers: [{ key: 'P-1', category: 'done' }] } }, stepLabels: [], inputLabels: [], dry: false }),
   ].map((as) => as.length));
   t('AC5 every decision returns its actions', out.every((n) => n > 0), true);

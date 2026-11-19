@@ -15,7 +15,7 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 : > "$GIT_CONFIG_GLOBAL"
 mkdir -p "$T/desk"; ln -s "$SRC/desk/bin" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_CONFIG="$T/config.md" DESK_MACHINE="$T/machine.md"
-unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT
+unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
 HOOK="$SRC/hooks/desk-handoff.py"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -266,7 +266,7 @@ check "resume injects nothing"                            '[ -z "$out" ]'
 hook SessionStart s1 "$T/low.jsonl" ',"source":"compact"'
 check "compact: its own handoff, already consumed, is not offered" '[ -z "$out" ]'
 hook SessionStart s3 "$T/low.jsonl" ',"source":"compact"'
-check "compact with no handoff recorded: injects the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
+check "#865: compact with no handoff of its own injects none, not another session's newest" '[ -z "$out" ]'
 transcript "$T/compacted.jsonl" 100000
 printf '{"type":"system","subtype":"compact_boundary","isSidechain":false}\n{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"summary"}}\n' >> "$T/compacted.jsonl"
 hook UserPromptSubmit s1 "$T/compacted.jsonl"
@@ -286,6 +286,81 @@ config '`0`'; echo "# fresh" > "$R/.handoffs/fresh.md"
 hook SessionStart n5 "$T/low.jsonl" ',"source":"clear"'
 check "§2 at 0: no SessionStart injection"                '[ -z "$out" ]'
 config '`45`'
+
+# ---- #865: compaction mode (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set): no /clear, one handoff kept ----
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PostToolUse c1 "$T/high.jsonl"
+c="$(ctx)"; CP="$(printf '%s' "$c" | grep -o "$R/.handoffs/[^ ]*\.md" | head -1)"
+check "#865 with the override set, the threshold asks for the handoff and to keep working" '[[ "$c" == *"context is at 50%"* ]] && [[ "$c" == *"compacts on its own"* ]] && [[ "$c" == *"write the handoff at $CP"* ]] && [[ "$c" == *"carry on with the work"* ]]'
+check "#865 and asks for no /clear or /desk-resume"        '[[ "$c" != *"type /clear, then"* ]] && [[ "$c" != *"/desk-resume"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook Stop c1 "$T/high.jsonl"
+check "#865 the Stop block asks for the handoff, not /clear" '[[ "$out" == *"\"decision\": \"block\""* ]] && [[ "$out" == *"$CP"* ]] && [[ "$out" != *"/clear, then"* ]] && [[ "$out" == *"do not ask the user to /clear"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 PreCompact says nothing while the handoff is unwritten" '[ $rc -eq 0 ] && [ -z "$out" ]'
+echo "# compacting session" > "$CP"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 PreCompact names the written handoff for the summary" '[ $rc -eq 0 ] && [[ "$out" == *"$CP"* ]] && [[ "$out" == *"next step"* ]]'
+hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 without the override, PreCompact says nothing" '[ -z "$out" ]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook SessionStart c1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 after the compaction, the session is told to read its handoff" '[[ "$(ctx)" == *"read .handoffs/$(basename "$CP")"* ]]'
+check "#865 and the handoff is not marked consumed"        '! grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+age "$CP" 60
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PostToolUse c1 "$T/compacted-high.jsonl"
+c="$(ctx)"
+check "#865 the next crossing refreshes the same handoff, not a new one" '[[ "$c" == *"refresh the handoff at $CP"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 PreCompact says nothing while the kept handoff is not yet refreshed" '[ -z "$out" ]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook Stop c1 "$T/high.jsonl"
+check "#865 Stop blocks until the kept handoff is refreshed" '[[ "$out" == *"write the handoff first"* ]] && [[ "$out" == *"$CP"* ]]'
+echo "# compacting session, refreshed" > "$CP"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 once refreshed, PreCompact names it"           '[[ "$out" == *"$CP"* ]]'
+hook SessionStart x1 "$T/low.jsonl" ',"source":"clear"'
+check "#865 another session's /clear does not take the handoff a compacting session holds" '[[ "$(ctx)" != *"$(basename "$CP")"* ]] && ! grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=c1 hook SessionStart c2 "$T/low.jsonl" ',"source":"clear"'
+check "#865 a /clear after it still finds the handoff, and consumes it" '[[ "$(ctx)" == *"read .handoffs/$(basename "$CP")"* ]] && grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+# Between the handoff being written and the compaction, another session's /clear leaves it alone; a
+# second compaction with no crossing since does not hand over the handoff written before the first.
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook PostToolUse m1 "$T/high.jsonl"
+MP="$(ctx | grep -o "$R/.handoffs/[^ ]*\.md" | head -1)"; echo "# m1" > "$MP"
+hook SessionStart m9 "$T/low.jsonl" ',"source":"clear"'
+check "#865 before its compaction, another session's /clear does not take a compacting session's handoff" '[ -n "$MP" ] && [[ "$(ctx)" != *"$(basename "$MP")"* ]] && ! grep -qx "$(basename "$MP")" "$R/.handoffs/.consumed"'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook SessionStart m1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 and its own compaction still reads it"         '[[ "$(ctx)" == *"read .handoffs/$(basename "$MP")"* ]]'
+age "$MP" 30
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook PreCompact m1 "$T/low.jsonl" ',"trigger":"manual"'
+check "#865 a second compaction with no crossing since: PreCompact names no stale handoff" '[ -z "$out" ]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook SessionStart m1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 and the compaction injects none"               '[ -z "$out" ]'
+
+# A hold whose Claude process has exited no longer keeps the handoff from another session's /clear.
+echo "# orphan" > "$R/.handoffs/orphan-865.md"
+DEAD=99999999; printf 'orphan-865.md %s\n' "$DEAD" >> "$R/.handoffs/.held"
+hook SessionStart o9 "$T/low.jsonl" ',"source":"clear"'
+check "#865 a handoff held by a Claude process that has exited is taken by the next /clear" '[[ "$(ctx)" == *"read .handoffs/orphan-865.md"* ]]'
+echo "# reused" > "$R/.handoffs/reused-865.md"
+printf 'reused-865.md %s Thu1Jan00:00:001970\n' "$$" >> "$R/.handoffs/.held"
+hook SessionStart o8 "$T/low.jsonl" ',"source":"clear"'
+check "#865 so is one whose pid now belongs to a process that started later" '[[ "$(ctx)" == *"read .handoffs/reused-865.md"* ]]'
+# fn <name> <args...>: call one of the hook's functions directly, printing its result
+printf 'import importlib.util as u, sys\ns = u.spec_from_file_location("h", sys.argv[1]); m = u.module_from_spec(s); s.loader.exec_module(m)\nprint(getattr(m, sys.argv[2])(*sys.argv[3:]))\n' > "$T/fn.py"
+fn(){ python3 "$T/fn.py" "$HOOK" "$@"; }
+echo "# live" > "$R/.handoffs/live-865.md"
+printf 'live-865.md %s %s\n' "$$" "$(fn process_start $$)" >> "$R/.handoffs/.held"
+hook SessionStart o7 "$T/low.jsonl" ',"source":"clear"'
+check "#865 while one held by a running process, started when it did, is skipped" '[[ "$(ctx)" != *"live-865.md"* ]]'
+ST="$(TZ=Asia/Tokyo LC_ALL=C fn process_start $$)"
+check "#865 a start time read under another TZ and locale still matches" '[ "$(TZ=America/New_York fn process_alive $$ "$ST")" = True ]'
+check "#865 a pid held by another user's process that started at another time has lapsed" '[ "$(fn process_alive 1 t0)" = False ]'
+
+# A /clear straight after a compaction, with no crossing since, still finds the session's own handoff
+# when another session's is newer.
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=k1 hook PostToolUse k1 "$T/high.jsonl"
+KP="$(ctx | grep -o "$R/.handoffs/[^ ]*\.md" | head -1)"; echo "# k1" > "$KP"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=k1 hook SessionStart k1 "$T/low.jsonl" ',"source":"compact"'
+age "$KP" 30; echo "# another session" > "$R/.handoffs/other-865.md"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=k1 hook SessionStart k2 "$T/low.jsonl" ',"source":"clear"'
+check "#865 a /clear right after a compaction reads its own handoff, not another's newer one" '[ -n "$KP" ] && [[ "$(ctx)" == *"read .handoffs/$(basename "$KP")"* ]]'
 
 # ---- DS-282: two sessions in one repo each keep their own handoff ----
 rm -rf "$R/.handoffs"
@@ -332,7 +407,8 @@ fn="$(sed -n '/^register_hook() {$/,/^}$/p' "$SRC/install.sh")"
 check "register_hook is found in install.sh"              '[ -n "$fn" ] && [ -n "${DESK_WRITE_JSON_PY:-}" ]'
 eval "$fn"
 SETTINGS="$T/settings.json"
-EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+EVENTS="$(sed -n 's/^HANDOFF_EVENTS="\(.*\)"$/\1/p' "$SRC/install.sh")"
+check "HANDOFF_EVENTS is read from install.sh, PreCompact among them" '[[ " $EVENTS " == *" PreCompact "* ]]'
 printf '{"model":"opus","hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine.sh"}]}]}}\n' > "$SETTINGS"
 reg(){ rc=0; register_hook "$@" || rc=$?; out=$(cat "$SETTINGS" 2>/dev/null); }
 # shellcheck disable=SC2086
@@ -341,7 +417,7 @@ check "check: not registered is exit 1"                   '[ $rc -eq 1 ]'
 # shellcheck disable=SC2086
 reg apply desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
 q(){ python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$SETTINGS" "$1"; }
-check "apply: each of the four events runs the hook"      '[ "$(q "sum(1 for ev in \"$EVENTS\".split() for e in d[\"hooks\"][ev] for h in e[\"hooks\"] if h[\"command\"]==\"python3 \\\"/h/desk-handoff.py\\\"\" and h[\"timeout\"]==15)")" = 4 ]'
+check "apply: each of the five events runs the hook"      '[ "$(q "sum(1 for ev in \"$EVENTS\".split() for e in d[\"hooks\"][ev] for h in e[\"hooks\"] if h[\"command\"]==\"python3 \\\"/h/desk-handoff.py\\\"\" and h[\"timeout\"]==15)")" = 5 ]'
 check "apply: other settings and hooks are kept"          '[ "$(q "d[\"model\"]")" = opus ] && [ "$(q "d[\"hooks\"][\"Stop\"][0][\"hooks\"][0][\"command\"]")" = mine.sh ]'
 # shellcheck disable=SC2086
 reg check desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
@@ -352,7 +428,7 @@ check "apply again adds nothing"                          '[ "$(q "len(d[\"hooks
 python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["hooks"]["Stop"]=d["hooks"]["Stop"][:1]; json.dump(d,open(p,"w"))' "$SETTINGS"
 # shellcheck disable=SC2086
 reg apply desk-handoff.py 'python3 "/h/desk-handoff.py"' 15 "" $EVENTS
-check "one event missing: only it is added back"          '[ $rc -eq 0 ] && [ "$(q "[len(d[\"hooks\"][ev]) for ev in \"$EVENTS\".split()]")" = "[1, 1, 2, 1]" ]'
+check "one event missing: only it is added back"          '[ $rc -eq 0 ] && [ "$(q "[len(d[\"hooks\"][ev]) for ev in \"$EVENTS\".split()]")" = "[1, 1, 2, 1, 1]" ]'
 reg apply deny-ai-attribution.py 'python3 "/h/deny.py"' 10 Bash PreToolUse
 check "a matcher is written when given"                   '[ "$(q "d[\"hooks\"][\"PreToolUse\"][0][\"matcher\"]")" = Bash ] && [ "$(q "\"matcher\" in d[\"hooks\"][\"SessionStart\"][0]")" = False ]'
 : > "$SETTINGS"
@@ -361,5 +437,20 @@ check "an empty settings.json is treated as {}"           '[ $rc -eq 0 ] && [ "$
 printf '{not json' > "$SETTINGS"
 reg check desk-update-check.sh 'bash "/h/u.sh"' 15 "" SessionStart
 check "unreadable settings.json: exit 2, untouched"       '[ $rc -eq 2 ] && [ "$out" = "{not json" ]'
+
+# ---- install.sh's settings_env, which offers compaction mode, on a throwaway settings.json ----
+eval "$(sed -n '/^settings_env() {$/,/^}$/p' "$SRC/install.sh")"
+check "settings_env is found in install.sh"               'declare -F settings_env >/dev/null'
+printf '{"model":"opus","env":{"FOO":"1"}}\n' > "$SETTINGS"
+rc=0; settings_env check CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 55 || rc=$?
+check "settings_env check: unset is exit 1"               '[ $rc -eq 1 ]'
+rc=0; settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 55 || rc=$?
+check "settings_env apply: sets it and keeps the rest"    '[ $rc -eq 0 ] && [ "$(q "d[\"env\"][\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\"]")" = 55 ] && [ "$(q "d[\"env\"][\"FOO\"]+d[\"model\"]")" = 1opus ]'
+printf '{"env":{"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE":"30"}}\n' > "$SETTINGS"
+rc=0; settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 55 || rc=$?
+check "settings_env: a value already set is kept"         '[ $rc -eq 0 ] && [ "$(q "d[\"env\"][\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\"]")" = 30 ]'
+printf '{not json' > "$SETTINGS"
+rc=0; settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE 55 || rc=$?
+check "settings_env: unreadable settings.json is exit 2, untouched" '[ $rc -eq 2 ] && [ "$(cat "$SETTINGS")" = "{not json" ]'
 
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

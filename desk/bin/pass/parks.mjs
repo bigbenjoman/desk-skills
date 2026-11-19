@@ -29,7 +29,7 @@
 //   unpromoted {key, into}        -> intake.mjs unpromotedBase(key, into): the branch key merged into instead, and its promotion PR into `into`
 //   landed-here {key}             -> whether key is in another configured repo, or landed on the default branch
 import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS, promotionWords,
-  HELD_PREFIX, LIVE_READ, personStep, triageGate } from '../batch-state.mjs';
+  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
@@ -315,12 +315,19 @@ export function* decideOutsideBlockers(s) {
 // another branch is recorded on the ticket with that branch and its promotion PR (raiseUnpromoted), for
 // the person to promote it or start without it; the hold stays.
 //
+// Whether a blocker landed reads GitHub, so a pass asks it once per blocker however many tickets wait
+// on it, and for a ticket's blockers at most once every IDLE_RECHECK_MS (outside_read): a busy batch
+// passes every tick, and an idle one rechecks on that interval (supervisor.mjs), so a blocker that
+// lands is seen within it either way. Whether an epic landed through its epic PR reads the batches on
+// disk, so it is asked once per pass; the GitHub read it makes for an archived batch whose merge
+// nothing recorded keeps its answer in that archive (pass.mjs epicMerged) and so has its own interval.
+//
 // The snapshot: tickets, epic, triage (as for person-step holds), defaultBranch (the batch's base),
 // repoDefault (the repo's default branch), now (in ms), dry.
 export function* decideOutsideHolds(s) {
   const { tickets } = s;
   const { ownEpicOf } = blockerViews(tickets, s.epic);
-  const landed = new Map();
+  const answers = { landed: new Map(), 'epic-merged': new Map() };
   const unpromoted = new Map();
   for (const t of Object.values(tickets).filter((x) => holdsKept(x) && x.held_outside && !stoppedHold(x))) {
     const outside = keysOf(t.held_outside);
@@ -329,10 +336,24 @@ export function* decideOutsideHolds(s) {
     const blockers = rec?.blockers;
     const done = new Set((blockers ?? []).filter((b) => b?.category === 'done' && !closedUnlanded(b)).map((b) => b.key));
     const unlinked = Array.isArray(blockers) ? outside.filter((p) => !tickets[p] && !ownEpic.includes(p) && !blockers.some((b) => b?.key === p)) : [];
+    // `now` is when the supervisor started the pass (DESK_PASS_AT), the same clock its idle recheck
+    // counts from, so the pass that recheck starts is a whole interval after the last read.
+    const recent = !!t.outside_read && s.now - Date.parse(t.outside_read) < IDLE_RECHECK_MS;
+    let read = false;
+    // The answer for blocker p, asked only where no ticket asked it this pass, and whether it landed
+    // only where this ticket's were not read within the interval; undefined when not asked. Only a
+    // ticket that asked all its blockers moves its own clock: an answer another ticket fetched, picked
+    // up while this one's are recent, would otherwise keep its unshared blockers from ever being asked.
+    function* ask(type, p) {
+      if (!answers[type].has(p)) { if (recent && type === 'landed') return undefined; answers[type].set(p, yield { type, key: p }); }
+      if (type === 'landed' && !recent) read = true;
+      return answers[type].get(p);
+    }
     // An epic whose own batch (this one, or the batch named for it) landed its base through its epic
-    // PR, whatever Jira says: the epic itself is never transitioned.
+    // PR: the epic itself is never transitioned, so this is asked of a blocker not Done in Jira. One
+    // Done is asked only whether it landed, which finds its epic PR too, so each blocker costs one read.
     const epicLanded = [];
-    for (const p of outside) if (!tickets[p] && !ownEpic.includes(p) && (yield { type: 'epic-merged', key: p })) epicLanded.push(p);
+    for (const p of outside) if (!tickets[p] && !ownEpic.includes(p) && !done.has(p) && (yield* ask('epic-merged', p))) epicLanded.push(p);
     // A blocker whose Jira Repository is another configured repo lands there, never on this base, so
     // Done in Jira alone lifts it.
     const awayDone = [];
@@ -341,11 +362,12 @@ export function* decideOutsideHolds(s) {
     const away = {};
     for (const p of outside) {
       if (tickets[p] || ownEpic.includes(p) || epicLanded.includes(p) || awayDone.includes(p) || !done.has(p)) continue;
-      if (!landed.has(p)) landed.set(p, yield { type: 'landed', key: p });
-      if (landed.get(p) === true) { landedNow.push(p); continue; }
-      // A read that failed keeps what was recorded.
+      const isLanded = yield* ask('landed', p);
+      if (isLanded === true) { landedNow.push(p); continue; }
+      // A read that failed, or one not asked because this ticket's were read within the interval,
+      // keeps what was recorded.
       const kept = t.unpromoted?.[p];
-      if (landed.get(p) !== false) { if (kept) away[p] = kept; continue; }
+      if (isLanded !== false) { if (kept) away[p] = kept; continue; }
       // Done a day or more with its code merged into another branch, never promoted: raised once, in needs-you.
       const since = Date.parse((blockers ?? []).find((b) => b?.key === p)?.resolved);
       if (!(s.now - since >= UNPROMOTED_AFTER_MS)) continue;
@@ -359,7 +381,8 @@ export function* decideOutsideHolds(s) {
     yield* raiseUnpromoted(t, away, s);
     const lifted = [...ownEpic, ...epicLanded, ...awayDone, ...landedNow, ...unlinked];
     const left = outside.filter((p) => !tickets[p] && !lifted.includes(p));
-    if (left.length === outside.length) continue;
+    const stamp = read && !s.dry ? [`outside_read=${new Date(s.now).toISOString()}`] : [];
+    if (left.length === outside.length) { if (stamp.length) yield set(t.key, ...stamp); continue; }
     const by = keysOf(t.held_by).filter((p) => !lifted.includes(p));
     const joined = outside.filter((p) => tickets[p]);
     const what = [ownEpic.length && `${ownEpic.join(', ')} its own epic, so its link is ignored`, epicLanded.length && `${epicLanded.join(', ')} landed on ${s.repoDefault} through its epic PR`,
@@ -368,13 +391,13 @@ export function* decideOutsideHolds(s) {
       joined.length && `${joined.join(', ')} now in this batch`].filter(Boolean).join('; ');
     if (s.dry) { yield epicLine(`outside hold (dry run): ${t.key}: ${what}`); continue; }
     if (by.length) {
-      yield set(t.key, `held_by=${by.join('|')}`, `held_outside=${left.join('|') || 'null'}`);
+      yield set(t.key, `held_by=${by.join('|')}`, `held_outside=${left.join('|') || 'null'}`, ...(left.length ? stamp : ['outside_read=null']));
       yield epicLine(`outside hold: ${t.key}: ${what}; still held behind ${by.join(', ')}`);
     } else if (!isHeld(t)) {
-      yield set(t.key, 'held_by=null', 'held_outside=null');
+      yield set(t.key, 'held_by=null', 'held_outside=null', 'outside_read=null');
       yield epicLine(`outside hold: ${t.key}: ${what}; hold lifted, and it stays parked: ${String(t.park.question).slice(0, 80)}`);
     } else {
-      yield set(t.key, 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null');
+      yield set(t.key, 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null', 'outside_read=null');
       yield { type: 'front', key: t.key };
       yield epicLine(`outside hold: ${t.key}: ${what}; RELEASED`);
     }

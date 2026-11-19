@@ -44,7 +44,10 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   minutes is stopped and its items handed on as `decider timed out`. What each session cost, settled
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
-  or a ticket admitted or requeued into this one).
+  or a ticket admitted or requeued into this one), a park is answered, or, with anything parked,
+  failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes. A pass asks
+  GitHub whether a held ticket's outside blockers landed at most once in that interval, busy batch or
+  idle.
 
 A batch not handed over gets no pass, so the supervisor never runs one before Stage 3 has asked; the
 log says so once per batch.
