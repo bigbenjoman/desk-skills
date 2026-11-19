@@ -43,10 +43,14 @@ const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 1
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 
 // What a WAITING ON YOU line waits on, for its id: its ticket, its class (`DRAFT`, `STUCK`, `READY TO
-// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. A line
-// with no class is keyed on all of it.
+// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. The batch's
+// base sync line is keyed on its label alone, as its cause and commit count change pass to pass. Any
+// other line with no class is keyed on all of it.
+const BASE_SYNC = 'base sync';
+export const baseSyncLine = (line) => String(line).split(':')[0] === BASE_SYNC;
 function waitKey(line) {
   const s = String(line);
+  if (baseSyncLine(s)) return BASE_SYNC;
   const m = /^([^:]*): ([A-Z][A-Z ]*[A-Z]) — /.exec(s);
   if (!m) return s;
   const pr = /PR #(\d+)/.exec(s.slice(m[0].length));
@@ -78,7 +82,9 @@ export function samePark(a, b, ticket = '') {
 // last requeue cleared, whether this one asks the same thing, and the clears-when it had when listed.
 // A triaged ticket's line carries its open questions word for word (openQuestionsOf). A park's `note`
 // (its PR conflicting with the base, say) goes in its text, never its id, so the item stays one item.
-export function deciderItems(v, q = {}, state = null) {
+// The base sync line carries `baseSha`, origin's head of the batch base, as its `base`: one handed on
+// is dropped once that moves (pruneHanded), so a new base gets one new session.
+export function deciderItems(v, q = {}, state = null, { baseSha = null } = {}) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
     const prev = tickets[p.key]?.prev_park ?? null;
@@ -93,7 +99,8 @@ export function deciderItems(v, q = {}, state = null) {
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
-    const item = { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
+    const item = { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null,
+      ...(baseSyncLine(line) && baseSha ? { base: baseSha } : {}) };
     const questions = item.state === 'triaged' ? openQuestionsOf(state, label, tickets[label]) : [];
     return questions.length ? { ...item, questions } : item;
   });
@@ -199,7 +206,7 @@ export function handItems(state, handed, now = new Date()) {
   const added = [];
   for (const h of handed) {
     if (r[h.item.id] && !answered(state, r[h.item.id])) continue;
-    r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString() };
+    r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString(), ...(h.item.base ? { base: h.item.base } : {}) };
     added.push(h);
   }
   if (added.length) writeHanded(state, r);
@@ -214,14 +221,19 @@ export function dropHanded(state, ids) {
 }
 
 // Drops every handed item the latest pass no longer lists: it was settled some other way. One it still
-// lists keeps its time and takes the line's latest wording. The archive check's own items (kind
-// `archive`, batch.mjs) are no pass's, and that check drops them.
+// lists keeps its time and takes the line's latest wording, unless it was handed on at another base
+// than the item now names, which drops it too. The archive check's own items (kind `archive`,
+// batch.mjs) are no pass's, and that check drops them.
 export function pruneHanded(state, items) {
   const r = readHanded(state);
-  const live = new Map(items.map((i) => [i.id, i.text]));
-  const kept = Object.fromEntries(Object.entries(r).filter(([id, e]) => live.has(id) || e.kind === 'archive'));
-  const reworded = Object.entries(kept).filter(([id, e]) => live.has(id) && e.text !== live.get(id));
-  for (const [id, e] of reworded) e.text = live.get(id);
+  const live = new Map(items.map((i) => [i.id, i]));
+  const moved = (e, i) => !!(e.base && i.base && e.base !== i.base);
+  const kept = Object.fromEntries(Object.entries(r).filter(([id, e]) => (live.has(id) && !moved(e, live.get(id))) || e.kind === 'archive'));
+  const reworded = Object.entries(kept).filter(([id, e]) => live.has(id) && (e.text !== live.get(id).text || (!e.base && live.get(id).base)));
+  for (const [id, e] of reworded) {
+    e.text = live.get(id).text;
+    if (live.get(id).base) e.base = live.get(id).base;
+  }
   if (Object.keys(kept).length !== Object.keys(r).length || reworded.length) writeHanded(state, kept);
   return kept;
 }
