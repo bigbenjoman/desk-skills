@@ -138,6 +138,12 @@ check-in digest can list it. Taking it is not widening §3: a row that is not `y
 asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
 for workers: where that row is not `yes`, a worker parks on it.
 
+**Tickets the person already chose are not asked again.** Adding them to a running batch (a
+planned next phase, a ticket they named) needs no confirmation when every §3 row the batch hits for
+them is `yes`: admit them and say so in one line. In the session that runs the batch, that is
+`intake.mjs admit <TICKET>... --session`; under the supervisor, `/desk-admit`. Ask only for a §3 row
+they hit that is not `yes`, or a question this section keeps.
+
 Two scope calls are always taken where it is `yes`:
 
 - **A gap a sibling ticket in the epic owns is not a question.** Cite the sibling's key in an
