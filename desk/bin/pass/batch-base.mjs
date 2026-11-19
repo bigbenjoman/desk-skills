@@ -15,7 +15,7 @@
 //   queue        the queue as the pass's spawn section read it
 //   base, source the batch base, and the default branch it is synced from
 //   willSpawn    this pass has slots and tickets to spawn
-//   epicOn       an epic batch not in feature mode;  epicOpen  its epic PR is open
+//   epicOpen     an epic batch's epic PR is open
 //   sliceBad     config §3b "Promotion slice size (children)" said as unreadable, or null
 //   behindMax    how many commits behind the default branch a base outside feature mode may be and
 //                still spawn while its sync is blocked
@@ -55,14 +55,11 @@
 //                               baseLag, baseNotSynced, baseWt, baseFix, baseFixLive, baseFixResume,
 //                               gateConflict }
 //   baseline {path}             record the baseline checks in the base worktree (decideBaseline)
-//   open-promotion {path, carry}    open the promotion or epic PR
-//   next-promotion {path, promotion}  follow a merged promotion PR with the next one
 import { workerMarkers, endedNormally } from '../harvest.mjs';
 import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
-import { epicDue, epicCarry } from '../batch-state.mjs';
 import { behindPrs } from '../desk-q.mjs';
 import { summary } from '../baseline.mjs';
 import { QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, usageHeldText, tryWhat, tryNo } from './shared.mjs';
@@ -291,15 +288,7 @@ export function* decideBaseSync(s) {
   const fixOwns = baseFixLive || baseFix != null;
   yield { type: 'synced', state: { bf, baseHold, baseLag, baseNotSynced, baseWt: wt.ok ? wt.path : null, baseFix, baseFixLive, baseFixResume, gateConflict } };
   if (wt.ok && s.willSpawn && !gateBusy && !baseHold && !fixOwns && s.baselineOn) yield { type: 'baseline', path: wt.path };
-  if (wt.ok && featureMode && !fixOwns && q.promotion == null) yield { type: 'open-promotion', path: wt.path };
-  else if (wt.ok && featureMode && !fixOwns && q.promotion?.pr != null && !gateBusy) yield { type: 'next-promotion', path: wt.path, promotion: q.promotion };
-  // An epic batch not in feature mode opens its epic PR once every child has merged into the base, and
-  // tries again each pass until one is open.
-  // Each one opened after an earlier merged keeps that merge as `since`, and every earlier merge in
-  // `merged`, through a retry too: needs-you ages a child's follow-on steps from the epic PR that
-  // promoted it (needs-you.mjs outAt), so a reopen must not drop one.
-  const ep = q.promotion;
-  if (wt.ok && s.epicOn && !fixOwns && epicDue(q) && (ep?.pr == null || ep.merged_at)) yield { type: 'open-promotion', path: wt.path, carry: epicCarry(ep) };
+  // The promotion or epic PR it opens next is pass/promotion-pr.mjs decidePromotion's.
 }
 
 // ---- baseline checks -------------------------------------------------------

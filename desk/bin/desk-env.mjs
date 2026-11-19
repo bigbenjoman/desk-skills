@@ -1248,9 +1248,13 @@ export const binDir = () => join(deskHome(), 'bin');
 // to a person or written into settings stay binDir(), which follows the current release.
 export function runBin() {
   const here = dirname(fileURLToPath(import.meta.url));
+  return releaseDirOf(here) ? here : binDir();
+}
+// The release folder a real bin path belongs to (<DESK_HOME>/releases/<name>/bin), or null outside one.
+export function releaseDirOf(bin, home = deskHome()) {
   let releases;
-  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
-  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+  try { releases = join(realpathSync(home), 'releases'); } catch { return null; }
+  return dirname(dirname(bin)) === releases && basename(bin) === 'bin' ? dirname(bin) : null;
 }
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under

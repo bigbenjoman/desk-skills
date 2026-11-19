@@ -124,7 +124,7 @@ export function lastPromotion(tickets, mergedAt) {
 }
 
 // Whether a feature batch's last promotion PR has merged, so it takes no more tickets: as a pass
-// recorded it (pass.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
+// recorded it (pass/promotion-pr.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
 // when no pass has recorded it.
 export const lastPromotionRecorded = (q) => q?.promotion?.pr != null && (q.promotion.merged ?? []).some((m) => String(m.pr) === String(q.promotion.pr));
 function promoted(q) {
