@@ -3457,12 +3457,12 @@ function leversCommand(argv, { now, opener, rebuild, say }) {
 }
 
 // The repo `desk-q <repo> …` loads alone (loadRepos), else null for every repo. Costs, ships, days and
-// levers read every repo, and so do the --json views, whose first word is the view, not a repo. A
-// workers change reads every repo too: it is weighed against every live batch's workers and every
-// repo's ports.
+// levers read every repo, and so does a workers change, which is weighed against every live batch's
+// workers and every repo's ports. Of the --json views, whose first word is the view, only repo and
+// ticket name a repo, in their second word.
 function scopeWord(argv) {
-  if (argv.includes('--json')) return null;
   const [first, verb] = argv.filter((a) => !a.startsWith('--'));
+  if (argv.includes('--json')) return ['repo', 'ticket'].includes(first?.toLowerCase()) && verb ? verb : null;
   return first && !['costs', ...SHIPS, 'days', 'levers'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
 }
 

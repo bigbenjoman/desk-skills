@@ -4338,6 +4338,8 @@ async function spawnAudit({ key, item, sha, model, task, brief }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return { error: refused, preflight_usd };
+  // It takes a slot, as a ticket worker does, so a promotion check try later this pass counts it.
+  attempts += 1;
   report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
   return { session: sid, worktree: wt, state: STATE, preflight_usd };
 }
@@ -4712,7 +4714,7 @@ async function promotionChecksStep(qx) {
   }
   clear();
   const last = bf?.tries?.[bf.tries.length - 1];
-  // The ticket workers this pass started took slots baseFixRoom counted before they did.
+  // The ticket workers and blind audits this pass started took slots baseFixRoom counted before they did.
   const roomLeft = attempts < Math.min(concurrency - running.length, MACHINE.room, REPO.room);
   if (baseFixLive) {
     out.push(last?.kind === 'checks' && last.pr === n ? `${said}; check try ${last.try} of ${FIX_TRIES_MAX} is at it (session ${bf.running})`
