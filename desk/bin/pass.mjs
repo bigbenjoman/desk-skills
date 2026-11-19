@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -2359,13 +2359,15 @@ for (const t of Object.values(queue().tickets)) if (clearable(t) && t.park.clear
 // The epic PR of an epic batch not in feature mode, as GitHub has it: { pr, state, isDraft, head }, or
 // { pr, unreadable }, or null with none open. One that merged is recorded as `promotion.merged_at`.
 function readEpicPr(qx) {
-  const r = readBasePr(qx, 'mergedAt');
+  const r = readBasePr(qx, 'mergedAt,mergeCommit');
   if (!r || r.unreadable) return r;
   const { p, v } = r;
   if (v.state === 'MERGED') {
     const at = v.mergedAt ?? new Date().toISOString();
-    if (!DRY) q('set-batch', `promotion.merged_at=${at}`);
-    qx.promotion = { ...p, merged_at: at };
+    // Its merge commit gates its children's production steps (needs-you.mjs gateHeld), whatever way it merged.
+    const oid = mergeOid(v);
+    if (!DRY) q('set-batch', `promotion.merged_at=${at}`, ...(oid ? [`promotion.merge_commit=${oid}`] : []));
+    qx.promotion = { ...p, merged_at: at, ...(oid ? { merge_commit: oid } : {}) };
     baseLines.push(`epic PR #${p.pr} merged ${BASE} into ${SOURCE}`);
   }
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null };
@@ -2379,6 +2381,9 @@ function readPromotionPr(qx) {
   const { p, v } = r;
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
+// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
+// A declaration, as readEpicPr runs above it.
+function mergeOid(v) { return /^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null; }
 // The batch's recorded promotion or epic PR read from GitHub with `extra` beside its state, draft and
 // head: { p (the record), v (gh's answer) }, or { pr, unreadable }, or null with none open.
 function readBasePr(qx, extra) {
@@ -2406,12 +2411,13 @@ function promotionRed(qx, v) {
 // from that merge. The ledger comment is written afresh on the new PR by the next ledger update.
 function nextPromotion(path, p) {
   if ((p.merged ?? []).some((m) => m.pr === p.pr)) return;
-  const raw = sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', 'state,mergedAt'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', 'state,mergedAt,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return; }
   if (v?.state !== 'MERGED') return;
   const slice = p.slice ?? 1;
-  const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null }];
+  const oid = mergeOid(v);
+  const merged = [...(p.merged ?? []), { pr: p.pr, slice, merged_at: v.mergedAt ?? null, ...(oid ? { merge_commit: oid } : {}) }];
   if (lastPromotion(fresh.tickets, v.mergedAt)) {
     if (!DRY) q('set-batch', `promotion.merged=${JSON.stringify(merged)}`);
     return;
@@ -3794,10 +3800,15 @@ const prStates = {};
 // merged_at yet. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 const PR_FINAL = ['MERGED', 'CLOSED'];
-// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
-const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
+// (harvest.mjs postMergeOwed).
+// A follow step gated on the default branch or production (needs-you.mjs gateHeld) waits on its PR's
+// merge commit, which a merge recorded without reading the PR (needs-you's done, a hand-ship) lacks, so
+// that PR is read again for it. GitHub names a merged PR's merge commit, so one read records it.
+const gatedFollow = (t) => followOnPending(t) && t.follow_on.some((s) => (s?.after ?? 'merge') !== 'merge');
+const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -3812,7 +3823,7 @@ function readPrStatus(n) {
   const postMerge = conflictHandle ? postMergeSteps(latestReview(v.reviews, conflictHandle)?.body) : [];
   return {
     ...(postMerge.length ? { post_merge: postMerge } : {}),
-    pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
+    pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), merge_commit: v.mergeCommit?.oid ?? null,
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
     base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
@@ -3922,8 +3933,8 @@ for (const t of Object.values(qNow.tickets)) {
   const owed = t.reopening != null && String(t.reopening) === String(n);
   if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
     prStates[n] = t.pr_status.state;
-    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n))) continue;
-    if (t.pr_status.merged_at) s = t.pr_status;
+    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
+    if (t.pr_status.merged_at && !commitOwed(t)) s = t.pr_status;
   } else if (n in prStates) continue;
   if (!s) {
     s = readPrStatus(n);
@@ -3946,17 +3957,31 @@ for (const t of Object.values(qNow.tickets)) {
   // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
   // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first. An
   // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
-  // these steps. One write, so a refused one leaves the criteria owed to the next pass.
+  // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
+  // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
+  // this is written skips it whole, so the next pass adds the criteria to what done left.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
+    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
-    if (q('set', t.key, ...steps, `post_merge_read=${n}`) && later.length) {
+    // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+    const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
+    const ok = [stateOf(t), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(t)];
+    const args = ['set', t.key, ...steps, `post_merge_read=${n}`];
+    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
+    if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+    if (w.ok && !w.skipped && later.length) {
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
     }
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
+// needs-you judges a gated follow step from the repo root's remote refs, so origin is fetched each pass
+// while one waits: nothing else moves origin/<default> or the Promotion ref there on a quiet repo.
+if (Object.values(qNow.tickets).some(gatedFollow)) {
+  const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
+  if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
+}
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));

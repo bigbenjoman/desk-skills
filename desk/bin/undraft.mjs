@@ -238,9 +238,13 @@ export function postMergeIn(body) {
   } catch { return []; }
 }
 // Those criteria as the follow-on steps a merged ticket keeps for the person (pass.mjs follow_on,
-// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system.
+// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system. What a
+// criterion needs is its gate (harvest.mjs FOLLOW_GATES): production waits on the production ref,
+// staging and a deploy on the default branch, anything else on the merge.
 const POST_MERGE_STEP ='Check after the merge: ';
-export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null }));
+const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
+export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null,
+  ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
 
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
