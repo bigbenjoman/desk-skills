@@ -77,6 +77,12 @@ since round 2. After the third round there is no fourth without the user. From r
   ticket the body links instead (`desk-pr` §2). Nothing stops for them, whatever §3 `jira-create`
   says: without it they stay in the body.
 
+**With §4 Tracker (`desk-env get tracker`) `none`, a GitHub issue in this repo is the ticket.**
+Opening a follow-up issue is §3 `gh-issue-create`, and commenting on another issue is §3
+`gh-issue-comment`: at `yes`, print the exact text as it posts; at `ask`, print it and wait; at `no`,
+hand the text over. The issue this ticket works from still gets no comment, label or close: its PR
+closes it.
+
 The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
 starts again at one.
 
