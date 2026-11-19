@@ -11,7 +11,7 @@ import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
-import { handoffTarget, openPrOf, repointToPr, writeHandback } from './handoff.mjs';
+import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -204,6 +204,9 @@ function passRunning() {
 // Read before the queue lock (the registry read can outlast another writer's wait for it), for the
 // ticket `requeue` names on the command line, as { key, session, park }.
 let exitedPark = null;
+// Read before the queue lock too, for the ticket `handback` names: { key, worktree, pr, fetchError },
+// its own open PR (handoff.mjs openPrOf) and whether its head could be fetched.
+let prePr = null;
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
@@ -296,17 +299,19 @@ function handback(q, key, note) {
   if (never) throw new Error(`${key} parked mid-build on ${never}, which no worker is allowed, so a worker starting at self-review would skip the rest of its build. Finish it in an interactive session: /desk-ticket ${key}`);
   let missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
   // Its own open PR on another branch is where its work is: the worktree moves onto that branch, the
-  // queued one kept as a backup, unless the queued one holds commits the PR does not.
+  // queued one kept as a backup, unless the queued one holds commits the PR does not. The PR was read
+  // and fetched before the queue lock (prePr).
   let repointed = '';
-  if (missing || ownPr(t) != null) {
-    const pr = openPrOf({ key, pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
-    const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr });
-    if (moved?.why) throw new Error(`${key}: ${moved.why}. Finish it in an interactive session: /desk-ticket ${key}`);
-    if (moved?.branch) {
-      repointed = `; its branch ${t.branch} re-pointed to its open PR #${pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
-      t.branch = moved.branch;
-      missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
-    }
+  const pr = prePr?.key === key && prePr.worktree === t.worktree ? prePr.pr : null;
+  const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr, fetchError: prePr?.fetchError });
+  // A PR found only by naming the ticket does not outrank a queued branch that is in place with work of
+  // its own: that one is handed back as before.
+  const unrecordedOverWork = moved?.ahead && !missing && !pr.recorded;
+  if (moved?.why && !unrecordedOverWork) throw new Error(`${key}: ${moved.why}. Finish it in an interactive session: /desk-ticket ${key}`);
+  if (moved?.branch) {
+    repointed = `; its branch ${t.branch} re-pointed to its open PR #${pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
+    t.branch = moved.branch;
+    missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
   }
   if (missing) throw new Error(`${key}: ${missing}, so no worker can start it at Stage 4b. Finish it in an interactive session: /desk-ticket ${key}`);
   const at = new Date().toISOString();
@@ -316,7 +321,12 @@ function handback(q, key, note) {
   // park behind with the requeue, so it needs no change.
   Object.assign(t, { handoff_stage: '4b', ...(t.lane === 'C' ? { lane: 'B' } : {}) });
   let msg;
-  try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
+  try { msg = requeue(q, key, { handedBack: true }); } catch (e) {
+    Object.assign(t, was);
+    // The worktree has already moved, so the queue records where it now is even though nothing is requeued.
+    if (repointed) { save(q); e.message += `. Not requeued, but${repointed.slice(1)}, and the queue records it`; }
+    throw e;
+  }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
@@ -663,12 +673,20 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
+}
+// handback's gh read and git fetch can outlast another writer's wait for the queue lock, so they run first.
+if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
+  const t = readQueue(QUEUE).tickets?.[args[0]];
+  if (t?.worktree && existsSync(t.worktree)) {
+    const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
+    prePr = { key: args[0], worktree: t.worktree, pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
+  }
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue

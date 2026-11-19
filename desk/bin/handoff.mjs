@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
-import { keyPattern } from './batch-state.mjs';
+import { prNames } from './recoveries.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -163,47 +163,76 @@ export function handoffTarget({ worktree, branch }) {
 }
 
 // The ticket's own open PR as { number, head }, or null. Its recorded PR (`pr`) when that one is open,
-// else the one open PR whose title or head branch names `key`; a fork's PR is never its own.
+// read by its number, else the one open PR whose title or head branch names `key`; a fork's PR is never
+// its own. `recorded` says which, since only a recorded PR outranks a queued branch with work of its own.
 export function openPrOf({ key, pr = null, repo, worktree }) {
-  let prs;
-  try {
-    prs = JSON.parse(execFileSync('gh', ['pr', 'list', ...(repo ? ['--repo', repo] : []), '--state', 'open', '--search', key, '--limit', '30',
-      '--json', 'number,title,headRefName,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }) || '[]');
-  } catch { return null; }
-  const own = (Array.isArray(prs) ? prs : []).filter((p) => p?.headRefName && !p.isCrossRepository);
-  const recorded = pr == null ? null : own.find((p) => Number(p.number) === Number(pr));
-  const re = new RegExp(keyPattern(String(key)));
-  const naming = own.filter((p) => re.test(String(p.title ?? '')) || re.test(String(p.headRefName)));
-  const hit = recorded ?? (naming.length === 1 ? naming[0] : null);
-  return hit ? { number: Number(hit.number), head: String(hit.headRefName) } : null;
+  const gh = (...a) => {
+    try {
+      return JSON.parse(execFileSync('gh', [...a, ...(repo ? ['--repo', repo] : [])], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }) || 'null');
+    } catch { return null; }
+  };
+  const ownOpen = (p) => p?.headRefName && !p.isCrossRepository && (p.state == null || p.state === 'OPEN');
+  const as = (p, recorded) => ({ number: Number(p.number), head: String(p.headRefName), recorded });
+  if (pr != null) {
+    const v = gh('pr', 'view', String(pr), '--json', 'number,state,headRefName,isCrossRepository');
+    if (ownOpen(v)) return as(v, true);
+  }
+  const prs = gh('pr', 'list', '--state', 'open', '--search', key, '--limit', '30', '--json', 'number,title,headRefName,isCrossRepository');
+  const naming = (Array.isArray(prs) ? prs : []).filter((p) => ownOpen(p) && prNames(key)(p));
+  return naming.length === 1 ? as(naming[0], false) : null;
 }
 
-// A worktree whose queued branch is not its open PR's head, moved onto that head: the PR's branch is
-// fetched and checked out, and the queued branch, where it still exists, is renamed to a backup ref.
-// Returns { branch, backup } once on the PR's head, { why } when the queued branch (or a detached
-// HEAD) holds commits the PR's head does not, and null when there is nothing to move to.
-export function repointToPr({ worktree, branch, pr }) {
-  if (!pr?.head || pr.head === branch || !worktree || !existsSync(worktree)) return null;
+// Brings origin's copy of the PR's head into the worktree, as refs/remotes/origin/<head>: null once
+// fetched, else why not. Kept apart from repointToPr so the network call runs before the queue lock.
+export function fetchPrHead({ worktree, pr }) {
+  if (!pr?.head || !worktree || !existsSync(worktree)) return null;
+  try {
+    execFileSync('git', ['-C', worktree, 'fetch', '-q', 'origin', `+refs/heads/${pr.head}:refs/remotes/origin/${pr.head}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    return null;
+  } catch (e) { return String(e.stderr ?? e.message).trim().split('\n').pop(); }
+}
+
+// A worktree whose queued branch is not its open PR's head (or is its head's name, but missing), moved
+// onto that head as fetched (fetchPrHead): checked out, a local copy behind the PR fast-forwarded, and
+// the queued branch, where it still exists, renamed to a backup ref. Returns { branch, backup } once on
+// the PR's head; { why, ahead } when the queued branch (or a detached HEAD) holds commits the PR's head
+// does not, `ahead` listing them; { why } when anything else stops it, before any change; and null when
+// there is nothing to move to.
+export function repointToPr({ worktree, branch, pr, fetchError = null }) {
+  if (!pr?.head || !worktree || !existsSync(worktree)) return null;
   const run = (...a) => { try { return { ok: true, out: execFileSync('git', ['-C', worktree, ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch (e) { return { ok: false, out: String(e.stderr ?? e.message).trim() }; } };
-  const remote = `refs/remotes/origin/${pr.head}`;
-  const fetched = run('fetch', '-q', 'origin', `+refs/heads/${pr.head}:${remote}`);
-  if (!fetched.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, which could not be fetched (${fetched.out.split('\n').pop()})` };
-  const hasQueued = run('rev-parse', '--verify', '-q', `refs/heads/${branch}`).ok;
+  const has = (ref) => run('rev-parse', '--verify', '-q', ref).ok;
+  const last = (r) => r.out.split('\n').pop();
   const on = run('branch', '--show-current').out;
+  if (pr.head === branch && has(`refs/heads/${branch}`)) return null;
+  const remote = `refs/remotes/origin/${pr.head}`;
+  if (fetchError || !has(remote)) return { why: `its open PR #${pr.number} is on ${pr.head}, which could not be fetched (${fetchError ?? 'no copy of it from origin'})` };
+  const hasQueued = branch !== pr.head && has(`refs/heads/${branch}`);
   const keep = [...(hasQueued ? [`refs/heads/${branch}`] : []), ...(on ? [] : ['HEAD'])];
   if (keep.length) {
     const extra = run('log', '--format=%h %s', ...keep, '--not', remote);
-    if (!extra.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and the commits not on it could not be listed (${extra.out.split('\n').pop()})` };
-    if (extra.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but ${hasQueued ? `its branch ${branch}` : 'its detached HEAD'} has commits that are not on it, so it was not re-pointed: ${extra.out.split('\n').join('; ')}` };
+    if (!extra.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and the commits not on it could not be listed (${last(extra)})` };
+    if (extra.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but ${hasQueued ? `its branch ${branch}` : 'its detached HEAD'} has commits that are not on it, so it was not re-pointed: ${extra.out.split('\n').join('; ')}`, ahead: extra.out };
   }
-  if (on !== pr.head) {
+  // A local copy of the PR's head must hold everything the PR does, or the worker reviews stale code:
+  // behind it is fast-forwarded below, and diverged from it is refused here, before anything moves.
+  const local = has(`refs/heads/${pr.head}`);
+  const behind = local && !run('merge-base', '--is-ancestor', remote, `refs/heads/${pr.head}`).ok;
+  if (behind && !run('merge-base', '--is-ancestor', `refs/heads/${pr.head}`, remote).ok) {
+    const own = run('log', '--format=%h %s', `refs/heads/${pr.head}`, '--not', remote).out.split('\n').join('; ');
+    return { why: `its open PR #${pr.number} is on ${pr.head}, but the local ${pr.head} has diverged from it, so it was not re-pointed: ${own}` };
+  }
+  if (on !== pr.head || behind) {
     const dirty = run('status', '--porcelain', '--untracked-files=no');
     if (!dirty.ok || dirty.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but its worktree ${worktree} has uncommitted changes, so it was not re-pointed` };
-    const local = run('rev-parse', '--verify', '-q', `refs/heads/${pr.head}`).ok;
+  }
+  if (on !== pr.head) {
     const moved = local ? run('checkout', '-q', pr.head) : run('checkout', '-q', '-b', pr.head, remote);
-    if (!moved.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, which its worktree could not be moved onto (${moved.out.split('\n').pop()})` };
-    // A local copy behind the PR catches up; one with commits of its own is left as it is.
-    if (local) run('merge', '-q', '--ff-only', remote);
+    if (!moved.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, which its worktree could not be moved onto (${last(moved)})` };
+  }
+  if (behind) {
+    const ff = run('merge', '-q', '--ff-only', remote);
+    if (!ff.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and its worktree is on it, but could not be brought up to the PR (${last(ff)})` };
   }
   if (!hasQueued) return { branch: pr.head, backup: null };
   let backup = `desk-backup/${branch}`;

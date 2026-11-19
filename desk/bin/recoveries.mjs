@@ -47,8 +47,13 @@ export function prTitleIn(text) {
   return title?.trim() || null;
 }
 
-// The merged PR whose title or head branch names `key` exactly (`DS-39` is not `DS-397`), or null.
-export function mergedNaming(key, prs) {
+// Whether a PR's title or head branch names `key` exactly (`DS-39` is not `DS-397`), as a predicate.
+export function prNames(key) {
   const re = new RegExp(keyPattern(String(key)));
-  return (Array.isArray(prs) ? prs : []).find((p) => re.test(String(p?.title ?? '')) || re.test(String(p?.headRefName ?? ''))) ?? null;
+  return (p) => re.test(String(p?.title ?? '')) || re.test(String(p?.headRefName ?? ''));
+}
+
+// The merged PR whose title or head branch names `key`, or null.
+export function mergedNaming(key, prs) {
+  return (Array.isArray(prs) ? prs : []).find(prNames(key)) ?? null;
 }
