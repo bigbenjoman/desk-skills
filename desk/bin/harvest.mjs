@@ -162,6 +162,12 @@ export function followOnIn(done) {
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
+// A kept PR status naming criteria its review left for after the merge that the pass has not made
+// follow-on steps of yet for PR `n` (pass.mjs post_merge_read).
+export const postMergeOwed = (t, n = t?.result?.pr) => (t?.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A merged ticket the pass still owes those steps: its batch is not finished, nor is it archived or
+// dropped by a new batch, until the pass has added them.
+export const postMergeUnmade = (t) => !!t?.merged_at && t.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && postMergeOwed(t);
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

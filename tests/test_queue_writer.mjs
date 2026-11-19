@@ -15,7 +15,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: join(T, 'config
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf, archivePath, mergeQueue, archivedOf } = await import('../desk/bin/queue-store.mjs');
-const { readQueue, waitingOnMerge } = await import('../desk/bin/batch-state.mjs');
+const { readQueue, waitingOnMerge, batchIdle } = await import('../desk/bin/batch-state.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -181,6 +181,15 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 a hold behind an archived ticket finds it, and is kept for the merge driver to release', `${h.status} ${read(f).tickets.A.held_by}`, '0 M');  qm('add', 'M');
   t('admitting an archived ticket again starts it over', read(f).tickets.M?.state, 'queued');
   t('queue.mjs saves one version higher each time, and a refused command saves nothing', read(f).version, versionOf(q) + 2);
+}
+
+// A merged ticket still owed its post-merge steps keeps its batch from idling, so the pass that adds
+// them still runs; once they are added, or for a PR that closed unmerged, the batch idles.
+{
+  const owedTk = (more) => tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] }, ...more });
+  const idle = (t) => batchIdle({ tickets: { P: t } }, () => 'MERGED');
+  t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, or never merged, it is',
+    `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))}`, 'false true true');
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

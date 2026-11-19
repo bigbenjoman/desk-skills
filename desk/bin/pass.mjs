@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -3800,8 +3800,8 @@ const prStates = {};
 // merged_at yet. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 const PR_FINAL = ['MERGED', 'CLOSED'];
-// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
-const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
+// (harvest.mjs postMergeOwed).
 // A follow step gated on the default branch or production (needs-you.mjs gateHeld) waits on its PR's
 // merge commit, which a merge recorded without reading the PR (needs-you's done, a hand-ship) lacks, so
 // that PR is read again for it. GitHub names a merged PR's merge commit, so one read records it.

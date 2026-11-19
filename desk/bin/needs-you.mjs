@@ -102,7 +102,7 @@ import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAs
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
-import { followOnPending } from './harvest.mjs';
+import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
@@ -347,10 +347,10 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (root && !fetched.has(root)) { fetched.add(root); reads.fetch?.(root); }
       if (!reads.pr) continue;
       const p = (t.promoted_at || viaBase(r.q, t)) && t.follow_on.some((s) => gateOf(s) === 'production') ? promotionOf(r.q, t) : null;
-      if (p && !SHA40.test(String(p.merge_commit ?? '')) && !promos.has(p.path)) {
-        promos.add(p.path);
+      if (p && !SHA40.test(String(p.merge_commit ?? '')) && /^\d+$/.test(String(p.pr)) && !promos.has(p.pr)) {
+        promos.add(p.pr);
         const oid = reads.pr(r, p.pr, ',mergeCommit').v?.mergeCommit?.oid;
-        if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set-batch', `${p.path}=${oid}`]);
+        if (SHA40.test(String(oid ?? ''))) queueCmd(r, ['set-batch', `promotion_commits.${p.pr}=${oid}`]);
       }
       if (t.pr_status?.merge_commit || t.result?.pr == null) continue;
       const oid = reads.pr(r, t.result.pr, ',mergeCommit').v?.mergeCommit?.oid;
@@ -858,15 +858,16 @@ function outAt(q, t) {
 // the step saying it was not checked.
 const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
 // The promotion PR that took batch child `t` to the default branch: the first merged after it (batch-state
-// promotedAt), as { pr, merge_commit, path }, `path` the set-batch field its merge commit is recorded
-// in, or null where the batch keeps no record of one.
+// promotedAt), as { pr, merge_commit }, or null where the batch keeps no record of one. Its merge commit
+// is the pass's or the merge driver's record of it, else list's refresh's (promotion_commits, by PR
+// number, which no promotion PR opened since can take for its own).
 function promotionOf(q, t) {
   const own = Date.parse(t.merged_at);
   const p = q?.promotion ?? {};
-  const all = [...(p.merged ?? []).map((m, i) => ({ ...m, path: `promotion.merged.${i}.merge_commit` })),
-    ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit, path: 'promotion.merge_commit' }] : [])]
+  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at, merge_commit: p.merge_commit }] : [])]
     .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
-  return all[0] ?? null;
+  const m = all[0];
+  return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
 }
 const SHA40 = /^[0-9a-f]{40}$/;
 function gateHeld(r, t, s) {
@@ -921,7 +922,6 @@ function followSplit(r, t) {
 // A merged PR whose kept status names criteria its review left for after the merge, which the pass has
 // not made follow-on steps yet (pass.mjs post_merge_read), is held off the list until it has: its item
 // would gain them after the person saw it, and done would take them as run unseen.
-const postMergeOwed = (t) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(t.result?.pr);
 const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t) && !postMergeOwed(t));
 const GATES = ['merge', 'main', 'production'];
 const gateOf = (s) => s?.after ?? 'merge';

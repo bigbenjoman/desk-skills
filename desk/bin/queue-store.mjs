@@ -11,7 +11,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
-import { followOnPending } from './harvest.mjs';
+import { followOnPending, postMergeUnmade } from './harvest.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -78,9 +78,8 @@ export function archivable(q, key) {
   const closed = Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
   if (!t.merged_at && !closed) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
-  // steps yet (pass.mjs post_merge_read): an append it skipped is owed to the next pass, so the ticket stays.
-  const own = Number(t.pr_status?.pr) === Number(t.result.pr);
-  if (!closed && own && (t.pr_status?.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(t.result.pr)) return false;
+  // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
+  if (!closed && postMergeUnmade(t)) return false;
   if ([q.batch, q.spine, q.epic].includes(key)) return false;
   return !Object.values(q.tickets).some((o) => o?.key !== key && HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key)));
 }

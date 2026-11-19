@@ -23,7 +23,7 @@ import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './di
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -691,7 +691,8 @@ switch (cmd) {
     // carried_from, it is no ticket of this batch: a queue holding only those is one not yet planned.
     let prev = null;
     try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
-    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t))
+    // So does one whose post-merge criteria the pass has not made those steps yet (postMergeUnmade).
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t) || postMergeUnmade(t))
       .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
     fresh.version = versionOf(prev);
     // The old batch's archive goes aside with it, so the new batch finds none of its tickets by key.

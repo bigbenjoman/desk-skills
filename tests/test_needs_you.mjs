@@ -2096,7 +2096,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const promoReads = [];
   N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
   t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
-    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion?.merge_commit === rebased} ${Object.keys(byKey('reb785')).join()} ${/is merged and production runs it, .*\(it names no §3 row\) Run/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/is merged and production runs it, .*\(it names no §3 row\) Run/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
     'true true follow:R-1:production true');
   git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
   put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
