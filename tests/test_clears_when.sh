@@ -339,8 +339,14 @@ console.log([
   w(rel, 'Please run the check once the worker saves \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
   w(rel, 'Waiting on runs that write /a/compare-pass.txt and /b/compare-pass.txt'),
   w(rel, 'This needs Ben to save its output to \$DESK_STATE/fixtures/DS-776/compare-pass.txt. Then the check reruns.'),
+  w(rel, 'Please run the export and, after it finishes, save the output to \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Please copy the export to /tmp/delivery/compare-pass.txt from \$DESK_STATE/staging/compare-pass.txt'),
+  w(rel, 'Please save the export to \\\${DESK_STATE}/fixtures/DS-776/compare-pass.txt'),
 ].join('|'));
 ")
+check "DS-807 AC1 a further step of the same request after a timing clause is still the person's" '[ "$(cut -d"|" -f10 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
+check "DS-807 AC4 a copy's destination is looked at, never the path it copies from" '[ "$(cut -d"|" -f11 <<< "$r")" = "abs /tmp/delivery/compare-pass.txt true" ]'
+check "DS-807 AC4 a \${DESK_STATE} path is a place, not a placeholder" '[ "$(cut -d"|" -f12 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
 check "DS-807 AC4 a copy request looks at the \$DESK_STATE copy, not its source" '[ "$(cut -d"|" -f1 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
 check "DS-807 AC4 an absolute or \$DESK_STATE clears-when is kept when the question's path is a placeholder, and is still the person's" \
   '[ "$(cut -d"|" -f2 <<< "$r")" = "state fixtures/X/out.txt true" ]'

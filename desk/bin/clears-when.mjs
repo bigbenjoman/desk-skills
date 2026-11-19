@@ -191,11 +191,17 @@ export const personClears = (c) => c?.kind === 'links-made' || (c?.kind === 'fil
 const QUESTION_WORD = /(?<=^|[\s(<[{])(["'`])([^\n]+?)\1(?=$|[\s.,;:!?)>\]}])|(?:\\ |\S)+/g;
 // The files a park's question names, each {cond, at, placeholder}: a word holding a slash that reads as
 // a path fileCond takes, ~/ read from the home directory, `at` where it starts in the question, and
-// placeholder where it still holds a <name> or {name} to fill in, so it names no real place.
+// placeholder where it still holds a <name> or {name} to fill in, so it names no real place (${DESK_STATE}
+// aside), and source where the word before it is "from", so it is what a copy reads, not what it makes.
 const questionFiles = (question, home) => [...String(question ?? '').matchAll(QUESTION_WORD)]
   .map((m) => ({ at: m.index, w: m[2] ?? m[0].replace(/^[("'`<[]+|[)"'`>\].,;:!?]+$/g, '').replace(/\\ /g, ' ') }))
   .filter(({ w }) => w.includes('/') && !/^[a-z]+:\/\//i.test(w))
-  .map(({ at, w }) => ({ at, placeholder: /[<>{}]/.test(w), cond: fileCond(w.startsWith('~/') ? posix.join(home, w.slice(2)) : w) }))
+  .map(({ at, w }) => ({
+    at,
+    placeholder: /[<>{}]/.test(w.replace(STATE_PREFIX, '')),
+    source: /\bfrom\W*$/i.test(String(question).slice(0, at)),
+    cond: fileCond(w.startsWith('~/') ? posix.join(home, w.slice(2)) : w),
+  }))
   .filter((f) => f.cond.kind === 'file-exists');
 // An absolute path under the state directory, as one under $DESK_STATE.
 const inState = (c, state) => {
@@ -213,21 +219,25 @@ const ASKS = [
   new RegExp(`\\b(?:asks?|asking|needs?|wants?) [A-Z][a-z]+ to\\s+${ASK_VERB}`, 'g'),
   new RegExp(`[;:]\\s+(?:${VERBS.map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})\\b`, 'g'),
 ];
+// A further step of the same request, after an ask: "… and save", "…, then save", "after it finishes, save".
+const AND_VERB = new RegExp(`(?:\\band\\s+(?:then\\s+)?|\\bthen\\s+|,\\s*)${ASK_VERB}`, 'gi');
 // Whether the question asks the person to make the file named at `at`: an ask earlier in that
 // sentence, with no clause after it that hands the making to someone else (once the worker saves …).
 function askedAt(question, at) {
   const before = question.slice(0, at);
   const from = Math.max(0, ...[...before.matchAll(/[.?!]\s+/g)].map((m) => m.index + m[0].length));
   const sentence = before.slice(from);
-  const ends = ASKS.flatMap((re) => [...sentence.matchAll(re)].map((m) => m.index + m[0].length));
-  return ends.length > 0 && !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
+  const asks = ASKS.flatMap((re) => [...sentence.matchAll(re)].map((m) => [m.index, m.index + m[0].length]));
+  if (!asks.length) return false;
+  const first = Math.min(...asks.map(([s]) => s));
+  const ends = [...asks.map(([, e]) => e), ...[...sentence.matchAll(AND_VERB)].filter((m) => m.index > first).map((m) => m.index + m[0].length)];
+  return !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
 }
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or
 // {ok: false, why}. The question names the file by its name. Where a relative condition names it
 // somewhere the question does not, it looks where the question says when that is one absolute or
-// $DESK_STATE path ($DESK_STATE first, so "copy /tmp/x to $DESK_STATE/x" is the copy), and is refused
-// when it is not. An absolute or $DESK_STATE condition is kept. Where the question asks the person to
+// $DESK_STATE path ($DESK_STATE first, and never one a copy reads from), and is refused when it is not. An absolute or $DESK_STATE condition is kept. Where the question asks the person to
 // make it, the condition is marked person (personClears). Any other condition, or a question naming no
 // such file, is kept as given.
 export function withQuestion(cond, question, { state = null, home = homedir() } = {}) {
@@ -239,7 +249,7 @@ export function withQuestion(cond, question, { state = null, home = homedir() } 
   const own = inState(cond, state);
   let at = cond;
   if (own.root === 'worktree' && !named.some((f) => sameFile(f.cond, own))) {
-    const places = named.filter((f) => f.cond.root !== 'worktree' && !f.placeholder).map((f) => f.cond)
+    const places = named.filter((f) => f.cond.root !== 'worktree' && !f.placeholder && !f.source).map((f) => f.cond)
       .filter((c, i, all) => all.findIndex((d) => sameFile(c, d)) === i);
     const inStateDir = places.filter((c) => c.root === 'state');
     const pick = inStateDir.length ? inStateDir : places;
