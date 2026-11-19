@@ -31,6 +31,8 @@
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
+import { POST_MERGE_STEP } from '../undraft.mjs';
+import { LINK_STEP } from './shared.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
@@ -93,10 +95,14 @@ export function* decidePrStatus(s) {
     // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
     // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
     // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
-    // this is written skips it whole, so the next pass adds the criteria to what done left.
+    // this is written skips it whole, so the next pass adds the criteria to what done left. Steps the worker
+    // declared for after the merge win over the criteria: the two word one check differently, so both would
+    // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
+    // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
     if (st.state === 'MERGED' && !s.dry && (st.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
       const have = t.follow_on_done ? [] : t.follow_on ?? [];
-      const later = st.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
+      const declared = have.some((h) => ![LINK_STEP, POST_MERGE_STEP].some((p) => String(h?.step ?? '').startsWith(p)));
+      const later = declared ? [] : st.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
       const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
       // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
       const expect = [followState(t), later.length ? followState({ follow_on: [...have, ...later], follow_on_done: null }) : followState(t)];

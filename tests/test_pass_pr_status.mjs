@@ -67,6 +67,14 @@ const lists = (acts) => acts.at(-1);
   t('a write skipped because the steps changed under it names none', ofType(skipped, 'out').length, 0);
   const gated = done('E2', 26, { merged_at: 'x', pr_status: status(26, 'MERGED', { merged_at: 'x', post_merge: [{ step: 'check live', after: 'production' }] }) });
   t('a criterion gated on production keeps its gate', ofType(run(snap([gated])), 'follow-on')[0].fields[0], 'follow_on=[{"step":"check live","row":null,"after":"production"}]');
+  // DS-787: steps the worker declared for after the merge win over its review's criteria.
+  const declared = { ...owedT, key: 'E3', follow_on: [{ step: 'run the staging script', row: 'staging-write' }] };
+  const dActs = run(snap([declared]));
+  t('DS-787 a worker\'s declared step leaves the criteria out: only post_merge_read is written', j(ofType(dActs, 'follow-on').map((a) => a.fields)), j([['post_merge_read=15']]));
+  t('DS-787 and no merge line names criteria', ofType(dActs, 'out').length, 0);
+  const notWorkers = { ...owedT, key: 'E4', follow_on: [{ step: 'Issue link not made: DS-1 relates-to DS-2', row: 'jira-edit' }, { step: 'Check after the merge: AC1 (needs production): old', row: null }] };
+  t('DS-787 a kept link step and an earlier PR\'s criterion are not declared steps: the criteria are added',
+    ofType(run(snap([notWorkers])), 'follow-on')[0].fields[0], `follow_on=${j([...notWorkers.follow_on, { step: 'check prod', row: null }])}`);
 }
 {
   // A follow step gated past the merge waits on its PR's merge commit: a merged PR recorded without one is read again.
