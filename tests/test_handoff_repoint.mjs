@@ -18,10 +18,11 @@ for (const k of Object.keys(process.env)) if (k.startsWith('DESK_') || k.startsW
 
 mkdirSync(join(T, 'bin'));
 const PRS = join(T, 'prs.json');
-// `gh pr list` answers with $T/prs.json; `gh pr view <n>` with that PR from $T/views.json, or fails.
+// `gh pr list` answers with $T/prs.json, narrowed as GitHub's text search would with --search (titles
+// only, never a branch); `gh pr view <n>` with that PR from $T/views.json, or fails.
 const VIEWS = join(T, 'views.json');
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh
-[ "$1 $2" = "pr list" ] && exec cat ${JSON.stringify(PRS)}
+[ "$1 $2" = "pr list" ] && exec ${JSON.stringify(process.execPath)} -e 'const a = process.argv.slice(2); const s = a.includes("--search") ? a[a.indexOf("--search") + 1] : null; const l = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(JSON.stringify(s ? l.filter((p) => String(p.title).includes(s)) : l))' ${JSON.stringify(PRS)} "$@"
 [ "$1 $2" = "pr view" ] && exec ${JSON.stringify(process.execPath)} -e 'const v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))[process.argv[2]]; if (!v) process.exit(1); console.log(JSON.stringify(v))' ${JSON.stringify(VIEWS)} "$3"
 exit 1
 `, { mode: 0o755 });
@@ -77,6 +78,12 @@ t('AC1 the queued branch becomes the PR\'s head', queued().branch, 'task/K-1-pr'
 t('AC1 the worktree is on it', git(wt1, 'branch', '--show-current'), 'task/K-1-pr');
 t('AC1 and the ticket resumes at Stage 4b', `${queued().state} ${queued().handoff_stage}`, 'triaged 4b');
 t('AC1 the line says it was re-pointed', /re-pointed to its open PR #861's task\/K-1-pr/.test(r1.stdout), true);
+
+// The same with the key only in the PR's branch, which GitHub's text search never reads: still found.
+const wt1b = fixture({ queued: false });
+prs([{ ...PR, title: 'refactor(pass): split the module' }]);
+queue(wt1b);
+t('AC1 a PR naming the ticket only in its branch is found though search would miss it', `${handback().status} ${queued().branch}`, '0 task/K-1-pr');
 
 // AC2: the queued branch still exists, its worktree on it, with nothing the PR's head lacks; its PR is recorded.
 const wt2 = fixture();

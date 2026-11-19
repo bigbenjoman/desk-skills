@@ -10,7 +10,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ANSWER_HEAD, collectAnswers } from './briefing.mjs';
 import { RESUME_STAGES, SAFE_ID, stateDir } from './desk-env.mjs';
-import { prNames } from './recoveries.mjs';
+import { prsNaming } from './recoveries.mjs';
 
 // The stages a session may start at, and the stage each one follows.
 export const HANDOFF_STAGES = { '4b': '4', 7: '6' };
@@ -177,8 +177,10 @@ export function openPrOf({ key, pr = null, repo, worktree }) {
     const v = gh('pr', 'view', String(pr), '--json', 'number,state,headRefName,isCrossRepository');
     if (ownOpen(v)) return as(v, true);
   }
-  const prs = gh('pr', 'list', '--state', 'open', '--search', key, '--limit', '30', '--json', 'number,title,headRefName,isCrossRepository');
-  const naming = (Array.isArray(prs) ? prs : []).filter((p) => ownOpen(p) && prNames(key)(p));
+  let naming;
+  try {
+    naming = prsNaming(repo, 'open', key, { fields: 'title,isCrossRepository', inTitle: true, search: false, limit: 500, ...(worktree && existsSync(worktree) ? { cwd: worktree } : {}) }).filter(ownOpen);
+  } catch { return null; }
   return naming.length === 1 ? as(naming[0], false) : null;
 }
 
