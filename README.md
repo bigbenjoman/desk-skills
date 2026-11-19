@@ -910,7 +910,8 @@ one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the rea
 where they need them. Every park and
 hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
 base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
-runs, each called there. Each phase has its
+runs, each called there. So is the base gate (`desk/bin/pass/base-gate.mjs`), whose last action
+says whether it keeps the batch from idle. Each phase has its
 own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
 fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
 the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`

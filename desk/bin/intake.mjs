@@ -140,20 +140,32 @@ export function intakeReasons(r) {
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
 // Whether ticket `key`'s code is on `base`: true once a PR naming it has merged into `base`, or into
-// another branch with its merge commit on origin/<base>, and when no PR is left to land (none, or only
-// closed ones); false while one is open or merged only elsewhere; null when GitHub cannot be read.
+// another branch with its merge commit on origin/<base> or with a PR from that branch merged into `base`
+// after it (a squash or rebase promotion, which writes new commits), and when no PR is left to land
+// (none, or only closed ones); false while one is open or merged only elsewhere; null when GitHub cannot
+// be read.
 export function landedOn(key, base) {
   let repo, root;
   try { repo = E.ghRepo(); root = E.repoRoot(); } catch { return null; }
-  const r = spawnSync('gh', ['pr', 'list', '--repo', repo, '--state', 'all', '--search', key, '--limit', '50',
-    '--json', 'number,state,title,headRefName,baseRefName,mergeCommit'], { encoding: 'utf8' });
-  let prs;
-  try { prs = r.status === 0 ? JSON.parse(r.stdout) : null; } catch { prs = null; }
-  if (!Array.isArray(prs)) return null;
+  const list = (args) => {
+    const r = spawnSync('gh', ['pr', 'list', '--repo', repo, ...args, '--limit', '50'], { encoding: 'utf8' });
+    try { const v = r.status === 0 ? JSON.parse(r.stdout) : null; return Array.isArray(v) ? v : null; } catch { return null; }
+  };
+  const prs = list(['--state', 'all', '--search', key, '--json', 'number,state,title,headRefName,baseRefName,mergeCommit,mergedAt']);
+  if (!prs) return null;
   const names = new RegExp(keyPattern(key));
   const mine = prs.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`));
   const reaches = (sha) => !!sha && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', sha, `origin/${base}`], { stdio: 'ignore' }).status === 0;
-  if (mine.some((p) => p.state === 'MERGED' && (p.baseRefName === base || reaches(p.mergeCommit?.oid)))) return true;
+  const merged = mine.filter((p) => p.state === 'MERGED');
+  if (merged.some((p) => p.baseRefName === base || reaches(p.mergeCommit?.oid))) return true;
+  let unread = false;
+  for (const p of merged) {
+    if (!p.baseRefName || !Date.parse(p.mergedAt)) continue;
+    const promotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', base, '--json', 'number,mergedAt']);
+    if (!promotions) { unread = true; continue; }
+    if (promotions.some((q) => Date.parse(q?.mergedAt) >= Date.parse(p.mergedAt))) return true;
+  }
+  if (unread) return null;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
 }
 

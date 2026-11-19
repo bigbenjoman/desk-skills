@@ -964,9 +964,9 @@ switch (cmd) {
     break;
   }
 
-  // The follow-on steps the person ran (needs-you's done on a follow item), each by its text and gate
+  // The follow-on steps the person settled, by running them or on the PR's own evidence (needs-you's done on a follow item), each by its text and gate
   // (`after`, none for the merge): each leaves follow_on, read here under the lock so a step written since
-  // needs-you read it is kept, and with none left the item is recorded run (follow_on_done=<at>).
+  // needs-you read it is kept, and with none left the item is recorded settled (follow_on_done=<at>).
   case 'follow-ran': {
     const [key, json, at] = args;
     let ran;
@@ -977,7 +977,7 @@ switch (cmd) {
     const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
     applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
     save(q);
-    console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded run${left.length ? `, ${left.length} kept` : ''}`);
+    console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded done${left.length ? `, ${left.length} kept` : ''}`);
     break;
   }
 

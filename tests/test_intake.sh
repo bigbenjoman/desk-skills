@@ -94,11 +94,14 @@ EOF
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/digest.calls', 'checkin\\\\n');\nconsole.log(JSON.stringify({ status: 'not_due', push: null }));\n" "$T" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
-# A PR list is whatever $T/prs.json holds (none by default). The workflows at a ref are one ci.yml,
-# $T/wf/<the ref, URL-encoded>.yml, while $T/wf exists; any other call reads OPEN.
+# A PR list is whatever $T/prs.json holds (none by default); one by --head and --base is the PRs in
+# $T/promos.json with that head and base, or a failure while $T/promos.fails exists. The workflows at a
+# ref are one ci.yml, $T/wf/<the ref, URL-encoded>.yml, while $T/wf exists; any other call reads OPEN.
 cat > "$T/fakes/gh" <<EOF
 #!/bin/sh
 case "\$*" in
+  "pr list "*"--head "*) [ -f "$T/promos.fails" ] && exit 1
+    node -e 'const a = process.argv, h = a[a.indexOf("--head") + 1], b = a[a.indexOf("--base") + 1]; let v = []; try { v = JSON.parse(require("fs").readFileSync("$T/promos.json", "utf8")); } catch {} console.log(JSON.stringify(v.filter((p) => p.headRefName === h && p.baseRefName === b)))' -- "\$@" ;;
   "pr list "*) cat "$T/prs.json" 2>/dev/null || echo "[]" ;;
   "api repos/"*"/contents/.github/workflows?ref="*) [ -d "$T/wf" ] && echo .github/workflows/ci.yml || exit 1 ;;
   "api -H Accept: application/vnd.github.raw repos/"*"/contents/.github/workflows/ci.yml?ref="*) a="\$*"; cat "$T/wf/\${a##*ref=}.yml" ;;
@@ -623,6 +626,31 @@ git init -q --bare "$T/origin.git"
 git -C "$T/repo" init -q -b main
 git -C "$T/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q origin main
+
+# ---- DS-816: a blocker merged into an epic or integration branch, then promoted to main ------------
+# Each L-n PR merged into its own branch on 11-01. epic/L1 was squash-promoted on 11-05 and epic/L2
+# rebase-promoted on 11-06; epic/L3 has no promotion; epic/L4 was promoted only before L-4 merged;
+# epic/L5 was promoted by a merge commit, so L-5's merge commit is on origin/main.
+git -C "$T/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'L-5 merge'
+git -C "$T/repo" push -q origin main
+L5SHA=$(git -C "$T/repo" rev-parse HEAD)
+lpr(){ printf '{"number":%s,"state":"MERGED","title":"fix: %s x","headRefName":"fix/%s-x","baseRefName":"%s","mergeCommit":{"oid":"%s"},"mergedAt":"2026-11-01T10:00:00Z"}' "$1" "$2" "$2" "$3" "$4"; }
+printf '[%s,%s,%s,%s,%s]\n' "$(lpr 81 L-1 epic/L1 1111111111111111111111111111111111111111)" "$(lpr 82 L-2 epic/L2 2222222222222222222222222222222222222222)" \
+  "$(lpr 83 L-3 epic/L3 3333333333333333333333333333333333333333)" "$(lpr 84 L-4 epic/L4 4444444444444444444444444444444444444444)" "$(lpr 85 L-5 epic/L5 "$L5SHA")" > "$T/prs.json"
+printf '%s\n' '[{"number":91,"headRefName":"epic/L1","baseRefName":"main","mergedAt":"2026-11-05T09:00:00Z"},{"number":92,"headRefName":"epic/L2","baseRefName":"main","mergedAt":"2026-11-06T09:00:00Z"},{"number":93,"headRefName":"epic/L3","baseRefName":"integration/x","mergedAt":"2026-11-05T09:00:00Z"},{"number":94,"headRefName":"epic/L4","baseRefName":"main","mergedAt":"2026-10-30T09:00:00Z"}]' > "$T/promos.json"
+# The module path goes last: intake.mjs runs its CLI when argv[1] is itself.
+landed(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(String(m.landedOn(process.argv[1], "main"))))' "$1" "$T/bin/intake.mjs"); }
+outside(){ (cd "$T/repo" && node -e 'const a = process.argv.slice(1); import(a.pop()).then((m) => console.log(m.holdsFor({ blockers: a.map((key) => ({ key, category: "done" })) }, {}, "main").outside.join()))' "$@" "$T/bin/intake.mjs"); }
+check "DS-816 AC1: a blocker merged into an epic branch later squash-merged to main has landed" '[ "$(landed L-1)" = true ]'
+check "DS-816 AC2: one whose epic branch was rebase-merged to main has landed" '[ "$(landed L-2)" = true ]'
+check "DS-816 AC3: one whose epic branch has no merged PR into main has not" '[ "$(landed L-3)" = false ]'
+check "DS-816 AC3: nor one whose epic branch merged into main only before it" '[ "$(landed L-4)" = false ]'
+check "DS-816 a merge-commit promotion still lands it through the merge commit" '[ "$(landed L-5)" = true ]'
+touch "$T/promos.fails"
+check "DS-816 a promotion list GitHub cannot read is unread, not false" '[ "$(landed L-1)" = null ] && [ "$(landed L-5)" = true ]'
+rm -f "$T/promos.fails"
+check "DS-816 AC4: admit holds a blocker outside only while it is unpromoted" '[ "$(outside L-1 L-2 L-3 L-4 L-5)" = "L-3,L-4" ]'
+rm -f "$T/prs.json" "$T/promos.json"
 mkdir -p "$T/children"
 cat > "$T/bin/expand-parent.mjs" <<EOF
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';

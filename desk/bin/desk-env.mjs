@@ -963,7 +963,9 @@ export function parseBudget(raw, label) {
   throw new DeskConfigError(`desk: ${label} is "${raw}" — want a positive number of USD, or none/off/no cap. Refusing to guess.`);
 }
 export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
-export const batchBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' }), 'the batch budget');
+export const BATCH_BUDGET_LABEL = 'the batch budget';
+export const batchBudgetRaw = () => resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' });
+export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABEL);
 
 // Config §3b "Worker models": `default` (no --model, the session default) or
 // `standard=<model> high=<model>`, each a `claude --model` alias or full name. Either may be followed

@@ -27,8 +27,7 @@ that line and stop.
 
 Otherwise it prints:
 
-- `@ <repo>: …` lines, one per repo with items, saying who runs that repo's batch: the supervisor,
-  a live session, or nothing because passes stopped.
+- `@ <repo>: …` lines, one per repo with items, saying who runs that repo's batch, if anyone.
 - One line per item, already in the order to ask (`PRODUCTION BROKEN` first, then most held
   behind it, then oldest):
 
@@ -49,7 +48,7 @@ comes back as a new `plan` item naming why), `triage`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
-switch) or `base-push` (approve the sync); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+switch), `base-push` (approve the sync) or `follow` (try it first: `references/follow.md`); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub has none: its need names the step, and it leaves once its check is green.
 
 ## 2. Ask, four at a time
