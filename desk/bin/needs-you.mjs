@@ -973,7 +973,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const where = onProd ? 'production' : repoConfigValue(r.slug, 'default-branch') ?? 'main';
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
     need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
-    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or the PR's own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
+    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or ${t.result?.pr != null ? `PR #${t.result.pr}'s` : "the PR's"} own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
 

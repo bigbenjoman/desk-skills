@@ -5,9 +5,9 @@ and that row's value; a step with none names no row. Settle each step yourself w
 read beyond the script:
 
 - **The PR already covers it**: where the merged PR's Testing or its checks show the step working,
-  it is covered. Name the test or check. The need names the ticket, not the PR: find it with
-  `gh pr list --repo <owner/name> --state merged --search "<KEY>" --json number,title`, then read it
-  with `gh pr view <n> --repo <owner/name> --json body,statusCheckRollup`.
+  it is covered. Name the test or check. The `done` action names the PR (`PR #<n>'s own checks`):
+  read it with `gh pr view <n> --repo <owner/name> --json body,statusCheckRollup`. Where it names no
+  PR number, no step is covered by the PR.
 - **You can run it**: where its row is `yes`, or it names no row and the step only reads (a page
   loads, a record exists), run it with the tools this session has (the signed-in browser, `gh`, the
   repo's own scripts) and note what it showed.
