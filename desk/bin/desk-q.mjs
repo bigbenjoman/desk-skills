@@ -62,6 +62,7 @@ import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
+import { readUploadQueue } from './upload-queue.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -130,7 +131,19 @@ function stateOf(q, t, ctx, seen) {
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
+
+// The machine's upload queue paused on GitHub's PR page (upload-queue.mjs `page`): { page, prs }, the
+// PRs waiting in it as "<repo> #<pr>", or null while uploads run. A queue that cannot be read pauses nothing.
+export function uploadPause() {
+  let q;
+  try { q = readUploadQueue(); } catch { return null; }
+  return q.page ? { page: q.page, prs: [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))] } : null;
+}
+// The one note a screen gives that pause, however many of its PRs wait on it.
+const uploadPauseText = ({ page, prs }) => `Screenshot uploads are paused for every repo: desk's uploader found GitHub's PR page changed (${String(page.why ?? '').replace(/\s+/g, ' ').trim()}, at ${page.at}). `
+  + `${prs.length ? `${prs.length} PR${prs.length === 1 ? '' : 's'} wait${prs.length === 1 ? 's' : ''} in draft for ${prs.length === 1 ? 'its' : 'their'} screenshots` : 'No upload waits on it yet'}. `
+  + 'It is desk\'s fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes them.';
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -201,7 +214,7 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -386,7 +399,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
-  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now);
+  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now, ctx);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
   // <glob>, …`, then `; routine `<command>` not run: …` or `… failed at <sha> (exit <n>): <step>` where
   // the hold names one) and leaves it for a person, so the item says the hold's step.
@@ -503,7 +516,7 @@ function pendingPast(checks, now) {
 
 // A draft PR: merging while the pass takes it out of draft (checks still running, or out of draft at
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
-function draftNeed(q, t, needs, merging, now = Date.now()) {
+function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   const u = t.undraft;
   if (heldDraft(t)) return needs({ code: 'held' }, ['held by you in draft', null], [' · undraft it to release it', null]);
   // A check stuck pending: its job re-run, or its run cancelled so the next pass re-runs it.
@@ -513,7 +526,9 @@ function draftNeed(q, t, needs, merging, now = Date.now()) {
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
-  // The pass uploads screenshots desk holds and never tried to put in (undraft.mjs cellCall `upload`).
+  // The pass uploads screenshots desk holds and never tried to put in (undraft.mjs cellCall `upload`),
+  // unless GitHub's page change has paused every upload: the screen's note names that once.
+  if (u?.call === 'upload' && ctx.uploadPage) return merging(['draft', null], [' · ', null], ['screenshot uploads paused', WARN], [': GitHub\'s PR page changed, see the note', null]);
   if (u?.call === 'upload') return merging(['draft', null], [' · screenshots being uploaded, out of draft once they are in', null]);
   if (u?.call === 'wait' && /^its base /.test(u.why ?? '')) return merging(['draft', null], [' · base being synced or the PR reopened so CI runs', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
@@ -2521,6 +2536,9 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const out = claude?.limit ? claude : null;
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
     ...readable.flatMap((r) => stallNotes(r, quiet, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
+  const pause = uploadPause();
+  if (pause) notes.unshift({ tag: '▲ uploads', sgr: WARN, text: [[uploadPauseText(pause), null]] });
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -2842,6 +2860,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     countsLine(r),
     ...passHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
+    ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.

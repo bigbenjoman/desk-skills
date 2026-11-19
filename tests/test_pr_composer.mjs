@@ -5,6 +5,8 @@
 // Playwright, against the fixtures served in a real browser. No network, no real profile or GitHub.
 // DESK_COMPOSER_SMOKE=<owner/repo>#<pr> opts in to a run against that live PR in the signed-in
 // profile: it finds the composer and its file input or add-files button, and uploads nothing.
+// DESK_COMPOSER_CAPTURE=<file> with it saves that page, focused and stripped of its tokens, to build
+// a fixture from.
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -158,6 +160,20 @@ if (!smoke) {
       console.log(`smoke: composer textarea: ${desc}`);
       t(`smoke: ${repo}#${pr} has a composer`, !!c, true);
       t(`smoke: ${repo}#${pr}'s composer has a way to add files once focused (nothing is uploaded)`, !!c?.setFiles, true);
+      // DESK_COMPOSER_CAPTURE=<file> also saves the page as it stands once the composer is focused, to
+      // build a fixture from: no scripts, styles or svg paths, and no hidden input's value or meta
+      // content, which hold the session's tokens. Nothing is uploaded.
+      if (process.env.DESK_COMPOSER_CAPTURE) {
+        const html = await page.evaluate(() => {
+          const doc = document.documentElement.cloneNode(true);
+          doc.querySelectorAll('script, style, link, noscript, template, svg *').forEach((el) => el.remove());
+          doc.querySelectorAll('input[type="hidden"]').forEach((el) => el.removeAttribute('value'));
+          doc.querySelectorAll('meta').forEach((el) => el.removeAttribute('content'));
+          return `<!doctype html>\n${doc.outerHTML}`;
+        });
+        writeFileSync(process.env.DESK_COMPOSER_CAPTURE, html);
+        console.log(`smoke: saved the focused page to ${process.env.DESK_COMPOSER_CAPTURE} (${html.length} chars)`);
+      }
     } finally { await ctx.close(); }
   }
 }
