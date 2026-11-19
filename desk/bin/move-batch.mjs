@@ -25,16 +25,19 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor, onlyKeptTriage } from './batches.mjs';
-import { lockPid, releaseDirLock, alive, tryLockFile } from './dir-lock.mjs';
+import { lockPid, unlock, alive, tryLockFile } from './dir-lock.mjs';
 import { writeQueueFile, archivePath } from './queue-store.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
 // agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot),
-// the repo's asks (asks.mjs) and the repo's lever log with its append lock (lever-log.mjs keeps one
-// per repo, not per batch).
-const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json', 'levers.jsonl', 'levers.jsonl.lock', 'levers.jsonl.lock.clearing'];
+// the repo's asks (asks.mjs), and the levers' repo-level records with their locks: the lever log
+// (lever-log.mjs), the blind audits and their queue (levers-audit.mjs) and the evaluations with their
+// evidence (levers-evaluate.mjs). Each is kept once per repo, not per batch, and read from this folder.
+const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
+const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
+const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
@@ -75,7 +78,7 @@ const queueLock = `${from.queue}.lock`;
 const passHolder = tryLockFile(passLock, { by: 'move-batch.mjs' });
 const busy = passHolder === true ? holder(join(from.state, 'supervisor.lock')) : (passHolder ?? '?');
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
-process.on('exit', () => releaseDirLock(queueLock));
+process.on('exit', () => unlock(queueLock));
 
 // queue.mjs's lock (dir-lock.mjs), taken with the same mkdir but refused at once rather than waited
 // for, and never over a lock that is there. A lock a dead writer left is cleared by queue.mjs's next
@@ -147,7 +150,7 @@ try {
   }
   for (const n of notes) writeFileSync(n.file, `${JSON.stringify({ ...JSON.parse(n.was), queue: to.queue })}\n`);
   for (const f of readdirSync(from.state)) {
-    if (STAYS.includes(f)) continue;
+    if (stays(f)) continue;
     renameSync(join(from.state, f), join(to.state, f));
     moved.push(f);
   }

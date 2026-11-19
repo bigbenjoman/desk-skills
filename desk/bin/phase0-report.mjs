@@ -37,7 +37,8 @@ import { sizeOf } from './desk-q-eta.mjs';
 import { pinDisagrees } from './lever-pin.mjs';
 import { ticketRework, reworkSummary } from './rework.mjs';
 import { toolOutcomes, codexCalls } from './log-tool-calls.mjs';
-import { everyTicket, readQueueFile } from './queue-store.mjs';
+import { everyTicket } from './queue-store.mjs';
+import { readQueue as readQueueFile } from './batch-state.mjs';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
 export const NR = 'not recorded';

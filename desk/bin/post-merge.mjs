@@ -46,11 +46,17 @@ export function revertedPr(subject) {
 export function mergedTickets(queue) {
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
-    const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
-    if (Number.isInteger(pr) && pr > 0 && Number.isFinite(Date.parse(t?.merged_at))) out.push({ ticket, pr, merged_at: t.merged_at });
+    const pr = mergedPr(t);
+    if (pr) out.push({ ticket, pr, merged_at: t.merged_at });
   }
   return out;
 }
+
+// Queue ticket `t`'s merged PR number, or null when it has none merged.
+export const mergedPr = (t) => {
+  const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
+  return Number.isInteger(pr) && pr > 0 && Number.isFinite(Date.parse(t?.merged_at)) ? pr : null;
+};
 
 const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}` : r.kind === 'red_main' ? `${r.ticket}|red_main|${r.run?.id}` : null);
 

@@ -43,12 +43,12 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, stat
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REGISTRY, KEPT_STATES } from './lever-registry.mjs';
-import { appendWith, read, stampAfter } from './lever-log.mjs';
+import { appendWith, isStateChange, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId } from './levers-auto.mjs';
 import { runsPath } from './findings.mjs';
 import { postMergePath } from './post-merge.mjs';
 import { readLogFile } from './harvest.mjs';
-import { workerLogs } from './worker-cost.mjs';
+import { logRound, workerLogs } from './worker-cost.mjs';
 import { WAITING_CLASSES } from './failure-class.mjs';
 import { toolOutcomes, codexCalls } from './log-tool-calls.mjs';
 import { priorRevertsOf, revertTarget, frozenText } from './levers-evaluate.mjs';
@@ -109,7 +109,7 @@ function liveSince(events, lever, registry) {
   let since = null;
   const before = new Map();
   for (const e of events) {
-    if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
+    if (!isStateChange(e, lever)) continue;
     before.set(e.id, { live, since });
     if (e.restores && before.has(e.undoes_event)) ({ live, since } = before.get(e.undoes_event));
     else if (REVERTIBLE.includes(e.to)) { if (!live) { live = true; since = e.at; } }
@@ -134,13 +134,19 @@ export function onArm(t, lever, s, slug, events, registry = REGISTRY) {
 // ---- reading a worker log ---------------------------------------------------------------------------
 // Each of ticket `key`'s worker logs written since `since`, with what toolOutcomes reads from it; read
 // once per `cache`, a Map one run of the trips shares.
-function logOutcomes(state, key, since, cache = new Map()) {
-  const k = `${state}|${key}|${since ?? ''}`;
+const logOutcomes = (state, key, since, cache) => fromLogs(state, key, since, cache, 'outcomes', toolOutcomes);
+
+// What `parse` reads from each of ticket `key`'s worker logs written since `since`, each item tagged
+// with its `file`; read once per `cache` and `tag`.
+function fromLogs(state, key, since, cache = new Map(), tag, parse) {
+  const k = `${tag}|${state}|${key}|${since ?? ''}`;
   if (!cache.has(k)) {
-    cache.set(k, workerLogs(state, key, since ?? null).sort().flatMap((file) => {
+    // Oldest round first, the current log last (worker-cost.mjs logRound), so a window of the latest
+    // calls holds the newest.
+    cache.set(k, workerLogs(state, key, since ?? null).sort((a, b) => logRound(a) - logRound(b)).flatMap((file) => {
       let text;
       try { text = readLogFile(file); } catch { return []; }
-      return toolOutcomes(text).map((o) => ({ ...o, file }));
+      return parse(text).map((o) => ({ ...o, file }));
     }));
   }
   return cache.get(k);
@@ -269,17 +275,8 @@ export const DETECTORS = Object.freeze({
 
 // Each of ticket `key`'s desk-codex review calls in its worker logs since `since`, oldest first; read once
 // per `cache`.
-function codexCallsOf(state, key, since, cache = new Map()) {
-  const k = `codex|${state}|${key}|${since ?? ''}`;
-  if (!cache.has(k)) {
-    cache.set(k, workerLogs(state, key, since ?? null).sort().flatMap((file) => {
-      let text;
-      try { text = readLogFile(file); } catch { return []; }
-      return codexCalls(text).map((c) => ({ ...c, file, ticket: key }));
-    }));
-  }
-  return cache.get(k);
-}
+const codexCallsOf = (state, key, since, cache) =>
+  fromLogs(state, key, since, cache, 'codex', (text) => codexCalls(text).map((c) => ({ ...c, ticket: key })));
 
 // Trips read as a rate over the calls of every on-arm ticket, in their admission order. Each returns
 // the record to cite, { ticket, file, line, why }, or null.

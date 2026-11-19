@@ -14,7 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { deskConfigRoot } from './desk-env.mjs';
 import { autopilotRoot, buildLock, buildRecord, buildView, inputFiles, leversDir } from './levers-view.mjs';
 import { renderPage } from './levers-page.mjs';
-import { releaseDirLock, takeDirLock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
+import { lock, unlock, writeJsonAtomic, writeTextAtomic } from './dir-lock.mjs';
 
 // A page older than this is rebuilt whatever its inputs, so the ages it shows stay current.
 const REBUILD_MS = 10 * 60 * 1000;
@@ -67,7 +67,7 @@ export function refresh({ root = autopilotRoot(), configRoot = deskConfigRoot(),
   };
   if (!due(fingerprint({ root, configRoot }))) return { ran: false, why: 'up_to_date' };
   mkdirSync(dir, { recursive: true });
-  try { takeDirLock(f.lock, { waitMs }); } catch { return { ran: false, why: 'busy' }; }
+  try { lock(f.lock, { waitMs }); } catch { return { ran: false, why: 'busy' }; }
   try {
     // Another refresh may have built while this one waited.
     const fp = fingerprint({ root, configRoot });
@@ -92,7 +92,7 @@ export function refresh({ root = autopilotRoot(), configRoot = deskConfigRoot(),
       writeJsonAtomic(f.build, { ...buildRecord(view, Date.now() - t0), attempted_at: attempted, fingerprint: fp });
       return { ran: true, ok: true, line: view.line.state };
     } catch (e) { return fail({ file: null, line: null, message: e.message }); }
-  } finally { releaseDirLock(f.lock); }
+  } finally { unlock(f.lock); }
 }
 
 const isMain = () => {

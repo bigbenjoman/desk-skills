@@ -16,6 +16,9 @@ import { REGISTRY, REASON_CODES } from './lever-registry.mjs';
 
 export const VERSION = 1;
 export const KINDS = Object.freeze(['assign', 'transition', 'trip', 'ramp', 'override', 'freeze', 'thaw', 'row_change', 'fp_reset', 'evidence_incomplete', 'audit', 'audit_deferred', 'needs_you', 'pair']);
+// The kinds that change one lever's state, and whether `e` is such a change (of `lever`, when given).
+export const STATE_KINDS = Object.freeze(['transition', 'override', 'trip']);
+export const isStateChange = (e, lever) => STATE_KINDS.includes(e?.kind) && e.to != null && (lever === undefined || e.lever === lever);
 // Kinds that may name no lever: those acting on every lever in the repo or on the machine, a ticket's
 // assignment across every lever, an item about the whole repo, and a pair trial's state change (its
 // `levers` names the two).
@@ -102,7 +105,7 @@ export function appendWith(slug, build) {
   }, {
     waitMs: LOCK_WAIT_MS,
     pollMs: 20,
-    timeoutError: (pid) => new LeverLogError(`lever-log: ${lock} is held by pid ${pid ?? '?'} past the ${LOCK_WAIT_MS / 1000}s wait: nothing was written`),
+    timeout: (pid) => new LeverLogError(`lever-log: ${lock} is held by pid ${pid ?? '?'} past the ${LOCK_WAIT_MS / 1000}s wait: nothing was written`),
   });
 }
 

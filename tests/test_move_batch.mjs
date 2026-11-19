@@ -166,6 +166,11 @@ const staying = {
   'intake.json': '{"seen":{}}',
   'supervisor.agent.log': 'agent\n',
   'levers.jsonl': '{"v":1,"kind":"freeze"}\n',
+  'audit.jsonl': '{"v":1}\n',
+  'audit-queue.json': '{"items":{}}',
+  'audit-queue.json.lock/pid': '1\n',
+  'lever-evals.jsonl': '{"v":1}\n',
+  'levers-evidence/e1.jsonl': '{"v":1}\n',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };

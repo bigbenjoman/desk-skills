@@ -33,7 +33,7 @@ import { readWarnings } from './pass-metrics.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
-import { read as readLeverLog, appendChecked as appendCheckedLeverLog, stampAfter } from './lever-log.mjs';
+import { read as readLeverLog, appendChecked as appendCheckedLeverLog, isStateChange, stampAfter } from './lever-log.mjs';
 import { changeLine, overrideEvent, isDecided, recordLeverDecision } from './lever-changes.mjs';
 import { leversDir } from './levers-view.mjs';
 import { pageState as leversPageState, refresh as refreshLevers } from './levers-refresh.mjs';
@@ -561,7 +561,7 @@ export function override({ slug, id, choice, dir = digestDir(), list = repos(), 
           leverEvent = had;
           at = had.at;
           // A state change written after it (another decision's override, a trip) is what admission reads now.
-          superseded = events.slice(events.indexOf(had) + 1).some((e) => e.lever === d.lever && ['transition', 'override', 'trip'].includes(e.kind) && e.to != null);
+          superseded = events.slice(events.indexOf(had) + 1).some((e) => e.lever === d.lever && isStateChange(e));
           return null;
         }
         at = stampAfter(events, at);

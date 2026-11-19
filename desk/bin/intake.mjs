@@ -74,7 +74,6 @@ import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
-import { readQueueFile } from './queue-store.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -230,7 +229,7 @@ const waitFor = (b) => ({
   session: () => `intake: admits nothing while batch ${b.batch ?? '?'} is not handed over (queue.mjs set-batch supervised=true): it joins that batch once it is`,
 }[closed(b)]?.() ?? null);
 // With its archived tickets behind the live ones, so a batch whose finished tickets were archived still counts them.
-const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? readQueueFile(qf) : null; };
+const readQueue = () => { const qf = E.queueFile(); return existsSync(qf) ? readQueueAt(qf) : null; };
 
 const queueCmdIn = (env, args) => spawnSync(process.execPath, [join(HERE, 'queue.mjs'), ...args], { encoding: 'utf8', env });
 const queueCmd = (...args) => queueCmdIn(process.env, args);

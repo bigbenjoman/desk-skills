@@ -1050,10 +1050,22 @@ export function leverStates(env = process.env) {
   const pin = env.DESK_LEVERS != null;
   const items = pin ? [env.DESK_LEVERS] : leverItems();
   const r = leverRow(items);
-  const auto = !pin && r.auto;
-  const states = Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : auto ? 'auto' : 'off']));
-  return { from: pin ? 'pin' : 'row', row: items?.length ? items.join(' ') : null, states, unknown: r.unknown, invalid: r.invalid };
+  return { from: pin ? 'pin' : 'row', row: items?.length ? items.join(' ') : null, states: statesOfRow(r, { auto: !pin }), unknown: r.unknown, invalid: r.invalid };
 }
+// Each lever's state from a parsed levers row (`leverRow`): `auto: false` reads a pin, where `auto`
+// never applies. `rowStates` is the same for any repo's row items, as the evaluation reads them.
+const statesOfRow = (r, { auto = true } = {}) =>
+  Object.fromEntries(LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : auto && r.auto && !r.invalid ? 'auto' : 'off']));
+export const rowStates = (items) => statesOfRow(leverRow(items));
+// A slug's name without its owner: the part after the first `__`, or the slug with none.
+export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
+// Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
+export function shownNames(slugs) {
+  const short = slugs.map(shortName);
+  return slugs.map((s, i) => (short.filter((n) => n === short[i]).length > 1 ? s.replace('__', '/') : short[i]));
+}
+// The calendar day of `ms` in time zone `tz`, as YYYY-MM-DD: the levers' evaluation and view key days by it.
+export const localDay = (ms, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
 
 // The machine-wide freeze: while ~/.desk-autopilot/levers.freeze exists, every trial in every repo is
 // stopped. `leversFrozen` is { at, reason } from the file, or null with no file; a file it cannot parse

@@ -19,11 +19,10 @@
 import { realpathSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
+import { batchPaths, configuredRepos, deskConfigRoot, leverRow, repoConfigValues, rowStates } from './desk-env.mjs';
 import { auditP0Replay } from './levers-audit.mjs';
-import { rowStates } from './levers-evaluate.mjs';
 import { KEPT_STATES, REGISTRY } from './lever-registry.mjs';
-import { appendChecked, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
+import { appendChecked, isStateChange, spendsNeedsYou, stampAfter as stamp } from './lever-log.mjs';
 import { leverStatesIn } from './levers-auto.mjs';
 import { CATEGORY, VALUES, recordLeverDecision } from './lever-changes.mjs';
 import { appendDecisions } from './decisions.mjs';
@@ -32,7 +31,6 @@ import { resolveRepo as resolveShown, shortName, shownNames, Usage } from './des
 
 export const CHOICES = Object.freeze(['off', 'trial']);
 const BY_HAND = 'ben';
-const STATE_KINDS = Object.freeze(['transition', 'override', 'trip']);
 
 export class LeversRefusal extends Error {}
 const refuse = (why) => { throw new LeversRefusal(why); };
@@ -83,7 +81,7 @@ function loggedIds(state) {
 }
 
 // The lever's latest state change in `events`, or undefined.
-const latestChange = (events, lever) => events.filter((e) => STATE_KINDS.includes(e.kind) && e.lever === lever && e.to != null).at(-1);
+const latestChange = (events, lever) => events.filter((e) => isStateChange(e, lever)).at(-1);
 
 // An override of Ben's whose decision line was never written: the run that wrote it stopped short.
 const unfinished = (e, logged) => e?.kind === 'override' && e.actor === BY_HAND && !!e.decision_id && !logged.has(e.decision_id);
@@ -93,7 +91,7 @@ const unfinished = (e, logged) => e?.kind === 'override' && e.actor === BY_HAND 
 // otherwise hide an undo whose decision line was never written from the run that finishes it. Any
 // other change since (desk's adopt) is the latest change, and this run undoes that instead.
 function latestCall(events, lever) {
-  const changes = events.filter((e) => STATE_KINDS.includes(e.kind) && e.lever === lever && e.to != null);
+  const changes = events.filter((e) => isStateChange(e, lever));
   const k = changes.findLastIndex((e) => e.kind === 'override' && e.actor === BY_HAND && !!e.decision_id);
   return k >= 0 && changes.slice(k + 1).every((e) => e.kind === 'trip') ? changes[k] : undefined;
 }

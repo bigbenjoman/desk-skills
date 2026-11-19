@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, repoConfigValues } from './desk-env.mjs';
+import { HOME, BATCHES_DIR, configuredRepos, deskConfigRoot, leverRow, localDay, repoConfigValues, shownNames } from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, KEPT_STATES as KEPT, reasonWording, unassignableText } from './lever-registry.mjs';
 import { parseBaseline } from './bench-report.mjs';
 import { ageWords, renderPage } from './levers-page.mjs';
@@ -180,9 +180,10 @@ function repoFiles(r, root) {
 const AGE_ONLY = new Set(['supervisor', 'healths']);
 
 // Everything one repo holds, read once.
+// `r.name` is the repo's name as desk-q shows it (shownNames), which `levers` and `needs-you` take.
 function readRepo(r, root) {
   const f = repoFiles(r, root);
-  const name = (r.ghRepo ?? r.slug).split('/').pop();
+  const { name } = r;
   // A malformed levers row is an error naming the config, never a missing row.
   let items = null;
   let configError = null;
@@ -209,7 +210,7 @@ export function inputFiles({ root = autopilotRoot(), configRoot = deskConfigRoot
 }
 
 // ---- dates, in the person's own time zone ---------------------------------------------------------------
-const dayKey = (ms, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+const dayKey = localDay;
 const keyMs = (k) => Date.UTC(Number(k.slice(0, 4)), Number(k.slice(5, 7)) - 1, Number(k.slice(8, 10)));
 const addDays = (k, n) => new Date(keyMs(k) + n * DAY_MS).toISOString().slice(0, 10);
 const weekStart = (k) => addDays(k, -((new Date(keyMs(k)).getUTCDay() + 6) % 7));
@@ -285,7 +286,9 @@ const errs = (...reads) => reads.flat(Infinity).map((x) => x?.error).filter(Bool
 
 // The view model for the inputs under `root` and the configs under `configRoot`, as of `now`.
 export function buildView({ root = autopilotRoot(), configRoot = deskConfigRoot(), now = Date.now(), tz = Intl.DateTimeFormat().resolvedOptions().timeZone, generatedAt = Date.now() } = {}) {
-  const repos = configuredRepos(configRoot).map((r) => readRepo({ ...r, root: configRoot }, root));
+  const configured = configuredRepos(configRoot);
+  const names = shownNames(configured.map((r) => r.slug));
+  const repos = configured.map((r, i) => readRepo({ ...r, root: configRoot, name: names[i] }, root));
   const machine = machineFiles(root);
   const pooled = readJsonl(machine.pooled);
   const frozen = existsSync(machine.freeze);
@@ -544,7 +547,7 @@ export function build({ out = leversDir(), waitMs = BUILD_WAIT_MS, ...opts } = {
     writeJsonAtomic(files.view, view);
     writeJsonAtomic(files.build, record);
     return { view, record, files };
-  }, { waitMs, timeoutError: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
+  }, { waitMs, timeout: (pid) => new Error(`another Levers build (pid ${pid ?? '?'}) held ${held} past the ${waitMs / 1000}s wait: nothing was written`) });
 }
 
 // Renders the Levers page from the view.json in `dir` into index.html beside it. -> { file, view }

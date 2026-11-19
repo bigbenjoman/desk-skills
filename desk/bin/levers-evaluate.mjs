@@ -34,17 +34,18 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, GUARDRAILS, leverFingerprints } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendWith, read, stampAfter } from './lever-log.mjs';
 import { leverStatesIn, trialId, holdbackEnd, pairTrial, ACTOR } from './levers-auto.mjs';
 import { recordLeverDecision } from './lever-changes.mjs';
 import { tryLock, unlock } from './dir-lock.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { bootstrap, costRatio, interval, meanDiff, rateRatio, seedOf } from './lever-stats.mjs';
 import { guardrailStatus, leversDir, autopilotRoot, readJsonl } from './levers-view.mjs';
-import { findingsPath } from './findings.mjs';
+import { findingsPath, runsPath } from './findings.mjs';
 import { postMergePath, readPostMerge } from './post-merge.mjs';
 import { perTicket, allBatches, failedRuns } from './phase0-report.mjs';
-import { everyTicket, readQueueFile } from './queue-store.mjs';
+import { everyTicket } from './queue-store.mjs';
+import { readQueue } from './batch-state.mjs';
 
 const DAY_MS = 86_400_000;
 const WEEK_MS = 7 * DAY_MS;
@@ -60,7 +61,7 @@ export const evalsFile = (state) => join(state, 'lever-evals.jsonl');
 export const evidenceDir = (state) => join(state, 'levers-evidence');
 export const pooledFile = (root = autopilotRoot()) => join(leversDir(root), 'pooled-evals.jsonl');
 const snake = (k) => k.replace(/-/g, '_');
-const dayOf = (ms, tz) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms));
+const dayOf = E.localDay;
 const fin = (v) => (Number.isFinite(v) ? v : 0);
 const r4 = (v) => (v == null || !Number.isFinite(v) ? null : Math.round(v * 1e4) / 1e4);
 
@@ -131,11 +132,17 @@ export function withOutcomes(rows, batches) {
     const f = findingsPath(state, r.key);
     if (existsSync(f)) {
       try { newestFindings = Math.max(newestFindings ?? 0, statSync(f).mtimeMs); } catch { /* age only */ }
+      const rounds = new Set();
       for (const line of readFileSync(f, 'utf8').split('\n')) {
         let d;
         try { d = JSON.parse(line); } catch { continue; }
         if (d && !d.carried) review += fin(d.p0) + fin(d.p1);
+        if (d?.round != null) rounds.add(d.round);
       }
+      // A round the recorder noted as missing or unreadable (findings.mjs recordFindings), and never
+      // recorded since, leaves the count partial: never read as clean.
+      const gaps = readJsonl(runsPath(state, r.key)).rows.filter((n) => n.findings_unreadable || (n.findings_missing && !rounds.has(n.findings_missing.round)));
+      if (gaps.length) { review = null; missing.push(runsPath(state, r.key)); }
     } else if (r.merged_at) { review = null; missing.push(f); }
     if (!postMerge.has(state)) {
       let recs = existsSync(postMergePath(state)) ? readPostMerge(state) : null;
@@ -450,10 +457,12 @@ export function evaluate({
         const holdback = d.to === 'adopted' ? { share: reg.ramp.holdback, until: day(holdbackEnd(now, reg.ramp.holdback_weeks)) } : undefined;
         const e = appendWith(r.slug, () => {
           // Written only while the lever is still in the state this evaluation read.
-          const nowState = leverStatesIn(read(r.slug).events, registry)[lever];
+          // Stamped after every event already written, so an undo written while this ran replays first.
+          const events = read(r.slug).events;
+          const nowState = leverStatesIn(events, registry)[lever];
           if (nowState.state !== s.state || nowState.id !== s.id) return null;
           return {
-            kind: 'transition', lever, from: s.state, to: d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, at, ...evidence,
+            kind: 'transition', lever, from: s.state, to: d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at),
             n, mechanism, cost, guardrails, desk_commit_range: range, lever_fp: fingerprints[lever] ?? null, ...(holdback ? { holdback } : {}),
           };
         });
@@ -519,9 +528,10 @@ function evaluatePair({ r, pt, today, at, now, frozen, registry, written }) {
   if (d.to) {
     const e = appendWith(r.slug, () => {
       // Written only while the same pair trial is still running.
-      const live = pairTrial({ slug: r.slug, events: read(r.slug).events, states: r.states, values: null, registry, now });
+      const events = read(r.slug).events;
+      const live = pairTrial({ slug: r.slug, events, states: r.states, values: null, registry, now });
       if (live?.id !== pt.id || live.state !== 'trial') return null;
-      return { kind: 'pair', levers: pt.levers, pair: key, trial_id: pt.id, from: 'trial', to: d.to === 'frozen' ? 'reverted' : d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, at, ...evidence, n, cost, guardrails };
+      return { kind: 'pair', levers: pt.levers, pair: key, trial_id: pt.id, from: 'trial', to: d.to === 'frozen' ? 'reverted' : d.to, actor: ACTOR, reason_code: d.reason_code, reason: d.reason, ...evidence, at: stampAfter(events, at), n, cost, guardrails };
     });
     if (e) { written.events.push(e); to = e.to; }
   }
@@ -560,12 +570,6 @@ function sweepEvidence(state, now) {
 }
 
 // ---- the daily run -----------------------------------------------------------------------------------------
-// Each lever's row state in another repo's levers row, as desk-env leverStates reads this repo's.
-export function rowStates(items) {
-  const r = E.leverRow(items);
-  return Object.fromEntries(E.LEVERS.map((n) => [n, r.on.includes(n) ? 'pinned' : r.auto && !r.invalid ? 'auto' : 'off']));
-}
-
 // gh for the evaluation's one read of failed runs, ended after GH_TIMEOUT_MS so a hung call cannot
 // hold the pass.
 const GH_TIMEOUT_MS = 60_000;
@@ -585,7 +589,7 @@ export function repoRows({ slug, ghRepo, now, batches = allBatches(slug), gh = g
   // The rows name no branch, so red CI is matched through each batch's queue.
   const branchOf = new Map();
   for (const b of batches) {
-    try { for (const t of Object.values(everyTicket(readQueueFile(b.queue)))) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
+    try { for (const t of Object.values(everyTicket(readQueue(b.queue)))) if (t.branch) branchOf.set(`${b.name ?? ''}|${t.key}`, t.branch); } catch { /* no queue */ }
   }
   const rows = all.rows.map((r) => {
     const branch = branchOf.get(`${r.batch ?? ''}|${r.key}`);
@@ -601,7 +605,7 @@ export function evaluateDue({ now = Date.now(), root = autopilotRoot(), configRo
   const repos = E.configuredRepos(configRoot).map((c) => {
     let items = null;
     try { items = E.repoConfigValues(c.slug, 'levers', configRoot); } catch { /* read as off */ }
-    return { ...c, states: rowStates(items) };
+    return { ...c, states: E.rowStates(items) };
   }).filter((c) => Object.values(c.states).includes('auto'));
   if (!repos.length) return { status: 'none', line: null };
   const lock = join(leversDir(root), 'evaluate.lock.d');

@@ -23,6 +23,7 @@ const A = await import('../desk/bin/levers-audit.mjs');
 const { append, read } = await import('../desk/bin/lever-log.mjs');
 const { leverStatesIn, trialId } = await import('../desk/bin/levers-auto.mjs');
 const { LEVERS } = await import('../desk/bin/desk-env.mjs');
+const { repoTickets } = await import('../desk/bin/batches.mjs');
 const { REGISTRY, REASON_CODES } = await import('../desk/bin/lever-registry.mjs');
 
 const MIN = 60_000;
@@ -109,7 +110,7 @@ t('AC1 a ticket drawn under another trial is not sampled', A.sampleAudits({ slug
   writeFileSync(join(bdir, 'queue.archive.json'), JSON.stringify({ tickets: Object.fromEntries(rest.map((x) => [x.key, x])) }));
   writeFileSync(join(bdir, 'logs', `${recent.key}.log`), workerLog({ head: 'abc', usd: 8 }));
   const batches = [{ queue: join(bdir, 'queue.json'), state: bdir }];
-  const got = A.repoTickets(S1, batches);
+  const got = repoTickets(S1, batches);
   t('AC1 archived merged tickets are sampled with the live ones', [got.length, A.sampleAudits({ slug: S1, events: read(S1).events, tickets: got, states: AUTO }).map((s) => s.ticket)], [10, ['R-on5', 'R-off5']]);
   t('AC6 an archived merged ticket counts in the weekly spend', A.weeklySpend({ slug: S1, now: NOW, batches }), 2);
 }

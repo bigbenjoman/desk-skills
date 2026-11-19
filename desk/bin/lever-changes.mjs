@@ -9,6 +9,7 @@
 //
 //   import { leverDecision, recordLeverDecision, changeLine, overrideEvent, summaryLine } from './lever-changes.mjs'
 import { decisionEntry, appendDecisions } from './decisions.mjs';
+import { shortName } from './desk-env.mjs';
 import { REGISTRY, DECISION_RULE, reasonWording } from './lever-registry.mjs';
 import { leverStatesIn, trialId, inHoldback } from './levers-auto.mjs';
 
@@ -19,7 +20,7 @@ export const VALUES = Object.freeze(['on', 'off']);
 const BY_HAND = 'ben';
 
 // A repo's short name from its slug: `bigbenjoman__desk-skills` is `desk-skills`.
-export const repoName = (slug) => String(slug ?? '').split('__').pop();
+const repoName = (slug) => shortName(String(slug ?? ''));
 
 // Whether a lever log event is an adopt or a revert the person is told about.
 export const isDecided = (e) => ['transition', 'trip'].includes(e?.kind) && DECIDED.includes(e.to) && !!e.lever;

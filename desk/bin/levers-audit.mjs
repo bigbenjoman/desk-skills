@@ -40,6 +40,7 @@ import { logUsage, ticketCost } from './worker-cost.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readQueue } from './batch-state.mjs';
 import { everyTicket } from './queue-store.mjs';
+import { mergedPr } from './post-merge.mjs';
 import { allBatches, repoTickets } from './batches.mjs';
 import { withDirLock, writeJsonAtomic } from './dir-lock.mjs';
 
@@ -68,10 +69,6 @@ export function weekStart(now) {
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
 }
 
-const mergedPr = (t) => {
-  const pr = Number(t?.pr_status?.pr ?? t?.result?.pr);
-  return Number.isInteger(pr) && pr > 0 && Number.isFinite(Date.parse(t?.merged_at)) ? pr : null;
-};
 
 // The audits each quality-risk trial running in the repo samples, from the repo's lever log `events`
 // and its queue tickets (every batch's), oldest merge first:
@@ -166,9 +163,6 @@ export function weeklySpend({ slug, now = Date.now(), batches = allBatches(slug)
   }
   return usd / 4;
 }
-
-// Every queue ticket of the repo's batches, archived ones included, for the sample (batches.mjs).
-export { repoTickets };
 
 // When the audit worker of `item` ended, from the exit file spawn-worker.sh writes: { at } or null.
 export function endedFromExit(item) {

@@ -19,8 +19,9 @@
 // `step_after` tickets have carried it at the current one with no hard trip, each step one `ramp` event
 // in the lever log. A ticket drawn on for none of them is the `off` arm of every one, and carries the
 // repo's kept quality-risk lever: one of them, at random, while two are kept and not yet proven
-// together. Once 30% (`cap`) of the repo's tickets in flight already carry an unproven quality-risk
-// lever, a ticket carries none. Two quality-risk levers kept alone, past their holdbacks, are tried as a
+// together. A ticket is drawn on for a quality-risk trial only while the tickets in flight carrying an
+// unproven quality-risk lever, this one counted, stay within 30% (`cap`) of the tickets in flight, this
+// one counted; so with fewer than three others in flight, none is. Two quality-risk levers kept alone, past their holdbacks, are tried as a
 // pair: the pair's `on` arm carries both, its `off` arm the kept set as it stands. A pair's state is
 // its latest `pair` event for that trial (levers-evaluate.mjs writes them): adopted or settled is the
 // repo's default, both on; reverted ends the trial with the levers kept alone.
@@ -41,12 +42,13 @@ import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { leverStates, leversFrozen, queueFile, repoSlug, stateDir, SAFE_ID } from './desk-env.mjs';
 import { REGISTRY, KEPT_STATES, leverFingerprints, preconditions, repoValues, unassignableText } from './lever-registry.mjs';
-import { appendWith, read } from './lever-log.mjs';
+import { appendWith, isStateChange, read } from './lever-log.mjs';
 import { pinAtAdmission } from './lever-pin.mjs';
 import { readQueue } from './batch-state.mjs';
 import { listBatches, repoTickets } from './batches.mjs';
 import { SIZES, sizeOf } from './desk-q-eta.mjs';
-import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { lock, unlock } from './dir-lock.mjs';
+import { writeQueueFile } from './queue-store.mjs';
 
 export const STATES = Object.freeze(['off', 'trial', 'adopted', 'settled', 'reverted', 'frozen', 'overridden']);
 export const BLOCK_SIZE = 4;
@@ -69,7 +71,7 @@ export function leverStatesIn(events, registry = REGISTRY) {
     out[name] = { state: l.trialled ? 'trial' : 'off', at: null, id: null };
   }
   for (const e of events) {
-    if (!['transition', 'override', 'trip'].includes(e.kind) || !Object.hasOwn(out, e.lever) || e.to == null) continue;
+    if (!isStateChange(e) || !Object.hasOwn(out, e.lever)) continue;
     const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
     const state = pinned ? 'overridden' : STATES.includes(e.to) ? e.to : 'off';
     const value = pinned ? e.to : e.value;
@@ -146,7 +148,7 @@ function keptSince(events, lever) {
   let kept = false;
   const before = new Map();
   for (const e of events) {
-    if (!['transition', 'override', 'trip'].includes(e.kind) || e.lever !== lever || e.to == null) continue;
+    if (!isStateChange(e, lever)) continue;
     before.set(e.id, { id, kept });
     if (e.kind === 'override' && e.restores && before.has(e.undoes_event)) { ({ id, kept } = before.get(e.undoes_event)); continue; }
     const now = KEPT_STATES.includes(e.to);
@@ -410,8 +412,9 @@ if (isMain && process.argv[2] === 'evaluate' && process.argv.length === 3) {
     const qLock = `${qf}.lock`;
     lock(qLock, { timeout: (pid) => new Error(`the queue is locked by pid ${pid ?? '?'} past the 10s wait: nothing was changed`) });
     const q = readQueue(qf);
-    const t = q.tickets?.[key];
-    if (!t) throw new Error(`no such ticket in the queue: ${key}`);
+    // Only a live ticket: an archived one is found by key behind them, but the queue write keeps none.
+    const t = q.tickets && Object.hasOwn(q.tickets, key) ? q.tickets[key] : null;
+    if (!t) throw new Error(`no such ticket in the queue: ${key}${q.tickets?.[key] ? ' (it is archived)' : ''}`);
     if (t.levers != null) {
       unlock(qLock);
       console.log(`${key} is already pinned; unchanged: ${JSON.stringify(t.levers)}`);
@@ -419,7 +422,7 @@ if (isMain && process.argv[2] === 'evaluate' && process.argv.length === 3) {
     }
     const { pin, warning } = assignPin(key, { size: sizeOf(stateDir(), key) });
     t.levers = pin;
-    writeJsonAtomic(qf, q);
+    writeQueueFile(qf, q);
     unlock(qLock);
     if (warning) console.error(warning);
     console.log(`${key} pinned: ${JSON.stringify(pin)}`);

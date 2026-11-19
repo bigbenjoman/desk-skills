@@ -42,7 +42,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, shortName, shownNames } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -680,14 +680,8 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
-// A slug's name without its owner: the part after the first `__`, or the slug with none.
-export const shortName = (slug) => slug.split('__').slice(1).join('__') || slug;
-
-// Each slug's name as desk-q shows it: the part after the owner, or owner/name where two repos share it.
-export function shownNames(slugs) {
-  const short = slugs.map(shortName);
-  return slugs.map((s, i) => (short.filter((n) => n === short[i]).length > 1 ? s.replace('__', '/') : short[i]));
-}
+// A slug's name without its owner, and each slug's name as desk-q shows it (desk-env.mjs).
+export { shortName, shownNames } from './desk-env.mjs';
 
 // With `word`, only the repo it names (resolveRepo) is loaded: every other batch is read only for its
 // names and its running workers (lightBatch), so a slow batch elsewhere never holds up its listing.
@@ -2177,7 +2171,7 @@ function loginUses(subs = readSubscriptions(subscriptionsPath())) {
 const holdOut = (repos, l, now) => ((h) => (h ? { at: h.resets_at ?? null, type: h.type } : null))(
   holdOn(withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
-const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
+const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? shortName(String(slug));
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check, use }. `out` is
 // { at, type } while the login is at its limit (a batch here holds on it, or its Codex reading is at

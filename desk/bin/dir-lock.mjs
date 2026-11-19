@@ -3,13 +3,11 @@
 // Creating a directory is atomic, so the mkdir that succeeds holds it. A holder that has exited never
 // lets go, so its lock is cleared; every lock this process still holds goes when it exits.
 //
-//   import { tryLock, lock, unlock, takeDirLock, releaseDirLock, withDirLock, lockPid, alive } from './dir-lock.mjs'
+//   import { tryLock, lock, unlock, withDirLock, lockPid, alive } from './dir-lock.mjs'
 //   tryLock(dir)                                         -> true once taken, else the holder's pid (or null)
-//   lock(dir, { waitMs, timeout })                       -> returns once held, or throws timeout(pid)
+//   lock(dir, { waitMs, pollMs, timeout })               -> returns once held, or throws timeout(pid)
 //   unlock(dir?)                                         -> lets go of dir, or of every lock this process holds
-//   takeDirLock(dir, { waitMs, pollMs, timeoutError })   -> returns once held, or throws timeoutError(pid)
-//   releaseDirLock(dir)                                  -> removes it only while this process holds it
-//   withDirLock(dir, fn, opts)                           -> fn()'s result, the lock held around it
+//   withDirLock(dir, fn, opts)                           -> fn()'s result, the lock held around it (lock()'s opts)
 //   tryLockFile(file, fields) / unlockFile(file?)        -> the same, for a lock that is a {pid} JSON file
 import { mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -58,14 +56,15 @@ export function tryLock(dir) {
   }
 }
 
-// Takes `dir`, waiting up to waitMs; past it, throws timeout(pid) (pid null when none is written yet).
-export function lock(dir, { waitMs = 10_000, timeout = (pid) => new Error(`${dir} is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) } = {}) {
+// Takes `dir`, trying every pollMs and waiting up to waitMs; past it, throws timeout(pid) (pid null when
+// none is written yet).
+export function lock(dir, { waitMs = 10_000, pollMs = 50, timeout = (pid) => new Error(`${dir} is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) } = {}) {
   const until = Date.now() + waitMs;
   for (;;) {
     const got = tryLock(dir);
     if (got === true) return;
     if (Date.now() >= until) throw timeout(got);
-    sleepSync(50);
+    sleepSync(pollMs);
   }
 }
 
@@ -80,23 +79,11 @@ process.on('exit', () => unlock());
 
 const heldError = (dir, waitMs) => (pid) => new Error(`${dir} is held by pid ${pid ?? '? (no pid written yet)'} past the ${waitMs / 1000}s wait`);
 
-// The lever log's form of lock(): its own poll interval and timeout error.
-export function takeDirLock(dir, { waitMs = 10_000, pollMs = 50, timeoutError = heldError(dir, waitMs) } = {}) {
-  const until = Date.now() + waitMs;
-  for (;;) {
-    const got = tryLock(dir);
-    if (got === true) return;
-    if (Date.now() >= until) throw timeoutError(got);
-    sleepSync(pollMs);
-  }
-}
-
-export const releaseDirLock = (dir) => unlock(dir);
-
-export function withDirLock(dir, fn, opts) {
-  takeDirLock(dir, opts);
+// fn()'s result, with `dir` held around it (lock()'s options).
+export function withDirLock(dir, fn, opts = {}) {
+  lock(dir, { timeout: heldError(dir, opts.waitMs ?? 10_000), ...opts });
   try { return fn(); }
-  finally { releaseDirLock(dir); }
+  finally { unlock(dir); }
 }
 
 // A lock that is a file of JSON { pid, since, ... }: pass.mjs's orchestrator.lock, which queue.mjs stop
