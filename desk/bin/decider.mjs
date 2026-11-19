@@ -28,6 +28,7 @@ import { needsSession, planPark, leftPark, personOnlyStep, LEFT_PREFIX, moveTarg
 import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
+import { refusedLogin } from './health.mjs';
 import { TAKE_CATEGORIES } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 
@@ -333,10 +334,14 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
 
 // Starts the session detached, on the repo's subscription (call-login.mjs), its JSON result written to
 // <state>/decider/<id>.json. Returns the record the supervisor keeps until the session ends, or
-// { wait }, starting nothing, when the subscription is at its limit or no login here is signed in to it.
+// { wait }, starting nothing, when the subscription is at its limit, no login here is signed in to it,
+// or the pass's last health check found the API refusing its login (health.mjs refusedLogin), which
+// that check's own item names to the person.
 export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
   if (wait) return { wait };
+  const refused = refusedLogin(state, login);
+  if (refused) return { wait: `its login${login ? ` ${login.name}` : ''} failed its health check, ${refused}` };
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
   const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
