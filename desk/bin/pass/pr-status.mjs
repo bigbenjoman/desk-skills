@@ -22,17 +22,27 @@
 //   pr-status {key, status}            keep status on the ticket as pr_status
 //   set {key, fields}                  -> queue.mjs set's result
 //   merged {key, at}                   -> queue.mjs merged's record, or '' (at: GitHub's merge time, or null)
+//   follow-on {key, fields, expect}    -> queue.mjs set's result for fields, written only while the
+//                                      ticket's followState is one of `expect` ({ ok, skipped } when not)
 //   out {line}                         a report line
+//   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
 //   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
-import { FOLLOW_ON_MAX } from '../harvest.mjs';
+import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
+// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
+// (harvest.mjs postMergeOwed).
 const PR_FINAL = ['MERGED', 'CLOSED'];
-// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
-const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A follow step gated on the default branch or production (needs-you.mjs gateHeld) waits on its PR's
+// merge commit, which a merge recorded without reading the PR (needs-you's done, a hand-ship) lacks, so
+// that PR is read again for it. GitHub names a merged PR's merge commit, so one read records it.
+const gatedFollow = (t) => followOnPending(t) && t.follow_on.some((x) => (x?.after ?? 'merge') !== 'merge');
+const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
+// A ticket's follow-on steps as the follow-on write compares them: as read, or as that write leaves them.
+export const followState = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
 
 export function* decidePrStatus(s) {
   const prStates = {};
@@ -56,8 +66,8 @@ export function* decidePrStatus(s) {
     const owed = t.reopening != null && String(t.reopening) === String(n);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
       prStates[n] = t.pr_status.state;
-      if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n))) continue;
-      if (t.pr_status.merged_at) st = t.pr_status;
+      if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
+      if (t.pr_status.merged_at && !commitOwed(t)) st = t.pr_status;
     } else if (n in prStates) continue;
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
@@ -81,18 +91,25 @@ export function* decidePrStatus(s) {
     // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
     // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first. An
     // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
-    // these steps. One write, so a refused one leaves the criteria owed to the next pass.
+    // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
+    // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
+    // this is written skips it whole, so the next pass adds the criteria to what done left.
     if (st.state === 'MERGED' && !s.dry && (st.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
       const have = t.follow_on_done ? [] : t.follow_on ?? [];
-      const later = st.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
+      const later = st.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
       const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
-      const ok = yield { type: 'set', key: t.key, fields: [...steps, `post_merge_read=${n}`] };
-      if (ok && later.length) {
+      // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+      const expect = [followState(t), later.length ? followState({ follow_on: [...have, ...later], follow_on_done: null }) : followState(t)];
+      const w = yield { type: 'follow-on', key: t.key, fields: [...steps, `post_merge_read=${n}`], expect };
+      if (w?.ok && !w.skipped && later.length) {
         merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
       }
     }
   }
   for (const m of merges) yield { type: 'out', line: `merge recorded: ${m}` };
+  // needs-you judges a gated follow step from the repo root's remote refs, so origin is fetched each pass
+  // while one waits: nothing else moves origin/<default> or the Promotion ref there on a quiet repo.
+  if (Object.values(s.tickets).some(gatedFollow)) yield { type: 'fetch-origin' };
   // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
   if (!s.dry) {
     const open = [...new Set(Object.values(s.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String))];

@@ -67,7 +67,7 @@ import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
-import { decidePrStatus } from './pass/pr-status.mjs';
+import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, ownWords, LINK_STEP, linkSteps, parkFollowOn, gateListsOf,
@@ -3925,6 +3925,16 @@ runSteps({
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
     merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
+    'follow-on': (a) => {
+      const args = ['set', a.key, ...a.fields];
+      const w = QW.apply(args, { when: (x) => a.expect.includes(followState(x)) });
+      if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+      return w;
+    },
+    'fetch-origin': () => {
+      const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
+      if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
+    },
     'prune-builds': (a) => {
       const open = new Set(a.open);
       for (const f of pruneTrees(TREE_DIR, BUILD_DIR, (n) => open.has(n))) report.failed.push(`check build checkout ${join(TREE_DIR, f.n)}: PR #${f.n} is closed, but it could not be removed — ${f.why}`);

@@ -1,5 +1,5 @@
 // suite: pass phase: PR status (each done ticket's PR read, merges recorded, the lists the steps after it use)
-import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
+import { decidePrStatus, followState } from '../desk/bin/pass/pr-status.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -17,6 +17,7 @@ const answers = (reads = {}) => (a) => {
   if (a.type === 'read-pr') return reads[a.pr] ?? null;
   if (a.type === 'merged') return `merged_at=${a.at ?? PASS_AT}`;
   if (a.type === 'set') return true;
+  if (a.type === 'follow-on') return { ok: true };
   return undefined;
 };
 const run = (s, reads) => drive(decidePrStatus(s), answers(reads));
@@ -56,10 +57,30 @@ const lists = (acts) => acts.at(-1);
   t('a merged PR whose post-merge criteria were read for it already gets no action', j(read.filter((a) => !['prune-builds', 'lists'].includes(a.type))), '[]');
   const acts = run(snap([owedT]));
   t('a merged PR owed its post-merge steps is not read again', ofType(acts, 'read-pr').length, 0);
-  t('its criteria become follow-on steps in one write', j(ofType(acts, 'set').map((a) => a.fields)), j([['follow_on=[{"step":"check prod","row":null}]', 'post_merge_read=15']]));
+  t('its criteria become follow-on steps in one write', j(ofType(acts, 'follow-on').map((a) => a.fields)), j([['follow_on=[{"step":"check prod","row":null}]', 'post_merge_read=15']]));
+  t('made only while the steps are as read, or as that write leaves them', j(ofType(acts, 'follow-on')[0].expect),
+    j([followState(owedT), followState({ follow_on: [{ step: 'check prod', row: null }], follow_on_done: null })]));
   t('and a merge line names them', ofType(acts, 'out')[0].line, 'merge recorded: E (PR #15): 1 criterion its review left for after the merge, now follow-on steps');
-  const refused = drive(decidePrStatus(snap([owedT])), (a) => (a.type === 'set' ? false : undefined));
+  const refused = drive(decidePrStatus(snap([owedT])), (a) => (a.type === 'follow-on' ? { ok: false, why: 'no' } : undefined));
   t('a refused write names no follow-on steps', ofType(refused, 'out').length, 0);
+  const skipped = drive(decidePrStatus(snap([owedT])), (a) => (a.type === 'follow-on' ? { ok: true, skipped: true } : undefined));
+  t('a write skipped because the steps changed under it names none', ofType(skipped, 'out').length, 0);
+  const gated = done('E2', 26, { merged_at: 'x', pr_status: status(26, 'MERGED', { merged_at: 'x', post_merge: [{ step: 'check live', after: 'production' }] }) });
+  t('a criterion gated on production keeps its gate', ofType(run(snap([gated])), 'follow-on')[0].fields[0], 'follow_on=[{"step":"check live","row":null,"after":"production"}]');
+}
+{
+  // A follow step gated past the merge waits on its PR's merge commit: a merged PR recorded without one is read again.
+  const follow = { follow_on: [{ step: 'check main', row: null, after: 'main' }] };
+  const noCommit = done('V', 27, { merged_at: 'x', ...follow, pr_status: status(27, 'MERGED', { merged_at: 'x' }) });
+  const acts = run(snap([noCommit]), { 27: status(27, 'MERGED', { merged_at: 'x', merge_commit: 'c'.repeat(40) }) });
+  t('a merged PR owed its merge commit is read again', j(ofType(acts, 'read-pr').map((a) => a.pr)), j([27]));
+  t('and origin is fetched while a gated follow step waits', ofType(acts, 'fetch-origin').length, 1);
+  const withCommit = done('W', 28, { merged_at: 'x', ...follow, pr_status: status(28, 'MERGED', { merged_at: 'x', merge_commit: 'c'.repeat(40) }) });
+  const kept = run(snap([withCommit]));
+  t('one with its merge commit is not read again', ofType(kept, 'read-pr').length, 0);
+  t('origin is still fetched for its gated step', ofType(kept, 'fetch-origin').length, 1);
+  const mergeOnly = done('X', 29, { merged_at: 'x', follow_on: [{ step: 's', row: null }], pr_status: status(29, 'MERGED', { merged_at: 'x' }) });
+  t('a step gated on the merge alone needs neither', j(run(snap([mergeOnly])).map((a) => a.type)), j(['prune-builds', 'lists']));
 }
 {
   // A closed PR still owed its reopen is read again, and counts as open.
