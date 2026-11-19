@@ -30,7 +30,7 @@ Read the `CONFIG` file. `EXISTS=no` means stop: say which slug was looked up and
 
 | §4 Check-out destination | Where the draft goes |
 |---|---|
-| a Slack channel (`#name`) | At `§3 slack-draft` `yes`, saved as a Slack draft in that channel, and printed. Otherwise, or when the draft cannot be saved, printed and copied for the user to paste, saying why there is no draft. **Never sent** |
+| a Slack channel (`#name`) | Printed, and saved as a Slack draft in that channel or copied, as §5 says. **Never sent** |
 | a file path | Written to that file (a directory gets `<YYYY-MM-DD>.md` inside it). If the file already exists, show what is there and ask before replacing or appending |
 | `none` | Printed and copied. Nothing is written anywhere |
 | `TODO` or missing | Ask where it goes, print it meanwhile, and offer `/desk-setup` |
@@ -174,15 +174,16 @@ Print the post inside a single ```text fence so it copies cleanly. Then put it w
 destination says, and say in one line where it went:
 
 - **A Slack channel, `§3 slack-draft` `yes`:** save it as a draft in that channel with the Slack
-  connector's `slack_send_message_draft`, finding the channel's id with `slack_search_channels`
-  first. Say "Saved as a draft in #name, not sent", with the link it returns. This is the default,
-  not something to offer: the user looks for it in Slack's drafts.
+  connector's `slack_send_message_draft`. Find the channel's id first with `slack_search_channels`,
+  `channel_types` `public_channel,private_channel` (it searches public channels only by default),
+  taking the exact name. Say "Saved as a draft in #name, not sent", with the link it returns. This
+  is the default, not something to offer: the user looks for it in Slack's drafts.
 - **When that draft cannot be saved** (no Slack connector, the channel not found or not joined, a
   draft already waiting in that channel, or any other error), copy the post to the clipboard
   instead and say so with the reason: "No draft saved (<why>); copied to the clipboard". For a draft
   already waiting, say the user must post or delete it before a new one can be saved.
-- **Any other destination, or `§3 slack-draft` not `yes`:** copy it to the clipboard. At `ask`,
-  offer to save the Slack draft as well.
+- **Any other destination, or `§3 slack-draft` not `yes`:** copy it to the clipboard. For a Slack
+  channel at `ask`, offer to save the draft as well.
 
 Copy with `pbcopy` on macOS, `clip.exe` on WSL, `xclip -selection clipboard` or `wl-copy` on Linux,
 from a heredoc. On WSL a copy may not reach the Windows desktop, so the printed post is the fallback

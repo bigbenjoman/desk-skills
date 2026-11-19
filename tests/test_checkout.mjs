@@ -252,11 +252,12 @@ const calls = readFileSync(join(FAKE, 'calls.log'), 'utf8').split('\n').filter((
 t('jira: every request went through desk-jira as acme__app', calls.every((l) => l.startsWith('desk-jira acme__app api ')), true);
 t('jira: the search is limited to the project', calls.some((l) => decodeURIComponent(l.replace(/\+/g, ' ')).includes('project = APP AND (')), true);
 
-// #818: at a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft rather
-// than copying, says where it went, and copies only when the draft cannot be saved, saying why.
+// At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
+// went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
-has('#818 the destination table saves the draft at slack-draft yes', skill, 'At `§3 slack-draft` `yes`, saved as a Slack draft in that channel');
-has('#818 the hand-over saves it with slack_send_message_draft, by default', skill, 'save it as a draft in that channel with the Slack\n  connector\'s `slack_send_message_draft`');
+has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
+has('#818 by default, not as an offer', skill, 'the default, not something to offer');
+has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
