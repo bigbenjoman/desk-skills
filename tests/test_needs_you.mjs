@@ -481,7 +481,7 @@ t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
 
-// ---- DS-807: a park on a file the person is asked to make is listed; one a script makes is not
+// ---- A park on a file the person is asked to make is listed; one a script makes is not
 const fileQ = 'Please run bash tests/compare_pass.sh on the host and save its output to $DESK_STATE/fixtures/F-1/compare-pass.txt';
 const filePark = (question, cond) => { const p = parked('A', 30, question); return { ...p, park: { ...p.park, clears_when: { kind: 'file-exists', root: 'state', ...cond } } }; };
 put('file807', { port: 4807, beat: 1, supervised: true, tickets: {

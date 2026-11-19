@@ -299,7 +299,7 @@ check "DS-581 the queued form reads as SV-3994 wrote it, and as owner/name" \
 check "DS-581 an app's review, written with its [bot] suffix, counts at the head" '[ "$(cut -d"|" -f8 <<< "$r")" = "{\"holds\":true}" ]'
 check "DS-581 AC8 a failed reviews read is an error, not holding" '[ "$(cut -d"|" -f9 <<< "$r")" = "{\"error\":\"gh pr view 1: HTTP 502\"}" ]'
 check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut -d"|" -f10,11 <<< "$r")" = "/s/a/b|/w/a/b" ]'
-# DS-807: a file condition read against its park's question.
+# A file condition read against its park's question.
 r=$(node --input-type=module -e "
 import { withQuestion } from '$B/clears-when.mjs';
 const w = (cond, q) => JSON.stringify(withQuestion(cond, q, { state: '/h/.desk-autopilot/acme__w', home: '/h' }));
@@ -324,6 +324,33 @@ check "DS-807 an absolute path under the state directory is the question's \$DES
   '[ "$(cut -d"|" -f6 <<< "$r")" = "{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"/h/.desk-autopilot/acme__w/fixtures/a.json\",\"root\":\"abs\",\"person\":true}}" ]'
 check "DS-807 AC4 a relative path the question contradicts with another relative one is refused, saying the two paths differ" \
   '[[ "$(cut -d"|" -f7 <<< "$r")" == "{\"ok\":false,\"why\":\"the question names \\\"out/meet.json\\\" and the clears-when \\\"fixtures/meet.json\\\": the two paths differ"* ]]'
+r=$(node --input-type=module -e "
+import { withQuestion } from '$B/clears-when.mjs';
+const w = (cond, q) => { const r = withQuestion(cond, q, { state: '/h/.desk-autopilot/acme__w', home: '/h' }); return r.ok ? [r.cond.root, r.cond.path, !!r.cond.person].join(' ') : r.why; };
+const rel = { kind: 'file-exists', path: 'fixtures/DS-776/compare-pass.txt', root: 'worktree' };
+const mov = { kind: 'file-exists', path: 'fixtures/Screen Recording.mov', root: 'worktree' };
+console.log([
+  w(rel, 'Please copy /tmp/DS-776/compare-pass.txt to \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w({ kind: 'file-exists', path: 'fixtures/X/out.txt', root: 'state' }, 'Please save it to ~/.desk-autopilot/<slug>/fixtures/X/out.txt'),
+  w(mov, 'Please save the recording to \"\$DESK_STATE/fixtures/Screen Recording.mov\".'),
+  w(mov, 'Please save it to ~/.desk-autopilot/acme__w/fixtures/Screen\\\\ Recording.mov'),
+  w(rel, 'The nightly job needs it to write \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Waiting on CI: run 991 writes \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Please run the check once the worker saves \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Waiting on runs that write /a/compare-pass.txt and /b/compare-pass.txt'),
+  w(rel, 'This needs Ben to save its output to \$DESK_STATE/fixtures/DS-776/compare-pass.txt. Then the check reruns.'),
+].join('|'));
+")
+check "DS-807 AC4 a copy request looks at the \$DESK_STATE copy, not its source" '[ "$(cut -d"|" -f1 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
+check "DS-807 AC4 an absolute or \$DESK_STATE clears-when is kept when the question's path is a placeholder, and is still the person's" \
+  '[ "$(cut -d"|" -f2 <<< "$r")" = "state fixtures/X/out.txt true" ]'
+check "DS-807 AC1 a quoted or escaped path with a space is the question's file" \
+  '[ "$(cut -d"|" -f3,4 <<< "$r")" = "state fixtures/Screen Recording.mov true|state fixtures/Screen Recording.mov true" ]'
+check "DS-807 AC3 a file a job, a run or the worker makes is not the person's" \
+  '[ "$(cut -d"|" -f5,6,7 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt false|state fixtures/DS-776/compare-pass.txt false|state fixtures/DS-776/compare-pass.txt false" ]'
+check "DS-807 AC4 a question naming two places for the file is refused, naming both" \
+  '[[ "$(cut -d"|" -f8 <<< "$r")" == "the question names \"/a/compare-pass.txt\", \"/b/compare-pass.txt\" and the clears-when \"fixtures/DS-776/compare-pass.txt\": it names more than one place"* ]]'
+check "DS-807 AC1 a question asking the person by name is theirs" '[ "$(cut -d"|" -f9 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
 # A condition only the parked ticket's own draft leaving draft or merging makes hold is refused.
@@ -345,7 +372,7 @@ check "DS-582 AC6 with no recorded PR it is accepted" '[ $rc -eq 0 ] && [ "$(fie
 q drop DR-1; q drop DR-2; q drop DR-3
 q add C-10 Story A; q set C-10 state=running branch=feat/C-10 session_id=gone; draft C-10 3085 true
 say "AUTOPILOT_PARK: the Review gate is red on #3085" "AUTOPILOT_PARK_CLEARS_WHEN: PR #3085 out of draft" > "$T/state/logs/C-10.log"
-# DS-807: a park asking the person to save a file, recorded by queue.mjs and by a worker's lines.
+# A park asking the person to save a file, recorded by queue.mjs and by a worker's lines.
 parked FP-1 A "Please run compare_pass.sh on the host and save its output to \$DESK_STATE/fixtures/FP-1/compare-pass.txt" "file fixtures/FP-1/compare-pass.txt exists"
 parked FP-2 A "Please save the capture to out/meet.json"
 out=$(node "$B/queue.mjs" clears-when FP-2 "file fixtures/meet.json exists" 2>&1); rc=$?
@@ -353,6 +380,11 @@ check "DS-807 AC4 queue.mjs clears-when refuses a path the question contradicts,
   '[ $rc -ne 0 ] && grep -q "the two paths differ" <<< "$out" && grep -q "Nothing was recorded" <<< "$out" && [ "$(field FP-2 park.clears_when)" = null ]'
 check "DS-807 AC4 queue.mjs clears-when looks where the question's \$DESK_STATE path says, marked the person's" \
   '[ "$(field FP-1 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/FP-1/compare-pass.txt\",\"root\":\"state\",\"person\":true}" ]'
+parked FP-3 A "Please save the export to \$DESK_STATE/fixtures/FP-3/export.csv"
+out=$(node "$B/queue.mjs" clears-when FP-3 "file fixtures/FP-3/export.csv exists" 2>&1)
+check "DS-807 AC4 queue.mjs clears-when says the path it recorded, and that the person makes it" \
+  'grep -qF "FP-3: its park clears when file \$DESK_STATE/fixtures/FP-3/export.csv exists, which the person makes" <<< "$out"'
+q drop FP-3
 q add C-11 Story A; q set C-11 state=running branch=feat/C-11 session_id=gone
 say "AUTOPILOT_PARK: Please save the export to $T/state/fixtures/C-11/export.csv" "AUTOPILOT_PARK_CLEARS_WHEN: file fixtures/C-11/export.csv exists" > "$T/state/logs/C-11.log"
 q add C-12 Story A; q set C-12 state=running branch=feat/C-12 session_id=gone
@@ -375,7 +407,7 @@ console.log([settlesByScript(q.tickets['C-8']), settlesByScript(q.tickets['E-2']
 ")
 check "DS-563 AC3 a park waiting on its restate is not yet the person's (digest and needs-you leave it out), and one recorded none is" '[ "$r" = "true|false" ]'
 check "DS-807 AC4 a worker's relative clears-when is recorded where its question's path says, marked the person's" \
-  '[ "$(field C-11 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/C-11/export.csv\",\"root\":\"state\",\"person\":true}" ]'
+  '[ "$(field C-11 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/C-11/export.csv\",\"root\":\"state\",\"person\":true}" ] && grep -qF "C-11: clears-when \"file fixtures/C-11/export.csv exists\" recorded as file \$DESK_STATE/fixtures/C-11/export.csv exists, where its question says" <<< "$out"'
 check "DS-807 AC4 one its question contradicts is kept for the decider to restate, naming why" \
   '[ "$(field C-12 park.clears_when.kind)" = "\"unreadable\"" ] && grep -q "C-12: unreadable clears-when (the question names \"out/export.csv\" and the clears-when \"fixtures/export.csv\": the two paths differ" <<< "$out"'
 r=$(node --input-type=module -e "

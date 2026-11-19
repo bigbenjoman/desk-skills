@@ -42,7 +42,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion } from './clears-when.mjs';
+import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -530,6 +530,9 @@ function clearsWhenOf(t, log, question) {
     return { kind: 'none' };
   }
   const p = parsed.ok ? withQuestion(parsed.cond, question, { state: STATE }) : parsed;
+  if (p.ok && (p.cond.path !== parsed.cond.path || p.cond.root !== parsed.cond.root)) {
+    report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as ${describeCond(p.cond)}, where its question says`);
+  }
   if (p.ok) return p.cond;
   report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
   return { kind: UNREADABLE, text: String(raw).trim(), why: p.why, at: PASS_AT };

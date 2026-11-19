@@ -919,7 +919,7 @@ switch (cmd) {
     t.park.clears_when = w.cond;
     t.updated_at = new Date().toISOString();
     save(q);
-    console.log(`${key}: its park clears when ${describeCond(p.cond)}`);
+    console.log(`${key}: its park clears when ${describeCond(w.cond)}${w.cond.person ? ', which the person makes, so the park is still put to them' : ''}`);
     break;
   }
 

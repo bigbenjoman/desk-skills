@@ -186,37 +186,71 @@ export function queuedIn(ticket, repo, queues, live) {
 // issue links, or a file its park's question asks them to make (withQuestion marks it person).
 export const personClears = (c) => c?.kind === 'links-made' || (c?.kind === 'file-exists' && c.person === true);
 
-// The files a park's question names, as conditions: each word holding a slash that reads as a path
-// fileCond takes, ~/ read from the home directory.
-const questionFiles = (question, home) => String(question ?? '').split(/\s+/)
-  .map((w) => w.replace(/^[("'`<]+|[)"'`>.,;:!?]+$/g, ''))
-  .filter((w) => w.includes('/') && !/^[a-z]+:\/\//i.test(w))
-  .map((w) => fileCond(w.startsWith('~/') ? posix.join(home, w.slice(2)) : w))
-  .filter((c) => c.kind === 'file-exists');
+// The words of a park's question: one in quotes or backticks runs to the closing one, spaces and all;
+// any other runs to the first unescaped space (`Screen\ Recording.mov`, as a dragged-in path is written).
+const QUESTION_WORD = /(?<=^|[\s(<[{])(["'`])([^\n]+?)\1(?=$|[\s.,;:!?)>\]}])|(?:\\ |\S)+/g;
+// The files a park's question names, each {cond, at, placeholder}: a word holding a slash that reads as
+// a path fileCond takes, ~/ read from the home directory, `at` where it starts in the question, and
+// placeholder where it still holds a <name> or {name} to fill in, so it names no real place.
+const questionFiles = (question, home) => [...String(question ?? '').matchAll(QUESTION_WORD)]
+  .map((m) => ({ at: m.index, w: m[2] ?? m[0].replace(/^[("'`<[]+|[)"'`>\].,;:!?]+$/g, '').replace(/\\ /g, ' ') }))
+  .filter(({ w }) => w.includes('/') && !/^[a-z]+:\/\//i.test(w))
+  .map(({ at, w }) => ({ at, placeholder: /[<>{}]/.test(w), cond: fileCond(w.startsWith('~/') ? posix.join(home, w.slice(2)) : w) }))
+  .filter((f) => f.cond.kind === 'file-exists');
 // An absolute path under the state directory, as one under $DESK_STATE.
-const inState = (c, state) => (c.root === 'abs' && state && c.path.startsWith(`${posix.normalize(state).replace(/\/$/, '')}/`)
-  ? { ...c, path: c.path.slice(posix.normalize(state).replace(/\/$/, '').length + 1), root: 'state' } : c);
-// The question asks the person to make, save or run something: a request, not a description of a step.
-const ASKS = /(?:^|[.?!;:]\s+|\b(?:please|kindly)\s+|\b(?:can|could|would|will) you\s+(?:please\s+)?|\byou (?:need to|have to|must|should)\s+|\b(?:asks?|asking|need|needs|want|wants) (?:you|the (?:person|user)|[A-Z][a-z]+) to\s+)(?:run|save|put|write|copy|drop|place|create|make|store|upload|attach|export|download|capture|paste)\b/i;
+const inState = (c, state) => {
+  const dir = state ? posix.normalize(state).replace(/\/$/, '') : null;
+  return c.root === 'abs' && dir && c.path.startsWith(`${dir}/`) ? { ...c, path: c.path.slice(dir.length + 1), root: 'state' } : c;
+};
+const sameFile = (a, b) => a.root === b.root && a.path === b.path;
+// A request of the person to make, save or run something, not a description of a step. The verbs and
+// their lead-ins read in either case; a name before "to" (needs Ben to) and a sentence's own first
+// word (Save it to …) only capitalised, so "needs it to write" and "CI: run 991 writes" are not asks.
+const VERBS = ['run', 'save', 'put', 'write', 'copy', 'drop', 'place', 'create', 'make', 'store', 'upload', 'attach', 'export', 'download', 'capture', 'paste'];
+const ASK_VERB = `(?:${VERBS.join('|')})\\b`;
+const ASKS = [
+  new RegExp(`(?:\\b(?:please|kindly)\\s+|\\b(?:can|could|would|will) you\\s+(?:please\\s+)?|\\byou (?:need to|have to|must|should)\\s+|\\b(?:asks?|asking|needs?|wants?) (?:you|the (?:person|user)) to\\s+|^\\s*)${ASK_VERB}`, 'gi'),
+  new RegExp(`\\b(?:asks?|asking|needs?|wants?) [A-Z][a-z]+ to\\s+${ASK_VERB}`, 'g'),
+  new RegExp(`[;:]\\s+(?:${VERBS.map((v) => v[0].toUpperCase() + v.slice(1)).join('|')})\\b`, 'g'),
+];
+// Whether the question asks the person to make the file named at `at`: an ask earlier in that
+// sentence, with no clause after it that hands the making to someone else (once the worker saves …).
+function askedAt(question, at) {
+  const before = question.slice(0, at);
+  const from = Math.max(0, ...[...before.matchAll(/[.?!]\s+/g)].map((m) => m.index + m[0].length));
+  const sentence = before.slice(from);
+  const ends = ASKS.flatMap((re) => [...sentence.matchAll(re)].map((m) => m.index + m[0].length));
+  return ends.length > 0 && !/\b(?:once|when|after|until|while|before|if|unless|since)\b/i.test(sentence.slice(Math.max(...ends)));
+}
 
 // A file-exists condition read against the question of the park it clears: {ok: true, cond} or
-// {ok: false, why}. The question names the file by its name. Where it names it somewhere other than the
-// condition looks, the condition looks where the question says when that is an absolute or $DESK_STATE
-// path, and is refused when it is not. Where the question asks the person to make it, the condition is
-// marked person (personClears). Any other condition, or a question naming no such file, is kept as given.
+// {ok: false, why}. The question names the file by its name. Where a relative condition names it
+// somewhere the question does not, it looks where the question says when that is one absolute or
+// $DESK_STATE path ($DESK_STATE first, so "copy /tmp/x to $DESK_STATE/x" is the copy), and is refused
+// when it is not. An absolute or $DESK_STATE condition is kept. Where the question asks the person to
+// make it, the condition is marked person (personClears). Any other condition, or a question naming no
+// such file, is kept as given.
 export function withQuestion(cond, question, { state = null, home = homedir() } = {}) {
   if (cond?.kind !== 'file-exists') return { ok: true, cond };
+  const q = String(question ?? '');
   const name = posix.basename(cond.path);
-  const named = questionFiles(question, home).map((c) => inState(c, state)).filter((c) => posix.basename(c.path) === name);
+  const named = questionFiles(q, home).map((f) => ({ ...f, cond: inState(f.cond, state) })).filter((f) => posix.basename(f.cond.path) === name);
   if (!named.length) return { ok: true, cond };
   const own = inState(cond, state);
-  const same = named.find((c) => c.root === own.root && c.path === own.path);
-  const at = same ? cond : named.find((c) => c.root !== 'worktree');
-  if (!at) {
-    return { ok: false, why: `the question names ${named.map((c) => `"${filePath(c)}"`).join(', ')} and the clears-when "${filePath(own)}": the two paths differ, so a file saved where the question says would never clear it. Name the path the question gives, as an absolute path or $DESK_STATE/<path>` };
+  let at = cond;
+  if (own.root === 'worktree' && !named.some((f) => sameFile(f.cond, own))) {
+    const places = named.filter((f) => f.cond.root !== 'worktree' && !f.placeholder).map((f) => f.cond)
+      .filter((c, i, all) => all.findIndex((d) => sameFile(c, d)) === i);
+    const inStateDir = places.filter((c) => c.root === 'state');
+    const pick = inStateDir.length ? inStateDir : places;
+    if (pick.length !== 1) {
+      const why = pick.length ? 'it names more than one place for the file' : 'the two paths differ, so a file saved where the question says would never clear it';
+      return { ok: false, why: `the question names ${named.map((f) => `"${filePath(f.cond)}"`).join(', ')} and the clears-when "${filePath(own)}": ${why}. Name the path the question gives, as an absolute path or $DESK_STATE/<path>` };
+    }
+    [at] = pick;
   }
   const { person, ...file } = at;
-  return { ok: true, cond: ASKS.test(String(question)) ? { ...file, person: true } : file };
+  return { ok: true, cond: named.some((f) => askedAt(q, f.at)) ? { ...file, person: true } : file };
 }
 
 // Why condition `c` can never hold while parked ticket `t` stays parked, or null. That is the ticket's

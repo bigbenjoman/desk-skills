@@ -60,10 +60,11 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
   left out (or `none`) when only a person can settle it. A `file <path> exists` is read against the
-  park's question as it is recorded: where the question gives the file as an absolute or
-  `$DESK_STATE` path and the condition names it elsewhere, the condition looks where the question
-  says (another relative path is refused, saying the two paths differ), and where the question asks
-  the person to make or save it, the park is still put to them while each pass checks for the file.
+  park's question as it is recorded: where the condition is a relative path and the question gives
+  the file as one absolute or `$DESK_STATE` path, the condition looks where the question says (a
+  question giving it another relative path, or more than one place, is refused, saying so), and
+  where the question asks the person to make or save it, the park is still put to them while each
+  pass checks for the file.
   **A worker runs
   `node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on its line before it ends**:
   it prints what the line reads as, or exits 1 listing the forms, so rewrite it in one of them. A line
