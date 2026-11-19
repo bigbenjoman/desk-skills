@@ -39,10 +39,10 @@ import { undraftCall, undraftComment, personHold } from '../undraft.mjs';
 import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
 import { dragCells } from '../evidence.mjs';
+import { set, say } from './shared.mjs';
 
-const set = (key, ...fields) => ({ type: 'set', key, fields });
 const out = (line) => ({ type: 'out', line });
-const waiting = (line) => ({ type: 'report', list: 'waiting', line });
+const waiting = (line) => say(null, 'waiting', line);
 const lastLine = (o) => String(o ?? '').split('\n').pop();
 const cap = (s) => `${s[0].toUpperCase()}${s.slice(1)}`;
 
