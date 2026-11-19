@@ -25,13 +25,15 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor } from './batches.mjs';
-import { writeJsonAtomic } from './dir-lock.mjs';
+import { tryLockFile } from './dir-lock.mjs';
+import { writeQueueFile, archivePath } from './queue-store.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
-// agent's own log (launchd writes it for the repo) and intake's register (intake admits into the slot).
-const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json'];
+// agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot) and
+// the repo's asks (asks.mjs).
+const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
@@ -65,13 +67,15 @@ if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a re
 mkdirSync(from.state, { recursive: true });
 const passLock = join(from.state, 'orchestrator.lock');
 const queueLock = `${from.queue}.lock`;
-const busy = holder(passLock) ?? holder(join(from.state, 'supervisor.lock'));
+// The pass lock is taken exclusively, as pass.mjs claim() and queue.mjs stop take it (tryLockFile), so
+// this never writes over one they hold; it goes when this process exits. A supervisor tick is looked
+// for once it is held.
+const passHolder = tryLockFile(passLock, { by: 'move-batch.mjs' });
+const busy = passHolder === true ? holder(join(from.state, 'supervisor.lock')) : (passHolder ?? '?');
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
-writeFileSync(passLock, JSON.stringify({ pid: process.pid, since: new Date().toISOString() }));
 const lockPid = () => { try { return Number(readFileSync(join(queueLock, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
 process.on('exit', () => {
   if (lockPid() === process.pid) rmSync(queueLock, { recursive: true, force: true });
-  try { if (JSON.parse(readFileSync(passLock, 'utf8')).pid === process.pid) unlinkSync(passLock); } catch { /* gone */ }
 });
 
 // queue.mjs's lock, taken the way it takes it: one mkdir, never over a lock that is there. A lock a
@@ -88,7 +92,7 @@ const cur = readQueue(from.queue);
 if (cur.supervised !== true) refuse(`the standing batch ${name} is run by a session, not the supervisor: that session's next pass would look for it in the standing slot. Hand it to the supervisor first (queue.mjs set-batch supervised=true, desk-autopilot Stage 4), then run this again. Nothing was moved`);
 const running = [...Object.values(cur.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => t.key), ...(cur.base_fix?.running ? ['the base fix'] : [])];
 const DRAIN = ['concurrency', 'concurrency_by', 'concurrency_user'];
-const writeQueue = writeJsonAtomic;
+const writeQueue = writeQueueFile;
 if (running.length) {
   // A worker count of 0 is a pause pass.mjs and borrowing both honour, resumes and the base fix
   // included. The count it replaces is kept, unless this batch is already draining: a count the
@@ -150,6 +154,7 @@ try {
     writeQueue(to.queue, cur);
     unlinkSync(from.queue);
   } else renameSync(from.queue, to.queue);
+  if (existsSync(archivePath(from.queue))) renameSync(archivePath(from.queue), archivePath(to.queue));
 } catch (e) {
   if (existsSync(from.queue)) rmSync(to.queue, { force: true });
   const stuck = moved.reverse().filter((f) => { try { renameSync(join(to.state, f), join(from.state, f)); return false; } catch { return true; } });

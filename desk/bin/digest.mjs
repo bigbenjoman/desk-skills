@@ -13,12 +13,13 @@
 // The page and its state live in ~/.desk-autopilot/digest/ (DESK_DIGEST_DIR overrides). Exits 0 once
 // recorded, 11 (show the person) on anything it refuses: EXIT in batch-state.mjs.
 import { readFileSync, writeFileSync, appendFileSync, existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { jiraSearch, keySearch } from './jira-search.mjs';
 import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
 import { namedBatches } from './batches.mjs';
@@ -26,6 +27,7 @@ import { takeBorrowLock } from './borrow.mjs';
 import { readRegister, lookup, clearPutOff, NOT_NOW } from './not-now.mjs';
 import { digestNotes } from './maintenance.mjs';
 import { readHanded } from './decider.mjs';
+import { readWarnings } from './pass-metrics.mjs';
 import { browserSignins, SIGNIN_STALL } from './health.mjs';
 import { handedByIntake } from './intake.mjs';
 import { PRODUCTION_BROKEN, promotionSlot, promotionFor, promotionInputs, promotionQuestion, recordOffered, approve } from './promotion.mjs';
@@ -135,9 +137,6 @@ export function putOffQuestions(r, register = readRegister(r.state)) {
 
 // A key `key in (...)` can take: anything else a queue holds (a work id, an issue slug) is not asked about.
 const JIRA_KEY = /^[A-Z][A-Z0-9_]*-\d+$/;
-// Keys per search: Jira's largest page for a search returning fields.
-export const DONE_CHUNK = 100;
-const SEARCH_TIMEOUT_MS = 30 * 1000;
 
 // Where to run a repo's own desk-jira, so its search uses that repo's config and credentials:
 // {cwd, env}, or {why} when its Jira status cannot be checked. The calling repo runs it as this process
@@ -155,21 +154,8 @@ export function jiraTarget(r, root = E.deskConfigRoot()) {
   return { cwd, env: E.otherRepoEnv() };
 }
 
-// One desk-jira search, one page: {ok, issues} or {ok: false, why}. A page with more behind it read
-// nothing about the keys past it, so it is a failure rather than a partial answer.
-export function jiraSearch({ cwd, env }, jql, max) {
-  const r = spawnSync('desk-jira', ['search', jql, String(max), '--json'], { cwd, env, encoding: 'utf8', timeout: SEARCH_TIMEOUT_MS, maxBuffer: 64 << 20 });
-  const why = `${r.stderr ?? ''}${r.error?.message ?? ''}`.trim().split('\n').pop() || `desk-jira exited ${r.status ?? r.signal}`;
-  if (r.status !== 0) return { ok: false, why };
-  let res;
-  try { res = JSON.parse(r.stdout); } catch { return { ok: false, why: 'desk-jira search did not return JSON' }; }
-  if (!Array.isArray(res?.issues)) return { ok: false, why: `desk-jira search returned no issue list${res?.errorMessages?.length ? ` (${res.errorMessages.join('; ')})` : ''}` };
-  if (res.nextPageToken) return { ok: false, why: `Jira returned fewer than ${max} issues a page` };
-  return { ok: true, issues: res.issues };
-}
-
 // One repo's parked tickets that Jira has moved to a Done status: {done: [keys]}, {unchecked: why}, or
-// null when it has no park to check. One `key in (...)` search per DONE_CHUNK keys, never one per ticket;
+// null when it has no park to check. One `key in (...)` search per KEY_CHUNK keys (keySearch), never one per ticket;
 // any search failing leaves the whole repo unchecked. Reads the queue, never writes it.
 export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) {
   const q = readJson(r.queue, null);
@@ -177,17 +163,9 @@ export function doneParks(r, { target = jiraTarget, search = jiraSearch } = {}) 
   if (!keys.length) return null;
   const where = target(r);
   if (where.why) return { unchecked: where.why };
-  const asked = keys.filter((k) => JIRA_KEY.test(k)).sort();
-  const done = [];
-  for (let i = 0; i < asked.length; i += DONE_CHUNK) {
-    const chunk = asked.slice(i, i + DONE_CHUNK);
-    let res;
-    try { res = search(where, `key in (${chunk.join(', ')})`, chunk.length); } catch (e) { res = { ok: false, why: e.message }; }
-    if (!res?.ok) return { unchecked: res?.why ?? 'the search failed' };
-    const wanted = new Set(chunk);
-    for (const issue of res.issues) if (wanted.has(issue?.key) && issue.fields?.status?.statusCategory?.key === 'done') done.push(issue.key);
-  }
-  return { done: done.sort() };
+  const res = keySearch(keys.filter((k) => JIRA_KEY.test(k)).sort(), (jql, max) => search(where, jql, max));
+  if (!res.ok) return { unchecked: res.why };
+  return { done: [...res.issues.values()].filter((issue) => issue.fields?.status?.statusCategory?.key === 'done').map((issue) => issue.key).sort() };
 }
 
 // The page's line for a repo's Done check, or null when there is nothing to say.
@@ -204,6 +182,8 @@ export function jiraLine(slug, j) {
 // person put off with the same inputs, nor a park waiting on a recorded clears-when, which a pass
 // settles unless only a session may take the ticket or only the person's step makes it hold) and each triaged or held ticket's unanswered triage unknowns. Questions
 // already answered from a digest are left out. A put-off question whose inputs changed says what changed.
+// `r.triage(key)`, where given, reads a ticket's triage record in place of its file, so a listing that
+// has read it already reads it once.
 export function openQuestions(r, answered = {}, register = readRegister(r.state)) {
   const q = readJson(r.queue, null);
   const out = [];
@@ -232,7 +212,7 @@ export function openQuestions(r, answered = {}, register = readRegister(r.state)
       const why = handed.find((x) => x.kind === 'parked' && x.ticket === t.key && x.text === String(t.park?.question ?? ''))?.why;
       if (!answered[key]) out.push({ ticket: t.key, kind: 'parked', text: why ? `${text} (handed on: ${why})` : text, key });
     } else if ((t.state === 'triaged' || isHeld(t)) && (t.open_questions ?? 0) > 0) {
-      const unknowns = readJson(join(r.state, 'triage', `${t.key}.json`), {})?.unknowns;
+      const unknowns = (r.triage ? r.triage(t.key) : readJson(join(r.state, 'triage', `${t.key}.json`), {}))?.unknowns;
       const text = Array.isArray(unknowns) && unknowns.length ? unknowns.join(' · ') : `${t.open_questions} triage question(s) open`;
       const key = questionKey(r.slug, t.key, text);
       if (!answered[key]) out.push({ ticket: t.key, kind: 'triage', text, key });
@@ -253,6 +233,7 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   const np = groups.reduce((n, g) => n + (g.putOff?.length ?? 0), 0);
   const nm = maintenance.length;
   const ns = groups.reduce((n, g) => n + (g.stalled?.length ?? 0), 0);
+  const nw = groups.reduce((n, g) => n + (g.warnings?.length ?? 0), 0);
   const npr = groups.filter((g) => g.promotion?.key).length;
   const nj = groups.filter((g) => jiraLine(g.slug, g.jira)).length;
   const ndone = groups.reduce((n, g) => n + (g.jira?.done?.length ?? 0), 0);
@@ -261,20 +242,25 @@ export function renderPage({ slot, since, groups, bin = E.binDir(), maintenance 
   // A repo the promotion window skipped says why, last, whatever else the page holds.
   const skipped = groups.filter((g) => g.promotion?.why).map((g) => `No promotion question for ${g.slug}: ${g.promotion.why}.`);
   const footer = () => (skipped.length ? [...lines, '## Promotion', '', ...skipped, ''] : lines).join('\n');
-  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns) {
+  if (!nq && !nd && !nc && !np && !nm && !npr && !nj && !ns && !nw) {
     lines.push(`Nothing to answer, and no decisions taken${since ? ` since ${since}` : ''}.`, '');
     return footer();
   }
-  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}.`, '');
+  lines.push(`${nq} question(s) to answer${npr ? `, ${npr} promotion question(s)` : ''}, ${nd} decision(s) taken${nc ? `, ${nc} question(s) settled by checking` : ''}${since ? ` since ${since}` : ''}${np ? `; ${np} put off` : ''}${nm ? `; ${nm} maintenance note(s)` : ''}${ndone ? `; ${ndone} parked ticket(s) already Done in Jira` : ''}${ns ? `; ${ns} merging PR(s) with no change for ${STALL_FOR} or more` : ''}${nw ? `; ${nw} warning(s)` : ''}.`, '');
   if (nm) {
     lines.push('## Maintenance', '');
     for (const m of maintenance) lines.push(`- ${m.at.slice(0, 16).replace('T', ' ')}: ${m.text}`);
     lines.push('');
   }
-  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length)) {
+  for (const g of groups.filter((x) => x.questions.length || x.decisions.length || x.checks?.length || x.putOff?.length || x.promotion?.key || jiraLine(x.slug, x.jira) || x.stalled?.length || x.warnings?.length)) {
     lines.push(batchHeading(g), '');
     const jl = jiraLine(g.slug, g.jira);
     if (jl) lines.push(jl, '');
+    if (g.warnings?.length) {
+      lines.push('### Warnings', '');
+      for (const w of g.warnings) lines.push(`- ${w.at.slice(0, 16).replace('T', ' ')}: ${w.text}`);
+      lines.push('');
+    }
     const p = g.promotion;
     if (p?.key) {
       lines.push('### Promotion', '');
@@ -379,6 +365,7 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
         promotion: promotionOf(r),
         jira,
         stalled: stalledPrs(r, now),
+        warnings: readWarnings(r.state).filter(inWindow),
       };
     });
     const maintenance = digestNotes().filter(inWindow);
@@ -388,13 +375,14 @@ export async function checkin({ times, now = new Date(), dir = digestDir(), list
     const nd = groups.reduce((n, g) => n + g.decisions.length, 0);
     const nc = groups.reduce((n, g) => n + g.checks.length, 0);
     const nm = maintenance.length;
+    const nw = groups.reduce((n, g) => n + g.warnings.length, 0);
     const asks = groups.filter((g) => g.promotion?.key);
     const listed = [...groups.flatMap((g) => g.questions.map((q) => q.key)), ...asks.map((g) => g.promotion.key)];
     const fresh = listed.filter((k) => !(last?.listed ?? []).includes(k));
-    const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.promotion?.key).map((g) => g.slug)).size;
+    const repoCount = new Set(groups.filter((g) => g.questions.length || g.decisions.length || g.checks.length || g.warnings.length || g.promotion?.key).map((g) => g.slug)).size;
     // Put-off questions and checks are listed, never pushed: neither asks anything of the person.
-    const push = nd || nm || fresh.length
-      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''} across ${repoCount} repo(s). ${page}` }
+    const push = nd || nm || nw || fresh.length
+      ? { key: `digest:${slot.id}`, text: `Check-in ${slot.id.slice(11)}: ${nq} question(s)${asks.length ? `, ${asks.length} promotion question(s)` : ''}, ${nd} decision(s)${nc ? `, ${nc} check(s)` : ''}${nm ? `, ${nm} maintenance note(s)` : ''}${nw ? `, ${nw} warning(s)` : ''} across ${repoCount} repo(s). ${page}` }
       : null;
     writeFileSync(lastFile(dir), `${JSON.stringify({ slot: slot.id, through: now.toISOString(), page, questions: nq, decisions: nd, listed, by: self, push }, null, 2)}\n`);
     return { status: 'sent', slot: slot.id, page, questions: nq, promotions: asks.length, decisions: nd, push };
@@ -424,7 +412,7 @@ const who = () => {
 };
 
 // Records an answer through the named repo's answer.mjs, as an answer given there would be.
-export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.binDir(), now = new Date() }) {
+export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.runBin(), now = new Date() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);

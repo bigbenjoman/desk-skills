@@ -6,6 +6,7 @@
 // worker unseen. Every tool definition rides in every call's context, so a tool nobody uses is paid
 // for on every turn. desk-env.sh's desk_tool_args turns a list into the flag, and passes no flag at
 // all (Claude Code's default list) when AUTOPILOT_DEFAULT_TOOLS is set.
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // A worker, and the preflight that vets it: every tool the worker contract or a skill the worker
@@ -22,7 +23,10 @@ export const TRIAGE_TOOLS = ['Bash', 'Read', 'Write'];
 
 export const TOOL_LISTS = { worker: WORKER_TOOLS, triage: TRIAGE_TOOLS, none: [] };
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+const isMain = () => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+};
+if (isMain()) {
   const list = TOOL_LISTS[process.argv[2]];
   if (!list) {
     console.error('usage: worker-tools.mjs worker|triage|none');

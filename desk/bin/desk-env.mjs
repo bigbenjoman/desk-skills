@@ -41,6 +41,9 @@
 //                                             (`default` with the lever off), exit 4 if §3b Worker
 //                                             effort is malformed
 //   node desk-env.mjs budget worker|batch     print USD or none; exit 4 if malformed
+//   node desk-env.mjs config                  print what every get (but default-branch), list, perm,
+//                                             perm-or-unset and budget prints, as shell assignments for
+//                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths                   print KEY=value lines for the shell
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
@@ -387,6 +390,7 @@ export const CONFIG_ROWS = Object.freeze({
   subscription: { section: '3b', row: 'Subscription' },
   'checkin-times': { section: '3b', row: 'Check-in times' },
   'intake-query': { section: '3b', row: 'Intake query' },
+  'file-budget': { section: '3b', row: 'Per-file collision budget' },
   'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
   'maintenance-window': { section: '3b', row: 'Maintenance window' },
   'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
@@ -647,12 +651,14 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
 // Admits `key` into the other configured repo `p` (repoPlacement's answer) by intake.mjs admit, run in
 // that repo's checkout with nothing of this repo's in its environment: {ok, line} or {ok: false, why, cmd}.
 export function admitInRepo(p, key, { by }) {
-  const intake = join(binDir(), 'intake.mjs');
-  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && node ${intake} admit ${key} --by ${by}`;
+  const intake = join(runBin(), 'intake.mjs');
+  // This repo's copy is dropped once the admit is made, so it does not refuse it (batches.mjs belongsElsewhere).
+  const from = currentRepo().slug ?? '';
+  const cmd = `cd ${p.root ?? `<${p.ghRepo}'s checkout>`} && DESK_ADMIT_FROM=${from} node ${join(binDir(), 'intake.mjs')} admit ${key} --by ${by}`;
   if (!p.root || !existsSync(p.root)) return { ok: false, why: `${p.ghRepo}'s checkout (its config §2 Primary repo root) is ${p.root ? `not at ${p.root}` : 'unset'}`, cmd };
   const env = otherRepoEnv();
   for (const k of [...PER_REPO_ENV, 'DESK_AUTOPILOT_STATE', 'AUTOPILOT_WRITE_QUEUE']) delete env[k];
-  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root });
+  Object.assign(env, { DESK_REPO_DIR: p.root, DESK_REPO_ROOT: p.root, DESK_ADMIT_FROM: from });
   const x = spawnSync(process.execPath, [intake, 'admit', key, '--by', by, '--json'], { cwd: p.root, env, encoding: 'utf8', maxBuffer: 64 << 20 });
   let out = null;
   try { out = JSON.parse(String(x.stdout ?? '').trim().split('\n').pop()); } catch { /* no report: the exit and stderr say why */ }
@@ -1183,6 +1189,15 @@ export const defaultBranch = () => {
 };
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
+// The bin a running script starts desk's other scripts from: the release folder it was loaded from
+// (node loads a script by its real path), so an install mid-run never mixes two releases. Paths shown
+// to a person or written into settings stay binDir(), which follows the current release.
+export function runBin() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  let releases;
+  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
+  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+}
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
 // them in `batches/<name>/`, so a reader that takes each top-level state folder for a repo slug never
@@ -1384,6 +1399,32 @@ export function spawnGate(row = configValue('spawn-gate')) {
   const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
   const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
   return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
+}
+
+// §3b "Per-file collision budget": how many running tickets may name one file before a ticket naming
+// it waits. `<big> over <lines> lines, else <small>` gives a file longer than <lines> on the batch base
+// <big> places and any other <small>; a bare `<k>` gives every file k. `; serial: <glob>, ...` (or
+// `none`) keeps the files it names at 1. Unset is `3 over 1000 lines, else 1; serial: none`. A row
+// that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard. The
+// row is one code span: a cell of more than one is read whole and does not read, since its first span
+// alone would drop the serial list without a word.
+//   -> { big, lines, small, serial: [glob], bad: string | null }
+const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
+// configValues refuses a cell mixing `none` with other spans: more than one span all the same.
+const fileBudgetSpans = () => { try { return configValues('file-budget'); } catch { return [null, null]; } };
+export function fileBudget(row = fileBudgetSpans()) {
+  if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
+  const spans = [].concat(row);
+  const v = spans.length === 1 ? String(spans[0]).trim() : '';
+  const m = /^(?:(\d+)\s+over\s+(\d+)\s+lines?\s*,\s*else\s+(\d+)|(\d+))\s*(?:;\s*serial\s*:\s*(.*))?$/i.exec(v);
+  const serial = m?.[5] == null || isNone(m[5].trim()) ? [] : m[5].split(',').map((s) => s.trim());
+  const big = Number(m?.[1] ?? m?.[4]);
+  const small = Number(m?.[3] ?? m?.[4]);
+  if (!m || !(big >= 1) || !(small >= 1) || serial.some((g) => !g || /\s/.test(g))) {
+    const read = spans.length === 1 ? `reads "${v}"` : 'holds more than one code span';
+    return { big: 1, lines: 0, small: 1, serial: [], bad: `config §3b "${CONFIG_ROWS['file-budget'].row}" ${read}, not one \`<k> over <n> lines, else <k>; serial: <globs>\`` };
+  }
+  return { big, lines: m[2] == null ? 0 : Number(m[2]), small, serial, bad: null };
 }
 
 // ---- ticket ids ------------------------------------------------------------------------------
@@ -1863,7 +1904,8 @@ export function thisRepoSubscription(L, subs, env = process.env) {
 }
 
 // Writes another repo's Subscription row: `default`, or an email one of this computer's Claude logins is
-// signed in to (stored lowercase). An unknown email or repo is refused with the config unchanged.
+// signed in to (stored lowercase). An unknown email or repo, or an email whose login is set off, is
+// refused with the config unchanged.
 //   -> { slug, was, now }
 export async function setRepoSubscription(slug, value, root = deskConfigRoot()) {
   const L = await import('./logins.mjs');
@@ -1872,7 +1914,10 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
   if (!/^[\w.-]+$/.test(String(slug)) || !existsSync(config)) throw new DeskConfigError(`desk-env subscription set: no repo config for "${slug}" under ${join(root, 'repos')}`);
   const now = String(value ?? '').trim().toLowerCase();
   if (!now || now.includes('`') || /\s/.test(now)) throw new DeskConfigError('desk-env subscription set: the value is `default` or an account email');
-  if (now !== 'default' && !L.subscriptionLogin(L.readSubscriptions(subscriptionsPath()), now)) {
+  const subs = now === 'default' ? null : L.readSubscriptions(subscriptionsPath());
+  const off = subs && L.offSubscriptionLogin(subs, now);
+  if (off) throw new DeskConfigError(`desk-env subscription set: ${now} is off (claude ${off.name}), so desk starts no new work on it: set it unused first (desk-env logins set claude ${off.name} unused); ${slug}'s config is unchanged`);
+  if (subs && !L.subscriptionLogin(subs, now)) {
     throw new DeskConfigError(`desk-env subscription set: ${now} is not one of this computer's subscriptions: sign it in and add it in desk-q view 6 (Usage) first; ${slug}'s config is unchanged`);
   }
   const was = repoConfigValue(slug, 'subscription', root)?.toLowerCase() ?? 'default';
@@ -1884,18 +1929,40 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };
 const IDENTITY = { DESK_GITHUB_HANDLE: githubHandle, DESK_JIRA_NAME: jiraName };
-const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+const MACHINE_PATHS = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
 // The subcommands that write the machine profile, the cost sources or the login rules: the user's to
 // confirm, so a worker is refused them here as well as by its deny rules. The deny rules match on the
 // command's start, and `--batch <name>` may come before the subcommand, so they cannot hold alone.
 export const WORKER_DENIED_WRITES = ['machine write', 'machine set', 'costs write', 'logins set', 'logins default', 'logins remove', 'subscription set'];
 export const PER_REPO_ENV = ['DESK_BATCH', ...Object.keys(PATHS).filter((k) => !MACHINE_PATHS.includes(k)), ...Object.keys(IDENTITY)];
 const shellQuote = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+
+// What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
+// 3. The CLI cases print it and `config` snapshots it, so desk-env.sh's readers answer as they do.
+const line = (v) => (v == null ? null : `${v}\n`);
+const READS = {
+  // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks
+  // for <default> gets the branch its batch targets, not the config row.
+  get: (id) => line(expandHome(id === 'default-branch' ? defaultBranch() : configValue(id))),
+  list: (id) => configValues(id)?.map((x) => line(expandHome(x))).join('') ?? null,
+  perm: (id) => line(permission(id)),
+  'perm-or-unset': (id) => line(permissionOrUnset(id)),
+  budget: (which) => {
+    const b = which === 'batch' ? batchBudget() : which === 'worker' ? workerBudget() : null;
+    if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
+    return line(b.off ? 'none' : b.usd);
+  },
+};
+const printRead = (cmd, id) => {
+  const out = READS[cmd](id);
+  if (out == null) process.exit(3);
+  process.stdout.write(out);
+};
 
 // ---- CLI -----------------------------------------------------------------------------------
 const isMain = (() => {
@@ -1921,12 +1988,9 @@ if (isMain) {
         if (!r.slug) process.exit(3);
         break;
       }
-      case 'list': {
-        const v = configValues(args[0]);
-        if (v == null) process.exit(3);
-        for (const x of v) console.log(expandHome(x));
+      case 'list':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'cmds': {
         const v = configValues(args[0]);
         if (v == null) process.exit(3);
@@ -1938,14 +2002,9 @@ if (isMain) {
         console.log(JSON.stringify(requiredFields(args[0] ?? '')));
         break;
       }
-      case 'get': {
-        // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that
-        // asks for <default> gets the branch its batch targets, not the config row.
-        const v = args[0] === 'default-branch' ? defaultBranch() : configValue(args[0]);
-        if (v == null) process.exit(3);
-        console.log(expandHome(v));
+      case 'get':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'review-cmd': {
         const { run } = reviewRows();
         if (run == null) process.exit(3);
@@ -2011,15 +2070,37 @@ if (isMain) {
         if (why) { console.error(`desk: branch '${args[0] ?? ''}' is not usable: ${why}`); process.exit(1); }
         break;
       }
-      case 'perm-or-unset': {
-        const v = permissionOrUnset(args[0]);
-        if (v == null) process.exit(3);
-        console.log(v);
+      case 'perm-or-unset':
+      case 'perm':
+        printRead(cmd, args[0]);
+        break;
+      case 'config': {
+        // Every value desk-env.sh's readers (desk_cfg, desk_list, desk_perm, desk_perm_or_unset,
+        // desk_budget) give, as assignments for desk_load_config to eval: `=` and what get, list, perm,
+        // perm-or-unset or budget prints, or `!` for one that exits 3. A read that fails is assigned
+        // empty, so the shell asks node for it alone and gets that read's own error, and a value from
+        // an earlier snapshot is not kept. default-branch is left out: it follows the queue's batch
+        // base, which can change mid-run.
+        const out = [];
+        const put = (kind, cmd, id) => {
+          if (!/^[a-z0-9-]+$/.test(id)) return;
+          let v;
+          try { v = READS[cmd](id); v = v == null ? '!' : `=${v}`; } catch { v = ''; }
+          out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v)}`);
+        };
+        for (const id of Object.keys(CONFIG_ROWS)) {
+          if (id !== 'default-branch') put('G', 'get', id);
+          put('L', 'list', id);
+        }
+        for (const id of Object.keys(PERMISSION_KEYS)) {
+          put('P', 'perm', id);
+          put('U', 'perm-or-unset', id);
+        }
+        put('B', 'budget', 'worker');
+        put('B', 'budget', 'batch');
+        console.log(out.join('\n'));
         break;
       }
-      case 'perm':
-        console.log(permission(args[0]));
-        break;
       case 'merge-grant': {
         const g = mergeGrant();
         console.log(`${g.by ?? 'none'}\t${g.why}`);
@@ -2042,12 +2123,9 @@ if (isMain) {
         if (!args[0]) throw new Error(`usage: desk-env.mjs effort ${EFFORT_STARTS.join('|')}`);
         console.log(workerEffort(args[0]));
         break;
-      case 'budget': {
-        const b = args[0] === 'batch' ? batchBudget() : args[0] === 'worker' ? workerBudget() : null;
-        if (!b) throw new Error('usage: desk-env.mjs budget worker|batch');
-        console.log(b.off ? 'none' : b.usd);
+      case 'budget':
+        printRead(cmd, args[0]);
         break;
-      }
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
         for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
@@ -2175,7 +2253,7 @@ if (isMain) {
         const prefix = commandPrefix();
         let pass = true;
         for (const { dir, cmd } of list) {
-          const run = B.runItem({ bin: binDir(), root: top, dir, cmd, lock: lockFor(row), prefix });
+          const run = B.runItem({ bin: runBin(), root: top, dir, cmd, lock: lockFor(row), prefix });
           if (!a.on) {
             if (run.out.trim()) console.log(run.out.trimEnd());
             console.log(`${run.code === 0 ? 'PASS' : 'FAIL'} ${dir === '.' ? '' : `${dir}: `}${cmd} (exit ${run.code})`);

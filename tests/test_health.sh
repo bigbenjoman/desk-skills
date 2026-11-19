@@ -291,12 +291,12 @@ pj
 check "a test pass can turn the checks off"                 'out=$(AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" 2>&1); grep -q "health: checks off" <<< "$out"'
 
 # ---- AC3 / AC4: the supervisor notifies once per newly failing check ---------------------------
-# The real supervisor and its notifier, running the real pass.
+# The real supervisor and its notifier, running the real pass, as on macOS: its notifier is the stub osascript.
 q set-batch supervised=true
 q add H-5; q set H-5 state=triaged branch=fix/H-5
 rm -f "$T/state/health.json" "$T/notify.calls"
 mode gh out
-sup(){ node "$B/supervisor.mjs" tick --foreground >/dev/null 2>&1; }
+sup(){ DESK_PLATFORM=darwin node "$B/supervisor.mjs" tick --foreground >/dev/null 2>&1; }
 notes(){ if [ -f "$T/notify.calls" ]; then wc -l < "$T/notify.calls" | tr -d ' '; else echo 0; fi; }
 sup
 check "DS-333 gh failing once: no notification yet"        '[ "$(notes)" = 0 ]'

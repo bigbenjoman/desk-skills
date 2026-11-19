@@ -19,7 +19,7 @@ PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 R="$T/repo"; mkdir -p "$R/tests" "$R/lib" "$R/hooks"
-cp "$S/related.sh" "$S/run.sh" "$S/scope_sections.mjs" "$R/tests/"
+cp "$S/related.sh" "$S/run.sh" "$S/suite_env.sh" "$S/scope_sections.mjs" "$R/tests/"
 printf 'print("ok attribution hook stub")\n' > "$R/hooks/deny-ai-attribution.py"
 for n in a b; do
   printf 'echo %s\n' "$n" > "$R/lib/$n.sh"

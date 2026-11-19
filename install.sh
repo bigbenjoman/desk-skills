@@ -6,9 +6,13 @@
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
+#   ./install.sh --rollback     makes the release before the current one current, installs nothing
 #
 # Installs nothing from a checkout off the default branch or behind origin's (fetched first), or
 # when that cannot be checked, unless given --any-branch.
+#
+# desk's scripts and templates go into ~/.claude/desk/releases/<commit>/, which goes live in one step
+# (~/.claude/desk/current, which ~/.claude/desk/bin and /templates link through); the newest three are kept.
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env, desk-q and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
@@ -40,15 +44,38 @@ PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official fron
 YES=0
 CHECK_ONLY=0
 ANY_BRANCH=0
+ROLLBACK=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=1 ;;
     --check) CHECK_ONLY=1 ;;
     --any-branch) ANY_BRANCH=1 ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --rollback) ROLLBACK=1 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# refresh_pristine <from> — for each release file read from stdin (bin/<script>, templates/<path>),
+# makes its pristine copy <from>'s, so the next install reads only your own edits as edits
+refresh_pristine() {
+  local rel
+  while IFS= read -r rel; do
+    [ -f "$1/$rel" ] || continue
+    mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
+    cp "$1/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
+  done
+}
+
+# --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
+# hold the release now current. Then it moves what runs onto it.
+if [ "$ROLLBACK" = 1 ]; then
+  if [ ! -f "$DESKDIR/bin/installed.mjs" ]; then echo "nothing rolled back: no desk is installed in $DESKDIR" >&2; exit 1; fi
+  DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
+  if [ -f "$DESKDIR/current/release-files" ]; then refresh_pristine "$DESKDIR/current" < "$DESKDIR/current/release-files"; fi
+  DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
+  exit 0
+fi
 
 case "$(uname -s)" in
   Darwin) OS=mac ;;
@@ -175,8 +202,8 @@ need() {
   return 1
 }
 
-# install_file <src> <dest> — keeps a copy of <dest> if you had edited it since the last install
-install_file() {
+# save_edit <src> <dest> — keeps a copy of <dest> if you had edited it since the last install
+save_edit() {
   local src="$1" dest="$2" rel pristine
   rel="${dest#"$HOME"/}"
   pristine="$PRISTINE/$rel"
@@ -188,6 +215,14 @@ install_file() {
       wrote "backup   ~/$rel -> $BACKUP/$rel (your edit)"
     fi
   fi
+}
+
+# install_file <src> <dest> — the same, then writes <src> to <dest>
+install_file() {
+  local src="$1" dest="$2" rel pristine
+  rel="${dest#"$HOME"/}"
+  pristine="$PRISTINE/$rel"
+  save_edit "$src" "$dest"
   mkdir -p "$(dirname "$dest")" "$(dirname "$pristine")"
   # Written beside <dest> and renamed over it, so a script running from the old file keeps its
   # inode; copying the old file first keeps its mode.
@@ -196,6 +231,34 @@ install_file() {
   cp "$src" "$tmp"
   mv -f "$tmp" "$dest"
   cp "$src" "$pristine"
+}
+
+# prune_removed <src dir> <dest dir> [" name name "] [<write dir>] — removes each file an earlier install
+# put under <dest> (it has a pristine copy) that <src> no longer has, saving it to the backup first if
+# you had edited it. A file desk never installed has no pristine copy and is left alone; so is each name
+# kept. With <write dir>, the file is removed from there instead, and <dest> is only read.
+prune_removed() {
+  local src="${1%/}" dest="${2%/}" keep="${3:-}" write="${4:-${2%/}}" rel pristine p sub
+  rel="${dest#"$HOME"/}"
+  pristine="$PRISTINE/$rel"
+  [ -d "$pristine" ] || return 0
+  while IFS= read -r p; do
+    sub="${p#"$pristine"/}"
+    [ -e "$src/$sub" ] && continue
+    case "$keep" in *" $sub "*) continue ;; esac
+    if [ -f "$dest/$sub" ]; then
+      if ! cmp -s "$dest/$sub" "$p"; then
+        mkdir -p "$(dirname "$BACKUP/$rel/$sub")"
+        cp -p "$dest/$sub" "$BACKUP/$rel/$sub"
+        note "your edited ~/$rel/$sub was saved to $BACKUP/$rel/$sub"
+        wrote "backup   ~/$rel/$sub -> $BACKUP/$rel/$sub (your edit)"
+      fi
+      rm -f "$write/$sub"
+      ok "removed ~/$rel/$sub (no longer in desk)"
+      wrote "removed  ~/$rel/$sub (no longer in desk)"
+    fi
+    rm -f "$p"
+  done < <(find "$pristine" -type f)
 }
 
 # Python bytecode is build output, never shipped: not copied, and not counted as an edit.
@@ -221,6 +284,145 @@ install_dir() {
   cp -R "$src" "$pristine"
   prune_bytecode "$dest"
   prune_bytecode "$pristine"
+}
+
+# Releases: desk's scripts and templates go into $RELEASES/<name>/{bin,templates}, built beside it
+# under a dot name and renamed into place whole, then made live by renaming a new `current` link over
+# the old one. $DESKDIR/bin and /templates are links through `current`, so every absolute path to them
+# keeps working, and a script running from a release keeps its own release's files.
+RELEASES="$DESKDIR/releases"
+STAGE=""   # the release being built: removed if the install stops before it is complete
+trap '[ -z "$STAGE" ] || { rm -rf "$STAGE"; echo "the new release was not completed and is removed; the current release is unchanged" >&2; }' EXIT
+# rename_over <from> <to> — one rename(2), so <to> is never missing; it replaces a link, never a folder
+rename_over() {
+  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$1" "$2"
+}
+# release_files — each file a release holds, relative to it: bin/<script>, bin/<dir>/<module> (the
+# modules a script imports from a folder beside it, e.g. bin/pass/) and templates/<path>
+release_files() {
+  local f
+  for f in "$SRC"/desk/bin/* "$SRC"/desk/bin/*/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.bak*|*.pyc|*/__pycache__/*) continue ;; esac
+    printf 'bin/%s\n' "${f#"$SRC"/desk/bin/}"
+  done
+  if [ -d "$SRC/desk/templates" ]; then (cd "$SRC/desk/templates" && find . -type f ! -name '*.bak*' | sed 's|^\./|templates/|'); fi
+}
+# same_release <dir> — <dir> holds this checkout's release files unchanged
+same_release() {
+  local rel
+  while IFS= read -r rel; do cmp -s "$SRC/desk/$rel" "$1/$rel" || return 1; done < <(release_files)
+}
+# release_name — the commit for a clean checkout; for a dirty one, or a commit whose release folder
+# holds other files or is not the current one, the commit and this install's time; for a checkout
+# outside git, unversioned-<time>. Only the current release is reused: an older one lacks the files
+# of your own the live folder has gained since, which a new release carries.
+release_name() {
+  local head n
+  if ! head="$(git -C "$SRC" rev-parse HEAD 2>/dev/null)"; then n="unversioned-$TS"
+  elif [ -z "$(git -C "$SRC" status --porcelain --untracked-files=no 2>/dev/null)" ] \
+     && { [ ! -e "$RELEASES/$head" ] || { [ "$(readlink "$DESKDIR/current" 2>/dev/null || true)" = "releases/$head" ] \
+                                           && same_release "$RELEASES/$head"; }; }; then
+    echo "$head"; return
+  else n="$head-$TS"
+  fi
+  [ ! -e "$RELEASES/$n" ] || n="$n-$$"
+  echo "$n"
+}
+# carry_own <bin|templates> [" name name "] — copies into the release being built each file in the live
+# folder desk never installed (no pristine copy, not in this checkout), and each name kept
+carry_own() {
+  local live="$DESKDIR/$1" keep="${2:-}" p sub
+  [ -d "$live" ] || return 0
+  while IFS= read -r p; do
+    sub="${p#"$live"/}"
+    case "$sub" in *.pyc|*__pycache__*|*.desk-tmp.*) continue ;; esac
+    case "$keep" in *" $sub "*) ;; *)
+      [ -e "$SRC/desk/$1/$sub" ] && continue
+      [ -e "$PRISTINE/${live#"$HOME"/}/$sub" ] && continue ;;
+    esac
+    mkdir -p "$(dirname "$STAGE/$1/$sub")"
+    cp -p "$p" "$STAGE/$1/$sub"
+  done < <(find -H "$live" -type f)
+}
+# go_live <name> — makes $RELEASES/<name> current. A real bin or templates folder (an install from
+# before releases) is first moved into a release of its own, so it can be rolled back to.
+go_live() {
+  local d old=""
+  for d in bin templates; do
+    if [ -d "$DESKDIR/$d" ] && [ ! -L "$DESKDIR/$d" ]; then
+      if [ -z "$old" ]; then
+        old="$RELEASES/before-releases-$TS"; mkdir -p "$old"
+        if [ -f "$DESKDIR/installed.json" ]; then cp -p "$DESKDIR/installed.json" "$old/release.json"; fi
+      fi
+      mv "$DESKDIR/$d" "$old/$d"
+    fi
+  done
+  # The files desk installed there, as a release built here lists its own.
+  if [ -n "$old" ]; then
+    (cd "$old" && find bin templates -type f 2>/dev/null || true) | while IFS= read -r p; do
+      if [ -e "$PRISTINE/${DESKDIR#"$HOME"/}/$p" ]; then printf '%s\n' "$p"; fi
+    done > "$old/release-files"
+  fi
+  ln -sfn "releases/$1" "$DESKDIR/.current.$$"
+  rename_over "$DESKDIR/.current.$$" "$DESKDIR/current"
+  for d in bin templates; do
+    [ "$(readlink "$DESKDIR/$d" 2>/dev/null || true)" = "current/$d" ] && continue
+    ln -sfn "current/$d" "$DESKDIR/.$d.$$"
+    rename_over "$DESKDIR/.$d.$$" "$DESKDIR/$d"
+  done
+  if [ -n "$old" ]; then
+    ok "the install from before releases is kept as release ${old##*/}"
+    wrote "moved    ~/.claude/desk/bin and templates -> ~/.claude/desk/releases/${old##*/}"
+  fi
+}
+# install_release [" name name "] — the scripts, and beside them the templates a repo commits (dotfiles
+# included: undraft.mjs reads review verdicts with the review gate's parser from there, and workers, who
+# cannot read this checkout, copy them from there), as a new current release; each name is kept from
+# the current one. An edit to the live copy is backed up first, as install_file does.
+install_release() {
+  local keep="${1:-}" name rel out count=0
+  name="$(release_name)"
+  local rel_dir="$RELEASES/$name"
+  while IFS= read -r rel; do
+    save_edit "$SRC/desk/$rel" "$DESKDIR/$rel"
+    case "$rel" in bin/*) count=$((count + 1)) ;; esac
+  done < <(release_files)
+  if [ -d "$rel_dir" ]; then
+    note "release $name already holds these files and is current"
+  else
+    STAGE="$RELEASES/.partial-$name.$$"
+    mkdir -p "$STAGE/bin" "$STAGE/templates"
+    while IFS= read -r rel; do
+      mkdir -p "$(dirname "$STAGE/$rel")"
+      cp "$SRC/desk/$rel" "$STAGE/$rel"
+    done < <(release_files)
+    chmod +x "$STAGE"/bin/*
+    release_files > "$STAGE/release-files"
+    carry_own bin "$keep"
+    carry_own templates
+    mv "$STAGE" "$rel_dir"
+    STAGE=""
+  fi
+  # After the copy, which carries a file desk never installed by its having no pristine copy.
+  prune_removed "$SRC/desk/bin" "$DESKDIR/bin" "$keep" "$rel_dir/bin"
+  prune_removed "$SRC/desk/templates" "$DESKDIR/templates" "" "$rel_dir/templates"
+  go_live "$name"
+  if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" record "$SRC" "$rel_dir" 2>&1)"; then
+    ok "installed version $out (~/.claude/desk/installed.json)"
+    wrote "version  ~/.claude/desk/installed.json"
+  else
+    warn "could not record the installed version"; show_err "$out"
+  fi
+  release_files | refresh_pristine "$SRC/desk"
+  ok "$count scripts in release $name, now current (queue.json, workers/ and batch state are never touched)"
+  wrote "scripts  ~/.claude/desk/releases/$name ($count), current; ~/.claude/desk/bin and templates link through ~/.claude/desk/current"
+  if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" prune 2>&1)"; then
+    [ -z "$out" ] || printf '%s\n' "$out" | while IFS= read -r l; do ok "$l"; done
+  else
+    warn "could not remove the older releases"; show_err "$out"
+  fi
+  note "roll back to the release before this one: ./install.sh --rollback"
 }
 
 echo "desk-skills installer  ($SRC)"
@@ -492,22 +694,38 @@ check_links
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"
 
 if [ -d "$SRC/desk/bin" ]; then
-  mkdir -p "$DESKDIR/bin"
-  count=0
-  for f in "$SRC"/desk/bin/*; do
-    [ -f "$f" ] || continue
-    case "$f" in *.bak*|*.pyc) continue ;; esac
-    install_file "$f" "$DESKDIR/bin/$(basename "$f")"
-    chmod +x "$DESKDIR/bin/$(basename "$f")"
-    count=$((count + 1))
-  done
-  # The templates a repo commits (dotfiles included), beside bin: undraft.mjs reads review verdicts with
-  # the review gate's parser from there, and workers, who cannot read this checkout, copy them from there.
-  while IFS= read -r f; do
-    install_file "$f" "$DESKDIR/templates/${f#"$SRC/desk/templates/"}"
-  done < <(find "$SRC/desk/templates" -type f ! -name '*.bak*')
-  ok "$count scripts (queue.json, workers/ and batch state are never touched)"
-  wrote "scripts  ~/.claude/desk/bin ($count)"
+  # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
+  gone=""; runner_kept=""
+  # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
+  if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
+    && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
+    warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
+    runner_kept=" desk-runner runner-slot.sh runner-probe.sh mem-turns.mjs "
+  else
+    for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
+      "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
+      [ -e "$f" ] || continue
+      rm -f "$f"; gone="$gone ${f/#$HOME/~}"
+    done
+    for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
+      [ -d "$d" ] || continue
+      rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
+    done
+    # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
+    for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
+      plist="$HOME/Library/LaunchAgents/$label.plist"
+      [ -e "$plist" ] || continue
+      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
+      rm -f "$plist"; gone="$gone $label"
+    done
+    purge_runner_tart; gone="$gone$RUNNER_TART_GONE"
+  fi
+  if [ -n "$gone" ]; then
+    ok "removed the local CI runner:$gone"
+    wrote "removed  local CI runner:$gone"
+  fi
+  # end retired local CI runner
+  install_release "$runner_kept"
   # desk-env on PATH: the skills run `desk-env where` to find the current repo's config.
   mkdir -p "$HOME/.local/bin"
   ENV_SHIM="$(mktemp)"
@@ -533,36 +751,6 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-codex"
   ok "desk-codex -> ~/.local/bin (desk-codex probe|finder|refuter: codex review calls)"
   wrote "desk-codex ~/.local/bin/desk-codex"
-  # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
-  gone=""
-  # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
-  if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
-    && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
-    warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
-  else
-    for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
-      "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
-      [ -e "$f" ] || continue
-      rm -f "$f"; gone="$gone ${f/#$HOME/~}"
-    done
-    for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
-      [ -d "$d" ] || continue
-      rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
-    done
-    # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
-    for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
-      plist="$HOME/Library/LaunchAgents/$label.plist"
-      [ -e "$plist" ] || continue
-      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
-      rm -f "$plist"; gone="$gone $label"
-    done
-    purge_runner_tart; gone="$gone$RUNNER_TART_GONE"
-  fi
-  if [ -n "$gone" ]; then
-    ok "removed the local CI runner:$gone"
-    wrote "removed  local CI runner:$gone"
-  fi
-  # end retired local CI runner
   # desk-q on PATH: every autopilot queue on this computer, to see, reorder and set workers.
   install_file "$SRC/bin/desk-q" "$HOME/.local/bin/desk-q"
   chmod +x "$HOME/.local/bin/desk-q"
@@ -1043,15 +1231,9 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"
 
-# Last, once every file is in place: scripts are replaced by rename, so a merge driver or supervisor
-# agent already running keeps the code it started with until it is started again.
+# Last, once every file is in place: a merge driver or supervisor agent already running keeps the
+# release it started with until it is started again. The version was recorded as the release went live.
 if [ -f "$DESKDIR/bin/installed.mjs" ]; then
-  if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" record "$SRC" 2>&1)"; then
-    ok "installed version $out (~/.claude/desk/installed.json)"
-    wrote "version  ~/.claude/desk/installed.json"
-  else
-    warn "could not record the installed version"; show_err "$out"
-  fi
   if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart 2>&1)"; then
     RUNNING="$out"
     printf '%s\n' "$out" | sed 's/^/  /'

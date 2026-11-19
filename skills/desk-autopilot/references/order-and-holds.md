@@ -12,7 +12,9 @@ does not hold, that is in the core or in the file the core's reference table nam
 radius first, each with its kind and why. Two tickets that share files are chained, the larger blast
 radius first (two of a kind: the smaller first, then the order named), as holds in the queue and
 entries in the `--deps` it prints, which already carries the chain; tickets that share no files are
-never chained. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
+never chained. Each ticket in a chain is held behind every earlier one it shares a file with, not
+only the one just before it, so dropping or freeing that one by hand never lets it start ahead of
+the rest. Jira Blocks links win over the kinds, and `CONTRADICTIONS` names each place they
 disagree. **Say the order in the Stage 2 report** and put it in the status table's Notes; a
 contradiction is worth one line to the user, since the link may be stale.
 
@@ -24,10 +26,10 @@ reads as `none`, and the pass report names it.
 **The user's named order is spawn priority, not a merge chain**: `plan-batch` seeds the queue
 blockers first and otherwise in the order named, and `pass.mjs` spawns in queue order, so pass the
 tickets that gate the most others first. If the user asks for a literal chain that would idle a gate,
-say what that costs and ask. A released ticket's `collides_with` still
-blocks it while that worker runs, so clear the entry too if you release it early. A ticket added
-mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs hold <SUCCESSOR>
-<TICKET>` behind any ticket it shares files with.
+say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
+records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
+up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not
+chained for you: hold it with `queue.mjs hold <SUCCESSOR> <TICKET>` where its merge must wait.
 
 ### Dependencies from Jira links
 
@@ -36,12 +38,12 @@ mid-batch (`queue.mjs admit`) is not chained for you: hold it with `queue.mjs ho
 
 | Blocker | What `plan-batch` does |
 |---|---|
-| in the batch, admitted | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
+| in the batch, admitted or parked for its lane or size | holds the successor: parked `held by orchestrator: blocked by … (Jira link)`, `held_by` set, and an entry in the `--deps` it prints |
 | outside the batch and done | nothing (noted) |
 | outside the batch, not done, and triage's `blocker_needs` calls it `build` (needed to build) | holds the successor, `held_outside` set, with no question: the pass lifts the hold once the blocker is Done and on the base |
 | outside the batch, not done, and `blocker_needs` calls it `merge` (needed only to merge) | built now, its merge held: `merge_after` set, lifted by the pass once the blocker is Done and on the base (Done alone where its Jira Repository is another configured repo) |
 | outside the batch, not done, and `blocker_needs` calls it `none` (not needed), under §3 `autopilot-judgement` `yes` | nothing held: a plan note, and an engineering decision "start without it" logged when the queue is seeded |
-| outside the batch and not done otherwise; in the batch but parked or someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
+| outside the batch and not done otherwise; in the batch but someone else's; or links that could not be read | a question on the successor, asked at Stage 3 like any unknown |
 | on a cycle | parks every ticket on it: the links need fixing |
 
 Triage gives every open blocker one of the three calls, and refuses a record missing one. A record
@@ -53,10 +55,20 @@ of it, so a step in the batch that triage calls `build` holds the build, not onl
 (`queue.mjs transfer`) into a batch holding that blocker keeps the merge-only gate while Jira reads the
 blocker Done, so the gate lifts only once the blocker's code is on the base.
 
-A ticket parked for its lane (C, D) or its size (L, XL) is **never held and never in `--deps`**:
-those parks win, so a release can never send one to a headless worker. `plan-batch` seeds the queue
+A ticket parked for its lane (C, D), its size (L, XL) or its design is planned like any other: its
+blockers go in `held_by` (and `held_outside`) **beside its park**, and the plan reads `HELD (blocked
+by … , and parked: <its park>)`. The park wins and it is **never in `--deps`**, so a release can never
+send one to a headless worker; `queue.mjs hold`, `admit` and `transfer` keep that park beside the hold. `plan-batch` seeds the queue
 blockers first, and its `--deps` already carries the merge chain for tickets that share files (*Order
 the batch by blast radius*): pass it to the merge driver as it stands.
+
+**A batch planned before those parks kept their blockers** has them with `held_by` empty. `queue.mjs
+backfill-holds --dry-run` (with `--batch <name>` for a named batch) prints the hold each would gain from
+its triage record, as intake holds a ticket it admits: its blockers in the batch not yet merged or
+done, and those in no batch it holds (in `held_outside` too). A blocker that failed in the batch is
+named, not held, as is one that would close a cycle. Read it, then run it without `--dry-run` to add
+them. The park itself, and any park that already has a `held_by`, is left as it is, so a second run
+changes nothing. It is run once, by hand: no pass runs it, and `plan.md` stays the record of plan time.
 
 **A held ticket is in flight, not idle.** While every blocker is still on its way (running, waiting
 to spawn, or done with an open PR), `pass.mjs` reports it under `WAITING ON MERGE` and never exits
@@ -135,6 +147,30 @@ on it keeps it held. One that ends with no marker is parked, not done, so it kee
 already in front of the person (its `FAILED` line, or its park), so what is held behind it, at any
 depth, is listed once under `WAITING ON A PARK` and in `on_park`, never under `stuck` or `waiting`:
 the answer to the blocker settles it.
+
+**A Blocks link added after admission is held by the next pass that reads it.** Before it spawns, each
+pass reads the blockers of every triaged ticket that is not done again from Jira, at most once every
+intake interval, in one `key in (...)` search for them all (and one more for their blockers), never a
+read per ticket. A blocker the read adds to a ticket not yet started (triaged, held, or parked on its
+lane, size or design, no worktree) is
+held as intake holds one: `held_by` in the batch, `held_by` and `held_outside` in no batch, the person's
+step as `merge_after`, and the report says `blocker link: <TICKET>: newly linked as blocked by <B>`. A
+lane, size or design park keeps its park, its holds beside it. No
+hold is added for a blocker already Done and on the base, merged in the batch, failed in the batch
+(said), or waiting behind the ticket (said as a cycle, and raised once as a needs-you `triage` item
+naming both tickets, `cycle_link`; the ticket does not start while it stands, so neither of the two
+does. The item says how to settle it either way: the ticket first, remove its link; the one held behind
+it first, release that one and hold the ticket behind it, as its hold outlives its link). A hold on a ticket dropped from the batch (`dropped_link`), and a
+blocker in the batch closed as Won't Do with its PR unmerged (`wont_do_link`, as for one in no batch),
+are each raised once the same way. A ticket whose worker started keeps its holds, and
+the report says the link arrived after it started. A link removed lifts a hold in no batch (*outside
+holds*, above) but never one in the batch, which may be a shared file or the spine: the report says the
+link went, and the release is yours. A read that fails, either search, keeps every hold and is tried
+again next interval.
+What a read adds is measured against the links the pass last acted on for the ticket (`links_seen`),
+not the triage record, so a read cut off part-way is acted on by the next one. A ticket's first
+`links_seen` is its record before its first read, so a hold you released by hand is not taken for a
+new link.
 
 Answering a held ticket's question (`answer.mjs`) keeps the hold.
 

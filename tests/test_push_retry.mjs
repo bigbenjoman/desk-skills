@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseClearsWhen } from '../desk/bin/clears-when.mjs';
-import { TRANSIENT_EXIT, parseArgs, pushWithRetry, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
+import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -117,6 +117,41 @@ r = await run(['origin', 'b'], [{ status: 128, out: 'fatal: could not read Usern
 t('AC3 git\'s own exit code is kept', r.code, 128);
 r = await run(['origin', 'b'], [E5, NFF]);
 t('AC3 a refusal after a 5xx stops there', [r.code, r.calls.length], [1, 2]);
+
+// A hook that could not run its checks is an environment failure, never a failing check.
+const VPL861 = [
+  'pre-push: FAIL  pnpm format:check (1s, exit 1)',
+  '> voicepa@ format:check /Users/x/voicepa-worktrees/base-feat-VPL-861-demo-caller-voices',
+  '> turbo run format:check',
+  '',
+  ' WARN   Local package.json exists, but node_modules missing, did you mean to install?',
+  'sh: turbo: command not found',
+  ' ELIFECYCLE  Command failed.',
+  'pre-push: push stopped. Fix it and push again, or push with --no-verify (CI still runs every check).',
+  'error: failed to push some refs to \'github.com:acme/voicepa.git\'',
+].join('\n');
+const FORMAT = 'pre-push: ok    pnpm lint (4s)\npre-push: FAIL  pnpm format:check (2s, exit 1)\n[warn] src/a.ts\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\npre-push: push stopped.';
+for (const [name, out, want] of [
+  ['DS-803 AC2 the VPL-861 hook output names the missing tool', VPL861, '`turbo` (command not found)'],
+  ['dash names it its own way', 'pre-push: FAIL  npm run lint (0s, exit 127)\nsh: 1: eslint: not found', '`eslint` (command not found)'],
+  ['bash with a line number', 'pre-push: FAIL  make check (0s, exit 127)\nbash: line 1: ruff: command not found', '`ruff` (command not found)'],
+  ['zsh puts the name last', 'pre-push: FAIL  just check (0s, exit 127)\nzsh: command not found: just', '`just` (command not found)'],
+  ['packages missing, and a package could not be loaded', 'pre-push: FAIL  pnpm test (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\nError: Cannot find module \'vitest\'', '`node_modules` (packages not installed)'],
+  ['or so says an ES module import', 'pre-push: FAIL  pnpm check (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\nError [ERR_MODULE_NOT_FOUND]: Cannot find package \'zod\' imported from /x/src/a.mjs', '`node_modules` (packages not installed)'],
+  ['a local file the code could not load is a failing check', 'pre-push: FAIL  pnpm test (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\nError [ERR_MODULE_NOT_FOUND]: Cannot find module \'/x/src/gone.mjs\' imported from /x/src/a.mjs\nError: Cannot find module \'./gone\'', null],
+  ['packages missing beside a check that ran and failed is a failing check', 'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\n[warn] b.txt\n[warn] Code style issues found in the above file.', null],
+  ['DS-803 AC3 a real formatting failure is not one', FORMAT, null],
+  ['nor is a refusal with no hook in it', 'sh: turbo: command not found\n ! [remote rejected] b -> b (pre-receive hook declined)', null],
+]) t(name, hookEnvFailure(out), want);
+// Compared, not printed: tests/run.sh fails a suite on any output line holding the hook's word for a failed check.
+t('DS-803 AC2 it is quoted as an environment failure, not a formatting one',
+  refusalLine(VPL861) === 'the pre-push hook could not run its checks here: `turbo` (command not found), an environment failure, not a failing check (pre-push: FAIL  pnpm format:check (1s, exit 1))', true);
+t('DS-803 AC3 a real failure is quoted by the hook\'s line for it, not the ok line before it', refusalLine(FORMAT) === 'pre-push: FAIL  pnpm format:check (2s, exit 1)', true);
+t('a refusal with no hook is quoted by git\'s first line', refusalLine('To github.com:a/b.git\n ! [remote rejected] b -> b (GH006)\nerror: failed'), '! [remote rejected] b -> b (GH006)');
+r = await run(['origin', 'b'], [{ status: 1, out: VPL861 }]);
+t('DS-803 AC2 a worker\'s push says so, unretried', [r.code, r.calls.length, r.said.length === 1 && r.said[0].includes('an environment failure, not a failing check')], [1, 1, true]);
+r = await run(['origin', 'b'], [{ status: 1, out: FORMAT }]);
+t('and says nothing over a real failing check', r.said, []);
 
 // The CLI, against a stub git that prints $STUB_OUT and exits $STUB_RC.
 const dir = mkdtempSync(join(tmpdir(), 'push-retry-'));

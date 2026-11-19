@@ -31,6 +31,7 @@ import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
+import { bootTime } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -49,11 +50,8 @@ const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
 
 export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
-const bootMs = () => {
-  const v = process.env.DESK_BOOT_TIME;
-  if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
-  return Date.now() - uptime() * 1000;
-};
+// When this computer last started (pass/shared.mjs bootTime), read the way the pass reads it.
+const bootMs = () => bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
 const stamp = (d) => d.toISOString().replace(/\.\d+Z$/, 'Z');
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 
@@ -203,7 +201,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
 // no supervisor loads until someone logs in. That one is `loginWait` as well, since the computer is
 // otherwise ready for a restart a person makes.
 export function rebootCheck({ selfQueue = null } = {}) {
-  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.binDir(), 'reboot-check.mjs')]);
+  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.runBin(), 'reboot-check.mjs')]);
   const summary = r.out.split('\n').find((l) => l.startsWith('summary: ')) ?? null;
   const field = (k) => new RegExp(`\\b${k}=(\\S+)`).exec(summary ?? '')?.[1] ?? null;
   const blockers = [];
@@ -228,12 +226,13 @@ const restart = () => (process.env.DESK_RESTART_CMD
 
 // ---- auto-release ------------------------------------------------------------------------------
 // Between windows, a pass installs desk-skills main once origin/main has moved past the installed
-// commit and main's `tests` check passed on it, so merged work runs within minutes. It waits while
+// commit and main's `tests` check passed on it, so merged work runs within minutes. While the head's
+// check has not passed, it installs the newest commit between the two whose check has. It waits while
 // any repo has a worker at Stage 7 (opening its PR), and does nothing while a window is open. Its
 // state is release.json beside the window's: when origin was last fetched, the last reason recorded
 // for a commit, and the last commit whose check failed with the repo that pushes it. Tests stand in for
 // the check with DESK_RELEASE_CHECK_CMD (run with sh -c, the commit appended; it prints success,
-// pending or failure).
+// pending, cancelled or failure).
 export const RELEASE_CHECK = 'tests';
 export const FETCH_EVERY_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 60 * 1000;
@@ -242,7 +241,8 @@ const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(
 const writeRelease = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(releaseFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
 
 // main's `tests` check on `sha`: {state: 'success' | 'pending' | 'failure', word} | {error}. A check
-// not started yet is pending; any conclusion but success is a failure.
+// not started yet is pending, and so is a cancelled one, which is read again on later passes; any
+// other conclusion but success is a failure.
 export function releaseCheck(dir, sha) {
   const jq = `[.check_runs[] | select(.name == "${RELEASE_CHECK}")] | sort_by(.started_at) | last | if . == null then "pending" elif .status != "completed" then "pending" else .conclusion end`;
   const r = process.env.DESK_RELEASE_CHECK_CMD
@@ -251,8 +251,20 @@ export function releaseCheck(dir, sha) {
   const word = lastLine(r.out).trim().toLowerCase();
   if (!r.ok || !word) return { error: said(r) };
   if (word === 'success') return { state: 'success', word };
-  if (['pending', 'queued', 'in_progress', 'waiting', 'requested'].includes(word)) return { state: 'pending', word };
+  if (['pending', 'queued', 'in_progress', 'waiting', 'requested', 'cancelled'].includes(word)) return { state: 'pending', word };
   return { state: 'failure', word };
+}
+
+// The newest commit on main's first-parent line after `base` and before `head` whose check passed.
+// -> {sha} | {sha: null} | {error, at}: a check it could not read, at `at`, stops the look.
+function newestPassed(git, src, base, head) {
+  const older = git('rev-list', '--first-parent', `${base}..${head}`).out.split('\n').filter(Boolean).slice(1);
+  for (const sha of older) {
+    const c = releaseCheck(src, sha);
+    if (c.error) return { error: c.error, at: sha };
+    if (c.state === 'success') return { sha };
+  }
+  return { sha: null };
 }
 
 // A worker at Stage 7, which may be pushing.
@@ -294,40 +306,60 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const lines = [];
     const save = () => writeRelease(dir, s);
     // A reason is recorded, and said, once per commit.
-    const blocked = (why) => {
-      if (s.blocked?.sha === head && s.blocked.why === why) return { lines };
-      s.blocked = { sha: head, why };
+    const blocked = (why, sha = head) => {
+      if (s.blocked?.sha === sha && s.blocked.why === why) return { lines };
+      s.blocked = { sha, why };
       save();
-      record(dir, at, `release: ${short(head)} not installed: ${why}`);
-      lines.push(`release: desk-skills main ${short(head)} not installed: ${why}`);
+      record(dir, at, `release: ${short(sha)} not installed: ${why}`);
+      lines.push(`release: desk-skills main ${short(sha)} not installed: ${why}`);
       return { lines };
     };
     if (!git('merge-base', '--is-ancestor', base, head).ok) return blocked(`the installed commit ${short(base)} is not on origin/main, so it was not replaced; run /desk-update`);
 
     const c = releaseCheck(src, head);
     if (c.error) return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting, main's ${RELEASE_CHECK} check could not be read (${c.error})`] };
-    if (c.state === 'pending') return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it`] };
-    if (c.state === 'failure') {
-      const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed: the installed version stays at ${short(base)}`;
-      lines.push(`release: ${text}`);
-      if (s.notified?.sha !== head) {
-        s.notified = { sha: head, by: selfSlug(), text };
-        save();
-        record(dir, at, `release: ${text}`);
+    // A head that has not passed leaves the newest commit before it that has, if any, to install.
+    let to = head;
+    let why = '';
+    if (c.state !== 'success') {
+      const failed = c.state === 'failure';
+      const p = newestPassed(git, src, base, head);
+      if (failed) {
+        const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed` +
+          (p.sha ? `; ${short(p.sha)}, the newest commit before it whose check passed, is installed in its place when nothing blocks it` : `: the installed version stays at ${short(base)}`);
+        lines.push(`release: ${text}`);
+        if (s.notified?.sha !== head) {
+          s.notified = { sha: head, by: selfSlug(), text };
+          save();
+          record(dir, at, `release: ${text}`);
+        }
       }
-      return { lines };
+      const waiting = `release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it (${c.word})`;
+      if (p.error) {
+        lines.push(`${failed ? `release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}` : waiting}; main's ${RELEASE_CHECK} check on the earlier ${short(p.at)} could not be read (${p.error}), so no earlier commit was installed`);
+        return { lines };
+      }
+      if (!p.sha) {
+        if (!failed) lines.push(`${waiting}, and no commit since the installed one passed it, so the installed version stays at ${short(base)}`);
+        return { lines };
+      }
+      to = p.sha;
+      why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
 
     const o = othersRunning(selfQueue, { self: true, where: atStage7 });
     const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
-    if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`] };
+    if (pushing.length) {
+      lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')}`);
+      return { lines };
+    }
 
-    const u = updateDesk(src, { to: head });
-    if (!u.ok) return blocked(u.why);
+    const u = updateDesk(src, { to });
+    if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed`);
-    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it`);
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}`);
     return { lines };
   } finally { lock.release(); }
 }
@@ -520,8 +552,8 @@ if (isMain) {
     return stopForWindow(t, {
       live,
       kill: (pid) => spawnSync('kill', [String(pid)]),
-      setQueue: (key, fields) => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
-      setBaseFix: () => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setQueue: (key, fields) => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setBaseFix: () => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
   console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));

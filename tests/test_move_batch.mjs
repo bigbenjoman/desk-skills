@@ -224,7 +224,9 @@ const after = JSON.parse(read(namedQ('E-1')));
 t('AC2 an images_dir under the old folder points at the moved one', after.tickets['K-1'].images_dir, join(namedS('E-1'), 'images', 'K-1'));
 t('AC2 and the screenshot is there', existsSync(join(after.tickets['K-1'].images_dir, 'shot.png')), true);
 t('AC2 an images_dir elsewhere is left alone', after.tickets['K-3'].images_dir, '/elsewhere/K-3');
-t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null }), JSON.stringify({ ...withImages, tickets: null }));
+// Rewritten with its images_dir moved, the queue is one version higher (queue-store.mjs).
+t('AC2 everything else in the queue unchanged', JSON.stringify({ ...after, tickets: null, version: null }), JSON.stringify({ ...withImages, tickets: null, version: null }));
+t('AC2 the rewrite is one version higher', after.version, (withImages.version ?? 0) + 1);
 t('AC2 with screenshots: the standing slot has no queue', existsSync(standingQ), false);
 
 // A batch whose tickets span several epics names no epic: it moves to a slot named after its branch.
@@ -234,6 +236,7 @@ put(standingQ, multi);
 put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
 put(join(standingS, 'answers', 'K-2.txt'), 'blue');
 put(join(standingS, 'intake.json'), '{"seen":{}}');
+put(join(standingS, 'asks.json'), '{"next":2,"asks":[{"id":1,"text":"merge PR #9"}]}');
 r = move();
 const slotted = 'feat-epics-coverage-to-podcasts';
 t('several epics: moved', r.code, 0);
@@ -242,6 +245,7 @@ t('several epics: the queue is under the branch-named slot, unchanged', existsSy
 t('several epics: its parks and answers moved', `${read(join(namedS(slotted), 'parks', 'K-2.json'))} ${read(join(namedS(slotted), 'answers', 'K-2.txt'))}`, '{"question":"which colour?"} blue');
 t('several epics: the standing slot has no queue', existsSync(standingQ), false);
 t('several epics: intake\'s register stays with the standing slot', existsSync(join(standingS, 'intake.json')), true);
+t('several epics: the repo\'s asks stay with the standing slot', existsSync(join(standingS, 'asks.json')) && !existsSync(join(namedS(slotted), 'asks.json')), true);
 const listed2 = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' '))`], { encoding: 'utf8', env: base });
 t('several epics: the repo lists the standing slot and the branch-named batch', listed2.stdout.trim(), `- ${slotted}`);
 // The slot name keeps only what a batch name may hold.

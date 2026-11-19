@@ -36,16 +36,17 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { isHeld, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep } from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
+import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
-import { platform, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
+import { backend, runBySetting, supervisorAgent, supervisorRun, supervisorState as readSupervisorState, turnOn } from './run-by.mjs';
 import { FAILED, evaluateGate, skippedOnly, SKIPPED_ON_DRAFT, PENDING_LIMIT_MS, since, holdNeedsPerson } from './gate.mjs';
 import { FIX_TRIES_MAX, RERUNS_MAX, RERUN_COOLDOWN_S, conflictTriesMade, personCall, stuckWhy, triesMade } from './fix-tries.mjs';
-import { readHistory, recentHistory, sizeOf, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
+import { readHistory, recentHistory, sizeIn, forecast, epicsOf, durations, durationsFor, quantile, when, dayAndTime, nextCheckin, dayAt, calendarDays, HOUR, DAY, RUNS, MIN_HISTORY, WINDOW_DAYS,
   readEstimates, saveEstimates, hitRate, MIN_HITS } from './desk-q-eta.mjs';
 import { WINDOW_LABELS, pacingSetting, usagePace, stateDirs, windowUse } from './usage-pace.mjs';
 import { readUsage, readLoginUsage, probeDue, probe, usageDir, PROBE_EVERY_MS } from './usage-probe.mjs';
@@ -59,7 +60,9 @@ import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
+import { readAsks } from './asks.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
+import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -120,13 +123,21 @@ function stateOf(q, t, ctx, seen) {
   if (['running', 'done', 'failed'].includes(t.state)) return t.state;
   if (outsideOf(t).length && (t.open_questions ?? 0) > 0) return 'stuck';
   if (isHeld(t)) return heldAsks(t) ? 'needs' : holdOf(q, t, ctx, seen).k;
+  const ph = parkHold(q, t, ctx, seen);
+  if (ph) return ph.k;
   if (worktreeBusy(t)) return 'needs';
   if (answeredPark(t, ctx) || readPark(t, ctx) || clearsPark(t)) return 'waiting';
   if (t.state === 'parked' || (t.open_questions ?? 0) > 0) return 'needs';
   return t.state === 'queued' ? 'queued' : 'ready';
 }
 
-const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [] };
+const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
+
+// The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
+// uploadPause), however many of its PRs wait on it.
+const uploadPauseText = ({ page, prs }) => `Screenshot uploads are paused for every repo: desk's uploader found GitHub's PR page changed (${String(page.why ?? '').replace(/\s+/g, ' ').trim()}, at ${page.at}). `
+  + `${prs.length ? `${prs.length} PR${prs.length === 1 ? '' : 's'} wait${prs.length === 1 ? 's' : ''} in draft for ${prs.length === 1 ? 'its' : 'their'} screenshots` : 'No upload waits on it yet'}. `
+  + `${PAGE_RESUMES}.`;
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -162,12 +173,12 @@ const stoppedText = (t) => `worker stopped: ${failedWhy(t)} · requeue it`;
 const releaseCmd = (key) => releaseCommand(key, 'node ~/.claude/desk/bin/queue.mjs');
 
 // How an open blocker `b` of ticket `key` holds it when the blocker is a step only the person takes,
-// as `key`'s triage record in `stateDir` last read it and repo `slug`'s label rows judge it (personStep:
+// as `key`'s triage record read through listing object `at` (triageOf) last read it and repo `slug`'s label rows judge it (personStep:
 // 'build' or 'merge'), else null. A Done blocker holds nothing as a step.
-export function personStepOf(stateDir, slug) {
+export function personStepOf(at, slug) {
   const labels = [personStepLabels(slug), personInputLabels(slug)];
   return (key, b) => {
-    const rec = triageOf(stateDir, key);
+    const rec = triageOf(at, key);
     const x = (rec?.blockers ?? []).find((y) => y?.key === b);
     return x && x.category !== 'done' ? personStep(x, rec, ...labels) : null;
   };
@@ -184,7 +195,7 @@ function holdContext(r) {
   const releases = driver || (granted && r.live && (r.q?.supervised === true || r.q?.pass?.by === 'supervisor'));
   const stage = (key) => { const s = rowStage(r.stateDir, r.q.tickets[key], r.last); return s.label ?? s.stage; };
   // The Jira status category ticket `key`'s triage record last read for its blocker `b`, or undefined.
-  const blockerCategory = (key, b) => (triageOf(r.stateDir, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
+  const blockerCategory = (key, b) => (triageOf(r, key)?.blockers ?? []).find((x) => x?.key === b)?.category;
   // The base the pass sends a conflict's fix try against: the batch's own, else the repo's default.
   let base = typeof r.q?.base === 'string' ? r.q.base.trim() : '';
   if (!base) { try { base = String(repoConfigValue(r.slug, 'default-branch') ?? '').trim(); } catch { /* an unreadable row reads as main */ } }
@@ -197,7 +208,7 @@ function holdContext(r) {
   let basePush = 'no';
   try { basePush = repoPermission(r.slug, 'batch-base-push'); } catch { /* a row that cannot be read is no */ }
   // With passes stopped nothing merges, but a PR the grant covers merges by itself once they resume.
-  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r.stateDir, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks') };
+  return { releases, merges: granted && (releases || !r.live), reruns, basePush, live: r.live, stage, blockerCategory, stepOf: personStepOf(r, r.slug), base: base || 'main', required: list('required-checks'), advisory: list('advisory-checks'), uploadPage: uploadPause()?.page ?? null };
 }
 
 // What a held ticket waits on, as { k, text, act }: `waiting` when it moves without the user, `needs`
@@ -210,6 +221,7 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (day?.bad) return { k: 'needs', text: `held: ${badLabelText(day.label)}`, act: releaseCmd(t.key) };
   if (day) return { k: 'waiting', text: `held until ${day.until}, by its label ${day.label}` };
   // Neither the pass nor the merge driver lets a ticket start whose hold names no blocker.
+  if (stoppedHold(t)) return { k: 'needs', text: 'its worker was stopped: let it start', act: releaseCmd(t.key) };
   if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
@@ -222,6 +234,18 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   return each.find((e) => e.k === 'needs' && !e.step) ?? each.find((e) => e.k === 'needs') ?? (each.length === 1 ? each[0] : { k: 'waiting', text: `behind ${each.map((e) => e.name).join(', ')}` });
 }
 
+// What a ticket parked at triage for its own reason (triagePark) waits on while its held_by still names
+// an unmerged blocker that moves without the user, or that is only the person's own step (needs-you
+// lists the step, with the park among those waiting on it), as holdOf reads it; else null. Its own
+// question is asked once nothing holds it, or at once where the hold itself needs the user.
+function parkHold(q, t, ctx = NOBODY, seen = new Set()) {
+  if (!triagePark(t) || !unmergedBlockers(q, t).length) return null;
+  const h = holdOf(q, t, ctx, seen);
+  return h.k === 'waiting' || h.step != null ? h : null;
+}
+// What a held ticket, or a triage park held behind its blockers, waits on (holdOf), else null.
+export const holdShown = (q, t, ctx = NOBODY) => (isHeld(t) ? holdOf(q, t, ctx) : parkHold(q, t, ctx));
+
 // One unmerged blocker of the held ticket `key`, as holdOf reads it, plus `name`: its PR or its key.
 // One in no batch that is the person's own step (ctx.stepOf) needs them, and is `step`: needs-you lists
 // it once, as the step, with every ticket waiting on it.
@@ -232,6 +256,8 @@ function blockerHold(q, key, b, ctx, seen) {
     return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
       : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   }
+  // One the pass raised as dropped (dropped_link) is asked as that triage item, never twice.
+  if (!bt && keysOf(q.tickets?.[key]?.dropped_link).includes(b)) return { k: 'waiting', name: b, text: `behind ${b}, no longer in this batch: asked whether the link is still right` };
   if (!bt) return { k: 'needs', name: b, text: `${b} is not in this queue: let it start`, act: releaseCmd(key) };
   const n = bt.result?.pr;
   if (bt.state === 'done') {
@@ -246,8 +272,64 @@ function blockerHold(q, key, b, ctx, seen) {
   }
   if (bt.state === 'running') return { k: 'waiting', name: b, text: `behind ${b} (running, stage ${ctx.stage(b) ?? '?'})` };
   if (seen.has(b) || holdsReach(q, b, key)) return { k: 'needs', name: b, text: `${b} is held behind this one: let one of them start`, act: releaseCmd(key) };
-  const bk = groupOf(stateOf(q, bt, ctx, seen));
+  // A blocker's group is the same by whichever path the walk reaches it (a cycle through it is caught
+  // above, before this line), so it is read once per walk: a dense held_by graph (each ticket naming
+  // every one before it) has exponentially many paths.
+  const memo = (seen.memo ??= new Map());
+  if (!memo.has(b)) memo.set(b, groupOf(stateOf(q, bt, ctx, seen)));
+  const bk = memo.get(b);
   return { k: 'waiting', name: b, text: bk === 'needs' ? `behind ${b}, which needs you` : `behind ${b}` };
+}
+
+// The tickets a held ticket waits on at the end of its chain: each unmerged blocker that is not itself
+// held, followed through those that are, a triage park held behind its blockers among them (holdsKept).
+// A held one nothing further holds (a stop or date hold, or every blocker merged) is a root itself.
+// Each key is read once, so a dense held_by graph stays linear.
+export function waitRoots(q, t) {
+  const roots = new Set(), seen = new Set([t.key]);
+  for (let edge = unmergedBlockers(q, t); edge.length;) {
+    const next = [];
+    for (const b of edge) {
+      if (seen.has(b)) continue;
+      seen.add(b);
+      const bt = q.tickets?.[b];
+      const up = bt && holdsKept(bt) ? unmergedBlockers(q, bt) : [];
+      if (up.length) next.push(...up); else roots.add(b);
+    }
+    edge = next;
+  }
+  return roots;
+}
+// What a repo row's waiting tickets all wait on, where that is one ticket and nothing else of the row is
+// ready or running: `all 23 wait on VPL-511 (PR #954, your merge)`. null otherwise.
+export function waitCause(r) {
+  if (r.error || !r.rows || count(r, 'ready')) return null;
+  const waiting = [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'waiting');
+  if (!waiting.length) return null;
+  const roots = new Map();
+  for (const x of waiting) {
+    const b = x.b ?? r;
+    const each = holdsKept(x.t) ? waitRoots(b.q, x.t) : new Set();
+    if (!each.size) return null;
+    for (const key of each) roots.set(`${b.stateDir}\t${key}`, { b, key });
+  }
+  if (roots.size !== 1) return null;
+  const [{ b, key }] = roots.values();
+  if (r.rows.some((x) => groupOf(x.k) === 'running' && (x.t.key !== key || (x.b ?? r) !== b))) return null;
+  const n = waiting.length;
+  return `${n === 1 ? '1 waits' : `all ${n} wait`} on ${key}${rootWords(b, key)}`;
+}
+// What the one ticket a row waits on is doing, in brackets after its key.
+function rootWords(b, key) {
+  const bt = b.q?.tickets?.[key];
+  if (!bt) return ' (outside this batch)';
+  if (bt.state === 'running') return ` (running, stage ${b.ctx?.stage?.(key) ?? '?'})`;
+  if (bt.state === 'done' && bt.result?.pr != null) {
+    const m = prNeed(b.q, bt, b.ctx ?? NOBODY, null);
+    const what = m.k !== 'needs' ? m.k : ['hold', 'green', 'running'].includes(m.why?.code) ? 'your merge' : 'needs you';
+    return ` (PR #${bt.result.pr}, ${what})`;
+  }
+  return groupOf(shownState(b.q, bt, b.ctx ?? NOBODY)) === 'needs' ? ' (needs you)' : '';
 }
 
 // What a PR the pass recorded stuck is still stuck on, read against its checks as they are now:
@@ -281,18 +363,22 @@ const tryOf = (t) => `try ${triesMade(t.fix_tries) + 1} of ${FIX_TRIES_MAX}`;
 // names, which needs-you words for the person (prWhy).
 // A merge_blocked note the merge driver wrote for a §4 Merge hold, or null: { text (after the prefix),
 // why, where, routine (the command it names, or null), off (why it was not run, or null), failed
-// ({ sha, exit, step }, or null) }.
+// ({ sha, exit, step }, or null), more (how many other holds with no routine the PR touches, which the
+// note counts after the first: ` (and <n> more merge hold(s))`) }.
 export function parseHoldNote(note) {
   const m = /^merge hold:\s*(.*)$/s.exec(String(note ?? ''));
   if (!m) return null;
   const text = m[1];
   const r = /; routine `([^`]+)` (?:not run: (.*)|failed at (\S+) \(exit (-?\d+)\): (.*))$/s.exec(text);
-  const head = r ? text.slice(0, r.index) : text;
+  let head = r ? text.slice(0, r.index) : text;
+  const extra = r ? null : / \(and (\d+) more merge hold\(s\)\)$/.exec(head);
+  if (extra) head = head.slice(0, extra.index);
   const i = head.indexOf(' — ');
   return {
     text, why: (i < 0 ? head : head.slice(0, i)).trim(), where: i < 0 ? '' : head.slice(i + 3).trim(),
     routine: r?.[1] ?? null, off: r?.[2] ?? null,
     failed: r && r[3] ? { sha: r[3], exit: Number(r[4]), step: r[5] } : null,
+    more: extra ? Number(extra[1]) : 0,
   };
 }
 
@@ -307,7 +393,7 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // What no fix try can move: a check only a person clears, or one still red after both tries.
   const stuck = stuckOf(t, ctx);
   if (stuck) return needs({ code: 'stuck', stuck }, [stuck.why, null]);
-  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now);
+  if (ps.isDraft === true) return draftNeed(q, t, needs, merging, now, ctx);
   // The merge driver records a PR into the default branch under §4 Merge holds (`merge hold: <why> —
   // <glob>, …`, then `; routine `<command>` not run: …` or `… failed at <sha> (exit <n>): <step>` where
   // the hold names one) and leaves it for a person, so the item says the hold's step.
@@ -424,7 +510,7 @@ function pendingPast(checks, now) {
 
 // A draft PR: merging while the pass takes it out of draft (checks still running, or out of draft at
 // its next pass), else what the person has to do first, as the pass recorded it (undraft.mjs).
-function draftNeed(q, t, needs, merging, now = Date.now()) {
+function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   const u = t.undraft;
   if (heldDraft(t)) return needs({ code: 'held' }, ['held by you in draft', null], [' · undraft it to release it', null]);
   // A check stuck pending: its job re-run, or its run cancelled so the next pass re-runs it.
@@ -434,7 +520,11 @@ function draftNeed(q, t, needs, merging, now = Date.now()) {
   if (u?.call === 'rerun' || (u?.call === 'wait' && /^checks re-run/.test(u.why ?? ''))) return merging(['draft', null], [' · cancelled checks re-run, out of draft once green', null]);
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
-  // The pass uploads screenshots desk holds and never tried to put in (undraft.mjs cellCall `upload`).
+  // The pass uploads screenshots desk holds and never tried to put in (undraft.mjs cellCall `upload`),
+  // or tries again one whose upload was busy, throttled or crashed (its `wait`, "<n> screenshot cell(s)
+  // left: …"), unless GitHub's page change has paused every upload: the screen's note names that once.
+  const retry = u?.call === 'wait' && /^\d+ screenshot cell\(s\) left/.test(u.why ?? '');
+  if ((u?.call === 'upload' || retry) && ctx.uploadPage) return merging(['draft', null], [' · ', null], ['screenshot uploads paused', WARN], [': GitHub\'s PR page changed, see the note', null]);
   if (u?.call === 'upload') return merging(['draft', null], [' · screenshots being uploaded, out of draft once they are in', null]);
   if (u?.call === 'wait' && /^its base /.test(u.why ?? '')) return merging(['draft', null], [' · base being synced or the PR reopened so CI runs', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);
@@ -469,12 +559,22 @@ function draftWhy(u) {
 }
 
 // Whether following holds from `from` reaches `key`: a cycle, at any depth, that nothing releases.
-function holdsReach(q, from, key, seen = new Set()) {
+// A triage park keeps its holds in held_by (heldBehindOf), so a cycle can run through one. Each pair is
+// walked once per queue object, so once per listing.
+const reaches = new WeakMap();
+function holdsReach(q, from, key) {
+  let m = reaches.get(q);
+  if (!m) reaches.set(q, (m = new Map()));
+  const pair = `${from}\n${key}`;
+  if (!m.has(pair)) m.set(pair, reachWalk(q, from, key, new Set()));
+  return m.get(pair);
+}
+function reachWalk(q, from, key, seen) {
   if (from === key) return true;
   const ft = q.tickets?.[from];
-  if (seen.has(from) || !ft || !isHeld(ft)) return false;
+  if (seen.has(from) || !ft || !holdsKept(ft)) return false;
   seen.add(from);
-  return unmergedBlockers(q, ft).some((p) => holdsReach(q, p, key, seen));
+  return unmergedBlockers(q, ft).some((p) => reachWalk(q, p, key, seen));
 }
 
 export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
@@ -513,10 +613,19 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
-export function triageOf(stateDir, key) {
+function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
   try { return readJsonOrRefuse(p, `re-run triage.sh ${key}`); } catch { return { summary: '(triage record unreadable)' }; }
+}
+// Ticket `key`'s triage record in the state folder of `at`, a listing's repo object (`stateDir`), which
+// reads each record once and drops them with the listing.
+const triageRead = new WeakMap();
+export function triageOf(at, key) {
+  let m = triageRead.get(at);
+  if (!m) triageRead.set(at, (m = new Map()));
+  if (!m.has(key)) m.set(key, readTriageRecord(at.stateDir, key));
+  return m.get(key);
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
 export const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
@@ -563,31 +672,52 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
-export function loadRepos(now = Date.now()) {
+// With `word`, only the repo it names (resolveRepo) is loaded: every other batch is read only for its
+// names and its running workers (lightBatch), so a slow batch elsewhere never holds up its listing.
+export function loadRepos(now = Date.now(), word = null) {
   const claims = repoPortClaims();
   const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
-  const all = claims.flatMap((c, i) => {
+  const listed = claims.flatMap((c, i) => {
     const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
-    return listBatches(c.slug).map((b) => loadBatch(c, name, b.name, limits, now));
+    return listBatches(c.slug).map((b) => ({ c, name, batch: b.name, limits }));
   });
+  const light = word ? listed.map((x) => lightBatch(x.c, x.name, x.batch, x.limits)) : [];
+  const slug = word && light.length ? resolveRepo(light, word).slug : null;
+  const all = listed.filter((x) => !slug || x.c.slug === slug).map((x) => loadBatch(x.c, x.name, x.batch, x.limits, now));
+  const others = light.filter((x) => x.slug !== slug);
   // Every batch carries the machine's load, so a repo's screen can say when the machine cap, not the
-  // batch's own workers, is what holds its ready tickets back.
-  const machine = { running: machineRunning(all), cap: machineCap() };
+  // batch's own workers, is what holds its ready tickets back. `others` are the batches not loaded.
+  const machine = { running: machineRunning([...all, ...others]), cap: machineCap(), others };
   for (const r of all) r.machine = machine;
   return all;
 }
 
+// A batch's names, as loadBatch gives them: its repo's for the standing batch, else its own with its base.
+function batchNames(c, repoName, batch, q) {
+  if (!batch) return { name: repoName, repo: repoName, word: repoName, id: c.slug };
+  const base = typeof q?.base === 'string' && q.base.trim() ? ` (${q.base.trim()})` : '';
+  return { name: `${repoName} · ${batch}${base}`, repo: repoName, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` };
+}
+
+// A batch read only for its names, its running workers and its usage hold, shaped as machineRunning,
+// runningOn and holdOut read a loaded one. An unreadable queue keeps its error, so it counts at its cap.
+function lightBatch(c, repoName, batch, limits) {
+  const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
+  let q = null, error = null;
+  if (existsSync(queuePath)) { try { q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { error = describeCrash(e); } }
+  const rows = Object.values(q?.tickets ?? {}).filter((t) => t?.state === 'running').map((t) => ({ t, k: 'running' }));
+  return { ...batchNames(c, repoName, batch, q), slug: c.slug, batch, stateDir, cap: limits.cap, error, rows, prs: [], q: q && { base: q.base, base_fix: q.base_fix, usage_hold: q.usage_hold } };
+}
+
 function loadBatch(c, repoName, batch, limits, now) {
   const { state: stateDir, queue: queuePath } = batchPaths(c.slug, batch);
-  const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null };
+  const r = { name: repoName, repo: repoName, word: repoName, id: c.slug, slug: c.slug, batch, claim: c, stateDir, queuePath, cap: limits.cap, q: null, error: null, asks: batch == null ? readAsks(stateDir) : [] };
   if (existsSync(queuePath)) {
-    try { r.q = readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'); } catch (e) { r.error = describeCrash(e); }
+    // Archived tickets are found by key behind the live ones (queue-store.mjs attachArchive).
+    try { r.q = attachArchive(readJsonOrRefuse(queuePath, 'restore it, or start a new batch there'), queuePath); } catch (e) { r.error = describeCrash(e); }
   }
-  if (batch) {
-    const base = typeof r.q?.base === 'string' && r.q.base.trim() ? ` (${r.q.base.trim()})` : '';
-    Object.assign(r, { name: `${repoName} · ${batch}${base}`, word: `${repoName}:${batch}`, id: `${c.slug}:${batch}` });
-  }
+  Object.assign(r, batchNames(c, repoName, batch, r.q));
   const beat = lastBeat(stateDir, queuePath);
   // The last pass, not the last beat: a supervisor's idle tick refreshes the beat and runs no pass.
   r.last = beat?.pass ?? null;
@@ -615,10 +745,10 @@ const unfinished = (r) => r.rows.length > 0 || r.prs.length > 0;
 // Who runs the batch's passes: the supervisor once the batch was handed to it (the queue's
 // `supervised`), else a session. `set` is the repo's "Batches run by" row, `unset` that it has none.
 // `agent` is 'loaded' or 'off' for a handed-over batch not yet finished, read with one launchctl
-// print per refresh, and `exit` the loaded agent's failed last run, when it cannot start. Off macOS
-// there is no supervisor, so every batch is a session's.
+// print (or systemctl call) per refresh, and `exit` the loaded agent's failed last run, when it cannot
+// start. With neither launchd nor systemd there is no supervisor, so every batch is a session's.
 function whoRuns(r) {
-  if (platform() !== 'darwin') return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
+  if (!backend()) return { by: 'session', set: 'session', unset: false, agent: null, exit: null };
   let raw = null;
   try { raw = repoConfigValue(r.slug, 'batches-run-by'); } catch { /* a row that cannot be read is unset */ }
   const by = r.q.supervised === true ? 'supervisor' : 'session';
@@ -696,13 +826,15 @@ const baseFixes = (r) => (r.batches ? r.batches.reduce((a, b) => a + baseFixes(b
 const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // Every repo's workers together, as the pass counts them against the machine cap (borrow.mjs
 // machineBudget): a batch whose queue cannot be read counts at its repo's cap, the most it could run.
-export const machineRunning = (repos) => repos.reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+// A scoped load's other batches (loadRepos `others`) count too.
+const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
+export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // The workers running on one Claude login, by the login spawn-worker.sh recorded for each
 // (claude-logins.mjs), a worker with no record on the default. A batch whose queue cannot be read
 // counts at its repo's cap.
 export function runningOn(repos, login) {
   let n = 0;
-  for (const r of repos) {
+  for (const r of withOthers(repos)) {
     if (r.error) { n += r.cap ?? 0; continue; }
     for (const b of r.batches ?? [r]) {
       const keys = (b.rows ?? []).filter((x) => groupOf(x.k) === 'running').map((x) => x.t.key);
@@ -747,8 +879,9 @@ export function probesDue(repos, { now } = {}) {
 }
 // The repo's tickets and unmerged PRs in Needs you: what its count is, and what /desk-needs-you asks about.
 export const needsRows = (r) => [...r.rows, ...(r.prs ?? [])].filter((x) => groupOf(x.k) === 'needs');
-const attention = (r) => (r.error || !r.q ? 0 : needsCount(r).shown);
-const hasBatch = (r) => r.q != null || r.error != null;
+const attention = (r) => (r.error || (!r.q && !r.asks?.length) ? 0 : needsCount(r).shown);
+// A repo with no batch still has a row while a session's ask waits on the person (asks.mjs).
+const hasBatch = (r) => r.q != null || r.error != null || r.asks?.length > 0;
 
 // Live batches first, freshest first; then quiet ones with something for the user (a ticket, a
 // supervisor to turn back on or that cannot start, failing passes, or an unfinished batch to hand
@@ -805,13 +938,13 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   const at = Math.floor(now / MINUTE) * MINUTE;
   const history = recentHistory(readHistory(r.stateDir), at);
   const list = (s) => String(s ?? '').split('|').filter(Boolean);
-  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r.stateDir, k)])),
+  const ep = epicsOf(r.q.tickets ?? {}, Object.fromEntries(Object.keys(r.q.tickets ?? {}).map((k) => [k, triageOf(r, k)])),
     { jira: /^jira\b/i.test(String(repoConfigValue(r.slug, 'tracker') ?? '').trim()) });
   // A ticket held behind a PR that needs the user waits on them, and one held behind a blocker in no
   // batch waits until a pass lifts it, so neither is run forward; nor is anything held behind them.
   const behindYou = (t) => isHeld(t) && unmergedBlockers(r.q, t).some((b) => blockerHold(r.q, t.key, b, r.ctx, new Set([t.key])).you);
   const heldOutside = (t) => isHeld(t) && keysOf(t.held_outside).some((b) => !r.q.tickets?.[b]);
-  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeOf(r.stateDir, t.key), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
+  const rows = r.rows.map(({ t, k, st }) => ({ key: t.key, k: k === 'waiting' && (heldOutside(t) || behindYou(t)) ? 'stuck' : k, size: sizeIn(triageOf(r, t.key)), stage: st.stage, held: list(t.held_by), collides: list(t.collides_with), epic: ep.of[t.key] ?? null }));
   // An epic with nothing left to run has shipped, so it is not run forward.
   const open = Object.fromEntries(Object.values(ep.epics).filter((e) => e.queued || e.missing > 0).map((e) => [e.key, { missing: e.missing }]));
   const id = JSON.stringify([r.id, at, checkin, r.live, r.workers, rows, open, ep.unread, history.map((l) => [l.key, l.size, l.hours])]);
@@ -1143,7 +1276,7 @@ const whyCell = (s, cell, tw) => {
 };
 // A ticket opened from an epic's views keeps the epic, so Esc and the breadcrumb lead back to it.
 const openTicket = (i, epic = null) => ({ kind: 'ticket', slug: i.r.id, key: i.x.t.key, ...(epic ? { epic } : {}) });
-const summaryOf = (i) => triageOf(i.r.stateDir, i.x.t.key)?.summary ?? '';
+const summaryOf = (i) => triageOf(i.r, i.x.t.key)?.summary ?? '';
 const nothingToDate = 'No repo here has an autopilot batch, so there is nothing to date.';
 
 // The label columns before a Timeline bar, the STARTS and SHIPS after it (behind its end mark), and
@@ -1307,7 +1440,7 @@ const EP_BAR = 16;
 function epicReadAt(r, F, key) {
   let at = -Infinity;
   for (const k of Object.keys(r.q?.tickets ?? {})) {
-    if (F.of[k] !== key && triageOf(r.stateDir, k)?.epic?.key !== key) continue;
+    if (F.of[k] !== key && triageOf(r, k)?.epic?.key !== key) continue;
     try { at = Math.max(at, statSync(join(r.stateDir, 'triage', `${k}.json`)).mtimeMs); } catch { /* no record */ }
   }
   return at;
@@ -1964,7 +2097,7 @@ function loginUses(subs = readSubscriptions(subscriptionsPath())) {
 // and the decider wait on) as a limit `out`: { at, type }, `at` null with no reset time; null with none.
 // A hold naming no login is on the pass's own, which desk-q shares.
 const holdOut = (repos, l, now) => ((h) => (h ? { at: h.resets_at ?? null, type: h.type } : null))(
-  holdOn(repos.flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
+  holdOn(withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
 const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
 
@@ -2346,7 +2479,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${workersRunning(r)} of ${r.workers} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] },
@@ -2399,6 +2532,9 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const out = claude?.limit ? claude : null;
   const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
     ...readable.flatMap((r) => stallNotes(r, quiet, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
+  const pause = uploadPause();
+  if (pause) notes.unshift({ tag: '▲ uploads', sgr: WARN, text: [[uploadPauseText(pause), null]] });
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -2414,6 +2550,8 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   notes.push(...cost.notes);
   // What a narrow table left out: merging counts, in cyan, then ready tickets with no free slot.
   const ok = list.filter((r) => !r.error);
+  // A row whose WAIT is all behind one ticket says which.
+  for (const r of ok) { const c = waitCause(r); if (c) notes.push({ tag: `· ${r.name}`, sgr: STATE_SGR.waiting, text: [[`${c}.`, null]] }); }
   if (lay.drop.includes('MERGING')) {
     for (const r of ok.filter((x) => count(x, 'merging'))) {
       const m = count(r, 'merging');
@@ -2605,7 +2743,8 @@ function needSegs(r, x, now = Date.now()) {
   if (k === 'stuck') return [[outsideText(t), null]];
   // One with a question of its own needs the user for that, whatever it is held behind.
   if (heldAsks(t)) return [[`${t.open_questions} triage question(s) open: answer them`, null]];
-  if (isHeld(t)) return holdOf(r.q, t, r.ctx).text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
+  const h = holdShown(r.q, t, r.ctx);
+  if (h) return h.text.split(/(#\d+)/).filter(Boolean).map((s) => [s, /^#\d+$/.test(s) ? PR_SGR : null]);
   const wb = worktreeBusy(t);
   if (wb) return [[`${busyPark(t) ? `${busyPark(t).question} · ` : ''}${worktreeBusyText(wb)}`, null]];
   const f = fixOn(t);
@@ -2717,6 +2856,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     countsLine(r),
     ...passHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
+    ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
     ...(pinUsage ? [] : usageLines(usage ?? usageOf([r], now), { now, solid: solidBars(width) })),
   ];
   // Wrapped to the terminal, so how to resume passes is never cut.
@@ -2850,7 +2990,7 @@ function blockerRow(r, key, b, kw, now) {
     const at = text.lastIndexOf(': ');
     return segRow(b, [[`  ◆ ${pad(b, kw)}  `, YOU_BOLD], [text.slice(0, at + 2), null], [text.slice(at + 2), BOLD]], open);
   }
-  const what = prRow(bt) ? prSegs(r, bt, now) : [[cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]];
+  const what = prRow(bt) ? prSegs(r, bt, now) : [[cut(triageOf(r, b)?.summary ?? '', 70), null]];
   return segRow(b, [[`  ${LABEL[bk][0]} ${pad(b, kw)}  `, STATE_SGR[bk] ?? null], [pad(LABEL[bk].slice(2), STATE_W - 2), STATE_SGR[bk] ?? null], ...what], open);
 }
 
@@ -2910,13 +3050,13 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const t = r.q.tickets[key];
   const k = shownState(r.q, t, r.ctx);
   const row = r.rows.find((x) => x.t.key === key) ?? r.prs.find((x) => x.t.key === key);
-  const tr = triageOf(r.stateDir, key) ?? {};
+  const tr = triageOf(r, key) ?? {};
   const pos = r.rows.find((x) => x.t.key === key)?.pos;
   const lane = laneOf(t, tr);
   const ww = width == null ? 96 : Math.max(20, Math.min(96, width - 2));
   const shows = (id) => open == null || open.has(id);
   const can = { a: false, y: false, f: false };
-  const h = isHeld(t) ? holdOf(r.q, t, r.ctx) : null;
+  const h = holdShown(r.q, t, r.ctx);
   // The key bold, the state in its colour, the facts after it grey; then the title, then on the rail
   // whether it moves without the user, any command alone on its own line.
   const head = [
@@ -2950,7 +3090,7 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
     can.a = merged.length > 0 || outside.length > fits;
     if (merged.length) {
       head.push(segLine([[`  ✓ ${merged.length}`, GOOD], [` ${outside.length ? 'in this batch ' : ''}merged`, null], ...(open && !shows('a') ? [['  · a shows them', DIM]] : [])]));
-      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r.stateDir, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.id, key: b }));
+      if (shows('a')) for (const b of merged) rows.push(segRow(b, [[`  ✓ ${pad(b, kw)}  `, GOOD], [cut(triageOf(r, b)?.summary ?? '', 70), null]], { kind: 'ticket', slug: r.id, key: b }));
     }
     for (const b of unmerged) {
       rows.push(blockerRow(r, key, b, kw, now));
@@ -3160,7 +3300,7 @@ function apply(repos, v) {
 
 // ---- the supervisor ----------------------------------------------------------------------------
 
-export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd, so it cannot run on this computer. Nothing changed.';
+export const NEEDS_LAUNCHD = 'The supervisor needs macOS launchd or Linux systemd, so it cannot run on this computer. Nothing changed.';
 
 // The named repo's own checkout, { cwd, env }, so a child run there acts as that repo (its slug,
 // config and GitHub repo) and not as the one this process runs in. `doing` ends the refusal.
@@ -3185,7 +3325,7 @@ function supervisorState(r, run = supervisorRunner(r)) {
 
 // `on` and `off` say what changed in one line; a refusal or a failure says nothing changed.
 function supervisor(r, op) {
-  if (platform() !== 'darwin') {
+  if (!backend()) {
     if (op === 'status') return `${r.name}: no supervisor. ${NEEDS_LAUNCHD.replace(' Nothing changed.', '')}`;
     throw new Usage(NEEDS_LAUNCHD);
   }
@@ -3217,10 +3357,18 @@ function checkFlags(argv) {
   if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
 }
 
-function loadOrRefuse(now) {
-  const repos = loadRepos(now);
+function loadOrRefuse(now, word = null) {
+  const repos = loadRepos(now, word);
   if (!repos.length) throw new Usage('No repo is set up for desk on this machine. Run /desk-setup in a repo first.');
   return repos;
+}
+
+// The repo `desk-q <repo> …` loads alone (loadRepos), else null for every repo. Costs, ships and days
+// read every repo, and so does a workers change, which is weighed against every live batch's workers
+// and every repo's ports.
+function scopeWord(argv) {
+  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
+  return first && !['costs', ...SHIPS, 'days'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
 }
 
 export function run(argv, { now = Date.now() } = {}) {
@@ -3228,7 +3376,8 @@ export function run(argv, { now = Date.now() } = {}) {
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off]';
   checkFlags(argv);
-  const repos = loadOrRefuse(now);
+  const word = scopeWord(argv);
+  const repos = loadOrRefuse(now, word);
   const v = target(repos, argv);
   if (v.kind === 'supervisor') return apply(repos, v);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
@@ -3238,7 +3387,7 @@ export function run(argv, { now = Date.now() } = {}) {
   if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    const after = loadOrRefuse(now);
+    const after = loadOrRefuse(now, word);
     return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
@@ -3410,9 +3559,26 @@ export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
-  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription,
+  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, word = null,
 } = {}) {
-  let repos = loadOrRefuse(clock());
+  // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
+  // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
+  // change, read every repo, so the first move there loads every repo, and so does every reread after.
+  // Once loaded, the scope is the repo's slug, which names its standing batch (always listed) whichever
+  // named batches come and go. A scoped reread that still fails reads every repo, which says what is gone.
+  let scope = word;
+  const reload = () => {
+    if (scope == null) return loadOrRefuse(clock());
+    try { return loadOrRefuse(clock(), scope); } catch { scope = null; return loadOrRefuse(clock()); }
+  };
+  let repos = reload();
+  if (scope != null) scope = repos[0].slug;
+  const inScope = () => view?.slug != null && !['costs', 'usage'].includes(tab) && repos.some((x) => x.id === view.slug);
+  function widen(always = false) {
+    if (scope == null || (!always && inScope())) return;
+    scope = null;
+    repos = reload();
+  }
   // On a screen too tall to fit, `scroll` is its first line shown when it has no rows to select,
   // and how far past the selection it shows when it has.
   // `tab`: the view, one of VIEWS, kept across every change of place.
@@ -3542,6 +3708,7 @@ export function interactive({
   // Rebuilds the screen from disk, then writes it.
   function draw() {
     if (done) return;
+    try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
     crumbs = crumbParts();
     frame();
@@ -3916,14 +4083,18 @@ export function interactive({
 
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
-    try { msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
+    try { repos = reload(); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
     const words = line.trim().split(/\s+/).filter(Boolean);
     try {
       checkFlags(words);
+      // A command for another repo, or for every repo, reads every repo.
+      const w = scopeWord(words);
+      const here = () => { try { return resolveRepo(repos, w) != null; } catch { return false; } };
+      if (scope != null && (w == null || !here())) widen(true);
       const v = target(repos, words);
       if (v.kind === 'supervisor') act(v);
       else if (isWrite(v)) {
@@ -4005,7 +4176,7 @@ export function interactive({
       if (!r) return;
       const v = { kind: 'supervisor', slug: r.slug };
       let state = null;
-      if (platform() !== 'darwin') msg = NEEDS_LAUNCHD;
+      if (!backend()) msg = NEEDS_LAUNCHD;
       else { try { ({ state } = supervisorState(r)); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); } }
       if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });
@@ -4049,7 +4220,7 @@ export function interactive({
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
   timer = setInterval(() => {
-    try { repos = loadOrRefuse(clock()); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = reload(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
@@ -4075,12 +4246,13 @@ if (isMain) {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
     let start = null;
+    const word = scopeWord(argv);
     if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now()), argv);
+      start = target(loadOrRefuse(Date.now(), word), argv);
     }
     if (start && !isCommand(start)) {
-      const ui = interactive({ start });
+      const ui = interactive({ start, word });
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

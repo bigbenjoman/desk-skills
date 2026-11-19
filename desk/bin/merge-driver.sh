@@ -195,12 +195,33 @@ if [ -n "$LOG" ]; then
   if ! LOG_STATE="$(desk_load_paths && printf '%s' "$DESK_STATE")" || [ -z "$LOG_STATE" ] || ! mkdir -p "$LOG_STATE"; then
     echo "FAIL: --log: could not resolve the batch state directory" >&2; exit 1
   fi
-  exec >>"$LOG_STATE/merge-driver.log" 2>&1
 fi
+# A log past LOG_ROTATE_BYTES moves to <log>.1 and the redirect re-opens a new one, with the older
+# copies shifted up and only LOG_ROTATE_KEEP kept, as the supervisor does for its own log. Checked
+# once this driver holds the lock and between loops: only the main shell may re-open its redirect, and
+# a start that loses the lock must not move the running driver's log out from under it.
+LOG_ROTATE_BYTES="${DESK_LOG_ROTATE_BYTES:-10485760}"
+LOG_ROTATE_KEEP=3
+# rotate_log succeeds only when it moved the log aside.
+rotate_log(){
+  local f="$LOG_STATE/merge-driver.log" size i
+  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  [ "${size:-0}" -gt "$LOG_ROTATE_BYTES" ] || return 1
+  rm -f "$f.$LOG_ROTATE_KEEP"
+  for (( i = LOG_ROTATE_KEEP - 1; i >= 1; i-- )); do if [ -f "$f.$i" ]; then mv -f "$f.$i" "$f.$((i + 1))"; fi; done
+  mv -f "$f" "$f.1"
+}
+# reopen_log: rotates the log if it is due, and re-opens the redirect when it rotated or when this
+# driver's output no longer goes to merge-driver.log (something else moved it).
+reopen_log(){
+  [ -n "$LOG" ] || return 0
+  if rotate_log || ! [ /dev/fd/1 -ef "$LOG_STATE/merge-driver.log" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
+}
+if [ -n "$LOG" ]; then exec >>"$LOG_STATE/merge-driver.log" 2>&1; fi
 # The last line is always the exit code, so the supervisor can tell a driver that failed from one it
 # never saw stop. The lock is removed only once this driver holds it, never another driver's.
 LOCK_HELD=""
-on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
+on_exit(){ rc=$?; [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; [ -n "$LOCK_HELD" ] && rm -rf "$LOCKD"; [ -n "${SAID:-}" ] && rm -rf "$SAID"; echo "$(date -u +%H:%M:%SZ) merge driver exited $rc"; }
 trap on_exit EXIT
 
 # Who lets this driver merge: config §3 (`config`), or the batch's Stage 3 approval (`batch`). It is
@@ -212,6 +233,7 @@ if ! GRANT="$(node "$DESK_ENV_MJS" merge-grant 2>&1)"; then
   exit 1
 fi
 GRANT_BY="${GRANT%%"$TAB"*}"
+desk_load_config
 
 # How this repo merges, and what "green" means here — both from config §4, never assumed.
 MERGE_METHOD="$(desk_cfg merge-method 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}' || true)"
@@ -219,28 +241,28 @@ case "$MERGE_METHOD" in
   squash|merge|rebase) ;;
   *) echo "FAIL: config §4 Merge method is '${MERGE_METHOD:-unset}' — want squash, merge or rebase. Run /desk-setup." >&2; exit 1 ;;
 esac
-if ! REQUIRED="$(node "$DESK_ENV_MJS" list required-checks 2>/dev/null)"; then
+if ! REQUIRED="$(desk_list required-checks 2>/dev/null)"; then
   echo "FAIL: config §4 Required checks is not set — run /desk-setup (\`none\` when nothing is required; every non-advisory check must still pass)." >&2; exit 1
 fi
-node "$DESK_ENV_MJS" list merge-holds >/dev/null 2>&1 \
+desk_list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
 UPDATE_PERM="$(desk_perm pr-update-branch)"
 # Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
 ROUTINE_PERM="$(desk_perm merge-hold-routine)"
 # Strict unless explicitly relaxed: unset, ask and yes all mean feedback is worked before merging.
-FEEDBACK_RAW="$(node "$DESK_ENV_MJS" perm-or-unset merge-feedback-first 2>/dev/null || echo unset)"
+FEEDBACK_RAW="$(desk_perm_or_unset merge-feedback-first 2>/dev/null || echo unset)"
 if [ "$FEEDBACK_RAW" = no ]; then FEEDBACK_STRICT=""; else FEEDBACK_STRICT=1; fi
 
 desk_apply_batch_base || exit 1
 desk_load_paths || exit 1
 desk_load_identity || exit 1
 # §4 Known flaky checks: what may be waived, and how a waiver's ticket is filed. Unset waives nothing.
-if ! FLAKY="$(node "$DESK_BIN/gate.mjs" flaky 2>&1)"; then
+if ! FLAKY="$(node "$DESK_RUN_BIN/gate.mjs" flaky 2>&1)"; then
   echo "FAIL: $(printf '%s' "$FLAKY" | sed 's/^gate: //') — the driver waives nothing until it does." >&2; exit 1
 fi
 # §4 State checks: the checks a rerun cannot turn green, since they read the PR's state, not its code.
-if ! STATE_CHECKS="$(node "$DESK_BIN/gate.mjs" state 2>&1)"; then
+if ! STATE_CHECKS="$(node "$DESK_RUN_BIN/gate.mjs" state 2>&1)"; then
   echo "FAIL: $(printf '%s' "$STATE_CHECKS" | sed 's/^gate: //') — the driver cannot tell which red checks a rerun could fix until it does." >&2; exit 1
 fi
 TRACKER="$(desk_cfg tracker 2>/dev/null | tr 'A-Z' 'a-z' || true)"
@@ -248,6 +270,15 @@ JIRA_CREATE_PERM="$(desk_perm jira-create)"
 CLOSE_PERM="$(desk_perm jira-close-own-merged)"
 DONE_STATE="$(desk_cfg done-state 2>/dev/null || true)"
 SIZE_FIELD="$(desk_cfg jira-size-field 2>/dev/null || true)"
+# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
+# Read here, before the cd below, so it comes from the snapshot taken in this directory.
+CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
+# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
+REVIEW_HOLD=""
+case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
+  ''|todo|none) ;;
+  *) REVIEW_HOLD=1 ;;
+esac
 command -v jq >/dev/null 2>&1 || { echo "FAIL: jq is required" >&2; exit 1; }
 command -v gh >/dev/null 2>&1 || { echo "FAIL: gh is required" >&2; exit 1; }
 
@@ -265,8 +296,9 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
   mv "$LOCKD" "$LOCKD.stale.$$" 2>/dev/null && rm -rf "$LOCKD.stale.$$"   # atomic takeover of a dead holder's lock
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
+reopen_log
 # The desk version this driver runs, so the supervisor can tell it started before the last install.
-node "$DESK_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
+node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
@@ -275,31 +307,55 @@ trap 'STOP=143' TERM
 stop_if_asked(){ if [ -n "$STOP" ]; then exit "$STOP"; fi; }
 
 cd "$DESK_REPO_ROOT" || exit 1
-log(){ echo "$(date -u +%H:%M:%SZ) $*"; }
-Q="$DESK_BIN/queue.mjs"
-GATE="$DESK_BIN/gate.mjs"
-THREADS="$DESK_BIN/review-threads.mjs"
+# A line about one PR ("#<n> …", "epic PR #<n> …"), or the loop's draft and no-ready lines, is written
+# only when the last loop that logged about it said something else: each key keeps the lines of the
+# loop that last logged it in $SAID/<key>, under that loop's number, and the loop before's in .prev.
+# Files rather than variables, since log also runs in subshells.
+LOOP=0; SAID=""
+log(){
+  local msg="$*" key=""
+  case "$msg" in
+    *$'\n'*) ;;
+    '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
+    'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*) key=loop ;;
+  esac
+  case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
+  if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
+  echo "$(date -u +%H:%M:%SZ) $msg"
+}
+# said <key> <line>: records the line for this loop; succeeds when this or the key's last logged loop
+# already said it.
+said(){
+  local f="$SAID/$1" at="" hit=1
+  if [ -f "$f" ]; then IFS= read -r at < "$f" || true; fi
+  if [ "$at" != "$LOOP" ]; then
+    if [ -f "$f" ]; then mv -f "$f" "$f.prev"; fi
+    printf '%s\n' "$LOOP" > "$f"
+  fi
+  if grep -Fxqs -- "$2" "$f" || grep -Fxqs -- "$2" "$f.prev"; then hit=0; fi
+  printf '%s\n' "$2" >> "$f"
+  return "$hit"
+}
+Q="$DESK_RUN_BIN/queue.mjs"
+GATE="$DESK_RUN_BIN/gate.mjs"
+THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
-# §4 Clean review verdict: the verdict at a head that settles the desk-review threads opened before it.
-CLEAN_ROW="$(desk_cfg clean-verdict 2>/dev/null || true)"
-# §4 Local review command: set, a green PR merges only on that review's clean verdict at its head.
-REVIEW_HOLD=""
-case "$(desk_cfg local-review 2>/dev/null | tr 'A-Z' 'a-z' | awk '{print $1}')" in
-  ''|todo|none) ;;
-  *) REVIEW_HOLD=1 ;;
-esac
 REPO="$DESK_GH_REPO"
 AUTHOR="$DESK_GITHUB_HANDLE"
 # The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
 VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
 BASE_BRANCH="$DESK_DEFAULT_BRANCH"
 SD="$DESK_STATE/merge-driver"; mkdir -p "$SD"
+# What this run has logged per PR starts empty, so each start says every PR's state once. Only the
+# lock holder gets here, so a killed run's record is no one's.
+rm -rf "$SD"/said.*; SAID="$SD/said.$$"; mkdir -p "$SAID"
 GREEN_HOLD_SECS="${MERGE_DRIVER_GREEN_SECS:-60}"
 
 # The id -> (branch, regex) map, rebuilt each loop because the queue learns branches as tickets spawn.
 # A recorded branch is matched exactly; only an id with none falls back to the bounded regex.
 ticket_map(){   # ticket_map <key>...
-  node --input-type=module - "$DESK_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
+  node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" "$@" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [mod, qf, ...keys] = process.argv.slice(2);
@@ -407,15 +463,20 @@ NODE
 # parked "held by orchestrator" is ever released.
 release_chain(){
   local plan succ preds got n pred all
-  plan=$(node - "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
-const fs = require('fs');
-const [qf, ...pairs] = process.argv.slice(2);
+  plan=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$DESK_QUEUE" ${DEP_LIST[@]+"${DEP_LIST[@]}"} <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const [mod, qf, ...pairs] = process.argv.slice(2);
+const { stoppedHold } = await import(pathToFileURL(mod).href);
 let q = {}; let spine = null;
-try { const all = JSON.parse(fs.readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
+try { const all = JSON.parse(readFileSync(qf, 'utf8')); q = all.tickets || {}; spine = all.feature === true ? all.spine : null; } catch { /* no queue: nothing is held */ }
 const held = (t) => t && t.state === 'parked' && String(t.park?.question ?? '').startsWith('held by orchestrator');
 const m = {};
 const add = (s, ps) => { m[s] ??= new Set(); for (const p of ps) if (p) m[s].add(p); };
-for (const pair of pairs) { const i = pair.indexOf(':'); add(pair.slice(0, i), pair.slice(i + 1).split(',')); }
+// A --deps predecessor the ticket was freed from by hand (freed_from, needs-you link items) no longer holds
+// it: --deps outlive a restart, so without this a ticket freed from a dropped blocker would never release.
+const freed = (s) => new Set(String(q[s]?.freed_from ?? '').split('|').filter(Boolean));
+for (const pair of pairs) { const i = pair.indexOf(':'); const s = pair.slice(0, i); const f = freed(s); add(s, pair.slice(i + 1).split(',').filter((p) => !f.has(p))); }
 for (const [k, t] of Object.entries(q)) if (held(t) && t.held_by) add(k, String(t.held_by).split('|'));
 // Only an approval from the person releases what a feature spine holds: a spine PR merged without it does not.
 // No apostrophes in this heredoc: bash 3.2 matches quotes inside a heredoc within a command substitution.
@@ -423,7 +484,9 @@ const unapproved = (p) => p === spine && q[p]?.approved !== true;
 // A blocker in no batch (held_outside) waits on Jira as well as a merge: pass.mjs lifts it, not this.
 // So does a ticket held on its blocked-until label (held_label with no held_by, batch-state.mjs dateHeld).
 const onDate = (t) => !!t.held_label && !String(t.held_by ?? '').split('|').some(Boolean);
-for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
+// A ticket queue.mjs stop held starts only when the person lets it, even where --deps still names it
+// as a successor whose predecessors have merged.
+for (const [s, ps] of Object.entries(m)) if (held(q[s]) && !stoppedHold(q[s]) && !q[s].held_outside && !onDate(q[s]) && ps.size && ![...ps].some(unapproved)) console.log(`${s} ${[...ps].join(',')}`);
 NODE
 ) || return 0
   [ -n "$plan" ] || return 0
@@ -432,11 +495,15 @@ NODE
   # blocker whose PR is older than that (a long-lived draft, rebased and merged today) was never found
   # and held its successors forever. Lines in the shape `prs` prints; the PR is "?" when none is recorded.
   local merged known
-  known=$(node - "$DESK_QUEUE" <<'NODE'
-const fs = require('fs');
+  known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
+import { readFileSync } from 'node:fs';
+const { readArchive } = await import(process.argv[3]);
 let q = {};
-try { q = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
-for (const [k, t] of Object.entries(q)) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+try { q = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+// Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
+let a = {};
+try { a = readArchive(process.argv[2]).tickets; } catch { /* unreadable archive */ }
+for (const [k, t] of Object.entries({ ...a, ...q })) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
@@ -454,7 +521,7 @@ NODE
       [ -z "$n" ] && { all=0; break; }; got="$got $pred#$n"
     done
     if [ "$all" = 1 ]; then
-      node "$Q" set "$succ" state=triaged park=null held_by=null >/dev/null </dev/null \
+      node "$Q" set "$succ" state=triaged park=null held_by=null freed_from=null >/dev/null </dev/null \
         && placed=$(node "$Q" front "$succ" </dev/null) && log "merged:$got -> RELEASED $placed"
     fi
   done <<EOF_PLAN
@@ -629,7 +696,7 @@ close_issues(){
   local line
   while IFS= read -r line; do
     [ -n "$line" ] && log "#$1 $2 $line"
-  done < <(node "$DESK_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
+  done < <(node "$DESK_RUN_BIN/linked-issues.mjs" "$2" --repo "$REPO" 2>&1)
 }
 
 # A §4 Merge holds routine is run once per PR head, recorded in <state>/merge-driver/routine-<n>-<sha>.*:
@@ -716,7 +783,7 @@ instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge
 # person, as pass.mjs says. -> `<n>\t<epic key>\tepic` for one to try, or nothing.
 epic_pr(){
   local line n key carried st
-  line=$(node --input-type=module - "$DESK_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
+  line=$(node --input-type=module - "$DESK_RUN_BIN/batch-state.mjs" "$GATE" "$DESK_QUEUE" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 const [bs, gate, qf] = process.argv.slice(2);
@@ -835,7 +902,7 @@ EOF_REPAIRS
 # A check that could not run holds the merge.
 tree_checked(){
   local r res line
-  r=$(node --input-type=module - "$DESK_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$4" "$1" "$2" <<'NODE'
+  r=$(node --input-type=module - "$DESK_RUN_BIN/base-sync.mjs" "$DESK_REPO_ROOT" "$SD" "$4" "$1" "$2" <<'NODE'
 import { pathToFileURL } from 'node:url';
 const [mod, repo, cache, base, pr, head] = process.argv.slice(2);
 const { prTreeCheck } = await import(pathToFileURL(mod).href);
@@ -867,7 +934,7 @@ NODE
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -896,7 +963,14 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
       log "#$n HELD by §4 Merge holds — a person merges it, after its step: $(printf '%s' "$holds" | paste -sd ';' -)"
       # A routine hold's step comes first in the note, so the person is never sent past it to the merge.
       if [ -n "$routines" ]; then routine_off_note "$key" "$routines" "it also touches a hold no routine clears: $(printf '%s' "$bare" | head -1)"
-      else queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)"; fi
+      else
+        # The note quotes the first hold; any others it touches are counted, so no reader takes the
+        # first one's step for the PR's last (needs-you never says only the merge is left).
+        nbare=$(printf '%s\n' "$bare" | grep -c .)
+        bare_more=""
+        if [ "$nbare" -gt 1 ]; then bare_more=" (and $((nbare - 1)) more merge hold(s))"; fi
+        queue_note "$key" "merge hold: $(printf '%s' "$bare" | head -1)$bare_more"
+      fi
       return 1
     fi
     if [ "$ROUTINE_PERM" != yes ]; then
@@ -1043,7 +1117,7 @@ EOF_RESOLVE
   # Last before the merge, so a routine never runs for a PR that would not merge after it. The row is
   # read again here, as the grant is, so revoking it stops a driver that is already running.
   if [ -n "$routines" ]; then
-    ROUTINE_PERM="$(desk_perm merge-hold-routine)"
+    ROUTINE_PERM="$(desk_perm_fresh merge-hold-routine)"
     if [ "$ROUTINE_PERM" != yes ]; then
       log "#$n HELD by §4 Merge holds — its routine is not run, §3 merge-hold-routine is now $ROUTINE_PERM"
       routine_off_note "$key" "$routines" "§3 merge-hold-routine is $ROUTINE_PERM"; rm -f "$SD/green-$n"; return 1
@@ -1070,7 +1144,11 @@ EOF_RESOLVE
     # The merge time on the ticket, and its line in the eta history (the epic PR's on the queue's
     # promotion, which releases what waits on the epic). A failure here never undoes the merge.
     if [ -n "$EPIC_KEY" ]; then
-      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
+      # Its merge commit gates its children's production steps (needs-you.mjs gateHeld), whatever the merge method.
+      moid=$(gh pr view "$n" --repo "$REPO" --json mergeCommit 2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null)
+      case "$moid" in *[!0-9a-f]*|'') moid= ;; esac
+      [ "${#moid}" -eq 40 ] || moid=
+      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
     elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
@@ -1097,6 +1175,8 @@ pause(){
 }
 while true; do
   stop_if_asked
+  LOOP=$((LOOP + 1))
+  reopen_log
   join_queue_tickets
   release_chain
 

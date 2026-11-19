@@ -18,16 +18,22 @@
 //     served:  { [repo]: <when its last job started> }
 //     backoff: { at, stalls, until, repo, pr } | null
 //     running: { id, pr, pid, at } | null     the job an upload is running now (inFlight)
-//     signin:  { [session file]: { at, why, mtime } } }   GitHub refused that saved login (the
+//     signin:  { [session file]: { at, why, mtime } }   GitHub refused that saved login (the
 //                                             uploader's exit 6), until the file is written again (signedIn)
+//     page:    { at, why, repo, pr, install } | null }   the uploader found no comment composer on
+//                                             GitHub's PR page (its exit 7 saying "GitHub's PR page changed")
+//                                             from the desk release `install` (deskInstall)
 //
 // While a job's browser profile's saved GitHub login is not signed in (signedIn), no job uploading with
 // it runs, from any repo: each keeps its place and spends no try, and one health item per login asks
 // for the sign-in. Jobs with another login still run.
-import { readFileSync, statSync } from 'node:fs';
+// While `page` is set, no pass running that release runs a job, from any repo: each keeps its place and
+// spends no try, and needs-you lists one item for the machine. A pass on a release installed since runs
+// them, and the first that gets past the composer clears it.
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { alive, lock, tryLock, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { browserProfile, deskHome } from './desk-env.mjs';
+import { browserProfile, deskHome, runBin } from './desk-env.mjs';
 import { loginState } from './find-playwright.mjs';
 import { UPLOAD_PACE } from './desk-design.mjs';
 import { readUploadLog, uploadsBefore } from './upload-log.mjs';
@@ -44,8 +50,30 @@ export function readUploadQueue(file = uploadQueueFile()) {
   try { q = JSON.parse(readFileSync(file, 'utf8')); } catch (e) {
     if (e.code !== 'ENOENT' && !(e instanceof SyntaxError)) throw e;
   }
-  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null, signin: q?.signin && typeof q.signin === 'object' ? q.signin : {} };
+  return { jobs: Array.isArray(q?.jobs) ? q.jobs : [], results: Array.isArray(q?.results) ? q.results : [], served: q?.served ?? {}, backoff: q?.backoff ?? null, running: q?.running ?? null, signin: q?.signin && typeof q.signin === 'object' ? q.signin : {}, page: q?.page ?? null };
 }
+
+// The PRs some jobs are for, once each, as "<repo> #<pr>".
+export const waitingPrs = (jobs) => [...new Set(jobs.map((j) => `${j.repo} #${j.pr}`))];
+// The queue paused on GitHub's PR page (`page`): { page, jobs, prs }, `prs` the PRs waiting in it, or
+// null while uploads run. A queue that cannot be read pauses nothing. Every screen that names the pause
+// reads it here and says how it ends with PAGE_RESUMES, so needs-you and desk-q never disagree.
+export function uploadPause(file = uploadQueueFile()) {
+  let q;
+  try { q = readUploadQueue(file); } catch { return null; }
+  return q.page ? { page: q.page, jobs: q.jobs, prs: waitingPrs(q.jobs) } : null;
+}
+export const PAGE_RESUMES = "It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue";
+
+// The uploader's exit 7 when it found no comment composer on the PR page, as against GitHub's rate limit.
+const PAGE_CHANGED = /GitHub's PR page changed/;
+// Which desk release this process runs, and so whose uploader its pass starts: runBin's real path (a
+// release folder per install). Never the live bin, which an install mid-run moves to a release that
+// has not tried the page.
+function deskInstall() {
+  try { return realpathSync(runBin()); } catch { return runBin(); }
+}
+const pageWhy =(p) => `desk's screenshot uploader is broken: ${p.why} (an upload for ${p.repo} #${p.pr} at ${p.at}), so no repo's upload runs until desk is installed again with a fix`;
 
 export const SIGNIN_CMD = 'node ~/.claude/desk/bin/github-signin.mjs';
 const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return 0; } };
@@ -132,9 +160,9 @@ export const backoffWhy = (b) => `an upload for ${b.repo} #${b.pr} stalled at ${
 // Runs the queue's jobs until it is empty, the pace is spent, an upload stalls or the profile is in
 // use, each job at most once (`tried` holds the ids already run, across one pass's pumps), passing over
 // each job whose login is not signed in. run(job, max) runs the uploader and returns { code, out };
-// login(job) is signedIn for the job's profile.
+// login(job) is signedIn for the job's profile; install() is deskInstall.
 // -> { ran: [{ job, code }], stop: why it stopped short (or left a job waiting on a sign-in), or null }.
-export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set(), login = (job) => signedIn({ profile: job.profile ?? undefined, file, now: now() }) }) {
+export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog = () => readUploadLog(), tried = new Set(), login = (job) => signedIn({ profile: job.profile ?? undefined, file, now: now() }), install = deskInstall }) {
   const runLock = `${file}.run`;
   const holder = tryLock(runLock);
   if (holder !== true) return { ran: [], stop: `another pass is uploading from the machine's upload queue (pid ${holder ?? '?'})` };
@@ -147,6 +175,7 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       const t = now();
       const q = readUploadQueue(file);
       if (Date.parse(q.backoff?.until ?? '') > t) { stop = backoffWhy(q.backoff); break; }
+      if (q.page && q.page.install === install()) { stop = pageWhy(q.page); break; }
       const job = pickJob(q, passed);
       if (!job) break;
       let s;
@@ -171,9 +200,16 @@ export function pump({ run, file = uploadQueueFile(), now = Date.now, uploadLog 
       // GitHub turning the login away keeps the job queued, as the cap does, and passes over every
       // job with that login, from any repo, till its session file is written again.
       const refused = r.code === EXIT_SIGNIN && REFUSED.test(r.out ?? '');
+      // No composer on GitHub's page keeps the job queued, as a refused login does, and pauses every
+      // repo's jobs: each would find the same page.
+      const changed = r.code === EXIT_THROTTLED ? PAGE_CHANGED.exec(r.out ?? '') : null;
       stop = withQueue(file, (w) => {
+        if (changed) {
+          w.page = { at: iso(end), why: String(r.out).slice(changed.index).split('\n')[0], repo: job.repo, pr: job.pr, install: install() };
+          return pageWhy(w.page);
+        }
         if (r.code === EXIT_THROTTLED) w.backoff = backoffAfter(w.backoff, r.out, end, job);
-        if ([0, 4, EXIT_PACED].includes(r.code)) w.backoff = null;
+        if ([0, 4, EXIT_PACED].includes(r.code)) { w.backoff = null; w.page = null; }
         if (r.code === EXIT_PACED) return null;
         if (refused) {
           w.signin[s.file] = { at: iso(end), why: String(r.out).trim().split('\n').at(-1) ?? '', mtime: mtimeOf(s.file) };

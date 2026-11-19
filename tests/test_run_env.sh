@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # suite: run.sh starts every suite without the caller's DESK_* environment
 # A desk worker runs tests/run.sh with its own DESK_* variables exported, which some suites read.
-# run.sh clears every DESK_* variable but DESK_REQUIRE_SHELLCHECK (CI's), and DATABASE_URL and
+# run.sh clears every DESK_* variable but DESK_REQUIRE_SHELLCHECK (CI's) and DESK_COMPOSER_SMOKE (an
+# opt-in), and DATABASE_URL and
 # DIRECT_DATABASE_URL, before any suite runs; tests/related.sh runs through run.sh, so its suites get
 # the same. A copy of both runners in a scratch repo runs a probe suite that records its environment.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -16,7 +17,7 @@ check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1";
 
 # The scratch repo: both runners, a stub attribution hook, and one probe suite.
 R="$T/repo"; mkdir -p "$R/tests" "$R/hooks"
-cat "$S/run.sh" > "$R/tests/run.sh"; cat "$S/related.sh" > "$R/tests/related.sh"
+cat "$S/run.sh" > "$R/tests/run.sh"; cat "$S/suite_env.sh" > "$R/tests/suite_env.sh"; cat "$S/related.sh" > "$R/tests/related.sh"
 printf 'print("ok stub hook")\n' > "$R/hooks/deny-ai-attribution.py"
 cat > "$R/tests/test_probe.sh" <<'EOF'
 #!/usr/bin/env bash

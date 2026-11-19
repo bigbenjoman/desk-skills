@@ -62,4 +62,34 @@ install_file "$T/new.sh" "$DEST"
 out="$(ls -la "$(dirname "$DEST")")"
 check "a fresh install writes the file and nothing else" 'cmp -s "$T/new.sh" "$DEST" && [ "$(ls -A "$(dirname "$DEST")")" = "loop.sh" ]'
 
+# ---- prune_removed: what an earlier install put there and the repo no longer has ----------------
+fn="$(sed -n '/^prune_removed() {$/,/^}$/p' "$S/../install.sh")"
+check "prune_removed is found in install.sh" '[ -n "$fn" ]'
+eval "$fn"
+ok(){ echo "ok $1"; }; note(){ echo "note $1"; }
+rm -rf "$HOME/.claude" "$PRISTINE" "$BACKUP"
+SB="$T/src/bin"; ST="$T/src/templates"; DB="$HOME/.claude/desk/bin"; DT="$HOME/.claude/desk/templates"
+mkdir -p "$SB" "$ST/sub"
+for f in kept.mjs gone.mjs edited.mjs; do echo "$f v1" > "$SB/$f"; install_file "$SB/$f" "$DB/$f"; done
+echo "a" > "$ST/sub/kept.md"; echo "b" > "$ST/sub/gone.md"
+for f in sub/kept.md sub/gone.md; do install_file "$ST/$f" "$DT/$f"; done
+echo "mine" > "$DB/mine.mjs"
+echo "edited by you" >> "$DB/edited.mjs"
+rm "$SB/gone.mjs" "$SB/edited.mjs" "$ST/sub/gone.md"
+out="$(prune_removed "$SB" "$DB"; prune_removed "$ST" "$DT")"
+check "AC3: a script an earlier install put there that the repo no longer has is removed" '[ ! -e "$DB/gone.mjs" ] && [ ! -e "$PRISTINE/.claude/desk/bin/gone.mjs" ]'
+check "AC3: and the output names it" 'grep -qx "ok removed ~/.claude/desk/bin/gone.mjs (no longer in desk)" <<< "$out"'
+check "AC4: a removed script you had edited is saved to the backup first, and the output says where" \
+  '[ ! -e "$DB/edited.mjs" ] && grep -q "edited by you" "$BACKUP/.claude/desk/bin/edited.mjs" && grep -qx "note your edited ~/.claude/desk/bin/edited.mjs was saved to $BACKUP/.claude/desk/bin/edited.mjs" <<< "$out"'
+check "AC4: an unedited one is not backed up" '[ ! -e "$BACKUP/.claude/desk/bin/gone.mjs" ]'
+check "AC5: a file desk never installed is left alone" '[ "$(cat "$DB/mine.mjs")" = mine ] && ! grep -q mine.mjs <<< "$out"'
+check "a script the repo still has stays" 'cmp -s "$SB/kept.mjs" "$DB/kept.mjs"'
+check "AC6: a template the repo no longer has is removed the same way, and named" \
+  '[ ! -e "$DT/sub/gone.md" ] && [ -f "$DT/sub/kept.md" ] && grep -qx "ok removed ~/.claude/desk/templates/sub/gone.md (no longer in desk)" <<< "$out"'
+out="$(prune_removed "$SB" "$DB")"
+check "a second run has nothing left to remove" '[ -z "$out" ]'
+echo "x v1" > "$SB/runner.sh"; install_file "$SB/runner.sh" "$DB/runner.sh"; rm "$SB/runner.sh"
+out="$(prune_removed "$SB" "$DB" " runner.sh ")"
+check "a name it is told to keep stays" '[ -f "$DB/runner.sh" ] && [ -z "$out" ]'
+
 echo "$PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

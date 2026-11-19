@@ -134,10 +134,14 @@ export function prBodyIn(texts) {
 }
 
 // The steps a DONE marker names as waiting on its PR's merge: `follow_on=` then a one-line JSON array of
-// {"step": "<one line>", "row": "<the §3 key it needs>"} (row null where none says), before any said=,
-// which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and with an error
-// naming why where one is there but does not read.
+// {"step": "<one line>", "row": "<the §3 key it needs>", "after": "<gate>"} (row null where none says),
+// before any said=, which runs to the line's end. -> { steps, error }: steps [] with no follow_on=, and
+// with an error naming why where one is there but does not read.
 export const FOLLOW_ON_MAX = 500;
+// What a step waits on before needs-you lists it: the merge (the default, kept as no `after`), its merge
+// commit on the default branch (`main`), or on config §4 "Promotion ref" (`production`).
+const FOLLOW_GATES = ['merge', 'main', 'production'];
+const gateOf = (after) => (after == null || after === 'merge' ? {} : { after });
 export function followOnIn(done) {
   const s = String(done ?? '');
   const at = s.search(/\bfollow_on=/);
@@ -152,10 +156,19 @@ export function followOnIn(done) {
   if (!Array.isArray(list)) return { steps: [], error: 'not a JSON array' };
   const bad = list.find((x) => typeof x?.step !== 'string' || !x.step.trim() || (x.row != null && typeof x.row !== 'string'));
   if (bad !== undefined) return { steps: [], error: `an entry is not {"step": "…", "row": "…"}: ${JSON.stringify(bad)}` };
-  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null })), error: null };
+  const badGate = list.find((x) => x.after != null && !FOLLOW_GATES.includes(x.after));
+  if (badGate !== undefined) return { steps: [], error: `an entry's "after" is not one of ${FOLLOW_GATES.join(', ')}: ${JSON.stringify(badGate)}` };
+  return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
 export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
+// A kept PR status naming criteria its review left for after the merge that the pass has not made
+// follow-on steps of yet for PR `n` (pass.mjs post_merge_read).
+export const postMergeOwed = (t, n = t?.result?.pr) => (t?.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A merged ticket the pass still owes those steps: its batch is not finished, nor is it archived or
+// dropped by a new batch, until the pass has added them. Only a done ticket's PR is read (pass.mjs), so
+// a requeued one owes nothing until it is done again.
+export const postMergeUnmade = (t) => t?.state === 'done' && !!t.merged_at && t.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && postMergeOwed(t);
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

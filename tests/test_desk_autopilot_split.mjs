@@ -54,6 +54,15 @@ const REWRITTEN = [
   ['DS-589', 'and the disk on the first', 1], // the local database is a health check
   ['DS-669', 'and each triaged ticket\'s unknowns)', 1], // a held ticket's triage unknowns are asked too
   ['DS-673', '`pass.mjs` serialises it *within* your batch;', 1], // every repo uploads through the machine's one queue
+  ['DS-714', '| in the batch, admitted | holds the successor', 1], // a lane or size park holds what it blocks, and keeps its own blockers beside its park
+  ['DS-714', 'is **never held and never in `--deps`**', 1],
+  ['DS-719', '(recorded; released on its merge) node ~/.claude/desk/bin/queue.mjs admit ABC-125', 1], // backfill-holds is listed among the commands
+  ['DS-754', 'A pending check, or a Stage 7 worker it names, makes it wait.', 1], // a head not yet green installs the newest green commit before it
+  ['DS-755', 'say what that costs and ask. A released ticket\'s `collides_with` still', 1], // sharing a file holds nothing at admission: the per-file budget decides at spawn
+  ['#735', '`supervisor.mjs` runs passes from launchd with no model in the loop', 1], // the supervisor runs from a systemd user timer on Linux too
+  ['#735', '- sends one macOS notification, titled with the repo', 1], // notifications go out off macOS too (notify.mjs)
+  ['#735', 'macOS the row reads as `session`, since the supervisor needs launchd.', 1],
+  ['DS-793', 'never chained. Jira Blocks links win over the kinds', 1], // a chain holds each ticket behind every earlier one it shares a file with
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

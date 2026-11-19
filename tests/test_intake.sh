@@ -52,7 +52,7 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs queue-store.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -107,6 +107,8 @@ esac
 EOF
 printf '#!/bin/sh\nexit 1\n' > "$T/fakes/launchctl"
 printf '#!/bin/sh\nexit 0\n' > "$T/fakes/osascript"
+# No real notifier: on Linux notify.mjs tries notify-send, then WSL's powershell.exe, and neither may reach the desktop.
+printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell.exe"
 chmod +x "$T/fakes/"* "$T/bin/triage.sh" "$T/bin/merge-driver.sh"
 export PATH="$T/fakes:$PATH"
 
@@ -380,6 +382,13 @@ rec A-7 A '"blockers":[{"key":"Z","category":"indeterminate"}]'
 rec A-8 A; search A-8 A-7; out=$(intake)
 check "AC2: a finished batch gets a new standing batch" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-8.state)" = triaged ] && [ "$(qget tickets.Z)" = undefined ]'
 check "a blocker left in the finished batch holds its ticket in the new one" '[ "$(qget tickets.A-7.held_outside)" = Z ] && grep -q "^admitted: lane A, size S, waiting for Z, outside the batch" <<< "$(handed A-7)"'
+# DS-757: a session's batch whose finished tickets all moved to the archive is finished, not one with
+# no tickets yet: the next ticket starts a new standing batch.
+printf '{"version":3,"batch":"arch","supervised":false,"tickets":{}}\n' > "$DESK_QUEUE"
+printf '{"tickets":{"Z":{"key":"Z","state":"done","result":{"pr":7},"merged_at":"2026-11-16T10:00:00.000Z"}}}\n' > "${DESK_QUEUE%.json}.archive.json"
+rec A-61 A; search A-61; out=$(intake)
+check "DS-757 a batch whose tickets are all archived is finished: a new standing batch takes the ticket" 'grep -q "^standing-" <<< "$(qget batch)" && [ "$(qget tickets.A-61.state)" = triaged ]'
+rm -f "${DESK_QUEUE%.json}.archive.json"
 # Not finished: a failed ticket waits on the person, and a batch on a base has its gate to come.
 printf '{"version":1,"batch":"f1","supervised":false,"tickets":{"Z":{"key":"Z","state":"failed"}}}\n' > "$DESK_QUEUE"
 rec A-6 A; search A-6; out=$(intake)
@@ -541,7 +550,7 @@ check "DS-300 AC4: the child is triaged again in its feature batch, on that batc
 mkdir -p "$NS/triage"; printf '{"ticket":"X-2","files_in_scope":["src/shared.js"]}\n' > "$NS/triage/X-2.json"
 rec X-5 A '"epic":{"key":"X-1","summary":"a feature"},"files_in_scope":["src/shared.js"],"blockers":[{"key":"X-4","category":"new"}]'
 out=$(admit X-5); rc=$?
-check "DS-300 AC4: a child is held behind its blocker there and behind an in-flight child it collides with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4|X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4, X-2$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
+check "DS-300 AC4 DS-755 AC8: a child is held behind its blocker there, and not behind an in-flight child it shares a file with" '[ $rc -eq 0 ] && [ "$(nget tickets.X-5.state)" = parked ] && [ "$(nget tickets.X-5.held_by)" = "X-4" ] && [ "$(nget tickets.X-5.collides_with)" = "X-2" ] && grep -q "into feature batch X-1 (lane A, size S), held behind X-4$" <<< "$out" && [ "$(cat "$DESK_QUEUE")" = "$before" ]'
 # In feature mode, X-2 is the spine: a child sharing nothing with it still waits for it.
 node -e 'const f=require("fs"),p=process.argv[1],q=JSON.parse(f.readFileSync(p,"utf8")); q.feature=true; q.spine="X-2"; f.writeFileSync(p,JSON.stringify(q))' "$NQ"
 rec X-6 A '"epic":{"key":"X-1","summary":"a feature"}'
