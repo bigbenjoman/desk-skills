@@ -12,6 +12,7 @@ import { execFileSync } from 'node:child_process';
 import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
+import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -204,8 +205,9 @@ function passRunning() {
 // Read before the queue lock (the registry read can outlast another writer's wait for it), for the
 // ticket `requeue` names on the command line, as { key, session, park }.
 let exitedPark = null;
-// Read before the queue lock too, for the ticket `handback` names: { key, worktree, pr, fetchError },
-// its own open PR (handoff.mjs openPrOf) and whether its head could be fetched.
+// Read before the queue lock too, for the ticket `handback` names: { key, worktree, branch, recordedPr,
+// pr, fetchError }, its own open PR (handoff.mjs openPrOf), whether its head could be fetched, and the
+// queue fields that chose it, checked again under the lock.
 let prePr = null;
 
 function requeue(q, key, { handedBack = false } = {}) {
@@ -302,8 +304,15 @@ function handback(q, key, note) {
   // queued one kept as a backup, unless the queued one holds commits the PR does not. The PR was read
   // and fetched before the queue lock (prePr).
   let repointed = '';
-  const pr = prePr?.key === key && prePr.worktree === t.worktree ? prePr.pr : null;
-  const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr, fetchError: prePr?.fetchError });
+  const pre = prePr?.key === key ? prePr : null;
+  if (pre && (pre.worktree !== t.worktree || pre.branch !== t.branch || pre.recordedPr !== ownPr(t))) {
+    throw new Error(`${key}'s worktree, branch or recorded PR changed while its PR was being read, so nothing was handed back: run this again`);
+  }
+  // With the queued branch in place, a PR none recorded is taken only when its head branch names the
+  // ticket: a title can mention another ticket's key.
+  const found = pre?.pr ?? null;
+  const pr = found && (found.recorded || missing || prNames(key)({ headRefName: found.head })) ? found : null;
+  const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr, fetchError: pre?.fetchError });
   // A PR found only by naming the ticket does not outrank a queued branch that is in place with work of
   // its own: that one is handed back as before.
   const unrecordedOverWork = moved?.ahead && !missing && !pr.recorded;
@@ -685,7 +694,7 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.worktree && existsSync(t.worktree)) {
     const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
-    prePr = { key: args[0], worktree: t.worktree, pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
+    prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
   }
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();

@@ -132,6 +132,11 @@ const wt8 = fixture({ extra: true });
 queue(wt8);
 const r8 = handback();
 t('an unrecorded PR does not outrank a queued branch with work of its own', `${r8.status} ${queued().branch} ${git(wt8, 'branch', '--show-current')}`, '0 task/K-1-old task/K-1-old');
+const wt8b = fixture();
+prs([{ ...PR, number: 870, title: 'feat: K-2 builds on K-1', headRefName: 'feat/K-2-x' }]);
+git(join(wt8b, '..', 'origin.git'), 'branch', 'feat/K-2-x', 'task/K-1-pr');
+queue(wt8b);
+t('an unrecorded PR naming the ticket only in its title leaves a queued branch in place alone', `${handback().status} ${queued().branch} ${git(wt8b, 'branch', '--show-current')}`, '0 task/K-1-old task/K-1-old');
 
 // The PR's head has the queued branch's own name, but that branch is gone from the worktree: made again from origin.
 const wt9 = fixture({ queued: false });
@@ -145,7 +150,11 @@ const wt10 = fixture({ queued: false });
 git(wt10, 'branch', 'task/K-1-pr', 'origin/main');
 prs([PR]);
 queue(wt10);
-t('a local copy behind the PR is fast-forwarded to it', `${handback().status} ${git(wt10, 'rev-parse', 'HEAD') === git(wt10, 'rev-parse', 'origin/task/K-1-pr')}`, '0 true');
+t('a local copy behind the PR is brought up to it as it is checked out', `${handback().status} ${git(wt10, 'branch', '--show-current')} ${git(wt10, 'rev-parse', 'HEAD') === git(wt10, 'rev-parse', 'origin/task/K-1-pr')}`, '0 task/K-1-pr true');
+const wt10b = fixture({ queued: false });
+git(wt10b, 'checkout', '-q', '-b', 'task/K-1-pr', 'origin/main');
+queue(wt10b);
+t('a local copy behind the PR, already checked out, is fast-forwarded in place', `${handback().status} ${git(wt10b, 'rev-parse', 'HEAD') === git(wt10b, 'rev-parse', 'origin/task/K-1-pr')}`, '0 true');
 const wt11 = fixture({ queued: false });
 git(wt11, 'checkout', '-q', '-b', 'task/K-1-pr', 'origin/main');
 commit(wt11, 'a stray local commit');

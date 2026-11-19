@@ -162,9 +162,9 @@ export function handoffTarget({ worktree, branch }) {
   return null;
 }
 
-// The ticket's own open PR as { number, head }, or null. Its recorded PR (`pr`) when that one is open,
-// read by its number, else the one open PR whose title or head branch names `key`; a fork's PR is never
-// its own. `recorded` says which, since only a recorded PR outranks a queued branch with work of its own.
+// The ticket's own open PR as { number, head, recorded }, or null. Its recorded PR (`pr`) when that one
+// is open, read by its number, else the one open PR whose title or head branch names `key`; a fork's PR
+// is never its own. `recorded` says which, since an unrecorded one is only a PR naming the ticket.
 export function openPrOf({ key, pr = null, repo, worktree }) {
   const gh = (...a) => {
     try {
@@ -226,11 +226,13 @@ export function repointToPr({ worktree, branch, pr, fetchError = null }) {
     const dirty = run('status', '--porcelain', '--untracked-files=no');
     if (!dirty.ok || dirty.out) return { why: `its open PR #${pr.number} is on ${pr.head}, but its worktree ${worktree} has uncommitted changes, so it was not re-pointed` };
   }
+  // One step each way, so a failure leaves the worktree where it was: a local copy behind the PR is
+  // reset to it as it is checked out (it holds nothing the PR lacks), and one already checked out is
+  // fast-forwarded in place.
   if (on !== pr.head) {
-    const moved = local ? run('checkout', '-q', pr.head) : run('checkout', '-q', '-b', pr.head, remote);
+    const moved = !local || behind ? run('checkout', '-q', '-B', pr.head, remote) : run('checkout', '-q', pr.head);
     if (!moved.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, which its worktree could not be moved onto (${last(moved)})` };
-  }
-  if (behind) {
+  } else if (behind) {
     const ff = run('merge', '-q', '--ff-only', remote);
     if (!ff.ok) return { why: `its open PR #${pr.number} is on ${pr.head}, and its worktree is on it, but could not be brought up to the PR (${last(ff)})` };
   }
