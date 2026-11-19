@@ -2471,8 +2471,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-546 AC2 done on a session item whose PR cannot be read refuses, naming why', `${db1.ok} ${db1.line} ${queueOf('mu546b').tickets['MB-1'].state}`,
     "false mu546b MB-1: could not read PR #931's state from GitHub (HTTP 502), so it is not recorded done and stays on your list. parked");
 
-  // DS-817: done on a session item reads its PR from pr_status, then from GitHub by its key, before
-  // recording it done with no PR.
+  // Done on a session item reads its PR from pr_status, then from GitHub by its key, before recording it
+  // done with no PR.
   put('mu817', { port: 5817, beat: 1, supervised: true, pattern: 'AA-[0-9]+', tickets: {
     // AA-88's shape: its open PR is known only from the last pass's pr_status.
     'AA-88': { ...parked('B', 60, CURL), pr_status: { pr: 192, state: 'OPEN', isDraft: true } },
@@ -2481,12 +2481,15 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'AA-91': parked('B', 30, CURL),
     // Its PR merged, then it was requeued and parked again: that merged PR is not its PR now.
     'AA-92': { ...parked('B', 20, CURL), merged_at: '2026-11-01T10:00:00Z', result: { pr: 180 }, pr_status: { pr: 180, state: 'MERGED' } },
+    // An earlier round's PR closed unmerged, and a respawn cleared result and draft_pr but not pr_status.
+    'AA-93': { ...parked('B', 15, CURL), pr_status: { pr: 181, state: 'CLOSED' } },
+    'AA-94': { ...parked('B', 10, CURL), pr_status: { pr: 182, state: 'CLOSED' } },
   } });
-  const gh817 = { 192: 'OPEN', 193: 'OPEN', 180: 'MERGED' };
+  const gh817 = { 192: 'OPEN', 193: 'OPEN', 194: 'OPEN', 180: 'MERGED', 181: 'CLOSED', 182: 'CLOSED' };
   const searched = [];
   const reads817 = { ...reads, ticket: () => 'indeterminate',
     pr: (_r, n) => ({ v: gh817[n] ? { state: gh817[n], mergedAt: gh817[n] === 'MERGED' ? '2026-11-01T10:00:00Z' : null, isDraft: gh817[n] === 'OPEN' } : null, err: gh817[n] ? '' : 'no such PR' }),
-    open: (_r, key) => { searched.push(key); return key === 'AA-91' ? { pr: null, err: 'HTTP 502' } : { pr: key === 'AA-89' ? 193 : null, err: '' }; } };
+    open: (_r, key) => { searched.push(key); return key === 'AA-91' ? { pr: null, err: 'HTTP 502' } : { pr: key === 'AA-89' ? 193 : key === 'AA-94' ? 194 : null, err: '' }; } };
   const q817 = () => queueOf('mu817').tickets;
   const a1 = N.record({ word: 'mu817', ticket: 'AA-88', action: 'done', reads: reads817 });
   t('DS-817 AC1 done on a ticket whose open PR is only in pr_status refuses, naming it, and it stays on the list',
@@ -2508,14 +2511,26 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const a5 = N.record({ word: 'mu817', ticket: 'AA-92', action: 'done', reads: reads817 });
   t('DS-817 a PR merged before a requeue is not taken from pr_status: it searches, and records no PR',
     `${a5.ok} ${searched.includes('AA-92')} ${q817()['AA-92'].state} ${/it has no PR/.test(q817()['AA-92'].result?.summary)}`, 'true true done true');
-  // GitHub's search is fuzzy: only a PR whose title or branch names the key itself counts.
+  const a6 = N.record({ word: 'mu817', ticket: 'AA-93', action: 'done', reads: reads817 });
+  t('DS-817 a PR in pr_status that GitHub shows closed unmerged is passed over: it searches, and records no PR',
+    `${a6.ok} ${searched.includes('AA-93')} ${q817()['AA-93'].state} ${/it has no PR/.test(q817()['AA-93'].result?.summary)}`, 'true true done true');
+  const a7 = N.record({ word: 'mu817', ticket: 'AA-94', action: 'done', reads: reads817 });
+  t('DS-817 AC2 a closed PR in pr_status does not hide the open one naming its key',
+    `${a7.ok} ${a7.line} ${q817()['AA-94'].state}`,
+    'false mu817 AA-94: GitHub shows PR #194 unmerged, still a draft, so it is not recorded done and stays on your list. Say done once it has merged. parked');
+  // Every open PR is read, not a text search, which never reads a branch; only a PR whose title or
+  // branch names the key itself counts.
+  const ghLogAt = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8').length : 0;
   writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([
     { number: 201, title: 'AA-890 something else', headRefName: 'fix/AA-890-other' },
     { number: 202, title: 'Fix the widget (AA-89)', headRefName: 'fix/widget' },
     { number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' },
   ]));
   t('DS-817 AC2 the open PR found by key is the newest whose title or branch names the key', JSON.stringify(N.READS.open({ slug: 'acme__mu817' }, 'AA-89')), '{"pr":202,"err":""}');
+  t('DS-817 AC2 the open PRs are listed whole, not searched by text', /pr list .*--state open/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)) && !/--search/.test(readFileSync(GH_LOG, 'utf8').slice(ghLogAt)), true);
   t('DS-817 AC2 a PR whose title and branch name another key is not taken', N.READS.open({ slug: 'acme__mu817' }, 'AA-88').pr, null);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify(Array.from({ length: 500 }, (_, i) => ({ number: i + 1, title: 'x', headRefName: `b${i}` }))));
+  t('DS-817 an open-PR list that may be cut short is a failure, not no PR', /cut short/.test(N.READS.open({ slug: 'acme__mu817' }, 'AA-89').err), true);
   writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 200, title: 'Unrelated', headRefName: 'fix/AA-89-widget' }]));
   t('DS-817 AC2 a PR whose branch alone names the key is found', N.READS.open({ slug: 'acme__mu817' }, 'AA-89').pr, 200);
   rmSync(join(GH_PRS, 'list-open.json'));
