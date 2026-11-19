@@ -13,6 +13,7 @@ read beyond the script:
 - **Anything else stays the user's**: a row short of `yes` is never run, and a step that failed when
   you ran it is theirs too, with what you saw.
 
-When every step is covered or ran clean, `record` the item `done` without asking, and say how each
-step was settled. Otherwise ask. Offer `done` as recommended where the PR's evidence covers what is
-left, and say in the question which steps you settled and how.
+When every step ran clean, `record` the item `done` without asking, and say what each run showed.
+Otherwise ask, and say in the question which steps you settled and how. Where the PR's evidence
+covers every step you did not run clean, offer `done` as recommended, naming the test or check: the
+user closes it on that evidence, never you.
