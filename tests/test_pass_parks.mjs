@@ -209,6 +209,8 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
     j([sets(opened), lines(opened, 'epic-line')]), j([[`unpromoted=${JSON.stringify({ 'DS-692': { ...base, pr: 12, state: 'red', since, promote: 12 } })}`], []]));
   const unread = drive(decideOutsideHolds, snap(48, recorded), { unpromoted: null });
   t('DS-811 a read that failed keeps what was recorded', j(sets(unread)), '[]');
+  const noLanded = drive(decideOutsideHolds, snap(48, recorded), { landed: null, unpromoted: () => { throw new Error('asked'); } });
+  t('DS-811 so does a landed read that failed, with nothing said', j([sets(noLanded), lines(noLanded, 'epic-line')]), '[[],[]]');
   const landed = drive(decideOutsideHolds, snap(48, recorded), { landed: true });
   t('DS-811 once it lands the record is dropped and the hold lifted', j(sets(landed)), j(['unpromoted=null', 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null']));
   t('DS-811 a dry run says it and writes nothing', j([sets(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base })), lines(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base }), 'epic-line')[0]?.startsWith('outside hold (dry run): DS-705')]), '[[],true]');

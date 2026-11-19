@@ -343,16 +343,17 @@ export function* decideOutsideHolds(s) {
       if (tickets[p] || ownEpic.includes(p) || epicLanded.includes(p) || awayDone.includes(p) || !done.has(p)) continue;
       if (!landed.has(p)) landed.set(p, yield { type: 'landed', key: p });
       if (landed.get(p) === true) { landedNow.push(p); continue; }
+      // A read that failed keeps what was recorded.
+      const kept = t.unpromoted?.[p];
+      if (landed.get(p) !== false) { if (kept) away[p] = kept; continue; }
       // Done a day or more with its code merged into another branch, never promoted: raised once, in needs-you.
       const since = Date.parse((blockers ?? []).find((b) => b?.key === p)?.resolved);
-      if (landed.get(p) !== false || !(s.now - since >= UNPROMOTED_AFTER_MS)) continue;
+      if (!(s.now - since >= UNPROMOTED_AFTER_MS)) continue;
       if (!unpromoted.has(p)) unpromoted.set(p, yield { type: 'unpromoted', key: p });
       const u = unpromoted.get(p);
       // `promote` is the promotion PR the person asked for in needs-you, kept across reads.
-      const asked = t.unpromoted?.[p]?.promote;
-      if (u) away[p] = { ...u, since: new Date(since).toISOString(), ...(asked != null ? { promote: asked } : {}) };
-      // A read that failed keeps what was recorded.
-      else if (t.unpromoted?.[p]) away[p] = t.unpromoted[p];
+      if (u) away[p] = { ...u, since: new Date(since).toISOString(), ...(kept?.promote != null ? { promote: kept.promote } : {}) };
+      else if (kept) away[p] = kept;
     }
     yield* raiseUnpromoted(t, away, s);
     const lifted = [...ownEpic, ...epicLanded, ...awayDone, ...landedNow, ...unlinked];
