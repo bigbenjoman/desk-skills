@@ -244,9 +244,10 @@ export function postMergeIn(body) {
 // own step as written, marked `from: 'review'` so the pass tells it from a step the worker declared.
 // POST_MERGE_STEP opens a step an older pass recorded with the criterion's name and needs before it,
 // which reviewStep drops.
-export const POST_MERGE_STEP = 'Check after the merge: ';
+const POST_MERGE_STEP = 'Check after the merge: ';
+const OLD_PREFIX = new RegExp(`^${POST_MERGE_STEP}.*? \\(needs [^)]*\\): `);
 export const fromReview = (s) => s?.from === 'review' || String(s?.step ?? '').startsWith(POST_MERGE_STEP);
-export const reviewStep = (step) => String(step ?? '').replace(/^Check after the merge: .*? \(needs [^)]*\): /, '');
+export const reviewStep = (step) => String(step ?? '').replace(OLD_PREFIX, '');
 const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
 export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: p.step, row: null, from: 'review',
   ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));

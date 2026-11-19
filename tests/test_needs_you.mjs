@@ -2041,8 +2041,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     `${doneMain.ok} ${queueOf('prod785').tickets['G-1'].follow_on_done ?? 'unset'} ${JSON.stringify(queueOf('prod785').tickets['G-1'].follow_on)}`, `true unset ${JSON.stringify([PROD])}`);
   g = byKey('prod785');
   t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1:production,follow:G-2:production');
-  t('DS-785 AC4 the listed production step says nothing about an unchecked gate',
-    /^G-2 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(g['follow:G-2:production']?.need ?? ''), true);
+  t('DS-785 AC4 DS-788 the listed production step says nothing about an unchecked gate, nor a date production fast-forwarded on, which git does not keep',
+    /^G-2 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(g['follow:G-2:production']?.need ?? ''), true);
   const doneProd = N.record({ word: 'prod785', ticket: 'follow:G-1:production', action: 'done' });
   t('DS-785 done on the last step records the ticket\'s follow-on run', `${doneProd.ok} ${typeof queueOf('prod785').tickets['G-1'].follow_on_done}`, 'true string');
 
@@ -2080,7 +2080,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-785 and while production does not have the promotion', Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
   git(f.root, 'update-ref', 'refs/remotes/origin/production', promo);
   t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
-    `${Object.keys(byKey('feat785')).join()} ${/^K-1 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
+    `${Object.keys(byKey('feat785')).join()} ${/^K-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
 
   // A promotion rebase-merged: its commit names no PR, and the child's own merge commit is rewritten, so
   // production is judged by the promotion's merge commit as recorded, which list's refresh reads.
@@ -2096,7 +2096,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const promoReads = [];
   N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
   t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
-    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production since \d{4}-\d\d-\d\d\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
+    `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
     'true true follow:R-1:production true');
   git(rb.root, 'update-ref', 'refs/remotes/origin/production', rb.merge);
   put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(rebased) });
@@ -2144,6 +2144,11 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-788 AC1 a production item opens with the day production first had the merge, one Check per step, an older review prefix dropped',
     byKey('dated788')['follow:Q-1:production']?.need,
     'Q-1 is on production since 2026-11-03. Check: open Osteopaths in the production portal. Check: open the relay log. Then say done.');
+  // A step's own closing period gives way to the line's, but a command's last `.` is kept.
+  const DOTS = [{ step: 'open the relay log.', row: null }, { step: 'run git add .', row: null }];
+  put('dated788', { ...cfg, port: 4793, tickets: { 'Q-2': merged(95, merge788, DOTS) } });
+  t('DS-788 a step ending a sentence gets one period, and one ending in a command keeps its dot',
+    byKey('dated788')['follow:Q-2']?.need?.replace(/^.*?\. Check/, 'Check'), 'Check: open the relay log. Check: run git add . Then say done.');
 }
 
 // A feature batch's promotion PR still red once its check tries are spent (pass.mjs

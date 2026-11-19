@@ -847,7 +847,7 @@ function outAt(q, t) {
 }
 // Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
 // saying why a gate was taken as held without being checked. A production gate read as held adds
-// `on: 'production'` and `at`, when production first had the commit (its committer date). A gate is git reachability in the repo
+// `on: 'production'`, and `at` where a commit of production's own took it in: that commit's date. A gate is git reachability in the repo
 // root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
 // a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
 // (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
@@ -911,10 +911,11 @@ function gateHeld(r, t, s) {
   const prod = commit(ref.ref);
   if (!prod) return unread(`production (\`${ref.ref}\`)`);
   if (!within(landed, prod)) return wait;
-  // Production has had it since the oldest commit on its first-parent line that holds `landed`.
+  // Production has had it since the oldest commit on its first-parent line that holds `landed`. Where that
+  // is `landed` itself, production was fast-forwarded to it, and git keeps no date for that: none is given.
   const lines = (x) => String(x ?? '').split('\n').filter(Boolean);
   const line = new Set(lines(git(['rev-list', '--first-parent', '-n', '2000', prod])));
-  const entry = [landed, ...lines(git(['rev-list', '--ancestry-path', `${landed}..${prod}`])).reverse()].find((c) => line.has(c));
+  const entry = line.has(landed) ? null : lines(git(['rev-list', '--ancestry-path', `${landed}..${prod}`])).reverse().find((c) => line.has(c));
   const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
   return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
@@ -956,7 +957,11 @@ function followItem(r, t, { gate, ready, waiting }) {
     try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
     return ` (§3 ${row} is "${v}")`;
   };
-  const checks = ready.map(({ s }) => ` Check: ${reviewStep(one(s.step)).replace(/[\s.]+$/, '')}${rowSaid(s.row)}.`).join('');
+  // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
+  const checks = ready.map(({ s }) => {
+    const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
+    return ` Check: ${said}${said.endsWith('.') ? '' : '.'}`;
+  }).join('');
   const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
   const n = ready.length;
   const m = waiting.length;
