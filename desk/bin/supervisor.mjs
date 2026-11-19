@@ -628,6 +628,9 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const every = Number(installedInterval(slug));
   // An answer recorded while the pass runs is after it started, so it still ends the idle it reports.
   const startedAt = new Date().toISOString();
+  // The pass reads its time from it, so a read it records is at most the interval before the pass the
+  // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
+  env.DESK_PASS_AT = startedAt;
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });

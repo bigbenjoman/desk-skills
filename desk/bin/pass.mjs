@@ -3305,7 +3305,7 @@ const epicMerged = (qO, key) => {
 const inOtherRepo = (key) => { const a = E.repoPlacement(triageRec(key)?.repository); return !!a && !a.unknown; };
 runSteps({
   name: 'outside holds',
-  snapshot: () => ({ ...holdsSnapshot({ defaultBranch: DEFAULT_BRANCH, repoDefault: REPO_DEFAULT, now: Date.now() }), q: queue() }),
+  snapshot: () => ({ ...holdsSnapshot({ defaultBranch: DEFAULT_BRANCH, repoDefault: REPO_DEFAULT, now: Date.parse(process.env.DESK_PASS_AT ?? '') || Date.now() }), q: queue() }),
   decide: decideOutsideHolds,
   handlers: {
     ...EPIC_HANDLERS,

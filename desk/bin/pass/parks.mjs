@@ -310,10 +310,11 @@ export function* decideOutsideBlockers(s) {
 // ticket held outside its batch, so lifting the last blocker releases it here. A ticket parked at
 // triage for its own reason (triagePark) loses only the hold: its park stays, and nothing spawns it.
 //
-// Whether a blocker landed, or landed through its epic PR, can read GitHub, so a pass asks once per
-// blocker however many tickets wait on it, and asks for a ticket's blockers at most once every
-// IDLE_RECHECK_MS (outside_read): a busy batch passes every tick, and an idle one rechecks on that
-// interval (supervisor.mjs), so a blocker that lands is seen within it either way.
+// Whether a blocker landed reads GitHub, so a pass asks it once per blocker however many tickets wait
+// on it, and for a ticket's blockers at most once every IDLE_RECHECK_MS (outside_read): a busy batch
+// passes every tick, and an idle one rechecks on that interval (supervisor.mjs), so a blocker that
+// lands is seen within it either way. Whether an epic landed through its epic PR reads the batches on
+// disk, and GitHub only for an archived one whose merge nothing recorded: it is asked once per pass.
 //
 // The snapshot: tickets, epic, triage (as for person-step holds), defaultBranch (the batch's base),
 // repoDefault (the repo's default branch), now, dry.
@@ -328,21 +329,22 @@ export function* decideOutsideHolds(s) {
     const blockers = rec?.blockers;
     const done = new Set((blockers ?? []).filter((b) => b?.category === 'done' && !closedUnlanded(b)).map((b) => b.key));
     const unlinked = Array.isArray(blockers) ? outside.filter((p) => !tickets[p] && !ownEpic.includes(p) && !blockers.some((b) => b?.key === p)) : [];
-    // A minute short of the interval: the read falls partway through the pass the batch went idle on,
-    // so the pass its recheck starts comes a little under the interval after it.
-    const recent = !!t.outside_read && s.now - Date.parse(t.outside_read) < IDLE_RECHECK_MS - 60_000;
+    // `now` is when the supervisor started the pass (DESK_PASS_AT), the same clock its idle recheck
+    // counts from, so the pass that recheck starts is a whole interval after the last read.
+    const recent = !!t.outside_read && s.now - Date.parse(t.outside_read) < IDLE_RECHECK_MS;
     let read = false;
-    // The answer for blocker p, asked only where no ticket asked it this pass and this one's were not
-    // read within the interval; undefined when not asked.
+    // The answer for blocker p, asked only where no ticket asked it this pass, and whether it landed
+    // only where this ticket's were not read within the interval; undefined when not asked.
     function* ask(type, p) {
-      if (!answers[type].has(p)) { if (recent) return undefined; answers[type].set(p, yield { type, key: p }); }
-      read = true;
+      if (!answers[type].has(p)) { if (recent && type === 'landed') return undefined; answers[type].set(p, yield { type, key: p }); }
+      if (type === 'landed') read = true;
       return answers[type].get(p);
     }
     // An epic whose own batch (this one, or the batch named for it) landed its base through its epic
-    // PR, whatever Jira says: the epic itself is never transitioned.
+    // PR: the epic itself is never transitioned, so this is asked of a blocker not Done in Jira. One
+    // Done is asked only whether it landed, which finds its epic PR too, so each blocker costs one read.
     const epicLanded = [];
-    for (const p of outside) if (!tickets[p] && !ownEpic.includes(p) && (yield* ask('epic-merged', p))) epicLanded.push(p);
+    for (const p of outside) if (!tickets[p] && !ownEpic.includes(p) && !done.has(p) && (yield* ask('epic-merged', p))) epicLanded.push(p);
     // A blocker whose Jira Repository is another configured repo lands there, never on this base, so
     // Done in Jira alone lifts it.
     const awayDone = [];
