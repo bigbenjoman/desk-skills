@@ -43,8 +43,20 @@ let out = run('no', ['feat', 'extra'], squash);
 t('no: a squash-merged branch is left, naming the row', out[0], 'left feat (merging it into main changes nothing): config §3 branch-delete is no');
 t('no: nothing is deleted', has('feat') && has('extra'), true);
 out = run('ask', ['feat'], squash);
-t('ask: it is named with the command to run once agreed', out[0], 'ready to delete feat (merging it into main changes nothing), config §3 branch-delete is ask: git branch -D feat');
+t('ask: it is named with the command to run once agreed, pinned to the tip checked', out[0], `ready to delete feat (merging it into main changes nothing), config §3 branch-delete is ask: git update-ref -d refs/heads/feat ${head}`);
 t('ask: and not deleted', has('feat'), true);
+// The pinned command refuses once the branch has moved, so an approval given for one tip never
+// deletes another.
+git('branch', 'moved', head);
+const asked = run('ask', ['moved'], squash)[0].split(': git ')[1].split(' ');
+git('checkout', '-q', 'moved'); commit('d.txt', 'd\n', 'later'); git('checkout', '-q', 'main');
+spawnSync('git', ['-C', R, ...asked], { env });
+t('ask: its command deletes nothing once the branch moved', has('moved'), true);
+// A branch a worktree has checked out is left.
+git('branch', 'inwt', head);
+git('worktree', 'add', '-q', join(T, 'wt'), 'inwt');
+out = run('merged', ['inwt'], squash);
+t('a branch checked out in a worktree is left, naming it', out[0].startsWith('left inwt (merging it into main changes nothing): it is checked out in ') && has('inwt'), true);
 out = [...run('merged', ['exact']), ...run('merged', ['feat', 'feat-backup', 'extra', 'gone'], squash)];
 t('merged: a branch at the merged head is deleted, its tip printed to restore it', out[0], `deleted exact (its tip is the head PR #7 merged; restore: git branch exact ${head})`);
 t('merged: a squash-merged branch is deleted though git branch -d would refuse it', out[1], `deleted feat (merging it into main changes nothing; restore: git branch feat ${head})`);

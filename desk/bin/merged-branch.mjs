@@ -3,10 +3,11 @@
 // the ticket's own branch and any backup branch it made (while rebasing, say). A branch qualifies only
 // when the PR has merged and the branch holds nothing the base lacks: its tip is the head that merged,
 // or merging it into the base changes nothing (a squash or rebase merge leaves no ancestry, so
-// `git branch -d` would refuse it). At branch-delete `merged` or `yes` each one that qualifies is
-// deleted with its tip printed, so `git branch <name> <sha>` restores it; at `ask` each is named with
-// the command to run once the person agrees; at `no` nothing is deleted. One that does not qualify is
-// left, saying why: deleting it is a question at any value.
+// `git branch -d` would refuse it), and no worktree has it checked out. At branch-delete `merged` or
+// `yes` each one that qualifies is deleted, pinned to the tip that was checked (`git update-ref -d`
+// refuses if the branch moved since), with that tip printed so `git branch <name> <sha>` restores it;
+// at `ask` each is named with that same pinned command to run once the person agrees; at `no` nothing
+// is deleted. One that does not qualify is left, saying why.
 //
 //   merged-branch.mjs <PR> <branch>... [--repo <owner/name>]   (the repo defaults to §0 GitHub repo)
 import { spawnSync } from 'node:child_process';
@@ -22,14 +23,19 @@ const lastLine = (r) => r.err.split('\n').pop() || r.out.split('\n').pop() || 'n
 
 // Why <branch> holds nothing <base> lacks, given merged PR <pr>, or null when it may hold work.
 export function heldInBase(branch, { pr, base, cwd }) {
-  const tip = sh('git', ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], cwd);
+  const git = (...a) => sh('git', a, cwd);
+  const tip = git('rev-parse', '--verify', '-q', `refs/heads/${branch}`);
   if (!tip.ok) return { missing: true };
   if (tip.out === pr.headRefOid) return { tip: tip.out, why: `its tip is the head PR #${pr.number} merged` };
-  const baseTree = sh('git', ['rev-parse', `${base}^{tree}`], cwd);
-  const tree = sh('git', ['merge-tree', '--write-tree', base, tip.out], cwd);
-  if (baseTree.ok && tree.ok && tree.out.split('\n')[0] === baseTree.out) return { tip: tip.out, why: `merging it into ${base} changes nothing` };
+  if (E.baseHolds(git, base, tip.out)) return { tip: tip.out, why: `merging it into ${base} changes nothing` };
   return { tip: tip.out, why: null };
 }
+// The worktree that has <branch> checked out, or null.
+const checkedOut = (branch, cwd) => {
+  const list = sh('git', ['worktree', 'list', '--porcelain'], cwd).out.split('\n\n');
+  const wt = list.find((w) => w.split('\n').includes(`branch refs/heads/${branch}`));
+  return wt ? wt.split('\n')[0].replace(/^worktree /, '') : null;
+};
 
 // One line per branch: deleted, ready to delete (ask), or left with the reason.
 export function tidy({ pr, branches, perm, base, cwd }) {
@@ -38,11 +44,14 @@ export function tidy({ pr, branches, perm, base, cwd }) {
     const h = heldInBase(b, { pr, base, cwd });
     if (h.missing) return `no local branch ${b}`;
     if (!h.why) return `left ${b} (${h.tip}): it holds work ${base} lacks, so deleting it is a question`;
+    const wt = checkedOut(b, cwd);
+    if (wt) return `left ${b} (${h.why}): it is checked out in ${wt}`;
+    const del = ['update-ref', '-d', `refs/heads/${b}`, h.tip];
     if (perm === 'merged' || perm === 'yes') {
-      const d = sh('git', ['branch', '-D', b], cwd);
-      return d.ok ? `deleted ${b} (${h.why}; restore: git branch ${b} ${h.tip})` : `left ${b}: git branch -D failed (${lastLine(d)})`;
+      const d = sh('git', del, cwd);
+      return d.ok ? `deleted ${b} (${h.why}; restore: git branch ${b} ${h.tip})` : `left ${b}: it could not be deleted at ${h.tip} (${lastLine(d)})`;
     }
-    if (perm === 'ask') return `ready to delete ${b} (${h.why}), config §3 branch-delete is ask: git branch -D ${b}`;
+    if (perm === 'ask') return `ready to delete ${b} (${h.why}), config §3 branch-delete is ask: git ${del.join(' ')}`;
     return `left ${b} (${h.why}): config §3 branch-delete is ${perm}`;
   });
 }

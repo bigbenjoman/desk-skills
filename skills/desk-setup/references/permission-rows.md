@@ -228,7 +228,7 @@ short of `yes`, unset included, is refused to the worker, which parks naming the
 | `local-reindex` | ask | a shared local index or cache (§4 Local services) reflects your change | it is shared: every session's copy is rebuilt (skip when §4 Local services is `none`) | no | — |
 | `tests-shared-db` | no | database-backed tests without a per-ticket DB | test setup that truncates or deletes wipes another session's data | ask | — |
 | `worktree-remove` | yes | disk back (~4GB per worktree) | untracked files, local state | ask | — |
-| `branch-delete` | merged | a merged ticket's local branch, and any backup branch it made, deleted with no question once its PR merged and the base holds all it has (`merged-branch.mjs`) | nothing the base lacks; each tip SHA is printed so `git branch <name> <sha>` restores it. At `yes`, `git branch -D` on any branch, discarding commits `-d` refused to | yes · ask · no | — (`merged-branch.mjs` reads the row and runs `git branch -D` itself) |
+| `branch-delete` | merged | a merged ticket's local branch, and any backup branch it made, deleted with no question once its PR merged and the base holds all it has (`merged-branch.mjs`) | nothing the base lacks; each tip SHA is printed so `git branch <name> <sha>` restores it. At `yes`, `git branch -D` on any branch, discarding commits `-d` refused to | yes · ask · no | `Bash(node ~/.claude/desk/bin/merged-branch.mjs *)`, written at `merged` as at `yes` (the script reads the row and deletes only what it clears) |
 
 ## Round 12 — other
 

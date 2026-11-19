@@ -13,4 +13,4 @@ saved before a rebase, say), the worktree removed first. At §3 `branch-delete` 
 branch-delete`) `merged` or `yes` it deletes each that holds nothing the base lacks, printing its tip
 to restore it; at `ask` it names each with the command, which you ask before running; at `no` it
 deletes nothing. Relay what it prints. A branch it leaves because it holds work the base lacks is a
-question at any value.
+question at `yes`, `merged` or `ask`; at `no` it stays.

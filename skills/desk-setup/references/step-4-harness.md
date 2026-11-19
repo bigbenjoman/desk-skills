@@ -49,6 +49,9 @@ python3 $H "${REPO_RULES[@]}" add "${TMPDIR:-/tmp}/desk-harness-plan-$SLUG.json"
 python3 $H "${REPO_RULES[@]}" list --markdown      # replaces the §3c table
 ```
 
+**`branch-delete` counts as granting at `merged` too**: its rule (`merged-branch.mjs`, which deletes
+only a merged ticket's branches the base holds) goes in the plan at `merged` as at `yes`.
+
 **`harness-rules.py` enforces where allows may go**: it writes an allow plan only to a
 `settings.local.json` inside a repo's own `.claude/` that git ignores there, and refuses a tracked
 or un-ignored file and any user-level file (exit 2, nothing written). Pass its report on: when only
