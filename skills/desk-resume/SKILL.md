@@ -14,6 +14,10 @@ The second half of a context handoff. When a session passes its handoff threshol
 SessionStart hook puts the handoff in the fresh session's context, but a hook cannot start a turn,
 so this command is the prompt that does.
 
+With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set, a session compacts on its own instead and is never asked
+for `/clear` or this command: after the compaction the hook tells it to read its handoff, and it
+carries on in the same turn. This command is still the way back in after a `/clear`.
+
 ## Steps
 
 1. **Find the handoff.** It is the one this session's context names in a line `desk handoff: read
