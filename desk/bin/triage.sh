@@ -298,9 +298,29 @@ if (l?.kind !== 'limit' || l.resumed) process.exit(1);
 console.error(`USAGE LIMIT: ${ticket} triage stopped at ${limitName(l.type)}${l.resetsAt != null ? `, which resets at ${resetText(l.resetsAt)}` : ''} (log: ${log})`);
 LIMIT_END
 }
+# A pass the API refused outright (HTTP 401 or 403, a Cloudflare page) is the login, not a limit:
+# usage-limit.mjs apiRefusal reads the log and says which status.
+refused() {
+  node --input-type=module - "$LOG" "$DESK_RUN_BIN" <<'REFUSED_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [log, bin] = process.argv.slice(2);
+const { apiRefusal } = await import(pathToFileURL(join(bin, 'usage-limit.mjs')).href);
+let text = '';
+try { text = readFileSync(log, 'utf8'); } catch { /* no log: not a refusal */ }
+const r = apiRefusal(text);
+if (!r) process.exit(1);
+console.log(r.why);
+REFUSED_END
+}
 
 if [ ! -f "$OUT" ]; then
   at_limit && exit 3
+  if REFUSED_WHY="$(refused)"; then
+    echo "FAIL: $TICKET produced no triage record: $REFUSED_WHY. That is the login, not the session limit: sign it in again, and if the call is still refused the API is turning away this machine's connection (log: $LOG)" >&2
+    exit 1
+  fi
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi
