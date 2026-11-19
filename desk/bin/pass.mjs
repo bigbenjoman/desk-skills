@@ -61,12 +61,13 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
+import { PACE_HELD, usageHeldText, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
@@ -1612,36 +1613,26 @@ const fresh = queue();
 const all = Object.values(fresh.tickets);
 const running = all.filter((r) => r.state === 'running');
 
-// Batch budget: the queue's `budget_usd`, else $AUTOPILOT_BATCH_BUDGET_USD, else config §3b, else none.
-// A positive number of USD or none/off/no cap. Anything else ("25 USD") holds every spawn rather than
-// reading as no cap: a typo must never silently remove a guard. Spend is reported only when a cap exists.
-const spent = all.reduce((n, r) => n + (Number(r.cost) || 0), 0);
-let cap = 0;
-let budgetBad = null;
+// Batch budget: the queue's `budget_usd`, else $AUTOPILOT_BATCH_BUDGET_USD, else config §3b, else none
+// (pass/eligibility.mjs decides what it holds).
+let BUDGET;
 try {
-  const b = fresh.budget_usd != null ? E.parseBudget(fresh.budget_usd, 'the queue\'s budget_usd') : E.batchBudget();
-  cap = b.off ? 0 : b.usd;
-} catch (e) { budgetBad = e.message; }
-if (budgetBad) personStall(`${budgetBad} — not spawning until it is fixed`);
-const overBudget = !!budgetBad || (cap > 0 && spent >= cap);
-if (cap > 0 && spent >= cap) personStall(`batch budget reached: $${spent.toFixed(2)} of $${cap} — not spawning anything further`);
+  BUDGET = fresh.budget_usd != null ? { raw: fresh.budget_usd, label: 'the queue\'s budget_usd' } : { raw: E.batchBudgetRaw(), label: E.BATCH_BUDGET_LABEL };
+} catch (e) { BUDGET = { error: e.message }; }
 
 // Config §3b "Worker models": each worker runs on its ticket's tier, or on the session default
 // when the row is `default`. A malformed row holds every spawn, the way a malformed budget does.
 let models = { off: true };
 let modelsBad = null;
 try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
-if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 // §3b "Check-in times": when the digest goes out. A row that does not read holds spawns, since the
 // questions a new worker parks would have no check-in to reach.
 let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
-if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
 // The health watchdog (health.mjs): a required sign-in, the free disk or the local database failing holds every new spawn.
 // The browser profile's login failing holds none: the upload queue runs no upload until it passes.
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
-for (const s of HEALTH.stalls) personStall(s);
 // The reviewer check passing, or not required, lifts every PR hold it made (gate_hold, below).
 if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; }
 // Weekly usage pacing (usage-pace.mjs): new spawns hold while 7-day usage is ahead of an even pace by
@@ -1664,8 +1655,6 @@ if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READI
     paceProbe = '; read by a probe call just now';
   } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
 }
-if (PACE.bad) personStall(`${PACE.bad} — not spawning until it is fixed`);
-else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on; fix tries still start${paceProbe})`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -1695,13 +1684,6 @@ const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
-if (lowMemory) {
-  report.stalled.push(availGB < GATE.hold
-    ? `memory: ${availGB.toFixed(1)}G available, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
-      `holding spawns (${running.length} running; a worker mid-suite will drain)`
-    : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
-      `(${running.length} running; a worker mid-suite will drain)`);
-}
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
 // test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
 // and none resumes into a stage that runs suites, since each would only join the queue. Every other
@@ -1716,7 +1698,6 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
-if (LOCK_QUEUE?.unread) report.stalled.push(LOCK_QUEUE.line);
 // Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
@@ -1808,58 +1789,37 @@ const alreadyFinished = (r) => {
   try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
 };
 
-// A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which
-// comes first, so neither of the two starts while the triage item asks.
-const inCycle = (r) => keysOf(r.cycle_link).length > 0;
-const eligibleBase = all.filter((r) =>
-  r.state === 'triaged' &&
-  (r.open_questions ?? 0) === 0 &&
-  !inCycle(r) &&
-  !collidesWithRunning(r));
-const cycleWaits = all.filter((r) => r.state === 'triaged' && inCycle(r));
-if (cycleWaits.length) report.stalled.push(`not spawning ${cycleWaits.map((r) => `${r.key} (linked in Jira as blocked by ${keysOf(r.cycle_link).join(', ')}, which ${keysOf(r.cycle_link).length === 1 ? 'is' : 'are'} held behind it)`).join(', ')}: which comes first is asked in needs-you`);
-const blockedByDone = eligibleBase.filter(alreadyFinished);
-// A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
-// new ticket.
-const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot'].includes(r.resume);
-const toHandoff = (r) => r.handoff === 'pending';
-const goesFirst = (r) => toResume(r) || toHandoff(r);
-// A worker stopped for a planned reboot is held until rebootReady lets it go.
-const rebootWaits = eligibleBase.filter((r) => r.resume === 'reboot' && rebootReady(r).wait);
-const eligible = eligibleBase.filter((r) => !alreadyFinished(r) && !rebootWaits.includes(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
-if (!maySpawn && eligible.length) {
-  personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
-    (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
-}
-// Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
-if (blockedByDone.length) {
-  personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
-    `if the re-run is deliberate: node ${join(SHOWN_BIN, 'queue.mjs')} requeue <TICKET>`);
-}
+// The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
+// tickets are this section's own, so a candidate is the same object the rest of the pass reads.
+let ELIGIBILITY = null;
+runSteps({
+  name: 'eligibility',
+  snapshot: () => ({
+    tickets: fresh.tickets, budget: BUDGET, modelsBad, checkin: CHECKIN, health: { stalls: HEALTH.stalls, holding: HEALTH.holding },
+    pace: { bad: PACE.bad, hold: PACE.hold, line: PACE.line }, paceProbe,
+    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo }, lockQueue: LOCK_QUEUE,
+    spawnGrant: { may: maySpawn, key: HEADLESS_KEY, perm: headlessPerm, queueBin: join(SHOWN_BIN, 'queue.mjs') },
+    maintHold: MAINT.hold, usageHold: USAGE_HOLD, probes: [...PROBES.values()].map((p) => p.why), pacingRow: E.CONFIG_ROWS['usage-pacing'].row,
+  }),
+  decide: decideEligibility,
+  handlers: {
+    ...PHASE_HANDLERS,
+    stall: (a) => personStall(a.line),
+    collides: (a) => collidesWithRunning(fresh.tickets[a.key]),
+    finished: (a) => alreadyFinished(fresh.tickets[a.key]),
+    'reboot-wait': (a) => rebootReady(fresh.tickets[a.key]).wait,
+    eligibility: (a) => { ELIGIBILITY = a; },
+  },
+  report,
+});
+const { eligible, spawnable, held, spawnHeld } = ELIGIBILITY;
 
 // ---- slots, and borrowing ----------------------------------------------------
-// Up to the batch's own number, as always. With config §3b "Borrow idle workers" on, the machine's
-// free slots are counted, from every repo's queue, and the workers started under one lock every
-// repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
-// machine has room, then above it up to the §3b cap into slots no other live batch has first claim
-// on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
-// repo (machineBudget), counted under the same lock when it can be taken. And the repo's §3b cap is
-// shared by all its batches (repoBudget).
+// The batch's own number, borrowing, and the machine and repo budgets (pass/eligibility.mjs
+// decideSlots). The workers are started under one lock every repo's pass shares, so two passes cannot
+// both take the last slot; the budgets are counted under it when it can be taken.
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
-const PACE_HELD = '7-day usage ahead of pace holds every spawn';
-const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
-if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${[...PROBES.values()].map((p) => p.why).filter(Boolean).join('; ') || 'not run'})`);
-const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
-  : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
-  : HEALTH.holding.length ? `a failing health check (${HEALTH.holding.join(', ')}) holds every spawn`
-  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
-  : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
-  : PACE.hold ? PACE_HELD : null;
-// Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
-// it starts within the worker count as any spawn does.
-const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
-const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
 let REPO_SLUG = null;
 try { REPO_SLUG = E.repoSlug(); } catch { /* outside a repo there are no batches */ }
 const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve(b.queue) !== resolve(QUEUE_FILE) && existsSync(b.queue));
@@ -1906,28 +1866,21 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
-const planFor = (workers, on = BORROW.on) => borrowPlan({
-  on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
-  others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
-});
-const plan = planFor(running.length);
-// This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
-const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
-// A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
-const wantedWorkers = Math.min(plan.slots, spawnable.length) || (gateFixDue || epicReviewDue || promotionChecksDue ? 1 : 0);
-const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: wantedWorkers, machine: MACHINE_CAP, queues: otherRepos });
-const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
-const REPO = repoBudget({
-  batch: E.batchName(), running: running.length + ownBaseFix, wanted: wantedWorkers,
-  last: fresh.last_start ?? null, cap: E.concurrencyLimits().cap, batches: repoBatches,
-});
-// A repo's batches share its cap only under the lock: without it two passes could each count the same
-// free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
-// starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
-const repoUnlocked = lockWhy != null && repoBatches.some((o) => o.error || o.live || o.running > 0);
-const slots = MAINT.hold || repoUnlocked ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
-const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
-const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${lockWhy}` : REPO.line;
+const SLOTS_SNAP = {
+  borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
+  others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
+  // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
+  ownBaseFix: fresh.base_fix?.running ? 1 : 0,
+  // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
+  baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
+  machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
+  repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
+  otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
+  batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
+};
+let SLOTS = null;
+runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
+const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine } = SLOTS;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2463,9 +2416,7 @@ const triageBrief = (t) => {
 // holds one of the batch's own number; the machine and repo budgets have counted it already. In a batch
 // of 1 it holds the batch's one worker, from the pass that starts it, and no ticket borrows a way round
 // that.
-const ticketWorkers = running.length + (baseFixLive ? 1 : 0);
-const ticketPlan = planFor(ticketWorkers, BORROW.on && !((baseFixLive || baseFix != null) && concurrency === 1));
-const ticketSlots = Math.min(slots, ticketPlan.slots);
+const { workers: ticketWorkers, plan: ticketPlan, slots: ticketSlots } = ticketSlotsOf(SLOTS_SNAP, slots, { baseFixLive, baseFixOn: baseFix != null });
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing

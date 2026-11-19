@@ -126,17 +126,20 @@ const runningIn = (q) => Object.values(q.tickets ?? {}).filter((t) => t?.state =
 //   running   this batch's running workers
 //   wanted    the slots this pass would otherwise fill
 //   queues    otherQueues()
+//   profiled  whether there is a machine profile, and capOf a repo's §3b cap by its slug: each read
+//             from the config unless given
 // -> { room, line }   room is Infinity with no machine total
-export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [] }) {
+export const repoCap = (slug) => E.concurrencyLimits(E.repoConfigValue(slug, 'concurrency')).cap;
+export function machineBudget({ running, wanted = 0, machine = machineCap(), queues = [], profiled, capOf = repoCap }) {
   if (machine == null) {
-    const why = E.machineProfile() != null ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
+    const why = (profiled ?? E.machineProfile() != null) ? 'the machine profile has no autopilot-concurrency' : 'no machine profile';
     return { room: Infinity, line: `machine budget: none — ${why}, so this repo uses its own §3b rows` };
   }
   let all = running;
   let why = '';
   for (const o of queues) {
     if (o.error) {
-      const counted = E.concurrencyLimits(E.repoConfigValue(o.slug, 'concurrency')).cap;
+      const counted = capOf(o.slug);
       why += `; ${queueName(o)}'s queue cannot be read (${o.error}), so it counts at its cap of ${workers(counted)}`;
       all += counted;
     } else all += runningIn(o.q);
