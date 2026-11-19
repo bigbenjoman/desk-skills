@@ -93,11 +93,12 @@ rc=$?
 summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
 check "install.sh exits 0" '[ $rc -eq 0 ]'
 check "summary has a Skipped (no terminal) block with the count" \
-  '[[ "$summary" == "Skipped (no terminal): 9 prompt(s)"* ]]'
+  '[[ "$summary" == "Skipped (no terminal): 10 prompt(s)"* ]]'
 for q in "Make one real codex call to prove it can answer?" \
          "Register the attribution hook in ~/.claude/settings.json (backed up first)?" \
          "Register the update notice in ~/.claude/settings.json (backed up first)?" \
          "Register the context handoff in ~/.claude/settings.json (backed up first)?" \
+         "Set compaction mode in ~/.claude/settings.json (backed up first)?" \
          "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" \
          "Install the missing plugins now, user scope?" \
          "Register desk's Playwright MCP as your user-level playwright server?" \

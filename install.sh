@@ -935,11 +935,12 @@ case "$rc" in
     ;;
 esac
 
-# Context handoff: one script on four events. Past config §2 "Handoff at context %" (default 45) the
+# Context handoff: one script on five events. Past config §2 "Handoff at context %" (default 45) the
 # session finishes its step and writes .handoffs/<date>.md; after /clear or a compaction the next
-# session is told to read it. Silent in repos with no desk config.
+# session is told to read it. With CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set, the session compacts on its own
+# instead of asking for /clear. Silent in repos with no desk config.
 HANDOFF_HOOK="$CLAUDE_DIR/hooks/desk-handoff.py"
-HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart PreCompact"
 install_file "$SRC/hooks/desk-handoff.py" "$HANDOFF_HOOK"
 chmod +x "$HANDOFF_HOOK"
 wrote "hook     ~/.claude/hooks/desk-handoff.py (script only; registering it is asked)"
@@ -959,6 +960,53 @@ case "$rc" in
       if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
       note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+    fi
+    ;;
+esac
+
+# Compaction mode for the handoff: with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in settings.json's env, Claude
+# Code compacts a session on its own and the handoff carries over without /clear. AUTOCOMPACT_PCT is
+# above §2's default 45, so the handoff is written before the compaction. A value already set is kept.
+AUTOCOMPACT_PCT=55
+# settings_env check|apply <name> <value>: exit 0 when <name> is already in settings.json's env, 1 when
+# not (apply then sets it), 2 when settings.json is unreadable.
+settings_env() {
+  python3 - "$SETTINGS" "$@" <<'PY'
+import json, os, sys
+path, mode, name, value = sys.argv[1:5]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            raw = f.read()
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        sys.exit(2)
+if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
+    sys.exit(2)
+if name in data.get("env", {}):
+    sys.exit(0)
+if mode == "check":
+    sys.exit(1)
+data.setdefault("env", {})[name] = value
+exec(os.environ["DESK_WRITE_JSON_PY"])
+write_json(path, data)
+PY
+}
+rc=0; settings_env check CLAUDE_AUTOCOMPACT_PCT_OVERRIDE "$AUTOCOMPACT_PCT" || rc=$?
+case "$rc" in
+  0) ok "compaction mode already set (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE)" ;;
+  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to set compaction mode" ;;
+  *)
+    note "Sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=$AUTOCOMPACT_PCT in settings.json's env: Claude Code then"
+    note "compacts a session at $AUTOCOMPACT_PCT% of its window and carries on, and the context handoff"
+    note "carries over through the compaction instead of asking you to /clear, then /desk-resume."
+    note "Keep §2 'Handoff at context %' below it. It applies to sessions started afterwards."
+    if confirm "Set compaction mode in ~/.claude/settings.json (backed up first)?"; then
+      backup_settings
+      if settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE "$AUTOCOMPACT_PCT"; then ok "set"; else warn "could not write ~/.claude/settings.json"; fi
+    else
+      note "not set: the handoff keeps asking for /clear. To set it later, re-run ./install.sh"
     fi
     ;;
 esac
