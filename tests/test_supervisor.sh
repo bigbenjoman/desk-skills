@@ -362,6 +362,22 @@ out=$(tick)
 check "DS-269 AC5 once a pass has run, the same answer wakes it no more" '[ "$(count "$T/pass.calls")" = 5 ]'
 queue true '{}' "$DONE" b5
 
+# ---- DS-815: an idle batch held only behind blockers in no batch rechecks on the timer too ---------
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+queue true '{}' '{"H":{"key":"H","state":"parked","held_by":"X-1","held_outside":"X-1","park":{"question":"held by orchestrator: blocked by X-1"}}}' b6
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-815 an idle batch held behind an outside blocker runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+sleep 4
+out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+check "DS-815 AC1 once the interval has passed, a batch held only behind an outside blocker runs a pass" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"H":{"key":"H","state":"parked","held_by":"A","park":{"question":"held by orchestrator: blocked by A"}}}' b7
+: > "$T/pass.calls"
+out=$(tick); sleep 4
+out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+check "DS-815 AC2 a batch held only behind blockers inside it runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+queue true '{}' "$DONE" b8
+
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)

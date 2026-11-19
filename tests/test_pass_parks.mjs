@@ -182,6 +182,11 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const away = drive(decideOutsideHolds, s, { 'other-repo': (a) => a.key === 'X-1', landed: () => { throw new Error('asked'); } });
   t('Done in another repo lifts it with no landed read', lines(away, 'epic-line')[0], 'outside hold: A: X-1 Done in Jira, in another repo; still held behind X-2');
   t('nothing lifted, nothing said', j(settles(drive(decideOutsideHolds, s))), '[]');
+  const both = { blockers: [rec.blockers[0], { key: 'X-2', category: 'done', resolution: 'Done' }] };
+  const three = { ...s, tickets: byKey(tk, { ...tk, key: 'B' }, { ...tk, key: 'C' }), triage: { A: both, B: both, C: both } };
+  const reads = [];
+  drive(decideOutsideHolds, three, { landed: (a) => { reads.push(a.key); return false; } });
+  t('DS-815 AC3 three tickets held behind the same two blockers ask GitHub once per blocker', j(reads), '["X-1","X-2"]');
 }
 
 // ---- merge holds ----
