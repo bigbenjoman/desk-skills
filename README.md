@@ -250,7 +250,9 @@ close. A merge driver still running for such a batch has nothing left to merge, 
 (one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
 `batch.mjs discard <EPIC>` removes one no ticket has started in. An epic's start that fails discards
 its batch with `--keep-triage`, which keeps the children's triage records, so admitting the epic again
-triages only the children with none; a child whose triage fails is tried once more after 60 seconds first.
+on the same branch within six hours triages only the children with none; a child whose triage fails is
+tried once more after 60 seconds first. `batch.mjs discard <EPIC>` on a slot holding only those records
+removes them, and `move-batch.mjs` clears them from the slot it moves into.
 `./install.sh` puts desk's scripts and templates in a release folder of their own,
 `~/.claude/desk/releases/<commit>/` (`<commit>-<time>` from a dirty checkout), and makes it live in one
 step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through

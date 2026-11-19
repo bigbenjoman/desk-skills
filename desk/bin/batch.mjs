@@ -8,7 +8,8 @@
 //   node batch.mjs discard <EPIC>          removes a batch no ticket has started in and the supervisor does
 //                                          not run: its queue and state folders, and its branch from origin
 //                                          when that holds no commit the default branch lacks;
-//                                          --keep-triage keeps its state's triage/ records
+//                                          --keep-triage keeps its state's triage/ records; on a slot
+//                                          holding only those, removes them
 //   node batch.mjs archive <EPIC>          the supervisor's archive check, once, now
 // Every refusal exits 11 (show the person) and changes nothing.
 //
@@ -26,7 +27,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promotedAt } from './batch-state.mjs';
-import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
+import { listBatches, onlyKeptTriage, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
@@ -95,7 +96,12 @@ const startedTicket = (t) => t.spawned_at != null || ['running', 'done', 'failed
 function discard(epic, { keepTriage = false } = {}, slug = E.repoSlug()) {
   checkName(epic);
   const b = named(slug, epic);
-  if (!b) refuse(`no batch ${epic} in this repo: nothing removed`);
+  if (!b) {
+    const left = E.batchPaths(slug, epic);
+    if (!onlyKeptTriage(left)) refuse(`no batch ${epic} in this repo: nothing removed`);
+    rmSync(left.state, { recursive: true, force: true });
+    return [`batch ${epic} had only the triage records an earlier start kept: removed ${left.state}`];
+  }
   let q;
   try { q = readQueue(b.queue); } catch (e) { refuse(`batch ${epic}'s queue cannot be read, so whether a ticket started cannot be told: nothing removed (${describeCrash(e)})`); }
   if (q.supervised === true) refuse(`batch ${epic} is handed to the supervisor: nothing removed. A batch it runs is archived once its work is promoted or abandoned`);

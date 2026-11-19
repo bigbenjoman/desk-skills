@@ -72,6 +72,13 @@ export function triageErrorClass(t) {
   return 'unknown';
 }
 
+// The children a start of the epic triaged in full, in its state's triage/kept.json ({KEY: {base, at}}),
+// whose records a later start of the same epic reuses. Only a triage.sh run that exited 0 is listed, so
+// a record it had not finished or had refused is never reused; one triaged on another base, or longer
+// ago than KEPT_TRIAGE_MS (its assignee or text may have changed since), is triaged again.
+const KEPT = 'kept.json';
+export const KEPT_TRIAGE_MS = 6 * 60 * 60 * 1000;
+
 // In a batch's state from its start until it is handed to the supervisor. A start killed in between
 // (the supervisor's intake timeout) never reaches its discard, so the next one finds this left behind
 // by a pid that has exited.
@@ -382,9 +389,9 @@ export const planQuestion = (epic, n, path, feature, ask = null) => `${FEATURE_P
 // its plan for the person. -> {batch, children, lines} or {why}; a `why` has left no batch behind, and
 // carries `limited`, the child's triage.sh run, when that triage stopped at a usage limit (exit 3).
 // `say` is called with each of `lines` as it happens, and as each child's triage starts and ends.
-// A child whose triage fails is run once more after `retryMs`, and a second failure is refused naming
-// its triageErrorClass.
-export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {}, triage = triageRun, retryMs = TRIAGE_RETRY_MS } = {}) {
+// A child whose triage fails is run once more after TRIAGE_RETRY_MS, and a second failure is refused
+// naming its triageErrorClass.
+export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say = () => {} } = {}) {
   const branch = rec?.branch;
   if (!branch) return { why: `its triage record names no branch for the feature batch: run /desk-autopilot ${key}` };
   const noBranch = ensureBranch(branch);
@@ -411,9 +418,12 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
   if (!children.length) return discard(`expand-parent named no children of ${key}`);
 
   const recs = {};
+  const keptPath = join(state, 'triage', KEPT);
+  const keptList = readJson(keptPath, {});
   for (const c of children) {
     const recPath = join(state, 'triage', `${c}.json`);
-    const kept = readJson(recPath, null);
+    const k = keptList[c];
+    const kept = k?.base === branch && Date.now() - Date.parse(k.at) < KEPT_TRIAGE_MS ? readJson(recPath, null) : null;
     if (kept) {
       say(`triage: kept ${c}'s record from an earlier start of batch ${key}`);
       recs[c] = kept;
@@ -424,21 +434,21 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
       const began = Date.now();
       say(`triage: started ${c} in batch ${key}`);
       // eslint-disable-next-line no-await-in-loop
-      t = await triage(c, env);
+      t = await triageRun(c, env);
       r = t.status === 0 ? readJson(recPath, null) : null;
       say(triageDone(c, r, Date.now() - began));
       // A usage limit does not lift in a minute, so it is never retried.
       if (r || t.status === 3 || tries > 1) break;
-      say(`triage: ${c} failed (${triageErrorClass(t)}), so it is tried once more in ${elapsed(retryMs)}`);
+      say(`triage: ${c} failed (${triageErrorClass(t)}), so it is tried once more in ${elapsed(TRIAGE_RETRY_MS)}`);
       // eslint-disable-next-line no-await-in-loop
-      await new Promise((res) => { setTimeout(res, retryMs); });
+      await new Promise((res) => { setTimeout(res, TRIAGE_RETRY_MS); });
     }
     if (!r) {
-      // A failed run can leave a record behind, which must not read as triaged when the epic is admitted again.
-      rmSync(recPath, { force: true });
       if (t.status === 3) return { ...discard(`child ${c} could not be triaged (${lastLine(t)})`), limited: t };
       return discard(`child ${c} could not be triaged, twice (${triageErrorClass(t)}: ${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
     }
+    keptList[c] = { base: branch, at: new Date().toISOString() };
+    writeFileSync(keptPath, `${JSON.stringify(keptList, null, 2)}\n`);
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));

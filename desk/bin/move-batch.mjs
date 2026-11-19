@@ -24,7 +24,7 @@ import { dirname, join } from 'node:path';
 import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { slotFor } from './batches.mjs';
+import { slotFor, onlyKeptTriage } from './batches.mjs';
 import { tryLockFile } from './dir-lock.mjs';
 import { writeQueueFile, archivePath } from './queue-store.mjs';
 
@@ -61,6 +61,7 @@ const slot = slotFor(q);
 if (slot.why) refuse(`the standing batch ${name} runs on base ${q.base}, but ${slot.why}, so it has no slot to move to: set its epic with queue.mjs set-batch epic=<KEY>, then run this again. Nothing was moved`);
 const epic = slot.name;
 const to = E.batchPaths(slug, epic);
+if (onlyKeptTriage(to)) rmSync(to.state, { recursive: true, force: true });
 const taken = [to.queue, to.state].filter((p) => existsSync(p));
 if (taken.length) refuse(`batch ${epic} already has ${taken.join(' and ')}: a repo holds one batch per ${slot.by}. Nothing was moved`);
 

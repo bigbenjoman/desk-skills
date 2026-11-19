@@ -71,7 +71,8 @@ EOF
 # Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
 # $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
 # It fails its first run while $T/recs/<KEY>.failonce exists, and every run on a login refusal while
-# $T/recs/<KEY>.authfails does. It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
+# $T/recs/<KEY>.authfails does, and leaves its record behind refused as malformed, as triage.sh can,
+# while $T/recs/<KEY>.badrec does. It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
 # `end <KEY>` in $T/triage.events. It stops at the usage limit in $T/recs/<KEY>.limit, or in a named
 # batch only, in $T/recs/<KEY>.batchlimit.
 cat > "$T/bin/triage.sh" <<EOF
@@ -84,6 +85,7 @@ trap 'echo "end \$1" >> "$T/triage.events"' EXIT
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
 [ -f "$T/recs/\$1.failonce" ] && { rm -f "$T/recs/\$1.failonce"; echo "FAIL: \$1 produced no triage record at \$DESK_AUTOPILOT_STATE/triage/\$1.json" >&2; exit 1; }
 [ -f "$T/recs/\$1.authfails" ] && { echo "FAIL: \$1 produced no triage record: HTTP 401. That is the login, not the session limit" >&2; exit 1; }
+[ -f "$T/recs/\$1.badrec" ] && { mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"; echo "FAIL: \$1 triage record is malformed" >&2; exit 1; }
 [ -f "$T/recs/\$1.limit" ] && { echo "[triage] reading \$1" >&2; echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.limit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 [ -n "\${DESK_BATCH:-}" ] && [ -f "$T/recs/\$1.batchlimit" ] && { echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.batchlimit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
@@ -1253,10 +1255,27 @@ check "DS-814 AC1: the retry waits 60 seconds unless overridden" '[ "$(env -u DE
 rec SA-1 A '"type":"Epic","branch":"feat/SA-1-auth"'; epicget SA-1; rec SA-2 A; rec SA-3 A; touch "$T/recs/SA-3.authfails"; printf 'SA-2\nSA-3\n' > "$T/children/SA-1"
 rm -f "$T/triage.calls"; out=$(admit SA-1 --by ben); rc=$?
 check "DS-814 AC2: a child whose triage fails twice stops the epic, naming the child and its error class" '[ $rc -eq 11 ] && [ ! -e "$EB/SA-1" ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SA-1 SA-2 SA-3 SA-3 " ] && grep -qx "not admitted SA-1: an epic, and its feature batch was not started: child SA-3 could not be triaged, twice (auth: FAIL: SA-3 produced no triage record: HTTP 401. That is the login, not the session limit); batch SA-1 discarded" <<< "$out"'
-check "DS-814 AC3: the discard keeps the triaged child's record, and leaves none for the failed one" '[ "$(ls "$ES/SA-1")" = triage ] && [ -f "$ES/SA-1/triage/SA-2.json" ] && [ ! -e "$ES/SA-1/triage/SA-3.json" ]'
+kept(){ node -e 'const k=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.keys(k).map((c)=>`${c}@${k[c].base}`).join(" "))' "$ES/$1/triage/kept.json"; }
+check "DS-814 AC3: the discard keeps the triage records, listing only the child triaged in full" '[ "$(ls "$ES/SA-1")" = triage ] && [ -f "$ES/SA-1/triage/SA-2.json" ] && [ "$(kept SA-1)" = "SA-2@feat/SA-1-auth" ]'
 rm -f "$T/recs/SA-3.authfails" "$T/triage.calls"; out=$(admit SA-1 --by ben); rc=$?
 check "DS-814 AC3: admitted again, only the child with no triage record is triaged" '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SA-1 SA-3 " ] && grep -qx "triage: kept SA-2.s record from an earlier start of batch SA-1" <<< "$out" && [ "$(eget SA-1 tickets.SA-2.held_by)" = SA-1 ]'
-classes=$(node --input-type=module -e "import { triageErrorClass as c } from '$B/epic-plan.mjs'; console.log([c({ status: null, signal: 'SIGTERM', stderr: '' }), c({ status: 124, stderr: '' }), c({ status: 1, stderr: 'FAIL: X triage record is malformed: bad lane. Triage it again.' }), c({ status: 1, stderr: 'FAIL: X not triaged: no subscription here, and triage never runs on another login' }), c({ status: 1, stderr: 'triage: claude exited 1' })].join(' '))")
+# A record triage refused is left on disk, as triage.sh leaves it, and is never reused: only a child
+# listed in kept.json is, and only while its listing is recent.
+rec SL-1 A '"type":"Epic","branch":"feat/SL-1-lint"'; epicget SL-1; rec SL-2 A; rec SL-3 A; touch "$T/recs/SL-3.badrec"; printf 'SL-2\nSL-3\n' > "$T/children/SL-1"
+rm -f "$T/triage.calls"; out=$(admit SL-1 --by ben); rc=$?
+check "DS-814 AC2: a child whose record is refused twice is named with the lint class" '[ $rc -eq 11 ] && grep -q "child SL-3 could not be triaged, twice (lint: FAIL: SL-3 triage record is malformed)" <<< "$out" && [ -f "$ES/SL-1/triage/SL-3.json" ] && [ "$(kept SL-1)" = "SL-2@feat/SL-1-lint" ]'
+node -e 'const f=process.argv[1], k=JSON.parse(require("fs").readFileSync(f,"utf8")); k["SL-2"].at=new Date(Date.now()-7*3600e3).toISOString(); require("fs").writeFileSync(f, JSON.stringify(k))' "$ES/SL-1/triage/kept.json"
+rm -f "$T/recs/SL-3.badrec" "$T/triage.calls"; out=$(admit SL-1 --by ben); rc=$?
+check "DS-814 AC3: a record refused, or listed longer ago than six hours, is triaged again" '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SL-1 SL-2 SL-3 " ] && ! grep -q "^triage: kept" <<< "$out"'
+# A slot holding only kept records is cleared by a discard, which refuses a slot with nothing in it.
+rec SK-1 A '"type":"Epic","branch":"feat/SK-1-left"'; epicget SK-1; rec SK-2 A; touch "$T/recs/SK-2.authfails"; printf 'SK-2\n' > "$T/children/SK-1"
+out=$(admit SK-1 --by ben); mkdir -p "$ES/SK-1/triage"
+out=$(cd "$T/repo" && node "$T/bin/batch.mjs" discard SK-1 2>&1); rc=$?
+check "DS-814 AC3: a discard removes a slot that holds only kept triage records" '[ $rc -eq 0 ] && [ ! -e "$ES/SK-1" ] && grep -q "had only the triage records an earlier start kept" <<< "$out"'
+out=$(cd "$T/repo" && node "$T/bin/batch.mjs" discard SK-1 2>&1); rc=$?
+check "DS-814 AC3: and refuses once nothing is left" '[ $rc -eq 11 ] && grep -q "no batch SK-1 in this repo: nothing removed" <<< "$out"'
+rm -f "$T/recs/SK-2.authfails"
+classes=$(node --input-type=module -e "import { triageErrorClass as c } from '$B/epic-plan.mjs'; console.log([c({ status: null, signal: 'SIGTERM', stderr: '' }), c({ status: 1, stderr: 'FAIL: X produced no triage record: claude timed out after 600s (log: /x.log)' }), c({ status: 1, stderr: 'FAIL: X triage record is malformed: bad lane. Triage it again.' }), c({ status: 1, stderr: 'FAIL: X not triaged: no subscription here, and triage never runs on another login' }), c({ status: 1, stderr: 'triage: claude exited 1' })].join(' '))")
 check "DS-814 AC2: a failed triage's class is read from how it ended and its last stderr line" '[ "$classes" = "timeout timeout lint auth unknown" ]'
 # Those triages leave the rest free to say they finished: SG-2 ends during SG-3's triage as SG-1's child,
 # and SJ-2 during SJ-1's triage again in the feature batch it joins.
