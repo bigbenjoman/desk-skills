@@ -17,7 +17,7 @@ const held = (key, by, fields = {}) => ({ key, state: 'parked', park: { question
 // action), else from READS. A plain decision runs through runPhase, a generator through runSteps.
 const READS = {
   'merge-park': null, check: { holds: false }, 'own-merged': { pr: null }, 'tail-after-merge': false, write: true, requeue: { ok: true, out: '' },
-  'lift-put-off': { ok: true }, 'read-blockers': { unread: [], why: '' }, triage: {}, 'epic-merged': false, 'other-repo': false, landed: false, 'landed-here': false,
+  'lift-put-off': { ok: true }, 'read-blockers': { unread: [], why: '' }, triage: {}, 'epic-merged': false, 'other-repo': false, landed: false, 'landed-here': false, unpromoted: null,
 };
 const WRITES = ['set', 'report', 'front', 'park', 'date-line', 'epic-line'];
 function drive(decide, s, answers = {}, steps = true) {
@@ -182,6 +182,36 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   const away = drive(decideOutsideHolds, s, { 'other-repo': (a) => a.key === 'X-1', landed: () => { throw new Error('asked'); } });
   t('Done in another repo lifts it with no landed read', lines(away, 'epic-line')[0], 'outside hold: A: X-1 Done in Jira, in another repo; still held behind X-2');
   t('nothing lifted, nothing said', j(settles(drive(decideOutsideHolds, s))), '[]');
+}
+
+// DS-811: a DS-705-shaped hold. The blocker is Done, and its PR merged into a feature base that has no
+// promotion PR. A day after it was resolved, the pass records the base on the ticket and says so once.
+{
+  const base = { branch: 'feat/DS-631-levers', pr: null, state: 'none' };
+  const tk = held('DS-705', 'DS-692', { held_outside: 'DS-692' });
+  const rec = (hours) => ({ blockers: [{ key: 'DS-692', category: 'done', resolution: 'Done', resolved: new Date(NOW - hours * 3600_000).toISOString() }] });
+  const snap = (hours, ticket = tk) => ({ tickets: byKey(ticket), epic: null, triage: { 'DS-705': rec(hours) }, defaultBranch: 'main', repoDefault: 'main', now: NOW, dry: false });
+  const asked = [];
+  const as = drive(decideOutsideHolds, snap(48), { unpromoted: (a) => { asked.push(a.key); return base; } });
+  const since = new Date(NOW - 48 * 3600_000).toISOString();
+  t('DS-811 AC1 a Done blocker not landed a day on is asked where its code is', j(asked), '["DS-692"]');
+  t('DS-811 AC1 the base and its promotion PR are recorded on the held ticket, which stays held',
+    j(sets(as)), j([`unpromoted=${JSON.stringify({ 'DS-692': { ...base, since } })}`]));
+  t('DS-811 AC1 and it is said once', lines(as, 'epic-line').join(),
+    'outside hold: DS-705: DS-692 Done since 2026-11-16, its code on feat/DS-631-levers with no promotion PR: raised once, in needs-you');
+  const young = drive(decideOutsideHolds, snap(23), { unpromoted: () => { throw new Error('asked'); } });
+  t('DS-811 AC2 Done under a day: nothing asked, recorded or said', j(young.filter((a) => !['epic-merged', 'other-repo', 'landed'].includes(a.type))), '[]');
+  const recorded = { ...tk, unpromoted: { 'DS-692': { ...base, since } } };
+  const again = drive(decideOutsideHolds, snap(48, recorded), { unpromoted: base });
+  t('DS-811 AC5 the next pass finds it again and raises nothing, nor writes', j([sets(again), lines(again, 'epic-line')]), '[[],[]]');
+  const opened = drive(decideOutsideHolds, snap(48, { ...recorded, unpromoted: { 'DS-692': { ...base, since, promote: 12 } } }), { unpromoted: { ...base, pr: 12, state: 'red' } });
+  t('DS-811 a promotion PR that changed state is written, the PR asked for kept, and not said again',
+    j([sets(opened), lines(opened, 'epic-line')]), j([[`unpromoted=${JSON.stringify({ 'DS-692': { ...base, pr: 12, state: 'red', since, promote: 12 } })}`], []]));
+  const unread = drive(decideOutsideHolds, snap(48, recorded), { unpromoted: null });
+  t('DS-811 a read that failed keeps what was recorded', j(sets(unread)), '[]');
+  const landed = drive(decideOutsideHolds, snap(48, recorded), { landed: true });
+  t('DS-811 once it lands the record is dropped and the hold lifted', j(sets(landed)), j(['unpromoted=null', 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null']));
+  t('DS-811 a dry run says it and writes nothing', j([sets(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base })), lines(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base }), 'epic-line')[0]?.startsWith('outside hold (dry run): DS-705')]), '[[],true]');
 }
 
 // ---- merge holds ----

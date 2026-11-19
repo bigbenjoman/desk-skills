@@ -28,7 +28,8 @@ const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
   `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n` +
-  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\nexit 0\n`, { mode: 0o755 });
+  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\n` +
+  `if [ "$1 $2" = "pr create" ]; then echo "https://github.com/$4/pull/931"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
@@ -2291,6 +2292,47 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
   q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+}
+
+// DS-811: a DS-705-shaped hold. The blocker is Done, and its PR merged into a feature base with no
+// promotion PR, recorded by the pass (unpromoted). Once it has been Done a day it is one held item,
+// offering promote or start.
+{
+  const BASE = 'feat/DS-631-levers-auto-trial-adopt';
+  const heldOn = (b, hours, more = {}) => ({ state: 'parked', lane: 'A', held_by: b, held_outside: b, park: { question: `held by orchestrator: blocked by ${b} — starts once ${b} is Done and on the base`, since: minsAgo(3000) },
+    unpromoted: { [b]: { branch: BASE, pr: null, state: 'none', since: minsAgo(hours * 60), ...more } } });
+  put('ds811', { port: 4811, beat: 1, supervised: true, pattern: 'DS-[0-9]+', tickets: {
+    'DS-705': heldOn('DS-692', 48), 'DS-706': heldOn('DS-693', 23), 'DS-707': heldOn('DS-694', 48), 'DS-708': heldOn('DS-695', 48),
+  }, triage: { 'DS-705': { blockers: [{ key: 'DS-692', category: 'done', resolution: 'Done', summary: 'Adopt the lever' }] } } });
+  const items = () => N.collect({ word: 'ds811' }).items;
+  const keys = () => items().map((i) => i.t.key).sort().join();
+  const i705 = items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692');
+  t('DS-811 AC1 one held item for the hold, naming the base and its promotion PR, offering promote first then start',
+    `${i705?.kind} ${/^DS-705 is held behind DS-692 \("Adopt the lever"\), Done since \d{4}-\d\d-\d\d, whose code merged into feat\/DS-631-levers-auto-trial-adopt, not main\. No PR promotes feat\/DS-631-levers-auto-trial-adopt into main, so nothing lands it\. Promote feat\/DS-631-levers-auto-trial-adopt, or start DS-705 without DS-692/.test(i705?.need ?? '')} ${i705?.actions.map(([a]) => a).join()}`,
+    'held true promote,start,not-now');
+  t('DS-811 AC2 a blocker Done under a day lists nothing, and no held ticket is listed on its own', keys(), 'unpromoted:DS-705:DS-692,unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  t('DS-811 AC5 listed again with nothing answered, it is still one item', items().filter((i) => i.t.key === 'unpromoted:DS-705:DS-692').length, 1);
+  const before = readFileSync(GH_LOG, 'utf8');
+  const p = N.record({ word: 'ds811', ticket: 'unpromoted:DS-705:DS-692', action: 'promote' });
+  const made = readFileSync(GH_LOG, 'utf8').slice(before.length);
+  const q705 = queueOf('ds811').tickets['DS-705'];
+  t('DS-811 AC3 promote with none open opens one from the base into main, ready for review',
+    `${p.ok} ${made.includes(`pr create --repo acme/ds811 --base main --head ${BASE} --title DS-631: promote ${BASE} to main`)} ${made.includes('--draft')}`, 'true true false');
+  t('DS-811 AC3 the dependant stays held, with the PR recorded as asked for', `${q705.state} ${q705.held_by} ${q705.unpromoted['DS-692'].pr} ${q705.unpromoted['DS-692'].promote}`, 'parked DS-692 931 931');
+  t('DS-811 AC3 and its item leaves the list while that PR is open', keys(), 'unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  const q2 = queueOf('ds811'); q2.tickets['DS-705'].unpromoted['DS-692'].state = 'red';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ds811', 'queue.json'), JSON.stringify(q2));
+  t('DS-811 it comes back once that PR goes red', /Promotion PR #931, feat\/DS-631-levers-auto-trial-adopt into main, is red, and DS-705 waits until it merges\./.test(items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692')?.need ?? ''), true);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 640, isDraft: true }]));
+  const mark = readFileSync(GH_LOG, 'utf8').length;
+  const named = N.record({ word: 'ds811', ticket: 'unpromoted:DS-707:DS-694', action: 'promote' });
+  rmSync(join(GH_PRS, 'list-open.json'));
+  t('DS-811 AC3 promote with one open names it and opens none',
+    `${named.ok} ${/promotion PR #640 \(.*\) is already open, as a draft; DS-707 stays held/.test(named.line)} ${readFileSync(GH_LOG, 'utf8').slice(mark).includes('pr create')}`, 'true true false');
+  const s = N.record({ word: 'ds811', ticket: 'unpromoted:DS-708:DS-695', action: 'start' });
+  const q708 = queueOf('ds811').tickets['DS-708'];
+  t('DS-811 AC4 start lifts that hold and queues it', `${s.ok} ${q708.state} ${q708.held_by ?? null} ${q708.held_outside ?? null} ${q708.unpromoted ?? null} ${q708.freed_from}`, 'true triaged null null null DS-695');
+  t('DS-811 AC4 and its item leaves the list', items().some((i) => i.t.key === 'unpromoted:DS-708:DS-695'), false);
 }
 
 // A hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as

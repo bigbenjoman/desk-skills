@@ -1663,6 +1663,22 @@ const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+// DS-811 AC6: held behind a blocker Done a day or more whose code sits on another branch, recorded by the
+// pass (unpromoted): the row and the ticket page show that branch's promotion PR state, never "no date".
+dated('s811', 5811, { hours: twelveHours, tickets: {
+  'DS-705': { ...heldBy('OUT-2'), held_outside: 'OUT-2', outside_blockers: [], unpromoted: { 'OUT-2': { branch: 'feat/DS-631-levers', pr: 640, state: 'red', since: new Date(FIXED - 48 * 3600_000).toISOString() } } },
+  'DS-706': { ...heldBy('OUT-3'), held_outside: 'OUT-3', outside_blockers: [], unpromoted: { 'OUT-3': { branch: 'feat/DS-631-levers', pr: null, state: 'none', since: new Date(FIXED - 48 * 3600_000).toISOString() } } } } });
+for (const [k, b] of [['DS-705', 'OUT-2'], ['DS-706', 'OUT-3']]) writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s811', 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: 'held outside', size: 'M', blockers: [{ key: b, category: 'done' }] }));
+{
+  const r811 = Q.loadRepos(FIXED).find((r) => r.name === 's811');
+  const row = (k) => lines(Q.repoScreen(r811, { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${k} `).test(x)) ?? '';
+  t('DS-811 AC6 its row shows the promotion PR state where the date would be, never "no date"',
+    ['DS-705', 'DS-706'].map((k) => `${/promo (red|none)/.exec(row(k))?.[0]} ${row(k).includes('no date')}`).join(' / '), 'promo red false / promo none false');
+  const page = lines(Q.ticketScreen(r811, 'DS-705', { now: FIXED, width: 120 }));
+  t('DS-811 AC6 its page says it ships once the branch is promoted, with the promotion PR, and why it waits',
+    `${page.find((l) => l.startsWith('Ships'))} | ${railText(Q.ticketScreen(r811, 'DS-705', { now: FIXED, width: 120 }))}`,
+    'Ships     not until feat/DS-631-levers is promoted  Promotion PR #640, red. | Moves without you: behind OUT-2, outside this batch: Done, its code on feat/DS-631-levers with promotion PR #640, red, asked whether to promote it.');
+}
 // DS-685 AC5: held behind a step only the person takes, in no batch (a Person-input label), it needs
 // the person and its row names the step; behind an ordinary ticket in no batch it still waits.
 dated('s685', 5685, { hours: twelveHours, tickets: { 'DS-685': { ...heldBy('OPS-7'), held_outside: 'OPS-7' }, 'DS-686': { ...heldBy('CODE-1'), held_outside: 'CODE-1' } } });

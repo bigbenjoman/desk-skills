@@ -169,6 +169,33 @@ export function landedOn(key, base) {
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
 }
 
+// A check run or status that failed, as gh's statusCheckRollup gives each.
+const RED = new Set(['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
+// Where ticket `key`'s code waits when landedOn finds it merged only into another branch: { branch, pr,
+// state }, `branch` the latest branch other than `base` a PR naming it merged into, and the open PR from
+// that branch into `base` as `pr` (its number, null for none) and `state`: none, draft, red (a check
+// failed) or open. null when no PR naming it merged elsewhere, or GitHub cannot be read.
+export function unpromotedBase(key, base) {
+  let repo;
+  try { repo = E.ghRepo(); } catch { return null; }
+  const list = (args) => {
+    const r = spawnSync('gh', ['pr', 'list', '--repo', repo, ...args, '--limit', '50'], { encoding: 'utf8' });
+    try { const v = r.status === 0 ? JSON.parse(r.stdout) : null; return Array.isArray(v) ? v : null; } catch { return null; }
+  };
+  const prs = list(['--state', 'merged', '--search', key, '--json', 'number,title,headRefName,baseRefName,mergedAt']);
+  if (!prs) return null;
+  const names = new RegExp(keyPattern(key));
+  const away = prs.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`) && p.baseRefName && p.baseRefName !== base)
+    .sort((a, b) => (Date.parse(b.mergedAt) || 0) - (Date.parse(a.mergedAt) || 0))[0];
+  if (!away) return null;
+  const open = list(['--state', 'open', '--head', away.baseRefName, '--base', base, '--json', 'number,isDraft,statusCheckRollup']);
+  if (!open) return null;
+  const p = open[0];
+  if (!p) return { branch: away.baseRefName, pr: null, state: 'none' };
+  const red = (p.statusCheckRollup ?? []).some((c) => RED.has(String(c?.conclusion ?? c?.state ?? '').toUpperCase()));
+  return { branch: away.baseRefName, pr: p.number, state: p.isDraft ? 'draft' : red ? 'red' : 'open' };
+}
+
 // How a triaged ticket's blockers hold it in a batch holding `tickets`, on `base`: `held`, those in
 // the batch not merged there, open in Jira or Done with a PR still to merge, released as they merge;
 // `outside`, those in no batch, open or Done with their code not yet on `base`, lifted by the pass once

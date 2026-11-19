@@ -140,6 +140,17 @@ export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ??
 // this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
 export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
 
+// A blocker outside the batch Done this long with its code merged only into another branch is raised to
+// the person (pass/parks.mjs `unpromoted`, needs-you's unpromoted item).
+export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
+// The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
+// into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
+export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
+  .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
+    && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
+// An unpromoted record's promotion PR: "no promotion PR", or "promotion PR #N, a draft" / ", open" / ", red".
+export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${u.state === 'draft' ? 'a draft' : u.state}`);
+
 // The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
 export function heldBehindOf(q, key) {
   const held = Object.values(q?.tickets ?? {}).filter((o) => o.key !== key && holdsKept(o));
