@@ -144,7 +144,8 @@ the PR is not held for them. `node verdict.mjs --post-merge <results>` prints th
 merge` section, naming each criterion, what it needs and its step: it goes in the review body under
 the report. Once the PR merges, the autopilot pass reads the line from the PR's last review and keeps
 each criterion as a follow-on step (`desk/bin/pass.mjs`), which `desk-needs-you` lists to the person
-as the ticket's follow item. A tagged criterion stays in `post_merge` on every later round.
+as the ticket's follow item. Where the worker already declared follow-on steps of its own (any but
+kept link steps and an earlier PR's criteria still unrun), those stand and no criterion is added: the two word one check differently. A tagged criterion stays in `post_merge` on every later round.
 
 ### A gap the person accepted
 

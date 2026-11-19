@@ -25,6 +25,12 @@ export function registryView(registry) {
 // read (registryView), and the time. A phase adds what else it reads.
 export const phaseSnapshot = ({ tickets, registry, now }) => ({ tickets, registry, now });
 
+// ---- the shared actions --------------------------------------------------------
+// The two actions every phase may return, each run by pass.mjs PHASE_HANDLERS: queue fields to set on a
+// ticket, and a line for the pass's report list `list` (with no key where the line is the batch's).
+export const set = (key, ...fields) => ({ type: 'set', key, fields });
+export const say = (key, list, line) => ({ type: 'report', ...(key ? { key } : {}), list, line });
+
 // ---- logins, subscriptions and usage holds ----------------------------------
 // A paused worker whose session is still live is quiet, not wedged, until this long after the reset.
 export const LIMIT_GRACE_MS = 30 * 60 * 1000;

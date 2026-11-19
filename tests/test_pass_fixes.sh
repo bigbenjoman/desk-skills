@@ -770,13 +770,15 @@ check "DS-490 AC1 and the pass logs which job and why" \
 check "DS-490 AC1 still stuck after its re-run: the person, naming the job, and nothing re-run again" \
   '! grep -q "^run rerun" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Cookie Notice\" is still in_progress though its run 9101 has completed, after it was re-run once at this head. Re-run job \"Cookie Notice\" of run 9101 on #761 once a runner can take it"'
 fbx 761 "$HB1" tests:SUCCESS "Slow job:PENDING:9102"
-printf '%s' '{"status":"in_progress","startedAt":"2026-11-03T07:00:00Z","jobs":[{"databaseId":91021,"name":"Slow job","status":"in_progress","startedAt":"2026-11-03T07:00:00Z"}]}' > "$T/fb/run-9102.json"
+# Started 3d 30m before now, so its age reads "3d 0h" for half an hour, whatever the clock says.
+slow_at=$(node -e 'console.log(new Date(Date.now() - (72 * 60 + 30) * 60000).toISOString())')
+printf '{"status":"in_progress","startedAt":"%s","jobs":[{"databaseId":91021,"name":"Slow job","status":"in_progress","startedAt":"%s"}]}' "$slow_at" "$slow_at" > "$T/fb/run-9102.json"
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-490 AC2 pending past the limit with its run in progress: the run is cancelled, so its check is re-run" \
   'grep -q "^run cancel 9102 --repo acme/widgets$" "$T/gh-calls" && [ "$(field V-1 undraft.call)" = "\"cancel\"" ] && grep -qx "Slow job" "$T/state-b/merge-driver/cancels-761-$HB1" && ! echo "$out" | grep -q "V-1: DRAFT"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-490 AC2 on a second expiry the person, naming the job, and nothing cancelled again" \
-  '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for .* with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
+  '! grep -q "^run cancel" "$T/gh-calls" && echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Slow job\" has been in_progress for 3d 0h with its run 9102 still in progress, past the 6h 0m limit, after it was re-run once at this head. Re-run job \"Slow job\" of run 9102 on #761"'
 
 # ---- DS-498: a draft's required check the runner killed (exit 137) is re-run once, with no fix worker,
 # then put to the person as the runner's. The fake gh also answers a job's annotations from $T/fb/notes-<job>.json.
