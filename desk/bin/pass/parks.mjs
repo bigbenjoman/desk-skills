@@ -310,11 +310,11 @@ export function* decideOutsideBlockers(s) {
 // ticket held outside its batch, so lifting the last blocker releases it here. A ticket parked at
 // triage for its own reason (triagePark) loses only the hold: its park stays, and nothing spawns it.
 //
-// Whether a blocker landed reads GitHub, so a pass asks it once per blocker however many tickets wait
-// on it, and for a ticket's blockers at most once every IDLE_RECHECK_MS (outside_read): a busy batch
-// passes every tick, and an idle one rechecks on that interval (supervisor.mjs), so a blocker that
-// lands is seen within it either way. Whether an epic landed through its epic PR reads the batches on
-// disk, and GitHub only for an archived one whose merge nothing recorded: it is asked once per pass.
+// Whether a blocker landed, or an epic landed through its epic PR (which reads GitHub for each archived
+// batch whose promotion merge nothing recorded), reads GitHub, so a pass asks each once per blocker
+// however many tickets wait on it, and for a ticket's blockers at most once every IDLE_RECHECK_MS
+// (outside_read): a busy batch passes every tick, and an idle one rechecks on that interval
+// (supervisor.mjs), so a blocker that lands is seen within it either way.
 //
 // The snapshot: tickets, epic, triage (as for person-step holds), defaultBranch (the batch's base),
 // repoDefault (the repo's default branch), now, dry.
@@ -333,11 +333,11 @@ export function* decideOutsideHolds(s) {
     // counts from, so the pass that recheck starts is a whole interval after the last read.
     const recent = !!t.outside_read && s.now - Date.parse(t.outside_read) < IDLE_RECHECK_MS;
     let read = false;
-    // The answer for blocker p, asked only where no ticket asked it this pass, and whether it landed
-    // only where this ticket's were not read within the interval; undefined when not asked.
+    // The answer for blocker p, asked only where no ticket asked it this pass, and only where this
+    // ticket's were not read within the interval; undefined when not asked.
     function* ask(type, p) {
-      if (!answers[type].has(p)) { if (recent && type === 'landed') return undefined; answers[type].set(p, yield { type, key: p }); }
-      if (type === 'landed') read = true;
+      if (!answers[type].has(p)) { if (recent) return undefined; answers[type].set(p, yield { type, key: p }); }
+      read = true;
       return answers[type].get(p);
     }
     // An epic whose own batch (this one, or the batch named for it) landed its base through its epic
