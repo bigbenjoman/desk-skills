@@ -3951,12 +3951,20 @@ for (const t of Object.values(qNow.tickets)) {
   // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
   // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first. An
   // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
-  // these steps. One write, so a refused one leaves the criteria owed to the next pass.
+  // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
+  // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
+  // this is written skips it whole, so the next pass adds the criteria to what done left.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
     const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
-    if (q('set', t.key, ...steps, `post_merge_read=${n}`) && later.length) {
+    // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+    const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
+    const ok = [stateOf(t), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(t)];
+    const args = ['set', t.key, ...steps, `post_merge_read=${n}`];
+    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
+    if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+    if (w.ok && !w.skipped && later.length) {
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
     }
   }

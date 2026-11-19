@@ -948,16 +948,17 @@ switch (cmd) {
     break;
   }
 
-  // The follow-on steps the person ran (needs-you's done on a follow item), by their text: each leaves
-  // follow_on, read here under the lock so a step the pass added since the item was listed is kept, and
-  // with none left the item is recorded run (follow_on_done=<at>).
+  // The follow-on steps the person ran (needs-you's done on a follow item), each by its text and gate
+  // (`after`, none for the merge): each leaves follow_on, read here under the lock so a step written since
+  // needs-you read it is kept, and with none left the item is recorded run (follow_on_done=<at>).
   case 'follow-ran': {
     const [key, json, at] = args;
     let ran;
     try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
-    if (!key || !Array.isArray(ran) || !ran.length || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of step texts> <ISO time>');
+    if (!key || !Array.isArray(ran) || !ran.length || ran.some((s) => typeof s?.step !== 'string') || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of {step, after}> <ISO time>');
     const t = ticket(q, key);
-    const left = (t.follow_on ?? []).filter((s) => !ran.includes(s?.step));
+    const same = (a, b) => a?.step === b.step && (a?.after ?? 'merge') === (b.after ?? 'merge');
+    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
     applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
     save(q);
     console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded run${left.length ? `, ${left.length} kept` : ''}`);

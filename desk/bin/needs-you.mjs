@@ -217,6 +217,8 @@ export const READS = {
     } catch { return null; }
   },
   git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
+  // origin fetched in `dir`, so its remote refs are as GitHub has them: true, or false when it failed.
+  fetch: (dir) => { try { execFileSync('git', ['-C', dir, 'fetch', '-q', 'origin'], { ...quiet, timeout: 120000 }); return true; } catch { return false; } },
   // The newest PR merged in repo `slug` whose branch names `key` (a title is not enough: another
   // ticket's PR often names it), read once per process: { pr, mergedAt }, or null, also when unread.
   merged: (slug, key) => {
@@ -330,7 +332,22 @@ function worktreeClean(r, t, reads) {
 // is recorded done, and a worktree hold found clean is dropped. -> one line for each.
 export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
   const lines = [];
-  for (const r of scopeOf(repos, word).scope.filter((x) => !x.error && x.q)) {
+  const scope = scopeOf(repos, word).scope.filter((x) => !x.error && x.q);
+  // A follow step gated on the default branch or production is judged from the repo root's remote refs
+  // and its PR's merge commit (gateHeld), which no pass keeps fresh once the batch is idle: origin is
+  // fetched once per repo root, and a PR whose merge was recorded with no merge commit (done here, a
+  // hand-ship) is read for it.
+  const fetched = new Set();
+  for (const r of scope) {
+    for (const t of followsOf(r).filter(gatedFollow)) {
+      const root = gitRootOf(r);
+      if (root && !fetched.has(root)) { fetched.add(root); reads.fetch?.(root); }
+      if (t.pr_status?.merge_commit || t.result?.pr == null || !reads.pr) continue;
+      const oid = reads.pr(r, t.result.pr, ',mergeCommit').v?.mergeCommit?.oid;
+      if (/^[0-9a-f]{40}$/.test(String(oid ?? ''))) queueCmd(r, ['set', t.key, `pr_status.merge_commit=${oid}`]);
+    }
+  }
+  for (const r of scope) {
     for (const x of needsRows(r)) {
       const t = x.t;
       if (worktreeBusy(t)) {
@@ -820,19 +837,29 @@ function outAt(q, t) {
 }
 // Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
 // saying why a gate was taken as held without being checked. A gate is git reachability in the repo
-// root, from its remote refs as the last fetch left them: the pass fetches origin each pass while a gated
-// step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
+// root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
+// a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
 // (pr_status.merge_commit), or for a batch child that a squash promotion left off it, the default
-// branch's commit from that promotion (outAt, give or take PROMOTION_SLACK_MS). A batch child's main
-// gate is its promotion's merge, which outAt has already seen. A commit not read yet (no merge commit
-// recorded, or one not fetched) waits, as the pass records and fetches it; only a ref the repo root does
-// not have at all, which no fetch brings, lists the step saying it was not checked.
-const PROMOTION_SLACK_MS = 2 * 60 * 1000;
+// branch's commit of the promotion PR that took it there (promotionOf), found by its PR number. A batch
+// child's main gate is its promotion's merge, which outAt has already seen. A commit not read yet (no
+// merge commit recorded, or one not fetched) waits, as list's refresh and the pass fetch and record it;
+// only what no fetch brings (a ref the repo root does not have, a promotion desk has no record of) lists
+// the step saying it was not checked.
+const gitRootOf = (r) => { const x = expandHome(repoConfigValue(r.slug, 'repo-root') ?? ''); return x && !isNone(x) ? x : null; };
+// The promotion PR that took batch child `t` to the default branch: the first merged after it (batch-state
+// promotedAt), as { pr }, or null where the batch keeps no record of one.
+function promotionOf(q, t) {
+  const own = Date.parse(t.merged_at);
+  const p = q?.promotion ?? {};
+  const all = [...(p.merged ?? []), ...(p.merged_at ? [{ pr: p.pr, merged_at: p.merged_at }] : [])]
+    .filter((m) => m?.pr != null && Date.parse(m.merged_at) > own).sort((a, b) => Date.parse(a.merged_at) - Date.parse(b.merged_at));
+  return all[0] ?? null;
+}
 function gateHeld(r, t, s) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
-  const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
-  if (!root || isNone(root)) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
+  const root = gitRootOf(r);
+  if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
   const git = (args) => READS.git(root, args);
   const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
   const within = (a, b) => git(['merge-base', a, b]) === a;
@@ -845,14 +872,19 @@ function gateHeld(r, t, s) {
   const promoted = !!t.promoted_at || viaBase(r.q, t);
   const own = t.pr_status?.merge_commit ? commit(t.pr_status.merge_commit) : null;
   let landed = own && within(own, main) ? own : null;
-  if (!landed && promoted) {
-    const at = Date.parse(outAt(r.q, t));
-    const when = (ms) => `${new Date(ms).toISOString().slice(0, 19).replace('T', ' ')} +0000`;
-    if (Number.isFinite(at)) landed = git(['rev-list', '-1', '--first-parent', `--since=${when(at - PROMOTION_SLACK_MS)}`, `--until=${when(at + PROMOTION_SLACK_MS)}`, main]) || null;
-  }
   if (after === 'main') return promoted || landed ? { held: true, note: null } : wait;
   const ref = promotionRef(repoConfigValue(r.slug, 'promotion-ref'));
   if (ref.why) return promoted || landed ? { held: true, note: `production could not be checked: ${ref.why}` } : wait;
+  if (!landed && promoted) {
+    // A squash promotion: the promotion PR's own commit on the default branch, by its number in the subject
+    // GitHub writes ("Merge pull request #N from …", or "<title> (#N)").
+    const p = promotionOf(r.q, t);
+    if (!p) return { held: true, note: `production could not be checked: desk keeps no record of the promotion PR that took ${pr} to the default branch` };
+    const n = String(p.pr);
+    const hit = String(git(['log', '--first-parent', '-n', '2000', '--format=%H%x09%s', main]) ?? '').split('\n')
+      .find((l) => { const sub = l.split('\t')[1] ?? ''; return sub.startsWith(`Merge pull request #${n} `) || sub.endsWith(`(#${n})`); });
+    landed = hit ? hit.split('\t')[0] : null;
+  }
   if (!landed) return wait;
   const prod = commit(ref.ref);
   return prod ? { held: within(landed, prod), note: null } : unread(`production (\`${ref.ref}\`)`);
@@ -866,9 +898,14 @@ function followSplit(r, t) {
   }
   return { ready, waiting };
 }
-const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
+// A merged PR whose kept status names criteria its review left for after the merge, which the pass has
+// not made follow-on steps yet (pass.mjs post_merge_read), is held off the list until it has: its item
+// would gain them after the person saw it, and done would take them as run unseen.
+const postMergeOwed = (t) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(t.result?.pr);
+const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t) && !postMergeOwed(t));
 const GATES = ['merge', 'main', 'production'];
 const gateOf = (s) => s?.after ?? 'merge';
+const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // A ticket's ready steps are one item per gate: `follow:<KEY>` for the merge's, `follow:<KEY>:<gate>` for
 // the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
 // gate that opens after the list was read is a new item rather than one taken as run unseen.
@@ -896,7 +933,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const later = m ? `. ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then` : '';
   // With production unchecked (no Promotion ref), its steps were judged by the default branch alone.
   const said = GATE_SAID[gate === 'production' && ready.some((x) => x.note) ? 'main' : gate];
-  return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s.step),
+  return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) ${said}, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
     actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
@@ -1822,8 +1859,8 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
-  // Done on a follow item records the steps it listed as run, under the queue lock, so the ticket's other
-  // steps (another gate's, or one the pass added since) are kept.
+  // Done on a follow item records the steps it lists as run, each by its text and gate, under the queue
+  // lock, so the ticket's other steps (another gate's, or one written since this read) are kept.
   if (i.kind === 'follow') {
     const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);

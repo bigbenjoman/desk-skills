@@ -2069,12 +2069,42 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('feat785', { ...feat, tickets: {} });
   const f = commits('feat785');
   const promoted = { batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1002, merged_at: new Date().toISOString() } } };
-  put('feat785', { ...feat, tickets: { 'K-1': merged(97, f.unpushed, [PROD, STAGING]) }, ...promoted });
-  t('DS-785 a squash-promoted child lists its main step and holds its production step until production has the promotion',
-    Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  // origin/production already has origin/main's head, but not the promotion, which origin/main lacks too.
   git(f.root, 'update-ref', 'refs/remotes/origin/production', f.merge);
-  t('DS-785 and lists its production step once production has the promotion, saying nothing unchecked',
+  put('feat785', { ...feat, tickets: { 'K-1': merged(97, f.unpushed, [PROD, STAGING]) }, ...promoted });
+  t('DS-785 a squash-promoted child lists its main step and holds its production step while the promotion is not on the default branch it read',
+    Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  // The promotion squashed: its commit sits on origin/main's head, without the child's own merge commit.
+  const promo = git(f.root, 'commit-tree', `${f.merge}^{tree}`, '-p', f.merge, '-m', 'Merge pull request #1002 from acme/feat/VPL-842');
+  git(f.root, 'update-ref', 'refs/remotes/origin/main', promo);
+  t('DS-785 and while production does not have the promotion', Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', promo);
+  t('DS-785 and lists its production step once production has the promotion PR\'s commit, saying nothing unchecked',
     `${Object.keys(byKey('feat785')).join()} ${/is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
+
+  // The same words under two gates are two steps: done on one keeps the other.
+  put('dup785', { ...cfg, port: 4789, tickets: {} });
+  const d = commits('dup785');
+  const twice = [{ step: 'check the portal', row: null, after: 'main' }, { step: 'check the portal', row: null, after: 'production' }];
+  put('dup785', { ...cfg, port: 4789, tickets: { 'L-1': merged(95, d.merge, twice) } });
+  const doneDup = N.record({ word: 'dup785', ticket: 'follow:L-1:main', action: 'done' });
+  t('DS-785 done on a main step keeps a production step worded the same', `${doneDup.ok} ${JSON.stringify(queueOf('dup785').tickets['L-1'].follow_on)}`, `true ${JSON.stringify([twice[1]])}`);
+
+  // Criteria its review left for after the merge that the pass has not made steps yet hold the item
+  // off the list, so they never join it after the person saw it.
+  const owed = (read) => ({ ...merged(95, d.merge, [PLAIN]), pr_status: { pr: 95, state: 'MERGED', merged_at: minsAgo(5), merge_commit: d.merge, post_merge: [{ step: 'x', needs: 'device' }] }, ...(read ? { post_merge_read: 95 } : {}) });
+  put('owe785', { ...cfg, port: 4790, tickets: { 'M-1': owed(false), 'M-2': owed(true) } });
+  t('DS-785 a merged PR still owed its review\'s post-merge steps is not listed until the pass adds them', Object.keys(byKey('owe785')).join(), 'follow:M-2');
+
+  // list's refresh fetches origin once in the repo root and reads a merge commit no record has, so an
+  // idle batch, which runs no pass, still moves its gated steps on.
+  put('idle785', { ...cfg, port: 4791, tickets: {} });
+  const i7 = commits('idle785');
+  put('idle785', { ...cfg, port: 4791, tickets: { 'N-1': merged(97, null, [STAGING]), 'N-2': merged(98, i7.merge, [PROD]) } });
+  const fetches = [];
+  N.refresh({ word: 'idle785', reads: { ...N.READS, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
+  t('DS-785 list\'s refresh fetches the repo root once and records the merge commit no record had',
+    `${fetches.length} ${queueOf('idle785').tickets['N-1'].pr_status?.merge_commit === i7.merge} ${Object.keys(byKey('idle785')).join()}`, '1 true follow:N-1:main');
 }
 
 // A feature batch's promotion PR still red once its check tries are spent (pass.mjs
