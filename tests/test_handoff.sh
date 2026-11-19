@@ -338,6 +338,14 @@ echo "# orphan" > "$R/.handoffs/orphan-865.md"
 DEAD=99999999; printf 'orphan-865.md %s\n' "$DEAD" >> "$R/.handoffs/.held"
 hook SessionStart o9 "$T/low.jsonl" ',"source":"clear"'
 check "#865 a handoff held by a Claude process that has exited is taken by the next /clear" '[[ "$(ctx)" == *"read .handoffs/orphan-865.md"* ]]'
+echo "# reused" > "$R/.handoffs/reused-865.md"
+printf 'reused-865.md %s Thu1Jan00:00:001970\n' "$$" >> "$R/.handoffs/.held"
+hook SessionStart o8 "$T/low.jsonl" ',"source":"clear"'
+check "#865 so is one whose pid now belongs to a process that started later" '[[ "$(ctx)" == *"read .handoffs/reused-865.md"* ]]'
+echo "# live" > "$R/.handoffs/live-865.md"
+printf 'live-865.md %s %s\n' "$$" "$(ps -o lstart= -p $$ | tr -d ' ')" >> "$R/.handoffs/.held"
+hook SessionStart o7 "$T/low.jsonl" ',"source":"clear"'
+check "#865 while one held by a running process, started when it did, is skipped" '[[ "$(ctx)" != *"live-865.md"* ]]'
 
 # A /clear straight after a compaction, with no crossing since, still finds the session's own handoff
 # when another session's is newer.

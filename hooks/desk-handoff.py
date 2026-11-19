@@ -306,34 +306,51 @@ def handoffs(root):
     return sorted(files, key=os.path.getmtime, reverse=True)
 
 
-def process_alive(pid):
-    """Whether the Claude process a hold names still runs. A name that is not a number (the test
-    stand-in, DESK_HANDOFF_PID) or a line with none counts as running."""
+def process_start(pid):
+    """When a process started (`ps -o lstart`, spaces dropped), so a pid the OS has given to a new
+    process is not taken for the one that held a handoff; "" when it cannot be read."""
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True,
+                             text=True, timeout=5).stdout
+        return "".join(out.split())
+    except Exception:
+        return ""
+
+
+def process_alive(pid, start=None):
+    """Whether the Claude process a hold names still runs: its pid is live and, where the hold
+    recorded one, started when it did. A pid that is not a number (the test stand-in,
+    DESK_HANDOFF_PID) or a line with none counts as running."""
     try:
         os.kill(int(pid), 0)
     except (TypeError, ValueError, PermissionError):
         return True
     except OSError:
         return False
-    return True
+    if not start:
+        return True
+    now = process_start(pid)
+    return not now or now == start
 
 
 def held_names(root):
-    """Handoffs a compacting session holds (.handoffs/.held, one `<name> <pid>` a line): no other
-    session's /clear takes them while the Claude process holding them runs."""
+    """Handoffs a compacting session holds (.handoffs/.held, one `<name> <pid> [<start>]` a line): no
+    other session's /clear takes them while the Claude process holding them runs."""
     try:
         lines = open(os.path.join(handoff_dir(root), ".held")).read().splitlines()
     except Exception:
         return []
     parts = [line.split() for line in lines]
-    return [p[0] for p in parts if p and process_alive(p[1] if len(p) > 1 else None)]
+    return [p[0] for p in parts
+            if p and process_alive(p[1] if len(p) > 1 else None, p[2] if len(p) > 2 else None)]
 
 
 def hold(root, path):
     name = os.path.basename(path)
     if name not in held_names(root):
+        pid = claude_pid()
         with open(os.path.join(handoff_dir(root), ".held"), "a") as f:
-            f.write(f"{name} {claude_pid()}\n")
+            f.write(f"{name} {pid} {process_start(pid)}".rstrip() + "\n")
 
 
 def compaction_mode():
