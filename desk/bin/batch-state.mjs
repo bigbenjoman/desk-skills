@@ -148,8 +148,10 @@ export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
 export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
   .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
     && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
+// An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
+export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);
 // An unpromoted record's promotion PR: "no promotion PR", or "promotion PR #N, a draft" / ", open" / ", red".
-export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${u.state === 'draft' ? 'a draft' : u.state}`);
+export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${promotionState(u)}`);
 
 // The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
 export function heldBehindOf(q, key) {

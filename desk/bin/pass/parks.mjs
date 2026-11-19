@@ -26,9 +26,9 @@
 //   epic-merged {key}             -> whether epic key's batch recorded its epic PR merged
 //   other-repo {key}              -> whether key's Jira Repository is another configured repo
 //   landed {key}                  -> intake.mjs landedOn(key) on the default branch
-//   unpromoted {key}              -> intake.mjs unpromotedBase(key): the branch key merged into instead, and its promotion PR
+//   unpromoted {key, into}        -> intake.mjs unpromotedBase(key, into): the branch key merged into instead, and its promotion PR into `into`
 //   landed-here {key}             -> whether key is in another configured repo, or landed on the default branch
-import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS,
+import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS, promotionWords,
   HELD_PREFIX, LIVE_READ, personStep, triageGate } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
@@ -349,7 +349,8 @@ export function* decideOutsideHolds(s) {
       // Done a day or more with its code merged into another branch, never promoted: raised once, in needs-you.
       const since = Date.parse((blockers ?? []).find((b) => b?.key === p)?.resolved);
       if (!(s.now - since >= UNPROMOTED_AFTER_MS)) continue;
-      if (!unpromoted.has(p)) unpromoted.set(p, yield { type: 'unpromoted', key: p });
+      // Read against the repo's default branch, which needs-you promotes into, never a named batch's base.
+      if (!unpromoted.has(p)) unpromoted.set(p, yield { type: 'unpromoted', key: p, into: s.repoDefault });
       const u = unpromoted.get(p);
       // `promote` is the promotion PR the person asked for in needs-you, kept across reads.
       if (u) away[p] = { ...u, since: new Date(since).toISOString(), ...(kept?.promote != null ? { promote: kept.promote } : {}) };
@@ -389,7 +390,7 @@ function* raiseUnpromoted(t, away, s) {
   const fresh = keys.filter((p) => !was[p]);
   for (const p of fresh) {
     const u = away[p];
-    yield epicLine(`outside hold${s.dry ? ' (dry run)' : ''}: ${t.key}: ${p} Done since ${u.since.slice(0, 10)}, its code on ${u.branch} with ${u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr} ${u.state}`}: raised once, in needs-you`);
+    yield epicLine(`outside hold${s.dry ? ' (dry run)' : ''}: ${t.key}: ${p} Done since ${u.since.slice(0, 10)}, its code on ${u.branch} with ${promotionWords(u)}: raised once, in needs-you`);
   }
   if (s.dry || JSON.stringify(was) === JSON.stringify(away)) return;
   yield set(t.key, `unpromoted=${keys.length ? JSON.stringify(away) : 'null'}`);

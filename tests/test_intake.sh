@@ -659,11 +659,13 @@ check "DS-816 AC4: admit holds a blocker outside only while it is unpromoted" '[
 # promotion PR into main, by state.
 unpromoted(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(JSON.stringify(m.unpromotedBase(process.argv[1], "main"))))' "$1" "$T/bin/intake.mjs"); }
 check "DS-811 a blocker merged into a branch with no promotion PR names the branch and none" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":null,\"state\":\"none\"}" ]'
-printf '%s\n' '[{"number":96,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}]}]' > "$T/promos.json"
+printf '%s\n' '[{"number":96,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"name":"lint","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"test","status":"COMPLETED","conclusion":"FAILURE"}]}]' > "$T/promos.json"
 check "DS-811 a promotion PR with a failed check is red" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":96,\"state\":\"red\"}" ]'
+printf '%s\n' '[{"number":96,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"name":"test","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-11-18T10:00:00Z","detailsUrl":"https://github.com/a/b/actions/runs/1/job/1"},{"name":"test","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-18T11:00:00Z","detailsUrl":"https://github.com/a/b/actions/runs/2/job/2"}]}]' > "$T/promos.json"
+check "DS-811 a check that failed and then passed on a later run is not red" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":96,\"state\":\"open\"}" ]'
 printf '%s\n' '[{"number":97,"headRefName":"epic/L3","baseRefName":"main","isDraft":true,"statusCheckRollup":[]}]' > "$T/promos.json"
 check "DS-811 a draft one is draft" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":97,\"state\":\"draft\"}" ]'
-printf '%s\n' '[{"number":98,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"state":"SUCCESS"}]}]' > "$T/promos.json"
+printf '%s\n' '[{"number":98,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"context":"deploy","state":"SUCCESS"}]}]' > "$T/promos.json"
 check "DS-811 a green one is open" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":98,\"state\":\"open\"}" ]'
 touch "$T/promos.fails"
 check "DS-811 a promotion PR GitHub cannot read is null" '[ "$(unpromoted L-3)" = null ]'

@@ -213,6 +213,9 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   t('DS-811 so does a landed read that failed, with nothing said', j([sets(noLanded), lines(noLanded, 'epic-line')]), '[[],[]]');
   const landed = drive(decideOutsideHolds, snap(48, recorded), { landed: true });
   t('DS-811 once it lands the record is dropped and the hold lifted', j(sets(landed)), j(['unpromoted=null', 'state=triaged', 'park=null', 'held_by=null', 'held_outside=null']));
+  const into = [];
+  drive(decideOutsideHolds, { ...snap(48), defaultBranch: 'feat/DS-700-other', repoDefault: 'main' }, { unpromoted: (a) => { into.push(a.into); return base; } });
+  t('DS-811 in a named batch its promotion PR is read into the repo default branch, which needs-you promotes into, not the batch base', j(into), '["main"]');
   t('DS-811 a dry run says it and writes nothing', j([sets(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base })), lines(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base }), 'epic-line')[0]?.startsWith('outside hold (dry run): DS-705')]), '[[],true]');
 }
 
