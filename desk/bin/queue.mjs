@@ -9,9 +9,9 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
-import { handoffTarget, writeHandback } from './handoff.mjs';
+import { handoffTarget, openPrOf, repointToPr, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -294,7 +294,20 @@ function handback(q, key, note) {
   // skip the rest of its build.
   const never = neverStep(String(t.park?.question ?? ''));
   if (never) throw new Error(`${key} parked mid-build on ${never}, which no worker is allowed, so a worker starting at self-review would skip the rest of its build. Finish it in an interactive session: /desk-ticket ${key}`);
-  const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  let missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  // Its own open PR on another branch is where its work is: the worktree moves onto that branch, the
+  // queued one kept as a backup, unless the queued one holds commits the PR does not.
+  let repointed = '';
+  if (missing || ownPr(t) != null) {
+    const pr = openPrOf({ key, pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
+    const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr });
+    if (moved?.why) throw new Error(`${key}: ${moved.why}. Finish it in an interactive session: /desk-ticket ${key}`);
+    if (moved?.branch) {
+      repointed = `; its branch ${t.branch} re-pointed to its open PR #${pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
+      t.branch = moved.branch;
+      missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+    }
+  }
   if (missing) throw new Error(`${key}: ${missing}, so no worker can start it at Stage 4b. Finish it in an interactive session: /desk-ticket ${key}`);
   const at = new Date().toISOString();
   const was = { handoff_stage: t.handoff_stage, lane: t.lane };
@@ -307,7 +320,7 @@ function handback(q, key, note) {
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
-  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}${repointed}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
 // queue.mjs stop: one running ticket's worker ended, what its worktree holds committed on its branch,
