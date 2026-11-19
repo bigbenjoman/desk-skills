@@ -188,8 +188,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
 {
   const owedTk = (more) => tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] }, ...more });
   const idle = (t) => batchIdle({ tickets: { P: t } }, () => 'MERGED');
-  t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, or never merged, it is',
-    `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))}`, 'false true true');
+  t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, never merged, or requeued and parked (no pass reads it), it is',
+    `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))} ${idle(owedTk({ state: 'parked' }))}`, 'false true true true');
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

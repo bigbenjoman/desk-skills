@@ -166,8 +166,9 @@ export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Arr
 // follow-on steps of yet for PR `n` (pass.mjs post_merge_read).
 export const postMergeOwed = (t, n = t?.result?.pr) => (t?.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
 // A merged ticket the pass still owes those steps: its batch is not finished, nor is it archived or
-// dropped by a new batch, until the pass has added them.
-export const postMergeUnmade = (t) => !!t?.merged_at && t.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && postMergeOwed(t);
+// dropped by a new batch, until the pass has added them. Only a done ticket's PR is read (pass.mjs), so
+// a requeued one owes nothing until it is done again.
+export const postMergeUnmade = (t) => t?.state === 'done' && !!t.merged_at && t.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && postMergeOwed(t);
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }

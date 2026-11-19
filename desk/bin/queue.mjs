@@ -691,8 +691,9 @@ switch (cmd) {
     // carried_from, it is no ticket of this batch: a queue holding only those is one not yet planned.
     let prev = null;
     try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
-    // So does one whose post-merge criteria the pass has not made those steps yet (postMergeUnmade).
-    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t) || postMergeUnmade(t))
+    // So does one whose post-merge criteria the pass has not made those steps yet (postMergeUnmade), from
+    // a batch with no base: a base's child is gated on the base's promotion, which the new batch lacks.
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t) || (!prev.base && postMergeUnmade(t)))
       .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
     fresh.version = versionOf(prev);
     // The old batch's archive goes aside with it, so the new batch finds none of its tickets by key.
