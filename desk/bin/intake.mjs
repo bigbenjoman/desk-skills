@@ -6,10 +6,11 @@
 //
 //   node intake.mjs run [--json] [--force]   one intake now (--force: whether or not one is due)
 //   node intake.mjs forget <TICKET>          take a ticket out of the register: the next intake triages it again
-//   node intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--front] [--json]
+//   node intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--session] [--front] [--json]
 //                                            /desk-admit: the same checks on tickets the person names, now
 //                                            (--into: into live named batch <batch>, as pass.mjs admits a
-//                                            held ticket's blockers into its own batch)
+//                                            held ticket's blockers into its own batch; --session: the
+//                                            session that runs the batch admits into it)
 //
 // Each ticket the query finds, once (the register is <state>/intake.json):
 //   - already in the queue or another batch, or already admitted or handed on: nothing;
@@ -464,10 +465,12 @@ function placedThere(key, held, own) {
 // batch started where none is live, then the admit. Returns the one thing that happened:
 // {unreadable}, {closed, cur}, {elsewhere}, {reasons}, {startFailed}, {admitFailed}, or {batch, base, held, outside, started}.
 // Without mayStart, a free batch is closed as 'free' rather than replaced.
-function placeOne(key, rec, { started, by, now, mayStart = true }) {
+// With `session`, the caller is the session that runs the batch, so a batch not handed over is open to it.
+function placeOne(key, rec, { started, by, now, mayStart = true, session = false }) {
   let cur;
   try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
-  if (closed(cur)) return { closed: closed(cur), cur };
+  const shut = closed(cur);
+  if (shut && !(session && shut === 'session')) return { closed: shut, cur };
   const away = belongsElsewhere(key, rec, E.queueFile());
   if (away) return { elsewhere: away };
   const base = cur?.base ?? (E.configValue('default-branch') || 'main');
@@ -657,9 +660,11 @@ async function intake({ state, query, reg, now }) {
 // each line of the result's `lines` as it happens.
 // With `into`, a live named batch, each ticket joins that batch as a child joins its epic's, wherever
 // its record would place it, and the standing batch's state does not matter.
-export async function admitByHand(keys, { state = E.stateDir(), by = 'hand', front = false, into = null, now = new Date(), onLine = () => {} } = {}) {
+// With `session`, the caller is the session that runs the batch (one not handed to the supervisor):
+// the tickets join it, and that session's next pass picks them up.
+export async function admitByHand(keys, { state = E.stateDir(), by = 'hand', front = false, into = null, session = false, now = new Date(), onLine = () => {} } = {}) {
   mkdirSync(state, { recursive: true });
-  return withLock(state, () => byHand([...new Set(keys)], { state, by, front, into, now, onLine }));
+  return withLock(state, () => byHand([...new Set(keys)], { state, by, front, into, session, now, onLine }));
 }
 
 // Admit a ticket into the live named batch `epic` (its epic's feature batch, or the batch whose base has
@@ -699,7 +704,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
 // in flight finish, and the rest are named to admit again.
 // Every line is said as it happens, so whichever finishes first says so first, even while an epic's
 // children or a ticket joining a batch are being triaged: nothing here waits on a triage synchronously.
-async function byHand(keys, { state, by, front, into, now, onLine }) {
+async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const began = Date.now();
   const lines = [];
   const say = (line) => { lines.push(line); onLine(line); };
@@ -720,10 +725,11 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
     base: () => (moveTo(b)
       ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to ${moveTo(b)} (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
-    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them`,
+    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
   }[code]?.() ?? null);
-  const nowhere = (b) => said(closed(b) ?? (free(b) && !mayStart ? 'free' : null), b);
+  const shutFor = (b) => { const c = closed(b); return session && c === 'session' ? null : c; };
+  const nowhere = (b) => said(shutFor(b) ?? (free(b) && !mayStart ? 'free' : null), b);
   let q;
   try { q = readQueue(); } catch (e) { say(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = into ? null : nowhere(q);
@@ -809,7 +815,7 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
   const next = new Set();
   const place = async (key) => {
     let rec = recs[key];
-    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart });
+    let r = into ? { elsewhere: { route: into, why: `${key} was named for batch ${into}` } } : placeOne(key, rec, { started, by, now, mayStart, session });
     if (r.started) { started = r.started; say(`started standing batch ${started}, handed to the supervisor`); }
     // An epic started while this ticket was in triage took it into its feature batch.
     const there = inBatch(key, r.elsewhere?.held, r.elsewhere?.batch);
@@ -911,7 +917,7 @@ async function byHand(keys, { state, by, front, into, now, onLine }) {
     const these = untriaged.join(' ');
     say(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);
   }
-  if (admitted.length || epics.length) say(`the supervisor's next tick picks ${admitted.length + epics.length === 1 ? 'it' : 'them'} up`);
+  if (admitted.length || epics.length) say(`${session && q && !free(q) && q.supervised !== true ? "this session's next pass" : "the supervisor's next tick"} picks ${admitted.length + epics.length === 1 ? 'it' : 'them'} up`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);
@@ -950,14 +956,14 @@ if (isMain) {
     if (!E.SAFE_ID.test(by ?? '')) { console.error('intake: --by wants a name with no spaces'); process.exit(EXIT.SHOW_PERSON); }
     if (intoAt >= 0 && !E.SAFE_ID.test(into ?? '')) { console.error('intake: --into wants a batch name'); process.exit(EXIT.SHOW_PERSON); }
     const keys = rest.filter((a, i) => !a.startsWith('--') && !(byAt >= 0 && i === byAt + 1) && !(intoAt >= 0 && i === intoAt + 1));
-    const r = await admitByHand(keys, { by, front: rest.includes('--front'), into, onLine: json ? undefined : (line) => console.log(line) });
+    const r = await admitByHand(keys, { by, front: rest.includes('--front'), into, session: rest.includes('--session'), onLine: json ? undefined : (line) => console.log(line) });
     if (json) console.log(JSON.stringify(r));
     else if (r.ran === false) console.log(r.lines.join('\n'));
     if (r.ran === false || r.refused.length) process.exitCode = EXIT.SHOW_PERSON;
   } else if (cmd === 'forget' && rest[0] && E.SAFE_ID.test(rest[0])) {
     console.log(forget(rest[0]) ? `intake: ${rest[0]} forgotten: the next intake triages it again if the query still finds it` : `intake: ${rest[0]} is not in the register`);
   } else {
-    console.error('usage: intake.mjs run [--json] [--force] | intake.mjs forget <TICKET> | intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--front] [--json]');
+    console.error('usage: intake.mjs run [--json] [--force] | intake.mjs forget <TICKET> | intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--session] [--front] [--json]');
     process.exit(EXIT.SHOW_PERSON);
   }
 }
