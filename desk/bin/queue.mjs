@@ -1138,7 +1138,7 @@ switch (cmd) {
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
     const itsBranch = head != null && (head === t.branch || new RegExp(keyPattern(key)).test(head));
     if (pr != null && itsBranch && t.result?.pr == null && t.draft_pr == null && t.state !== 'running') {
-      // shipped_pr keeps it live until a pass reads that PR's review (queue-store.mjs archivable).
+      // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade).
       applySet(t, [...shippedSet(t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2), `shipped_pr=${pr}`]);
     }
     t.merged_at ??= new Date(when).toISOString();

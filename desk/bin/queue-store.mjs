@@ -80,9 +80,6 @@ export function archivable(q, key) {
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;
-  // Recorded shipped on a PR by the merge driver (shipped_pr) that no pass has read yet: those criteria
-  // are on that PR's review, so it stays until a pass reads it into pr_status.
-  if (!closed && Number(t.shipped_pr) === Number(t.result.pr) && Number(t.pr_status?.pr) !== Number(t.result.pr)) return false;
   if ([q.batch, q.spine, q.epic].includes(key)) return false;
   return !Object.values(q.tickets).some((o) => o?.key !== key && HOLD_FIELDS.some((f) => keys(o?.[f]).includes(key)));
 }
