@@ -30,9 +30,9 @@
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
-export const PR_FINAL = ['MERGED', 'CLOSED'];
+const PR_FINAL = ['MERGED', 'CLOSED'];
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
-export const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
 
 export function* decidePrStatus(s) {
   const prStates = {};

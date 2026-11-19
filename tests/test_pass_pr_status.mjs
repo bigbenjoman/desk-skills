@@ -1,5 +1,5 @@
 // suite: pass phase: PR status (each done ticket's PR read, merges recorded, the lists the steps after it use)
-import { decidePrStatus, PR_FINAL, postMergeOwed } from '../desk/bin/pass/pr-status.mjs';
+import { decidePrStatus } from '../desk/bin/pass/pr-status.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -52,8 +52,8 @@ const lists = (acts) => acts.at(-1);
 {
   // Merged and recorded, but its review's post-merge criteria are not yet follow-on steps: read on.
   const owedT = done('E', 15, { merged_at: 'x', pr_status: status(15, 'MERGED', { merged_at: 'x', post_merge: [{ step: 'check prod' }] }) });
-  t('postMergeOwed: criteria not yet read for this PR', postMergeOwed(owedT, 15), true);
-  t('postMergeOwed: read for this PR already', postMergeOwed({ ...owedT, post_merge_read: 15 }, 15), false);
+  const read = run(snap([{ ...owedT, post_merge_read: 15 }]));
+  t('a merged PR whose post-merge criteria were read for it already gets no action', j(read.filter((a) => !['prune-builds', 'lists'].includes(a.type))), '[]');
   const acts = run(snap([owedT]));
   t('a merged PR owed its post-merge steps is not read again', ofType(acts, 'read-pr').length, 0);
   t('its criteria become follow-on steps in one write', j(ofType(acts, 'set').map((a) => a.fields)), j([['follow_on=[{"step":"check prod","row":null}]', 'post_merge_read=15']]));
@@ -111,8 +111,6 @@ const lists = (acts) => acts.at(-1);
   const acts = run(snap(list, { dry: true }), { 22: status(22, 'MERGED', { merged_at: 'y', post_merge: [{ step: 's' }] }), 23: status(23, 'OPEN') });
   t('a dry run reads and keeps pr_status, and writes nothing else', j(acts.map((a) => a.type)), j(['read-pr', 'pr-status', 'read-pr', 'pr-status', 'lists']));
 }
-
-t('PR_FINAL', j(PR_FINAL), j(['MERGED', 'CLOSED']));
 
 // ---- AC5: the decision does no I/O
 {
