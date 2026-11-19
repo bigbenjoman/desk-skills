@@ -467,6 +467,9 @@ check "DS-557: the digest asks a park waiting on links-made, and still not one w
 # the object literals in a check's eval.
 sorted(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const c = (k) => JSON.stringify({ kind: k }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'L', text: 'x', clears: c('links-made') }, { kind: 'parked', lane: 'A', ticket: 'U', text: 'y', clears: c('pr-merged') }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join());"; }
 check "DS-557: the decider hands a links-made park on to the person rather than letting it wait" '[ "$(sorted)" = "L U" ]'
+filesort(){ node --input-type=module -e "import { presort } from '$B/decider.mjs'; const f = (person) => JSON.stringify({ kind: 'file-exists', path: 'fixtures/F/out.txt', root: 'state', ...(person ? { person } : {}) }); const r = presort([{ kind: 'parked', lane: 'A', ticket: 'F', text: 'x', clears: f(true) }, { kind: 'parked', lane: 'A', ticket: 'G', text: 'y', clears: f(false) }]); console.log(r.hand.map((h) => h.item.ticket).join(), r.waits.map((w) => w.ticket).join(), '|', r.hand[0]?.why);"; }
+check "DS-807: the decider hands a park on a file the person makes on to them, naming the file, and one a script makes waits" \
+  '[ "$(filesort)" = "F G | waits on a file only the person makes (file \$DESK_STATE/fixtures/F/out.txt exists): a pass requeues it once the file is there" ]'
 
 # ---- DS-580: a park on a step only a person or another account takes is handed on unless answered since -
 PO="There is no review from agent-pullbot at all. No worker can run it: only a person with Mac mini or org access can do this."

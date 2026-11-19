@@ -36,8 +36,10 @@
 // Stored on the park as {kind, pr | ticket | name | run | branch | login | path | repo}: kind is
 // pr-merged (with repo: <owner/name> for another repo's PR), pr-ready, ticket-done, variable-set,
 // run-completed, push-ok (with lease: <sha> for a lease push), base-contains, pr-reviewed {pr, login},
-// file-exists {path, root: abs | worktree | state}, ticket-queued {ticket, repo}, checks-pass
-// {pr, checks}, commit-on {sha, branch} or none.
+// file-exists {path, root: abs | worktree | state, person?}, ticket-queued {ticket, repo}, checks-pass
+// {pr, checks}, commit-on {sha, branch} or none. A file-exists is read against its park's question as it
+// is recorded (withQuestion): it looks where the question says, and is person where the question asks
+// the person to make the file, so that park is still put to them (personClears) while a pass checks it.
 // A worker's line that reads as none of them is stored as unreadable {text, why, at}: the decider
 // restates it once (decider.mjs; in a batch a session runs, that session), and it waits for a person
 // only once the decider has seen it, or once RESTATE_MS has passed with no restate.
@@ -48,6 +50,7 @@
 // makes that one hold, so its park is still put to them (personClears), not left to wait unseen.
 
 import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -132,6 +135,9 @@ export function checkLine(raw, { here = null } = {}) {
   return { ok: false, text: `${p.why.replace(/ is not one of: [\s\S]*$/, ' is not a form a pass reads')}. The forms:\n${CLEARS_WHEN_FORM_LINES.map((f) => `  ${f}`).join('\n')}` };
 }
 
+// A file-exists condition's path as it is written.
+const filePath = (c) => (c.root === 'state' ? `$DESK_STATE/${c.path}` : c.path);
+
 // Where a file-exists condition looks: worktree and state are the ticket's worktree and $DESK_STATE.
 export function condPath(c, { worktree, state }) {
   if (c.root === 'abs') return c.path;
@@ -176,8 +182,42 @@ export function queuedIn(ticket, repo, queues, live) {
     : { holds: false, note: `not in any ${repo} queue` };
 }
 
-// Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them.
-export const personClears = (c) => c?.kind === 'links-made';
+// Whether only a step of the person's makes condition `c` hold, so a park waiting on it still asks them:
+// issue links, or a file its park's question asks them to make (withQuestion marks it person).
+export const personClears = (c) => c?.kind === 'links-made' || (c?.kind === 'file-exists' && c.person === true);
+
+// The files a park's question names, as conditions: each word holding a slash that reads as a path
+// fileCond takes, ~/ read from the home directory.
+const questionFiles = (question, home) => String(question ?? '').split(/\s+/)
+  .map((w) => w.replace(/^[("'`<]+|[)"'`>.,;:!?]+$/g, ''))
+  .filter((w) => w.includes('/') && !/^[a-z]+:\/\//i.test(w))
+  .map((w) => fileCond(w.startsWith('~/') ? posix.join(home, w.slice(2)) : w))
+  .filter((c) => c.kind === 'file-exists');
+// An absolute path under the state directory, as one under $DESK_STATE.
+const inState = (c, state) => (c.root === 'abs' && state && c.path.startsWith(`${posix.normalize(state).replace(/\/$/, '')}/`)
+  ? { ...c, path: c.path.slice(posix.normalize(state).replace(/\/$/, '').length + 1), root: 'state' } : c);
+// The question asks the person to make, save or run something: a request, not a description of a step.
+const ASKS = /(?:^|[.?!;:]\s+|\b(?:please|kindly)\s+|\b(?:can|could|would|will) you\s+(?:please\s+)?|\byou (?:need to|have to|must|should)\s+|\b(?:asks?|asking|need|needs|want|wants) (?:you|the (?:person|user)|[A-Z][a-z]+) to\s+)(?:run|save|put|write|copy|drop|place|create|make|store|upload|attach|export|download|capture|paste)\b/i;
+
+// A file-exists condition read against the question of the park it clears: {ok: true, cond} or
+// {ok: false, why}. The question names the file by its name. Where it names it somewhere other than the
+// condition looks, the condition looks where the question says when that is an absolute or $DESK_STATE
+// path, and is refused when it is not. Where the question asks the person to make it, the condition is
+// marked person (personClears). Any other condition, or a question naming no such file, is kept as given.
+export function withQuestion(cond, question, { state = null, home = homedir() } = {}) {
+  if (cond?.kind !== 'file-exists') return { ok: true, cond };
+  const name = posix.basename(cond.path);
+  const named = questionFiles(question, home).map((c) => inState(c, state)).filter((c) => posix.basename(c.path) === name);
+  if (!named.length) return { ok: true, cond };
+  const own = inState(cond, state);
+  const same = named.find((c) => c.root === own.root && c.path === own.path);
+  const at = same ? cond : named.find((c) => c.root !== 'worktree');
+  if (!at) {
+    return { ok: false, why: `the question names ${named.map((c) => `"${filePath(c)}"`).join(', ')} and the clears-when "${filePath(own)}": the two paths differ, so a file saved where the question says would never clear it. Name the path the question gives, as an absolute path or $DESK_STATE/<path>` };
+  }
+  const { person, ...file } = at;
+  return { ok: true, cond: ASKS.test(String(question)) ? { ...file, person: true } : file };
+}
 
 // Why condition `c` can never hold while parked ticket `t` stays parked, or null. That is the ticket's
 // own PR leaving draft or merging while the last recorded pr_status says it is a draft: no pass undrafts
@@ -200,7 +240,7 @@ export function describeCond(c) {
     case 'push-ok': return `git push ${c.lease ? `--force-with-lease=${c.branch}:${c.lease} ` : ''}origin ${c.branch} succeeds`;
     case 'base-contains': return `the batch base contains ${c.branch}`;
     case 'pr-reviewed': return `PR #${c.pr} reviewed by ${c.login} at its head`;
-    case 'file-exists': return `file ${c.root === 'state' ? `$DESK_STATE/${c.path}` : c.path} exists`;
+    case 'file-exists': return `file ${filePath(c)} exists`;
     case 'ticket-queued': return `${c.ticket} in a running ${c.repo} batch`;
     case 'checks-pass': return `${(c.checks ?? []).map((n) => `"${n}"`).join(' and ')} passing on PR #${c.pr}'s head`;
     case 'commit-on': return `commit ${c.sha} on origin/${c.branch}`;

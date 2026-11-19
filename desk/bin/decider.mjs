@@ -133,7 +133,9 @@ export function presort(items, state = null) {
     } else if (item.kind === 'parked' && item.restate != null) {
       ask.push(item);
     } else if (item.kind === 'parked' && item.clears && personClears(JSON.parse(item.clears))) {
-      hand.push({ item, why: 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
+      hand.push({ item, why: JSON.parse(item.clears).kind === 'file-exists'
+        ? `waits on a file only the person makes (${describeCond(JSON.parse(item.clears))}): a pass requeues it once the file is there`
+        : 'waits on issue links only the person makes: a pass records it done again once each is on Jira' });
     } else if (item.kind === 'parked' && item.clears) {
       waits.push(item);
     } else if (item.kind === 'parked' && personOnlyStep(item.text) && !(state && item.since && answered(state, { ticket: item.ticket, at: item.since }))) {

@@ -92,7 +92,7 @@ import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, 
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
-import { describeCond, personClears } from './clears-when.mjs';
+import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
@@ -280,9 +280,9 @@ function trackerTicket(r, key) {
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
-// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
-// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
-const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A park waiting on issue links only the person makes holds them in its clears_when alone: the pass
+// records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (t.park?.clears_when?.kind === 'links-made' ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);

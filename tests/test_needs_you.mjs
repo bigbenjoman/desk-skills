@@ -481,6 +481,18 @@ t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
 t('DS-345 AC3 a findings draft with no gaps keeps its actions', mu['M-2']?.actions.map((a) => a[0]).join(), 'done,resume,not-now');
 
+// ---- DS-807: a park on a file the person is asked to make is listed; one a script makes is not
+const fileQ = 'Please run bash tests/compare_pass.sh on the host and save its output to $DESK_STATE/fixtures/F-1/compare-pass.txt';
+const filePark = (question, cond) => { const p = parked('A', 30, question); return { ...p, park: { ...p.park, clears_when: { kind: 'file-exists', root: 'state', ...cond } } }; };
+put('file807', { port: 4807, beat: 1, supervised: true, tickets: {
+  'F-1': filePark(fileQ, { path: 'fixtures/F-1/compare-pass.txt', person: true }),
+  'F-2': filePark('waiting on the recall capture to write $DESK_STATE/fixtures/F-2/meet.json', { path: 'fixtures/F-2/meet.json' }),
+} });
+const f807 = Object.fromEntries(N.collect({ word: 'file807' }).items.map((i) => [i.t.key, i]));
+t('DS-807 AC1 a park on a file its question asks the person to make is listed with its question and resume',
+  `${f807['F-1']?.need === fileQ} ${f807['F-1']?.actions.map((a) => a[0])[0]}`, 'true resume');
+t('DS-807 AC3 one a script makes is still left out', 'F-2' in f807, false);
+
 // ---- DS-586: a draft whose review left gaps quotes them from that review, as a ready PR's item does.
 const SHA586 = '65ad4e75a1b2c3d4e5f60718293a4b5c6d7e8f90';
 const review586 = (login, sha, lines) => ({ author: { login }, body: `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${sha} p0=0 p1=0 p2=0 deferred=0 gaps=${lines.length} unrefuted=0 partial=0 vendor=codex round=1 -->\n## desk-review: ${lines.length} requirement gaps\n\n### Requirement gaps\n${lines.map((l) => `- ${l}`).join('\n')}\n` });
