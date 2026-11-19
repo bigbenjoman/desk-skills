@@ -7,7 +7,8 @@
 //                                          Required check's workflow runs on (gate.mjs admissionRefusal)
 //   node batch.mjs discard <EPIC>          removes a batch no ticket has started in and the supervisor does
 //                                          not run: its queue and state folders, and its branch from origin
-//                                          when that holds no commit the default branch lacks
+//                                          when that holds no commit the default branch lacks;
+//                                          --keep-triage keeps its state's triage/ records
 //   node batch.mjs archive <EPIC>          the supervisor's archive check, once, now
 // Every refusal exits 11 (show the person) and changes nothing.
 //
@@ -19,7 +20,7 @@
 // in the batch, not done and not running, is moved to the standing batch first when a merged last
 // promotion leaves it ready to run, and otherwise parked and handed on the same way, holding the
 // archive until it is moved or dropped.
-import { existsSync, mkdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -89,8 +90,9 @@ function start(epic, branch, slug = E.repoSlug()) {
 // A ticket some worker has begun: spawned, past triage, or with a PR.
 const startedTicket = (t) => t.spawned_at != null || ['running', 'done', 'failed'].includes(t.state) || t.result?.pr != null;
 
-// -> lines saying what was removed and what became of the branch.
-function discard(epic, slug = E.repoSlug()) {
+// -> lines saying what was removed and what became of the branch. With `keepTriage`, the state folder's
+// triage/ records stay, so the epic's next start triages only the children that have none.
+function discard(epic, { keepTriage = false } = {}, slug = E.repoSlug()) {
   checkName(epic);
   const b = named(slug, epic);
   if (!b) refuse(`no batch ${epic} in this repo: nothing removed`);
@@ -100,8 +102,11 @@ function discard(epic, slug = E.repoSlug()) {
   const begun = Object.values(q.tickets ?? {}).filter(startedTicket).map((t) => t.key);
   if (begun.length) refuse(`batch ${epic} has started tickets (${begun.join(', ')}): nothing removed`);
   rmSync(dirname(b.queue), { recursive: true, force: true });
-  rmSync(b.state, { recursive: true, force: true });
-  const lines = [`batch ${epic} discarded: removed ${dirname(b.queue)} and ${b.state}`];
+  const triage = join(b.state, 'triage');
+  const kept = keepTriage && existsSync(triage);
+  if (kept) for (const f of readdirSync(b.state)) { if (f !== 'triage') rmSync(join(b.state, f), { recursive: true, force: true }); }
+  else rmSync(b.state, { recursive: true, force: true });
+  const lines = [`batch ${epic} discarded: removed ${dirname(b.queue)} and ${kept ? `everything in ${b.state} but its triage records, which its next start reuses` : b.state}`];
   if (q.base) lines.push(branchFate(q.base));
   return lines;
 }
@@ -292,7 +297,7 @@ if (isMain) {
   try {
     let lines;
     if (cmd === 'start' && rest.length === 2) lines = start(rest[0], rest[1]);
-    else if (cmd === 'discard' && rest.length === 1) lines = discard(rest[0]);
+    else if (cmd === 'discard' && rest.filter((a) => a !== '--keep-triage').length === 1) lines = discard(rest.find((a) => a !== '--keep-triage'), { keepTriage: rest.includes('--keep-triage') });
     else if (cmd === 'archive' && rest.length === 1) {
       checkName(rest[0]);
       const b = named(E.repoSlug(), rest[0]);
@@ -300,7 +305,7 @@ if (isMain) {
       const a = archiveCheck(b);
       lines = a.archived ? a.log : a.lines.length ? a.lines : [`batch ${rest[0]} is not archived: its promotion PR is not merged or closed, or a ticket still runs`];
     } else {
-      console.error('usage: batch.mjs start <EPIC> <branch> | discard <EPIC> | archive <EPIC>');
+      console.error('usage: batch.mjs start <EPIC> <branch> | discard <EPIC> [--keep-triage] | archive <EPIC>');
       process.exit(EXIT.SHOW_PERSON);
     }
     console.log(lines.join('\n'));
