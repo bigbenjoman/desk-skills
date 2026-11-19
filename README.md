@@ -715,12 +715,14 @@ session in a configured repo write `.handoffs/<date>.md` once its context passes
 context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
 you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
 
-With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100,
-set under `env` in `~/.claude/settings.json`), nobody types anything: past §2 the session writes its
+With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
+under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value
+already there), nobody types anything: past §2 the session writes its
 handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
 handoff for the summary, and after the compaction the session is told to read it and carry on. Each
-later crossing refreshes that same handoff, and a compaction does not mark it consumed, so a later
-`/clear` still finds it. Set §2 below the override, so the handoff is written before the compaction.
+later crossing refreshes that same handoff, and the turn cannot end until it has. A compaction does
+not mark it consumed, so the session's own later `/clear` still finds it, and no other session's
+`/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
 
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
