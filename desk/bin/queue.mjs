@@ -18,7 +18,8 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
+import { placement, featureRole } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
@@ -448,6 +449,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     }
   }
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
+  // Config §3b "Worker location", applied as plan-batch applies it to each ticket it seeds.
+  const location = workerLocation();
+  const placed = placement(r, location, {
+    feature: featureRole(q.feature === true ? { spine: q.spine, owners: q.owners } : null, key),
+    effort: location === 'cloud' && leverOn('effort'),
+  });
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
   // holds it behind the open ones once its own park is settled.
@@ -460,10 +467,13 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
+    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
-  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
+  // At cloud, where it runs, in the batch plan's `runs:` words.
+  const runs = location === 'cloud' ? `; runs: ${placed.where}${placed.why ? ` — ${placed.why}` : ''}` : '';
+  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}${runs}`;
 }
 
 // The holds each lane, size or design park in `q` with no held_by should carry beside its park: its

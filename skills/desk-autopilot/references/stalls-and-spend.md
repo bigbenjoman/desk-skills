@@ -77,6 +77,12 @@ left for you. A start that fails parks with the CLI's error and is never run loc
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
 
+**A ticket admitted mid-batch is placed the same way.** `queue.mjs admit`, which every mid-batch
+route admits through (intake, `/desk-admit`, an approved epic plan's children, a ticket handed over
+from another repo), applies the same rules to its triage record and the batch's feature
+roles, so at `cloud` one that needs nothing here gets `location: cloud`, and its admit line ends with
+the same `runs:` words as the plan's.
+
 A worker whose log has not grown for 6 passes is **stopped and parked**, freeing its slot, unless
 its last marker is `AUTOPILOT_DONE`: a worker that finished and then hung is stopped and recorded
 done with its PR, on the first pass that reads the marker. Nor is one whose worktree is running a
