@@ -25,6 +25,10 @@ Why not delete:
   `delete_branch_on_merge` on, GitHub already deleted the remotes, so they never show in
   `git branch -r`.
 
+At config §3 `branch-delete` `merged`, a branch whose PR merged and that holds nothing the base lacks
+goes without a question: `node ~/.claude/desk/bin/merged-branch.mjs <PR> <branch>...` checks each
+and deletes it, printing its tip. Any other branch still needs the user, as below.
+
 If the user explicitly asks for them gone, that is their call **only if config §3 `branch-delete`
 is `yes` or `ask`** — then `git branch -D <branch>`, with the tip SHAs already in the report
 so `git branch <name> <sha>` restores any of them. `no` or `TODO` means say it is disabled and offer

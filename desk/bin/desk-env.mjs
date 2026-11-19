@@ -30,7 +30,7 @@
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|issue|slug, exit 2 if the id is not accepted
-//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
+//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop, or merged for branch-delete (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
@@ -895,12 +895,15 @@ const rowMissing = (parsed, id) => parsed.exists && !parsed.sections?.['3']?.byK
 export const permissionMissing = (id) => rowMissing(parseConfig(), id);
 // Another repo's, by slug; false with no config.
 export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => rowMissing(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+// A §3 value: yes, ask, no, never or stop; branch-delete also takes merged (delete a local branch only
+// once its PR merged and the base holds all it has: merged-branch.mjs).
+const permValue = (key, v) => (key === 'branch-delete' ? /^(yes|merged|ask|no|never|stop)\b/i : /^(yes|ask|no|never|stop)\b/i).exec(v.trim())?.[1].toLowerCase() ?? 'no';
 function permissionIn(parsed, id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const v = parsed.sections?.['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return 'no';
-  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
+  return permValue(key, v);
 }
 // Tri-state for guard rows, where "unset" must mean the strict default rather than `no`:
 // returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO. A value it cannot
@@ -910,7 +913,7 @@ export function permissionOrUnset(id) {
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return null;
-  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
+  return permValue(key, v);
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
@@ -1855,7 +1858,8 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   // A §3 row whose Recommended value is a permission takes a permission: a typo would read as `no`.
   if (sec === '3' && t.header[0] === 'key') {
     const rec = cellItems(t.cells[t.header.indexOf('recommended')] ?? '')[0] ?? '';
-    if (/^(yes|ask|no)\b/i.test(rec) && !/^(yes|ask|no)\b/.test(v)) throw new DeskConfigError(`desk-env add-row: §3 ${t.label} takes yes, ask or no, not "${v}"`);
+    const takes = t.label === 'branch-delete' ? ['yes', 'merged', 'ask', 'no'] : ['yes', 'ask', 'no'];
+    if (/^(yes|merged|ask|no)\b/i.test(rec) && !takes.includes(v.split(/[\s(]/)[0])) throw new DeskConfigError(`desk-env add-row: §3 ${t.label} takes ${takes.slice(0, -1).join(', ')} or ${takes.at(-1)}, not "${v}"`);
   }
   const cells = t.cells.slice();
   cells[col] = `\`${v}\`${note.trim() ? ` (${note.trim().replace(/\n/g, ' ')})` : ''}`;

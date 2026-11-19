@@ -236,7 +236,7 @@ requeues it with the run's conclusion.
 | `local-reindex` | Rebuild a shared local index or cache that every session uses (§4 Local services) | `ask` | `TODO` |
 | `tests-shared-db` | Run database-backed tests against a database another session may be using | `no` | `TODO` |
 | `worktree-remove` | Remove a worktree whose PR has merged | `yes` | `TODO` |
-| `branch-delete` | Delete a local branch | `no` | `TODO` |
+| `branch-delete` | Delete a local branch (`merged`: only a ticket's own or backup branch once its PR merged and the base holds all it has) | `merged` | `TODO` |
 | `server-stop` | Stop a dev server you started for a finished ticket | `ask` | `TODO` |
 | `skills-edit` | Edit your installed `desk-*` skill files | `ask` | `TODO` |
 | `vercel-env` | Add or change a Vercel environment variable | `ask` | `TODO` |

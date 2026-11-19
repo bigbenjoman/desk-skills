@@ -97,6 +97,7 @@ a row changes, say which of these applies.
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first`, `merge-hold-routine` (it never arms auto-merge, so `pr-auto-merge` does not reach it); through `linked-issues.mjs`, `gh-close-linked-issue` |
 | `linked-issues.mjs` | `gh-close-linked-issue` (unset reads as `no`: the issue is named as ready to close) |
+| `merged-branch.mjs` | `branch-delete` (`merged` or `yes` deletes a merged ticket's branches that hold nothing the base lacks; `ask` names each with its command; unset reads as `no`) |
 | `pass.mjs` | `autopilot-workers`, `pr-images`, `ci-rerun` (a draft's cancelled or timed-out runs), `batch-base-push` (unset is `ask`); through `maintenance.mjs`, `machine-reboot` (unset is `ask`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
@@ -227,7 +228,7 @@ short of `yes`, unset included, is refused to the worker, which parks naming the
 | `local-reindex` | ask | a shared local index or cache (§4 Local services) reflects your change | it is shared: every session's copy is rebuilt (skip when §4 Local services is `none`) | no | — |
 | `tests-shared-db` | no | database-backed tests without a per-ticket DB | test setup that truncates or deletes wipes another session's data | ask | — |
 | `worktree-remove` | yes | disk back (~4GB per worktree) | untracked files, local state | ask | — |
-| `branch-delete` | no | tidy branch list | `-D` discards commits `-d` refused to | ask | — |
+| `branch-delete` | merged | a merged ticket's local branch, and any backup branch it made, deleted with no question once its PR merged and the base holds all it has (`merged-branch.mjs`) | nothing the base lacks; each tip SHA is printed so `git branch <name> <sha>` restores it. At `yes`, `git branch -D` on any branch, discarding commits `-d` refused to | yes · ask · no | — (`merged-branch.mjs` reads the row and runs `git branch -D` itself) |
 
 ## Round 12 — other
 
