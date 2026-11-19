@@ -50,7 +50,7 @@ import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver,
 import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, fromReview, reviewStep } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
@@ -67,6 +67,7 @@ import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
+import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
@@ -3931,94 +3932,33 @@ function startEvidence(t, n, head, c, rec) {
   report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
   return { ...rec, call: 'person', why, action };
 }
-// Drafts whose evidence run failed, or filled no cell (undraft.mjs `evidence-failed`): the failure is
-// the repo's, so one fix ticket is filed and admitted for each failure (the workflow and its run log's
-// first error line, evidence.mjs failureKey), and every PR it fails waits on that ticket rather than
-// going to the person. Once the ticket is done, each waiting PR's run is started again at its head;
-// one that then fails the same way, or whose fix failed or left the batch, is the person's.
+// Drafts whose evidence run failed, or filled no cell: decided in pass/evidence-failures.mjs, once every
+// draft is read, so one failure is one fix. Each run's failed log is read into the snapshot (once a
+// pass, cached); a run that succeeded has no failed log, so its key is the workflow alone.
 function settleEvidenceFailures(items) {
   const runLog = (id) => cached(`log:${id}`, () => {
     const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--log-failed'], { maxBuffer: 64 << 20 });
     return r.ok ? r.out : null;
   });
-  const fixes = readFixes(EVIDENCE_DIR);
-  const failures = [];
-  for (const it of items) {
-    const { t, n, c } = it;
-    // A run that succeeded has no failed log: its key is the workflow alone.
-    const log = c.conclusion === 'failure' ? runLog(c.runId) : '';
-    if (log == null) {
-      out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}, and its run's log could not be read; the next pass tries again`);
-      saveUndraft(t, { ...it.rec, call: 'wait', why: `${c.why}; its run's log is read at the next pass`, action: null });
-      continue;
-    }
-    const line = firstErrorLine(log);
-    failures.push({ ...it, ticket: t.key, key: failureKey(c.workflow, line), workflow: c.workflow, line, run: c.runId, url: c.url, at: c.at ?? null });
-  }
-  // Where each fix stands. Done is kept, with when, so a fix whose ticket has left the queue still
-  // reads as done and a failure that comes back after it is told apart. One in no batch is admitted
-  // again, and so is one filed but refused by admission.
-  const states = {};
-  for (const rec of Object.values(fixes)) {
-    if (!rec.fix) continue;
-    const s = rec.done_at ? { st: 'done' } : evidenceFixState(rec.fix);
-    if (s.st === 'done' && !rec.done_at) rec.done_at = s.at ?? PASS_AT;
-    if (s.st === 'lost' && rec.admitted !== false) { rec.admitted = false; rec.admit_error = `${rec.fix} is in no batch`; }
-    states[rec.fix] = s.st === 'lost' ? 'open' : s.st;
-    if (rec.admitted === false && !DRY) {
-      const a = admitFix(rec.fix);
-      if (a.ok) { rec.admitted = true; delete rec.admit_error; } else rec.admit_error = a.why;
-    }
-  }
-  const plan = evidenceFixPlan(failures, fixes, (fix) => states[fix] ?? 'open');
-  const filed = new Map();
-  for (const g of plan.file) {
-    if (DRY) { out.push(`undraft (dry run): would file and admit one fix for \`${g.key}\`, for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}`); continue; }
-    const f = fileEvidenceFix(g);
-    filed.set(g.key, f);
-    if (f.fix) fixes[g.key] = { workflow: g.workflow, line: g.line, run: g.run, url: g.url, fix: f.fix, at: PASS_AT, admitted: !f.why, ...(f.why ? { admit_error: f.why } : {}), prs: {} };
-    out.push(f.fix ? `evidence: filed ${f.fix} to fix \`${g.key}\` for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}${f.why ? `, but it was not admitted (${f.why})` : ', admitted to the batch'}`
-      : `evidence: no fix filed for \`${g.key}\`: ${f.why}`);
-  }
-  // A failure no fix could be started or admitted for is one item for the person, on the lowest PR it
-  // fails (so the item stays put from pass to pass), naming the others, which wait on it.
-  const stuck = (p) => (p.call === 'file' || p.call === 'wait') && (!(p.fix ?? filed.get(p.key)?.fix) || fixes[p.key]?.admitted === false);
-  const lead = new Map();
-  for (const p of plan.prs) if (stuck(p)) lead.set(p.key, [...(lead.get(p.key) ?? []), p.n].sort((a, b) => a - b));
-  for (const p of plan.prs) {
-    const { t, n, head, c } = p;
-    let rec = p.rec;
-    const fix = p.fix ?? filed.get(p.key)?.fix ?? null;
-    const fr = fix ? fixes[p.key] : null;
-    const err = p.line ? `: "${p.line}"` : '';
-    const person = (why) => {
-      rec = { ...rec, call: 'person', why: `${c.why}${err}; ${why}`, action: c.action };
-      report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${rec.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
-    };
-    if (DRY && p.call === 'file') { saveUndraft(t, rec); continue; }
-    if (p.call === 'person') person(p.why);
-    else if (stuck(p)) {
-      const [first, ...rest] = lead.get(p.key);
-      const why = fix ? `${fix} was filed to fix it for the repo but not admitted (${fr.admit_error ?? 'refused'}): /desk-admit ${fix}`
-        : `no fix could be started for it for the repo (${filed.get(p.key)?.why ?? 'none filed'})`;
-      if (n === first) person(`${why}${rest.length ? `. PR(s) ${rest.map((x) => `#${x}`).join(', ')} fail the same way and wait on this` : ''}`);
-      else {
-        rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix ? `${fix} fixes it` : 'its fix'} once PR #${first}'s item is settled`, action: null };
-        out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
-      }
-    } else if (p.call === 'rerun') {
-      const prev = fr.prs[n]?.rerun ?? null;
-      rec = startEvidence(t, n, head, { workflow: c.workflow, why: `${fix} fixed its evidence workflow \`${c.workflow}\`, so it runs again`, cells: p.cells }, { ...rec, call: 'evidence', why: `${fix} fixed its evidence workflow, so it runs again`, action: null });
-      // Only a run that started counts as run again: one GitHub refused is started at the next pass.
-      fr.prs[n] = { ticket: t.key, head, rerun: rec.call === 'person' ? prev : head };
-    } else {
-      fr.prs[n] = { ticket: t.key, head, rerun: fr.prs[n]?.rerun ?? null };
-      rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix} fixes it for the repo, then the run is started again`, action: null };
-      out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
-    }
-    saveUndraft(t, rec);
-  }
-  if (!DRY) writeFixes(EVIDENCE_DIR, fixes);
+  const tOf = new Map(items.map((it) => [it.t.key, it.t]));
+  runSteps({
+    name: 'evidence failures',
+    snapshot: () => ({
+      ...baseSnapshot(), at: PASS_AT, dry: DRY, fixes: readFixes(EVIDENCE_DIR),
+      items: items.map((it) => ({ ...it, log: it.c.conclusion === 'failure' ? runLog(it.c.runId) : '' })),
+    }),
+    decide: decideEvidenceFailures,
+    handlers: {
+      ...OUT_HANDLERS,
+      'save-undraft': (a) => saveUndraft(tOf.get(a.key), a.rec),
+      'fix-state': (a) => evidenceFixState(a.fix),
+      admit: (a) => admitFix(a.fix),
+      file: (a) => fileEvidenceFix(a.group),
+      'start-evidence': (a) => startEvidence(tOf.get(a.key), a.n, a.head, a.c, a.rec),
+      'write-fixes': (a) => writeFixes(EVIDENCE_DIR, a.fixes),
+    },
+    report,
+  });
 }
 // Where a fix ticket stands: { st, at }. done once it merged (at: when) or finished with no PR, gone
 // once it failed, else open. One in no queue this pass reads is asked of the tracker: done there is
