@@ -265,6 +265,8 @@ export const PERMISSION_KEYS = Object.freeze({
   'codex-review': 'codex-review',
   'ci-protection': 'ci-protection',
   'gh-close-linked-issue': 'gh-close-linked-issue',
+  'gh-issue-create': 'gh-issue-create',
+  'gh-issue-comment': 'gh-issue-comment',
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',

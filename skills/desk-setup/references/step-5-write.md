@@ -55,6 +55,9 @@ plugins   : off here <ids / none> · kept <ids> (skills listed <before> → <aft
 still TODO: <rows>
 ```
 
+The `git / PR` line goes on with the GitHub issue rows: `close-linked-issue <a> · issue-create <a> ·
+issue-comment <a>`.
+
 Every row appears, including the `no`s. Then say how to change it: re-run `/desk-setup` in this
 repo, `/desk-setup permissions`, or edit the file. No reinstall needed. Other repos are untouched.
 
