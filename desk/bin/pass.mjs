@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -2368,10 +2368,7 @@ function signedOut(login) {
 }
 // Why this pass's health check found the API refusing a real call on `login`, or null. Its own health
 // item names the login and its fix, pushed once.
-function refusedOf(login) {
-  const r = (login?.configDir && HEALTH.logins?.[loginKey(login)]) || (sameLogin(login, OWN_LOGIN) ? HEALTH.results?.claude : null);
-  return r && !r.ok && r.refused ? r.why : null;
-}
+function refusedOf(login) { return refusedIn(HEALTH, login, OWN_LOGIN); }
 
 // Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
 // a pass, else what failed. §3b Worker models' finder and text models are proved too, on every

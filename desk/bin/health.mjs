@@ -433,7 +433,7 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
     ...(prev?.reviewer && !prev.reviewer.ok && !reviewerOut ? ['reviewer'] : [])];
   // Another login failing holds no spawn: a pass starts no worker on it. It is told with its
   // sign-in command once signed out or refused by the API, and a connection failure once it has lasted
-  // two runs. A refused one is also kept out of new work (refusedLogin, pass.mjs repoLogin).
+  // two runs. A refused one is also kept out of new work (refusedIn: pass.mjs repoLogin, the decider).
   const loginsOut = others.filter((l) => !loginResults[loginKey(l)]?.ok);
   const loginStreak = reused ? prev.login_streak ?? {}
     : nextStreak({ streak: prev?.login_streak ?? {} }, loginsOut.map((l) => ({ key: loginKey(l), kind: loginResults[loginKey(l)].kind ?? 'auth' })));
@@ -498,14 +498,17 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   return { off: false, reused, at, results, failing, holding, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held, logins: loginResults };
 }
 
-// Why the last health run at `state` found the API refusing a real call on `login`, or null: a login
-// with a config folder by its own result, else the `claude` check's, which runs on the caller's login.
+// Why a health run (`rec`: health()'s result or its health.json record) found the API refusing a real
+// call on `login`, or null. A login with a config folder is judged by its own result; the caller's
+// login (`own`, or a null `login`) by the `claude` check's, which ran on it; any other was not called.
 // A pass starts no new worker on that login, and the supervisor no decider.
-export function refusedLogin(state, login = null) {
-  const rec = readRecord(state);
-  const r = login?.configDir ? rec?.logins?.[loginKey(login)] : rec?.results?.claude;
+export function refusedIn(rec, login, own) {
+  const r = (login?.configDir && rec?.logins?.[loginKey(login)])
+    || (!login || (own && login.dir === own.dir) ? rec?.results?.claude : null);
   return r && !r.ok && r.refused ? r.why : null;
 }
+// The same, read from the last health run at `state`.
+export const refusedLogin = (state, login, own) => refusedIn(readRecord(state), login, own);
 
 const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
 // The repo item a failing reviewer check is told as, and that holds a PR's tries: a sign-in failure is

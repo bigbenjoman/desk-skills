@@ -29,6 +29,7 @@ import { questionKey, readRegister, lookup } from './not-now.mjs';
 import { usageLimit } from './usage-limit.mjs';
 import { callLogin } from './call-login.mjs';
 import { refusedLogin } from './health.mjs';
+import { loginOf } from './claude-logins.mjs';
 import { TAKE_CATEGORIES } from './decisions.mjs';
 import { recommendedAnswer } from './recoveries.mjs';
 
@@ -340,7 +341,7 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
 export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
   if (wait) return { wait };
-  const refused = refusedLogin(state, login);
+  const refused = refusedLogin(state, login, login ? loginOf(callerEnv.CLAUDE_CONFIG_DIR) : null);
   if (refused) return { wait: `its login${login ? ` ${login.name}` : ''} failed its health check, ${refused}` };
   const dir = join(state, 'decider');
   mkdirSync(dir, { recursive: true });
