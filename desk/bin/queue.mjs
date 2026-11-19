@@ -54,7 +54,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -650,7 +650,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
@@ -948,6 +948,22 @@ switch (cmd) {
     break;
   }
 
+  // The follow-on steps the person ran (needs-you's done on a follow item), by their text: each leaves
+  // follow_on, read here under the lock so a step the pass added since the item was listed is kept, and
+  // with none left the item is recorded run (follow_on_done=<at>).
+  case 'follow-ran': {
+    const [key, json, at] = args;
+    let ran;
+    try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
+    if (!key || !Array.isArray(ran) || !ran.length || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of step texts> <ISO time>');
+    const t = ticket(q, key);
+    const left = (t.follow_on ?? []).filter((s) => !ran.includes(s?.step));
+    applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
+    save(q);
+    console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded run${left.length ? `, ${left.length} kept` : ''}`);
+    break;
+  }
+
   // A finished feature spine whose specs passed pass.mjs's check, approved by the person: the spine is
   // done, its PR leaves draft (§3 pr-ready), and it merges under the batch's merge rules, after which
   // what is held behind it is released. answer.mjs never un-parks; this is the orchestrator's decision.
@@ -1162,7 +1178,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

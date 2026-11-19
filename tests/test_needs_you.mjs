@@ -2021,22 +2021,29 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const fi = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
   const byKey = (word) => Object.fromEntries(fi(word).map((i) => [i.t.key, i]));
   let g = byKey('prod785');
-  t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed', Object.keys(g).join(), 'follow:G-1');
-  t('DS-785 AC3 the listed item names its main and merge steps and not the production one',
-    /\(1\) place a test call on staging .*\(2\) start the staging crons /.test(g['follow:G-1']?.need ?? '') && !/Osteopaths/.test(g['follow:G-1']?.need ?? ''), true);
+  t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed; the merge and main steps are, one item per gate',
+    Object.keys(g).join(), 'follow:G-1,follow:G-1:main');
+  t('DS-785 AC3 the merge item names its merge step, and the main item its main step, neither the production one',
+    /\(1\) start the staging crons /.test(g['follow:G-1']?.need ?? '') && /^PR #95 \(G-1\) is merged and on the default branch, and a step waits on it that no worker runs after a merge: \(1\) place a test call on staging /.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
   t('DS-785 AC3 it says the production step waits until production runs the merge',
     (g['follow:G-1']?.need ?? '').endsWith('then say done. Another step waits until production runs its merge, and is listed then'), true);
-  t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3' in g, false);
-  t('DS-785 desk-q counts only the listed item', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 1);
+  t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
+  t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
   const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
   const g1 = queueOf('prod785').tickets['G-1'];
-  t('DS-785 done records the listed steps run and keeps the one still waiting on production',
-    `${done785.ok} ${g1.follow_on_done ?? 'unset'} ${JSON.stringify(g1.follow_on)} ${'follow:G-1' in byKey('prod785')}`, `true unset ${JSON.stringify([PROD])} false`);
+  t('DS-785 done on the merge item records its step run and keeps the main and production ones',
+    `${done785.ok} ${g1.follow_on_done ?? 'unset'} ${JSON.stringify(g1.follow_on)} ${Object.keys(byKey('prod785')).join()}`, `true unset ${JSON.stringify([PROD, STAGING])} follow:G-1:main`);
+  // Production moves after the main item was listed: done on that item records only the step it showed.
   git(c.root, 'update-ref', 'refs/remotes/origin/production', c.merge);
+  const doneMain = N.record({ word: 'prod785', ticket: 'follow:G-1:main', action: 'done' });
+  t('DS-785 done on the main item, once production has moved, keeps the production step it never showed',
+    `${doneMain.ok} ${queueOf('prod785').tickets['G-1'].follow_on_done ?? 'unset'} ${JSON.stringify(queueOf('prod785').tickets['G-1'].follow_on)}`, `true unset ${JSON.stringify([PROD])}`);
   g = byKey('prod785');
-  t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1,follow:G-2');
+  t('DS-785 AC4 once the production ref reaches the merge commit, the production steps are listed', Object.keys(g).sort().join(), 'follow:G-1:production,follow:G-2:production');
   t('DS-785 AC4 the listed production step says nothing about an unchecked gate',
-    /^PR #95 \(G-2\) is merged, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run it, then say done$/.test(g['follow:G-2']?.need ?? ''), true);
+    /^PR #95 \(G-2\) is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run it, then say done$/.test(g['follow:G-2:production']?.need ?? ''), true);
+  const doneProd = N.record({ word: 'prod785', ticket: 'follow:G-1:production', action: 'done' });
+  t('DS-785 done on the last step records the ticket\'s follow-on run', `${doneProd.ok} ${typeof queueOf('prod785').tickets['G-1'].follow_on_done}`, 'true string');
 
   // AC5: no Promotion ref, so production is judged by the default branch and says it was not checked.
   const unset = { port: 4786, beat: 1, supervised: true, merge: 'yes' };
@@ -2044,14 +2051,30 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const u = commits('noprod785');
   put('noprod785', { ...unset, tickets: { 'H-1': merged(95, u.merge, [PROD]), 'H-2': merged(96, u.unpushed, [PROD]) } });
   const h = byKey('noprod785');
-  t('DS-785 AC5 with the Promotion ref row unset, a production step on the default branch is listed, and one not on it is not', Object.keys(h).join(), 'follow:H-1');
-  t('DS-785 AC5 the item says production could not be checked because the row is unset',
-    (h['follow:H-1']?.need ?? '').includes('open Osteopaths in the production portal (it names no §3 row; production could not be checked: config §4 "Promotion ref" is unset)'), true);
+  t('DS-785 AC5 with the Promotion ref row unset, a production step on the default branch is listed, and one not on it is not', Object.keys(h).join(), 'follow:H-1:production');
+  t('DS-785 AC5 the item says production could not be checked because the row is unset, and claims only the default branch',
+    (h['follow:H-1:production']?.need ?? '').includes('open Osteopaths in the production portal (it names no §3 row; production could not be checked: config §4 "Promotion ref" is unset)')
+      && (h['follow:H-1:production']?.need ?? '').startsWith('PR #95 (H-1) is merged and on the default branch, '), true);
 
-  // A merge commit desk never recorded (a PR read before the pass kept one) is listed, saying so.
-  put('nosha785', { ...cfg, port: 4787, tickets: { 'J-1': merged(97, null, [PROD]) } });
-  t('DS-785 a gated step with no recorded merge commit is listed, saying the gate was not checked',
-    (byKey('nosha785')['follow:J-1']?.need ?? '').includes('desk has no merge commit recorded for PR #97, so production (`origin/production`) was not checked'), true);
+  // A merge commit not read yet waits, never listed early: none recorded (the pass reads the PR again for
+  // it), or one the repo root has not fetched (the pass fetches origin while a gated step waits).
+  put('nosha785', { ...cfg, port: 4787, tickets: {} });
+  commits('nosha785');
+  put('nosha785', { ...cfg, port: 4787, tickets: { 'J-1': merged(97, null, [PROD, STAGING]), 'J-2': merged(98, 'f'.repeat(40), [PROD, STAGING]) } });
+  t('DS-785 a gated step whose merge commit is not recorded, or not fetched, waits', Object.keys(byKey('nosha785')).join(), '');
+
+  // A feature batch child promoted by a squash: its own merge commit is on no remote ref, so its main
+  // gate is the promotion and production is judged by the default branch's commit from the promotion.
+  const feat = { ...cfg, port: 4788 };
+  put('feat785', { ...feat, tickets: {} });
+  const f = commits('feat785');
+  const promoted = { batch: { base: 'feat/VPL-842', feature: true, epic: 'VPL-842', promotion: { pr: 1002, merged_at: new Date().toISOString() } } };
+  put('feat785', { ...feat, tickets: { 'K-1': merged(97, f.unpushed, [PROD, STAGING]) }, ...promoted });
+  t('DS-785 a squash-promoted child lists its main step and holds its production step until production has the promotion',
+    Object.keys(byKey('feat785')).join(), 'follow:K-1:main');
+  git(f.root, 'update-ref', 'refs/remotes/origin/production', f.merge);
+  t('DS-785 and lists its production step once production has the promotion, saying nothing unchecked',
+    `${Object.keys(byKey('feat785')).join()} ${/is merged and production runs it, and a step waits on it that no worker runs after a merge: \(1\) open Osteopaths in the production portal \(it names no §3 row\) Run/.test(byKey('feat785')['follow:K-1:production']?.need ?? '')}`, 'follow:K-1:main,follow:K-1:production true');
 }
 
 // A feature batch's promotion PR still red once its check tries are spent (pass.mjs

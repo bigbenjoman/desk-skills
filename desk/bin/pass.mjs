@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX } from './harvest.mjs';
+import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -3796,6 +3796,11 @@ const prStates = {};
 const PR_FINAL = ['MERGED', 'CLOSED'];
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
 const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
+// A follow step gated on the default branch or production (needs-you.mjs gateHeld) waits on its PR's
+// merge commit, which a merge recorded without reading the PR (needs-you's done, a hand-ship) lacks, so
+// that PR is read again for it. GitHub names a merged PR's merge commit, so one read records it.
+const gatedFollow = (t) => followOnPending(t) && t.follow_on.some((s) => (s?.after ?? 'merge') !== 'merge');
+const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
 function readPrStatus(n) {
   const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
@@ -3922,8 +3927,8 @@ for (const t of Object.values(qNow.tickets)) {
   const owed = t.reopening != null && String(t.reopening) === String(n);
   if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
     prStates[n] = t.pr_status.state;
-    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n))) continue;
-    if (t.pr_status.merged_at) s = t.pr_status;
+    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
+    if (t.pr_status.merged_at && !commitOwed(t)) s = t.pr_status;
   } else if (n in prStates) continue;
   if (!s) {
     s = readPrStatus(n);
@@ -3957,6 +3962,12 @@ for (const t of Object.values(qNow.tickets)) {
   }
 }
 for (const m of merges) out.push(`merge recorded: ${m}`);
+// needs-you judges a gated follow step from the repo root's remote refs, so origin is fetched each pass
+// while one waits: nothing else moves origin/<default> or the Promotion ref there on a quiet repo.
+if (Object.values(qNow.tickets).some(gatedFollow)) {
+  const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
+  if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
+}
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));

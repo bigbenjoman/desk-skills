@@ -716,7 +716,7 @@ const results = (o) => ({ sha, round: 1, gaps: 0, skipped_files: 0, seats, findi
 const later = results({ post_merge: [{ gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run' }, { gap: 'AC8', needs: 'staging', step: 'place a test call on staging' }] });
 const body = (r) => [render(r), '', postMergeSection(r)].join('\n');
 const other = results({ post_merge: [{ gap: 'AC9', needs: 'device', step: 'someone else says so' }] });
-const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://github.com/acme/widgets/pull/' + n, mergedAt: '2026-11-10T09:00:00Z', headRefOid: sha, statusCheckRollup: [], reviews });
+const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://github.com/acme/widgets/pull/' + n, mergedAt: '2026-11-10T09:00:00Z', headRefOid: sha, mergeCommit: { oid: 'b'.repeat(40) }, statusCheckRollup: [], reviews });
 writeFileSync('$T/pm-702.json', pr(702, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({ gaps: 2 })) }, { author: { login: 'ben' }, state: 'COMMENTED', body: body(later) }, { author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
 writeFileSync('$T/pm-703.json', pr(703, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({})) }]));
 writeFileSync('$T/pm-704.json', pr(704, [{ author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
@@ -742,6 +742,8 @@ pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; 
 check "DS-570 AC2 DS-785 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row, gated on production or main as each needs" \
   '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[null,\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
 check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
+check "DS-785 the pass keeps the merged PR's merge commit, which needs-you judges a gated step by" \
+  '[ "$(field PM-1 pr_status.merge_commit)" = "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"" ]'
 check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
   '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
@@ -752,6 +754,7 @@ check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$
 node --input-type=module -e "
 import { readFileSync, writeFileSync } from 'node:fs';
 writeFileSync('$T/pm-705.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/705'));
+writeFileSync('$T/pm-710.json', JSON.stringify({ ...JSON.parse(readFileSync('$T/pm-702.json', 'utf8')), reviews: [], url: 'https://github.com/acme/widgets/pull/710' }));
 const open = JSON.parse(readFileSync('$T/pm-702.json', 'utf8'));
 writeFileSync('$T/pm-709.json', JSON.stringify({ ...open, state: 'OPEN', mergedAt: '0001-01-01T00:00:00Z', url: open.url.replace('/pull/702', '/pull/709') }));
 "
@@ -761,6 +764,7 @@ echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 705 "*) cat "$T/pm-705.json" ;;
   "pr view 709 "*) cat "$T/pm-709.json" ;;
+  "pr view 710 "*) cat "$T/pm-710.json" ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
@@ -773,7 +777,13 @@ q add PM-7; q set PM-7 state=done result.pr=708 merged_at=2026-11-01T09:00:00Z f
   'follow_on=[{"step":"run the backfill","row":"jira-comment"}]' \
   "pr_status={\"pr\":708,\"state\":\"MERGED\",\"merged_at\":\"2026-11-10T09:00:00Z\",\"checks\":[],\"post_merge\":$kept}"
 q add PM-8; q set PM-8 state=done result.pr=709
+# A merge needs-you's done recorded carries no merge commit: a step gated on production has its PR read
+# again for one, and a step with no gate does not (PM-6 above).
+q add PM-9; q set PM-9 state=done result.pr=710 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":710,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","checks":[]}' \
+  'follow_on=[{"step":"open the portal","row":null,"after":"production"}]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-785 a merge recorded with no merge commit, owing a gated follow step, has its PR read again for the commit" \
+  'grep -qE "pr view 710 " "$T/gh-calls" && [ "$(field PM-9 pr_status.merge_commit)" = "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"" ] && [ "$(field PM-9 follow_on.length)" = 1 ]'
 check "DS-570 an open PR's kept status carries its post-merge criteria, and they are no follow-on step before the merge" \
   '[ "$(field PM-8 pr_status.post_merge.length)" = 2 ] && [ "$(field PM-8 follow_on)" = null ]'
 check "DS-570 AC2 a requeued ticket whose earlier follow-on item was run lists its new PR's post-merge steps alone" \
@@ -784,7 +794,7 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
   '[ "$(field PM-5 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC7 (needs production): fill in the switch date\"]" ] && [ "$(field PM-5 merged_at)" != null ] && [ "$(field PM-6 follow_on.length)" = 1 ] && ! grep -qE "pr view 70[67] " "$T/gh-calls"'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
-  '! grep -qE "pr view 70[4-8] " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
+  '! grep -qE "pr view (70[4-8]|710) " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.

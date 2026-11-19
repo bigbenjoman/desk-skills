@@ -818,59 +818,72 @@ function outAt(q, t) {
   if (t.promoted_at) return t.promoted_at;
   return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
-// Whether a step's gate (harvest.mjs FOLLOW_GATES) holds once outAt does: { held, note }, `note` saying
-// why a gate was taken as held without being checked. A gate is git reachability of the PR's merge
-// commit (pr_status.merge_commit) in the repo root, read from its remote refs as the last fetch left
-// them. A batch child's main gate is its promotion's merge, which outAt has already seen.
-function gateHeld(r, t, s, git) {
+// Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
+// saying why a gate was taken as held without being checked. A gate is git reachability in the repo
+// root, from its remote refs as the last fetch left them: the pass fetches origin each pass while a gated
+// step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
+// (pr_status.merge_commit), or for a batch child that a squash promotion left off it, the default
+// branch's commit from that promotion (outAt, give or take PROMOTION_SLACK_MS). A batch child's main
+// gate is its promotion's merge, which outAt has already seen. A commit not read yet (no merge commit
+// recorded, or one not fetched) waits, as the pass records and fetches it; only a ref the repo root does
+// not have at all, which no fetch brings, lists the step saying it was not checked.
+const PROMOTION_SLACK_MS = 2 * 60 * 1000;
+function gateHeld(r, t, s) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
-  const pr = `PR #${t.result?.pr ?? '?'}`;
-  const def = repoConfigValue(r.slug, 'default-branch') ?? 'main';
   const root = expandHome(repoConfigValue(r.slug, 'repo-root') ?? '');
-  const sha = t.pr_status?.merge_commit ?? null;
+  if (!root || isNone(root)) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
+  const git = (args) => READS.git(root, args);
+  const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
+  const within = (a, b) => git(['merge-base', a, b]) === a;
+  const pr = `PR #${t.result?.pr ?? '?'}`;
+  const unread = (ref) => ({ held: true, note: `${ref} could not be read in ${root}, so whether it has ${pr}'s merge was not checked` });
+  const wait = { held: false, note: null };
+  const def = repoConfigValue(r.slug, 'default-branch') ?? 'main';
+  const main = commit(`origin/${def}`);
+  if (!main) return unread(`origin/${def}`);
   const promoted = !!t.promoted_at || viaBase(r.q, t);
-  // The merge commit reachable from `ref`: true, false, or null when either does not resolve.
-  const reaches = (ref) => {
-    if (!sha || !root || isNone(root)) return null;
-    const a = git(root, ['rev-parse', '--verify', '--quiet', `${sha}^{commit}`]);
-    const b = git(root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
-    if (!a || !b) return null;
-    return git(root, ['merge-base', a, b]) === a;
-  };
-  const unread = (where) => ({ held: true, note: sha ? `whether ${where} has ${pr}'s merge commit could not be read in ${root || 'the repo root'}` : `desk has no merge commit recorded for ${pr}, so ${where} was not checked` });
-  const onMain = () => {
-    if (promoted) return { held: true, note: null };
-    const r1 = reaches(`origin/${def}`);
-    return r1 == null ? unread(`origin/${def}`) : { held: r1, note: null };
-  };
-  if (after === 'main') return onMain();
-  const ref = promotionRef(repoConfigValue(r.slug, 'promotion-ref'));
-  if (ref.why) {
-    const m = onMain();
-    return m.held ? { held: true, note: `production could not be checked: ${ref.why}${m.note ? `; ${m.note}` : ''}` } : m;
+  const own = t.pr_status?.merge_commit ? commit(t.pr_status.merge_commit) : null;
+  let landed = own && within(own, main) ? own : null;
+  if (!landed && promoted) {
+    const at = Date.parse(outAt(r.q, t));
+    const when = (ms) => `${new Date(ms).toISOString().slice(0, 19).replace('T', ' ')} +0000`;
+    if (Number.isFinite(at)) landed = git(['rev-list', '-1', '--first-parent', `--since=${when(at - PROMOTION_SLACK_MS)}`, `--until=${when(at + PROMOTION_SLACK_MS)}`, main]) || null;
   }
-  // A squash promotion leaves a batch child's own merge commit off the default branch, and so off production.
-  if (promoted && reaches(`origin/${def}`) !== true) return unread(`production (\`${ref.ref}\`)`);
-  const p = reaches(ref.ref);
-  return p == null ? unread(`production (\`${ref.ref}\`)`) : { held: p, note: null };
+  if (after === 'main') return promoted || landed ? { held: true, note: null } : wait;
+  const ref = promotionRef(repoConfigValue(r.slug, 'promotion-ref'));
+  if (ref.why) return promoted || landed ? { held: true, note: `production could not be checked: ${ref.why}` } : wait;
+  if (!landed) return wait;
+  const prod = commit(ref.ref);
+  return prod ? { held: within(landed, prod), note: null } : unread(`production (\`${ref.ref}\`)`);
 }
 // A ticket's steps split by their gates: `ready` listed now (each with its note), `waiting` not yet.
-function followSplit(r, t, git) {
+function followSplit(r, t) {
   const ready = [], waiting = [];
   for (const s of t.follow_on) {
-    const g = gateHeld(r, t, s, git);
+    const g = gateHeld(r, t, s);
     if (g.held) ready.push({ s, note: g.note }); else waiting.push(s);
   }
   return { ready, waiting };
 }
 const followsOf = (r) => Object.values(r.q?.tickets ?? {}).filter((t) => followOnPending(t) && outAt(r.q, t));
-function followItems(r, git = READS.git) {
-  return followsOf(r).map((t) => ({ t, split: followSplit(r, t, git) })).filter((x) => x.split.ready.length)
-    .map(({ t, split }) => ({ r, t: { key: `${FOLLOW}${t.key}` }, item: followItem(r, t, split) }));
+const GATES = ['merge', 'main', 'production'];
+const gateOf = (s) => s?.after ?? 'merge';
+// A ticket's ready steps are one item per gate: `follow:<KEY>` for the merge's, `follow:<KEY>:<gate>` for
+// the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
+// gate that opens after the list was read is a new item rather than one taken as run unseen.
+function followItems(r) {
+  return followsOf(r).flatMap((t) => {
+    const { ready, waiting } = followSplit(r, t);
+    return GATES.filter((g) => ready.some((x) => gateOf(x.s) === g)).map((g, i) => ({
+      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}` },
+      item: followItem(r, t, { gate: g, ready: ready.filter((x) => gateOf(x.s) === g), waiting: i === 0 ? waiting : [] }),
+    }));
+  });
 }
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
-function followItem(r, t, { ready, waiting }) {
+const GATE_SAID = { merge: 'is merged', main: 'is merged and on the default branch', production: 'is merged and production runs it' };
+function followItem(r, t, { gate, ready, waiting }) {
   const rowSaid = (row) => {
     if (!row) return 'it names no §3 row';
     let v;
@@ -881,9 +894,11 @@ function followItem(r, t, { ready, waiting }) {
   const n = ready.length;
   const m = waiting.length;
   const later = m ? `. ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then` : '';
-  return { kind: 'follow', ticket: t.key, ...(m ? { waiting } : {}),
-    need: `PR #${t.result?.pr ?? '?'} (${t.key}) is merged, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
-    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${waiting.length ? 'these steps' : 'the item'} off your list`], ['not-now']],
+  // With production unchecked (no Promotion ref), its steps were judged by the default branch alone.
+  const said = GATE_SAID[gate === 'production' && ready.some((x) => x.note) ? 'main' : gate];
+  return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s.step),
+    need: `PR #${t.result?.pr ?? '?'} (${t.key}) ${said}, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
+    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
 
@@ -1807,9 +1822,10 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     addPutOff(putOffEntry({ ...i.putOffKey, ticket, at: new Date(now).toISOString(), ...(i.kind === 'step' ? { actions: verbsOf(i) } : {}) }), i.putOffDir ?? i.r.stateDir);
     return say(true, `put off (${notNowPath(i.putOffDir ?? i.r.stateDir)}).`);
   }
-  // Done on a follow item records the steps it listed as run: the ones still waiting on a gate are kept.
+  // Done on a follow item records the steps it listed as run, under the queue lock, so the ticket's other
+  // steps (another gate's, or one the pass added since) are kept.
   if (i.kind === 'follow') {
-    const m = queueCmd(i.r, ['set', i.ticket, i.waiting?.length ? `follow_on=${JSON.stringify(i.waiting)}` : `follow_on_done=${new Date(now).toISOString()}`]);
+    const m = queueCmd(i.r, ['follow-ran', i.ticket, JSON.stringify(i.steps), new Date(now).toISOString()]);
     return m.ok ? say(true, 'recorded as run, so it is off your list.') : say(false, `recording it was refused: ${m.out}`);
   }
   if (i.promotion != null) return say(true, `noted: the next pass reads promotion PR #${i.promotion}'s checks again, and this item goes once they pass.`);

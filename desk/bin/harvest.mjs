@@ -140,7 +140,7 @@ export function prBodyIn(texts) {
 export const FOLLOW_ON_MAX = 500;
 // What a step waits on before needs-you lists it: the merge (the default, kept as no `after`), its merge
 // commit on the default branch (`main`), or on config §4 "Promotion ref" (`production`).
-export const FOLLOW_GATES = ['merge', 'main', 'production'];
+const FOLLOW_GATES = ['merge', 'main', 'production'];
 const gateOf = (after) => (after == null || after === 'merge' ? {} : { after });
 export function followOnIn(done) {
   const s = String(done ?? '');
