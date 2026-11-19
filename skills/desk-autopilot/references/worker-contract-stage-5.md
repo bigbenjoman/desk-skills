@@ -175,3 +175,6 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
   holds, needs-you lists the step for the person with its row's value. A step you can run before the
   merge is not a follow-on: run it.
+- **A check your PR's own tests or CI already make is not a follow-on either.** Name that test in
+  your PR's Testing instead. A follow-on needs the merged code running where your checks cannot reach
+  it: staging, production, or a live third party.
