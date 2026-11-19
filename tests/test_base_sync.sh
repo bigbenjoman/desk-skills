@@ -538,6 +538,37 @@ node -e 'const f = process.argv[1]; const q = JSON.parse(require("fs").readFileS
 pass
 check "a production base in the queue is refused"    '[ $rc -eq 11 ] && [[ "$out" == *"is a production branch"* ]] && [ "$(git -C "$C/origin.git" rev-parse production)" = "$tip" ] && [ ! -e "$C/wt/base-production" ]'
 
+# desk-skills#837: the repo's own pre-push hook does not run on a base sync. The base worktree has no
+# installed deps, so a hook that runs the repo's checks could only fail there.
+# hook <output>: the repo's pre-push hook prints <output>, notes that it ran, and refuses the push.
+hook(){
+  mkdir -p "$C/hooks"
+  { echo '#!/bin/sh'; echo "touch '$C/hook.ran'"; echo "cat >&2 <<'OUT'"; printf '%s\n' "$1"; echo 'OUT'; echo 'exit 1'; } > "$C/hooks/pre-push"
+  chmod +x "$C/hooks/pre-push"; git -C "$C/repo" config core.hooksPath "$C/hooks"
+}
+# own_commit: the base gets content of its own on origin, as a merged child PR gives it.
+own_commit(){ git clone -q "$C/origin.git" "$C/own"; git -C "$C/own" switch -q feat/x; echo own > "$C/own/b.txt"; git -C "$C/own" add b.txt; git -C "$C/own" commit -q -m own; git -C "$C/own" push -q origin feat/x; }
+NO_DEPS=$'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN   Local package.json exists, but node_modules missing, did you mean to install?\nsh: turbo: command not found\npre-push: push stopped.'
+fresh hooked; hook "$NO_DEPS"; pass
+check "#837 DS-803 AC1 a base with nothing of its own is synced without running the hook, to main's content" \
+  'origin_has_main && [ ! -e "$C/hook.ran" ] && git -C "$C/origin.git" diff --quiet main feat/x && [[ "$out" != *"was refused"* ]] && [[ "$out" != *"turbo"* ]]'
+# With content of its own, the hook runs, and a real failing check refuses the push.
+fresh hookfmt; own_commit; hook $'pre-push: ok    pnpm lint (1s)\npre-push: FAIL  pnpm format:check (1s, exit 1)\n[warn] b.txt\n[warn] Code style issues found in the above file. Run Prettier with --write to fix.\npre-push: push stopped.'
+tip=$(origin_tip); pass
+check "DS-803 AC3 a base with its own content runs the hook, and a failing check refuses the sync" \
+  '[ -e "$C/hook.ran" ] && [ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"the push to feat/x was refused: pre-push: FAIL  pnpm format:check"* ]] && [[ "$out" != *"environment failure"* ]]'
+# pnpm warns of missing packages before every script there, so the warning beside a check that ran
+# and failed is still a failing check, and still refuses the push.
+fresh hookwarn; own_commit; hook $'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN   Local package.json exists, but node_modules missing, did you mean to install?\n[warn] b.txt\n[warn] Code style issues found in the above file.\npre-push: push stopped.'
+tip=$(origin_tip); pass
+check "DS-803 AC3 pnpm's missing-packages warning beside a failing check still refuses the sync" \
+  '[ -e "$C/hook.ran" ] && [ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"the push to feat/x was refused: pre-push: FAIL  pnpm format:check"* ]] && [[ "$out" != *"environment failure"* ]]'
+# A hook that could not run its checks there is said as an environment failure, and the
+# sync pushes without it.
+fresh hookenv; own_commit; hook "$NO_DEPS"; pass
+check "DS-803 AC2 a hook missing its tool is an environment failure naming it, and the sync still pushes" \
+  '[ -e "$C/hook.ran" ] && origin_has_main && git -C "$C/origin.git" cat-file -e feat/x:b.txt && [[ "$out" == *"could not run its checks in the base worktree (\`turbo\` (command not found), an environment failure"* ]] && [[ "$out" != *"was refused"* ]]'
+
 # AC5: a push refused as non-fast-forward is fetched, merged again and retried once.
 fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q feat/x; echo "$C/other" > "$T/race.arm"; pass
 check "a non-fast-forward push is retried and lands" 'origin_has_main && git -C "$C/origin.git" log --format=%s feat/x | grep -qx "merged by the driver"'

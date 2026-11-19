@@ -4,7 +4,9 @@
 // loop prompts every time. State lives in the process, like `queue.mjs watch`.
 //
 //   pr-watch.mjs checks <n>        every check on the head has completed and no workflow run on it
-//                                  is still in flight; names each failed check
+//                                  is still in flight; names each failed check. A PR that conflicts
+//                                  with its base ends it too: GitHub runs no checks on it until the
+//                                  branch is updated (an UNKNOWN mergeable, not yet computed, waits)
 //   pr-watch.mjs head <n> <sha>    the head has moved off <sha>; prints the new sha
 //   pr-watch.mjs merged <n>        the PR has merged or closed
 //   options: --repo owner/name (default this repo), --interval <s> (default 60)
@@ -19,7 +21,7 @@ const USAGE = 'usage: pr-watch.mjs checks <n> | head <n> <sha> | merged <n> [--r
 
 const ghError = (e) => (String(e?.stderr ?? '').trim() || String(e?.message ?? e)).split('\n')[0];
 
-const readPr = (n, repo) => JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', 'number,state,headRefOid,mergedAt,statusCheckRollup']));
+const readPr = (n, repo) => JSON.parse(gh(['pr', 'view', n, '--repo', repo, '--json', 'number,state,headRefOid,mergedAt,statusCheckRollup,mergeable,mergeStateStatus,baseRefName']));
 
 const short = (sha) => String(sha ?? '').slice(0, 7);
 const ended = (pr) => pr.state === 'MERGED' ? `PR #${pr.number} merged${pr.mergedAt ? ` at ${pr.mergedAt}` : ''}`
@@ -28,6 +30,9 @@ const ended = (pr) => pr.state === 'MERGED' ? `PR #${pr.number} merged${pr.merge
 // The line to print when the wait is over, or null to keep waiting. A job that `needs` another has
 // no check until that one finishes, so a workflow run still in flight is checks still to come.
 function checksDone(pr, repo) {
+  if (pr.state === 'OPEN' && (pr.mergeable === 'CONFLICTING' || pr.mergeStateStatus === 'DIRTY')) {
+    return `PR #${pr.number} conflicts with ${pr.baseRefName || 'its base'} at ${short(pr.headRefOid)}: no checks run until the branch is updated`;
+  }
   const all = normaliseRollup(pr.statusCheckRollup);
   const checks = latestPerCheck(all);
   if (!checks.length || checks.some((c) => c.status !== 'completed')) return ended(pr);

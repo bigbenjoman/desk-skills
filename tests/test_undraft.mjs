@@ -426,6 +426,15 @@ for (const rerun of ['ask', 'no']) t(`DS-402 AC3 ci-rerun ${rerun}, so the pass 
   t('DS-509 AC2 no follow_on: none', fo('pr=871 jira=In Review'), JSON.stringify({ steps: [], error: null }));
   t('DS-509 AC2 one that does not read says so and keeps none', followOnIn('pr=1 follow_on=[{"step": 3}]').error?.startsWith('an entry is not'), true);
   t('DS-509 AC2 one that is not JSON says so', followOnIn('pr=1 follow_on=run it').error, 'not a JSON array');
+  t('DS-785 AC1 a step whose "after" is production keeps that gate',
+    fo('pr=1 follow_on=[{"step": "open Osteopaths in the production portal", "row": null, "after": "production"}, {"step": "call staging", "row": null, "after": "main"}]'),
+    JSON.stringify({ steps: [{ step: 'open Osteopaths in the production portal', row: null, after: 'production' }, { step: 'call staging', row: null, after: 'main' }], error: null }));
+  t('DS-785 AC6 a step with no "after", or "after": "merge", keeps the merge gate, written as no after',
+    fo('pr=1 follow_on=[{"step": "run x", "row": null}, {"step": "run y", "row": null, "after": "merge"}]'),
+    JSON.stringify({ steps: [{ step: 'run x', row: null }, { step: 'run y', row: null }], error: null }));
+  const badAfter = followOnIn('pr=1 follow_on=[{"step": "run x", "row": null}, {"step": "run y", "row": null, "after": "staging"}]');
+  t('DS-785 AC7 an "after" that is not merge, main or production keeps nothing and names the entry',
+    `${badAfter.steps.length} ${badAfter.error}`, '0 an entry\'s "after" is not one of merge, main, production: {"step":"run y","row":null,"after":"staging"}');
   const step = [{ step: 'run x', row: null }];
   t('DS-509 AC5 a merged ticket with steps not yet run waits on the person', followOnPending({ merged_at: '2026-11-08T10:00:00Z', follow_on: step }), true);
   t('DS-509 AC5 one not merged, one said run, and one with no steps do not',

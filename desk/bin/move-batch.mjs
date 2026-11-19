@@ -31,8 +31,9 @@ import { writeQueueFile, archivePath } from './queue-store.mjs';
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
-// agent's own log (launchd writes it for the repo) and intake's register (intake admits into the slot).
-const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json'];
+// agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot) and
+// the repo's asks (asks.mjs).
+const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 

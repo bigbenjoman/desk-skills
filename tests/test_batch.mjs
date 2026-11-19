@@ -320,6 +320,13 @@ writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9, merged: [{
   tickets: { 'X-13': { ...stepsLeft, merged_at: '2026-10-29T11:00:00Z' } } });
 res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
 t('DS-784 an earlier slice\'s child keeps the age that slice gave it', readQ('X-12').tickets['X-13'].promoted_at, '2026-10-29T12:00:00.000Z');
+// DS-785: a child whose review's post-merge criteria no pass has made follow-on steps yet keeps the
+// batch too, so they are not archived away unseen; once a pass has read them, it archives.
+const owedSteps = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', pr_status: { pr: 13, state: 'MERGED', post_merge: [{ step: 'check on production' }] } };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': owedSteps } });
+t('DS-785 a child still owed its post-merge steps keeps the batch', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, false);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { ...owedSteps, post_merge_read: 13 } } });
+t('DS-785 once a pass has read them, it archives', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
 rmSync(dirname(namedQ('X-12')), { recursive: true, force: true });
 
 // DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
