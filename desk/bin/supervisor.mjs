@@ -71,7 +71,7 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, describeCrash, isHeld, stoppedHold, spinePark } from './batch-state.mjs';
+import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
@@ -90,9 +90,6 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// How long an idle batch with anything parked, failed or held outside goes without a pass: each pass
-// checks what clears its parks and outside holds, and is script-only.
-const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
 // Location roots an install passes on to the agent, so the tick reads the same config and scripts.
 const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
 
@@ -510,9 +507,14 @@ function batchInterval(intake) {
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
   // And, for a batch with anything parked, failed or held behind a blocker in no batch, the recheck
   // interval passing: what clears a park or an outside hold (a PR merged by hand, a variable set, a
-  // blocker landing) is only seen by a pass, which asks GitHub once per distinct outside blocker.
-  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed'
-    || (isHeld(t) && !stoppedHold(t) && String(t.held_outside ?? '').split('|').some(Boolean)))
+  // blocker landing) is only seen by a pass, which asks GitHub once per distinct outside blocker. An
+  // outside key counts only while it is still in held_by and in no ticket here: a person's release
+  // clears held_by and leaves held_outside behind.
+  const heldOutside = (t) => {
+    const by = String(t.held_by ?? '').split('|');
+    return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
+  };
+  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t))
     && Date.now() - idleAt >= IDLE_RECHECK_MS;
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck) {
     intakeAlone();
@@ -686,7 +688,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
     s.idle_at = startedAt;
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked or failed`);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch`);
   }
   writeState(state, s);
   log(out);
