@@ -912,7 +912,9 @@ fails it on any process start or file write. Every phase's snapshot starts from 
 the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
 false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers
 more than one phase calls live in that module too (`tests/test_pass_shared.mjs`); a phase imports
-them from there, never from `pass.mjs`.
+them from there, never from `pass.mjs`. The batch base sync and its baseline checks
+(`desk/bin/pass/batch-base.mjs`) are generators too: the sync's `synced` action hands what it settled
+(the spawn hold, the base worktree, the base fix try) back to `pass.mjs` for the sections after it.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
