@@ -248,8 +248,8 @@ check "DS-810 AC1: a driver started from an older release writes that release's 
 
 # ---- DS-796: a PR built outside its worker is recorded on its ticket, with GitHub's merge time -----
 # T-31 is triaged, its worker never started, and PR #131, opened on its branch by a session, merges.
-# A ticket done with its merge recorded may be archived, so it is read with queue.mjs get.
 qg(){ node "$B/queue.mjs" get "$1" 2>/dev/null | jq -r "$2"; }
+live(){ jq -e --arg k "$1" '.tickets | has($k)' "$DESK_QUEUE" >/dev/null; }
 SHA31=3131313131313131313131313131313131313131
 cat > "$T/prs.json" <<EOF
 { "131": { "head": "fix/T-31", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedAt": "2026-11-18T11:40:02Z" } }
@@ -260,6 +260,16 @@ check "DS-796 AC1: the merge records the PR on the ticket and GitHub's mergedAt 
   'grep -q "^131 main " "$T/merges.log" && [ "$(qg T-31 .result.pr)" = 131 ] && [ "$(qg T-31 .merged_at)" = 2026-11-18T11:40:02.000Z ]'
 check "DS-796 AC1: and the ticket is done, shipped outside its worker, so no worker is started for it" \
   '[ "$(qg T-31 .state)" = done ] && [ "$(qg T-31 .result.summary)" = "shipped outside its worker: PR #131 merged by the merge driver" ]'
+check "DS-796: it stays live, not archived, until a pass reads that PR for its review's after-merge criteria" 'live T-31'
+# T-33 records no branch, and PR #133 names it only in its title: another ticket's PR. Its merge time is
+# recorded as before, and the ticket is not taken as shipped on it.
+cat > "$T/prs.json" <<EOF
+{ "133": { "head": "fix/other-work", "title": "fix: T-33 follow-up", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedAt": "2026-11-18T11:41:00Z" } }
+EOF
+q add T-33 Task A; q set T-33 state=triaged
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-33" 2>&1); done
+check "DS-796: a PR whose branch does not name the ticket is not recorded as its PR" \
+  'grep -q "^133 main " "$T/merges.log" && [ "$(qg T-33 .state)" = triaged ] && [ "$(qg T-33 .result.pr)" = null ] && [ "$(qg T-33 .merged_at)" = 2026-11-18T11:41:00.000Z ]'
 # T-32's own worker opened PR #132 and parked: the merge records its time and leaves the ticket as its
 # worker left it, for the pass to send back for its after-merge steps.
 cat > "$T/prs.json" <<EOF
@@ -268,6 +278,6 @@ EOF
 q add T-32 Task A; q set T-32 state=parked branch=fix/T-32 draft_pr=132 'park={"question":"Stage 8: comment"}'
 for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-32" 2>&1); done
 check "DS-796: a ticket that records its own PR keeps its state, and gh's unset time falls back to the driver's clock" \
-  'grep -q "^132 main " "$T/merges.log" && [ "$(qg T-32 .state)" = parked ] && [ "$(qg T-32 .result.pr)" = null ] && [ "$(qg T-32 .merged_at)" != null ]'
+  'grep -q "^132 main " "$T/merges.log" && [ "$(qg T-32 .state)" = parked ] && [ "$(qg T-32 .result.pr)" = null ] && [ "$(qg T-32 .merged_at | cut -c1-4)" = "$(date -u +%Y)" ]'
 
 finish loop

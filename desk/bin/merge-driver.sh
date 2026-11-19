@@ -935,7 +935,7 @@ NODE
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
-  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
+  local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH" mat="" head=""
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
@@ -1152,11 +1152,12 @@ EOF_RESOLVE
       if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
     else
-      # GitHub's merge time rather than this clock's, and the PR itself: a ticket built outside its
-      # worker records no PR of its own, and this merge is its PR. gh writes an unset time as 0001-01-01.
-      mat=$(gh pr view "$n" --repo "$REPO" --json mergedAt -q .mergedAt 2>/dev/null)
+      # GitHub's merge time rather than this clock's, and the PR with its branch: a ticket built outside
+      # its worker records no PR of its own, and this merge is its PR where the branch names its key
+      # (queue.mjs merged). gh writes an unset time as 0001-01-01.
+      IFS="$TAB" read -r mat head < <(gh pr view "$n" --repo "$REPO" --json mergedAt,headRefName -q '"\(.mergedAt)\t\(.headRefName)"' 2>/dev/null)
       case "$mat" in 0001-*) mat= ;; [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;; *) mat= ;; esac
-      if rec=$(node "$Q" merged "$key" ${mat:+"$mat"} --pr "$n" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+      if rec=$(node "$Q" merged "$key" ${mat:+"$mat"} --pr "$n" ${head:+--head "$head"} 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
       else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
     fi
     # The epic is never transitioned: its close-out is the orchestrator's.

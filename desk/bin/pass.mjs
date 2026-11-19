@@ -1125,12 +1125,16 @@ function ownMergedPr(t) {
 // its tracker status category is done and it records no PR of its own, else null. A title is not
 // enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
 // requeued for more work counts only PRs merged after that merge, and one requeued for its after-merge
-// steps (merged_tail) never counts that PR, whose merge is why it runs. A merge time with no PR of the
+// steps (merged_tail) never counts that PR, whose merge is why it runs. Its own PR is the one it records,
+// else the one a spawn kept (merged_pr) when it cleared the result. A merge time with no PR of the
 // ticket's own behind it is the merge of a PR built outside its worker, which is the one to find, so it
 // excludes nothing. A read that fails is null, and the ticket spawns as it would have.
+// The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
+const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
 function shippedElsewhere(t) {
+  const mine = t.result?.pr ?? t.merged_pr ?? null;
   try {
-    const own = t.result?.pr != null ? Date.parse(t.merged_at) : NaN;
+    const own = mine != null ? Date.parse(t.merged_at) : NaN;
     const since = Math.max(...[Date.parse(t.added_at), own].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
     // 1000 is the most a GitHub search returns.
@@ -1140,11 +1144,11 @@ function shippedElsewhere(t) {
     const hit = (Array.isArray(prs) ? prs : [])
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
         && (since === -Infinity || Date.parse(p.mergedAt) >= since)
-        && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(t.result?.pr))))
+        && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(mine))))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
     if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
   } catch { /* unread: spawn as before */ }
-  if (t.result?.pr != null || t.draft_pr != null) return null;
+  if (mine != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {
@@ -2579,7 +2583,7 @@ function spawnCloud(t) {
   // Recorded running before the session starts, which cannot be taken back. A start that fails parks,
   // which moves it off running. `cloud` holds `started` from here, so a refused write of the session
   // below still leaves a running ticket the pass watches for its PR (advanceCloud) rather than skips.
-  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', 'draft_pr=null', 'spawn_failed=null'],
+  if (!recordRunning(t.key, ['stage=cloud', `cloud=${JSON.stringify({ started })}`, 'session_id=null', 'port=null', 'result=null', ...keepMergedPr(t), 'draft_pr=null', 'spawn_failed=null'],
     'no cloud session was started')) return;
   const s = startCloud(cloudPrompt({ key: t.key, repo: GH_REPO, base: DEFAULT_BRANCH, branch: t.branch, text, tests: E.isNone(tests) ? [] : tests }));
   if (s.error) {
@@ -3044,7 +3048,7 @@ for (const t of spawnable) {
   const logBytes = logPreflight(t.key, pre.cost);
   const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
+    'result=null', ...keepMergedPr(t), 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.

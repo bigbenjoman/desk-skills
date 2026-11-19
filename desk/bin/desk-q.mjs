@@ -225,7 +225,8 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
-    if (!keysOf(t.held_by).every((p) => q.tickets?.[p]?.merged_at || prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    // Through on what the last pass read: a PR it has not read yet waits for it.
+    if (!keysOf(t.held_by).every((p) => blockerThrough(q.tickets?.[p], () => prStatusOf(q.tickets?.[p])?.state ?? null))) return { k: 'waiting', text: 'behind PRs the next pass reads' };
     return ctx.releases ? { k: 'waiting', text: 'starts at the next pass' } : { k: 'needs', text: 'every blocker merged: let it start', act: releaseCmd(t.key) };
   }
   seen.add(t.key);
