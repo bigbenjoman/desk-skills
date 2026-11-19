@@ -9,10 +9,9 @@
 // yield gives back. So each ticket's reads and writes run in the order they did, while the decision
 // itself starts no process and writes nothing. The handlers that do I/O are pass.mjs's.
 //
-// The snapshot:
-//   tickets   the queue's tickets, as the pass read them for this step (the same objects the steps
-//             after it read)
-//   dry       a dry run: nothing is written but pr_status
+// The snapshot (pass/shared.mjs phaseSnapshot, with `tickets` the queue's tickets as the pass read them
+// for this step: the same objects the steps after it read) adds:
+//   dry      a dry run: nothing is written but pr_status
 //   passAt    the pass's start time, ISO
 //
 // Actions ("->" is what the handler returns):

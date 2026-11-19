@@ -3910,7 +3910,7 @@ const undrafted = [];
 const reopens = [];
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ tickets: qNow.tickets, dry: DRY, passAt: PASS_AT }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
