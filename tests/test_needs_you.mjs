@@ -2039,6 +2039,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     / Check: start the staging crons\./.test(g['follow:G-1']?.need ?? '') && /^G-1 is on main since \d{4}-\d\d-\d\d\. Check: place a test call on staging\. Then say done\.$/.test(g['follow:G-1:main']?.need ?? '') && !/Osteopaths/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), true);
   t('DS-785 AC3 it says the production step waits until production runs the merge',
     (g['follow:G-1']?.need ?? '').endsWith('Check: start the staging crons. Another step waits until production runs its merge, and is listed then. Then say done.'), true);
+  t('#808 the done action names the merged PR, whose checks a session reads before asking (references/follow.md)',
+    g['follow:G-1']?.actions.find(([a]) => a === 'done')?.[1].includes("PR #95's own checks"), true);
   t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
   t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
   t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
