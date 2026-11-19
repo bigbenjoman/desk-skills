@@ -561,7 +561,7 @@ check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour sta
   '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
-# ---- DS-809: the base sync line is one item whatever its wording; a new base head is one new session --
+# ---- the base sync line is one item whatever its wording; a new base head is one new session --
 ids=$(node --input-type=module -e "
 import { deciderItems } from '$B/decider.mjs';
 import { createHash } from 'node:crypto';
