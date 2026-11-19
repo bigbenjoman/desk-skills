@@ -85,10 +85,10 @@ case "\$(cat "$T/driver.mode" 2>/dev/null)" in
         echo "00:00:01Z merge driver exited 1"; echo "\$@" >> "$T/driver.calls"; exit 1 ;;
   hang) mkdir -p "$T/state/merge-driver.lock.d"; echo \$\$ > "$T/state/merge-driver.lock.d/pid"
         echo "\$@" >> "$T/driver.calls"; exec sleep 30 ;;
-  # loop: as the real one at rest, it records the installed version in its lock, sleeps between loops
-  # (or, with $T/busy, is mid-loop: its child is not sleep), and on TERM drops the lock.
+  # loop: as the real one at rest, it records the version of the release it runs from in its lock,
+  # sleeps between loops (or, with $T/busy, is mid-loop: its child is not sleep), and on TERM drops the lock.
   loop) D="\$DESK_AUTOPILOT_STATE/merge-driver.lock.d"; mkdir -p "\$D"; echo \$\$ > "\$D/pid"
-        node "$T/bin/installed.mjs" version > "\$D/version"
+        node "\$(dirname "\$0")/installed.mjs" running > "\$D/version"
         echo "\$@" >> "$T/driver.calls"
         trap 'rm -rf "\$D"; exit 143' TERM
         while true; do if [ -f "$T/busy" ]; then tail -f /dev/null; else sleep 30; fi; done ;;
@@ -402,20 +402,24 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -rf "$T/state/merge-d
 
 # ---- DS-666: a merge driver on old code moves to the installed code once it waits between loops ----
 held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
-# A driver an earlier tick left, detached, that started before the install (its lock says old0). It
-# waits for the driver's sleep (or, mid-loop, tail): the node writing its version has finished by then.
+# A driver an earlier tick left, detached, that runs from the older release old0 while installed.json
+# names new1: it writes its lock's version itself. It waits for the driver's sleep (or, mid-loop,
+# tail): the node writing its version has finished by then.
+OLDREL="$DESK_HOME/releases/old0"; mkdir -p "$OLDREL/bin"; printf '{"commit":"old0","release":"old0"}\n' > "$OLDREL/release.json"
+cp "$T/bin/merge-driver.sh" "$T/bin/installed.mjs" "$OLDREL/bin/"
+for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$T/bin/$f" "$OLDREL/bin/$f"; done
 olddriver(){
   kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
-  (cd "$T/repo" && "$T/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
+  (cd "$T/repo" && "$OLDREL/bin/merge-driver.sh" --tickets "A B" --deps "B:A" --log </dev/null >/dev/null 2>&1 &)
   i=0; while { [ -z "$(held)" ] || ! pgrep -x -P "$(held)" "$kid" >/dev/null; } && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
-  echo old0 > "$T/state/merge-driver.lock.d/version"
 }
 # setdriver <pid> <from>: supervisor.json's record of the driver the supervisor itself started.
 setdriver(){ node -e 'const f = process.argv[1]; const s = JSON.parse(require("fs").readFileSync(f, "utf8")); s.driver = { failures: 0, notified: false, pid: Number(process.argv[2]), started: "then", from: Number(process.argv[3]) }; require("fs").writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1" "$2"; }
 driverrec(){ node -e 'const d = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).driver; console.log(`${d.pid} ${d.started === "then"} ${d.from}`)' "$T/state/supervisor.json"; }
 stopdriver(){ p="$(held)"; [ -n "$p" ] && { kill "$p" 2>/dev/null; pkill -P "$p" 2>/dev/null; }; i=0; while [ -n "$(held)" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done; rm -rf "$T/state/merge-driver.lock.d"; }
 olddriver; old="$(held)"; n=$(count "$T/driver.calls")
+check "DS-810: the supervisor's driver here, started from an older release, holds a lock naming that release (the real driver's write: test_merge_driver_loop.sh)" '[ "$(cat "$T/state/merge-driver.lock.d/version")" = old0 ]'
 # A pass running holds supervisor.lock: the driver is not moved under it.
 sleep 30 & PASSPID=$!; printf '{"pid":%s}\n' "$PASSPID" > "$T/state/supervisor.lock"
 out=$(DESK_AGENT_VERSION=new1 tick)
