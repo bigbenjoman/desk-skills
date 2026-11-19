@@ -71,7 +71,8 @@ import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInpu
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf,
-  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed } from './pass/shared.mjs';
+  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed, filesNamedByRunning } from './pass/shared.mjs';
+import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1781,11 +1782,9 @@ const placesFor = (f) => {
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
-  for (const f of budgetFiles(r.key)) {
-    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
-    if (!by.length) continue;
-    const k = placesFor(f);
-    if (by.length >= k) holds.push({ file: f, k, by });
+  for (const { file, by } of filesNamedByRunning(r.key, [...runningKeys], budgetFiles)) {
+    const k = placesFor(file);
+    if (by.length >= k) holds.push({ file, k, by });
   }
   return holds;
 };
@@ -3103,95 +3102,12 @@ for (const { name, why } of pruneReadRepos()) report.failed.push(`read-only clon
 let readRepoFailures = null;
 // health.mjs markFailed's line, stall and push once a worktree setup in this pass has not reached the local database.
 let dbDown = null;
-for (const t of spawnable) {
-  // usageStop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it.
-  if (baseHold || usageStop || !(attempts < ticketSlots)) break;
-  // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
-  if (collidesWithRunning(t)) continue;
-  if (fixTryStale(t)) continue;
-  // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
-  const shipped = rerunAllowed.has(t.key) ? null : shippedElsewhere(t);
-  if (shipped) {
-    const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : 'done in Jira with no PR';
-    const before = report.failed.length;
-    if (!DRY) q(...shippedSet(t, how, shipped.pr ?? null, shipped.mergedAt ?? null));
-    if (report.failed.length === before) report.done.push(`${t.key}: ${how}, outside its worker: recorded done, no worker spawned`);
-    continue;
-  }
-  // Its code wholly in another repo by its triage record: handed over without taking a slot.
-  const away = startsFresh(t) ? E.triagePlacement(triageRec(t.key)) : null;
-  if (away) {
-    handAway(t, away);
-    continue;
-  }
-  // Held without taking a slot: another ticket may spawn in its place.
-  const busy = busyWorktree(t, { push: true });
-  if (busy) {
-    busyNow.add(t.key);
-    if (!DRY && t.worktree_busy?.why !== busy) q('set', t.key, `worktree_busy=${JSON.stringify({ why: busy, at: PASS_AT })}`);
-    report.waiting.push(`${t.key}: WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
-    continue;
-  }
-  // Held without taking a slot: a resume at a stage that runs no suite may still start in its place.
-  if (lockQueueHolds(t)) {
-    lockQueueHeld.push(t.key);
-    continue;
-  }
-  // Its last round's upload running in the machine's upload queue (another repo's pass may be running
-  // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
-  // the job is dropped here, in the same locked step, so no pump can start it before the worker runs.
-  if (!toResume(t) && !toHandoff(t) && t.location !== 'cloud') {
-    let up = null;
-    try { up = DRY ? UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, t.key) : UQ.claimForSpawn(QUEUE_FILE, t.key); } catch (e) {
-      report.waiting.push(`${t.key}: the machine's upload queue could not be read to drop its last round's upload (${e.message}), so no worker was spawned. The next pass looks again`);
-      continue;
-    }
-    if (up) {
-      report.waiting.push(`${t.key}: its last round's upload to PR #${up.pr} is running in the machine's upload queue, so its next round's worker waits for it to end. The next pass looks again`);
-      continue;
-    }
-  }
-  if (t.location !== 'cloud') {
-    readRepoFailures ??= refreshReadRepos();
-    if (readRepoFailures.length) {
-      const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${readRepoFailures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
-      // A requeue starts a parked ticket's session afresh, so a killed worker's waits for the next pass.
-      if (toResume(t)) { report.waiting.push(`${t.key}: ${failure}. Its session is kept, and the next pass tries again`); continue; }
-      // Takes the slot its worker would have: a bad refresh parks no more tickets than the pass would have started.
-      attempts += 1;
-      const line = `${failure}. Once it is reachable: queue.mjs requeue ${t.key}`;
-      q('set', t.key, 'handoff=null');
-      q('park', t.key, line);
-      report.parked.push(`${t.key}: ${line}`);
-      continue;
-    }
-  }
-  // A new session starts on the repo's subscription; a resumed one has its own, so it still goes ahead.
-  const needsLogin = !toResume(t) && (toHandoff(t) || t.location !== 'cloud');
-  const pick = needsLogin ? repoLogin() : null;
-  if (needsLogin && !pick) continue;
-  attempts += 1;
-  if (toResume(t)) {
-    // eslint-disable-next-line no-await-in-loop
-    await resumeKilled(t);
-    if (usageStop) break;
-    continue;
-  }
-  if (toHandoff(t)) {
-    // eslint-disable-next-line no-await-in-loop
-    await spawnHandoff(t, pick);
-    if (usageStop) break;
-    continue;
-  }
-  if (t.location === 'cloud') {
-    spawnCloud(t);
-    continue;
-  }
-  // An earlier setup in this pass found the local database down: no other worktree is set up on it.
-  if (dbDown) {
-    report.waiting.push(`${t.key}: held, the local database is not answering (health); it spawns on the first pass it answers`);
-    continue;
-  }
+const SETUP_FETCH_S = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
+// A local spawn's worktree, set up by setup-worktree.sh for decideSpawn's `setup` action: { wt, kept,
+// renamed, hung } where origin was found hung before it ran, else { wt, kept, renamed, ok, exitOk, out,
+// retried }. `ok` is the verdict, never the directory's existence: setup-worktree.sh removes a
+// worktree it could not finish, and a half-built one must not get a worker.
+function setUpWorktree(t) {
   const wt = join(WORKTREES, t.key);
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
@@ -3208,14 +3124,8 @@ for (const t of spawnable) {
     t.branch = fixed;
   }
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
-  // The exit code is the verdict, never the directory's existence: setup-worktree.sh removes a
-  // worktree it could not finish, and a half-built one must not get a worker.
-  const fetchLimit = String(Math.max(1, Math.ceil(REMOTE_GIT_MS / 1000)));
-  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: fetchLimit } });
-  // A remote that did not answer is the machine's, not the ticket's: it stays queued for the next pass.
-  const remoteDown = (why) => { report.waiting.push(`${t.key}: held, origin did not answer (${why}); it spawns on a pass origin answers`); };
-  if (remoteHung()) { remoteDown(remoteHung()); continue; }
-  const whyOf = (out) => out.split('\n').filter((l) => /FAIL|WARNING|failed|cannot lock ref/.test(l)).slice(-3).join(' ') || out.slice(-200);
+  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S } });
+  if (remoteHung()) return { wt, kept, renamed, hung: remoteHung() };
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
   let setupRun = runSetup();
   // A remote-tracking ref that moved under setup's fetch is stale, not broken: re-fetch it and retry once.
@@ -3228,38 +3138,85 @@ for (const t of spawnable) {
     retried = `first try: ${first}; re-fetched ${staleRef[2]}${refetch.ok ? '' : ` (that fetch failed: ${lastLine(refetch.out)})`} and retried once: `;
     if (setUp(setupRun)) report.recovered.push(`${t.key}: worktree setup could not lock the stale ref ${staleRef[1]}; re-fetched ${staleRef[2]} and the retry set it up`);
   }
-  const setup = setupRun.out;
-  const fetchHung = !setUp(setupRun) && /FAIL: git fetch origin did not answer within \d+s/.exec(setup)?.[0];
-  if (fetchHung) {
-    markRemoteHung(`git fetch ran past its ${fetchLimit} seconds earlier in this run`);
-    remoteDown(fetchHung.replace(/^FAIL: /, ''));
+  return { wt, kept, renamed, ok: setUp(setupRun), exitOk: setupRun.ok, out: setupRun.out, retried };
+}
+// The decision is pass/spawn-loop.mjs decideSpawn, run for each candidate in turn: its snapshot is the
+// loop's state as the candidate's turn comes, its reads and locked writes are the handlers below, made
+// as the decision yields them (runSteps), and its last action is the verdict. A `start` verdict's
+// worker is started here.
+const SPAWN_HANDLERS = {
+  ...PHASE_HANDLERS,
+  places: (a) => placesFor(a.file),
+  'fix-try-stale': (a, s) => fixTryStale(s.t),
+  shipped: (a, s) => shippedElsewhere(s.t),
+  placement: (a) => E.triagePlacement(triageRec(a.key)),
+  busy: (a, s) => busyWorktree(s.t, { push: true }),
+  'busy-held': (a) => { busyNow.add(a.key); },
+  'lock-queue': (a, s) => lockQueueHolds(s.t),
+  'lock-queue-held': (a) => { lockQueueHeld.push(a.key); },
+  'claim-upload': (a) => {
+    try { return { ok: true, up: DRY ? UQ.inFlight(UQ.readUploadQueue(), QUEUE_FILE, a.key) : UQ.claimForSpawn(QUEUE_FILE, a.key) }; } catch (e) { return { ok: false, why: e.message }; }
+  },
+  'read-repos': () => (readRepoFailures ??= refreshReadRepos()),
+  login: () => repoLogin(),
+  'take-slot': () => { attempts += 1; },
+  setup: (a, s) => setUpWorktree(s.t),
+  'remote-hung': (a) => { markRemoteHung(a.why); },
+  'db-down': (a) => {
+    dbDown = markHealthFailed('database', a.why, { state: STATE });
+    HEALTH.line = dbDown.line;
+    HEALTH.push.push(dbDown.push);
+    personStall(dbDown.stall);
+  },
+  skip: () => {},
+  'record-done': (a, s) => {
+    const before = report.failed.length;
+    if (!DRY) q(...shippedSet(s.t, a.how, a.pr, a.mergedAt));
+    if (report.failed.length === before) report.done.push(a.line);
+  },
+  park: (a) => {
+    q('park', a.key, a.line);
+    report.parked.push(`${a.key}: ${a.line}`);
+  },
+  'hand-away': (a, s) => handAway(s.t, a.placement),
+  start: () => {},
+};
+// The files the per-file budget counts for t, and, where it names any, for each ticket running now.
+const spawnFiles = (t) => {
+  const own = budgetFiles(t.key);
+  return Object.fromEntries([t.key, ...(own.length ? runningKeys : [])].map((k) => [k, budgetFiles(k)]));
+};
+for (const t of spawnable) {
+  const [verdict] = runSteps({
+    name: 'spawn loop',
+    // stop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it,
+    // or a start in this loop met the limit.
+    snapshot: () => ({ t, at: PASS_AT, dry: DRY, stop: baseHold || usageStop, attempts, slots: ticketSlots,
+      running: [...runningKeys], files: spawnFiles(t), rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t),
+      fresh: startsFresh(t), dbDown: !!dbDown, dbUp: !HEALTH.reused && HEALTH.results?.database?.ok === true, fetchLimit: SETUP_FETCH_S }),
+    decide: decideSpawn,
+    handlers: SPAWN_HANDLERS,
+    report,
+  }).slice(-1);
+  if (verdict?.type === 'skip' && verdict.stop) break;
+  if (verdict?.type !== 'start') continue;
+  if (verdict.how === 'resume') {
+    // eslint-disable-next-line no-await-in-loop
+    await resumeKilled(t);
+    if (usageStop) break;
     continue;
   }
-  if (!setUp(setupRun)) {
-    const why = `${retried}${whyOf(setup)}`;
-    // The local database not answering is the machine's, not the ticket's: it stays queued, and the
-    // database health check is marked failing so the hold starts now and lifts once it answers.
-    const pgDown = setup.split('\n').find((l) => /FAIL: cannot reach Postgres in container/.test(l));
-    // Unless the database check answered on this pass, and this ticket waited on it before: then the
-    // container is up and setup still cannot use it (a role it lacks, say), which waiting will not fix.
-    const dbUp = !HEALTH.reused && HEALTH.results?.database?.ok === true;
-    if (setupRun.ok === false && pgDown && !(dbUp && t.db_wait)) {
-      if (!DRY) q('set', t.key, `db_wait=${PASS_AT}`);
-      if (!dbDown) {
-        dbDown = markHealthFailed('database', pgDown.replace(/^.*?FAIL: /, '').trim(), { state: STATE });
-        HEALTH.line = dbDown.line;
-        HEALTH.push.push(dbDown.push);
-        personStall(dbDown.stall);
-      }
-      report.waiting.push(`${t.key}: worktree setup could not reach the local database, so it stays queued and spawns on the first pass the database answers`);
-      continue;
-    }
-    const answered = pgDown ? ' (the local database check passes, so waiting for it will not clear this)' : '';
-    q('park', t.key, `worktree setup failed, not spawned — ${why}${answered}`);
-    report.parked.push(`${t.key}: worktree setup failed, not spawned — ${why}${answered}`);
+  if (verdict.how === 'handoff') {
+    // eslint-disable-next-line no-await-in-loop
+    await spawnHandoff(t, verdict.pick);
+    if (usageStop) break;
     continue;
   }
-  if (t.db_wait && !DRY) q('set', t.key, 'db_wait=null');
+  if (verdict.how === 'cloud') {
+    spawnCloud(t);
+    continue;
+  }
+  const { pick, setup: { wt, kept, renamed, out: setup } } = verdict;
   // The branch this ticket's PR must come from: recorded so the merge driver matches the PR by
   // branch, never by a fuzzy key search.
   const branch = [...setup.matchAll(/\[setup-worktree\] branch=(\S+)/g)].pop()?.[1] ?? t.branch;

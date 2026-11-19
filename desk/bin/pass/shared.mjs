@@ -31,6 +31,18 @@ export const phaseSnapshot = ({ tickets, registry, now }) => ({ tickets, registr
 export const set = (key, ...fields) => ({ type: 'set', key, fields });
 export const say = (key, list, line) => ({ type: 'report', ...(key ? { key } : {}), list, line });
 
+// ---- the per-file budget ------------------------------------------------------
+// Each file `key`'s ticket names that another of the `running` keys names too, with those keys, as
+// { file, by }. `filesOf(key)` is a ticket's files as the budget counts them.
+export function filesNamedByRunning(key, running, filesOf) {
+  const named = [];
+  for (const file of filesOf(key)) {
+    const by = running.filter((k) => k !== key && filesOf(k).includes(file));
+    if (by.length) named.push({ file, by });
+  }
+  return named;
+}
+
 // ---- logins, subscriptions and usage holds ----------------------------------
 // A paused worker whose session is still live is quiet, not wedged, until this long after the reset.
 export const LIMIT_GRACE_MS = 30 * 60 * 1000;
