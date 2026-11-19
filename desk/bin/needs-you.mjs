@@ -955,7 +955,7 @@ function followItem(r, t, { gate, ready, waiting }) {
   const said = GATE_SAID[gate === 'production' && ready.some((x) => x.note) ? 'main' : gate];
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
     need: `PR #${t.result?.pr ?? '?'} (${t.key}) ${said}, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
-    actions: [['done', `the PR has merged, so only you run ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
+    actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or the PR's own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
 
