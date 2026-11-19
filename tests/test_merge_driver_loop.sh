@@ -238,7 +238,7 @@ rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
 # A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.
 # The PR list hook reads the lock's version while the driver holds it.
-RH="$T/relhome"; mkdir -p "$RH/releases/old0"; cp -R "$B" "$RH/releases/old0/bin"
+RH="$T/relhome"; mkdir -p "$RH/releases/old0"; cp -R "$B" "$RH/releases/old0/bin"; cp -R "$SRC/desk/templates" "$RH/releases/old0/templates"
 printf '{"commit":"old0","release":"old0"}\n' > "$RH/releases/old0/release.json"
 printf '{"commit":"new1"}\n' > "$RH/installed.json"
 echo '{}' > "$T/prs.json"
