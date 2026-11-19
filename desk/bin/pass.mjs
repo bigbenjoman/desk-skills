@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -2298,6 +2298,11 @@ function repoLogin() {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
     return null;
   }
+  const refused = refusedOf(login);
+  if (refused) {
+    noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) failed its health check, ${refused}, so nothing new starts for this repo; it never falls back to another`);
+    return null;
+  }
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
 }
 function noLogin(why) {
@@ -2308,9 +2313,14 @@ function noLogin(why) {
 // Why a session cannot resume on its login, or null. A login that could not be checked goes on to its
 // preflight, which says what is wrong with it.
 function signedOut(login) {
+  const refused = refusedOf(login);
+  if (refused) return `its login ${login.name} (${login.folder}) failed its health check, ${refused}, so its session was not resumed`;
   if ((INHERITS && login.dir === OWN_LOGIN.dir) || checkLogin(login).state !== 'signed out') return null;
   return `its login ${login.name} (${login.folder}) is signed out, so its session was not resumed. Sign it in, in another terminal: ${signInCommand(login)}`;
 }
+// Why this pass's health check found the API refusing a real call on `login`, or null. Its own health
+// item names the login and its fix, pushed once.
+function refusedOf(login) { return refusedIn(HEALTH, login, OWN_LOGIN); }
 
 // Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
 // a pass, else what failed. §3b Worker models' finder and text models are proved too, on every

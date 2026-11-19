@@ -39,7 +39,13 @@ login in its own folder (`desk-env logins`), get their own `claude auth status` 
 out, one is named under `STALLED` with its sign-in command and pushed as
 `health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own. A
 subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
-own pass), so an unused one signed out raises nothing.
+own pass), so an unused one signed out raises nothing. Each of those logins whose sign-in passes
+also makes one real call (`usage-probe.mjs` `probeNow`), because a login the API refuses (401, 403,
+a Cloudflare page) still passes `claude auth status`. A refused call fails that login with the
+API's error, told at once: the default's holds every spawn, and the pinned login's starts no new
+worker, resume or decider on it. A passing call is not made again for 15 minutes; a usage limit or
+no answer passes without being kept. A triage run that writes no record and whose log holds a 401
+or 403 names that status, not the session limit.
 
 **The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
 pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config
