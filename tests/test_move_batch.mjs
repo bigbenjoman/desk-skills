@@ -180,7 +180,11 @@ put(join(standingS, 'decider', 'd.json'), '{"result":"x"}');
 // A close-out note for this queue, and one written for another.
 put(join(standingS, 'closed-out', 'K-2.json'), `${JSON.stringify({ ticket: 'K-2', how: 'done', pr: null, at: 'then', queue: standingQ })}\n`);
 put(join(standingS, 'closed-out', 'K-9.json'), `${JSON.stringify({ ticket: 'K-9', how: 'merged', pr: 3, at: 'then', queue: '/other/queue.json' })}\n`);
+// DS-814: the slot holds only the triage records an earlier start of epic E-1 kept, which is no batch.
+put(join(namedS('E-1'), 'triage', 'K-7.json'), '{"ticket":"K-7"}');
+put(join(namedS('E-1'), 'triage', 'kept.json'), '{"K-7":{"base":"feat/epics","at":"then"}}');
 r = move();
+t('DS-814: a slot holding only kept triage records is moved into, and they go', existsSync(join(namedS('E-1'), 'triage', 'K-7.json')) || existsSync(join(namedS('E-1'), 'triage', 'kept.json')), false);
 t('AC1 moved: exit 0', r.code, 0);
 t('AC1 moved: says where it went', r.out.includes('from the standing slot to batch E-1') && r.out.includes(namedQ('E-1')) && r.out.includes(namedS('E-1')), true);
 t('AC1 the queue is under batches/E-1/, unchanged', existsSync(namedQ('E-1')) && read(namedQ('E-1')), q);
