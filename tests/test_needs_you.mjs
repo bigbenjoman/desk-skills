@@ -3068,5 +3068,36 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
 }
 
+// DS-796: a done blocker whose merge is recorded, with no PR, is through, so a ticket held behind it and
+// an open one waits on the open one; a done blocker with neither a merge nor a PR still needs the person.
+{
+  const { holdOf } = await import('../desk/bin/desk-q.mjs');
+  const held = (by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge` } });
+  put('th796', { port: 5796, beat: 1, supervised: true, tickets: {
+    'M-1': { state: 'done', lane: 'A', merged_at: minsAgo(60), result: { summary: 'shipped outside its worker: done in Jira with no PR' } },
+    'M-2': { state: 'done', lane: 'A', result: { pr: 72 }, pr_status: { pr: 72, state: 'OPEN', isDraft: false, checks: [] } },
+    'M-3': { state: 'done', lane: 'A', result: {} },
+    'H-1': held('M-1|M-2'),
+    'H-2': held('M-3'),
+  } });
+  const items = N.collect({ word: 'th796' }).items;
+  const q796 = queueOf('th796');
+  t('DS-796 AC3 desk-q: held behind a merged blocker with no PR and an open one, it waits on the open one', `${holdOf(q796, q796.tickets['H-1']).k} ${holdOf(q796, q796.tickets['H-1']).text.startsWith('behind #72')}`, 'waiting true');
+  t('DS-796 AC3 needs-you list: no "finished with no PR" item for the merged blocker', items.some((i) => /finished with no PR/.test(i.need ?? '') && i.t.key === 'H-1'), false);
+  t('DS-796 AC3 needs-you list (the CLI) says no blocker finished with no PR for it', /M-1 finished with no PR/.test(cli('list', 'th796').out), false);
+  t('DS-796 AC4 a done blocker with neither a merge nor a PR still needs you', items.some((i) => i.t.key === 'H-2' && /M-3 finished with no PR: let it start/.test(i.need ?? '')), true);
+  // The shared predicate, as desk-q reads it (the last pass's pr_status) and as the pass does (GitHub read now).
+  const { blockerThrough } = await import('../desk/bin/batch-state.mjs');
+  const gh = (s) => () => s;
+  t('DS-796 blockerThrough: merged, recorded or read', [
+    blockerThrough(q796.tickets['M-1']), blockerThrough(q796.tickets['M-1'], gh(null)),
+    blockerThrough({ state: 'done', result: { pr: 5 } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh('MERGED')),
+  ].join(), 'true,true,true,true');
+  t('DS-796 blockerThrough: not done, no PR and no merge, open, closed, or unread by the pass', [
+    blockerThrough({ state: 'triaged', merged_at: minsAgo(5) }), blockerThrough(q796.tickets['M-3']), blockerThrough(q796.tickets['M-2']),
+    blockerThrough({ state: 'done', result: { pr: 5 }, pr_status: { pr: 5, state: 'CLOSED' } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh(null)), blockerThrough(undefined),
+  ].join(), 'false,false,false,false,false,false');
+}
+
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

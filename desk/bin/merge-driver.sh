@@ -1151,8 +1151,14 @@ EOF_RESOLVE
       [ "${#moid}" -eq 40 ] || moid=
       if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
-    elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
-    else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    else
+      # GitHub's merge time rather than this clock's, and the PR itself: a ticket built outside its
+      # worker records no PR of its own, and this merge is its PR. gh writes an unset time as 0001-01-01.
+      mat=$(gh pr view "$n" --repo "$REPO" --json mergedAt -q .mergedAt 2>/dev/null)
+      case "$mat" in 0001-*) mat= ;; [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T*) ;; *) mat= ;; esac
+      if rec=$(node "$Q" merged "$key" ${mat:+"$mat"} --pr "$n" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
+      else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
+    fi
     # The epic is never transitioned: its close-out is the orchestrator's.
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0

@@ -246,4 +246,28 @@ printf 'cp "%s/state/merge-driver.lock.d/version" "%s/seen-version"\n' "$T" "$T"
 out=$(DESK_HOME="$RH" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$RH/releases/old0/bin/merge-driver.sh" --tickets "T-1" 2>&1); rc=$?
 check "DS-810 AC1: a driver started from an older release writes that release's commit into its lock, not the installed one" '[ $rc -eq 0 ] && [ "$(cat "$T/seen-version" 2>/dev/null)" = old0 ]'
 
+# ---- DS-796: a PR built outside its worker is recorded on its ticket, with GitHub's merge time -----
+# T-31 is triaged, its worker never started, and PR #131, opened on its branch by a session, merges.
+# A ticket done with its merge recorded may be archived, so it is read with queue.mjs get.
+qg(){ node "$B/queue.mjs" get "$1" 2>/dev/null | jq -r "$2"; }
+SHA31=3131313131313131313131313131313131313131
+cat > "$T/prs.json" <<EOF
+{ "131": { "head": "fix/T-31", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]], "mergedAt": "2026-11-18T11:40:02Z" } }
+EOF
+q add T-31 Task A; q set T-31 state=triaged branch=fix/T-31
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-31" 2>&1); done
+check "DS-796 AC1: the merge records the PR on the ticket and GitHub's mergedAt as its merge time" \
+  'grep -q "^131 main " "$T/merges.log" && [ "$(qg T-31 .result.pr)" = 131 ] && [ "$(qg T-31 .merged_at)" = 2026-11-18T11:40:02.000Z ]'
+check "DS-796 AC1: and the ticket is done, shipped outside its worker, so no worker is started for it" \
+  '[ "$(qg T-31 .state)" = done ] && [ "$(qg T-31 .result.summary)" = "shipped outside its worker: PR #131 merged by the merge driver" ]'
+# T-32's own worker opened PR #132 and parked: the merge records its time and leaves the ticket as its
+# worker left it, for the pass to send back for its after-merge steps.
+cat > "$T/prs.json" <<EOF
+{ "132": { "head": "fix/T-32", "base": "main", "sha": "$SHA31", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] } }
+EOF
+q add T-32 Task A; q set T-32 state=parked branch=fix/T-32 draft_pr=132 'park={"question":"Stage 8: comment"}'
+for i in 1 2; do out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-32" 2>&1); done
+check "DS-796: a ticket that records its own PR keeps its state, and gh's unset time falls back to the driver's clock" \
+  'grep -q "^132 main " "$T/merges.log" && [ "$(qg T-32 .state)" = parked ] && [ "$(qg T-32 .result.pr)" = null ] && [ "$(qg T-32 .merged_at)" != null ]'
+
 finish loop

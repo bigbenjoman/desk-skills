@@ -89,6 +89,9 @@ queued DS-377 fix/DS-377-own
 queued DS-378 fix/DS-378-own result.pr=341 merged_at=2026-10-31T10:20:00Z
 # AC2: done in Jira, no PR anywhere.
 queued DS-373 fix/DS-373-x; jira DS-373 Done "done"
+# DS-796 AC2: its only PR, #345 built outside its worker, merged at 12:30:02Z, and the merge driver's
+# clock stamped merged_at 1.4s later, with no PR recorded.
+queued DS-755 fix/DS-755-x merged_at=2026-10-31T12:30:03.462Z; jira DS-755 Done "done"
 # AC3: neither. DS-40's key is only a prefix of DS-404's branch; DS-372's PR merged before it was
 # queued; DS-374 is done in Jira but has a PR of its own still open; DS-40's Jira read fails.
 queued DS-40 fix/DS-40-x
@@ -98,6 +101,7 @@ cat > "$T/merged.json" <<'EOF'
 [{"number":330,"headRefName":"fix/DS-371-first-go","mergedAt":"2026-10-31T10:30:00Z"},
  {"number":337,"headRefName":"fix/DS-371-evidence-workflow","mergedAt":"2026-10-31T11:49:54Z"},
  {"number":341,"headRefName":"fix/DS-378-own","mergedAt":"2026-10-31T10:20:00Z"},
+ {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
  {"number":339,"headRefName":"chore/DS-376-by-hand","mergedAt":"2026-10-31T13:00:00Z"},
@@ -114,7 +118,11 @@ check "DS-404 AC1 a killed worker whose key a merged branch carries is not resum
   '[ "$(field DS-376 state)" = "\"done\"" ] && [ "$(field DS-376 result.pr)" = 339 ] && [ "$(field DS-376 resume)" = null ] && ! spawned DS-376'
 check "DS-404 AC2 done in Jira with no PR: recorded done, nothing spawned, no PR recorded" \
   '[ "$(field DS-373 state)" = "\"done\"" ] && [ "$(field DS-373 result.pr)" = null ] && ! spawned DS-373 && grep -q "DS-373: done in Jira with no PR, outside its worker: recorded done, no worker spawned" <<< "$out"'
-# The machine caps this batch at 3 workers, and five tickets remain: the three shipped took no slot.
+# Done with its merge recorded, it is archived, so it is read with queue.mjs get.
+got(){ node "$B/queue.mjs" get "$1" 2>/dev/null | jq -r "$2"; }
+check "DS-796 AC2 a merge time a little after its only PR's records that PR, not \"no PR\"" \
+  '[ "$(got DS-755 .state)" = done ] && [ "$(got DS-755 .result.pr)" = 345 ] && ! spawned DS-755 && [ "$(got DS-755 .result.summary)" = "shipped outside its worker: PR #345 merged from fix/DS-755-x" ]'
+# The machine caps this batch at 3 workers, and five tickets remain: the shipped ones took no slot.
 check "DS-404 tickets recorded done take no slot: the cap's three workers spawned" '[ "$(wc -l < "$T/spawned" | tr -d " ")" = 3 ]'
 check "DS-404 the search asks GitHub only for PRs merged since the ticket was queued" 'grep -qx "merged:>=2026-10-31" "$T/searches"'
 # Those three finish, and a second pass spawns the other two.

@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, shippedSet } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -1121,13 +1121,20 @@ switch (cmd) {
 
   // The merge driver, once a ticket's PR has merged: the first merge time is kept on the ticket, the
   // repo's eta history gains its line, and its saved first estimate gains the merge time beside it
-  // (desk-q-eta.mjs), after the queue lock is released.
+  // (desk-q-eta.mjs), after the queue lock is released. With --pr, the PR that merged: a ticket that
+  // records no PR of its own (one built outside its worker) and has no worker running is recorded done
+  // on it, as a pass records one shipped outside its worker.
   case 'merged': {
-    const [key, at] = args;
-    if (!key) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>]');
+    const at = args.indexOf('--pr');
+    const pr = at === -1 ? null : args[at + 1];
+    const [key, time] = at === -1 ? args : [...args.slice(0, at), ...args.slice(at + 2)];
+    if (!key || (at !== -1 && !/^\d+$/.test(pr ?? ''))) throw new Error('usage: queue.mjs merged <TICKET> [<ISO time>] [--pr <n>]');
     const t = ticket(q, key);
-    const when = at ?? new Date().toISOString();
+    const when = time ?? new Date().toISOString();
     if (Number.isNaN(Date.parse(when))) throw new Error(`merged: "${when}" is not a time`);
+    if (pr != null && t.result?.pr == null && t.draft_pr == null && t.state !== 'running') {
+      applySet(t, shippedSet(t, `PR #${pr} merged by the merge driver`, Number(pr), new Date(when).toISOString()).slice(2));
+    }
     t.merged_at ??= new Date(when).toISOString();
     t.updated_at = new Date().toISOString();
     save(q);

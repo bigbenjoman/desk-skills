@@ -36,7 +36,7 @@ import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
@@ -225,7 +225,7 @@ export function holdOf(q, t, ctx = NOBODY, seen = new Set()) {
   if (!keysOf(t.held_by).length) return { k: 'needs', text: 'held behind no recorded blocker: let it start', act: releaseCmd(t.key) };
   const open = unmergedBlockers(q, t);
   if (!open.length) {
-    if (!keysOf(t.held_by).every((p) => prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
+    if (!keysOf(t.held_by).every((p) => q.tickets?.[p]?.merged_at || prStatusOf(q.tickets?.[p])?.state === 'MERGED')) return { k: 'waiting', text: 'behind PRs the next pass reads' };
     return ctx.releases ? { k: 'waiting', text: 'starts at the next pass' } : { k: 'needs', text: 'every blocker merged: let it start', act: releaseCmd(t.key) };
   }
   seen.add(t.key);
@@ -608,10 +608,11 @@ export const heldDraft = (t) => {
 // The fix try a requeued ticket is on, until its worker finishes.
 const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : null);
 
-// A hold's blockers less those done with a PR that is merged. A PR the pass has not read yet is taken
-// as merged or about to be; one it recorded open (landing) or closed still holds.
+// A hold's blockers less those through (blockerThrough): done with a merge recorded, or with a PR
+// that is merged. A PR the pass has not read yet is taken as merged or about to be; one it recorded
+// open (landing) or closed still holds.
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
-  .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
+  .filter((p) => !blockerThrough(q.tickets?.[p]));
 
 function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
