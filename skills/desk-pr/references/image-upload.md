@@ -59,7 +59,10 @@ Playwright reads `PLAYWRIGHT_BROWSERS_PATH` once, on first import.
    holds one and no other textarea (the classic page's form), so a reply box's input is never taken
    for it, and on the React page appears only after step 3's focus.
    Wait for it with `{ state: 'attached' }` — the default `visible` times out with the element right there.
-   It is `multiple`; setting up to 15 files in one `setInputFiles` works **provided the wait in
+   **GitHub's current PR page has no file input at all**: its "Paste, drop, or click to add files"
+   button, in the same ancestor as the composer's textarea, makes one off the page and clicks it.
+   There, click that button inside `page.waitForEvent('filechooser')` and `setFiles` on the
+   chooser, one click per batch (`pr-composer.mjs`'s `setFiles` does this). Either way it is `multiple`; setting up to 15 files in one `setInputFiles` works **provided the wait in
    step 5 is per file**. Set only the files the cells name, 15 at a time, and record each batch's
    links before the next. `input.files.length` reads 0 afterwards because GitHub consumes it.
 5. **Wait per file, on that file's own finished tag.** GitHub inserts an HTML `<img>` into the

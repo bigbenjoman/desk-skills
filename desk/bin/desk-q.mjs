@@ -62,7 +62,7 @@ import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
-import { readUploadQueue } from './upload-queue.mjs';
+import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -133,17 +133,11 @@ function stateOf(q, t, ctx, seen) {
 
 const NOBODY = { releases: false, merges: false, reruns: false, live: false, stage: () => null, blockerCategory: () => undefined, stepOf: () => null, base: 'main', required: [], advisory: [], uploadPage: null };
 
-// The machine's upload queue paused on GitHub's PR page (upload-queue.mjs `page`): { page, prs }, the
-// PRs waiting in it as "<repo> #<pr>", or null while uploads run. A queue that cannot be read pauses nothing.
-export function uploadPause() {
-  let q;
-  try { q = readUploadQueue(); } catch { return null; }
-  return q.page ? { page: q.page, prs: [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))] } : null;
-}
-// The one note a screen gives that pause, however many of its PRs wait on it.
+// The one note a screen gives the machine's upload pause on GitHub's PR page (upload-queue.mjs
+// uploadPause), however many of its PRs wait on it.
 const uploadPauseText = ({ page, prs }) => `Screenshot uploads are paused for every repo: desk's uploader found GitHub's PR page changed (${String(page.why ?? '').replace(/\s+/g, ' ').trim()}, at ${page.at}). `
   + `${prs.length ? `${prs.length} PR${prs.length === 1 ? '' : 's'} wait${prs.length === 1 ? 's' : ''} in draft for ${prs.length === 1 ? 'its' : 'their'} screenshots` : 'No upload waits on it yet'}. `
-  + 'It is desk\'s fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes them.';
+  + `${PAGE_RESUMES}.`;
 // A park the person answered through desk-needs-you whose requeue was left to the live session running
 // the batch: it waits on that session, not on them, until the requeue clears the park. With passes
 // stopped nothing will requeue it, so it needs them again.
@@ -527,8 +521,10 @@ function draftNeed(q, t, needs, merging, now = Date.now(), ctx = NOBODY) {
   if (u?.call === 'build' || (u?.call === 'wait' && /^its check build/.test(u.why ?? ''))) return merging(['draft', null], [' · check build running, out of draft once green', null]);
   if (u?.call === 'evidence' || (u?.call === 'wait' && /^its evidence workflow/.test(u.why ?? ''))) return merging(['draft', null], [' · screenshots being taken, out of draft once they are in', null]);
   // The pass uploads screenshots desk holds and never tried to put in (undraft.mjs cellCall `upload`),
-  // unless GitHub's page change has paused every upload: the screen's note names that once.
-  if (u?.call === 'upload' && ctx.uploadPage) return merging(['draft', null], [' · ', null], ['screenshot uploads paused', WARN], [': GitHub\'s PR page changed, see the note', null]);
+  // or tries again one whose upload was busy, throttled or crashed (its `wait`, "<n> screenshot cell(s)
+  // left: …"), unless GitHub's page change has paused every upload: the screen's note names that once.
+  const retry = u?.call === 'wait' && /^\d+ screenshot cell\(s\) left/.test(u.why ?? '');
+  if ((u?.call === 'upload' || retry) && ctx.uploadPage) return merging(['draft', null], [' · ', null], ['screenshot uploads paused', WARN], [': GitHub\'s PR page changed, see the note', null]);
   if (u?.call === 'upload') return merging(['draft', null], [' · screenshots being uploaded, out of draft once they are in', null]);
   if (u?.call === 'wait' && /^its base /.test(u.why ?? '')) return merging(['draft', null], [' · base being synced or the PR reopened so CI runs', null]);
   if (u?.call === 'rebuilt') return merging(['draft', null], [' · check built and re-run, out of draft once green', null]);

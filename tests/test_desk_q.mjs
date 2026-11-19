@@ -2318,21 +2318,25 @@ r490.machine = { running: 0, cap: 10 };
 t('DS-490 AC3 a draft on a check pending past the limit says how long it has been pending', railText(Q.ticketScreen(r490, 'V-697', { now: NOW })).includes('Cookie Notice (local build) pending 3d 4h · stuck: the next pass re-runs it'), true);
 t('DS-490 AC3 negative control: one pending under the limit reads as checks running', railText(Q.ticketScreen(r490, 'V-699', { now: NOW })).includes('draft · checks running, out of draft once green'), true);
 
-// ---- DS-802: with uploads paused on GitHub's page change (upload-queue.json `page`), a PR waiting to
-// upload reads as paused, and each screen names the pause once for the machine.
+// ---- With uploads paused on GitHub's page change (upload-queue.json `page`), a PR waiting to upload
+// reads as paused, a retry of one as well, and each screen names the pause once for the machine.
 const upload802 = { call: 'upload', why: 'its screenshots are held by desk and were never put in' };
+const retry802 = { call: 'wait', why: "1 screenshot cell(s) left: after-desktop.png: GitHub's rate limit throttled desk's upload of them, and a pass tries it again" };
 put(I.T, I.env, 'up802', { port: 5802, conc: '3 / 5', beat: 1, queue: { batch: 'up802', concurrency: 3, supervised: true, tickets: {
   'U-1': { ...prOn(1008, [okCheck('tests')], { isDraft: true }), undraft: upload802 },
   'U-2': { ...prOn(1079, [okCheck('tests')], { isDraft: true }), undraft: upload802 },
+  'U-3': { ...prOn(1080, [okCheck('tests')], { isDraft: true }), undraft: retry802 },
 } } });
 const uq802 = join(I.env.DESK_HOME, 'upload-queue.json');
 const r802 = () => { const r = Q.loadRepos(NOW).find((x) => x.name === 'up802'); r.machine = { running: 0, cap: 10 }; return r; };
 t('DS-802 AC2 negative control: with no pause a waiting upload reads as being uploaded', railText(Q.ticketScreen(r802(), 'U-1', { now: NOW })).includes('screenshots being uploaded'), true);
+t('DS-802 AC2 negative control: with no pause a retry does not read as paused', railText(Q.ticketScreen(r802(), 'U-3', { now: NOW })).includes('screenshot uploads paused'), false);
 writeFileSync(uq802, JSON.stringify({ jobs: [{ repo: 'acme/voicepa', pr: 1008 }, { repo: 'acme/pr-ninja', pr: 1079 }, { repo: 'acme/pr-ninja', pr: 1079 }], results: [],
   page: { at: '2026-11-18T18:39:10.000Z', why: "GitHub's PR page changed: the comment composer has no file input once focused", repo: 'acme/pr-ninja', pr: 1079, install: '/x/releases/81245615' } }));
 const shot802 = railText(Q.ticketScreen(r802(), 'U-1', { now: NOW }));
 t('DS-802 AC2 a PR waiting to upload reads as paused on the page change', shot802.includes("screenshot uploads paused: GitHub's PR page changed"), true);
 t('DS-802 AC2 and not as screenshots being uploaded', shot802.includes('screenshots being uploaded'), false);
+t('DS-802 AC2 a throttled upload waiting to be tried again reads as paused too', railText(Q.ticketScreen(r802(), 'U-3', { now: NOW })).includes("screenshot uploads paused: GitHub's PR page changed"), true);
 const repo802 = Q.repoScreen(r802(), { now: NOW });
 t('DS-802 AC2 the repo screen names the pause once, for every repo', lines(repo802).filter((l) => l.includes('Screenshot uploads are paused for every repo')).length, 1);
 t('DS-802 AC2 with the page\'s reason and the PRs waiting on it', repo802.includes("the comment composer has no file input once focused, at 2026-11-18T18:39:10.000Z). 2 PRs wait in draft"), true);
