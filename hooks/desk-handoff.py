@@ -29,7 +29,8 @@ Compaction mode: with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set (1-100), Claude Code c
 on its own and carries on, so nobody is asked to /clear. Past the threshold the session is told to
 write its handoff, or refresh the one it wrote before an earlier compaction, and keep working; the
 compaction then reads it back. The handoff is held (.held) from when it is named, so no other
-session's /clear takes it, and one not rewritten since it was last asked for is not handed over. Set the §2 handoff % below the override, so the handoff is written
+session's /clear takes it while that Claude process runs, and one not rewritten since it was last
+asked for is not handed over. Set the §2 handoff % below the override, so the handoff is written
 before the compaction that needs it; install.sh offers to set the override. Without it, the handoff
 asks for /clear as before.
 
@@ -305,19 +306,34 @@ def handoffs(root):
     return sorted(files, key=os.path.getmtime, reverse=True)
 
 
-def held_names(root):
-    """Handoffs a compacting session holds (.handoffs/.held): no other session's /clear takes them."""
+def process_alive(pid):
+    """Whether the Claude process a hold names still runs. A name that is not a number (the test
+    stand-in, DESK_HANDOFF_PID) or a line with none counts as running."""
     try:
-        return open(os.path.join(handoff_dir(root), ".held")).read().split()
+        os.kill(int(pid), 0)
+    except (TypeError, ValueError, PermissionError):
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def held_names(root):
+    """Handoffs a compacting session holds (.handoffs/.held, one `<name> <pid>` a line): no other
+    session's /clear takes them while the Claude process holding them runs."""
+    try:
+        lines = open(os.path.join(handoff_dir(root), ".held")).read().splitlines()
     except Exception:
         return []
+    parts = [line.split() for line in lines]
+    return [p[0] for p in parts if p and process_alive(p[1] if len(p) > 1 else None)]
 
 
 def hold(root, path):
     name = os.path.basename(path)
     if name not in held_names(root):
         with open(os.path.join(handoff_dir(root), ".held"), "a") as f:
-            f.write(name + "\n")
+            f.write(f"{name} {claude_pid()}\n")
 
 
 def compaction_mode():

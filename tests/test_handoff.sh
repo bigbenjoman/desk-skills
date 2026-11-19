@@ -333,6 +333,12 @@ check "#865 a second compaction with no crossing since: PreCompact names no stal
 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=m1 hook SessionStart m1 "$T/low.jsonl" ',"source":"compact"'
 check "#865 and the compaction injects none"               '[ -z "$out" ]'
 
+# A hold whose Claude process has exited no longer keeps the handoff from another session's /clear.
+echo "# orphan" > "$R/.handoffs/orphan-865.md"
+DEAD=99999999; printf 'orphan-865.md %s\n' "$DEAD" >> "$R/.handoffs/.held"
+hook SessionStart o9 "$T/low.jsonl" ',"source":"clear"'
+check "#865 a handoff held by a Claude process that has exited is taken by the next /clear" '[[ "$(ctx)" == *"read .handoffs/orphan-865.md"* ]]'
+
 # A /clear straight after a compaction, with no crossing since, still finds the session's own handoff
 # when another session's is newer.
 CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=k1 hook PostToolUse k1 "$T/high.jsonl"
