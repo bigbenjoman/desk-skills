@@ -720,6 +720,11 @@ const pr = (n, reviews) => JSON.stringify({ state: 'MERGED', url: 'https://githu
 writeFileSync('$T/pm-702.json', pr(702, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({ gaps: 2 })) }, { author: { login: 'ben' }, state: 'COMMENTED', body: body(later) }, { author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
 writeFileSync('$T/pm-703.json', pr(703, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(results({})) }]));
 writeFileSync('$T/pm-704.json', pr(704, [{ author: { login: 'mallory' }, state: 'COMMENTED', body: body(other) }]));
+// DS-787: a review whose post-merge criteria word the worker's two follow steps differently.
+const reworded =results({ post_merge: [{ gap: 'AC5', needs: 'production', step: 'manual production run: open Osteopaths in the production portal' }, { gap: 'AC6', needs: 'staging', step: 'staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project' }] });
+writeFileSync('$T/pm-711.json', pr(711, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(reworded) }]));
+writeFileSync('$T/pm-712.json', pr(712, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(reworded) }]));
+writeFileSync('$T/pm-713.json', pr(713, [{ author: { login: 'ben' }, state: 'COMMENTED', body: body(reworded) }]));
 "
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
@@ -728,26 +733,40 @@ case "\$*" in
   "pr view 702 "*) cat "$T/pm-702.json" ;;
   "pr view 703 "*) cat "$T/pm-703.json" ;;
   "pr view 704 "*) cat "$T/pm-704.json" ;;
+  "pr view 711 "*) cat "$T/pm-711.json" ;;
+  "pr view 712 "*) cat "$T/pm-712.json" ;;
+  "pr view 713 "*) cat "$T/pm-713.json" ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
 EOF
 chmod +x "$T/stub/gh"
 q init pm
-q add PM-1; q set PM-1 state=done result.pr=702 'follow_on=[{"step":"run the backfill","row":"jira-comment"}]'
+q add PM-1; q set PM-1 state=done result.pr=702
 q add PM-2; q set PM-2 state=done result.pr=703
 q add PM-3; q set PM-3 state=done result.pr=704
+q add PM-10; q set PM-10 state=done result.pr=711 \
+  'follow_on=[{"step":"after the promotion, open Osteopaths in the production portal","row":null},{"step":"after the promotion, delete AUTOMATED_TESTS_ENABLED from the staging portal Vercel project","row":null}]'
+q add PM-11; q set PM-11 state=done result.pr=712 'follow_on=[{"step":"Issue link not made: PM-11 blocks PM-12","row":"jira-edit"}]'
+q add PM-13; q set PM-13 state=done result.pr=713 post_merge_read=709 \
+  'follow_on=[{"step":"Check after the merge: AC2 (needs device): play the clip on a phone","row":null}]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { followOnPending } from '$B/harvest.mjs'; console.log(followOnPending(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
-check "DS-570 AC2 DS-785 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row, gated on production or main as each needs" \
-  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[null,\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-570 AC2 DS-785 AC2 DS-787 AC2 a merged PR whose worker declared no follow step lists its post-merge criteria, naming no §3 row, gated on production or main as each needs" \
+  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-787 AC1 a merged PR whose worker declared follow steps keeps only those, adding none of its review's post-merge criteria" \
+  '[ "$(field PM-10 follow_on | jq -c "[.[].step]")" = "[\"after the promotion, open Osteopaths in the production portal\",\"after the promotion, delete AUTOMATED_TESTS_ENABLED from the staging portal Vercel project\"]" ] && [ "$(field PM-10 post_merge_read)" = 711 ] && ! echo "$out" | grep -qF "merge recorded: PM-10 (PR #711): 2 criteria"'
+check "DS-787 AC3 a ticket whose only follow steps are link steps gains the post-merge criteria after them" \
+  '[ "$(field PM-11 follow_on | jq -c "[.[].step]")" = "[\"Issue link not made: PM-11 blocks PM-12\",\"Check after the merge: AC5 (needs production): manual production run: open Osteopaths in the production portal\",\"Check after the merge: AC6 (needs staging): staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ]'
+check "DS-787 a requeued ticket whose only kept steps are an earlier PR's unrun criteria gains the new PR's criteria after them" \
+  '[ "$(field PM-13 follow_on | jq -c "[.[].step]")" = "[\"Check after the merge: AC2 (needs device): play the clip on a phone\",\"Check after the merge: AC5 (needs production): manual production run: open Osteopaths in the production portal\",\"Check after the merge: AC6 (needs staging): staging variable removed: AUTOMATED_TESTS_ENABLED gone from the staging portal Vercel project\"]" ] && [ "$(field PM-13 post_merge_read)" = 713 ]'
 check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
 check "DS-785 the pass keeps the merged PR's merge commit, which needs-you judges a gated step by" \
   '[ "$(field PM-1 pr_status.merge_commit)" = "\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"" ]'
 check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
   '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
-check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 3 ]'
+check "DS-570 the next pass reads no PR again and adds no step twice" '[ ! -s "$T/gh-calls" ] && [ "$(field PM-1 follow_on.length)" = 2 ] && [ "$(field PM-10 follow_on.length)" = 2 ] && [ "$(field PM-11 follow_on.length)" = 3 ] && [ "$(field PM-13 follow_on.length)" = 3 ]'
 # A merge recorded before the pass read it still gains its steps: the merge driver's (merged_at set, its
 # kept status still open), and needs-you's done or a hand-shipped ticket's (the kept status set merged,
 # carrying the criteria an earlier read of the open PR kept).

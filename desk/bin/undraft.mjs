@@ -241,7 +241,7 @@ export function postMergeIn(body) {
 // needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system. What a
 // criterion needs is its gate (harvest.mjs FOLLOW_GATES): production waits on the production ref,
 // staging and a deploy on the default branch, anything else on the merge.
-const POST_MERGE_STEP ='Check after the merge: ';
+export const POST_MERGE_STEP ='Check after the merge: ';
 const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
 export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null,
   ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
