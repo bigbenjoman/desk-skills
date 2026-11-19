@@ -2,7 +2,7 @@
 // takes what it reads as arguments: none starts a process, calls git, gh or Jira, or writes the queue.
 // A helper that does any of those stays in pass.mjs as an action handler.
 import { isNone } from '../desk-env.mjs';
-import { resetText } from '../usage-limit.mjs';
+import { resetText, limitName } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 import { ownedIds } from '../spine-check.mjs';
@@ -50,6 +50,15 @@ export const untilText = (l) => (l.resetsAt != null ? ` until ${resetText(l.rese
 // A worker waiting at a usage limit until it lifts (or the grace after its reset) is paused, not quiet.
 // The limit passed in is one the worker has not answered since (usageLimit's `resumed` is false).
 export const pausedOn = (limit, now = Date.now()) => !!limit && !limit.resumed && (limit.resetsAt == null || now < limit.resetsAt * 1000 + LIMIT_GRACE_MS);
+// The batch's usage hold `h` ({ type, resetsAt }), in a line.
+export const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
+
+// ---- base fix tries -----------------------------------------------------------
+// What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, the epic PR's review
+// (kind `review`), or the promotion PR's red checks (kind `checks`).
+export const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind === 'checks' ? 'promotion PR check' : x?.check ? 'merged-tree fix' : 'conflict fix');
+// The last try's number, which a try that waited only on the test lock leaves for the next one too.
+export const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 
 // The queue's subscription_off value to write, or null when it stands as `was`: the repo's row pinned
 // to a subscription set off (`repoSub`, desk-env thisRepoSubscription) is recorded from `at`, and
