@@ -3,6 +3,8 @@
 //   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
 //                                          installed from (and the release's own release.json)
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
+//   node installed.mjs running             print the commit of the release this script runs from (the
+//                                          installed one outside a release folder)
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
 //   node installed.mjs prune               delete all but the newest three releases, never the current one
@@ -33,6 +35,17 @@ export const installedFile = (home = E.deskHome()) => join(home, 'installed.json
 // {commit, dirty, at, from}, or null when no install has recorded one.
 export function readInstalled(home = E.deskHome()) {
   try { const v = JSON.parse(readFileSync(installedFile(home), 'utf8')); return v?.commit ? v : null; } catch { return null; }
+}
+// The desk version a script in `bin` runs: its release folder's release.json commit (release-<name>
+// with none written, as rollback records it), so one started from an older release reads as old
+// whatever is installed since. Outside a release folder, the installed commit, or null.
+export function runningVersion(bin = HERE, home = E.deskHome()) {
+  let rels = null;
+  try { rels = realpathSync(releasesDir(home)); } catch { /* no releases */ }
+  const dir = dirname(bin);
+  if (!rels || basename(bin) !== 'bin' || dirname(dir) !== rels) return readInstalled(home)?.commit ?? null;
+  try { const v = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); if (v?.commit) return v.commit; } catch { /* none written */ }
+  return `release-${basename(dir)}`;
 }
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;
@@ -294,9 +307,10 @@ if (isMain()) {
   try {
     if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
+    else if (cmd === 'running') { const v = runningVersion(); if (v) console.log(v); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);
     else if (cmd === 'prune') for (const l of pruneReleases()) console.log(l);
     else if (cmd === 'rollback') { const r = rollback(); console.log(r.line); if (!r.ok) process.exit(1); }
-    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | restart | prune | rollback'); process.exit(2); }
+    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | running | restart | prune | rollback'); process.exit(2); }
   } catch (e) { console.error(`installed: ${e.message}`); process.exit(1); }
 }
