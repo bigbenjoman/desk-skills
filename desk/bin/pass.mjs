@@ -3284,16 +3284,15 @@ runSteps({
 // Whether epic `key`'s batch, `qO` itself or the repo's batch named for it, recorded its epic PR merged.
 // The supervisor archives a batch whose epic PR merged before its own pass runs, so a merge nothing
 // recorded (a person merged it) is read from GitHub in the archived copy, under batches/.done/. Each
-// read is kept beside that copy (promotion-read.json): a closed PR never merges, so it is not asked
-// again, and an open one is asked again only once IDLE_RECHECK_MS has passed, however many tickets,
-// passes or admissions wait on the epic.
+// read is kept beside that copy (promotion-read.json): a merged PR is not asked again, and an open or
+// closed one (the person may reopen it, as the epic PR step asks) only once IDLE_RECHECK_MS has passed,
+// however many tickets, passes or admissions wait on the epic.
 const PASS_NOW = Date.parse(process.env.DESK_PASS_AT ?? '') || Date.now();
 const archivedPrState = (dir, pr) => {
   const file = join(dir, 'promotion-read.json');
   let kept = null;
   try { kept = JSON.parse(readFileSync(file, 'utf8')); } catch { /* none kept yet */ }
-  if (kept && String(kept.pr) === String(pr) && (kept.state === 'CLOSED' || kept.state === 'MERGED'
-    || (kept.state === 'OPEN' && PASS_NOW - Date.parse(kept.at) < IDLE_RECHECK_MS))) return kept.state;
+  if (kept && String(kept.pr) === String(pr) && (kept.state === 'MERGED' || PASS_NOW - Date.parse(kept.at) < IDLE_RECHECK_MS)) return kept.state;
   const state = batchPrState(pr);
   if (state) try { writeFileSync(file, `${JSON.stringify({ pr, state, at: new Date(PASS_NOW).toISOString() })}\n`); } catch { /* asked again next time */ }
   return state;
