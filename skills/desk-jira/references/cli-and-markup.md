@@ -12,6 +12,9 @@ are in `../SKILL.md`, already loaded. §4 Priority below is `desk-env list jira-
   `assignee=me` becomes your accountId.
 - **Every `edit` prints the fields read back from Jira.** Check that output. A line saying
   `the write did not stick` is a failed write, even though the PUT returned 2xx.
+- **`create` prints every field it was given, read back the same way.** A line saying `the write
+  did not stick` is a field the project dropped although the POST returned 201: set it with `edit`,
+  and tell the user if that fails too.
 - **Bodies are positional.** `comment <KEY> <body-file|text>`, and `create`'s description the same
   way. There is no `--file` flag. The CLI refuses a body that looks like a flag or a missing
   `.md`/`.txt`. Write approved text to a file and pass the path. The literal-string form of

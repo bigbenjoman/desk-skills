@@ -1144,7 +1144,11 @@ EOF_RESOLVE
     # The merge time on the ticket, and its line in the eta history (the epic PR's on the queue's
     # promotion, which releases what waits on the epic). A failure here never undoes the merge.
     if [ -n "$EPIC_KEY" ]; then
-      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
+      # Its merge commit gates its children's production steps (needs-you.mjs gateHeld), whatever the merge method.
+      moid=$(gh pr view "$n" --repo "$REPO" --json mergeCommit 2>/dev/null | jq -r '.mergeCommit.oid // empty' 2>/dev/null)
+      case "$moid" in *[!0-9a-f]*|'') moid= ;; esac
+      [ "${#moid}" -eq 40 ] || moid=
+      if node "$Q" set-batch "promotion.merged_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ${moid:+"promotion.merge_commit=$moid"} >/dev/null 2>&1; then log "#$n epic PR merged: recorded on the queue"
       else log "#$n epic PR merge not recorded on the queue — the next pass reads it from GitHub"; fi
     elif rec=$(node "$Q" merged "$key" 2>&1); then log "#$n $(printf '%s' "$rec" | paste -sd ';' -)"
     else log "#$n merge time not recorded: $(printf '%s' "$rec" | tail -1)"; fi
