@@ -4434,9 +4434,8 @@ if (featureBase) {
     },
     decide: decideBaseGate,
     handlers: {
-      ...PHASE_HANDLERS,
+      ...OUT_HANDLERS,
       'set-batch': (a) => q('set-batch', ...a.fields),
-      out: (a) => { out.push(a.line); },
       milestone: (a) => isMilestone(a.key),
       'pr-state': (a) => readPr(a.pr),
       'base-head': () => {
