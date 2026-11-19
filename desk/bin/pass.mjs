@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -61,13 +61,14 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
-import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, lastPromotion, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
 import { decidePrStatus, followState } from './pass/pr-status.mjs';
+import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
@@ -75,9 +76,10 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  usageHeldText, tryWhat, tryNo } from './pass/shared.mjs';
+  tryWhat, tryNo } from './pass/shared.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
+import { decideBaseGate } from './pass/base-gate.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1624,36 +1626,26 @@ const fresh = queue();
 const all = Object.values(fresh.tickets);
 const running = all.filter((r) => r.state === 'running');
 
-// Batch budget: the queue's `budget_usd`, else $AUTOPILOT_BATCH_BUDGET_USD, else config §3b, else none.
-// A positive number of USD or none/off/no cap. Anything else ("25 USD") holds every spawn rather than
-// reading as no cap: a typo must never silently remove a guard. Spend is reported only when a cap exists.
-const spent = all.reduce((n, r) => n + (Number(r.cost) || 0), 0);
-let cap = 0;
-let budgetBad = null;
+// Batch budget: the queue's `budget_usd`, else $AUTOPILOT_BATCH_BUDGET_USD, else config §3b, else none
+// (pass/eligibility.mjs decides what it holds).
+let BUDGET;
 try {
-  const b = fresh.budget_usd != null ? E.parseBudget(fresh.budget_usd, 'the queue\'s budget_usd') : E.batchBudget();
-  cap = b.off ? 0 : b.usd;
-} catch (e) { budgetBad = e.message; }
-if (budgetBad) personStall(`${budgetBad} — not spawning until it is fixed`);
-const overBudget = !!budgetBad || (cap > 0 && spent >= cap);
-if (cap > 0 && spent >= cap) personStall(`batch budget reached: $${spent.toFixed(2)} of $${cap} — not spawning anything further`);
+  BUDGET = fresh.budget_usd != null ? { raw: fresh.budget_usd, label: 'the queue\'s budget_usd' } : { raw: E.batchBudgetRaw(), label: E.BATCH_BUDGET_LABEL };
+} catch (e) { BUDGET = { error: e.message }; }
 
 // Config §3b "Worker models": each worker runs on its ticket's tier, or on the session default
 // when the row is `default`. A malformed row holds every spawn, the way a malformed budget does.
 let models = { off: true };
 let modelsBad = null;
 try { models = E.workerModels(); } catch (e) { modelsBad = e.message; }
-if (modelsBad) personStall(`${modelsBad} — not spawning until it is fixed`);
 // §3b "Check-in times": when the digest goes out. A row that does not read holds spawns, since the
 // questions a new worker parks would have no check-in to reach.
 let CHECKIN;
 try { CHECKIN = checkinTimes(checkinRow()); } catch (e) { CHECKIN = { ok: false, why: e.message }; }
-if (!CHECKIN.ok) personStall(`${CHECKIN.why} — not spawning until it is fixed`);
 // The health watchdog (health.mjs): a required sign-in, the free disk or the local database failing holds every new spawn.
 // The browser profile's login failing holds none: the upload queue runs no upload until it passes.
 // Running workers carry on; the report names each failure and its fix, and the push names it once.
 const HEALTH = await health({ state: STATE });
-for (const s of HEALTH.stalls) personStall(s);
 // The reviewer check passing, or not required, lifts every PR hold it made (gate_hold, below).
 if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; }
 // Weekly usage pacing (usage-pace.mjs): new spawns hold while 7-day usage is ahead of an even pace by
@@ -1676,8 +1668,6 @@ if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READI
     paceProbe = '; read by a probe call just now';
   } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
 }
-if (PACE.bad) personStall(`${PACE.bad} — not spawning until it is fixed`);
-else if (PACE.hold) report.stalled.push(`${PACE.line} (${running.length} running carry on; fix tries still start${paceProbe})`);
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -1707,13 +1697,6 @@ const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
-if (lowMemory) {
-  report.stalled.push(availGB < GATE.hold
-    ? `memory: ${availGB.toFixed(1)}G available, under the ${GATE.hold}G floor — §3b says drop to ${GATE.dropTo} worker(s); ` +
-      `holding spawns (${running.length} running; a worker mid-suite will drain)`
-    : `memory: ${availGB.toFixed(1)}G available, in the §3b hold band (${GATE.hold}–${GATE.start}G) — holding spawns this pass ` +
-      `(${running.length} running; a worker mid-suite will drain)`);
-}
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
 // test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
 // and none resumes into a stage that runs suites, since each would only join the queue. Every other
@@ -1728,7 +1711,6 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
-if (LOCK_QUEUE?.unread) report.stalled.push(LOCK_QUEUE.line);
 // Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
@@ -1820,57 +1802,37 @@ const alreadyFinished = (r) => {
   try { return workerMarkers(readFileSync(log, 'utf8')).some(([k]) => k === 'AUTOPILOT_DONE'); } catch { return false; }
 };
 
-// A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which
-// comes first, so neither of the two starts while the triage item asks.
-const inCycle = (r) => keysOf(r.cycle_link).length > 0;
-const eligibleBase = all.filter((r) =>
-  r.state === 'triaged' &&
-  (r.open_questions ?? 0) === 0 &&
-  !inCycle(r) &&
-  !collidesWithRunning(r));
-const cycleWaits = all.filter((r) => r.state === 'triaged' && inCycle(r));
-if (cycleWaits.length) report.stalled.push(`not spawning ${cycleWaits.map((r) => `${r.key} (linked in Jira as blocked by ${keysOf(r.cycle_link).join(', ')}, which ${keysOf(r.cycle_link).length === 1 ? 'is' : 'are'} held behind it)`).join(', ')}: which comes first is asked in needs-you`);
-const blockedByDone = eligibleBase.filter(alreadyFinished);
-// A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every
-// new ticket.
-const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot'].includes(r.resume);
-const toHandoff = (r) => r.handoff === 'pending';
-const goesFirst = (r) => toResume(r) || toHandoff(r);
-// A worker stopped for a planned reboot is held until rebootReady lets it go.
-const rebootWaits = eligibleBase.filter((r) => r.resume === 'reboot' && rebootReady(r).wait);
-const eligible = eligibleBase.filter((r) => !alreadyFinished(r) && !rebootWaits.includes(r)).sort((a, b) => goesFirst(b) - goesFirst(a));
-if (!maySpawn && eligible.length) {
-  personStall(`not spawning ${eligible.length} ticket(s): config §3 ${HEADLESS_KEY} is "${headlessPerm}"` +
-    (headlessPerm === 'ask' ? ' — confirm the batch with the user, then run passes with AUTOPILOT_USER_APPROVED=1' : ' — run /desk-setup to grant it'));
-}
-// Say why a triaged ticket is not spawning: a silent refusal reads as slowness.
-if (blockedByDone.length) {
-  personStall(`not respawning (its worker already printed AUTOPILOT_DONE): ${blockedByDone.map((r) => r.key).join(', ')} — ` +
-    `if the re-run is deliberate: node ${join(SHOWN_BIN, 'queue.mjs')} requeue <TICKET>`);
-}
+// The candidates, in the order they start, and what holds every spawn (pass/eligibility.mjs). The
+// tickets are this section's own, so a candidate is the same object the rest of the pass reads.
+let ELIGIBILITY = null;
+runSteps({
+  name: 'eligibility',
+  snapshot: () => ({
+    tickets: fresh.tickets, budget: BUDGET, modelsBad, checkin: CHECKIN, health: { stalls: HEALTH.stalls, holding: HEALTH.holding },
+    pace: { bad: PACE.bad, hold: PACE.hold, line: PACE.line }, paceProbe,
+    memory: { low: lowMemory, avail: availGB, hold: GATE.hold, start: GATE.start, dropTo: GATE.dropTo }, lockQueue: LOCK_QUEUE,
+    spawnGrant: { may: maySpawn, key: HEADLESS_KEY, perm: headlessPerm, queueBin: join(SHOWN_BIN, 'queue.mjs') },
+    maintHold: MAINT.hold, usageHold: USAGE_HOLD, probes: [...PROBES.values()].map((p) => p.why), pacingRow: E.CONFIG_ROWS['usage-pacing'].row,
+  }),
+  decide: decideEligibility,
+  handlers: {
+    ...PHASE_HANDLERS,
+    stall: (a) => personStall(a.line),
+    collides: (a) => collidesWithRunning(fresh.tickets[a.key]),
+    finished: (a) => alreadyFinished(fresh.tickets[a.key]),
+    'reboot-wait': (a) => rebootReady(fresh.tickets[a.key]).wait,
+    eligibility: (a) => { ELIGIBILITY = a; },
+  },
+  report,
+});
+const { eligible, spawnable, held, spawnHeld } = ELIGIBILITY;
 
 // ---- slots, and borrowing ----------------------------------------------------
-// Up to the batch's own number, as always. With config §3b "Borrow idle workers" on, the machine's
-// free slots are counted, from every repo's queue, and the workers started under one lock every
-// repo's pass shares, so two passes cannot both take the last slot: its own number as far as the
-// machine has room, then above it up to the §3b cap into slots no other live batch has first claim
-// on (borrow.mjs). Either way, with a machine profile its worker cap is a hard limit across every
-// repo (machineBudget), counted under the same lock when it can be taken. And the repo's §3b cap is
-// shared by all its batches (repoBudget).
+// The batch's own number, borrowing, and the machine and repo budgets (pass/eligibility.mjs
+// decideSlots). The workers are started under one lock every repo's pass shares, so two passes cannot
+// both take the last slot; the budgets are counted under it when it can be taken.
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
-const PACE_HELD = '7-day usage ahead of pace holds every spawn';
-if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${[...PROBES.values()].map((p) => p.why).filter(Boolean).join('; ') || 'not run'})`);
-const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
-  : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
-  : HEALTH.holding.length ? `a failing health check (${HEALTH.holding.join(', ')}) holds every spawn`
-  : !maySpawn ? `config §3 ${HEADLESS_KEY} is "${headlessPerm}"`
-  : PACE.bad ? `config §3b "${E.CONFIG_ROWS['usage-pacing'].row}" holds every spawn`
-  : PACE.hold ? PACE_HELD : null;
-// Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
-// it starts within the worker count as any spawn does.
-const spawnable = held === PACE_HELD ? eligible.filter((r) => r.fix && !r.fix.finished) : eligible;
-const spawnHeld = held === PACE_HELD && spawnable.length ? null : held;
 let REPO_SLUG = null;
 try { REPO_SLUG = E.repoSlug(); } catch { /* outside a repo there are no batches */ }
 const SIBLINGS = REPO_SLUG != null && listBatches(REPO_SLUG).some((b) => resolve(b.queue) !== resolve(QUEUE_FILE) && existsSync(b.queue));
@@ -1917,28 +1879,21 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
-const planFor = (workers, on = BORROW.on) => borrowPlan({
-  on, share: concurrency, cap: E.concurrencyLimits().cap, running: workers, wanted: spawnable.length,
-  others, machine: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, held: spawnHeld, lock: lockWhy,
-});
-const plan = planFor(running.length);
-// This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
-const ownBaseFix = fresh.base_fix?.running ? 1 : 0;
-// A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
-const wantedWorkers = Math.min(plan.slots, spawnable.length) || (gateFixDue || epicReviewDue || promotionChecksDue ? 1 : 0);
-const MACHINE = machineBudget({ running: running.length + ownBaseFix, wanted: wantedWorkers, machine: MACHINE_CAP, queues: otherRepos });
-const repoBatches = otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) });
-const REPO = repoBudget({
-  batch: E.batchName(), running: running.length + ownBaseFix, wanted: wantedWorkers,
-  last: fresh.last_start ?? null, cap: E.concurrencyLimits().cap, batches: repoBatches,
-});
-// A repo's batches share its cap only under the lock: without it two passes could each count the same
-// free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)
-// starts nothing this pass rather than counting unlocked. An idle sibling shares nothing, so it does not.
-const repoUnlocked = lockWhy != null && repoBatches.some((o) => o.error || o.live || o.running > 0);
-const slots = MAINT.hold || repoUnlocked ? 0 : Math.min(plan.slots, MACHINE.room, REPO.room);
-const machineLine = MACHINE.line + (MACHINE_CAP != null && lockWhy ? ` (counted without the lock: ${lockWhy})` : '');
-const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the repo's batches share its §3b cap, and ${lockWhy}` : REPO.line;
+const SLOTS_SNAP = {
+  borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
+  others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
+  // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
+  ownBaseFix: fresh.base_fix?.running ? 1 : 0,
+  // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
+  baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
+  machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
+  repoCaps: MACHINE_CAP == null ? {} : Object.fromEntries(otherRepos.filter((o) => o.error).map((o) => [o.slug, repoCap(o.slug)])),
+  otherRepos, repoBatches: otherBatches({ self: QUEUE_FILE, queues: otherRepos.filter((o) => o.slug === REPO_SLUG) }),
+  batch: E.batchName(), lastStart: fresh.last_start ?? null, maintHold: MAINT.hold,
+};
+let SLOTS = null;
+runPhase({ name: 'slots', snapshot: () => SLOTS_SNAP, decide: decideSlots, handlers: { slots: (a) => { SLOTS = a; } }, report });
+const { machine: MACHINE, repo: REPO, repoUnlocked, slots, machineLine, repoLine } = SLOTS;
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
@@ -2288,9 +2243,7 @@ const triageBrief = (t) => {
 // holds one of the batch's own number; the machine and repo budgets have counted it already. In a batch
 // of 1 it holds the batch's one worker, from the pass that starts it, and no ticket borrows a way round
 // that.
-const ticketWorkers = running.length + (baseFixLive ? 1 : 0);
-const ticketPlan = planFor(ticketWorkers, BORROW.on && !((baseFixLive || baseFix != null) && concurrency === 1));
-const ticketSlots = Math.min(slots, ticketPlan.slots);
+const { workers: ticketWorkers, plan: ticketPlan, slots: ticketSlots } = ticketSlotsOf(SLOTS_SNAP, slots, { baseFixLive, baseFixOn: baseFix != null });
 let attempts = 0;
 // Ports held by running workers in every other batch's queue, this repo's other batches included. Two
 // batches' worker blocks can meet, and a worker's port is unbound until it starts a server, so probing
@@ -2346,6 +2299,11 @@ function repoLogin() {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
     return null;
   }
+  const refused = refusedOf(login);
+  if (refused) {
+    noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) failed its health check, ${refused}, so nothing new starts for this repo; it never falls back to another`);
+    return null;
+  }
   return { login, vars: loginVars(login.configDir), row: `login=${JSON.stringify({ name: login.name, config_dir: login.configDir, email })}`, line: ` login=${login.name}` };
 }
 function noLogin(why) {
@@ -2356,9 +2314,14 @@ function noLogin(why) {
 // Why a session cannot resume on its login, or null. A login that could not be checked goes on to its
 // preflight, which says what is wrong with it.
 function signedOut(login) {
+  const refused = refusedOf(login);
+  if (refused) return `its login ${login.name} (${login.folder}) failed its health check, ${refused}, so its session was not resumed`;
   if ((INHERITS && login.dir === OWN_LOGIN.dir) || checkLogin(login).state !== 'signed out') return null;
   return `its login ${login.name} (${login.folder}) is signed out, so its session was not resumed. Sign it in, in another terminal: ${signInCommand(login)}`;
 }
+// Why this pass's health check found the API refusing a real call on `login`, or null. Its own health
+// item names the login and its fix, pushed once.
+function refusedOf(login) { return refusedIn(HEALTH, login, OWN_LOGIN); }
 
 // Prove the generated permissions behave before committing a worker to a ticket: `failure` is null on
 // a pass, else what failed. §3b Worker models' finder and text models are proved too, on every
@@ -4377,158 +4340,49 @@ for (const t of Object.values(qNow.tickets).filter((r) => r.state === 'failed' &
 }
 
 // ---- base gate -------------------------------------------------------------
-// A feature-mode batch is checked on its base before its promotion PR leaves draft: base-gate.mjs,
-// started here in the background because the base's suites can outlast one pass, and read back from
-// the queue's `gate` on later passes. It runs on a slice: once §3b's slice size of children have
-// merged into the base since the last promotion (and since the last gate), once a child labelled
-// `milestone` merges, and once every child has merged, the last slice, which the epic close-out
-// follows. A slice gate waits on no other child: a parked or failed one is named as not in the slice,
-// and still stops the last. A failed gate runs again whenever the base moves. While the gate waits on
-// merges or runs, the batch is not idle.
+// The decision is pass/base-gate.mjs decideBaseGate: when a feature-mode batch's base gate
+// (base-gate.mjs, started here in the background) runs, and what a failed or pending gate holds. Its
+// reads and writes are the handlers below, made as the decision yields them (runSteps).
 const GATE_LOG = join(STATE, 'logs', 'base-gate.log');
 const isMilestone = (key) => (triageRec(key)?.labels ?? []).some((l) => /^milestone$/i.test(String(l).trim()));
-const sliceLabel = (s) => (s ? `slice ${s.n}: ${s.keys.length} of ${s.of} children${s.last ? ', the last' : ''}` : null);
-function baseGate(qx) {
-  const tickets = Object.values(qx.tickets);
-  const p = qx.promotion ?? {};
-  let g = qx.gate ?? null;
-  if (g?.state === 'running') {
-    if (gateAlive(g)) { out.push(`BASE GATE: running on ${BASE}${g.slice ? ` (${sliceLabel(g.slice)})` : ''} since ${g.started} (pid ${g.pid}); log ${GATE_LOG}`); return true; }
-    g = { ...g, state: 'failed', finished: new Date().toISOString(), failures: [`the gate stopped without a result (pid ${g.pid ?? '?'}): see ${GATE_LOG}`] };
-    q('set-batch', `gate=${JSON.stringify(g)}`);
-  }
-  // The base worktree is a base conflict fix worker's while it runs: the gate waits for it.
-  if (baseFixLive || baseFix) {
-    out.push(`BASE GATE: waits on the conflict fix worker on ${BASE}${gateConflict?.line ? `: ${gateConflict.line}` : ''}`);
-    return true;
-  }
-
-  // This promotion's children: merged into the base since the last promotion PR merged.
-  const since = p.since ? Date.parse(p.since) : null;
-  const merged = tickets.filter((t) => t.merged_at && (since == null || Date.parse(t.merged_at) > since));
-  const covered = new Set(g?.slice?.keys ?? []);
-  const uncovered = merged.filter((t) => !covered.has(t.key));
-  const milestones = uncovered.filter((t) => isMilestone(t.key));
-
-  // The last slice needs every child merged. A child that finished with no PR, or whose PR was closed
-  // unmerged, can never merge: the person decides, and nothing waits on it. One whose PR is still open
-  // is waited for.
-  const stopped = tickets.filter((t) => ['parked', 'failed'].includes(t.state));
-  const stoppedList = stopped.map((t) => `${t.key} (${t.state === 'failed' ? 'failed' : `parked: ${String(t.park?.question ?? '').slice(0, 80)}`})`).join(', ');
-  let complete = false;
-  let waits = false;
-  const lastLines = [];
-  if (batchSettled(qx, prState)) {
-    if (stopped.length) {
-      lastLines.push(() => report.waiting.push(`BASE GATE: ${g ? 'the last slice is ' : ''}not run, since ${stopped.length} child(ren) did not finish: ${stoppedList}. ` +
-        `The base is checked ${g ? 'as a whole ' : ''}once every child has merged into ${BASE}${p.pr && !g?.ready ? `; promotion PR #${p.pr} stays draft` : ''}`));
-    } else {
-      const noPr = tickets.filter((t) => t.result?.pr == null);
-      const closed = tickets.filter((t) => t.result?.pr != null && readPr(t.result.pr) === 'CLOSED');
-      const open = tickets.filter((t) => t.result?.pr != null && !['MERGED', 'CLOSED'].includes(readPr(t.result.pr)));
-      const never = [...noPr.map((t) => `${t.key} (finished with no PR)`), ...closed.map((t) => `${t.key} (PR #${t.result.pr} closed without merging)`)];
-      if (never.length) lastLines.push(() => report.waiting.push(`BASE GATE: not run, since ${never.join(', ')} cannot merge into ${BASE}: requeue or drop ${never.length > 1 ? 'them' : 'it'}`));
-      if (open.length) {
-        const list = open.map((t) => `${t.key} (PR #${t.result.pr})`).join(', ');
-        lastLines.push(() => (driverLive ? out.push(`BASE GATE: waits on ${list} merging into ${BASE}`)
-          : report.waiting.push(`BASE GATE: waits on ${list} merging into ${BASE}, and no merge driver is running: merge them`)));
-      }
-      complete = !never.length && !open.length;
-      waits = open.length > 0 && !never.length;
-    }
-  }
-  const due = complete || uncovered.length >= SLICE.size || milestones.length > 0;
-  if (!g && !due) {
-    for (const l of lastLines) l();
-    if (!lastLines.length) out.push(`BASE GATE: the next slice runs once ${SLICE.size - uncovered.length} more child(ren) merge into ${BASE} (${uncovered.length} of ${SLICE.size} so far), a milestone child merges, or the last child merges`);
-    return waits;
-  }
-
-  sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });
-  const head = sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
-  const moved = !!(g?.sha && head && g.sha !== head);
-  // A promotion PR holds whatever has merged into the base, so once a child no gate covered merges, or
-  // a gate fails, it is put back to draft until the next slice's gate passes, however it left draft
-  // (the gate, or the person). A refused undo is reported and tried again next pass.
-  let undoFailed = false;
-  if (g && g.pr != null && !g.redrafted && ((g.state === 'passed' && uncovered.length) || g.state === 'failed') && !DRY) {
-    let v = null;
-    try { v = JSON.parse(sh('gh', ['pr', 'view', String(g.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* reported below */ }
-    const r = !v ? { ok: false, out: 'it could not be read' } : v.state !== 'OPEN' || v.isDraft ? { ok: true } : shOut('gh', ['pr', 'ready', String(g.pr), '--repo', GH_REPO, '--undo']);
-    if (r.ok) {
-      g = { ...g, ready: false, redrafted: true, note: null };
-      q('set-batch', `gate=${JSON.stringify(g)}`);
-    } else {
-      undoFailed = true;
-      report.waiting.push(`BASE GATE: promotion PR #${g.pr} holds ${g.state === 'failed' ? 'a base whose gate failed' : `${uncovered.map((t) => t.key).join(', ')}, which no gate has covered`}, and could not go back to draft (${r.out.split('\n').pop()}): gh pr ready ${g.pr} --repo ${GH_REPO} --undo. The next pass tries again`);
-    }
-  }
-  const outside = () => { if (!complete && stopped.length) out.push(`BASE GATE: not in this slice: ${stoppedList}`); };
-  // A base sync asked in /desk-needs-you and not yet approved: the gate's own sync would be refused the
-  // same way, so it waits for the approval rather than failing into the waiting list each pass.
-  if (qx.base_push_ask && qx.approved?.base_push !== true) {
-    out.push(`BASE GATE: waits on the base sync, asked once for the batch in /desk-needs-you (its base-push item)`);
-    return true;
-  }
-  if (!g || (moved && (g.state === 'failed' || due))) {
-    if (DRY) { out.push(`BASE GATE (dry run): would start on ${BASE}`); return false; }
-    const slice = { n: p.slice ?? 1, keys: merged.map((t) => t.key), of: tickets.length, last: complete };
-    q('set-batch', `gate=${JSON.stringify({ state: 'running', pid: null, started: new Date().toISOString(), sha: head, slice })}`);
-    // base-gate.mjs reads the gate's sha from the file as it starts, so the gate is in the file first;
-    // refused, no gate starts, and the next pass tries again.
-    const gateWrite = flushQueue();
-    if (!gateWrite.ok || gateWrite.conflicts.some((c) => c.ticket == null && c.field === 'gate')) {
-      out.push(`BASE GATE: not started on ${BASE}: its record could not be written to the queue (see the failures above); the next pass tries again`);
-      return true;
-    }
-    mkdirSync(join(STATE, 'logs'), { recursive: true });
-    const fd = openSync(GATE_LOG, 'a');
-    const child = spawn(process.execPath, [join(BIN, 'base-gate.mjs')], { cwd: MAIN, detached: true, stdio: ['ignore', fd, fd], env: process.env });
-    child.unref();
-    closeSync(fd);
-    q('set-batch', `gate.pid=${child.pid}`);
-    flushQueue();
-    const why = complete ? '' : milestones.length ? `, since milestone ${milestones.map((t) => t.key).join(', ')} merged` : `, since ${uncovered.length} children merged since the last ${g ? 'gate' : 'promotion'}`;
-    out.push(`BASE GATE: started on ${BASE}${g ? ` again (it moved since the last run, at ${String(g.sha).slice(0, 12)})` : ''} for ${sliceLabel(slice)}${why} (pid ${child.pid}): merges ${SOURCE} in, then runs every acceptance spec and the repo's Typecheck, Lint and Unit tests there; log ${GATE_LOG}${g?.redrafted ? `. Promotion PR #${g.pr} is back in draft until it passes` : ''}`);
-    outside();
-    return true;
-  }
-
-  const at = `${BASE} at ${String(g.sha ?? '?').slice(0, 12)}${g.slice ? ` (${sliceLabel(g.slice)})` : ''}`;
-  if (!complete) { for (const l of lastLines) l(); outside(); }
-  if (g.state === 'passed') {
-    const link = qx.promotion?.url ?? (g.pr != null ? `https://github.com/${GH_REPO}/pull/${g.pr}` : null);
-    if (g.pr == null) {
-      report.waiting.push(`BASE GATE: passed on ${at}, but the batch has no promotion PR to mark ready (${qx.promotion?.why ?? 'none was recorded'}): open one from ${BASE} to ${SOURCE}`);
-    } else if (g.ready && !undoFailed) {
-      out.push(`BASE GATE: passed on ${at}: every acceptance spec, Typecheck, Lint and Unit tests. Promotion PR #${g.pr} is ready for review: ${link} (merging it is yours)`);
-    } else if (g.redrafted) {
-      out.push(`BASE GATE: passed on ${at}, and ${uncovered.length} child(ren) no gate has covered merged into ${BASE} since, so promotion PR #${g.pr} is in draft until the next slice's gate passes: ${link}`);
-    } else if (!undoFailed) {
-      report.waiting.push(`BASE GATE: passed on ${at}, but promotion PR #${g.pr} is still draft: ${g.note ?? 'it was not marked ready'}. ${link}`);
-    }
-    // The epic's close-out follows the last slice only.
-    if (complete) {
-      const co = g.close_out;
-      out.push(co == null ? `close-out: the epic's criteria could not be read, so check every one per criterion`
-        : co.length ? `close-out: check only ${co.join(', ')} per criterion, which no spec covers; every other criterion's spec passed on ${BASE}`
-          : `close-out: every criterion has a spec that passed on ${BASE}, so no per-criterion check is needed`);
-    }
-  } else if (Array.isArray(g.conflict) && gateConflict && !gateConflict.worker) {
-    // No fix worker may take the conflict, or its tries are spent: put to the person once, by the base
-    // sync where it met it too.
-    (gateConflict.said ? out : report.waiting).push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}: ${gateConflict.line}`);
-  } else if (Array.isArray(g.conflict) && gateConflict) {
-    out.push(`BASE GATE: failed on ${at}, since ${g.tree_check ? `merging ${SOURCE} fails the merged-tree check on` : `${SOURCE} conflicts with`} ${BASE}: ${gateConflict.line}. The gate runs again once ${BASE} moves`);
-    return true;
-  } else {
-    for (const f of g.failures ?? []) report.waiting.push(`BASE GATE: ${f}`);
-    report.waiting.push(`BASE GATE: failed on ${at}${g.pr != null && !undoFailed ? `, so promotion PR #${g.pr} stays draft` : ''}. Fix it on ${BASE}: the gate runs again once ${BASE} moves, or now with queue.mjs set-batch gate=null`);
-  }
-  return waits;
-}
 const featureBase = qNow.feature === true && BASE && SOURCE && BASE !== SOURCE && Object.keys(qNow.tickets).length > 0;
-const gatePending = featureBase ? baseGate(queue()) : false;
+let gatePending = false;
+if (featureBase) {
+  runSteps({
+    name: 'base gate',
+    snapshot: () => {
+      const qx = queue();
+      return { queue: qx, alive: gateAlive(qx.gate), baseFix: !!(baseFixLive || baseFix), conflict: gateConflict, settled: batchSettled(qx, prState),
+        driverLive, slice: SLICE.size, base: BASE, source: SOURCE, repo: GH_REPO, log: GATE_LOG, dry: DRY, now: Date.now() };
+    },
+    decide: decideBaseGate,
+    handlers: {
+      ...OUT_HANDLERS,
+      'set-batch': (a) => q('set-batch', ...a.fields),
+      milestone: (a) => isMilestone(a.key),
+      'pr-state': (a) => readPr(a.pr),
+      'base-head': () => {
+        sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`], { tolerant: true });
+        return sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
+      },
+      'pr-draft': (a) => {
+        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+      },
+      'undo-ready': (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO, '--undo']),
+      flush: () => flushQueue(),
+      'start-gate': () => {
+        mkdirSync(join(STATE, 'logs'), { recursive: true });
+        const fd = openSync(GATE_LOG, 'a');
+        const child = spawn(process.execPath, [join(BIN, 'base-gate.mjs')], { cwd: MAIN, detached: true, stdio: ['ignore', fd, fd], env: process.env });
+        child.unref();
+        closeSync(fd);
+        return child.pid;
+      },
+      pending: (a) => { gatePending = a.pending; },
+    },
+    report,
+  });
+}
 
 // ---- promotion PR checks ---------------------------------------------------
 // A feature batch's promotion PR whose checks fail (promotionRed) gets check tries in the base worktree
