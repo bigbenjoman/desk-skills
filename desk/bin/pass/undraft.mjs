@@ -5,8 +5,8 @@
 //
 // Each decision is a generator (pass/run-phase.mjs runSteps). A read the pass makes itself (a gh call,
 // a git fetch) and a write whose result the decision goes on to use is an action it yields, and what
-// the action's handler returns is what its yield gives back, so every read and write runs where it
-// did before, in the same order. The calls in ../undraft.mjs and ../fix-tries.mjs that this decides
+// the action's handler returns is what its yield gives back, so every read and write runs at the point
+// the decision reaches it, in order. The calls in ../undraft.mjs and ../fix-tries.mjs that this decides
 // with read lazily, through the functions they are given: those come in the snapshot's `reads`, which
 // pass.mjs fills with its gh and git readers and a unit suite with stubs. The decision itself starts no
 // process and writes nothing. The handlers that do I/O are pass.mjs's.
@@ -48,7 +48,7 @@ const cap = (s) => `${s[0].toUpperCase()}${s.slice(1)}`;
 
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-export const UNDRAFT_ACTS = ['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture', 'upload'];
+const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture', 'upload'];
 
 // The queue write that keeps a draft's undraft record `rec` on ticket t, or null when the record already
 // says it (its `at` aside) or on a dry run.

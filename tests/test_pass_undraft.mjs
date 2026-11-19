@@ -68,7 +68,13 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
 {
   const { actions } = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([review(marker(ALL_ZERO.replace('p1=0', 'p1=1')))]) });
   t('AC1 a draft whose review holds a P1 gets no undraft action', acts(actions).includes('ready'), false);
-  t('AC1 and goes to a fix try instead, or the person', ['apply-fix'].some((x) => acts(actions).includes(x)) || waits(actions).length > 0, true);
+  // Its body lists no finding with its file:line, so there is nothing to send a fix worker: the person's.
+  t('AC1 with no finding listed it goes to the person', j([acts(actions), waits(actions).length]), '[[],1]');
+  const listed = drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([review(`${marker(ALL_ZERO.replace('p1=0', 'p1=1'))}\n- **P1** \`src/a.js:12\` reads the wrong head`)]) }).actions;
+  t('AC1 with its finding listed it goes to a review fix try, and only that', j(acts(listed)), '["apply-fix"]');
+  const fix = listed.find((a) => a.type === 'apply-fix')?.fix;
+  t('AC1 the try is a review fix, requeued', `${fix?.call}:${fix?.fix?.kind}`, 'requeue:review');
+  t('AC1 and nothing is put to the person', j(waits(listed)), '[]');
 }
 
 // AC2: a PR already reopened at this base head, its checks still unreported, is not reopened again.
