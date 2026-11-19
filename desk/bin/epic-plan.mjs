@@ -19,6 +19,7 @@ import { markedResult, answers } from './decider.mjs';
 import { NOT_NOW } from './not-now.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { callLogin } from './call-login.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const DRAFT_TIMEOUT_MS = 10 * 60 * 1000;
@@ -429,6 +430,8 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
       recs[c] = kept;
       continue;
     }
+    // Unlisted before triage.sh replaces the record, so a run that then fails leaves nothing listed.
+    if (k) { delete keptList[c]; writeJsonAtomic(keptPath, keptList); }
     let t, r;
     for (let tries = 1; ; tries += 1) {
       const began = Date.now();
@@ -448,7 +451,7 @@ export async function startEpic(key, rec, { by = 'hand', claude = 'claude', say 
       return discard(`child ${c} could not be triaged, twice (${triageErrorClass(t)}: ${t.status === 0 ? 'triage wrote no record' : lastLine(t)})`);
     }
     keptList[c] = { base: branch, at: new Date().toISOString() };
-    writeFileSync(keptPath, `${JSON.stringify(keptList, null, 2)}\n`);
+    writeJsonAtomic(keptPath, keptList);
     recs[c] = r;
   }
   const never = untriggeredOn(branch, children.map((c) => recs[c].branch ?? null));
