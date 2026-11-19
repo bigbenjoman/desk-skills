@@ -217,8 +217,11 @@ export { prOpen };
 // Free for a standing batch: no queue, or a finished one (batches.mjs). queue.mjs init --standing checks
 // the same under its lock.
 const free = (q) => !q || finished(q);
-// Why no ticket may join this batch now: 'base', 'session' (not handed over), or null.
-const closed = (b) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true ? 'session' : null);
+// Why no ticket may join this batch now: 'base', 'session' (not handed over), or null. With `session`,
+// the caller is the session that runs the batch, so not being handed over does not close it.
+const closed = (b, session = false) => (!b || free(b) ? null : b.base ? 'base' : b.supervised !== true && !session ? 'session' : null);
+// Whether this batch is one a session runs: live, on no base, and not handed to the supervisor.
+const sessionRun = (b) => closed(b) === 'session';
 // Where move-batch.mjs would move standing batch `b` on a base, or null: in a named batch, or with no slot.
 const moveTo = (b) => {
   if (E.batchName() || !b?.base) return null;
@@ -469,8 +472,7 @@ function placedThere(key, held, own) {
 function placeOne(key, rec, { started, by, now, mayStart = true, session = false }) {
   let cur;
   try { cur = readQueue(); } catch (e) { return { unreadable: `the queue at ${E.queueFile()} cannot be read (${e.message})` }; }
-  const shut = closed(cur);
-  if (shut && !(session && shut === 'session')) return { closed: shut, cur };
+  if (closed(cur, session)) return { closed: closed(cur, session), cur };
   const away = belongsElsewhere(key, rec, E.queueFile());
   if (away) return { elsewhere: away };
   const base = cur?.base ?? (E.configValue('default-branch') || 'main');
@@ -490,7 +492,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, started: startNew ? started : null, note: epicFinishedNote(rec) } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && sessionRun(cur) } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 async function intake({ state, query, reg, now }) {
@@ -709,6 +711,9 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   const lines = [];
   const say = (line) => { lines.push(line); onLine(line); };
   const admitted = [];
+  // The admitted tickets placed in a batch a session runs: that session's next pass picks them up, not
+  // the supervisor's tick.
+  const ours = [];
   const refused = [];
   // Epics to plan as a feature batch beside the standing batch in a session (the /desk-autopilot epic
   // flow), and epics whose feature batch was started here, their plans waiting in needs-you.
@@ -728,8 +733,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
   }[code]?.() ?? null);
-  const shutFor = (b) => { const c = closed(b); return session && c === 'session' ? null : c; };
-  const nowhere = (b) => said(shutFor(b) ?? (free(b) && !mayStart ? 'free' : null), b);
+  const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart ? 'free' : null), b);
   let q;
   try { q = readQueue(); } catch (e) { say(`admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return done({ refused: keys }); }
   const why = into ? null : nowhere(q);
@@ -844,6 +848,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}, by ${by}` };
     writeIntake(state, reg);
     admitted.push(key);
+    if (!feature && r.sessionRun) ours.push(key);
     say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}${ownEpicText(rec)}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
@@ -917,7 +922,9 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     const these = untriaged.join(' ');
     say(`not triaged (usage limit${limit.resets ? `, resets ${limit.resets}` : ''}): ${these}: run /desk-admit ${these} again once the limit lifts`);
   }
-  if (admitted.length || epics.length) say(`${session && q && !free(q) && q.supervised !== true ? "this session's next pass" : "the supervisor's next tick"} picks ${admitted.length + epics.length === 1 ? 'it' : 'them'} up`);
+  const theirs = admitted.length + epics.length - ours.length;
+  if (ours.length) say(`this session's next pass picks up ${ours.join(' ')}`);
+  if (theirs) say(`the supervisor's next tick picks ${ours.length ? `up the other${theirs === 1 ? '' : 's'}` : `${theirs === 1 ? 'it' : 'them'} up`}`);
   // Open blockers in no batch are admitted next, by the same command, with no question: the person
   // naming what they block is the approval.
   if (next.size) say(`admit next: ${[...next].join(' ')} (open blockers in no batch)`);

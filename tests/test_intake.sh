@@ -528,7 +528,7 @@ check "admit: a session-run batch is refused before any triage, pointing at that
 check "#877 the refusal names the command that session admits with" 'grep -q "let it admit them with node .*intake.mjs admit H-7 --session$" <<< "$out"'
 out=$(admit H-7 --session); rc=$?
 check "#877 with --session, the session that runs the batch admits into it" '[ $rc -ne 11 ] && [ "$(qget tickets.H-7.state)" = triaged ] && [ "$(qget supervised)" = false ] && grep -q "^admitted H-7 by hand into batch s1" <<< "$out"'
-check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks it up$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
+check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks up H-7$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
 check "#877 desk-admit runs the --session command when this session runs the batch" 'grep -q "If this session runs that batch, run the command the line names" "$S/../skills/desk-admit/SKILL.md"'
