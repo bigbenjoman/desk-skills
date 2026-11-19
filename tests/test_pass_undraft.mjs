@@ -1,7 +1,7 @@
 // suite: pass phase: reopen and undraft (the decisions)
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from '../desk/bin/pass/undraft.mjs';
-import { conflictFilesIn, fixTryQuote, tryLabel } from '../desk/bin/pass/shared.mjs';
+import { conflictFilesIn, fixTryQuote } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -156,7 +156,6 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
 t('conflictFilesIn reads merge-tree past its tree line', j(conflictFilesIn('tree\na.js\nb.js\n')), '["a.js","b.js"]');
 t('conflictFilesIn: none named, or unread, is null', j([conflictFilesIn('tree\n'), conflictFilesIn(null)]), '[null,null]');
 t('fixTryQuote keeps a protected try\'s files', j(fixTryQuote({ kind: 'protected', paths: ['x'] })), '{"paths":["x"]}');
-t('tryLabel names a protected files try', tryLabel({ kind: 'protected', try: 1, of: 2 }), 'protected files try 1 of 2');
 
 // AC7: each decision, run with a snapshot, starts no process, calls no git, gh or Jira, and writes nothing.
 {

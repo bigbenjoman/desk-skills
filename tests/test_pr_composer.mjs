@@ -5,6 +5,8 @@
 // Playwright, against the fixtures served in a real browser. No network, no real profile or GitHub.
 // DESK_COMPOSER_SMOKE=<owner/repo>#<pr> opts in to a run against that live PR in the signed-in
 // profile: it finds the composer and its file input or add-files button, and uploads nothing.
+// DESK_COMPOSER_CAPTURE=<file> with it saves that page, focused and stripped of its tokens, to build
+// a fixture from.
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -101,6 +103,27 @@ if (!pw.entry) {
   }
   t('add-files: the React page with an input still uses it', (await (async () => { await open('react'); const r = await findComposer(page, opts); return r?.input ? typeof r.setFiles : 'no input'; })()), 'function');
 
+  // GitHub's page as served now (react-current.html, cut from a capture of a live PR) has no file
+  // input anywhere, only the add-files button.
+  await open('react-current');
+  await page.waitForSelector('#_r_24_');
+  t('current page: its mounted composer has no input[type=file]', await page.locator('input[type="file"]').count(), 0);
+  c = await findComposer(page, opts);
+  t('current page: nor once findComposer has focused it', await page.locator('input[type="file"]').count(), 0);
+  t('current page: its composer\'s textarea is found', c ? `${await c.textarea.getAttribute('id')} ${await which(c.textarea)}` : 'null', '_r_24_ new');
+  t('current page: it takes files through the add-files button\'s chooser', c ? `${c.input} ${typeof c.setFiles}` : 'null', 'null function');
+  writeFileSync(join(T, 'one.png'), 'png'); writeFileSync(join(T, 'two.png'), 'png'); writeFileSync(join(T, 'three.png'), 'png');
+  await c?.setFiles?.([join(T, 'one.png'), join(T, 'two.png')]);
+  await c?.setFiles?.([join(T, 'three.png')]);
+  const tags = c ? await c.textarea.inputValue() : '';
+  t('current page: files set reach the composer as GitHub\'s image tags, each call a new chooser', `${(tags.match(/alt="(one|two|three)"/g) ?? []).join(' ')} ${await page.evaluate(() => window.chosen ?? 0)}`, 'alt="one" alt="two" alt="three" 2');
+  // A focused composer with no file input and no add-files button is still a page change.
+  await open('react-current');
+  await page.waitForSelector('#_r_24_');
+  await page.evaluate(() => document.querySelector('.container__Sx9cv_').remove());
+  c = await findComposer(page, opts);
+  t('current page: with neither a file input nor the add-files button, no way to add files', c ? `${await which(c.textarea)} ${c.setFiles ? 'setFiles' : 'none'}` : 'null', 'new none');
+
   await open('no-composer');
   const t0 = Date.now();
   c = await findComposer(page, opts);
@@ -130,6 +153,17 @@ export const chromium = { launchPersistentContext: async (_profile, opts) => {
   r = served('signed-out');
   t('AC5: a signed-out page still exits 6', `${r.status}`, '6');
   t('AC5: with the sign-in message', r.stderr.includes(SIGN_IN), true);
+
+  // End to end: on the current page one image is uploaded and its tag reaches the body.
+  // This gh keeps the body it is given, so the run reads back what it wrote. Last: the run leaves
+  // its tags file beside the images.
+  const bodyOut = join(T, 'edited-body.md');
+  writeFileSync(join(fakes, 'gh'), '#!/bin/sh\nif [ "$2" = edit ]; then cat > "$GH_BODY_OUT"; elif [ -f "$GH_BODY_OUT" ]; then cat "$GH_BODY_OUT"; else echo "| _drag after-desktop.png_ |"; fi\n');
+  r = upload({ DESK_PLAYWRIGHT: join(T, 'served-pw.mjs'), PLAYWRIGHT_BROWSERS_PATH: pw.browsers ?? process.env.PLAYWRIGHT_BROWSERS_PATH ?? '', FIXTURE: fixture('react-current'), GH_BODY_OUT: bodyOut });
+  t('current page: an upload exits 0', `${r.status}`, '0');
+  if (r.status) console.log(r.out);
+  let edited = ''; try { edited = readFileSync(bodyOut, 'utf8'); } catch { /* not written */ }
+  t('current page: and the PR body gets the image in place of its placeholder', edited.includes('https://github.com/user-attachments/assets/after-desktop-0001') && !edited.includes('_drag after-desktop.png_') ? 'replaced' : edited, 'replaced');
 }
 
 // ---- AC6: the live smoke test, only when asked for --------------------------------------------
@@ -155,9 +189,23 @@ if (!smoke) {
       t(`smoke: ${repo}#${pr} is signed in`, user ? 'signed in' : 'signed out', 'signed in');
       const c = await findComposer(page);
       const desc = c ? await c.textarea.evaluate((el) => `${el.id} placeholder="${el.placeholder}" aria-label="${el.getAttribute('aria-label')}"`) : 'none';
-      console.log(`smoke: composer textarea: ${desc}`);
+      console.log(`smoke: composer textarea: ${desc}; files go in by ${c?.input ? 'input' : c?.setFiles ? 'chooser' : 'nothing'}`);
       t(`smoke: ${repo}#${pr} has a composer`, !!c, true);
       t(`smoke: ${repo}#${pr}'s composer has a way to add files once focused (nothing is uploaded)`, !!c?.setFiles, true);
+      // DESK_COMPOSER_CAPTURE=<file> also saves the page as it stands once the composer is focused, to
+      // build a fixture from: no scripts, styles or svg paths, and no hidden input's value or meta
+      // content, which hold the session's tokens. Nothing is uploaded.
+      if (process.env.DESK_COMPOSER_CAPTURE) {
+        const html = await page.evaluate(() => {
+          const doc = document.documentElement.cloneNode(true);
+          doc.querySelectorAll('script, style, link, noscript, template, svg *').forEach((el) => el.remove());
+          doc.querySelectorAll('input[type="hidden"]').forEach((el) => el.removeAttribute('value'));
+          doc.querySelectorAll('meta').forEach((el) => el.removeAttribute('content'));
+          return `<!doctype html>\n${doc.outerHTML}`;
+        });
+        writeFileSync(process.env.DESK_COMPOSER_CAPTURE, html);
+        console.log(`smoke: saved the focused page to ${process.env.DESK_COMPOSER_CAPTURE} (${html.length} chars)`);
+      }
     } finally { await ctx.close(); }
   }
 }
