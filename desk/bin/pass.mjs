@@ -47,7 +47,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
+import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, POST_MERGE_STEP } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
@@ -3758,10 +3758,14 @@ for (const t of Object.values(qNow.tickets)) {
   // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
   // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
   // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
-  // this is written skips it whole, so the next pass adds the criteria to what done left.
+  // this is written skips it whole, so the next pass adds the criteria to what done left. Steps the worker
+  // declared for after the merge win over the criteria: the two word one check differently, so both would
+  // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
+  // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
+    const declared = have.some((h) => ![LINK_STEP, POST_MERGE_STEP].some((p) => String(h?.step ?? '').startsWith(p)));
+    const later = declared ? [] : s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
     // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
     const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
