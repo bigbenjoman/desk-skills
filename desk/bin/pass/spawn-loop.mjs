@@ -47,11 +47,13 @@
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
+import { set, say } from './shared.mjs';
+
 export function* decideSpawn(s) {
   const { t } = s;
   const key = t.key;
   const skip = { type: 'skip', key };
-  const wait = (line) => ({ type: 'report', list: 'waiting', line: `${key}: ${line}` });
+  const wait = (line) => say(key, 'waiting', `${key}: ${line}`);
   if (s.stop || !(s.attempts < s.slots)) return yield { ...skip, stop: true };
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
   if (yield { type: 'file-budget', key }) return yield skip;
@@ -71,7 +73,7 @@ export function* decideSpawn(s) {
   const busy = yield { type: 'busy', key };
   if (busy) {
     yield { type: 'busy-held', key };
-    if (!s.dry && t.worktree_busy?.why !== busy) yield { type: 'set', key, fields: [`worktree_busy=${JSON.stringify({ why: busy, at: s.at })}`] };
+    if (!s.dry && t.worktree_busy?.why !== busy) yield set(key, `worktree_busy=${JSON.stringify({ why: busy, at: s.at })}`);
     yield wait(`WORKTREE IN USE — ${busy}, so no worker was spawned. The next pass looks again`);
     return yield skip;
   }
@@ -105,7 +107,7 @@ export function* decideSpawn(s) {
       }
       // Takes the slot its worker would have: a bad refresh parks no more tickets than the pass would have started.
       yield { type: 'take-slot', key };
-      yield { type: 'set', key, fields: ['handoff=null'] };
+      yield set(key, 'handoff=null');
       return yield { type: 'park', key, line: `${failure}. Once it is reachable: queue.mjs requeue ${key}` };
     }
   }
@@ -131,7 +133,7 @@ function* afterSetup(s, pick, setup) {
   const key = t.key;
   const skip = { type: 'skip', key };
   // A remote that did not answer is the machine's, not the ticket's: it stays queued for the next pass.
-  const remoteDown = (why) => ({ type: 'report', list: 'waiting', line: `${key}: held, origin did not answer (${why}); it spawns on a pass origin answers` });
+  const remoteDown = (why) => say(key, 'waiting', `${key}: held, origin did not answer (${why}); it spawns on a pass origin answers`);
   if (setup.hung) {
     yield remoteDown(setup.hung);
     return yield skip;
@@ -150,15 +152,15 @@ function* afterSetup(s, pick, setup) {
     // Unless the database check answered on this pass, and this ticket waited on it before: then the
     // container is up and setup still cannot use it (a role it lacks, say), which waiting will not fix.
     if (setup.exitOk === false && pgDown && !(s.dbUp && t.db_wait)) {
-      if (!s.dry) yield { type: 'set', key, fields: [`db_wait=${s.at}`] };
+      if (!s.dry) yield set(key, `db_wait=${s.at}`);
       yield { type: 'db-down', why: pgDown.replace(/^.*?FAIL: /, '').trim() };
-      yield { type: 'report', list: 'waiting', line: `${key}: worktree setup could not reach the local database, so it stays queued and spawns on the first pass the database answers` };
+      yield say(key, 'waiting', `${key}: worktree setup could not reach the local database, so it stays queued and spawns on the first pass the database answers`);
       return yield skip;
     }
     const answered = pgDown ? ' (the local database check passes, so waiting for it will not clear this)' : '';
     return yield { type: 'park', key, line: `worktree setup failed, not spawned — ${why}${answered}` };
   }
-  if (t.db_wait && !s.dry) yield { type: 'set', key, fields: ['db_wait=null'] };
+  if (t.db_wait && !s.dry) yield set(key, 'db_wait=null');
   return yield { type: 'start', key, how: 'local', pick, setup };
 }
 
