@@ -651,8 +651,8 @@ Reverse-chronological event list: `10:07 stage 4/9 Verify` · `09:53 stage 3/9 I
     `  ✓ 18 tests passed (2.4s)`
     `▸ Edit  skills/desk-pr/references/screenshots.md`
     `Writing the PASS/FAIL table rows for each breakpoint…`
-  - Bottom: heartbeat `last activity 4 s ago` (green) · `opus · high · ben@studia.example` · `Open`.
-- Tile stuck signal: when no tool progress for > 10 min and log not growing for 2 passes: amber border, line `No activity for 14 min. It may be stuck.` with `Look closer`.
+  - Bottom: heartbeat `last activity 4 s ago` (green) · `opus · high · ben@studia.example` · `Stop…` (ghost) · `Open`.
+- Tile stuck signal: when no tool progress for > 10 min and log not growing for 2 passes: amber border, line `No activity for 14 min. It may be stuck.` with `Look closer`, which replaces the bottom row. A stuck tile has no `Stop…` of its own: `Look closer` opens the focused view, whose Stop is the place to stop it once the person has seen why it is quiet.
 
 ### 7.2 Focused view (also the ticket's Live tab)
 Layout: left 2/3 stream, right 1/3 facts.
@@ -666,7 +666,18 @@ Layout: left 2/3 stream, right 1/3 facts.
   - desk markers `desk_preflight` / `desk_spawn` as thin dividers `Spawned 09:12 · port 4831 · ben@studia.example`.
   - Controls: `Follow` toggle (on by default; scrolling up turns it off and shows `Jump to latest ↓ (12 new)`), `Show thinking` off by default, search within log (⌘F).
 - **Facts column:** Is it stuck? card: `Last tool progress 4 s ago · log grew 18 KB in the last pass · idle passes 0` → verdict `Working.` / `Slow but working.` / `May be stuck: no activity for 14 min, 2 idle passes.` Then model, effort, login, port, database, worktree, session id, tokens so far *(illustrative)* `1.9M · $5.10 notional`.
-- **Actions:** `Open conversation about this worker` (forks the session, see 8.3) · `Open log file` · `Copy session id`. No Stop button (G9). In its place a muted line: `To stop a worker, use /desk-reboot or the terminal. Desk has no safe stop button yet.`
+- **Actions (updated 16 Nov, DS-743):** `Open conversation about this worker` (forks the session, see 8.3) · `Open log file` · `Copy session id` · `Stop worker…` (outline). Each Workers tile that is not stuck has a ghost `Stop…` beside `Open` (a stuck tile reaches Stop through `Look closer`, 7.1). Both run `queue.mjs stop <KEY>` (DS-742) through the write path (DS-703). The old line `To stop a worker, use /desk-reboot or the terminal. Desk has no safe stop button yet.` is gone.
+  - **Confirm (inline two-step, not a typed confirm: a stop can be undone, since the work is committed and the ticket held).** Opens in place, focus on `Keep running`:
+    `Stop DS-676 and hold it?`
+    `Ends its worker, commits any uncommitted work on its branch and holds DS-676. Nothing is lost: answer its held item with start and a new worker picks up on the same branch.`
+    `Keep running` (outline, focused) · `Stop and hold` (destructive) · muted `Esc keeps it running.` Caption `Runs: queue.mjs stop DS-676`.
+  - **Busy:** the button reads `Stopping DS-676…` (busy, disabled) beside `Committing its work. The stream stays open until the worker ends.`
+  - **Which result shows** is decided from the exit code and the ticket's queue state read just before the command and again just after, never from the output's wording. The output (stdout and stderr) is shown verbatim in mono; the samples below are `queue.mjs stop`'s own lines (`desk/bin/queue.mjs` `stop()`; a refusal goes to stderr with the `queue: ` prefix its catch adds), with illustrative values.
+  - **Exit 0:** ok alert `Stopped at 10:14. DS-676 is held.`, the output in mono (`DS-676 stopped: its worker (pid 48213) ended; committed as 3f9a2c1d8e04 on feat/DS-676-saved-canvas-stitch; DS-676 is held, and starts again only once you let it (needs-you: start)`), then `It's in Needs you. Answer it with start to resume.` The tile and state line read `◆ held` `held by you at 10:14 · 4/9 Verify`.
+  - **Exit 11, state unchanged** (a refusal: nothing changed): warn alert `queue.mjs stop refused (exit 11)`, the output in mono (for example `queue: DS-676's worker has already printed AUTOPILOT_DONE, so the next pass records it done and stops its session: nothing was changed`), then `Nothing was changed. The Workers list is current.` Nothing reads as stopped.
+  - **Exit 11, state changed** (its worker ended, but not cleanly: its work could not be committed, or the queue changed meanwhile): warn alert `DS-676's worker has ended, but not cleanly`, the output in mono (for example `DS-676 stopped: its worker (pid 48213) ended; not committed: <git's error>; DS-676 is held, …`), then the ticket's state as read back (`◆ held`, or what it is now) and `Any uncommitted work is still in its worktree.` with `Open worktree`. It never reads as a clean stop.
+  - **Exit 2** (the ticket is not in the queue): warn alert `DS-676 is no longer in the queue`, the output in mono (`queue: no such ticket in the queue: DS-676. Nothing was changed`), then `It may have finished. The Workers list is current.`
+  - Board: canvas v6, section 05, `Stop · confirm and result (DS-743)`. The board draws the confirm, busy and exit 0 states; for the result states and their copy, this section wins where the board differs (the board predates `queue.mjs stop` on main, and its output lines are placeholders, not the command's).
 - Accessibility: stream region `aria-live="polite"` announces only stage changes and the stuck verdict.
 
 ### 7.3 States
@@ -965,7 +976,7 @@ All shortcuts are listed in tooltips (`Record answer ⏎`) and in `?`. Nothing i
 ## 14. Assumptions to confirm with the user
 1. Inbox as the landing screen (not Repos). Change to Repos if the user mostly opens the app to watch, not answer.
 2. Needs you sits at the top of a queue list (desk-q puts it last). Chosen because the app is scanned for action.
-3. No Stop button until G9 exists.
+3. ~~No Stop button until G9 exists.~~ **Resolved 16 Nov:** G9 is `queue.mjs stop` (DS-742); the Stop button and its confirm are drawn on canvas v6 (§7.2, DS-743).
 4. Repo config stays read-only; all changes through `/desk-setup`.
 5. The 1 s "seen" guard on `⏎` won't annoy. Lower to 0.5 s if testing shows friction with no wrong answers.
 6. `{jira-site}` value per repo (draw as `jira.example.net`).
