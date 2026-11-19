@@ -15,7 +15,7 @@ export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mk
 : > "$GIT_CONFIG_GLOBAL"
 mkdir -p "$T/desk"; ln -s "$SRC/desk/bin" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_CONFIG="$T/config.md" DESK_MACHINE="$T/machine.md"
-unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT
+unset DESK_REPO_DIR DESK_CONTEXT_WINDOW ANTHROPIC_MODEL DESK_REPO_OVERRIDE CLAUDE_CODE_DISABLE_1M_CONTEXT CLAUDE_AUTOCOMPACT_PCT_OVERRIDE
 HOOK="$SRC/hooks/desk-handoff.py"
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -266,7 +266,7 @@ check "resume injects nothing"                            '[ -z "$out" ]'
 hook SessionStart s1 "$T/low.jsonl" ',"source":"compact"'
 check "compact: its own handoff, already consumed, is not offered" '[ -z "$out" ]'
 hook SessionStart s3 "$T/low.jsonl" ',"source":"compact"'
-check "compact with no handoff recorded: injects the newest" '[[ "$(ctx)" == *"read .handoffs/$DAY-2.md"* ]]'
+check "#865: compact with no handoff of its own injects none, not another session's newest" '[ -z "$out" ]'
 transcript "$T/compacted.jsonl" 100000
 printf '{"type":"system","subtype":"compact_boundary","isSidechain":false}\n{"type":"user","isSidechain":false,"isCompactSummary":true,"message":{"role":"user","content":"summary"}}\n' >> "$T/compacted.jsonl"
 hook UserPromptSubmit s1 "$T/compacted.jsonl"
@@ -286,6 +286,30 @@ config '`0`'; echo "# fresh" > "$R/.handoffs/fresh.md"
 hook SessionStart n5 "$T/low.jsonl" ',"source":"clear"'
 check "§2 at 0: no SessionStart injection"                '[ -z "$out" ]'
 config '`45`'
+
+# ---- #865: compaction mode (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set): no /clear, one handoff kept ----
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PostToolUse c1 "$T/high.jsonl"
+c="$(ctx)"; CP="$(printf '%s' "$c" | grep -o "$R/.handoffs/[^ ]*\.md" | head -1)"
+check "#865 with the override set, the threshold asks for the handoff and to keep working" '[[ "$c" == *"context is at 50%"* ]] && [[ "$c" == *"compacts on its own"* ]] && [[ "$c" == *"write the handoff at $CP"* ]] && [[ "$c" == *"carry on with the work"* ]]'
+check "#865 and asks for no /clear or /desk-resume"        '[[ "$c" != *"type /clear, then"* ]] && [[ "$c" != *"/desk-resume"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook Stop c1 "$T/high.jsonl"
+check "#865 the Stop block asks for the handoff, not /clear" '[[ "$out" == *"\"decision\": \"block\""* ]] && [[ "$out" == *"$CP"* ]] && [[ "$out" != *"/clear, then"* ]] && [[ "$out" == *"do not ask the user to /clear"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 PreCompact says nothing while the handoff is unwritten" '[ $rc -eq 0 ] && [ -z "$out" ]'
+echo "# compacting session" > "$CP"
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 PreCompact names the written handoff for the summary" '[ $rc -eq 0 ] && [[ "$out" == *"$CP"* ]] && [[ "$out" == *"next step"* ]]'
+hook PreCompact c1 "$T/high.jsonl" ',"trigger":"auto"'
+check "#865 without the override, PreCompact says nothing" '[ -z "$out" ]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook SessionStart c1 "$T/low.jsonl" ',"source":"compact"'
+check "#865 after the compaction, the session is told to read its handoff" '[[ "$(ctx)" == *"read .handoffs/$(basename "$CP")"* ]]'
+check "#865 and the handoff is not marked consumed"        '! grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 hook PostToolUse c1 "$T/compacted-high.jsonl"
+c="$(ctx)"
+check "#865 the next crossing refreshes the same handoff, not a new one" '[[ "$c" == *"refresh the handoff at $CP"* ]]'
+CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=50 PID=c1 hook SessionStart c2 "$T/low.jsonl" ',"source":"clear"'
+check "#865 a /clear after it still finds the handoff, and consumes it" '[[ "$(ctx)" == *"read .handoffs/$(basename "$CP")"* ]] && grep -qx "$(basename "$CP")" "$R/.handoffs/.consumed"'
+check "#865 install.sh registers the hook on PreCompact"   'grep -q "^HANDOFF_EVENTS=.*PreCompact" "$SRC/install.sh"'
 
 # ---- DS-282: two sessions in one repo each keep their own handoff ----
 rm -rf "$R/.handoffs"

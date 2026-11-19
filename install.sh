@@ -925,11 +925,12 @@ case "$rc" in
     ;;
 esac
 
-# Context handoff: one script on four events. Past config §2 "Handoff at context %" (default 45) the
+# Context handoff: one script on five events. Past config §2 "Handoff at context %" (default 45) the
 # session finishes its step and writes .handoffs/<date>.md; after /clear or a compaction the next
-# session is told to read it. Silent in repos with no desk config.
+# session is told to read it. With CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set, the session compacts on its own
+# instead of asking for /clear (#865). Silent in repos with no desk config.
 HANDOFF_HOOK="$CLAUDE_DIR/hooks/desk-handoff.py"
-HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart PreCompact"
 install_file "$SRC/hooks/desk-handoff.py" "$HANDOFF_HOOK"
 chmod +x "$HANDOFF_HOOK"
 wrote "hook     ~/.claude/hooks/desk-handoff.py (script only; registering it is asked)"

@@ -710,10 +710,18 @@ What it does:
 The four hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
 repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
-**`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
+**`desk-handoff.py`** (on prompt submit, after each tool, at turn end, at session start and before a compaction) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
 context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
 you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
+
+With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100,
+set under `env` in `~/.claude/settings.json`), nobody types anything: past §2 the session writes its
+handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
+handoff for the summary, and after the compaction the session is told to read it and carry on. Each
+later crossing refreshes that same handoff, and a compaction does not mark it consumed, so a later
+`/clear` still finds it. Set §2 below the override, so the handoff is written before the compaction.
+
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.
