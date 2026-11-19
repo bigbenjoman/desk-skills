@@ -3,6 +3,8 @@
 //   node installed.mjs record <checkout> [<release dir>]   write <DESK_HOME>/installed.json: the commit
 //                                          installed from (and the release's own release.json)
 //   node installed.mjs version             print the installed commit (nothing when none is recorded)
+//   node installed.mjs running             print the commit of the release this script runs from (the
+//                                          installed one outside a release folder)
 //   node installed.mjs restart             restart each running merge driver that is between loops, and
 //                                          rewrite and reload each loaded supervisor agent; one line each
 //   node installed.mjs prune               delete all but the newest three releases, never the current one
@@ -34,6 +36,15 @@ export const installedFile = (home = E.deskHome()) => join(home, 'installed.json
 export function readInstalled(home = E.deskHome()) {
   try { const v = JSON.parse(readFileSync(installedFile(home), 'utf8')); return v?.commit ? v : null; } catch { return null; }
 }
+// The desk version this script runs: its release folder's (releaseCommit), so one started from an older
+// release reads as old whatever is installed since. Outside a release folder, the installed commit, or null.
+export function runningVersion(home = E.deskHome()) {
+  const dir = E.releaseDirOf(HERE, home);
+  if (!dir) return readInstalled(home)?.commit ?? null;
+  let info = null;
+  try { info = JSON.parse(readFileSync(join(dir, RELEASE_FILE), 'utf8')); } catch { /* none written */ }
+  return releaseCommit(basename(dir), info);
+}
 // A process runs old code when an installed version is known and the one it started at is not it.
 export const oldCode = (version, installed = readInstalled()) => Boolean(installed?.commit) && version !== installed.commit;
 
@@ -63,6 +74,9 @@ function record(src, release = null) {
 // A release's order is its release.json `at` (when it last went live), else its folder's mtime.
 export const KEEP_RELEASES = 3;
 const RELEASE_FILE = 'release.json';
+// A release's version: its release.json commit, else release-<name>. Rollback records it as installed and
+// a driver started from the release records it in its lock, so the two compare equal.
+const releaseCommit = (name, info) => info?.commit || `release-${name}`;
 export const releasesDir = (home = E.deskHome()) => join(home, 'releases');
 export function currentRelease(home = E.deskHome()) {
   try { return basename(readlinkSync(join(home, 'current'))); } catch { return null; }
@@ -106,7 +120,7 @@ export function rollback(home = E.deskHome()) {
   }
   const prev = list[at - 1];
   makeCurrent(prev.name, home);
-  const v = { commit: prev.info?.commit ?? `release-${prev.name}`, dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
+  const v = { commit: releaseCommit(prev.name, prev.info), dirty: prev.info?.dirty ?? null, at: new Date().toISOString(), from: prev.info?.from ?? null, release: prev.name };
   writeFileSync(installedFile(home), `${JSON.stringify(v, null, 2)}\n`);
   return { ok: true, line: `rolled back from release ${cur} to ${prev.name} (commit ${v.commit})` };
 }
@@ -294,9 +308,10 @@ if (isMain()) {
   try {
     if (cmd === 'record' && arg) { const v = record(arg, rel ?? null); console.log(`${v.commit}${v.dirty ? ' (with uncommitted changes)' : ''}${v.dirty === null ? ' (not a git checkout)' : ''}`); }
     else if (cmd === 'version') { const v = readInstalled(); if (v) console.log(v.commit); }
+    else if (cmd === 'running') { const v = runningVersion(); if (v) console.log(v); }
     else if (cmd === 'restart') for (const l of restart()) console.log(l);
     else if (cmd === 'prune') for (const l of pruneReleases()) console.log(l);
     else if (cmd === 'rollback') { const r = rollback(); console.log(r.line); if (!r.ok) process.exit(1); }
-    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | restart | prune | rollback'); process.exit(2); }
+    else { console.error('usage: installed.mjs record <checkout> [<release dir>] | version | running | restart | prune | rollback'); process.exit(2); }
   } catch (e) { console.error(`installed: ${e.message}`); process.exit(1); }
 }

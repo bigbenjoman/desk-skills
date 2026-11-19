@@ -297,8 +297,9 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 reopen_log
-# The desk version this driver runs, so the supervisor can tell it started before the last install.
-node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
+# The desk version this driver runs (its release's, not the installed one), so the supervisor can tell
+# it started before the last install.
+node "$DESK_RUN_BIN/installed.mjs" running > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
