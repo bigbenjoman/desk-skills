@@ -93,6 +93,25 @@ out=$(DESK_CONFIG="$T/config-lever.md" node "$B/plan-batch.mjs" KAN-2 2>&1); rc=
 check "DS-639 AC5 with the row reading effort, a ticket pinned without it is planned as with the lever off" \
   '[ "$rc" = 0 ] && echo "$out" | grep -q "^workers: cloud — 1 of 1 admitted" && echo "$out" | grep -A3 "^KAN-2 " | grep -qx "  runs: cloud"'
 
+# #876: a ticket admitted mid-batch (queue.mjs admit, as intake and /desk-admit add one) is placed as
+# plan-batch places one it seeds.
+loc(){ node -e "console.log(JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).tickets[process.argv[2]]?.location ?? \"local\")" "$DESK_QUEUE" "$1"; }
+config cloud
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(node "$B/queue.mjs" admit KAN-2 2>&1); rc=$?
+check "#876 at cloud, a ticket admitted mid-batch that needs nothing here runs in the cloud" '[ "$rc" = 0 ] && [ "$(loc KAN-2)" = cloud ]'
+check "#876 and the admit says so"                                           'echo "$out" | grep -q "; runs: cloud$"'
+out=$(node "$B/queue.mjs" admit KAN-3 2>&1); rc=$?
+check "#876 one admitted mid-batch that renders runs locally, and the admit says why" '[ "$rc" = 0 ] && [ "$(loc KAN-3)" = local ] && echo "$out" | grep -q "; runs: local — it renders: its screenshots need the browser lock and a local dev server$"'
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(DESK_CONFIG="$T/config-lever.md" node "$B/queue.mjs" admit KAN-2 2>&1); rc=$?
+check "#876 with the effort lever on, a mid-batch admit stays local"         '[ "$rc" = 0 ] && [ "$(loc KAN-2)" = local ] && echo "$out" | grep -q "runs: local — the effort lever is on"'
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null
+node -e 'const f = process.argv[1], fs = require("fs"); const q = JSON.parse(fs.readFileSync(f, "utf8")); Object.assign(q, { feature: true, spine: "KAN-9", owners: { "AC1": "KAN-2" } }); fs.writeFileSync(f, JSON.stringify(q))' "$DESK_QUEUE"
+out=$(node "$B/queue.mjs" admit KAN-2 2>&1); rc=$?
+check "#876 in a feature batch, a child admitted mid-batch that owns specs stays local, and says why" '[ "$rc" = 0 ] && [ "$(loc KAN-2)" = local ] && echo "$out" | grep -q "runs: local — it owns acceptance specs"'
+config local
+node "$B/queue.mjs" init "t$RANDOM" >/dev/null; out=$(node "$B/queue.mjs" admit KAN-2 2>&1); rc=$?
+check "#876 at local, a mid-batch admit runs locally and says nothing of where" '[ "$rc" = 0 ] && [ "$(loc KAN-2)" = local ] && ! echo "$out" | grep -q "runs:"'
+
 config local; plan
 check "local reads as local"                                                 '[ "$rc" = 0 ] && echo "$out" | grep -qx "workers: local"'
 

@@ -19,7 +19,8 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
@@ -30,6 +31,7 @@ import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 import { assignPin } from './levers-auto.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -490,10 +492,18 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     }
   }
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
+  // Config §3b "Worker location", applied as plan-batch applies it to each ticket it seeds, the effort
+  // lever read from the ticket's pin (the row where it has none), as plan-batch reads it. The row is
+  // read before the pin is drawn, so a bad row refuses the admit before any trial arm is drawn.
+  const location = workerLocation();
+  if (pin === undefined) pin = admissionPin(key, r.size);
+  const placed = placement(r, location, {
+    feature: featureRole(q.feature === true ? { spine: q.spine, owners: q.owners } : null, key),
+    effort: location === 'cloud' && leverOnFor('effort', { key, levers: pin }),
+  });
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
   // holds it behind the open ones once its own park is settled.
-  if (pin === undefined) pin = admissionPin(key, r.size);
   q.tickets[key] = {
     key, type: r.type ?? 'Bug', lane: r.lane, state: park || holds.length ? 'parked' : 'triaged',
     worktree: null, branch: r.branch ?? null, database: null, port: null,
@@ -504,10 +514,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
     ...(pin ? { levers: pin } : {}),
+    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
-  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
+  const runs = location === 'cloud' ? `; ${runsText(placed)}` : '';
+  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}${runs}`;
 }
 
 // The holds each lane, size or design park in `q` with no held_by should carry beside its park: its
