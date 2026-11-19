@@ -88,6 +88,7 @@ This applies equally to edits to existing tickets, comments, and transitions. Re
    - **Priority**: in the field and values §4 Priority names; propose one, never leave it blank. Priority, status and size go in their fields, never as a line in the description (`desk-jira create` refuses one); the only exception is the `Size: M` first line below
    - **Size**: XS, S, M, L or XL on desk-jira's scale (its *Epics* section), in the project's `Size` field where there is one (`desk-jira fields size`), otherwise as the description's first line `Size: M`. Anything L or bigger is split: see *Epic Mode*
    - **Other fields**: every field §4 Other fields lists, filled in the same create — a blank one is never flagged later
+   - **Required fields**: every field §4 Required fields names for the issue type (`desk-env required-fields <type>`), with its value. A ticket handed to the user to file carries them in the draft too, since nothing checks a pasted ticket
    - **Labels / Links**: from §4 Labels; each dependency is a Blocks link you plan and file with `desk-jira link`, never a sentence in the body (with Tracker `none`, the template's `Blocked by #<n>` line)
 
    **An open decision blocks the create.** Anything you would be tempted to write as "open question", "TBD" or "to confirm" is a question for the user (or the owner §4 People names) now. Ask it, record the answer as a dated decision, and only then draft. Never file a ticket that carries an open question.
