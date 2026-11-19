@@ -42,7 +42,7 @@ import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from '
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy } from './clears-when.mjs';
+import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
@@ -520,13 +520,19 @@ function againstRegister(t, question, log, cond) {
 // the decider to restate once (decider.mjs; in a batch a session runs, that session) before the person
 // is asked. One no restate reaches in RESTATE_MS is recorded none (below), and so is one only the
 // ticket's own draft leaving draft or merging makes hold (ownDraftWhy), which the park itself prevents.
-function clearsWhenOf(t, log) {
+// A file is read against the park's question (withQuestion): one whose path the question contradicts
+// is kept as unreadable too, naming why.
+function clearsWhenOf(t, log, question) {
   const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
-  const p = parseClearsWhen(raw, { here: GH_REPO });
-  const circular = p.ok ? ownDraftWhy(p.cond, t) : null;
+  const parsed = parseClearsWhen(raw, { here: GH_REPO });
+  const circular = parsed.ok ? ownDraftWhy(parsed.cond, t) : null;
   if (circular) {
     report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as none, for the person: ${circular}`);
     return { kind: 'none' };
+  }
+  const p = parsed.ok ? withQuestion(parsed.cond, question, { state: STATE }) : parsed;
+  if (p.ok && (p.cond.path !== parsed.cond.path || p.cond.root !== parsed.cond.root)) {
+    report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as ${describeCond(p.cond)}, where its question says`);
   }
   if (p.ok) return p.cond;
   report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
@@ -865,7 +871,7 @@ const ADVANCE_HANDLERS = {
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
   'live-read': (a, s) => liveReadOf(s.t, a.question),
-  'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path),
+  'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path, a.question),
   register: (a, s) => againstRegister(s.t, a.question, s.log.path, a.cond),
   recommends: (a, s) => recommendsOf(s.t, a.question, s.log.path),
   'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
