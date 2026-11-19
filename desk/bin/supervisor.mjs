@@ -39,8 +39,9 @@
 //     once if none is live, and its lines go into the tick's report;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
-//     or, with anything parked or failed, DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch
-//     went idle, so a pass sees what cleared a park outside the queue. Each idle tick refreshes the
+//     or, with anything parked, failed or held behind a blocker in no batch (held_outside),
+//     DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch went idle, so a pass sees what
+//     cleared a park, or landed a blocker, outside the queue. Each idle tick refreshes the
 //     batch's heartbeat (so desk-q and needs-you read it as run, not stopped), and still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
@@ -71,7 +72,7 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, describeCrash, isHeld, spinePark } from './batch-state.mjs';
+import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
@@ -91,9 +92,6 @@ const DEFAULT_INTERVAL = 180;
 const MIN_INTERVAL = 60;
 // A pass takes seconds; one still going after this is hung, and launchd or systemd starts no tick while one runs.
 const PASS_TIMEOUT_MS = 10 * 60 * 1000;
-// How long an idle batch with anything parked or failed goes without a pass: each pass checks what
-// clears its parks, and is script-only.
-const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
 // Location roots an install passes on to the agent, so the tick reads the same config and scripts.
 const PASS_ON = ['DESK_HOME', 'DESK_CONFIG_ROOT'];
 
@@ -527,9 +525,16 @@ function batchInterval(intake) {
       && answered(state, { ticket: t.key, at: new Date(Math.max(idleAt, Date.parse(t.park?.since ?? '') || 0)).toISOString() }));
   // So does an interactive close-out's note: only a pass turns it into a done ticket.
   const closedOut = readCloseouts(state).some((c) => !c.queue || c.queue === E.queueFile());
-  // And, for a batch with anything parked or failed, the recheck interval passing: what clears a park
-  // outside the queue (a PR merged by hand, a variable set) is only seen by a pass.
-  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed')
+  // And, for a batch with anything parked, failed or held behind a blocker in no batch, the recheck
+  // interval passing: what clears a park or an outside hold (a PR merged by hand, a variable set, a
+  // blocker landing) is only seen by a pass, which asks GitHub once per distinct outside blocker. An
+  // outside key counts only while it is still in held_by and in no ticket here: a person's release
+  // clears held_by and leaves held_outside behind.
+  const heldOutside = (t) => {
+    const by = String(t.held_by ?? '').split('|');
+    return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
+  };
+  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t))
     && Date.now() - idleAt >= IDLE_RECHECK_MS;
   // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
   const watchDue = postMergeDue({ state, queue: q });
@@ -645,6 +650,9 @@ function runPass(state, q, s, log, stamp, intake = []) {
   const every = Number(installedInterval(slug));
   // An answer recorded while the pass runs is after it started, so it still ends the idle it reports.
   const startedAt = new Date().toISOString();
+  // The pass reads its time from it, so a read it records is at most the interval before the pass the
+  // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
+  env.DESK_PASS_AT = startedAt;
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
@@ -705,7 +713,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
     s.idle_at = startedAt;
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked or failed`);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch`);
   }
   writeState(state, s);
   log(out);
