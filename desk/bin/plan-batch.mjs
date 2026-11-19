@@ -18,7 +18,7 @@ import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePa
 import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
-import { placement, featureRole } from './cloud-worker.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
@@ -488,7 +488,7 @@ for (const r of order) {
   say(`  ${r.summary}`);
   say(`  branch: ${r.branch}`);
   if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
-  if (location === 'cloud' && admitted.includes(r)) say(`  runs: ${placed[r.ticket].where}${placed[r.ticket].why ? ` — ${placed[r.ticket].why}` : ''}`);
+  if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);

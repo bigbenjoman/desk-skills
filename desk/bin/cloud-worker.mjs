@@ -38,6 +38,10 @@ export function placement(rec, location, { feature = null, effort = false } = {}
   return why.length ? { where: 'local', why: why.join('; ') } : { where: 'cloud', why: null };
 }
 
+// Where a placed ticket runs, as the batch plan and a mid-batch admit both say it: `runs: <where>`, and
+// why it stays local where placement gave a reason.
+export const runsText = ({ where, why }) => `runs: ${where}${why ? ` — ${why}` : ''}`;
+
 // Ticket `key`'s part in a feature batch that keeps it local, as placement's `feature` takes it, or null.
 // `batch` is the feature batch's { spine, owners } (the owner table: criterion id -> ticket), or null
 // outside feature mode.

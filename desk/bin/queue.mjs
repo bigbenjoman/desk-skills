@@ -19,7 +19,7 @@ import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
   ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
-import { placement, featureRole } from './cloud-worker.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
@@ -471,8 +471,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
-  // At cloud, where it runs, in the batch plan's `runs:` words.
-  const runs = location === 'cloud' ? `; runs: ${placed.where}${placed.why ? ` — ${placed.why}` : ''}` : '';
+  const runs = location === 'cloud' ? `; ${runsText(placed)}` : '';
   return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}${runs}`;
 }
 
