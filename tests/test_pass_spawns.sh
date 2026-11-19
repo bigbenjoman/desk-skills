@@ -739,8 +739,8 @@ q add PM-2; q set PM-2 state=done result.pr=703
 q add PM-3; q set PM-3 state=done result.pr=704
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 pending(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { followOnPending } from '$B/harvest.mjs'; console.log(followOnPending(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
-check "DS-570 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row" \
-  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
+check "DS-570 AC2 DS-785 AC2 a merged PR's post-merge criteria are follow-on steps after the ones it had, naming no §3 row, gated on production or main as each needs" \
+  '[ "$(field PM-1 follow_on | jq -c "[.[] | [.step, .row]]")" = "[[\"run the backfill\",\"jira-comment\"],[\"Check after the merge: AC7 (needs production): fill in the switch date at the production relay run\",null],[\"Check after the merge: AC8 (needs staging): place a test call on staging\",null]]" ] && [ "$(field PM-1 follow_on | jq -c "[.[] | .after]")" = "[null,\"production\",\"main\"]" ] && echo "$out" | grep -qF "merge recorded: PM-1 (PR #702): 2 criteria its review left for after the merge, now follow-on steps"'
 check "DS-570 AC2 so needs-you lists them as the ticket's follow item" '[ "$(pending PM-1)" = true ]'
 check "DS-570 a review that left none, or one by anyone but the §1 handle, adds no follow-on step" \
   '[ "$(field PM-2 merged_at)" != null ] && [ "$(field PM-2 follow_on)" = null ] && [ "$(field PM-3 follow_on)" = null ] && [ "$(pending PM-3)" = false ]'

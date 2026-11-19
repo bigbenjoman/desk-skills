@@ -167,7 +167,10 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   deploy, a job to start against the merged code). They depend on the merge; they never block it. Name
   each on your DONE line as `follow_on=` and a one-line JSON array, before any `said=`:
   `AUTOPILOT_DONE: pr=871 jira=In Review follow_on=[{"step": "run provision-telnyx-assistant.ts --env staging", "row": "staging-write"}]`,
-  `row` being the §3 key the step needs (`null` where none does). Put the same steps in your Stage 8
-  ticket comment, one line each, under "Once this merges:". Once the PR merges, needs-you lists each
-  step for the person with its row's value. A step you can run before the merge is not a follow-on: run
-  it.
+  `row` being the §3 key the step needs (`null` where none does). Add `"after"` to a step that needs
+  more than the merge: `"main"` once the merge is on the default branch (a staging or deployed check),
+  `"production"` once production runs it (config §4 Promotion ref has the merge commit). Leave it out
+  for the merge itself; any other value keeps no steps at all. Put the same steps in your Stage 8
+  ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
+  holds, needs-you lists the step for the person with its row's value. A step you can run before the
+  merge is not a follow-on: run it.

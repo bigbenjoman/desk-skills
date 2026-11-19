@@ -3797,7 +3797,7 @@ const PR_FINAL = ['MERGED', 'CLOSED'];
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on.
 const postMergeOwed = (t, n) => (t.pr_status?.post_merge ?? []).length > 0 && String(t.post_merge_read ?? '') !== String(n);
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -3812,7 +3812,7 @@ function readPrStatus(n) {
   const postMerge = conflictHandle ? postMergeSteps(latestReview(v.reviews, conflictHandle)?.body) : [];
   return {
     ...(postMerge.length ? { post_merge: postMerge } : {}),
-    pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt),
+    pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), merge_commit: v.mergeCommit?.oid ?? null,
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
     base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
@@ -3949,7 +3949,7 @@ for (const t of Object.values(qNow.tickets)) {
   // these steps. One write, so a refused one leaves the criteria owed to the next pass.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null })).filter((x) => !have.some((h) => h?.step === x.step));
+    const later = s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
     if (q('set', t.key, ...steps, `post_merge_read=${n}`) && later.length) {
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
