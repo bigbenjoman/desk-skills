@@ -14,19 +14,18 @@
 //   dry        a dry run: nothing recorded where the loop records nothing on one
 //   stop       the loop is stopped: the batch base holds it, or the usage limit was met this pass
 //   attempts   the slots taken so far this pass, and `slots` how many it has
-//   running    the keys running now, tickets started earlier this pass included
-//   files      each of those keys' files, and t's, as the per-file budget counts them
 //   rerun      t is named in AUTOPILOT_RERUN, so a PR shipped elsewhere does not count
 //   resume     t is a killed worker waiting to resume, and `handoff` a session handed off to its next stage
-//   fresh      t starts from Stage 0, with no session, fix try or PR in this repo behind it
 //   dbDown     a worktree setup earlier this pass found the local database down
 //   dbUp       the database health check answered on this pass
 //   fetchLimit the seconds a worktree setup's git fetch is given
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
-//   places {file}        -> the places the per-file budget gives file
+//   file-budget {key}    -> true where a file it names is at its per-file budget, counting the tickets
+//                           running now, those started earlier this pass included (pass.mjs collidesWithRunning)
 //   fix-try-stale {key}  -> true where its fix try ended with no worker (pass.mjs fixTryStale)
 //   shipped {key}        -> { pr, branch, mergedAt } or { jira: true } where it shipped outside its worker, else null
+//   fresh {key}          -> true where it starts from Stage 0, with no session, fix try or PR in this repo behind it
 //   placement {key}      -> its triage record's placement in another repo, or null
 //   busy {key}           -> why its worktree is held, or null (pushing its last worker's commits first)
 //   busy-held {key}      the worktree is held this pass
@@ -47,7 +46,6 @@
 //   park {key, line}                          park it
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
-import { filesNamedByRunning } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
@@ -56,7 +54,7 @@ export function* decideSpawn(s) {
   const wait = (line) => ({ type: 'report', list: 'waiting', line: `${key}: ${line}` });
   if (s.stop || !(s.attempts < s.slots)) return yield { ...skip, stop: true };
   // A ticket spawned earlier in this pass is running too, so it fills a place in the per-file budget.
-  if (yield* atFileBudget(s)) return yield skip;
+  if (yield { type: 'file-budget', key }) return yield skip;
   if (yield { type: 'fix-try-stale', key }) return yield skip;
   // Shipped outside its worker: recorded done without taking a slot, and nothing spawns.
   const shipped = s.rerun ? null : yield { type: 'shipped', key };
@@ -65,8 +63,9 @@ export function* decideSpawn(s) {
     return yield { type: 'record-done', key, how, pr: shipped.pr ?? null, mergedAt: shipped.mergedAt ?? null,
       line: `${key}: ${how}, outside its worker: recorded done, no worker spawned` };
   }
-  // Its code wholly in another repo by its triage record: handed over without taking a slot.
-  const away = s.fresh ? yield { type: 'placement', key } : null;
+  // Its code wholly in another repo by its triage record: handed over without taking a slot. Whether it
+  // starts fresh is read here, not in the snapshot: the fix-try check above can finish its fix try.
+  const away = (yield { type: 'fresh', key }) ? yield { type: 'placement', key } : null;
   if (away) return yield { type: 'hand-away', key, placement: away };
   // Held without taking a slot: another ticket may spawn in its place.
   const busy = yield { type: 'busy', key };
@@ -124,16 +123,6 @@ export function* decideSpawn(s) {
     return yield skip;
   }
   return yield* afterSetup(s, pick, yield { type: 'setup', key });
-}
-
-// Whether a file t names is at its per-file budget: named by as many running tickets as its places.
-function* atFileBudget(s) {
-  const filesOf = (k) => s.files[k] ?? [];
-  let held = false;
-  for (const { file, by } of filesNamedByRunning(s.t.key, s.running, filesOf)) {
-    if (by.length >= (yield { type: 'places', file })) held = true;
-  }
-  return held;
 }
 
 // The verdict on a local ticket once its worktree setup has run.

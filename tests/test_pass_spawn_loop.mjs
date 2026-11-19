@@ -1,7 +1,6 @@
 // suite: pass phase: the spawn loop's per-ticket step (skip, record-done, park, hand-away or start)
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideSpawn, whyOf } from '../desk/bin/pass/spawn-loop.mjs';
-import { filesNamedByRunning } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -9,17 +8,16 @@ const j = (x) => JSON.stringify(x);
 
 const AT = '2026-11-19T08:00:00.000Z';
 const ticket = (key, fields = {}) => ({ key, state: 'triaged', branch: `feat/${key}`, ...fields });
-// The loop's state as a candidate's turn comes; `files` is every ticket's files by key.
-const snap = (tk, { attempts = 0, slots = 2, running = [], files = {}, ...rest } = {}) => ({
-  t: tk, at: AT, dry: false, stop: false, attempts, slots, running,
-  files: Object.fromEntries([tk.key, ...running].map((k) => [k, files[k] ?? []])),
-  rerun: false, resume: false, handoff: false, fresh: true, dbDown: false, dbUp: false, fetchLimit: '60', ...rest,
+// The loop's state as a candidate's turn comes.
+const snap = (tk, { attempts = 0, slots = 2, ...rest } = {}) => ({
+  t: tk, at: AT, dry: false, stop: false, attempts, slots,
+  rerun: false, resume: false, handoff: false, dbDown: false, dbUp: false, fetchLimit: '60', ...rest,
 });
 const PICK = { login: { name: 'a' }, vars: {}, row: 'login=null', line: '' };
 const SET_UP = { wt: '/wt/A', kept: false, renamed: '', ok: true, exitOk: true, out: '[setup-worktree] worktree=/wt/A\n', retried: '' };
 // What each read answers when a case gives nothing: the ticket spawns as nothing holds it.
 const READS = {
-  places: 1, 'fix-try-stale': false, shipped: null, placement: null, busy: null, 'lock-queue': false,
+  'file-budget': false, 'fix-try-stale': false, shipped: null, fresh: true, placement: null, busy: null, 'lock-queue': false,
   'claim-upload': { ok: true, up: null }, 'read-repos': [], login: PICK, setup: SET_UP,
 };
 const WRITES = ['set', 'report', 'busy-held', 'lock-queue-held', 'take-slot', 'remote-hung', 'db-down', 'skip', 'record-done', 'park', 'hand-away', 'start'];
@@ -38,14 +36,16 @@ const lines = (as) => as.filter((a) => a.type === 'report').map((a) => a.line);
 const sets = (as) => as.filter((a) => a.type === 'set').flatMap((a) => a.fields);
 
 // The runner over several candidates, as pass.mjs runs it: a slot taken counts at once, a ticket started
-// is running for the next candidate's per-file budget, and `onStart` stands in for the start's effects.
+// is running for the next candidate's per-file budget (a file `files` gives two tickets has one place),
+// and `onStart` stands in for the start's effects.
 function loop(cands, { slots = 2, files = {}, answers = {}, per = {}, onStart = () => {} } = {}) {
   const st = { attempts: 0, running: [], stop: false, dbDown: false };
+  const atBudget = (key) => (files[key] ?? []).some((f) => st.running.some((k) => (files[k] ?? []).includes(f)));
   const verdicts = [];
   for (const tk of cands) {
-    const s = snap(tk, { attempts: st.attempts, slots, running: [...st.running], files, stop: st.stop, dbDown: st.dbDown });
+    const s = snap(tk, { attempts: st.attempts, slots, stop: st.stop, dbDown: st.dbDown });
     const actions = runSteps({ name: 'spawn loop', snapshot: () => s, decide: decideSpawn,
-      handlers: handlersFor({ ...answers, ...(per[tk.key] ?? {}) }, { 'take-slot': () => { st.attempts += 1; }, 'db-down': () => { st.dbDown = true; } }),
+      handlers: handlersFor({ 'file-budget': (a) => atBudget(a.key), ...answers, ...(per[tk.key] ?? {}) }, { 'take-slot': () => { st.attempts += 1; }, 'db-down': () => { st.dbDown = true; } }),
       report: { failed: [] } });
     const v = actions.at(-1);
     verdicts.push({ key: tk.key, type: v.type, ...(v.stop ? { stop: true } : {}), ...(v.type === 'start' ? { how: v.how } : {}), setup: types(actions).includes('setup') });
@@ -72,7 +72,8 @@ const { threw, calls } = withNoIo(() => {
   {
     const r = loop([ticket('A'), ticket('B'), ticket('C')], { slots: 2, per: { A: { shipped: { pr: 7, branch: 'fix/A-x', mergedAt: AT } } } });
     t('AC2 the first is recorded done, and the second and third start', brief(r.verdicts), 'A:record-done B:start(local) C:start(local)');
-    t('AC2 the record-done takes no slot', r.attempts, 2);
+    const shippedA = step(snap(ticket('A')), { shipped: { pr: 7, branch: 'fix/A-x', mergedAt: AT } });
+    t('AC2 the record-done takes no slot', types(shippedA.actions).includes('take-slot'), false);
     const { verdict } = step(snap(ticket('A')), { shipped: { pr: 7, branch: 'fix/A-x', mergedAt: AT } });
     t('AC2 the record-done says how it shipped', j(verdict), j({ type: 'record-done', key: 'A', how: 'PR #7 merged from fix/A-x', pr: 7, mergedAt: AT, line: 'A: PR #7 merged from fix/A-x, outside its worker: recorded done, no worker spawned' }));
     t('a ticket done in Jira with no PR is recorded done too', step(snap(ticket('A')), { shipped: { jira: true } }).verdict.how, 'done in Jira with no PR');
@@ -108,13 +109,9 @@ const { threw, calls } = withNoIo(() => {
     const files = { A: ['desk/bin/pass.mjs'], B: ['desk/bin/pass.mjs', 'README.md'], C: ['tests/x.sh'] };
     const r = loop([ticket('A'), ticket('B'), ticket('C')], { slots: 3, files });
     t('AC4 a candidate naming a file a ticket started this pass fills is skipped', brief(r.verdicts), 'A:start(local) B:skip C:start(local)');
-    const held = step(snap(ticket('B'), { running: ['R'], files: { B: ['f'], R: ['f'] } }), { places: 1 });
-    t('AC4 a file named by as many running tickets as its places holds it', j(types(held.actions)), j(['places', 'skip']));
-    const room = step(snap(ticket('B'), { running: ['R'], files: { B: ['f'], R: ['f'] } }), { places: 2 });
-    t('a file with a place left does not hold it', room.verdict.type, 'start');
-    const none = step(snap(ticket('B'), { running: ['R'], files: { B: ['g'], R: ['f'] } }));
-    t('a file no running ticket names reads no places', types(none.actions).includes('places'), false);
-    t('filesNamedByRunning names each shared file with its tickets', j(filesNamedByRunning('B', ['B', 'R', 'S'], (k) => ({ B: ['f', 'g'], R: ['f'], S: ['f', 'h'] })[k] ?? [])), j([{ file: 'f', by: ['R', 'S'] }]));
+    const held = step(snap(ticket('B')), { 'file-budget': true });
+    t('AC4 a file at its per-file budget holds it, reading nothing more', j(types(held.actions)), j(['file-budget', 'skip']));
+    t('a ticket with no file at its budget goes on', step(snap(ticket('B'))).verdict.type, 'start');
   }
 
   // AC5: the local database was found down earlier this pass.
@@ -125,7 +122,7 @@ const { threw, calls } = withNoIo(() => {
     t('AC5 and no worktree is set up for it', r.verdicts[1].setup, false);
     const { actions } = step(snap(ticket('B'), { dbDown: true }));
     t('AC5 the skip says it waits on the database', lines(actions)[0], 'B: held, the local database is not answering (health); it spawns on the first pass it answers');
-    t('a resumed session goes ahead with the database down', step(snap(ticket('B', { resume: 'pending' }), { dbDown: true, resume: true, fresh: false })).verdict.how, 'resume');
+    t('a resumed session goes ahead with the database down', step(snap(ticket('B', { resume: 'pending' }), { dbDown: true, resume: true }), { fresh: false }).verdict.how, 'resume');
   }
 
   // AC6: a triage record placing the code wholly in another repo.
@@ -134,8 +131,11 @@ const { threw, calls } = withNoIo(() => {
     const { actions, verdict } = step(snap(ticket('A')), { placement: p });
     t('AC6 the candidate is handed away', j(verdict), j({ type: 'hand-away', key: 'A', placement: p }));
     t('AC6 and takes no slot', types(actions).includes('take-slot'), false);
-    const later = step(snap(ticket('A', { result: { pr: 3 } }), { fresh: false }), { placement: () => { throw new Error('read'); } });
+    const later = step(snap(ticket('A', { result: { pr: 3 } })), { fresh: false, placement: () => { throw new Error('read'); } });
     t('a ticket that does not start fresh is not read for its placement', later.verdict.type, 'start');
+    // The fix-try check can finish a fix try, which can make the ticket start fresh, so fresh is read after it.
+    const order = types(step(snap(ticket('A'))).actions);
+    t('whether it starts fresh is read after the fix-try and shipped checks', j(order.slice(0, 5)), j(['file-budget', 'fix-try-stale', 'shipped', 'fresh', 'placement']));
   }
 
   // AC7: the upload claim found the last round's upload still running.
@@ -145,7 +145,7 @@ const { threw, calls } = withNoIo(() => {
     t('AC7 with a line saying the worker waits for the upload', lines(actions)[0], 'A: its last round\'s upload to PR #41 is running in the machine\'s upload queue, so its next round\'s worker waits for it to end. The next pass looks again');
     const unread = step(snap(ticket('A')), { 'claim-upload': { ok: false, why: 'EACCES' } });
     t('an upload queue that cannot be read holds it too', lines(unread.actions)[0], 'A: the machine\'s upload queue could not be read to drop its last round\'s upload (EACCES), so no worker was spawned. The next pass looks again');
-    const resumed = step(snap(ticket('A', { resume: 'pending' }), { resume: true, fresh: false }));
+    const resumed = step(snap(ticket('A', { resume: 'pending' }), { resume: true }), { fresh: false });
     t('a resumed session makes no upload claim', types(resumed.actions).includes('claim-upload'), false);
     t('nor does a cloud ticket', types(step(snap(ticket('A', { location: 'cloud' }))).actions).includes('claim-upload'), false);
   }
@@ -157,16 +157,16 @@ const { threw, calls } = withNoIo(() => {
     t('AC8 the candidate is parked', j(verdict), j({ type: 'park', key: 'A', line: 'read-only repo could not be refreshed, so no worker was spawned to read a stale copy — o/lib: fetch failed. Once it is reachable: queue.mjs requeue A' }));
     t('AC8 taking a slot, and its handoff cleared, before the park', j(types(actions).slice(-3)), j(['take-slot', 'set', 'park']));
     t('AC8 the handoff is cleared', j(sets(actions)), j(['handoff=null']));
-    const resumed = step(snap(ticket('A', { resume: 'pending' }), { resume: true, fresh: false }), { 'read-repos': bad });
+    const resumed = step(snap(ticket('A', { resume: 'pending' }), { resume: true }), { fresh: false, 'read-repos': bad });
     t('a resumed session waits instead, keeping its session', j([resumed.verdict.type, types(resumed.actions).includes('take-slot'), lines(resumed.actions)[0].endsWith('Its session is kept, and the next pass tries again')]), j(['skip', false, true]));
     t('a cloud ticket does not refresh the read-only repos', types(step(snap(ticket('A', { location: 'cloud' }))).actions).includes('read-repos'), false);
   }
 
   // The holds that take no slot, and the start of each kind of session.
   {
-    t('a fix try that ended with no worker is skipped', j(types(step(snap(ticket('A')), { 'fix-try-stale': true }).actions)), j(['fix-try-stale', 'skip']));
+    t('a fix try that ended with no worker is skipped', j(types(step(snap(ticket('A')), { 'fix-try-stale': true }).actions)), j(['file-budget', 'fix-try-stale', 'skip']));
     const busy = step(snap(ticket('A')), { busy: 'its worktree /wt/A is the working directory of vim' });
-    t('a worktree in use is held and recorded on the ticket', j([types(busy.actions), sets(busy.actions)]), j([['fix-try-stale', 'shipped', 'placement', 'busy', 'busy-held', 'set', 'report', 'skip'],
+    t('a worktree in use is held and recorded on the ticket', j([types(busy.actions), sets(busy.actions)]), j([['file-budget', 'fix-try-stale', 'shipped', 'fresh', 'placement', 'busy', 'busy-held', 'set', 'report', 'skip'],
       [`worktree_busy=${j({ why: 'its worktree /wt/A is the working directory of vim', at: AT })}`]]));
     const same = step(snap(ticket('A', { worktree_busy: { why: 'x', at: 'then' } })), { busy: 'x' });
     t('one held for the same reason is not recorded again', sets(same.actions).length, 0);
@@ -174,9 +174,9 @@ const { threw, calls } = withNoIo(() => {
     t('the test-lock queue holds it without a slot', j(types(step(snap(ticket('A')), { 'lock-queue': true }).actions).slice(-2)), j(['lock-queue-held', 'skip']));
     const noLogin = step(snap(ticket('A')), { login: null });
     t('a new session with no login to start on is skipped without a slot', j([noLogin.verdict.type, types(noLogin.actions).includes('take-slot')]), j(['skip', false]));
-    const handoff = step(snap(ticket('A', { handoff: 'pending' }), { handoff: true, fresh: false }));
+    const handoff = step(snap(ticket('A', { handoff: 'pending' }), { handoff: true }), { fresh: false });
     t('a handoff starts on the repo login', j([handoff.verdict.how, handoff.verdict.pick === PICK]), j(['handoff', true]));
-    const resume = step(snap(ticket('A', { resume: 'pending' }), { resume: true, fresh: false }), { login: () => { throw new Error('read'); } });
+    const resume = step(snap(ticket('A', { resume: 'pending' }), { resume: true }), { fresh: false, login: () => { throw new Error('read'); } });
     t('a resume starts on its own login', resume.verdict.how, 'resume');
     t('a cloud ticket starts in the cloud', step(snap(ticket('A', { location: 'cloud' }))).verdict.how, 'cloud');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));

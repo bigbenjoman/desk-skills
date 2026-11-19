@@ -71,7 +71,7 @@ import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInpu
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf,
-  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed, filesNamedByRunning } from './pass/shared.mjs';
+  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed } from './pass/shared.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -1782,9 +1782,11 @@ const placesFor = (f) => {
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
-  for (const { file, by } of filesNamedByRunning(r.key, [...runningKeys], budgetFiles)) {
-    const k = placesFor(file);
-    if (by.length >= k) holds.push({ file, k, by });
+  for (const f of budgetFiles(r.key)) {
+    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
+    if (!by.length) continue;
+    const k = placesFor(f);
+    if (by.length >= k) holds.push({ file: f, k, by });
   }
   return holds;
 };
@@ -3146,9 +3148,10 @@ function setUpWorktree(t) {
 // worker is started here.
 const SPAWN_HANDLERS = {
   ...PHASE_HANDLERS,
-  places: (a) => placesFor(a.file),
+  'file-budget': (a, s) => collidesWithRunning(s.t),
   'fix-try-stale': (a, s) => fixTryStale(s.t),
   shipped: (a, s) => shippedElsewhere(s.t),
+  fresh: (a, s) => startsFresh(s.t),
   placement: (a) => E.triagePlacement(triageRec(a.key)),
   busy: (a, s) => busyWorktree(s.t, { push: true }),
   'busy-held': (a) => { busyNow.add(a.key); },
@@ -3181,19 +3184,14 @@ const SPAWN_HANDLERS = {
   'hand-away': (a, s) => handAway(s.t, a.placement),
   start: () => {},
 };
-// The files the per-file budget counts for t, and, where it names any, for each ticket running now.
-const spawnFiles = (t) => {
-  const own = budgetFiles(t.key);
-  return Object.fromEntries([t.key, ...(own.length ? runningKeys : [])].map((k) => [k, budgetFiles(k)]));
-};
 for (const t of spawnable) {
   const [verdict] = runSteps({
     name: 'spawn loop',
     // stop: the base fix's preflight above was refused at the usage limit, or its worker is paused at it,
     // or a start in this loop met the limit.
     snapshot: () => ({ t, at: PASS_AT, dry: DRY, stop: baseHold || usageStop, attempts, slots: ticketSlots,
-      running: [...runningKeys], files: spawnFiles(t), rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t),
-      fresh: startsFresh(t), dbDown: !!dbDown, dbUp: !HEALTH.reused && HEALTH.results?.database?.ok === true, fetchLimit: SETUP_FETCH_S }),
+      rerun: rerunAllowed.has(t.key), resume: toResume(t), handoff: toHandoff(t),
+      dbDown: !!dbDown, dbUp: !HEALTH.reused && HEALTH.results?.database?.ok === true, fetchLimit: SETUP_FETCH_S }),
     decide: decideSpawn,
     handlers: SPAWN_HANDLERS,
     report,
