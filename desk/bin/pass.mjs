@@ -11,12 +11,12 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicCarry,epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, epicChildren, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, endedNormally, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -29,36 +29,36 @@ import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
-import { batchCost, costTable, preflightLine, wallTime, wroteSince } from './worker-cost.mjs';
+import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger, ledgerHash } from './ledger.mjs';
-import { usageLimit, limitName } from './usage-limit.mjs';
+import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, epicUnread, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { health, markFailed as markHealthFailed } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
-import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy } from './clears-when.mjs';
+import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, promotionHolds, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, POST_MERGE_STEP } from './undraft.mjs';
+import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, fromReview, reviewStep } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
-import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, firstErrorLine, errorLinesIn, failureKey, readFixes, writeFixes, evidenceFixPlan, fixTicket } from './evidence.mjs';
+import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, verdictTry, draftChecksFix, draftGateTry, captureTry, feedbackFix, personGapsCall, personCall, resolvable, feedbackReply, RERUN_COOLDOWN_S, tries, treeHeld, builtStuck } from './fix-tries.mjs';
+import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
-import { baseFixCall, baseFixOutcome, lockWaitPark, baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
-import { groupsNow, keysOf, behindPrs, andList } from './desk-q.mjs';
+import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowPlan, borrowedLine, otherBatches, otherQueues, machineBudget, machineCap, repoBudget, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
@@ -67,12 +67,16 @@ import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
+import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
 import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
-import { registryView, phaseSnapshot, LIMIT_GRACE_MS, QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, subscriptionOffWrite,
-  isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf,
-  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed } from './pass/shared.mjs';
+import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
+import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
+  isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
+  HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
+  usageHeldText, tryWhat, tryNo } from './pass/shared.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
+import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -269,10 +273,10 @@ function exitCodeOf(key, sid) {
 
 // ---- liveness ------------------------------------------------------------
 // The session registry, read once a pass for every phase's snapshot (pass/shared.mjs registryView): a
-// failed read is unread, never empty, and leaves `live` and `liveSids` null. It covers every Claude
+// failed read is unread, never empty, and leaves `live` null. It covers every Claude
 // login (claude-logins.mjs), and one login's failed read fails it.
 const REGISTRY = registryView(readRegistry());
-const { read: registryOk, sessions: live, liveSids } = REGISTRY;
+const { read: registryOk, sessions: live } = REGISTRY;
 
 const Q = queue();
 const rows = Object.values(Q.tickets);
@@ -516,13 +520,19 @@ function againstRegister(t, question, log, cond) {
 // the decider to restate once (decider.mjs; in a batch a session runs, that session) before the person
 // is asked. One no restate reaches in RESTATE_MS is recorded none (below), and so is one only the
 // ticket's own draft leaving draft or merging makes hold (ownDraftWhy), which the park itself prevents.
-function clearsWhenOf(t, log) {
+// A file is read against the park's question (withQuestion): one whose path the question contradicts
+// is kept as unreadable too, naming why.
+function clearsWhenOf(t, log, question) {
   const raw = afterLastPark(log, 'AUTOPILOT_PARK_CLEARS_WHEN');
-  const p = parseClearsWhen(raw, { here: GH_REPO });
-  const circular = p.ok ? ownDraftWhy(p.cond, t) : null;
+  const parsed = parseClearsWhen(raw, { here: GH_REPO });
+  const circular = parsed.ok ? ownDraftWhy(parsed.cond, t) : null;
   if (circular) {
     report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as none, for the person: ${circular}`);
     return { kind: 'none' };
+  }
+  const p = parsed.ok ? withQuestion(parsed.cond, question, { state: STATE }) : parsed;
+  if (p.ok && (p.cond.path !== parsed.cond.path || p.cond.root !== parsed.cond.root)) {
+    report.clears.push(`${t.key}: clears-when "${String(raw).trim()}" recorded as ${describeCond(p.cond)}, where its question says`);
   }
   if (p.ok) return p.cond;
   report.clears.push(`${t.key}: unreadable clears-when (${p.why}), kept for the decider to restate: queue.mjs clears-when ${t.key} "<a form>", or none`);
@@ -861,7 +871,7 @@ const ADVANCE_HANDLERS = {
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
   'live-read': (a, s) => liveReadOf(s.t, a.question),
-  'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path),
+  'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path, a.question),
   register: (a, s) => againstRegister(s.t, a.question, s.log.path, a.cond),
   recommends: (a, s) => recommendsOf(s.t, a.question, s.log.path),
   'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
@@ -1849,7 +1859,6 @@ if (blockedByDone.length) {
 const BORROW = borrowSetting();
 const MACHINE_CAP = machineCap();
 const PACE_HELD = '7-day usage ahead of pace holds every spawn';
-const usageHeldText = (h) => `${limitName(h.type)}${untilText(h)} holds every spawn and resume, until it lifts or a probe call succeeds`;
 if (USAGE_HOLD) report.stalled.push(`${usageHeldText(USAGE_HOLD)} (probe: ${[...PROBES.values()].map((p) => p.why).filter(Boolean).join('; ') || 'not run'})`);
 const held = MAINT.hold ? 'the maintenance window holds every spawn' : USAGE_HOLD ? usageHeldText(USAGE_HOLD) : overBudget ? 'the batch budget holds every spawn' : modelsBad ? 'config §3b "Worker models" holds every spawn'
   : !CHECKIN.ok ? 'config §3b "Check-in times" holds every spawn'
@@ -1932,10 +1941,9 @@ const repoLine = repoUnlocked ? `repo workers: nothing starts this pass: the rep
 const CEILING = E.memoryCeiling();
 
 // ---- batch base ------------------------------------------------------------
-// A batch with a base keeps its own worktree for it (every pass makes sure it exists), and the default
-// branch is merged into the base only before a pass that will spawn, so new workers start on a current
-// tree. A sync that cannot run is reported; in feature mode it also holds this pass's spawns, since
-// the feature's children are built and tested against the base as one.
+// The decision is pass/batch-base.mjs decideBaseSync: whether the base is synced from the default
+// branch, what a sync that cannot run holds, and what a base fix try's worker has done. Its reads and
+// writes are the handlers below, made as the decision yields them (runSteps).
 // §0 Default branch, not DEFAULT_BRANCH, which a named batch sets to its base.
 const REPO_DEFAULT = String(SOURCE ?? '').trim() || 'main';
 // Config §3b "Promotion slice size (children)": how many children merge into the base between base
@@ -1962,9 +1970,6 @@ let baseHold = false;
 let baseLag = null;
 // The base worktree's path, set below.
 let baseWt = null;
-// What a base_fix try is for: a conflict, a merge §4 Merged-tree check failed, the epic PR's review
-// (kind `review`), or the promotion PR's red checks (kind `checks`).
-const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind === 'checks' ? 'promotion PR check' : x?.check ? 'merged-tree fix' : 'conflict fix');
 // A merge try or promotion check try that parks or dies can leave its work in the base worktree, and the
 // next sync, which refuses a worktree holding anything, must reach the merge again to report it.
 const dropTryMerge = (path, last) => { if (cleanedTry(last)) dropUnpushed({ path, base: BASE }); };
@@ -1991,11 +1996,6 @@ function endTry(outcome, path, extra = {}) {
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[n - 1]);
 }
-// The last try's number, which a try that waited only on the test lock leaves for the next one too.
-const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
-// What endTry kept of the last try, for its report line.
-const keptNote = (x) => (!x?.kept ? '' : x.kept.ref ? `; its unpushed ${String(x.kept.sha).slice(0, 12)} is kept on ${x.kept.ref}`
-  : `; its unpushed ${String(x.kept.sha).slice(0, 12)} could not be kept on a ref (${x.kept.error})`);
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
 // A base that conflicts with the default branch goes to a conflict fix worker in the base worktree
@@ -2020,230 +2020,53 @@ const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.to
   : repoUnlocked ? repoLine
   : REPO.line);
 if (BASE && SOURCE && BASE !== SOURCE) {
-  // plan-batch records the decision on the queue when it seeds; feature.json alone can name a spine
-  // for a batch that runs as an ordinary one.
-  const featureMode = fresh.feature === true;
-  if (featureMode && SLICE.bad) report.waiting.push(SLICE.bad);
-  const willSpawn = slots > 0 && spawnable.length > 0;
-  // An open child PR whose required check the default branch's workflow runs on the base, but the
-  // base's does not (pr_status.behind, from the last pass), gets CI only once the base is synced, so the
-  // base syncs even with nothing to spawn. So does an open epic PR, which merges into the default branch.
-  const staleCI = behindPrs(fresh);
-  // A base behind the default branch syncs on every pass, spawning or not: a batch whose every ticket
-  // is held spawns nothing, and a park waiting on "base contains <branch>" would otherwise wait for
-  // ever. Read from origin as fetched now; a fetch that fails reads the refs as they were.
   const quiet = { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] };
-  sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], quiet);
-  // null when the count cannot be read (a ref never fetched): unknown, never reported as 0.
-  const behindRaw = sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet);
-  const behindBy = /^\d+$/.test(behindRaw) ? Number(behindRaw) : null;
-  const behindNow = behindBy > 0;
-  const wantSync = willSpawn || staleCI.length > 0 || epicPr?.state === 'OPEN' || behindNow;
-  // A sync that does not land holds spawns in feature mode, and otherwise once the base lags too far.
-  // A lag that cannot be read holds nothing outside feature mode, and the note says it was not read.
-  const lag = behindBy === null ? `how far ${BASE} is behind ${SOURCE} could not be read` : `${BASE} is ${behindBy} commit(s) behind ${SOURCE}`;
-  const lagHolds = !featureMode && behindBy !== null && behindBy > BASE_BEHIND_MAX;
-  const syncHolds = featureMode || lagHolds;
-  const holdNote = featureMode ? 'feature mode, so nothing spawns this pass'
-    : lagHolds ? `${lag}, more than the ${BASE_BEHIND_MAX} it may lag and still spawn, so nothing spawns this pass`
-      : `spawning carries on from the base as it stands (${lag}${behindBy === null ? '' : `, within the ${BASE_BEHIND_MAX} it may lag`})`;
-  const holdSpawns = () => {
-    if (!syncHolds) return;
-    baseHold = true;
-    if (lagHolds) baseLag = `${lag}, more than the ${BASE_BEHIND_MAX} it may lag`;
-  };
-  const blocked = (why) => {
-    baseNotSynced = why;
-    report.waiting.push(`base sync: ${why} — ${holdNote}`);
-    holdSpawns();
-  };
-  // Held as a blocked sync is, but a worker's to clear, not the person's.
-  const heldForFix = (why) => {
-    baseNotSynced = why;
-    baseLines.push(`base sync: ${why} — ${syncHolds ? holdNote.replace('nothing spawns', 'nothing else spawns') : holdNote}`);
-    holdSpawns();
-  };
-  const wt = ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE });
-  if (wt.ok && wt.made) baseLines.push(`base worktree for ${BASE} made at ${wt.path}`);
-  // A try's worker that has finished leaves its outcome on the try. One whose last word is a park or a
-  // done has finished whether or not its session exits, and one quiet for six passes is wedged: either
-  // is stopped, as a ticket's worker is, so the try ends and the next conflict at this head goes to the
-  // person. Otherwise the registry unread, or a log written in the last two minutes that has not ended,
-  // reads as still at it.
-  // A try's worker resumes, after the usage limit or the maintenance window, only when a ticket's
-  // resume would: nothing holds spawns (pacing aside, which never holds a fix) and memory allows.
-  const resumeHeld = (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null);
-  if (bf?.running && bf.resume === 'maintenance') {
-    // Stopped for the maintenance window with its session kept: the same try, resumed once the window
-    // is done, never ended or counted as spent.
-    baseFixLive = true;
-    const ended = 'stopped for the maintenance window';
-    if (!resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume: null } };
-    else report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
-  } else if (bf?.running) {
-    const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
-    let raw = Buffer.alloc(0);
-    try { raw = readFileSync(log); } catch { /* no log yet: read as ended */ }
-    const text = raw.toString();
-    const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
-    const markers = workerMarkers(text);
-    const said = markers.some(([k]) => k === 'AUTOPILOT_DONE' || k === 'AUTOPILOT_PARK');
-    // At a usage limit it has not answered since, as a ticket's worker: never stopped or failed for it,
-    // and while it waits for the limit to lift it is paused, not quiet.
-    const usage = !said ? usageLimit(text) : null;
-    const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
-    const paused = pausedOn(atLimit);
-    const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
-    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
-    const sidLive = registryOk && liveSids.has(bf.running);
-    const exited = registryOk && !sidLive && !(recent && !endedNormally(text));
-    // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's
-    // worker: held until the limit lifts, then resumed in its own session (resumeBaseFix), never ended
-    // as no marker. Once per limit: a resume that ends before the model answers, with no new rejection,
-    // leaves the same count of limits in the log, and then ends the try as any other exit.
-    const awaitsLift = exited && !!atLimit && bf.resume_limits !== usage.limits.length;
-    const outcome = awaitsLift ? null
-        : idle >= WEDGE_PASSES && !said ? `was stopped as wedged, with no output for ${idle} passes`
-          : registryOk && (said || exited) ? baseFixOutcome(markers)
-            : null;
-    if (outcome) {
-      const pid = (registryOk ? live : []).find((a) => a.sessionId === bf.running)?.pid;
-      if (pid && !DRY) sh('kill', [String(pid)], { tolerant: true });
-      const lockWait = said && lockWaitPark(markers);
-      endTry(outcome, wt.ok ? wt.path : null, lockWait ? { lock_wait: true } : {});
-      const ended = bf.tries[bf.tries.length - 1];
-      baseLines.push(`base ${tryWhat(ended)}: try ${tryNo(bf)} of ${FIX_TRIES_MAX} on ${BASE} ${outcome}${pid ? ` (session still live, stopped pid ${pid})` : ''}${keptNote(ended)}${lockWait ? '; it waited only on the busy test lock, so it spends no try' : ''}`);
-    } else {
-      baseFixLive = true;
-      if (idle !== (bf.idle_passes ?? 0) || bytes !== (bf.log_bytes ?? 0)) {
-        bf = { ...bf, log_bytes: bytes, idle_passes: idle };
-        if (!DRY) q('set-batch', `base_fix=${JSON.stringify(bf)}`);
-      }
-      // Resumed once its limit lifts (its reset passed, or the pass's one probe call succeeded) and
-      // nothing else holds spawns: another limit, the maintenance window, the budget, memory.
-      const from = loginOf(loginDirOf({ key: BASE_FIX_KEY, login: bf.login }));
-      const up = awaitsLift && lifted(atLimit, from);
-      const ended = up ? `exited at ${limitName(atLimit.type)}, which lifted (${liftedHow(atLimit)})` : null;
-      // Until then it waits on its own login, whose folder holds its transcript.
-      if (up && !resumeHeld) baseFixResume = { wt: wt.ok ? wt.path : null, why: wt.ok ? null : wt.why, ended, clear: { resume_limits: usage.limits.length } };
-      else if (up) report.paused.push(`${BASE_FIX_KEY}: ${ended}; it resumes once nothing holds spawns (${resumeHeld})`);
-      else if (paused || awaitsLift) {
-        report.paused.push(`${BASE_FIX_KEY} on ${limitName(atLimit.type)}${untilText(atLimit)}, then it resumes, or sooner once a probe call succeeds`);
-        // On the repo's login its limit holds the batch, as a paused ticket's worker does.
-        if (onRepoLogin(from) && !lifted(atLimit, from)) {
-          if (!USAGE_HOLD) {
-            USAGE_HOLD = { type: atLimit.type, resetsAt: atLimit.resetsAt, preflight: null, login: from };
-            report.stalled.push(`${BASE_FIX_KEY}: ${usageHeldText(USAGE_HOLD)}`);
-          }
-          usageStop = true;
-        }
-      }
-      else if (idle >= QUIET_PASSES) report.quiet.push(`${BASE_FIX_KEY}: quiet for ${idle} passes`);
-    }
-  }
-  const originSha = (b) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${b}`], { tolerant: true }) || null;
-  // A conflict, met by the sync or by the base gate. A fix worker takes it where §3 lets one; what no
-  // worker may take, or what its tries left, is the person's, through `toPerson`.
-  const conflicted = (files, toPerson, check = null) => {
-    const c = baseFixCall(bf, { head: originSha(BASE), source: originSha(SOURCE), files, perm: E.permission('pr-conflict-unreviewed'), alive: baseFixLive,
-      push: BASE_PUSH, check });
-    const said = check
-      ? `merging ${SOURCE} into ${BASE} fails §4 Merged-tree check (${check.command}), nothing pushed. Its output: ${check.output.replace(/\n/g, ' / ')}`
-      : `merging ${SOURCE} into ${BASE} conflicts, nothing pushed. Conflicting files: ${files?.length ? files.join(', ') : 'not listed'}`;
-    const what = tryWhat({ check });
-    const Try = `${what[0].toUpperCase()}${what.slice(1)}`;
-    if (c.call === 'person' || c.call === 'stuck') { toPerson(`${said}. ${c.why[0].toUpperCase()}${c.why.slice(1)}: resolve it by hand in ${wt.path} and push`); return null; }
-    if (c.call === 'wait') return `${said}. ${Try} try ${c.try?.try ?? '?'} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running}); the base is synced once it pushes`;
-    if (!baseFixRoom) return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts once a worker may (none may this pass: ${noBaseFixRoom()})`;
-    baseFix = { wt: wt.path, fix: c.fix };
-    return `${said}. ${Try} try ${c.fix.try} of ${c.fix.of} starts this pass in ${wt.path}`;
-  };
-  // A slice gate runs in the base worktree while children still spawn: nothing else touches it until
-  // the gate is done, and spawns carry on from origin's base as it stands.
-  const gateBusy = gateAlive(fresh.gate);
-  let metConflict = false;
-  if (!wt.ok) {
-    if (wantSync) blocked(wt.why);
-    else report.waiting.push(`base worktree: ${wt.why}`);
-  } else if (wantSync && gateBusy) {
-    baseNotSynced = `skipped while the base gate runs in ${wt.path}`;
-    baseLines.push(`base sync: ${baseNotSynced}; spawning carries on from ${BASE} as it stands`);
-  } else if (wantSync && baseFixLive) {
-    // The worktree is the fix worker's until it ends.
-    metConflict = true;
-    const last = bf.tries[bf.tries.length - 1];
-    const line = !mergeTry(last) ? `${tryWhat(last)} try ${last.try} is working in ${wt.path} (session ${bf.running}); the base is synced once it ends`
-      : `${tryWhat(last)} try ${tryNo(bf)} of ${FIX_TRIES_MAX} is merging ${SOURCE} into ${BASE} in ${wt.path} (session ${bf.running}); the base is synced once it pushes`;
-    heldForFix(line);
-    gateConflict = { worker: true, line };
-  } else if (wantSync) {
-    const s = syncBase({ path: wt.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() });
-    const ciNote = staleCI.length ? `, and syncing it starts CI on ${staleCI.join(', ')}, whose required checks only ${SOURCE}'s workflow runs on ${BASE}` : '';
-    // A base that syncs is no longer in conflict, so a later conflict starts its tries afresh. The epic
-    // PR's review tries and the promotion PR's check tries are kept: they count per head.
-    const conflictTries = (bf?.tries ?? []).filter(mergeTry);
-    if (s.ok && !s.dry && conflictTries.length && !DRY) {
-      baseLines.push(`base conflict fix: ${BASE} is current with ${SOURCE} again, after ${tries(conflictTries.filter((x) => !x.lock_wait).length)}`);
-      for (const x of conflictTries) if (x.kept?.ref) sh('git', ['-C', MAIN, 'update-ref', '-d', x.kept.ref], quiet);
-      const kept = bf.tries.filter((x) => !mergeTry(x));
-      bf = kept.length ? { tries: kept, running: null, port: null } : null;
-      q('set-batch', `base_fix=${bf ? JSON.stringify(bf) : 'null'}`);
-    }
-    if (s.ok && s.dry) baseLines.push(`base sync (dry run): would merge ${s.merged} commit(s) from ${SOURCE} into ${BASE}; nothing pushed`);
-    else if (s.ok && s.merged) baseLines.push(`base sync: merged ${s.merged} commit(s) from ${SOURCE} into ${BASE} and pushed${s.retried ? ' (the first push was refused as non-fast-forward: fetched, merged again, retried once)' : ''}${s.hookSkipped ? `; the pre-push hook could not run its checks in the base worktree (${s.hookSkipped}, an environment failure, not a failing check), so it was pushed without them and CI checks it` : ''}${staleCI.length ? `; ${staleCI.join(', ')} ${staleCI.length === 1 ? 'is' : 'are'} reopened so CI runs` : ''}`);
-    else if (s.ok) baseLines.push(`base sync: ${BASE} already has everything on ${SOURCE}`);
-    else if (s.reason === 'conflict' || s.reason === 'check') {
-      metConflict = true;
-      if (s.reason === 'conflict') {
-        const noted = noteConflict(`the base ${BASE}`, { files: s.files, ticket: BASE_FIX_KEY, pr: null, head: originSha(BASE), source: originSha(SOURCE) });
-        if (noted) baseLines.push(noted);
-      }
-      let person = null;
-      const line = conflicted(s.files, (why) => { person = why; blocked(why); }, s.check ?? null);
-      if (line) heldForFix(line);
-      gateConflict = { worker: !!line, line: line ?? person, said: !line };
-    } else if (s.reason === 'permission') {
-      const why = `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${BASE_PUSH_KEY} is "${basePushPerm}", so it was not synced${ciNote}`;
-      if (basePushPerm === 'ask' && PASS_BY === 'supervisor') {
-        // No session is there to ask, so the batch is asked once, as one needs-you item; the approval
-        // it records on the queue is passed to every later pass by the supervisor.
-        if (!fresh.base_push_ask && !DRY) q('set-batch', `base_push_ask=${JSON.stringify({ since: PASS_AT, base: BASE, source: SOURCE })}`);
-        baseNotSynced = why;
-        baseLines.push(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${holdNote}`);
-        holdSpawns();
-      } else {
-        blocked(`${why}${basePushPerm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`);
-      }
-    } else blocked(s.why);
-    // The ask is settled once the base is current, its push is granted, or the row no longer asks.
-    if (fresh.base_push_ask && (s.ok || mayPushBase || basePushPerm !== 'ask') && !DRY) q('set-batch', 'base_push_ask=null');
-  }
-  // The base gate met a conflict at the head origin's base is still at: the same fix worker takes it,
-  // and the gate runs again once the base moves.
-  const g = fresh.gate;
-  if (wt.ok && !metConflict && !gateBusy && g?.state === 'failed' && Array.isArray(g.conflict)) {
-    sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], { tolerant: true });
-    if (baseFixLive) {
-      gateConflict = { worker: true, line: `conflict fix try ${tryNo(bf)} of ${FIX_TRIES_MAX} is resolving it (session ${bf.running})` };
-    } else if (g.sha && g.sha === originSha(BASE)) {
-      let person = null;
-      const line = conflicted(g.conflict, (why) => { person = why; }, g.tree_check ?? null);
-      gateConflict = line ? { worker: true, line } : { worker: false, line: person };
-    }
-  }
-  // The base worktree is a running fix worker's, or about to be, so nothing else works in it this pass.
-  const fixOwns = baseFixLive || baseFix != null;
-  if (wt.ok && willSpawn && !gateBusy && !baseHold && !fixOwns && baselineOn) recordBaseline(wt.path);
-  if (wt.ok && featureMode && !fixOwns && fresh.promotion == null) openPromotion(wt.path);
-  else if (wt.ok && featureMode && !fixOwns && fresh.promotion?.pr != null && !gateBusy) nextPromotion(wt.path, fresh.promotion);
-  // An epic batch not in feature mode opens its epic PR once every child has merged into the base, and
-  // tries again each pass until one is open.
-  // Each one opened after an earlier merged keeps that merge as `since`, and every earlier merge in
-  // `merged`, through a retry too: needs-you ages a child's follow-on steps from the epic PR that
-  // promoted it (needs-you.mjs outAt), so a reopen must not drop one.
-  const ep = fresh.promotion;
-  if (wt.ok && epicOn && !fixOwns && epicDue(fresh) && (ep?.pr == null || ep.merged_at)) openPromotion(wt.path, epicCarry(ep));
-  if (wt.ok) baseWt = wt.path;
+  const fetchBase = (opts) => sh('git', ['-C', MAIN, 'fetch', '-q', 'origin', `refs/heads/${BASE}:refs/remotes/origin/${BASE}`, `refs/heads/${SOURCE}:refs/remotes/origin/${SOURCE}`], opts);
+  runSteps({
+    name: 'base sync',
+    snapshot: () => ({
+      queue: fresh, base: BASE, source: SOURCE, willSpawn: slots > 0 && spawnable.length > 0, epicOn, epicOpen: epicPr?.state === 'OPEN', sliceBad: SLICE.bad,
+      behindMax: BASE_BEHIND_MAX, gateBusy: gateAlive(fresh.gate), resumeHeld: (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null),
+      registry: REGISTRY, fixKey: BASE_FIX_KEY, fixRoom: baseFixRoom, noFixRoom: noBaseFixRoom(), conflictPerm: E.permission('pr-conflict-unreviewed'),
+      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(),
+    }),
+    decide: decideBaseSync,
+    handlers: {
+      ...PHASE_HANDLERS,
+      'base-line': (a) => { baseLines.push(a.line); },
+      'set-batch': (a) => q('set-batch', ...a.fields),
+      behind: () => {
+        fetchBase(quiet);
+        const raw = sh('git', ['-C', MAIN, 'rev-list', '--count', `origin/${BASE}..origin/${SOURCE}`], quiet);
+        return /^\d+$/.test(raw) ? Number(raw) : null;
+      },
+      worktree: () => ensureBaseWorktree({ main: MAIN, worktrees: WORKTREES, base: BASE }),
+      'fix-log': () => {
+        const log = join(STATE, 'logs', `${BASE_FIX_KEY}.log`);
+        let raw = Buffer.alloc(0);
+        try { raw = readFileSync(log); } catch { /* no log yet: read as ended */ }
+        const recent = (() => { try { return Date.now() - statSync(log).mtimeMs < 120_000; } catch { return false; } })();
+        const bytes = (() => { try { return statSync(log).size; } catch { return 0; } })();
+        return { raw, text: raw.toString(), recent, bytes };
+      },
+      kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
+      'end-try': (a) => { endTry(a.outcome, a.path, a.extra); return bf; },
+      'fix-login': (a) => loginOf(loginDirOf({ key: BASE_FIX_KEY, login: a.login })),
+      lifted: (a) => lifted(a.limit, a.login),
+      'usage-hold': (a) => { USAGE_HOLD = a.hold; },
+      'usage-stop': () => { usageStop = true; },
+      'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
+      sync: (a) => syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() }),
+      'drop-ref': (a) => { sh('git', ['-C', MAIN, 'update-ref', '-d', a.ref], quiet); },
+      'note-conflict': (a) => noteConflict(a.what, a.entry),
+      fetch: () => { fetchBase({ tolerant: true }); },
+      synced: (a) => { ({ bf, baseHold, baseLag, baseNotSynced, baseWt, baseFix, baseFixLive, baseFixResume, gateConflict } = a.state); },
+      baseline: (a) => recordBaseline(a.path),
+      'open-promotion': (a) => openPromotion(a.path, a.carry),
+      'next-promotion': (a) => nextPromotion(a.path, a.promotion),
+    },
+    report,
+  });
 }
 
 // ---- parks waiting on the base -------------------------------------------------
@@ -2376,38 +2199,38 @@ function openPromotion(path, carry = {}) {
 }
 
 // ---- baseline checks -------------------------------------------------------
-// With config §4 Baseline checks on, the base's Typecheck and Lint errors are recorded in the base
-// worktree before a pass spawns, whenever the base has moved since the last record, so workers fail
-// only on errors they add (baseline.mjs). A base that cannot be recorded leaves no baseline at all:
-// workers then run the full checks rather than compare against an older base.
-// Workers branch from origin's base, so a base worktree that a failed sync left behind it is not
-// recorded either.
+// The decision is pass/batch-base.mjs decideBaseline, run from the base sync once it may record: whether
+// the base's Typecheck and Lint errors are recorded again, and the record dropped where they cannot be.
+// Its reads and writes are the handlers below.
 function recordBaseline(path) {
-  const head = sh('git', ['-C', path, 'rev-parse', 'HEAD'], { tolerant: true });
-  const origin = sh('git', ['-C', path, 'rev-parse', `origin/${BASE}`], { tolerant: true });
-  const prior = BL.readBaseline(STATE);
-  if (head && head === origin && prior && prior.base === BASE && prior.sha === head) return;
-  if (DRY) { baseLines.push(`baseline (dry run): would record ${BASE} at ${head.slice(0, 12)}`); return; }
-  const drop = (why) => {
-    try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ }
-    report.waiting.push(`baseline: not recorded for ${BASE} at ${head.slice(0, 12) || '?'}: ${why} — workers run the full Typecheck and Lint`);
-  };
-  if (!head) return drop(`could not read the base worktree's HEAD in ${path}`);
-  if (head !== origin) return drop(`the base worktree ${path} is not at origin's ${BASE} (${origin.slice(0, 12) || 'unreadable'}), which workers start from`);
-  if (sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true })) return drop(`the base worktree ${path} has uncommitted changes`);
   const items = (id) => { const v = E.configValues(id); return v && !E.isNone(v) ? v.map(E.parseCommandItem) : []; };
-  const prefix = E.commandPrefix();
-  const run = (lock, { dir, cmd }) => BL.runItem({ bin: BIN, root: path, dir, cmd, lock, prefix });
-  let list;
-  try { list = { typecheck: items('typecheck-cmd'), lint: items('lint-cmd') }; } catch (e) { return drop(e.message); }
-  // The base worktree is a plain checkout, so it gets the dependencies the checks need.
-  for (const it of (() => { try { return items('install-cmd'); } catch { return []; } })()) {
-    const r = run('nolock', it);
-    if (r.code !== 0) { restore(path); return drop(`config §4 Install (${it.cmd}) failed there with exit ${r.code}`); }
-  }
-  const b = BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: head, items: list, run: ({ name, ...it }) => run(E.lockFor(BL.CHECKS[name]), it) });
-  const changed = restore(path);
-  baseLines.push(`baseline: recorded ${BASE} at ${head.slice(0, 12)}: ${BL.summary(b)}${changed ? ' (the checks changed files in the base worktree; put back)' : ''}`);
+  const run = (lock, { dir, cmd }) => BL.runItem({ bin: BIN, root: path, dir, cmd, lock, prefix: E.commandPrefix() });
+  runSteps({
+    name: 'baseline checks',
+    snapshot: () => {
+      let checks = null;
+      let checksError = null;
+      try { checks = { typecheck: items('typecheck-cmd'), lint: items('lint-cmd') }; } catch (e) { checksError = e.message; }
+      let install = [];
+      try { install = items('install-cmd'); } catch { /* read as none */ }
+      return { base: BASE, path, prior: BL.readBaseline(STATE), checks, checksError, install, dry: DRY };
+    },
+    decide: decideBaseline,
+    handlers: {
+      ...PHASE_HANDLERS,
+      heads: () => ({
+        head: sh('git', ['-C', path, 'rev-parse', 'HEAD'], { tolerant: true }),
+        origin: sh('git', ['-C', path, 'rev-parse', `origin/${BASE}`], { tolerant: true }),
+      }),
+      'base-line': (a) => { baseLines.push(a.line); },
+      'drop-baseline': () => { try { unlinkSync(BL.baselineFile(STATE)); } catch { /* none recorded */ } },
+      dirty: () => !!sh('git', ['-C', path, 'status', '--porcelain'], { tolerant: true }),
+      install: (a) => run('nolock', a.item).code,
+      restore: () => restore(path),
+      record: (a) => BL.recordBaseline({ stateDir: STATE, root: path, base: BASE, sha: a.sha, items: a.checks, run: ({ name, ...it }) => run(E.lockFor(BL.CHECKS[name]), it) }),
+    },
+    report,
+  });
 }
 // An install or a lint fixer can write to the base worktree, and the next sync refuses a dirty one.
 function restore(path) {
@@ -3719,8 +3542,8 @@ for (const t of Object.values(qNow.tickets)) {
   // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const declared = have.some((h) => ![LINK_STEP, POST_MERGE_STEP].some((p) => String(h?.step ?? '').startsWith(p)));
-    const later = declared ? [] : s.post_merge.map((x) => ({ step: String(x.step).slice(0, FOLLOW_ON_MAX), row: null, ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => h?.step === x.step));
+    const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
+    const later = declared ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
     // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
     const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
@@ -3822,13 +3645,7 @@ const stateRow = parseStateChecks(E.configValues('state-checks'));
 // reviewers counts, or cannot be read) holds every PR red only on a §4 State check of kind verdict,
 // with nothing pending: a review or fix try there posts a verdict the gate does not count. The PR
 // records the hold as gate_hold, which needs-you lists once for the repo; build workers still start.
-function gatedByReviewer(s) {
-  if (!HEALTH.reviewer || s?.state !== 'OPEN') return false;
-  const gate = evaluateGate(s.checks ?? [], gateLists());
-  if (gate.state !== 'fail' || gate.pending.length) return false;
-  const verdict = new Set(stateFailing(gate.failing, stateRow.checks).filter((f) => f.kind === 'verdict').map((f) => f.name));
-  return verdict.size > 0 && gate.failing.every((f) => verdict.has(f.name));
-}
+const gatedByReviewer = (s) => reviewerGated(s, { reviewer: HEALTH.reviewer, gate: gateLists(), stateChecks: stateRow.checks });
 function markGateHold(t, s, on) {
   if (!on) { if (t.gate_hold && !DRY) { q('set', t.key, 'gate_hold=null'); t.gate_hold = null; } return; }
   const h = HEALTH.reviewer;
@@ -4121,94 +3938,33 @@ function startEvidence(t, n, head, c, rec) {
   report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${why}. ${action[0].toUpperCase()}${action.slice(1)}`);
   return { ...rec, call: 'person', why, action };
 }
-// Drafts whose evidence run failed, or filled no cell (undraft.mjs `evidence-failed`): the failure is
-// the repo's, so one fix ticket is filed and admitted for each failure (the workflow and its run log's
-// first error line, evidence.mjs failureKey), and every PR it fails waits on that ticket rather than
-// going to the person. Once the ticket is done, each waiting PR's run is started again at its head;
-// one that then fails the same way, or whose fix failed or left the batch, is the person's.
+// Drafts whose evidence run failed, or filled no cell: decided in pass/evidence-failures.mjs, once every
+// draft is read, so one failure is one fix. Each run's failed log is read into the snapshot (once a
+// pass, cached); a run that succeeded has no failed log, so its key is the workflow alone.
 function settleEvidenceFailures(items) {
   const runLog = (id) => cached(`log:${id}`, () => {
     const r = shOut('gh', ['run', 'view', String(id), '--repo', GH_REPO, '--log-failed'], { maxBuffer: 64 << 20 });
     return r.ok ? r.out : null;
   });
-  const fixes = readFixes(EVIDENCE_DIR);
-  const failures = [];
-  for (const it of items) {
-    const { t, n, c } = it;
-    // A run that succeeded has no failed log: its key is the workflow alone.
-    const log = c.conclusion === 'failure' ? runLog(c.runId) : '';
-    if (log == null) {
-      out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}, and its run's log could not be read; the next pass tries again`);
-      saveUndraft(t, { ...it.rec, call: 'wait', why: `${c.why}; its run's log is read at the next pass`, action: null });
-      continue;
-    }
-    const line = firstErrorLine(log);
-    failures.push({ ...it, ticket: t.key, key: failureKey(c.workflow, line), workflow: c.workflow, line, run: c.runId, url: c.url, at: c.at ?? null });
-  }
-  // Where each fix stands. Done is kept, with when, so a fix whose ticket has left the queue still
-  // reads as done and a failure that comes back after it is told apart. One in no batch is admitted
-  // again, and so is one filed but refused by admission.
-  const states = {};
-  for (const rec of Object.values(fixes)) {
-    if (!rec.fix) continue;
-    const s = rec.done_at ? { st: 'done' } : evidenceFixState(rec.fix);
-    if (s.st === 'done' && !rec.done_at) rec.done_at = s.at ?? PASS_AT;
-    if (s.st === 'lost' && rec.admitted !== false) { rec.admitted = false; rec.admit_error = `${rec.fix} is in no batch`; }
-    states[rec.fix] = s.st === 'lost' ? 'open' : s.st;
-    if (rec.admitted === false && !DRY) {
-      const a = admitFix(rec.fix);
-      if (a.ok) { rec.admitted = true; delete rec.admit_error; } else rec.admit_error = a.why;
-    }
-  }
-  const plan = evidenceFixPlan(failures, fixes, (fix) => states[fix] ?? 'open');
-  const filed = new Map();
-  for (const g of plan.file) {
-    if (DRY) { out.push(`undraft (dry run): would file and admit one fix for \`${g.key}\`, for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}`); continue; }
-    const f = fileEvidenceFix(g);
-    filed.set(g.key, f);
-    if (f.fix) fixes[g.key] = { workflow: g.workflow, line: g.line, run: g.run, url: g.url, fix: f.fix, at: PASS_AT, admitted: !f.why, ...(f.why ? { admit_error: f.why } : {}), prs: {} };
-    out.push(f.fix ? `evidence: filed ${f.fix} to fix \`${g.key}\` for PR(s) ${g.prs.map((p) => `#${p.n}`).join(', ')}${f.why ? `, but it was not admitted (${f.why})` : ', admitted to the batch'}`
-      : `evidence: no fix filed for \`${g.key}\`: ${f.why}`);
-  }
-  // A failure no fix could be started or admitted for is one item for the person, on the lowest PR it
-  // fails (so the item stays put from pass to pass), naming the others, which wait on it.
-  const stuck = (p) => (p.call === 'file' || p.call === 'wait') && (!(p.fix ?? filed.get(p.key)?.fix) || fixes[p.key]?.admitted === false);
-  const lead = new Map();
-  for (const p of plan.prs) if (stuck(p)) lead.set(p.key, [...(lead.get(p.key) ?? []), p.n].sort((a, b) => a - b));
-  for (const p of plan.prs) {
-    const { t, n, head, c } = p;
-    let rec = p.rec;
-    const fix = p.fix ?? filed.get(p.key)?.fix ?? null;
-    const fr = fix ? fixes[p.key] : null;
-    const err = p.line ? `: "${p.line}"` : '';
-    const person = (why) => {
-      rec = { ...rec, call: 'person', why: `${c.why}${err}; ${why}`, action: c.action };
-      report.waiting.push(`${t.key}: DRAFT — PR #${n} stays draft: ${rec.why}. ${c.action[0].toUpperCase()}${c.action.slice(1)}`);
-    };
-    if (DRY && p.call === 'file') { saveUndraft(t, rec); continue; }
-    if (p.call === 'person') person(p.why);
-    else if (stuck(p)) {
-      const [first, ...rest] = lead.get(p.key);
-      const why = fix ? `${fix} was filed to fix it for the repo but not admitted (${fr.admit_error ?? 'refused'}): /desk-admit ${fix}`
-        : `no fix could be started for it for the repo (${filed.get(p.key)?.why ?? 'none filed'})`;
-      if (n === first) person(`${why}${rest.length ? `. PR(s) ${rest.map((x) => `#${x}`).join(', ')} fail the same way and wait on this` : ''}`);
-      else {
-        rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix ? `${fix} fixes it` : 'its fix'} once PR #${first}'s item is settled`, action: null };
-        out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
-      }
-    } else if (p.call === 'rerun') {
-      const prev = fr.prs[n]?.rerun ?? null;
-      rec = startEvidence(t, n, head, { workflow: c.workflow, why: `${fix} fixed its evidence workflow \`${c.workflow}\`, so it runs again`, cells: p.cells }, { ...rec, call: 'evidence', why: `${fix} fixed its evidence workflow, so it runs again`, action: null });
-      // Only a run that started counts as run again: one GitHub refused is started at the next pass.
-      fr.prs[n] = { ticket: t.key, head, rerun: rec.call === 'person' ? prev : head };
-    } else {
-      fr.prs[n] = { ticket: t.key, head, rerun: fr.prs[n]?.rerun ?? null };
-      rec = { ...rec, call: 'evidence-fix', why: `${c.why}${err}; ${fix} fixes it for the repo, then the run is started again`, action: null };
-      out.push(`undraft: PR #${n} (${t.key}) stays draft: ${rec.why}`);
-    }
-    saveUndraft(t, rec);
-  }
-  if (!DRY) writeFixes(EVIDENCE_DIR, fixes);
+  const tOf = new Map(items.map((it) => [it.t.key, it.t]));
+  runSteps({
+    name: 'evidence failures',
+    snapshot: () => ({
+      ...baseSnapshot(), at: PASS_AT, dry: DRY, fixes: readFixes(EVIDENCE_DIR),
+      items: items.map((it) => ({ ...it, log: it.c.conclusion === 'failure' ? runLog(it.c.runId) : '' })),
+    }),
+    decide: decideEvidenceFailures,
+    handlers: {
+      ...OUT_HANDLERS,
+      'save-undraft': (a) => saveUndraft(tOf.get(a.key), a.rec),
+      'fix-state': (a) => evidenceFixState(a.fix),
+      admit: (a) => admitFix(a.fix),
+      file: (a) => fileEvidenceFix(a.group),
+      'start-evidence': (a) => startEvidence(tOf.get(a.key), a.n, a.head, a.c, a.rec),
+      'write-fixes': (a) => writeFixes(EVIDENCE_DIR, a.fixes),
+    },
+    report,
+  });
 }
 // Where a fix ticket stands: { st, at }. done once it merged (at: when) or finished with no PR, gone
 // once it failed, else open. One in no queue this pass reads is asked of the tracker: done there is
@@ -4330,18 +4086,10 @@ function reviewComments(id) {
 }
 
 // ---- fix tries -----------------------------------------------------------
-// A ready PR the merge driver cannot merge, red after its two reruns, in conflict with its base, held
-// for review feedback, or with a review at its head that is not clean, goes back to a fix worker on
-// the same branch, at most twice (fix-tries.mjs); one whose §4 State check reading its verdict is red,
-// which the driver never reruns, or that it holds for want of a clean verdict at its head, to a review
-// worker (verdictTry). What no worker can
-// fix, a check a person clears (§4 Checks workers can't fix or Pre-merge steps, or Check builds where
-// the pass builds none) or a third failure, is recorded on the ticket as `stuck`
-// and put to the person. A §4 Check builds check gets its build here as a draft's does (startCheckBuild),
-// once nothing a worker fixes is red. The driver's per-head rerun record is read from its state directory.
-if (fixRowErrors.length && undrafted.length) {
-  out.push(`fix tries: none this pass, since config ${fixRowErrors.join('; ')}. Run /desk-setup`);
-}
+// Which ready PRs the merge driver cannot merge go back to a fix or review worker, and which are
+// recorded as stuck and put to the person: pass/fix-tries.mjs decides, and the handlers below read
+// git, gh and the driver's per-head rerun record, and write the queue. A §4 Check builds check gets its
+// build here as a draft's does (startCheckBuild).
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
 function conflictFiles(branch) {
@@ -4362,32 +4110,11 @@ function humanSeen(n) {
   if (!v || typeof v !== 'object') return true;
   return humanReviewed(v, conflictHandle);
 }
-for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
+// The reads fix-tries.mjs's calls make for ready PR s of ticket t, each run only when a call makes it:
+// fixCall's ctx, the head against the base (baseMerge, and moves() read afresh for the verdict try), a
+// review's inline comments, and the verdict at the head.
+function fixReads(t, s, dirty, dirtyFiles) {
   const n = s.pr;
-  // A conflict goes to a fix worker only under the §3 row the base's conflict reads too, and so does a
-  // head the merge driver held for failing §4 Merged-tree check merged into the base.
-  const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
-  const tree = dirty ? null : treeHeld(t, s);
-  // Each file a ready PR conflicts on goes on the conflict record, whoever then resolves it.
-  const dirtyFiles = dirty ? conflictFiles(t.branch) : null;
-  const noted = dirty ? noteConflict(`PR #${n} (${t.key})`, { files: dirtyFiles, ticket: t.key, pr: n, head: s.head }) : null;
-  if (noted) out.push(noted);
-  // Held by the reviewer check: no review, checks or feedback fix try, as on a draft. A fix's new head
-  // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
-  // only on the gate, so it still goes to its own fix below.
-  const gated = !dirty && !tree && gatedByReviewer(s);
-  markGateHold(t, s, gated);
-  if (gated) continue;
-  if (dirty || tree) {
-    const row = humanSeen(n) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
-    const perm = E.permission(row);
-    if (perm !== 'yes') {
-      const what = tree ? `merged into ${DEFAULT_BRANCH}, fails §4 Merged-tree check \`${tree.command}\`` : `conflicts with ${DEFAULT_BRANCH}`;
-      const fix = tree ? `merge ${DEFAULT_BRANCH} into the PR's branch, fix what the check names, and push` : "resolve it on the PR's branch and push";
-      report.waiting.push(`${t.key}: CONFLICT — PR #${n} is out of draft and ${what}, and config §3 ${E.permissionKey(row)} is "${perm}", so no fix worker ${tree ? 'fixes' : 'resolves'} it: ${fix}`);
-      continue;
-    }
-  }
   const { baseMerge, behind } = baseMoves(t, s.head);
   const ctx = {
     // Out of draft, a §4 Check builds check is built as a draft's is, where §3 ci-rerun lets the pass.
@@ -4404,63 +4131,47 @@ for (const { t, s } of fixRowErrors.length ? [] : undrafted) {
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),
   };
-  // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
-  // worker before anything is put to the person.
-  let c = gateTry(t, s, { ...ctx, baseMerge }) ?? fixCall(t, s, ctx) ?? feedbackCall(t, s, ctx.waived);
-  if (!c) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
-  if (c.call === 'wait') { out.push(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); continue; }
-  // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
-  const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
-  if (b) {
-    const r = b.call === 'build' ? startCheckBuild(t, n, s.head, b, null, true) : rerunBuilt(t, n, s.head, b, null, true);
-    // One that could not start or whose re-run was refused is the person's step, with what to run.
-    const person = r?.call === 'person';
-    if (b === c && !person) { if (t.stuck && !DRY) q('set', t.key, 'stuck=null'); continue; }
-    if (person) {
-      const beside = b === c ? null : c;
-      c = { ...beside, ...builtStuck(beside?.lead ?? r.lead, b.checks, { command: r.action }, beside?.checks ?? []) };
-    }
-  }
-  applyFix(t, n, s.head, c);
-}
-// A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
-// head that is not clean goes to a review fix (reviewFix), and, where §3 merge-feedback-first holds
-// the merge for them, threads left unresolved or changes requested to a feedback fix (feedbackFix).
-// The threads a finished feedback try worked are replied on and resolved first, once its worker has
-// pushed past them, so the next try quotes only what is still open. One GitHub would not settle holds
-// any new try until a later pass settles it: a new try would replace the record of what was worked.
-function feedbackCall(t, s, waived) {
-  if (s.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
-  const n = s.pr;
-  const fb = readFeedback(n);
-  if (!fb) { out.push(`fix tries: PR #${n} (${t.key}): its review threads could not be read; the next pass tries again`); return null; }
-  if (fb.head !== s.head) return null;
-  const open = new Set(fb.left.map((x) => x.id));
-  const worked = resolvable(t, s.head).filter((x) => open.has(x.id));
-  const settled = worked.length ? settleWorked(t, n, s.head, worked) : [];
-  if (settled.length < worked.length && !DRY) return null;
-  const judgement = E.permission('autopilot-judgement');
-  if (fb.review) {
-    const comments = () => {
-      const r = reviewComments(fb.review.id);
+  return {
+    ctx,
+    baseMerge,
+    moves: () => baseMoves(t, s.head),
+    comments: (id) => {
+      const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
-    };
-    const rf = reviewFix(t, { pr: n, head: s.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement });
-    if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
-  }
-  const ff = E.permissionOrUnset('merge-feedback-first') === 'no' ? null
-    : feedbackFix(t, { pr: n, head: s.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
-  if (ff) return ff;
-  // Gaps only the person can settle wait on their call, whatever the checks or the merge grant say.
-  const gaps = fb.review ? personGapsCall(fb.review, { judgement }) : null;
-  if (gaps) return gaps;
-  // A red verdict state check with no unclean review at the head to fix: a review worker posts one. So
-  // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
-  const { carry, scope, baseMerge } = baseMoves(t, s.head);
-  const atHead = () => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
-    ? readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null);
-  return verdictTry(t, s, { ...gateLists(), stateChecks: stateRow.checks, settled: !!fb.review, atHead, waived, base: DEFAULT_BRANCH, baseMerge });
+    },
+    atHead: (payload, carry, scope) => (localReviewSet(E.configValue('local-review')) && E.mergeGrant(queue()).by
+      ? readVerdict(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry, scope }) : null),
+  };
+}
+{
+  const fixTicket = (k) => undrafted.find((e) => e.t.key === k);
+  runSteps({
+    name: 'fix tries',
+    snapshot: () => ({
+      undrafted, rowErrors: fixRowErrors, dry: DRY, base: DEFAULT_BRANCH, reviewer: HEALTH.reviewer ?? null, gate: gateLists(), stateChecks: stateRow.checks,
+      conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
+      feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
+      judgement: E.permission('autopilot-judgement'),
+    }),
+    decide: decideFixTries,
+    report,
+    handlers: {
+      ...OUT_HANDLERS,
+      'conflict-files': (a) => conflictFiles(a.branch),
+      'note-conflict': (a) => noteConflict(a.what, a.entry),
+      'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
+      'human-seen': (a) => humanSeen(a.pr),
+      reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
+      feedback: (a) => readFeedback(a.pr),
+      'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
+      'check-build': (a) => {
+        const { t } = fixTicket(a.key);
+        return a.call.call === 'build' ? startCheckBuild(t, a.pr, a.head, a.call, null, true) : rerunBuilt(t, a.pr, a.head, a.call, null, true);
+      },
+      apply: (a) => applyFix(fixTicket(a.key).t, a.pr, a.head, a.call),
+    },
+  });
 }
 function readFeedback(n) {
   const [owner, name] = GH_REPO.split('/');
@@ -4544,12 +4255,8 @@ function applyFix(t, n, head, c) {
   q('set', t.key, `fix_tries=${JSON.stringify([...(t.fix_tries ?? []), { try: f.try, head: f.head, kind: f.kind, what: f.what, ...quoted, ...(f.extra ? { extra: true } : {}), ...(f.class ? { class: f.class } : {}), at: PASS_AT }])}`, 'stuck=null');
   out.push(`${tryLabel(f)}: ${t.key} requeued for PR #${n} — ${f.what}`);
 }
-// How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".
-function tryLabel(f) {
-  if (f.kind === 'capture') return 'capture try';
-  if (f.extra) return `extra ${f.kind === 'rereview' ? 'review' : 'fix'} try`;
-  return `${f.kind === 'rereview' ? 'review' : f.kind === 'protected' ? 'protected files' : 'fix'} try ${f.try} of ${f.of}`;
-}
+
+// ---- held tickets and releases -------------------------------------------
 // A repo with no history yet gets it built once, the same as desk-q-eta.mjs build; later merges append.
 if (!DRY && readHistory(STATE) === null) {
   const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });

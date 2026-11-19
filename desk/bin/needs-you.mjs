@@ -87,16 +87,16 @@ import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
-import { cellPlan, parseVerdict, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
+import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
-import { describeCond, personClears } from './clears-when.mjs';
+import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
-import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
+import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
@@ -280,9 +280,9 @@ function trackerTicket(r, key) {
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
-// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
-// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
-const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A park waiting on issue links only the person makes holds them in its clears_when alone: the pass
+// records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (t.park?.clears_when?.kind === 'links-made' ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
@@ -846,7 +846,8 @@ function outAt(q, t) {
   return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
 // Whether a step's gate (after: merge, main or production) holds once outAt does: { held, note }, `note`
-// saying why a gate was taken as held without being checked. A gate is git reachability in the repo
+// saying why a gate was taken as held without being checked. A production gate read as held adds
+// `on: 'production'`, and `at` where a commit of production's own took it in: that commit's date. A gate is git reachability in the repo
 // root, from its remote refs as the last fetch left them: list's refresh and the pass fetch origin while
 // a gated step waits. The commit judged is the one that put the PR's code on the default branch: its merge commit
 // (pr_status.merge_commit), or for a batch child that a squash or rebase promotion left off it, the
@@ -908,14 +909,22 @@ function gateHeld(r, t, s) {
   }
   if (!landed) return wait;
   const prod = commit(ref.ref);
-  return prod ? { held: within(landed, prod), note: null } : unread(`production (\`${ref.ref}\`)`);
+  if (!prod) return unread(`production (\`${ref.ref}\`)`);
+  if (!within(landed, prod)) return wait;
+  // Production has had it since the oldest commit on its first-parent line that holds `landed`. Where that
+  // is `landed` itself, production was fast-forwarded to it, and git keeps no date for that: none is given.
+  const lines = (x) => String(x ?? '').split('\n').filter(Boolean);
+  const line = new Set(lines(git(['rev-list', '--first-parent', '-n', '2000', prod])));
+  const entry = line.has(landed) ? null : lines(git(['rev-list', '--ancestry-path', `${landed}..${prod}`])).reverse().find((c) => line.has(c));
+  const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
+  return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
 // A ticket's steps split by their gates: `ready` listed now (each with its note), `waiting` not yet.
 function followSplit(r, t) {
   const ready = [], waiting = [];
   for (const s of t.follow_on) {
     const g = gateHeld(r, t, s);
-    if (g.held) ready.push({ s, note: g.note }); else waiting.push(s);
+    if (g.held) ready.push({ s, note: g.note, on: g.on, at: g.at }); else waiting.push(s);
   }
   return { ready, waiting };
 }
@@ -939,22 +948,31 @@ function followItems(r) {
   });
 }
 const GATE_WORDS = { main: 'the default branch has', production: 'production runs' };
-const GATE_SAID = { merge: 'is merged', main: 'is merged and on the default branch', production: 'is merged and production runs it' };
+// "<KEY> is on <where> since <date>.", then any gate left unchecked, then one "Check: <step>." per step,
+// a step's §3 row and its value named only where it has one.
 function followItem(r, t, { gate, ready, waiting }) {
   const rowSaid = (row) => {
-    if (!row) return 'it names no §3 row';
+    if (!row) return '';
     let v;
     try { v = repoPermission(r.slug, row); } catch { v = 'unread'; }
-    return `§3 ${row} is "${v}"`;
+    return ` (§3 ${row} is "${v}")`;
   };
-  const steps = ready.map(({ s, note }, i) => `(${i + 1}) ${one(s.step)} (${rowSaid(s.row)}${note ? `; ${note}` : ''})`).join(' ');
+  // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
+  const checks = ready.map(({ s }) => {
+    const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
+    return ` Check: ${said}${said.endsWith('.') ? '' : '.'}`;
+  }).join('');
+  const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
   const n = ready.length;
   const m = waiting.length;
-  const later = m ? `. ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then` : '';
-  // With production unchecked (no Promotion ref), its steps were judged by the default branch alone.
-  const said = GATE_SAID[gate === 'production' && ready.some((x) => x.note) ? 'main' : gate];
+  const later = m ? ` ${m === 1 ? 'Another step waits' : `${m} more steps wait`} until ${andList([...new Set(waiting.map((s) => GATE_WORDS[s.after]))])} its merge, and ${m === 1 ? 'is' : 'are'} listed then.` : '';
+  // Production is named only where its ref was read; unchecked, its steps were judged by the default branch.
+  const onProd = gate === 'production' && ready.every((x) => x.on === 'production');
+  const at = onProd ? Math.min(...ready.map((x) => x.at ?? Infinity)) : timeOf(outAt(r.q, t));
+  const day = Number.isFinite(at) ? ` since ${new Date(at).toISOString().slice(0, 10)}` : '';
+  const where = onProd ? 'production' : repoConfigValue(r.slug, 'default-branch') ?? 'main';
   return { kind: 'follow', ticket: t.key, steps: ready.map((x) => x.s),
-    need: `PR #${t.result?.pr ?? '?'} (${t.key}) ${said}, and ${n === 1 ? 'a step waits' : `${n} steps wait`} on it that no worker runs after a merge: ${steps} Run ${n === 1 ? 'it' : 'them'}, then say done${later}`,
+    need: `${t.key} is on ${where}${day}.${notes}${checks}${later} Then say done.`,
     actions: [['done', `once ${n === 1 ? 'it has' : 'each has'} run, or the PR's own checks already cover ${n === 1 ? 'it' : 'them'}; done takes ${t.follow_on.length > n ? 'these steps' : 'the item'} off your list`], ['not-now']],
     since: timeOf(outAt(r.q, t)) };
 }
@@ -1123,7 +1141,7 @@ function signinItems(batches, only = null) {
     const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
     if (!r) return [];
     if (!jobs) { try { jobs = readUploadQueue().jobs; } catch { jobs = []; /* named as none waiting */ } }
-    const prs = [...new Set(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file).map((j) => `${j.repo} #${j.pr}`))];
+    const prs = waitingPrs(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file));
     return [{ r, dir: r.stateDir, t: { key: `${SIGNIN}:${s.id}` }, item: { kind: SIGNIN, repoLevel: true,
       need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload with it runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
       note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
@@ -1140,19 +1158,17 @@ function signinItems(batches, only = null) {
 // upload after desk is installed again that finds the composer drops it.
 const PAGE = 'upload-page';
 function pageItems(batches, { home = false } = {}) {
-  let q;
-  try { q = readUploadQueue(); } catch { return []; }
-  const p = q.page;
-  if (!p) return [];
+  const pause = uploadPause();
+  if (!pause) return [];
+  const { page: p, jobs, prs } = pause;
   const live = batches.filter((x) => !x.error && x.q);
   const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
   // The queue holds the pass's GitHub repo as its origin spells it; GitHub's names are case-insensitive.
   const isRepo = (b, repo) => repo != null && [b.slug, slugOf(ghRepoOf(b))].includes(slugOf(String(repo)));
-  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => isRepo(b, j.repo)))));
+  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => jobs.some((j) => isRepo(b, j.repo)))));
   if (!r) return [];
-  const prs = [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))];
   return [{ r, dir: deskHome(), t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
-    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue`,
+    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. ${PAGE_RESUMES}`,
     note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
     actions: [['done', 'once desk is installed again with a fix, the next pass uploads what waits and drops this item'], ['not-now']],
     since: timeOf(p.at) } }];

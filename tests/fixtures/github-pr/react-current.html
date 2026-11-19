@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<!-- GitHub's current React PR page, cut from a capture of a live PR taken focused and signed in.
+     The markup around the composer is GitHub's own, trimmed of
+     the formatting toolbar: the one textarea (placeholder "Leave a comment", aria-label
+     "Markdown value", a React useId for its id) and, beside it, the "Paste, drop, or click to add
+     files" button with its paperclip icon. The page has no input[type=file] at all, focused or not.
+     The script stands in for GitHub's: the button makes a file input that is never attached to the
+     page and clicks it, and a file set on it is written into the textarea as GitHub writes an
+     uploaded image. The composer mounts after load, as on hydration. -->
+<html>
+<head><meta name="user-login" content="octocat"><title>Fix the widget by octocat · Pull Request #7 · acme/widgets</title></head>
+<body>
+<main>
+  <section><h2 id="overview-comments">Comments</h2></section>
+  <div id="composer-root"></div>
+  <div data-item-type="review_summary" data-testid="timeline-item"><p>octocat commented</p></div>
+</main>
+<script>
+setTimeout(() => {
+  document.getElementById('composer-root').innerHTML = `
+<form tabindex="-1" aria-label="Add comment form" data-composer="new"><div class="commentBoxContainer__ENsp3V"><fieldset aria-disabled="false" class="fieldSet__Iyv63E">
+<legend class="sr-only">Add a comment</legend>
+<div class="container__l8D3Du"><span class="sr-only" id="_r_23_" aria-live="polite">Markdown input:  edit mode selected.</span>
+<div class="writeWrapper__4K2MB1">
+  <div class="header__3BFPRT"><div role="tablist" aria-label="View mode"><button type="button" role="tab" aria-selected="true">Write</button><button type="button" role="tab" aria-selected="false">Preview</button></div></div>
+  <div class="inputWrapper__Y2hEnV"><span class="textArea__nu8suQ" data-component="TextInput"><textarea data-component="Textarea" rows="5" cols="30" id="_r_24_" placeholder="Leave a comment" aria-label="Markdown value" aria-describedby="_r_23_"></textarea></span></div>
+  <div role="status"></div>
+  <div class="container__Sx9cv_"><div data-loading-wrapper="true"><button data-component="Button" type="button" class="prc-Button-ButtonBase-9n-Xk button__EnzL0K" data-size="small" data-variant="invisible"><span data-component="buttonContent"><span data-component="leadingVisual"><svg data-component="Octicon" aria-hidden="true" focusable="false" class="octicon octicon-paperclip" viewBox="0 0 16 16" width="16" height="16"></svg></span><span data-component="text" class="prc-Button-Label-FWkx3">Paste, drop, or click to add files</span></span></button></div></div>
+</div>
+<div class="footer__9gRDKx" data-testid="markdown-editor-footer"><button type="button" id="pull-request-state-button">Close pull request</button><button aria-disabled="true" type="button" data-variant="primary">Comment</button></div>
+</div></fieldset></div></form>`;
+  const ta = document.querySelector('#_r_24_');
+  const add = document.querySelector('.container__Sx9cv_ button');
+  add.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file'; input.multiple = true;
+    input.addEventListener('change', () => {
+      for (const f of input.files) {
+        const alt = f.name.replace(/\.[^.]+$/, '');
+        ta.value += `<img alt="${alt}" src="https://github.com/user-attachments/assets/${alt}-0001" />\n`;
+      }
+      window.chosen = (window.chosen ?? 0) + 1;
+    });
+    input.click();
+  });
+}, 300);
+</script>
+</body>
+</html>
