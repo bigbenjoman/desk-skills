@@ -96,7 +96,7 @@ import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseL
 import { fixClass } from './failure-class.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -109,6 +109,7 @@ import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
+import { prsNaming } from './recoveries.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -228,7 +229,7 @@ export const READS = {
     if (!mergedRead.has(id)) {
       let hit = null;
       try {
-        const p = prsNaming({ slug }, 'merged', key, { fields: 'mergedAt' }).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
+        const p = prsNaming(ghRepoOf({ slug }), 'merged', key, { fields: 'mergedAt' }).sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
         if (p) hit = { pr: Number(p.number), mergedAt: p.mergedAt ?? null };
       } catch { /* unread: no PR found */ }
       mergedRead.set(id, hit);
@@ -239,21 +240,11 @@ export const READS = {
   // open PR is read, as GitHub's text search never reads a branch name.
   open: (r, key) => {
     try {
-      const p = prsNaming(r, 'open', key, { fields: 'title', inTitle: true, search: false, limit: 500 }).sort((a, b) => Number(b.number) - Number(a.number))[0];
+      const p = prsNaming(ghRepoOf(r), 'open', key, { fields: 'title', inTitle: true, search: false, limit: 500 }).sort((a, b) => Number(b.number) - Number(a.number))[0];
       return { pr: p ? Number(p.number) : null, err: '' };
     } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
   },
 };
-// The PRs in `state` on r's repo whose branch names `key`, or with `inTitle` its title too. `search`
-// narrows the list by GitHub's text search first, which reads titles and bodies but never a branch;
-// without it every PR in that state is read, and a list `limit` long may be cut short, so it throws.
-function prsNaming(r, state, key, { fields, inTitle = false, search = true, limit = 30 }) {
-  const prs = JSON.parse(execFileSync('gh', ['pr', 'list', '--repo', ghRepoOf(r), '--state', state, ...(search ? ['--search', key] : []), '--limit', String(limit), '--json', `number,headRefName,${fields}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) || '[]');
-  const list = Array.isArray(prs) ? prs : [];
-  if (!search && list.length >= limit) throw new Error(`GitHub lists ${limit} or more ${state} PRs, so the list may be cut short`);
-  const re = new RegExp(keyPattern(key));
-  return list.filter((x) => Number.isFinite(Number(x?.number)) && (re.test(String(x.headRefName ?? '')) || (inTitle && re.test(String(x.title ?? '')))));
-}
 const mergedRead = new Map();
 // The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
 // queue record of it first (a PR it records merged), then GitHub (READS.merged) where `reads` is given.
