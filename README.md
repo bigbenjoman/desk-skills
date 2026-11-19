@@ -172,7 +172,8 @@ default branch, and finds leaked dev servers eating memory. It acts only on tick
 their Gemini notes, Jira changes, GitHub PRs, your Claude Code sessions and your own Slack messages.
 It covers every desk repo that posts to the same §4 Check-out destination, and each source needs its
 own §3 row (`read-calendar`, `read-transcripts`, `read-slack-public`…); a skipped source is listed in
-the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
+the draft. To a Slack channel at §3 `slack-draft` `yes` it saves the post as a draft there and says
+so, copying it to the clipboard only when the draft cannot be saved; it never sends.
 
 ```
 /desk-checkout                   today (before 10:00, yesterday)
