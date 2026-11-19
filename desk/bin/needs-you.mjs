@@ -92,11 +92,11 @@ import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, 
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
-import { describeCond, personClears } from './clears-when.mjs';
+import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, keyPattern, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, EXIT } from './batch-state.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
-import { readUploadQueue, SIGNIN_CMD } from './upload-queue.mjs';
+import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
 import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
@@ -280,9 +280,9 @@ function trackerTicket(r, key) {
 const ticketWords = (key, status) => (status === 'done' ? `${key} is done in Jira` : status ? `${key} is not done in Jira yet` : `${key}'s Jira status could not be read`);
 const mergedWords = (pr, v) => (pr == null ? 'it has no PR' : `PR #${pr} merged${v?.mergedAt ? ` at ${String(v.mergedAt).slice(0, 16).replace('T', ' ')} UTC` : ''}`);
 const recordShipped = (r, t, how, pr, v) => queueCmd(r, shippedSet(t, how, pr, v?.mergedAt ?? null));
-// A park waiting on issue links only the person makes (clears-when personClears) holds them in its
-// clears_when alone: the pass records it done once each reads on Jira, so it is never closed here.
-const linksPending = (t) => (personClears(t.park?.clears_when) ? describeCond(t.park.clears_when) : null);
+// A park waiting on issue links only the person makes holds them in its clears_when alone: the pass
+// records it done once each reads on Jira, so it is never closed here.
+const linksPending = (t) => (t.park?.clears_when?.kind === 'links-made' ? describeCond(t.park.clears_when) : null);
 // A parked or session item that shipped: its own PR merged, and its ticket done or in no tracker. -> how, or null.
 function shippedOf(r, t, reads) {
   const pr = ownPr(t);
@@ -1141,7 +1141,7 @@ function signinItems(batches, only = null) {
     const r = live.find((b) => s.state && resolve(b.stateDir) === resolve(s.state)) ?? live.find(mine) ?? live[0];
     if (!r) return [];
     if (!jobs) { try { jobs = readUploadQueue().jobs; } catch { jobs = []; /* named as none waiting */ } }
-    const prs = [...new Set(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file).map((j) => `${j.repo} #${j.pr}`))];
+    const prs = waitingPrs(jobs.filter((j) => !s.file || !j.profile || sessionFile(j.profile) === s.file));
     return [{ r, dir: r.stateDir, t: { key: `${SIGNIN}:${s.id}` }, item: { kind: SIGNIN, repoLevel: true,
       need: `the browser profile's saved GitHub login is not signed in (${one(s.why)}), so no repo's screenshot upload with it runs; workers still start. Sign it in, in a terminal on this machine's screen: ${SIGNIN_CMD}`,
       note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
@@ -1158,19 +1158,17 @@ function signinItems(batches, only = null) {
 // upload after desk is installed again that finds the composer drops it.
 const PAGE = 'upload-page';
 function pageItems(batches, { home = false } = {}) {
-  let q;
-  try { q = readUploadQueue(); } catch { return []; }
-  const p = q.page;
-  if (!p) return [];
+  const pause = uploadPause();
+  if (!pause) return [];
+  const { page: p, jobs, prs } = pause;
   const live = batches.filter((x) => !x.error && x.q);
   const first = (bs) => bs.find((b) => b.batch == null) ?? bs[0];
   // The queue holds the pass's GitHub repo as its origin spells it; GitHub's names are case-insensitive.
   const isRepo = (b, repo) => repo != null && [b.slug, slugOf(ghRepoOf(b))].includes(slugOf(String(repo)));
-  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => q.jobs.some((j) => isRepo(b, j.repo)))));
+  const r = first(live.filter((b) => isRepo(b, p.repo))) ?? (home ? null : first(live.filter((b) => jobs.some((j) => isRepo(b, j.repo)))));
   if (!r) return [];
-  const prs = [...new Set(q.jobs.map((j) => `${j.repo} #${j.pr}`))];
   return [{ r, dir: deskHome(), t: { key: PAGE }, item: { kind: PAGE, repoLevel: true,
-    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. It is desk's fault, not a step for you: once desk is installed again with a fix, the next upload that finds the composer resumes the queue`,
+    need: `desk's screenshot uploader is broken by a GitHub page change (${one(p.why)}), so no repo's screenshot upload runs and ${prs.length} PR(s) wait in draft for their screenshots. ${PAGE_RESUMES}`,
     note: prs.length ? `Waiting in the upload queue: ${andList(prs)}.` : 'No upload waits on it yet.',
     actions: [['done', 'once desk is installed again with a fix, the next pass uploads what waits and drops this item'], ['not-now']],
     since: timeOf(p.at) } }];
