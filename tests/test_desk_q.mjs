@@ -2448,17 +2448,19 @@ t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Buil
 L654 = await leversLine654({ line: WORKING654, age: 15 });
 t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
 
-// v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves.
+// v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves. The stub
+// takes 1.5s, well past a draw of home's whole fixture world on a loaded machine, so the screen is read
+// while it is still rebuilding.
 async function press654(opts, { rebuilt = null, how = 'v' } = {}) {
   levers654(opts);
   const calls = [];
-  const s = screen({ kind: 'overview', all: false }, 200, () => NOW, Q, { leversWith: (done) => { calls.push(1); setTimeout(() => { if (rebuilt) levers654(rebuilt); done(); }, 400); } });
+  const s = screen({ kind: 'overview', all: false }, 200, () => NOW, Q, { leversWith: (done) => { calls.push(1); setTimeout(() => { if (rebuilt) levers654(rebuilt); done(); }, 1500); } });
   await sleep(20);
   const keys = s.frame().some((l) => /(^|· )v levers( ·|$)/.test(l));
   if (how === 'v') await s.press('v');
   else await s.click(10, s.frame().findIndex((l) => /^[○●▼▲] Levers /.test(l)) + 1);
   const during = s.frame().some((l) => l === 'Updating Levers…');
-  await sleep(rebuilt ? 600 : 20);
+  await sleep(rebuilt ? 1800 : 20);
   const said = s.frame().filter((l) => /Levers|last good page|press v again/.test(l) && !/^[○●▼▲] Levers /.test(l)).join(' ');
   const codes = s.codes.length;
   s.ui.finish(0);
