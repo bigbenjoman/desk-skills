@@ -149,7 +149,7 @@ AGENT_NAMES="$(printf '%s\n' "$AGENTS_OUT" | sed -n 's/^AGENTS: //p')"
 # env files were repointed. Every §4 Database URL variable is removed from what the worker inherits.
 while IFS= read -r v; do
   case "$v" in ''|none|*[!A-Za-z0-9_]*) ;; *) unset "$v" ;; esac
-done < <(node "$DESK_ENV_MJS" list db-url-var 2>/dev/null || true)
+done < <(desk_list db-url-var 2>/dev/null || true)
 # With no tracker (config §4 Tracker `none`) there is no Jira step to prove reachable.
 TRACKER="$(desk_cfg tracker 2>/dev/null || echo unset)"
 CONFIG_NOTE=""

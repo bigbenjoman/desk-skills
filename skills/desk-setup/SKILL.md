@@ -142,10 +142,11 @@ desk-q open beside a batch run in the session: the status watch prints one line 
 changed and the orchestrator answers a spawn or stage step in a line or less, so the session spends
 fewer tokens; parks, questions, PRs, merges and failures are still reported, and the Stage 8 report
 and any status you ask for carry the full table), and record the answer. For batches run by, run
-`node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS (`ask: true`) offer `supervisor`
-(Recommended: once Stage 3 has asked, the supervisor runs the batch from launchd, the session ends,
-and you follow it in desk-q, opening a session only when it needs you) and `session` (the batch runs
-in the interactive session through `/loop`). Off macOS (`ask: false`) don't ask: record
+`node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS, or Linux where `systemctl --user`
+answers (`ask: true`), offer `supervisor` (Recommended: once Stage 3 has asked, the supervisor runs
+the batch from launchd or a systemd timer, the session ends, and you follow it in desk-q, opening a
+session only when it needs you) and `session` (the batch runs in the interactive session through
+`/loop`). Elsewhere (`ask: false`) don't ask: record
 `session` and say its `line` in one sentence. Once the config is written with `supervisor`, run
 `node ~/.claude/desk/bin/run-by.mjs ensure` in the repo, which installs and loads the supervisor, and
 report its result; on exit 11 give its `error` and `retry` command, and leave the row at

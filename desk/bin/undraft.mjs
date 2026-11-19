@@ -238,9 +238,19 @@ export function postMergeIn(body) {
   } catch { return []; }
 }
 // Those criteria as the follow-on steps a merged ticket keeps for the person (pass.mjs follow_on,
-// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system.
-const POST_MERGE_STEP ='Check after the merge: ';
-export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: `${POST_MERGE_STEP}${p.gap} (needs ${p.needs}): ${p.step}`, row: null }));
+// needs-you followItems): no §3 row runs them, since nothing of desk's checks a live system. What a
+// criterion needs is its gate (harvest.mjs FOLLOW_GATES): production waits on the production ref,
+// staging and a deploy on the default branch, anything else on the merge. Each keeps the criterion's
+// own step as written, marked `from: 'review'` so the pass tells it from a step the worker declared.
+// POST_MERGE_STEP opens a step an older pass recorded with the criterion's name and needs before it,
+// which reviewStep drops.
+const POST_MERGE_STEP = 'Check after the merge: ';
+const OLD_PREFIX = new RegExp(`^${POST_MERGE_STEP}.*? \\(needs [^)]*\\): `);
+export const fromReview = (s) => s?.from === 'review' || String(s?.step ?? '').startsWith(POST_MERGE_STEP);
+export const reviewStep = (step) => String(step ?? '').replace(OLD_PREFIX, '');
+const NEEDS_GATE = { production: 'production', staging: 'main', deployed: 'main' };
+export const postMergeSteps = (body) => postMergeIn(body).map((p) => ({ step: p.step, row: null, from: 'review',
+  ...(NEEDS_GATE[p.needs] ? { after: NEEDS_GATE[p.needs] } : {}) }));
 
 // Whether a path is a dependency manifest, a lockfile or repo configuration, which every review rests
 // on whatever its seats read: a change to one can change what the code does without touching it.
@@ -788,7 +798,15 @@ export function undraftCall(t, pr, cfg) {
   }
   if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
-    const notGreen = person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
+    // Red only on code checks §4 Required checks does not name: the gate passes once §4 Advisory checks names them.
+    const optional = codeRed.length === gate.failing.length && evaluateGate(pr.checks ?? [],
+      { required: cfg.required ?? [], advisory: [...(cfg.advisory ?? []), ...codeRed.map((f) => f.name)] }).state === 'pass'
+      ? [...new Set(codeRed.map((f) => `"${f.name}"`))] : [];
+    const one = optional.length === 1;
+    const notGreen = optional.length
+      ? person(`its checks are not green: ${gate.reasons.join('; ')}${spent}; ${one ? 'it is not' : 'none of them is'} a §4 Required check`,
+        `list ${optional.join(', ')} under §4 Advisory checks (/desk-setup) to let #${n} through without ${one ? 'it' : 'them'}, or fix ${one ? 'it' : 'them'} on #${n}: any red check holds the draft unless that row names it`)
+      : person(`its checks are not green: ${gate.reasons.join('; ')}${spent}`, `fix or re-run the checks on #${n}`);
     // A cancelled or timed-out run tested no code, so a fix worker has nothing to fix until its reruns are spent.
     if (!spent && codeRed.length && codeRed.every((f) => INTERRUPTED.has(f.conclusion))) return notGreen;
     // Beside a red code check, the red §4 State checks go with it, for the fix try to name as not its

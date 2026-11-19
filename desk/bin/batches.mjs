@@ -1,7 +1,7 @@
 // A repo's batches: its standing batch, then one named batch per epic in `batches/<name>/` beside its
 // queue. An archived batch sits under `batches/.done/` and is not listed. A ticket's key finds the one
 // batch that holds it.
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
@@ -180,6 +180,59 @@ export function otherRunningBatches(slug, own, defaultBase, isFinished = finishe
 const peek = (b) => { try { return { q: readQueue(b.queue) }; } catch (e) { return { unreadable: e.message }; } };
 const where = (b) => (b.name ? `batch ${b.name}` : 'the standing batch');
 
+// The tracker a repo's keys name tickets in: its §4 Jira site, where §4 Tracker is jira, else null. A
+// key is one ticket across repos only on the same site; an issue number or slug is the repo's own.
+// Read again only once the config file changes.
+// `get` reads a config row by id: this repo's, or another's by its slug.
+function siteFrom(get) {
+  try {
+    const s = String(get('jira-site') ?? '').trim().toLowerCase();
+    return get('tracker') === 'jira' && s ? s : null;
+  } catch { return null; /* an unreadable config names no tracker */ }
+}
+const sites = new Map();
+function siteOf(slug) {
+  const path = join(E.deskConfigRoot(), 'repos', slug, 'config.md');
+  let at;
+  try { at = statSync(path).mtimeMs; } catch { return null; /* no config: no tracker */ }
+  if (sites.get(path)?.at === at) return sites.get(path).site;
+  const site = siteFrom((id) => E.repoConfigValue(slug, id));
+  sites.set(path, { at, site });
+  return site;
+}
+
+// Every configured repo's copy of each ticket queued and not done, read from its batches' queues on
+// disk: key -> [{ slug, ghRepo, site, name, queue, state, q, t }], at most one copy per repo, from repos
+// on a Jira site only. A batch finished on its record, or whose queue cannot be read, holds none. Read
+// again only once a queue file changes.
+let copiesSeen = null;
+export function queuedCopies() {
+  const batches = E.configuredRepos().flatMap((r) => {
+    const site = siteOf(r.slug);
+    if (!site) return [];
+    try { return listBatches(r.slug).map((b) => ({ ...b, slug: r.slug, ghRepo: r.ghRepo, site })); } catch { return []; }
+  });
+  const stamp = batches.map((b) => { try { const s = statSync(b.queue); return `${b.site}:${b.queue}:${s.mtimeMs}:${s.size}`; } catch { return ''; } }).join('\n');
+  if (copiesSeen?.stamp === stamp) return copiesSeen.copies;
+  const copies = new Map();
+  for (const b of batches) {
+    const { q } = existsSync(b.queue) ? peek(b) : {};
+    if (!q || finishedOnRecord(q)) continue;
+    for (const t of ownRows(q)) {
+      if (t.state === 'done' || t.merged_at) continue;
+      const had = copies.get(t.key) ?? [];
+      if (!had.some((c) => c.slug === b.slug)) copies.set(t.key, [...had, { ...b, q, t }]);
+    }
+  }
+  copiesSeen = { stamp, copies };
+  return copies;
+}
+// The copies of `key` queued in configured repos other than `slug`, on its Jira site `site`.
+export function copiesElsewhere(key, slug, copies = queuedCopies(), site = slug ? siteOf(slug) : null) {
+  return site ? (copies.get(key) ?? []).filter((c) => c.slug !== slug && c.site === site) : [];
+}
+export const copyWhere = (c) => (c.name ? `batch ${c.name} of ${c.ghRepo}` : `${c.ghRepo}'s standing batch`);
+
 // Whether the named batch `name` is listed, readable, not finished, and not past its last promotion.
 export function liveBatch(name) {
   let b;
@@ -200,8 +253,8 @@ export function promotedEpicBatch(rec) {
 }
 
 // Why `key` may not join the batch whose queue is `own`, or null: another unfinished batch holds it
-// (`held` then names that batch, its state directory and the ticket's state there), or
-// its triage record `rec` names an epic whose feature batch is unfinished and not past its last
+// (`held` then names that batch, its state directory and the ticket's state there), a batch of another
+// configured repo has it queued (`repo` then names that repo), or its triage record `rec` names an epic whose feature batch is unfinished and not past its last
 // promotion. -> {batch, why},
 // with `epic` set to that epic for its child, and `unreadable` set when another batch's queue cannot be
 // read, so the key cannot be checked. Never
@@ -218,6 +271,15 @@ export function belongsElsewhere(key, rec = null, own = E.queueFile()) {
     const move = `if it belongs elsewhere, move it from /desk-needs-you once it is parked or stopped (move "<batch>")`;
     return { batch: label(held.b), held: { name: held.b.name, state: held.b.state, ticket: held.q.tickets[key].state },
       why: `${key} is in ${where(held.b)}: a ticket is in one batch at most; ${move}` };
+  }
+  // A ticket is queued in one repo at most. The repo handing it here (DESK_ADMIT_FROM, admitInRepo)
+  // drops its own copy once this admit is made.
+  let slug = null;
+  try { slug = E.repoSlug(); } catch { /* outside a repo: no Jira site to match a key on */ }
+  const there = slug && copiesElsewhere(key, slug, queuedCopies(), siteFrom(E.configValue)).find((c) => c.slug !== process.env.DESK_ADMIT_FROM);
+  if (there) {
+    return { batch: `${there.ghRepo}:${label(there)}`, repo: there.ghRepo,
+      why: `${key} is already queued in ${copyWhere(there)} (${there.t.state}): a ticket is queued in one repo at most; if it belongs here, drop it there first (queue.mjs drop ${key}, in ${there.ghRepo}'s checkout)` };
   }
   const epic = rec?.epic?.key;
   const feature = epic && live.find((x) => x.b.name === epic && !promoted(x.q));

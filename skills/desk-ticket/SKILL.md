@@ -100,6 +100,14 @@ about to do before any step that takes more than a minute or two, and surface fi
 them rather than saving them for the end. People run several sessions at once; going quiet is the
 problem. Full rule in `references/desk-ticket-working-style.md`.
 
+**An action you hand the person is recorded, not only said.** Whenever your reply leaves them a step
+to take (file this issue, merge that PR, sign in, run a command), record it as well, so
+`/desk-needs-you` and desk-q list it until they say done:
+
+```
+node ~/.claude/desk/bin/needs-you.mjs ask <repo> "<what to do>"
+```
+
 **Ask or take.** Before asking anything, sort it. Ask only in the five ask categories: money, legal
 or regulatory, production data or credentials, customer copy where length means cost, and facts
 only the user holds (gate 1's product data is one), or when you have no recommendation you can

@@ -52,6 +52,8 @@ if (existsSync('$T/upload-left')) { process.stdout.write(readFileSync('$T/upload
 if (existsSync('$T/upload-busy-' + process.argv[2])) { console.error('[upload] the shared profile is in use — refusing:'); process.exit(2); }
 // \$T/upload-throttle-<pr>, when it exists, is GitHub's rate limit: its contents are the retry_after, then exit 7.
 if (existsSync('$T/upload-throttle-' + process.argv[2])) { console.error('[upload] throttled: an earlier stall has not passed, so nothing is uploaded before ' + readFileSync('$T/upload-throttle-' + process.argv[2], 'utf8').trim()); process.exit(7); }
+// \$T/upload-page-<pr>, when it exists, is GitHub's PR page with no comment composer: exit 7 saying so.
+if (existsSync('$T/upload-page-' + process.argv[2])) { console.error("[upload] GitHub's PR page changed: no comment composer found by role, placeholder or legacy id"); process.exit(7); }
 // \$T/upload-fillcrash-<pr>, when it exists, fills the first cell of the fake gh's PR body, then crashes.
 const frc = '$T/fr/' + process.argv[2] + '.json';
 if (existsSync('$T/upload-fillcrash-' + process.argv[2])) { const j = JSON.parse(readFileSync(frc, 'utf8')); j.body = j.body.replace(/_drag (\S+?)\.png_/, '<img alt="\$1" src="https://github.com/user-attachments/assets/1">'); writeFileSync(frc, JSON.stringify(j)); console.error('Error: page closed'); process.exit(1); }

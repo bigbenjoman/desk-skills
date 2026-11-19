@@ -48,6 +48,7 @@ on its feature branch while the standing batch carries on.
 | `desk-review-response` | Replying to and working a reviewer's comments | loads itself |
 | `desk-dev` | Running the app locally, optionally against a copy of staging data | loads itself |
 | `desk-update` | Brings every skill and plugin on the machine up to date, brew-style (see [Updating](#updating)) | `/desk-update` |
+| `desk-resume` | After a context handoff's `/clear`: reads the handoff and carries on from its next step | `/desk-resume` |
 | `desk-reboot` | Before a reboot: every session, heavy processes and unsaved worktrees; busy sessions save a handoff; never reboots | `/desk-reboot` |
 | `desk-ci` | Places each CI job self-hosted or hosted by a written rule, citing the line that decided it, and lints workflows so no self-hosted job receives a secret; measures CI minutes, red rate and time to green within an API call budget, and holds an autopilot batch's red rate to that baseline; saves and restores branch protection, pins required checks to GitHub Actions and makes the default workflow token read-only, each change shown first and gated on §3 `ci-protection` | `/desk-ci classify`, `/desk-ci ci-lint`, `/desk-ci measure`, `/desk-ci protection` |
 
@@ -233,11 +234,14 @@ node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 da
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
 ```
 
-**`supervisor.mjs`** runs autopilot passes from launchd, with no Claude session in the loop. Install
-it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a batch
-the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. It keeps
-the batch's merge driver running, sends one macOS notification for each new set of items that need
-you, and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
+**`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
+Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Claude session in the loop.
+Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
+batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
+Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
+off. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
+log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
 named batch, each on its own base, with its own log and merge driver. A named batch whose last promotion
 PR is merged, or whose promotion PR is closed, with no ticket running and no ticket PR open, is archived under
@@ -708,7 +712,8 @@ repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at ses
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
 **`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
-context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it.
+context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
+you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.
@@ -885,6 +890,35 @@ runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory e
 `HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
 output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
 when nothing differs, 1 when something does, and 2 when a run was not compared.
+
+`pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
+is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
+PR bodies it needs included) and returns actions such as `{ type: 'set', key, fields }`. It starts no
+process, calls no git, gh or Jira, and writes nothing. `pass.mjs` runs it through `runPhase`
+(`desk/bin/pass/run-phase.mjs`), which reads the snapshot when the phase starts and carries the
+actions out in order. The `set` and `report` handlers are shared, and anything that does I/O stays in
+`pass.mjs` as a handler. A decision that needs a read only some cases make (a gh call, the usage
+probe), or the result of a write (the issue links it made), is a generator run by `runSteps` instead:
+it yields each read or write as an action and gets the handler's answer back, so each is made only
+where, and in the order, the pass made it before. Advancing running tickets and the usage limit
+(`desk/bin/pass/advance.mjs`) are decided that way, one running ticket at a time, and so is the spawn
+loop (`desk/bin/pass/spawn-loop.mjs`), one candidate at a time: its last action is the verdict (skip,
+record-done, park, hand-away or start), and starting the worker stays in `pass.mjs`. So are failed
+evidence runs on drafts (`desk/bin/pass/evidence-failures.mjs`), which yield filing a fix and starting
+a run again and settle each PR on what came back, and the fix tries (`desk/bin/pass/fix-tries.mjs`),
+one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the reads they make only
+where they need them. Every park and
+hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
+base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
+runs, each called there. Each phase has its
+own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
+fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
+the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`
+false, its session ids null) when it failed, never as a registry with no sessions. The pure helpers
+more than one phase calls live in that module too (`tests/test_pass_shared.mjs`); a phase imports
+them from there, never from `pass.mjs`. The batch base sync and its baseline checks
+(`desk/bin/pass/batch-base.mjs`) are generators too: the sync's `synced` action hands what it settled
+(the spawn hold, the base worktree, the base fix try) back to `pass.mjs` for the sections after it.
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and

@@ -297,13 +297,14 @@ trap '[ -z "$STAGE" ] || { rm -rf "$STAGE"; echo "the new release was not comple
 rename_over() {
   python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$1" "$2"
 }
-# release_files — each file a release holds, relative to it: bin/<script> and templates/<path>
+# release_files — each file a release holds, relative to it: bin/<script>, bin/<dir>/<module> (the
+# modules a script imports from a folder beside it, e.g. bin/pass/) and templates/<path>
 release_files() {
   local f
-  for f in "$SRC"/desk/bin/*; do
+  for f in "$SRC"/desk/bin/* "$SRC"/desk/bin/*/*; do
     [ -f "$f" ] || continue
-    case "$f" in *.bak*|*.pyc) continue ;; esac
-    printf 'bin/%s\n' "${f##*/}"
+    case "$f" in *.bak*|*.pyc|*/__pycache__/*) continue ;; esac
+    printf 'bin/%s\n' "${f#"$SRC"/desk/bin/}"
   done
   if [ -d "$SRC/desk/templates" ]; then (cd "$SRC/desk/templates" && find . -type f ! -name '*.bak*' | sed 's|^\./|templates/|'); fi
 }

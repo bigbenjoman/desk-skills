@@ -301,6 +301,34 @@ a = res(archive('X-3', { 9: 'MERGED', 10: 'MERGED' }));
 t('AC5 a second X-3 archives beside the first', a.archived === true && existsSync(doneQ('X-3')) && (a.log ?? []).join(' ').includes('.done/X-3.'), true);
 t('AC5 a last promotion merged is logged as merged', (a.log ?? []).join(' ').includes('its promotion PR #9 is merged'), true);
 
+// DS-784: a child whose follow-on steps needs-you held until the last promotion merged keeps the batch,
+// stamped with that merge so needs-you lists it, and the batch is archived once the steps are done.
+const stepsLeft = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+mkdirSync(namedS('X-12'), { recursive: true });
+a = res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 follow-on steps not run: not archived', a.archived === false && existsSync(namedQ('X-12')), true);
+t('DS-784 the child is stamped with the promotion merge', readQ('X-12').tickets['X-13'].promoted_at, MERGED_AT);
+t('DS-784 the report says what the batch waits on', (a.lines ?? []).join(' ').includes('waits on the follow-on steps of X-13'), true);
+t('DS-784 a second check stamps nothing new and says nothing', (res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).lines ?? []).length, 0);
+writeQ('X-12', { ...readQ('X-12'), tickets: { 'X-13': { ...readQ('X-12').tickets['X-13'], follow_on_done: '2026-10-30T14:00:00Z' } } });
+t('DS-784 once they are done, it is archived', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': stepsLeft } });
+t('DS-784 a closed promotion never took them out, so it archives as before', res(archive('X-12', { 9: 'CLOSED', 13: 'MERGED' })).archived, true);
+// A child an earlier slice promoted is stamped with that slice's merge, not the last one's.
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9, merged: [{ pr: 7, slice: 1, merged_at: '2026-10-29T12:00:00Z' }] },
+  tickets: { 'X-13': { ...stepsLeft, merged_at: '2026-10-29T11:00:00Z' } } });
+res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' }));
+t('DS-784 an earlier slice\'s child keeps the age that slice gave it', readQ('X-12').tickets['X-13'].promoted_at, '2026-10-29T12:00:00.000Z');
+// DS-785: a child whose review's post-merge criteria no pass has made follow-on steps yet keeps the
+// batch too, so they are not archived away unseen; once a pass has read them, it archives.
+const owedSteps = { key: 'X-13', state: 'done', result: { pr: 13 }, merged_at: '2026-10-30T11:00:00Z', pr_status: { pr: 13, state: 'MERGED', post_merge: [{ step: 'check on production' }] } };
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': owedSteps } });
+t('DS-785 a child still owed its post-merge steps keeps the batch', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, false);
+writeQ('X-12', { epic: 'X-12', base: 'feat/x-12', promotion: { pr: 9 }, tickets: { 'X-13': { ...owedSteps, post_merge_read: 13 } } });
+t('DS-785 once a pass has read them, it archives', res(archive('X-12', { 9: 'MERGED', 13: 'MERGED' })).archived, true);
+rmSync(dirname(namedQ('X-12')), { recursive: true, force: true });
+
 // DS-523 AC3: a ticket left in a batch ready to archive is never archived with it. After a last
 // promotion a pass recorded, one admitted since moves to the standing batch, and the archive line names it.
 const standingLive = JSON.stringify({ version: 1, batch: 'standing-2', supervised: true, tickets: { 'S-1': { key: 'S-1', state: 'running' } } });
@@ -317,6 +345,19 @@ t('DS-523 AC3 a ticket left after the last promotion: the batch is archived', a.
 t('DS-523 AC3 the ticket is in the standing batch', JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-11']?.state, 'triaged');
 t('DS-523 AC3 and not in the archived queue', JSON.parse(readFileSync(doneQ('X-9'), 'utf8')).tickets['X-11'], undefined);
 t('DS-523 AC3 the archive line names it', (a.log ?? []).join(' ').includes('moved X-11 to the standing batch'), true);
+// DS-784: a batch kept for follow-on steps still moves a ticket left behind, so no pass starts it there.
+writeQ('X-17', { epic: 'X-17', base: 'feat/x-17', promotion: lastRecorded, tickets: {
+  'X-18': { key: 'X-18', state: 'done', result: { pr: 10 }, merged_at: '2026-10-30T11:00:00Z', follow_on: [{ step: 'check on staging', row: 'staging-write' }] },
+  'X-19': { key: 'X-19', state: 'triaged' },
+} });
+mkdirSync(join(namedS('X-17'), 'triage'), { recursive: true });
+writeFileSync(join(namedS('X-17'), 'triage', 'X-19.json'), JSON.stringify({ ticket: 'X-19', type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', branch: 'fix/X-19', files_in_scope: ['f/X-19'], unknowns: [], blockers: [] }));
+a = res(archive('X-17', { 9: 'MERGED', 10: 'MERGED' }));
+t('DS-784 kept for its follow-on steps: not archived', a.archived === false && existsSync(namedQ('X-17')), true);
+t('DS-784 the ticket left behind is moved to the standing batch all the same', `${JSON.parse(readFileSync(standingQ, 'utf8')).tickets['X-19']?.state} ${readQ('X-17').tickets['X-19']}`, 'triaged undefined');
+t('DS-784 and the report says so', (a.lines ?? []).join(' ').includes('moved X-19 to the standing batch, and waits on follow-on steps'), true);
+rmSync(dirname(namedQ('X-17')), { recursive: true, force: true });
+rmSync(namedS('X-17'), { recursive: true, force: true });
 // DS-568: moved into a batch where its open blocker is parked as the person's step, a ticket merges after
 // that step rather than losing the hold: nothing builds the step, so it is no build hold either.
 const withStep = JSON.parse(readFileSync(standingQ, 'utf8'));

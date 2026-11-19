@@ -15,7 +15,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: join(T, 'config
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf, archivePath, mergeQueue, archivedOf } = await import('../desk/bin/queue-store.mjs');
-const { readQueue, waitingOnMerge } = await import('../desk/bin/batch-state.mjs');
+const { readQueue, waitingOnMerge, batchIdle } = await import('../desk/bin/batch-state.mjs');
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -89,6 +89,33 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('two different reorders keep theirs and name the order', `${Object.keys(m2.result.tickets).join('')} ${m2.conflicts[0]?.field}`, 'BAC order');
 }
 
+// A set on a condition: made while it holds, left out when another writer changed the ticket first.
+{
+  const park = { question: 'Ship it?', inputs: { 'pr-head': 'h1' } };
+  const still = (x) => x.state === 'parked' && x.park?.question === 'Ship it?';
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A', { state: 'parked', park }), B: tk('B', { state: 'parked', park }), C: tk('C', { state: 'parked', park }) } });
+  const w = queueWriter(f);
+  const requeue = (x) => { x.state = 'triaged'; x.park = null; };
+  other(f, (q) => requeue(q.tickets.B));
+  const b = w.apply(['set', 'B', 'park.inputs={"pr-head":"h2"}'], { when: still });
+  t('a condition no longer met when applied writes nothing, and says so', `${b.ok} ${b.skipped}`, 'true true');
+  t('a condition met applies the set', w.apply(['set', 'A', 'park.inputs={"pr-head":"h2"}'], { when: still }).skipped, undefined);
+  w.apply(['set', 'C', 'park.inputs={"pr-head":"h2"}'], { when: still });
+  other(f, (q) => requeue(q.tickets.C));
+  const r = w.flush();
+  const q = read(f);
+  t('the met one is written', q.tickets.A.park.inputs['pr-head'], 'h2');
+  t('a requeue before the set stands', `${q.tickets.B.state} ${q.tickets.B.park}`, 'triaged null');
+  t('a requeue between the set and the write stands', `${q.tickets.C.state} ${q.tickets.C.park}`, 'triaged null');
+  t('the write names it as skipped, not as lost to another writer', `${r.skipped.join(',')} ${r.conflicts.length}`, 'C 0');
+  t('a condition on anything but set is refused', (() => { try { w.apply(['park', 'A', 'q'], { when: still }); return 'ran'; } catch (e) { return e.message; } })(), 'a condition applies only to set, not park');
+  // Another writer changing only the state, leaving the park, still takes the set back.
+  w.apply(['set', 'A', 'park.inputs={"pr-head":"h3"}'], { when: still });
+  other(f, (x) => { x.tickets.A.state = 'triaged'; });
+  w.flush();
+  t('a state change alone takes back the conditional set', read(f).tickets.A.park.inputs['pr-head'], 'h2');
+}
+
 // AC5: the lock not taken within its wait: nothing written, every change named.
 {
   const f = fixture({ version: 3, batch: 'b', tickets: { A: tk('A'), B: tk('B') } });
@@ -113,6 +140,9 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     F: tk('F', { state: 'done', result: { pr: 4 }, merged_at: '2026-11-16T10:00:00.000Z', follow_on: ['run the migration'] }),
     H: tk('H', { state: 'done', result: { pr: 5 }, merged_at: '2026-11-16T10:00:00.000Z' }),
     W: tk('W', { state: 'parked', held_by: 'H', park: { question: 'held by orchestrator: blocked by H' } }),
+    // Criteria its review left for after the merge: P's the pass has not made steps yet, Q's it has.
+    P: tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] } }),
+    Q: tk('Q', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', post_merge: [{ step: 'x' }] }, post_merge_read: 7 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -126,7 +156,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the archive sits beside the queue', archivePath(f), join(dirname(f), 'queue.archive.json'));
   t('AC6 merged and closed tickets leave the live queue', `${'M' in q.tickets} ${'X' in q.tickets}`, 'false false');
   t('AC6 and are in the archive, with when', `${a.tickets.M.state} ${a.tickets.X.state} ${!!a.tickets.M.archived_at}`, 'done done true');
-  t('AC6 the write says which moved', r.archived.join(','), 'M,X');
+  t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q');
+  t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
   t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
   t('a merged ticket another ticket is held behind stays live', 'H' in q.tickets, true);
@@ -137,7 +168,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 and `in` finds it', 'X' in rq.tickets, true);
   t('AC8 but listing the tickets does not', Object.keys(rq.tickets).includes('M'), false);
   t('AC8 nor does writing the queue', JSON.stringify(rq).includes('"M"'), false);
-  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,X');
+  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
 
@@ -150,6 +181,15 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 a hold behind an archived ticket finds it, and is kept for the merge driver to release', `${h.status} ${read(f).tickets.A.held_by}`, '0 M');  qm('add', 'M');
   t('admitting an archived ticket again starts it over', read(f).tickets.M?.state, 'queued');
   t('queue.mjs saves one version higher each time, and a refused command saves nothing', read(f).version, versionOf(q) + 2);
+}
+
+// A merged ticket still owed its post-merge steps keeps its batch from idling, so the pass that adds
+// them still runs; once they are added, or for a PR that closed unmerged, the batch idles.
+{
+  const owedTk = (more) => tk('P', { state: 'done', result: { pr: 6 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 6, state: 'MERGED', post_merge: [{ step: 'x' }] }, ...more });
+  const idle = (t) => batchIdle({ tickets: { P: t } }, () => 'MERGED');
+  t('DS-785 a batch whose merged ticket is owed its post-merge steps is not idle; once read, never merged, or requeued and parked (no pass reads it), it is',
+    `${idle(owedTk({}))} ${idle(owedTk({ post_merge_read: 6 }))} ${idle(owedTk({ merged_at: null }))} ${idle(owedTk({ state: 'parked' }))}`, 'false true true true');
 }
 
 // A batch on a base, or an epic's, counts its finished children: it archives nothing.

@@ -16,7 +16,7 @@
 //
 // A read that exits 0 having printed at most MAX_BYTES has its stdout saved, mode 0644, to
 // <fixtures>/<KEY>/<name>.json, where the requeued worker reads it as an untrusted API response.
-import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, mkdirSync, realpathSync, copyFileSync, chmodSync, statSync, lstatSync, appendFileSync, rmSync, unlinkSync, openSync, writeSync, fchmodSync, closeSync, constants } from 'node:fs';
 import { join, dirname, resolve, relative, isAbsolute, basename, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -132,7 +132,7 @@ export const WORKTREE_FIXTURES = '.desk-fixtures';
 function realDir(path) {
   let st = null;
   try { st = lstatSync(path); } catch { st = null; }
-  if (st && !st.isDirectory()) rmSync(path, { force: true });
+  if (st && !st.isDirectory()) unlinkSync(path);
   if (!st || !st.isDirectory()) mkdirSync(path);
 }
 

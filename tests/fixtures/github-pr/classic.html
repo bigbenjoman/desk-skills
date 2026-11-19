@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<!-- GitHub's classic PR page, cut to what the composer finder reads: a review-thread reply form,
+     then the new-comment form with textarea#new_comment_field and its hidden file input inside a
+     <file-attachment>, present from load. -->
+<html>
+<head><meta name="user-login" content="octocat"><title>Fix the widget by octocat · Pull Request #7 · acme/widgets</title></head>
+<body>
+<div class="js-discussion">
+  <form class="js-inline-comment-form" data-composer="thread-1">
+    <textarea name="comment[body]" placeholder="Reply..."></textarea>
+    <file-attachment><input type="file" multiple hidden></file-attachment>
+  </form>
+</div>
+<form class="js-new-comment-form" data-composer="new">
+  <textarea id="new_comment_field" name="comment[body]" placeholder="Leave a comment"></textarea>
+  <file-attachment><input type="file" multiple hidden></file-attachment>
+</form>
+</body>
+</html>

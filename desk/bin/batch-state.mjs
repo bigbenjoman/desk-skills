@@ -5,6 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { personClears } from './clears-when.mjs';
 import { attachArchive } from './queue-store.mjs';
+import { postMergeUnmade } from './harvest.mjs';
 
 // pass.mjs, plan-batch.mjs, queue.mjs and answer.mjs exit only with these, so the orchestrator branches
 // on a number rather than on wording: go on; nothing to do yet, keep looping; show the person (an
@@ -618,10 +619,12 @@ export function batchSettled(q, prState) {
 }
 
 // Idle: settled, and every done ticket's PR merged or closed, so the merge driver has nothing left.
-// A done ticket with no PR is finished; a PR whose state is unknown counts as open.
+// A done ticket with no PR is finished; a PR whose state is unknown counts as open. A merged ticket
+// whose review's post-merge criteria the pass has not made follow-on steps yet is not: only a pass adds
+// them, so the batch keeps getting passes until one has.
 export function batchIdle(q, prState = () => null) {
   return batchSettled(q, prState) && Object.values(q.tickets ?? {})
-    .every((t) => t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr)));
+    .every((t) => (t.state !== 'done' || t.result?.pr == null || ['MERGED', 'CLOSED'].includes(prState(t.result.pr))) && !postMergeUnmade(t));
 }
 
 // An epic batch not in feature mode lands its base on the default branch through one epic PR (the
@@ -652,4 +655,21 @@ export function epicDue(q) {
   const merged = kids.filter((t) => t.merged_at);
   return kids.length > 0 && kids.every(childDone)
     && merged.some((t) => last == null || Date.parse(t.merged_at) > Date.parse(last));
+}
+// When the first promotion PR recorded on `q.promotion` (since, merged_at, each merged[].merged_at) to
+// merge after ticket `t` merged into the base took it to the default branch; null while none has.
+export function promotedAt(q, t) {
+  const own = Date.parse(t?.merged_at);
+  const p = q?.promotion ?? {};
+  const after = [p.since, p.merged_at, ...(p.merged ?? []).map((m) => m?.merged_at)]
+    .filter(Boolean).map((x) => Date.parse(x)).filter((x) => x > own);
+  return after.length ? new Date(Math.min(...after)).toISOString() : null;
+}
+// What the next epic PR's record carries from promotion `p`: the last merge as `since` and every merge
+// so far in `merged`, kept through a retry whose record has neither `pr` nor `merged_at`.
+export function epicCarry(p) {
+  // Its merge commit kept beside it: it gates the children's production steps (needs-you.mjs gateHeld).
+  const merged = [...(p?.merged ?? []), ...(p?.merged_at ? [{ pr: p.pr ?? null, merged_at: p.merged_at, ...(p.merge_commit ? { merge_commit: p.merge_commit } : {}) }] : [])];
+  const since = p?.merged_at ?? p?.since ?? null;
+  return { ...(since ? { since } : {}), ...(merged.length ? { merged } : {}) };
 }

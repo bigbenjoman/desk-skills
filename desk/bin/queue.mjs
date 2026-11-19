@@ -13,7 +13,7 @@ import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, writeHandback } from './handoff.mjs';
 import { spineMerger } from './spine-check.mjs';
-import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy } from './clears-when.mjs';
+import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
@@ -23,7 +23,7 @@ import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './di
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, workerMarkers, lastStage } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -55,7 +55,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -662,7 +662,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
@@ -703,7 +703,9 @@ switch (cmd) {
     // carried_from, it is no ticket of this batch: a queue holding only those is one not yet planned.
     let prev = null;
     try { prev = existsSync(QUEUE) ? readQueue(QUEUE) : null; } catch { prev = null; }
-    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t))
+    // So does one whose post-merge criteria the pass has not made those steps yet (postMergeUnmade), from
+    // a batch with no base: a base's child is gated on the base's promotion, which the new batch lacks.
+    fresh.tickets = Object.fromEntries(Object.entries(prev?.tickets ?? {}).filter(([, t]) => followOnPending(t) || (!prev.base && postMergeUnmade(t)))
       .map(([k, t]) => [k, { ...t, carried_from: t.carried_from ?? prev.batch ?? null }]));
     fresh.version = versionOf(prev);
     // The old batch's archive goes aside with it, so the new batch finds none of its tickets by key.
@@ -924,10 +926,12 @@ switch (cmd) {
     if (!p.ok) throw new Error(p.why);
     const circular = ownDraftWhy(p.cond, { ...t, key });
     if (circular) throw new Error(`${circular}. Nothing was recorded`);
-    t.park.clears_when = p.cond;
+    const w = withQuestion(p.cond, t.park?.question, { state: stateDir() });
+    if (!w.ok) throw new Error(`${w.why}. Nothing was recorded`);
+    t.park.clears_when = w.cond;
     t.updated_at = new Date().toISOString();
     save(q);
-    console.log(`${key}: its park clears when ${describeCond(p.cond)}`);
+    console.log(`${key}: its park clears when ${describeCond(w.cond)}${w.cond.person ? ', which the person makes, so the park is still put to them' : ''}`);
     break;
   }
 
@@ -957,6 +961,23 @@ switch (cmd) {
     const [key] = args;
     if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
     console.log(stepDone(q, key));
+    break;
+  }
+
+  // The follow-on steps the person ran (needs-you's done on a follow item), each by its text and gate
+  // (`after`, none for the merge): each leaves follow_on, read here under the lock so a step written since
+  // needs-you read it is kept, and with none left the item is recorded run (follow_on_done=<at>).
+  case 'follow-ran': {
+    const [key, json, at] = args;
+    let ran;
+    try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
+    if (!key || !Array.isArray(ran) || !ran.length || ran.some((s) => typeof s?.step !== 'string') || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of {step, after}> <ISO time>');
+    const t = ticket(q, key);
+    const same = (a, b) => a?.step === b.step && (a?.after ?? 'merge') === (b.after ?? 'merge');
+    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
+    applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
+    save(q);
+    console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded run${left.length ? `, ${left.length} kept` : ''}`);
     break;
   }
 
@@ -1174,7 +1195,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
