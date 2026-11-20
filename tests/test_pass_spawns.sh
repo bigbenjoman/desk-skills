@@ -481,6 +481,21 @@ check "one that dropped a commit origin has is not overwritten: held, naming the
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)" = "$W15_ORIGIN" ] && ! grep -q "^W-15 " "$T/wb-spawns" && field W-15 worktree_busy.why | grep -qF "but origin/fix/W-15 has 1 commit(s) the head does not hold by their patch, so the pass does not overwrite them. Check them, then push with git push --force-with-lease=fix/W-15:$W15_ORIGIN origin fix/W-15"'
 check "nor one whose origin holds a merge git cherry cannot compare: held, naming it" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)" = "$W16_ORIGIN" ] && ! grep -q "^W-16 " "$T/wb-spawns" && field W-16 worktree_busy.why | grep -qF "but origin/fix/W-16 has 1 merge commit(s) the head does not hold, whose resolutions git cherry cannot compare, so the pass does not overwrite them"'
+# W-21's last worker left a commit unpushed while another push's preview build holds §4 Vercel's
+# preview-build slot: the pass leaves its push for a later pass, then pushes once the slot is free.
+wb_clone W-21; q add W-21; git -C "$T/wt/W-21" commit -q --allow-empty -m "worker's"
+q set W-21 "worker_head={\"sha\":\"$(git -C "$T/wt/W-21" rev-parse HEAD)\"}"; wb_fix W-21; W21_HEAD=$(git -C "$T/wt/W-21" rev-parse HEAD)
+sed 's/^| Ticket key pattern | `T-\[0-9\]+` |$/&\n| Vercel | `acme` `web: prj_1` |/' "$T/config-gp.md" > "$T/config-gpv.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
+pv(){ DESK_CONFIG="$T/config-gpv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" "$@"; }
+pv node "$B/desk-env.mjs" lease acquire preview-build acme --ttl 600 --no-owner --label "another PR's push" >/dev/null
+out=$(pv node "$B/pass.mjs" 2>&1)
+check "a push the preview-build slot is taken for waits for a later pass, naming it" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the preview-build slot for acme is taken"'
+rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
+check "once the slot is free the pass pushes, taking the slot for that push" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e ".leases[0].label == \"W-21: a push by the pass\"" "$T/leases-pv/leases.json" >/dev/null'
+q set W-21 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \

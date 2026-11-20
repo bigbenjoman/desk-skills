@@ -86,6 +86,7 @@ import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite
 import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { leaseCli } from './leases.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -247,6 +248,24 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
+// The preview-build slot a push of a ticket's branch takes first (desk-env previewSlotArgs), waiting for
+// none: a pass never blocks on a build. -> { wait } naming why the push waits for a later pass, else
+// { id } of the lease taken, or {} where there is nothing to take (no §4 Vercel team, the lease kind
+// off, or a lease store it cannot read, where leases.mjs says to go on without it). A push that fails
+// starts no build, so freeSlot gives its slot back.
+const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
+function previewSlot(t) {
+  if (DRY) return {};
+  const args = E.previewSlotArgs(`${t.key}: a push by the pass`, 0);
+  if (!args) return {};
+  const said = [];
+  const code = leaseCli(args, { env: LEASE_ENV, out: (s) => said.push(s), err: (s) => said.push(s) });
+  if (code === 3 || code === 75) return { wait: `the preview-build slot for ${args[2]} is taken (${String(said.at(-1) ?? 'refused').split('\n')[0]}), so the push waits for a later pass` };
+  return code === 0 ? { id: said.find((l) => /^L-\w+$/.test(l)) } : {};
+}
+function freeSlot(slot) {
+  if (slot?.id) leaseCli(['release', slot.id], { env: LEASE_ENV, out: () => {}, err: () => {} });
+}
 const shOut = (cmd, args, { fresh, ...opts } = {}) => {
   const kept = beforeRun(cmd, args, fresh);
   if (kept !== undefined) return { ok: true, out: kept };
@@ -1224,8 +1243,11 @@ function pushParked(t, c) {
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
+  const slot = previewSlot(t);
+  if (slot.wait) return { holds: false, note: slot.wait };
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
   if (push.ok) return { holds: true };
+  freeSlot(slot);
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
   if (push.unreached || unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
   return stop(`git refused it: ${push.out.split('\n').pop()}`);
@@ -1356,7 +1378,14 @@ function finishPush(t) {
   const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
+  const slot = previewSlot(t);
+  if (slot.wait) {
+    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${slot.wait}: left parked, and each pass tries the push until it can requeue it`);
+    return true;
+  }
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (!push.ok) freeSlot(slot);
   if (!push.ok && (push.unreached || transientPush(push.out))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
     report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
@@ -2905,6 +2934,8 @@ function busyWorktree(t, { push = false } = {}) {
   if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
+  const slot = previewSlot(t);
+  if (slot.wait) return `${why}: they are its last worker's, but ${slot.wait}`;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
   if (pushed.ok) {
     report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
@@ -2925,12 +2956,15 @@ function busyWorktree(t, { push = false } = {}) {
         report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: every commit origin had is in it by its patch`);
         return null;
       }
+      freeSlot(slot);
       return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
     }
     const has = merges ? `${merges.split('\n').filter(Boolean).length} merge commit(s) the head does not hold, whose resolutions git cherry cannot compare`
       : lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare';
+    freeSlot(slot);
     return `${why}: its last worker rebased it, but origin/${branch} has ${has}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
   }
+  freeSlot(slot);
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.

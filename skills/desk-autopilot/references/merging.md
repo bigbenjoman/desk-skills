@@ -389,8 +389,11 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
   together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart
   have killed *both* builds. A monorepo PR can trigger several previews at once (an app, docs, a
-  component catalogue), so two PRs can be four-plus concurrent builds. Stagger PR creation and
-  serialise every retrigger. Where this applies, it, not review or CI, caps how fast a batch can
+  component catalogue), so two PRs can be four-plus concurrent builds. Every push of a ticket's
+  branch takes the preview-build slot first (`desk-env preview-slot`, one per §4 Vercel team, sized by
+  the machine's `preview-build-slots`, default 1; it holds only where the machine's `lease-kinds` sets
+  `preview-build=on`): a worker waits for it, and the pass leaves its push for a later pass. Serialise
+  any retrigger you start by hand the same way. Where this applies, it, not review or CI, caps how fast a batch can
   merge, and it is what a red preview-deploy check almost always means. Where config §3
   `read-vercel` allows, read the build log before treating it as broken code:
   `vercel inspect --logs <url> --scope <team slug from §4 Vercel>`, looking for exit 137 or
