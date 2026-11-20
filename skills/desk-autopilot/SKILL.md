@@ -77,7 +77,7 @@ an earlier copy of this skill. `/desk-update` reinstalls it.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Read the `CONFIG` file it prints. **`EXISTS=no` means stop**: say which slug was looked up and offer
+Read `desk-env show` (rules and rows, no §3c). **`EXISTS=no` means stop**: say which slug was looked up and offer
 `/desk-setup`. A `TODO` in a row the batch needs is a question, not a default. The scripts read the
 same file and fail loudly on a missing identity or path rather than guessing; say which value is
 missing and offer `/desk-setup`. **The config is per repo**: a batch in one repo never uses another
