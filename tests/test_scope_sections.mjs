@@ -187,7 +187,10 @@ t('DS-818 fix try: a quote or slash in a regex, or a line break in a block comme
   addedExports('const t = `\nhelp\n`;\nconsole.log(t);\n', 'const t = `\n// zq\nhelp\n`;\nconsole.log(t);\n'),
   addedExports('function g() {}\n(g)();\n', 'function g() {}\nexport const zq = 0\n(g)();\n'),
   addedExports('const x = 1\n+ 2;\n', 'const x = 1\nexport function zq() {}\n+ 2;\n'),
-], Array(27).fill(null));
+  addedExports(env, `${env}export const zzA = /*x*/dgimsuy;\n`),
+  addedExports(env, env.replace('export function two', 'export const zzA = /*x*/\nexport function two')),
+  addedExports(env, `${env}export const zzA = /*a/\nexport const zzB = /b*/d;\n`),
+], Array(31).fill(null));
 t('DS-818 fix try: a shebang, imports and import.meta in the old module still let a new export count', addedExports('#!/usr/bin/env node\nimport { a } from "./a.mjs";\nexport const here = import.meta.url;\n', '#!/usr/bin/env node\nimport { a } from "./a.mjs";\nexport const here = import.meta.url;\nexport function zq() {}\n'), ['zq']);
 t('DS-818 fix try: a slash JavaScript reads as a regex counts as one', addedExports(env, `${env}export const p4 = () => a + /x; main(); 1/;\n`), ['p4']);
 t('DS-818 fix try: a regex with , or ; in a class or a {n,m}, and a / after a postfix ++ or a .property, still count', addedExports(env, `${env}export const SEP = /[,;]\\d{1,3}/;\nexport const sep = (s) => s.split(/[,;]+/);\nexport function step(i, o) {\n  i++ / 2;\n  return o.in / 2;\n}\n`), ['SEP', 'sep', 'step']);
@@ -207,6 +210,12 @@ t('DS-818 addedExports: an arrow with a default that calls, a body on the next l
 
 // ---- this repo -----------------------------------------------------------------------------------
 const real = repoMap(R);
+// The real desk-env.mjs (a shebang, imports, import.meta, and top-level await in its CLI block).
+const envReal = readFileSync(join(R, 'desk/bin/desk-env.mjs'), 'utf8');
+t('DS-818 AC2 on the real desk-env.mjs: an export at the end, and one beside oomKills, count', [
+  addedExports(envReal, `${envReal}export function zqDs818End() {}\n`),
+  addedExports(envReal, envReal.replace('export const oomKills', 'export const zqDs818Mid = (a) => a\n  .map((x) => x);\nexport const oomKills')),
+], [['zqDs818End'], ['zqDs818Mid']]);
 const listed = execFileSync('git', ['-C', R, 'ls-files', 'tests/test_*.sh', 'tests/test_*.mjs'], { encoding: 'utf8' }).trim().split('\n').map((f) => f.slice(6)).sort();
 t('every suite in the repo is in the map', real.suites.map((s) => s.file).sort(), listed);
 t('this suite and its script are foundational', [decide(M('tests/scope_sections.mjs'), real).scope, decide(M('tests/bash32_check.sh'), real).scope], ['full', 'full']);

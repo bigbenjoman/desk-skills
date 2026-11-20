@@ -75,6 +75,12 @@ function topLevel(text) {
 function compiles(src) {
   try { new Script(`'use strict';\n${src}`); return true; } catch { return false; }
 }
+// The same for a whole run of old module code, which may `await` at top level as a module can: it is
+// compiled as an async function's body. A `}` that closed that function early would leave the rest
+// unbalanced, so it does not compile either.
+function compilesAsModuleBody(src) {
+  try { new Script(`(async function () {\n'use strict';\n${src}\n})`); return true; } catch { return false; }
+}
 // Where the group `text` opens with ends: just past the first `close` at which `wrap(text up to it)`
 // compiles, or -1. JavaScript reads a prefix exactly as it reads that part of the whole text, so every
 // earlier `close` leaves the group open (or a quote, regex or comment unclosed) and does not compile.
@@ -96,7 +102,7 @@ const isComment = (c) => /^\/\/[^\n\r\p{Zl}\p{Zp}]*(?:\n\/\/[^\n\r\p{Zl}\p{Zp}]*
 // starts with a name, which cannot carry on the statement before it the way `(`, `[`, `.` or an
 // operator can.
 function boundary(old, i) {
-  if (i > 0 && !compiles(asScript(old.slice(0, i)))) return false;
+  if (i > 0 && !compilesAsModuleBody(asScript(old.slice(0, i)))) return false;
   const next = old.slice(i).find((c) => !isComment(c));
   return !next || (/^[A-Za-z_$]/.test(next) && !/^(?:in|instanceof)(?![\w$])/.test(next));
 }
@@ -106,7 +112,9 @@ const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)(
 // objects of them. No call, member access, template, reference or spread.
 function literal(value) {
   const v = value.trim().replace(/;$/, '').trim();
-  if (/^\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+\/[dgimsuvy]*$/.test(v)) return true;
+  // A regex never starts `/*` or `//` (that is a comment), and the parser must read the value whole.
+  if (!compiles(`({ k: ${v}\n})`)) return false;
+  if (/^\/(?![*/])(?:[^/\\\n[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+\/[dgimsuvy]*$/.test(v)) return true;
   const bare = v.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(NUMBER, '0')
     .replace(/([{,]\s*)(?:[A-Za-z_$][\w$]*|""|0)\s*:/g, '$1');
   if (/["0\]}a-z]\s*\[/.test(bare)) return false;
