@@ -125,8 +125,10 @@ RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK
 # An earlier triage's open questions and person steps, which this one carries forward unless the
 # ticket or the person has settled them since: its record is kept aside as <ticket>.prev.json before
 # this pass removes it, and stays there until a pass finishes (a failed pass leaves it for the next).
+# One already kept is never replaced: only a failed pass leaves it, so it is the last good record, and
+# the record beside it now is that failed pass's.
 PREV="$STATE/triage/$TICKET.prev.json"
-[ -f "$OUT" ] && cp "$OUT" "$PREV"
+[ -f "$OUT" ] && [ ! -f "$PREV" ] && cp "$OUT" "$PREV"
 EARLIER="$(node -e '
 const fs = require("fs");
 let d; try { d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
@@ -597,9 +599,6 @@ NEEDS_END
   exit 1
 fi
 
-# With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
-# boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
-# stays: only the false clause goes from its reason.
 # What an earlier triage left open and this one neither kept nor dropped with a reason is carried
 # forward as it was: a question to the user's questions (taken off any call this pass took on it), a
 # person step to ben_steps. Each drop is kept with its reason, and both are said.
@@ -641,6 +640,9 @@ CARRY_END
   rm -f "$PREV"
 fi
 
+# With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
+# boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
+# stays: only the false clause goes from its reason.
 node - "$OUT" <<'SNAPPED_END'
 const fs = require('fs');
 const out = process.argv[2];

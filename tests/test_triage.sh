@@ -494,6 +494,12 @@ rm -f "$STUB_LOG".*; earlier
 out=$(STUB_LANE=A STUB_EXTRA=',"unknowns":[{"question":"Which legal copy goes in the footer?","category":"wording","options":["short","long"],"recommended":"short"}]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "#826 an earlier question this pass took as a call of its own goes back to the user, the call taken off" \
   '[ $rc -eq 0 ] && [ "$(lc ".unknowns[0]")" = "Which legal copy goes in the footer?" ] && [ "$(lc "[.decided[]? | select(.question == \"Which legal copy goes in the footer?\")] | length")" = 0 ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_EXTRA=',"ben_steps":"not a list"' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+failed=$rc; rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "#826 a failed pass that leaves its record keeps the earlier one, so the next pass still carries it" \
+  '[ $failed -ne 0 ] && [ $rc -eq 0 ] && [ "$(lc ".unknowns[0]")" = "Which legal copy goes in the footer?" ] && [ "$(lc ".ben_steps[0].step")" = "apply the migration to production" ]'
 rm -f "$STUB_LOG".* "$REC" "$T/state/triage/fix-thing.prev.json"
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "#826 with no earlier triage, nothing is said of one" '[ $rc -eq 0 ] && ! P0 | grep -qF "Left open by an earlier triage" && [ "$(lc ".carried_earlier // \"none\"")" = none ]'
