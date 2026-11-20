@@ -343,6 +343,11 @@ How to turn what you find into rows:
   runs that suite in full. A turbo or nx script that fans out over packages has no related form:
   propose each package's runner in its directory, or `none`. `none` keeps workers on the full
   suites, and changes nothing else.
+- **Suite weight.** `heavy` unless every Unit tests item is light on memory: shell tests, small
+  node or Python scripts, a headless browser driven one page at a time. A Jest or Vitest suite of
+  any size, or anything that has needed the Test worker cap, is `heavy`. Propose `light` only with a
+  reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
+  typechecks share, onto a box-wide light lock of their own.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
