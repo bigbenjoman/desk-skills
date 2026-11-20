@@ -1137,7 +1137,8 @@ function ownMergedPr(t) {
 // cleared the result but left pr_status, written only for the ticket's own PR, so a status naming a PR
 // in this repo stands in: its PR is the merge merged_at records once GitHub lists it merged by then
 // (whatever state the status last read; merged_at is GitHub's time or the driver's, never earlier), and a status read after merged_at is a later round of its
-// own, so merged_at is its own merge even when that round's PR never merged. A status read before
+// own, so merged_at is its own merge even when that round's PR never merged. A status read as MERGED
+// names its own PR whatever its merge time, merged_at keeping only a first merge. A status read before
 // merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
 // behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
 // nothing. A read that fails is null, and the ticket spawns as it would have.
@@ -1147,7 +1148,7 @@ const statusPr = (t) => {
   const s = t.merged_at ? t.pr_status : null;
   if (s?.pr == null) return null;
   const here = !s.url || String(s.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
-  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at) } : null;
+  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED' } : null;
 };
 function shippedElsewhere(t) {
   const status = statusPr(t);
@@ -1161,7 +1162,15 @@ function shippedElsewhere(t) {
     const list = Array.isArray(prs) ? prs : [];
     const at = Date.parse(t.merged_at);
     if (mine == null && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine = status.pr;
-    const own = mine != null || status?.later ? at : NaN;
+    let own = mine != null || status?.later ? at : NaN;
+    // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
+    // cleared it, even when it merged after merged_at (which keeps only the first merge): it is not news,
+    // and neither is anything merged by then.
+    if (mine == null && status?.merged) {
+      mine = status.pr;
+      const m = Date.parse(list.find((p) => Number(p?.number) === status.pr)?.mergedAt);
+      own = Number.isNaN(m) ? at : Math.max(at, m);
+    }
     const re = new RegExp(keyPattern(t.key));
     const hit = list
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
