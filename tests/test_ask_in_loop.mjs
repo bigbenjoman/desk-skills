@@ -11,7 +11,7 @@ const read = (f) => readFileSync(join(ROOT, f), 'utf8').replace(/\s+/g, ' ');
 const core = read('skills/desk-autopilot/SKILL.md');
 const take = read('skills/desk-autopilot/references/ask-or-take.md');
 
-t('the core sends no carousel in the pass loop, and says why', core.includes('**except in the pass loop**: a carousel there waits for the user and runs no pass until they answer, so one arising there goes to needs-you and the loop goes on (`ask-or-take.md` *In the pass loop*)'), true);
+t('the core sends no carousel in the pass loop, and says why', core.includes('**except in the pass loop**: a carousel there waits for the user and runs no pass until they answer, so one arising there is parked or reported and the loop goes on (`ask-or-take.md` *In the pass loop*)'), true);
 t('ask-or-take has the section the core names', take.includes('## In the pass loop'), true);
 t('a question there never goes to a prompt that waits', take.includes('never goes to an `AskUserQuestion` carousel or any other prompt that waits'), true);
 t('a §3 ask the pass reports is one of them', take.includes('a §3 `ask` the pass reports, such as a conflict under `pr-conflict-reviewed`'), true);

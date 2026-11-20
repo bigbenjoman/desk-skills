@@ -223,7 +223,7 @@ Run `plan-batch.mjs --json` too. It exits 0 when every ticket can start with not
 Every question *Ask or take* keeps (a Stage 3 unknown, a mid-run park, a lane C or D ticket, a §3 `ask`) goes to the user
 as an **`AskUserQuestion` carousel**, never as a numbered list in the report, **except in the pass
 loop**: a carousel there waits for the user and runs no pass until they answer, so one arising there
-goes to needs-you and the loop goes on (`ask-or-take.md` *In the pass loop*). One question per
+is parked or reported and the loop goes on (`ask-or-take.md` *In the pass loop*). One question per
 decision, up to four per call; run another call for more, or hold the rest for the next round.
 
 Each question carries a **recommended option first, labelled `(Recommended)`**, chosen by your own
