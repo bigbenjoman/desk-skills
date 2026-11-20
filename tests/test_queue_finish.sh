@@ -87,6 +87,8 @@ q finish F-2 --pr 41
 check "a held ticket is refused"                                       '[ $rc -ne 0 ] && [[ "$out" == *"F-2 is not parked on a step of its own"*"held"* ]] && [ "$(sum)" = "$before" ]'
 q finish F-5 41
 check "a call without --pr is refused with its usage"                  '[ $rc -ne 0 ] && [[ "$out" == *"usage: queue.mjs finish <TICKET> --pr <n>"* ]] && [ "$(sum)" = "$before" ]'
+: > "$T/gh.calls"; q finish "" --pr 41
+check "an empty ticket is refused with its usage, before asking GitHub" '[ $rc -ne 0 ] && [[ "$out" == *"usage: queue.mjs finish <TICKET> --pr <n>"* ]] && [ ! -s "$T/gh.calls" ] && [ "$(sum)" = "$before" ]'
 
 # A spine awaiting approval, or an epic's plan awaiting an answer, has an open PR on its own branch too,
 # but its park is the person's call: finish never clears it.

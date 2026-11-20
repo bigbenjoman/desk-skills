@@ -736,7 +736,7 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
 }
 // finish's gh read likewise runs before the lock; finish() acts on its result, error included.
 let finishPr = null;
-if (cmd === 'finish' && (args.length !== 3 || args[1] !== '--pr' || !/^\d+$/.test(args[2]))) throw new Error('usage: queue.mjs finish <TICKET> --pr <n>');
+if (cmd === 'finish' && (args.length !== 3 || !args[0] || args[1] !== '--pr' || !/^\d+$/.test(args[2]))) throw new Error('usage: queue.mjs finish <TICKET> --pr <n>');
 if (cmd === 'finish') {
   const n = args[2];
   const repo = hereRepo();
