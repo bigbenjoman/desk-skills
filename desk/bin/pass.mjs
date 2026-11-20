@@ -246,8 +246,6 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
   try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
-// Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
-// `unreached`: a remote call that got no answer in time, or was not tried after one did not.
 // The preview-build slot a push of a ticket's branch takes first (desk-env previewSlotArgs), waiting for
 // none: a pass never blocks on a build. -> { wait } naming why the push waits for a later pass, else
 // { id } of the lease taken, or {} where there is nothing to take (no §4 Vercel team, the lease kind
@@ -266,6 +264,8 @@ function previewSlot(t) {
 function freeSlot(slot) {
   if (slot?.id) leaseCli(['release', slot.id], { env: LEASE_ENV, out: () => {}, err: () => {} });
 }
+// Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
+// `unreached`: a remote call that got no answer in time, or was not tried after one did not.
 const shOut = (cmd, args, { fresh, ...opts } = {}) => {
   const kept = beforeRun(cmd, args, fresh);
   if (kept !== undefined) return { ok: true, out: kept };

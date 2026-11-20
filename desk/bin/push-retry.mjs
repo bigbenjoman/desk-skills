@@ -3,10 +3,15 @@
 // minutes, so one run stays inside that and a second run, `--more`, carries on with the long waits:
 //   node push-retry.mjs [--more] [-u | --set-upstream | --force-with-lease[=<branch>:<sha>]] origin <branch>
 // Exit 0 pushed; 75 GitHub still answers 5xx; anything else is git's own refusal, never retried.
+// Each run takes the preview-build slot first (desk-env preview-slot: a push starts a preview build
+// where §4 Vercel names a team, and builds on a shared builder kill each other), waiting up to
+// SLOT_WAIT_S for the build in flight, and pushes anyway once that runs out. A push that fails gives the
+// slot back, since it started no build.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { describeCond } from './clears-when.mjs';
 
 export const TRANSIENT_EXIT = 75;
@@ -15,6 +20,7 @@ const MORE_WAITS = [240, 240];
 // No wait starts that, with a try as long as the last one after it, would end past this: a slow
 // pre-push hook stays inside the Bash call's ten minutes.
 const RUN_LIMIT_S = 570;
+const SLOT_WAIT_S = 180;
 
 const REASON = '(?:Internal Server Error|Bad Gateway|Service Unavailable|Gateway Time-?out)';
 // Only the lines git and the remote write: a failing pre-push check can print anything.
@@ -117,9 +123,18 @@ function parkCond(push, git) {
 }
 
 // git(args) → {status, out}; sleep(ms), now() and say(line) as the CLI gives them. → the exit code.
-export async function pushWithRetry({ more, push }, { git, sleep, now, say }) {
+// slot.take(waitS) → { id } of the preview-build lease taken (none where there is nothing to take), or
+// { why } it was not; slot.give(id) releases one.
+export async function pushWithRetry({ more, push }, { git, sleep, now, say, slot = null }) {
   const waits = more ? MORE_WAITS : FIRST_WAITS;
   const began = now();
+  const held = slot ? slot.take(SLOT_WAIT_S) : {};
+  if (held.why) say(`push-retry: ${held.why}: pushing anyway`);
+  const code = await tryPush({ more, push, waits, began }, { git, sleep, now, say });
+  if (code !== 0 && held.id) slot.give(held.id);
+  return code;
+}
+async function tryPush({ more, push, waits, began }, { git, sleep, now, say }) {
   for (let tries = 1; ; tries += 1) {
     const tried = now();
     const r = git(push);
@@ -166,5 +181,14 @@ if (isMain()) {
     process.stderr.write(r.stderr ?? '');
     return { status: r.status ?? 1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
   };
-  process.exitCode = await pushWithRetry(args, { git, sleep: (ms) => wait(ms), now: Date.now, say: (l) => console.error(l) });
+  const deskEnv = (a) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs'), ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const slot = {
+    take: (waitS) => {
+      const r = deskEnv(['preview-slot', '--wait', String(waitS), `a push of ${args.push.at(-1)}`]);
+      if (r.status === 0) return { id: (r.stdout ?? '').split('\n').find((l) => /^L-\w+$/.test(l.trim()))?.trim() ?? null };
+      return { why: `the preview-build slot was not taken (${`${r.stderr ?? ''}${r.stdout ?? ''}`.trim().split('\n').pop() || `exit ${r.status}`})` };
+    },
+    give: (id) => { deskEnv(['lease', 'release', id]); },
+  };
+  process.exitCode = await pushWithRetry(args, { git, sleep: (ms) => wait(ms), now: Date.now, say: (l) => console.error(l), slot });
 }

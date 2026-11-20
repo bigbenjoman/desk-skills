@@ -70,6 +70,20 @@ const NFF = { status: 1, out: ' ! [rejected] b -> b (non-fast-forward)' };
 
 let r = await run(['origin', 'b'], [OK]);
 t('pushed first time: one push, no wait', [r.code, r.calls.length, r.slept], [0, 1, []]);
+
+// The preview-build slot: taken before the push, given back only when the push fails.
+const slotted = async (answers, taken) => {
+  const log = []; const said = [];
+  const slot = { take: (w) => { log.push(`take ${w}`); return taken; }, give: (id) => { log.push(`give ${id}`); } };
+  const code = await pushWithRetry(parseArgs(['origin', 'b']), { git: () => answers.shift(), sleep: async () => {}, now: () => 0, say: (l) => said.push(l), slot });
+  return { code, log, said };
+};
+let sl = await slotted([OK], { id: 'L-1' });
+t('a push takes the preview-build slot first, waiting up to 180s, and keeps it when it pushes', [sl.code, sl.log], [0, ['take 180']]);
+sl = await slotted([NFF], { id: 'L-2' });
+t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take 180', 'give L-2']]);
+sl = await slotted([OK], { why: 'the preview-build slot was not taken (gave up waiting)' });
+t('a slot still taken after the wait: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (gave up waiting): pushing anyway']]);
 r = await run(['origin', 'b'], [E5, E5, OK]);
 t('AC1 a 5xx then a success: retried with growing waits, exit 0', [r.code, r.slept], [0, [30, 60]]);
 r = await run(['origin', 'b'], [E5]);
@@ -167,12 +181,14 @@ writeFileSync(join(dir, 'git'), `#!/bin/sh\necho "$*" >> "${log}"\nprintf '%s\\n
 chmodSync(join(dir, 'git'), 0o755);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '../desk/bin/push-retry.mjs');
 const cli = (args, env) => spawnSync(process.execPath, [bin, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env } });
+// The pushes the stub ran: desk-env's own reads of the repo (for the preview slot) are not pushes.
+const pushes = () => readFileSync(log, 'utf8').trim().split('\n').filter((l) => l.startsWith('push'));
 let c = cli(['-u', 'origin', 'fix/A-1'], { STUB_OUT: 'pushed', STUB_RC: '0' });
-t('the CLI runs that push and passes on what git said', [c.status, readFileSync(log, 'utf8').trim(), c.stderr.includes('pushed')], [0, 'push -u origin fix/A-1', true]);
+t('the CLI runs that push and passes on what git said', [c.status, pushes().join('\n'), c.stderr.includes('pushed')], [0, 'push -u origin fix/A-1', true]);
 c = cli(['origin', 'fix/A-1'], { STUB_OUT: ' ! [rejected] b -> b (non-fast-forward)', STUB_RC: '1' });
-t('AC3 the CLI exits with git\'s refusal, unretried', [c.status, readFileSync(log, 'utf8').trim().split('\n').length], [1, 2]);
+t('AC3 the CLI exits with git\'s refusal, unretried', [c.status, pushes().length], [1, 2]);
 c = cli(['--force', 'origin', 'fix/A-1'], {});
-t('the CLI refuses any other push, running nothing', [c.status, readFileSync(log, 'utf8').trim().split('\n').length], [2, 2]);
+t('the CLI refuses any other push, running nothing', [c.status, pushes().length], [2, 2]);
 rmSync(dir, { recursive: true, force: true });
 
 console.log(`push-retry: ${fails ? `${fails} failed` : 'all passed'}`);

@@ -172,10 +172,11 @@ time on the push that follows. A new commit runs them again.
   `/desk-setup` to add it.
 - **Unset or `TODO`**: push as before, and say once that `/desk-setup` can set it. **`none`**: push.
 
-Then, right before the push, take the preview slot: `desk-env preview-slot <TICKET>`. Where §4 Vercel
-names a team, a push starts a preview build, and builds on a shared builder kill each other, so it
-waits (up to 10 minutes) for the one in flight; with no team it does nothing. Exit 75 (it gave up
-waiting): push anyway and say so in the `pre-push` slot.
+Then, right before a push you make yourself, take the preview slot: `desk-env preview-slot <TICKET>`.
+Where §4 Vercel names a team, a push starts a preview build, and builds on a shared builder kill each
+other, so it waits (up to 10 minutes) for the one in flight; with no team it does nothing. Exit 75 (it
+gave up waiting): push anyway and say so in the `pre-push` slot. An autopilot worker's
+`push-retry.mjs` takes it itself.
 
 Fill the `pre-push` slot of the §1 block from the run.
 
