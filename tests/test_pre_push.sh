@@ -96,10 +96,7 @@ check "the skip says CI will run it"                  '[[ "$out" == *"skip  sh t
 # A filtered typecheck is not the Typecheck row's exact text, and is as heavy, so its name takes the lock too.
 config '`sh gen.sh` `sub: sh tc.sh typecheck` `sh lint.sh`'; commit filtered; push origin main
 check "an item naming typecheck takes the lock"       '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ] && [[ "$out" == *"skip  sh tc.sh typecheck (in sub): the box-wide test lock stayed busy for 0s"* ]]'
-wait "$holder"
 # A type-aware lint is as heavy as a typecheck, so a §4 Lint item takes the lock too, with arguments added or not.
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/held2'; sleep 6" & holder=$!
-n=0; while [ ! -f "$T/held2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
 LINTROW='`sh lint.sh`' config '`sh gen.sh` `sh lint.sh`'; commit lintlock; push origin main
 check "DS-855 an item equal to a Lint item takes the lock" '[ $rc -eq 0 ] && [ "$ran" = "gen " ] && [[ "$out" == *"skip  sh lint.sh: the box-wide test lock stayed busy for 0s"* ]]'
 LINTROW='`sh lint.sh`' config '`sh gen.sh` `sh lint.sh --strict`'; commit lintargs; push origin main
