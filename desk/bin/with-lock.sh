@@ -16,6 +16,8 @@
 # is a compound command that neither the lock nor the worker allow-list can see into. The directory
 # must be inside the worktree: a relative path, or an absolute one under the worktree root, never
 # with `..`. The `--` after it is optional.
+# An absolute directory may also be in another worktree of the same repository (the same git common
+# directory), so a session whose shell sits in the main checkout can run a ticket worktree's command.
 # The locks are box-wide on purpose, shared by every repo desk runs in: memory is per machine, not per repo.
 #
 # Uses flock(1) where it exists (Linux). Where it does not (stock macOS) it falls back to an atomic
@@ -58,7 +60,15 @@ if [ "${1:-}" = "--cwd" ]; then
   case "$rel" in /*) from="$rel" ;; *) from="$top/$rel" ;; esac
   target="$(cd "$from" 2>/dev/null && pwd -P)" || { echo "with-lock.sh: --cwd $rel does not exist under $top" >&2; exit 2; }
   real_top="$(cd "$top" && pwd -P)"
-  case "$target/" in "$real_top"/*) ;; *) echo "with-lock.sh: --cwd $rel resolves outside the worktree ($target)" >&2; exit 2 ;; esac
+  case "$target/" in
+    "$real_top"/*) ;;
+    *)
+      common() { (cd "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null && pwd -P); }
+      mine="$(common "$real_top")"; theirs=""
+      case "$rel" in /*) git -C "$target" rev-parse --show-toplevel >/dev/null 2>&1 && theirs="$(common "$target")" ;; esac
+      [ -n "$theirs" ] && [ "$theirs" = "$mine" ] || {
+        echo "with-lock.sh: --cwd $target resolves outside this worktree ($real_top) and every other worktree of its repository" >&2; exit 2; } ;;
+  esac
   cd "$target" || exit 2
 elif [ "${1:-}" = "--" ]; then
   shift   # `with-lock.sh browser -- node x.mjs`: the separator is optional without --cwd
