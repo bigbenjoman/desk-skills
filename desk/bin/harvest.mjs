@@ -92,6 +92,35 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+// A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
+// inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
+// characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
+// prints the words, and the prompt or the worker's own prose, never do. A worker that hits one cannot
+// run commands, so whatever it said or parked on then is no judgement on its ticket.
+const HOST_RESULTS = 12;
+const HOST_FAULT = /\bENOSPC\b|No space left on device/;
+export function hostFault(logText) {
+  const results = [];
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!line.includes('tool_result')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.type === 'user' ? e.message?.content : null;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) if (c?.type === 'tool_result') results.push(c);
+  }
+  for (const c of results.slice(-HOST_RESULTS).reverse()) {
+    if (!c.is_error) continue;
+    const text = typeof c.content === 'string' ? c.content
+      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+    const m = HOST_FAULT.exec(text);
+    if (!m) continue;
+    const at = Math.max(0, m.index - 80);
+    return text.slice(at, at + 200).replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
 export function endedNormally(logText) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {

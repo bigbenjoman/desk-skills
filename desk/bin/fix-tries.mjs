@@ -1004,6 +1004,15 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 export function fixBrief(t, review = null) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  // The ticket's own worker was interrupted mid-try, leaving these uncommitted (busyWorktree).
+  if (f.left_dirty?.length && !t.left_dirty_said) {
+    const rest = fixBrief({ ...t, left_dirty_said: true }, review);
+    return [`## Your interrupted worker's changes`, '',
+      'Your worktree holds uncommitted changes the worker before you left when it was interrupted:', '',
+      ...f.left_dirty.slice(0, 20).map((x) => `- ${x}`), ...(f.left_dirty.length > 20 ? [`- and ${f.left_dirty.length - 20} more (git status)`] : []), '',
+      'Read them first. Where they are this try\'s work, finish it, test it and commit it as part of this try. ' +
+      'Where they are not this ticket\'s work, change nothing and park naming the files: never discard or stash them.', '', rest].join('\n');
+  }
   if (f.kind === 'renames') {
     return [`## Migration rename try: PR #${f.pr}`, '',
       `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and ${f.base} has renamed migrations your own files still name by the old filename, so their tests fail with ENOENT once ${f.base} is merged in:`, '',
