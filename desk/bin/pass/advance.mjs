@@ -138,8 +138,9 @@ export function* decideAdvance(s) {
   else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
-  // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
+  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
+  // overstates liveness. See references/orchestrator-recovery.md.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
