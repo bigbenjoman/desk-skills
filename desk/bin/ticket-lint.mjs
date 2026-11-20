@@ -17,7 +17,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
+import { baseRef, checkTicket, designDir, designSection, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 
@@ -81,7 +81,11 @@ export function lintTicket(t, { root, dir, ref } = {}) {
 
   // ---- blocking ----
   const criteria = sec(CRITERIA);
-  if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
+  // Given/When/Then written in a preformatted block under the heading are criteria too: blankCode
+  // empties code for the prose checks, so they are read from the source lines.
+  const source = String(t.text ?? '').split(/\r?\n/);
+  const gwt = !!criteria && /\bgiven\b[\s\S]*\bthen\b/i.test(criteria.lines.map((l) => source[l.n - 1] ?? '').join('\n'));
+  if (!filled(criteria) && !gwt) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
     const p = prose(l.text);
@@ -94,10 +98,9 @@ export function lintTicket(t, { root, dir, ref } = {}) {
     }
   }
 
-  const design = sec(/^design\b/i);
   const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
-  if (!noUi && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
-    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." there');
+  if (!noUi && !/https?:\/\//i.test(designSection(lines.join('\n')) ?? '')) {
+    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section (one elsewhere in the description counts too), or write "No UI." there');
   }
 
   if ('size' in t && !/sub-?task/i.test(t.type ?? '')) {

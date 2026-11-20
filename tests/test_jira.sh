@@ -546,6 +546,19 @@ check "lint: no design link and no No UI line is blocking" '[ $rc -eq 1 ] && pri
 clean | awk '{ if ($0 == "No UI.") print "https://www.figma.com/design/Ab/x?node-id=1-2"; else print }' > "$LD/figma.md"
 lint "$LD/figma.md" customfield_10208=M
 check "lint: a design URL in the Design section passes" '[ $rc -eq 0 ]'
+# #825: a design link under another heading, and Given/When/Then criteria in a preformatted block.
+clean | grep -v -e '^## Design' -e '^No UI' > "$LD/refs.md"; printf '\n## References\n* Mockups: https://www.figma.com/design/Ab/x?node-id=1-2\n' >> "$LD/refs.md"
+lint "$LD/refs.md" customfield_10208=M
+check "#825 lint: a design URL under another heading passes" '[ $rc -eq 0 ]'
+clean | grep -v -e '^## Design' -e '^No UI' > "$LD/otherurl.md"; printf '\n## References\n* Spec: https://example.com/spec\n' >> "$LD/otherurl.md"
+lint "$LD/otherurl.md" customfield_10208=M
+check "#825 lint: a link that is no design tool's still leaves no design link" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+clean | awk '/^1\. AC1/ { print "```"; print "Given a filed ticket"; print "When it is picked up"; print "Then its criteria are read"; print "```"; next } { print }' > "$LD/gwt.md"
+lint "$LD/gwt.md" customfield_10208=M
+check "#825 lint: Given/When/Then in a preformatted block under Acceptance criteria are criteria" '[ $rc -eq 0 ] && grep -q "^Given a filed ticket" "$LD/gwt.md"'
+clean | awk '/^1\. AC1/ { print "```"; print "npm test"; print "```"; next } { print }' > "$LD/code.md"
+lint "$LD/code.md" customfield_10208=M
+check "#825 lint: a code block with no Given/When/Then is still no criteria" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"

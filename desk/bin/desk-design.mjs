@@ -927,9 +927,18 @@ export function sections(text) {
 }
 
 // The ticket's Design section, up to the next heading. Null when there is none.
+// A design tool's link, wherever it sits: a Figma file, or a Claude Design artifact.
+export const DESIGN_URL = /https?:\/\/(?:[a-z0-9-]+\.)*(?:figma\.com\/|claude\.ai\/\S*\b(?:design|artifact)\b)/i;
+// The ticket's Design section, and, when it holds no link, every line elsewhere with a design tool's
+// link (one filed under References or a heading of the ticket's own is the ticket's design all the
+// same). Null when there is neither.
 export function designSection(text) {
-  const s = sections(text).find((x) => /^design\b/i.test(x.name));
-  return s ? s.lines.map((l) => l.text).join('\n') : null;
+  const all = sections(text);
+  const s = all.find((x) => /^design\b/i.test(x.name));
+  const own = s ? s.lines.map((l) => l.text).join('\n') : null;
+  if (own && /https?:\/\//i.test(own)) return own;
+  const elsewhere = all.filter((x) => x !== s).flatMap((x) => x.lines.map((l) => l.text)).filter((l) => DESIGN_URL.test(l));
+  return elsewhere.length ? [own, ...elsewhere].filter((l) => l != null).join('\n') : own;
 }
 
 export function claudeDesignLinks(section) {
