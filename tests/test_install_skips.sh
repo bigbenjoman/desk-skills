@@ -221,4 +221,20 @@ check "#736 a declined prompt is answered no and not listed as skipped" \
   '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
 check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
 
+# #828: the repo-config count of unanswered fields reads each row's value, not its note, and leaves
+# out the rows the template keeps `TODO` to follow the machine profile.
+eval "$(sed -n '/^unanswered_rows() {/,/^}/p' "$S/../install.sh")"
+cat > "$T/uc.md" <<'UEOF'
+| Field | Recommended | Your setting |
+|---|---|---|
+| Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
+| Memory ceiling for parallel work (GB) | WSL: `16` | `TODO` (a note) |
+| Test worker cap under the test lock | `4` | `TODO` |
+| Triage concurrency | `1` | `3` (how many at once; left `TODO` it is 1) |
+| Intake query | `none` | `TODO` (a Jira query) |
+| `pr-open` | Open a PR | `yes` | `TODO` |
+Left `TODO` or absent, each falls back to the machine profile.
+UEOF
+check "#828 only a value of TODO counts: not a note's, not the rows that follow the machine profile, not prose" '[ "$(unanswered_rows "$T/uc.md")" = 2 ]'
+
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
