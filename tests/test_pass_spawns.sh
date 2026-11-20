@@ -156,8 +156,9 @@ EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 resume=\${AUTOPILOT_RESUME:+yes} stage=\${AUTOPILOT_START_STAGE:-}" >> "$T/rr-spawns"; echo "[spawn] ticket=\$1"
+[ -n "\${AUTOPILOT_TASK:-}" ] && echo "\$1" >> "$T/rr-tasks"; exit 0
 EOF
-: > "$T/rr-spawns"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
+: > "$T/rr-spawns"; : > "$T/rr-tasks"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
 spawns_of(){ grep -c "^$1 " "$T/rr-spawns"; }
 refused_pass(){ touch "$T/refuse-running-$1"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-running-$1"; }
 q init rr
@@ -253,6 +254,13 @@ lq_pass
 check "DS-662 AC4 a requeue resuming its last round at Stage 7 starts as today, while the held ones stay held" \
   'grep -qx "LQ-7 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-7 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-7"'
 q set LQ-7 state=done session_id=null
+# A fix try whose last worker parked at Stage 7 starts again on its fix task, which runs suites, so the
+# deep queue holds it as it would a start at Stage 0.
+git -C "$T/repo" worktree add -q -b fix/LQ-8 "$T/wt/LQ-8"
+q add LQ-8; q set LQ-8 state=triaged lane=A branch=fix/LQ-8 "worktree=$T/wt/LQ-8" 'last_round={"stage":"7/9","question":"which?"}' 'fix={"kind":"review","try":1,"of":2,"pr":8,"head":"x","what":"review not clean"}'
+lq_pass
+check "a fix try last parked at Stage 7 is held by the deep queue, as its task runs suites" '[ "$(spawns_of LQ-8)" = 0 ] && echo "$out" | grep -q "Stage 4 (.*LQ-8"'
+q set LQ-8 state=done session_id=null
 # One waiter drains: below the hold, the held resume and handoff start in the pass's two places.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 lq_pass
@@ -261,6 +269,14 @@ check "DS-662 AC3 below the hold, the held resume and handoff start, and nothing
 q set LQ-2 state=done session_id=null; q set LQ-3 state=done session_id=null
 lq_pass
 check "DS-662 AC3 and the held new ticket starts once a place frees" '[ "$(spawns_of LQ-1)" = 1 ] && [ "$(field LQ-1 state)" = "\"running\"" ]'
+# A fix try whose last worker reached Stage 3 and parked starts again on its fix task, at its try's stage,
+# never as a desk-ticket round resumed from Stage 3.
+git -C "$T/repo" worktree add -q -b fix/LQ-9 "$T/wt/LQ-9"
+q add LQ-9; q set LQ-9 state=triaged lane=A branch=fix/LQ-9 "worktree=$T/wt/LQ-9" 'last_round={"stage":"3/9","question":"which?"}' 'fix={"kind":"review","try":1,"of":2,"pr":9,"head":"x","what":"review not clean"}'
+lq_pass
+check "an unfinished fix try is spawned on its fix task, not resumed from its last round's stage" \
+  'grep -qx "LQ-9 resume= stage=" "$T/rr-spawns" && grep -qx LQ-9 "$T/rr-tasks" && [ "$(field LQ-9 stage)" = "\"3/9\"" ]'
+q set LQ-9 state=done session_id=null
 q set LQ-1 state=done session_id=null
 q add LQ-6; q set LQ-6 state=triaged lane=A branch=fix/LQ-6
 touch "$T/ps.fail"; lq_pass; rm -f "$T/ps.fail"

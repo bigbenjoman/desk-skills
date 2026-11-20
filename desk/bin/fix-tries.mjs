@@ -1069,7 +1069,16 @@ function targetedBrief(x) {
 const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2' : 'P0 and P1');
 
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK). `review` as reviewStep reads it.
+// The stage a fix try's worker starts at, so a requeued worker's row reads where it is from its spawn
+// rather than 0/9: a review try reviews (4b), a capture try takes screenshots (5), and every other try
+// changes the branch (3), then verifies, self-reviews and pushes.
+export const fixStartStage = (fix) => (fix?.kind === 'rereview' ? '4b/9' : fix?.kind === 'capture' ? '5/9' : '3/9');
+const stageMarkers = (fix) => ` Print AUTOPILOT_STAGE as you reach each stage you run, starting with ${fixStartStage(fix)}, as the contract's Reporting section says: a worker that prints none reads as stuck at its start.`;
+// The task a fix try's worker carries out (fixTaskText), with the stage markers it prints.
 export function fixTask(t, review = null) {
+  return `${fixTaskText(t, review)}${stageMarkers(t.fix)}`;
+}
+function fixTaskText(t, review = null) {
   const f = t.fix;
   const afterReview = `, then ${reviewStep(review, 'the new head')}`;
   if (f.kind === 'renames') {
