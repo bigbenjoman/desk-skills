@@ -907,8 +907,9 @@ bash tests/run.sh
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
-those suites, and `bash tests/related.sh` only the ones your branch's change reaches (every suite
-when that cannot be decided). `bash tests/run.sh -j 3` runs up to three suites at once, each
+those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
+chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
+`DESK_TEST_JOBS=3` runs three at once). `bash tests/run.sh -j 3` runs up to three suites at once, each
 reported in one piece in name order (CI's shards do). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
@@ -955,9 +956,11 @@ them from there, never from `pass.mjs`. The batch base sync and its baseline che
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
-shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
-file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
+`install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
+`desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
+a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
+CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
 shards (the `macOS` workflow, not a required check); its nightly run only runs the suite when no
 macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
 cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's

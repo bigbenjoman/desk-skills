@@ -16,20 +16,27 @@
 //     built from a directory (`join(BIN, 'x.mjs')`, `"$DIR/x.sh"`; see loads()), followed
 //     transitively, except through a foundational file (desk-env.mjs; changing it runs all). A file
 //     many suites reach that way runs those suites: they are the ones that can see the change.
+// Test helpers, stubs and fixtures under tests/, and the root's documents and scripts (install.sh,
+// desk-config.md), are claimed the same way as any other file.
 // A suite with a `// claims: imports` (`# claims: imports`) line uses repo file names as test data
 // (the scoping suites themselves): its text names nothing, and only its import statements are followed.
 //
 // The decision, which fails closed: anything it cannot place runs every suite.
-//   full  - tests/run.sh, any other file under tests/ that is not a suite (helpers, stubs, fixtures,
-//           this script), .github/, install.sh, a root file other than README.md, desk-env.mjs or
-//           desk-env.sh, a deleted or renamed file, or a changed file no suite claims
-//   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it
+//   full  - a foundational file (tests/run.sh and the environment it gives suites, this script, the
+//           bash 3.2 check, .github/, desk-env.sh, and desk-env.mjs unless the change only adds
+//           exports), a root file that is not a document or a script (.gitignore, a lockfile), a
+//           deleted or renamed file, or a changed file no suite claims
+//   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it;
+//           for a change that only adds exports to desk-env.mjs, the suites that name a new export
 //   none  - nothing changed
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
 //
 // CLI (from anywhere in the repo):
 //   node tests/scope_sections.mjs --base <ref> [--head <ref>]   decide for `git diff base...head`
+//   node tests/scope_sections.mjs --base <ref> --worktree       decide for the working tree against the
+//                                                                merge base with <ref>, untracked files
+//                                                                included (tests/related.sh)
 //   node tests/scope_sections.mjs --files <path>...              decide for these paths, as modified
 //   node tests/scope_sections.mjs --full                         every suite (a push to main)
 //   add --json for the decision as JSON, or --github-output to append scope=, suites= and shells= to
@@ -42,13 +49,53 @@ import { fileURLToPath } from 'node:url';
 
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
-const FOUNDATION = [/^tests\/(?!test_[^/]+\.(sh|mjs)$)/, /^\.github\//, /^install\.sh$/, /^desk\/bin\/desk-env\.(mjs|sh)$/];
-// A root file other than these is config for the whole repo (.gitignore, a lockfile, ...).
-const ROOT_DOCS = new Set(['README.md']);
+const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/];
+// A foundational module whose change, when it only adds exports, reaches only the suites using them.
+const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;
 const DIR_ROOTS = /^(skills|vendor|docs)\//;
 
 export const isSuite = (p) => /^tests\/test_[^/]+\.(sh|mjs)$/.test(p);
+// A root file that is not a document or a script is config for the whole repo (.gitignore, a lockfile).
+const rootConfig = (p) => !p.includes('/') && !/\.md$/.test(p) && !CODE_EXT.test(p);
+
+// Top-level statements: a line at column 0 that does not close a bracket starts one. Trailing blank
+// lines are dropped, so moving a blank line between statements changes none.
+function topLevel(text) {
+  const out = [];
+  for (const l of String(text).split('\n')) {
+    if (!out.length || /^[^\s})\]]/.test(l)) out.push([]);
+    out.at(-1).push(l);
+  }
+  return out.map((c) => { while (c.length && !c.at(-1).trim()) c.pop(); return c.join('\n'); }).filter(Boolean);
+}
+// A new top-level statement that declares an export and runs nothing when the module loads: a
+// function or class, or a const whose value is a function or holds no call. -> its name, or null.
+function newExport(chunk) {
+  const fn = chunk.match(/^export\s+(?:async\s+)?(?:function\s*\*?|class)\s*([A-Za-z_$][\w$]*)/);
+  if (fn) return fn[1];
+  const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*)$/);
+  if (!c) return null;
+  const value = c[2];
+  const fnValue = /^(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(value);
+  return fnValue || !value.includes('(') ? c[1] : null;
+}
+// The names a change to a module only adds as exports, or null when it does anything else: every old
+// top-level statement is still there unchanged and in order, and each new one is a comment or a
+// newExport().
+export function addedExports(before, after) {
+  const old = topLevel(before);
+  const names = [];
+  let i = 0;
+  for (const c of topLevel(after)) {
+    if (i < old.length && c === old[i]) { i++; continue; }
+    if (/^(\/\/[^\n]*)(\n\/\/[^\n]*)*$/.test(c) || /^\/\*[\s\S]*\*\/$/.test(c)) continue;
+    const name = newExport(c);
+    if (!name) return null;
+    names.push(name);
+  }
+  return i === old.length ? names : null;
+}
 
 // `**` spans segments, `*` stays within one.
 export function globRe(glob) {
@@ -79,17 +126,22 @@ export function mentions(text) {
 // `files` is every tracked path; `read(path)` returns its text (or '' when unreadable).
 export function buildMap(files, read) {
   const suites = files.filter(isSuite).sort();
-  const nodes = files.filter((f) => !f.startsWith('tests/'));
+  const nodes = files.filter((f) => !isSuite(f));
   const names = new Map(); // a mention -> the paths it names
   const add = (k, p) => { if (!names.has(k)) names.set(k, new Set()); names.get(k).add(p); };
+  // Basenames are counted outside tests/ and across every file, so a file under tests/ named by its
+  // basename alone never takes that name from a file elsewhere.
   const baseCount = new Map();
-  for (const f of nodes) { const b = f.slice(f.lastIndexOf('/') + 1); baseCount.set(b, (baseCount.get(b) ?? 0) + 1); }
+  const allCount = new Map();
+  const bump = (m, b) => m.set(b, (m.get(b) ?? 0) + 1);
+  for (const f of nodes) { const b = f.slice(f.lastIndexOf('/') + 1); bump(allCount, b); if (!f.startsWith('tests/')) bump(baseCount, b); }
   const dirs = new Map(); // a skills/vendor/docs directory (two or more levels) -> its files
   for (const f of nodes) {
     const segs = f.split('/');
     for (let i = 0; i < segs.length - 1; i++) add(segs.slice(i).join('/'), f);
+    if (segs.length === 1) add(f, f);
     const b = segs.at(-1);
-    if (!b.endsWith('.md') && baseCount.get(b) === 1 && b.length >= 5) add(b, f);
+    if (!b.endsWith('.md') && (f.startsWith('tests/') ? allCount : baseCount).get(b) === 1 && b.length >= 5) add(b, f);
     if (DIR_ROOTS.test(f)) for (let d = 2; d < segs.length; d++) {
       const dir = segs.slice(0, d).join('/');
       if (!dirs.has(dir)) dirs.set(dir, []);
@@ -138,7 +190,12 @@ export function buildMap(files, read) {
     for (const f of seen) { if (!claims.has(f)) claims.set(f, new Set()); claims.get(f).add(s.slice(6)); }
   }
   const shells = new Set(files.filter((f) => /\.(sh|bash)$/.test(f) || (!/\.[A-Za-z0-9]+$/.test(f.slice(f.lastIndexOf('/') + 1)) && /^#!.*[/ ](ba)?sh( |$)/.test(textOf(f).split('\n')[0]))));
-  return { suites: out, claims, shells };
+  // The suites (bar ALWAYS) whose text names any of these identifiers as a whole word.
+  const uses = (ids) => {
+    const res = ids.map((n) => new RegExp(`(?<![\\w$])${n.replace(/\$/g, '\\$')}(?![\\w$])`));
+    return suites.filter((s) => !ALWAYS.includes(s.slice(6)) && res.some((r) => r.test(textOf(s)))).map((s) => s.slice(6));
+  };
+  return { suites: out, claims, shells, uses };
 }
 
 // `git diff --name-status -M` lines -> [{ status, path, from }]
@@ -166,15 +223,19 @@ export function decide(changes, map) {
   const gone = changes.find((c) => c.status === 'D' || c.status === 'R');
   if (gone) return full(gone.status === 'D' ? `${gone.path} was deleted` : `${gone.from} was renamed to ${gone.path}`);
   const pick = new Set(ALWAYS);
-  for (const { path } of changes) {
+  for (const { path, exports } of changes) {
     if (isSuite(path)) {
       if (!all.includes(path.slice(6))) return full(`${path} is not a suite tests/run.sh knows`);
       pick.add(path.slice(6));
       for (const s of map.claims.get(path) ?? []) pick.add(s);
       continue;
     }
+    if (EXPORTS_ONLY.has(path) && Array.isArray(exports)) {
+      for (const s of map.uses(exports)) pick.add(s);
+      continue;
+    }
     if (FOUNDATION.some((r) => r.test(path))) return full(`${path} is shared by every suite`);
-    if (!path.includes('/') && !ROOT_DOCS.has(path)) return full(`${path} is a root file`);
+    if (rootConfig(path)) return full(`${path} is a root file`);
     const by = map.claims.get(path);
     if (!by?.size) return full(`no suite claims ${path}`);
     for (const s of by) pick.add(s);
@@ -220,6 +281,21 @@ export function repoMap(root) {
   return buildMap(files, (p) => { try { return readFileSync(join(root, p), 'utf8'); } catch { return ''; } });
 }
 
+// The changes CI and tests/related.sh both decide on: everything since the merge base of `base` and
+// `head`, or, with no head, of `base` and HEAD up to the working tree, untracked files included.
+// A modified EXPORTS_ONLY module carries `exports`: addedExports() between the merge base and the head.
+export function changesAgainst(root, base, head) {
+  const mb = git(root, ['merge-base', base, head ?? 'HEAD']).trim();
+  const changes = parseNameStatus(git(root, ['diff', '--name-status', '-M', mb, ...(head ? [head] : [])]));
+  if (!head) for (const path of git(root, ['ls-files', '--others', '--exclude-standard', '-z']).split('\0').filter(Boolean)) changes.push({ status: 'A', path });
+  for (const c of changes) {
+    if (c.status !== 'M' || !EXPORTS_ONLY.has(c.path)) continue;
+    const after = head ? git(root, ['show', `${head}:${c.path}`]) : readFileSync(join(root, c.path), 'utf8');
+    c.exports = addedExports(git(root, ['show', `${mb}:${c.path}`]), after) ?? undefined;
+  }
+  return changes;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
@@ -232,15 +308,15 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   }
   if (args.includes('--unclaimed')) {
     const files = git(root, ['ls-files']).split('\n').filter(Boolean);
-    for (const f of files) if (!isSuite(f) && !map.claims.get(f)?.size && !FOUNDATION.some((r) => r.test(f)) && f.includes('/')) console.log(f);
+    for (const f of files) if (!isSuite(f) && !map.claims.get(f)?.size && !FOUNDATION.some((r) => r.test(f)) && !rootConfig(f)) console.log(f);
     process.exit(0);
   }
   let changes;
   let d;
   if (args.includes('--full')) d = fullScope(map, '--full');
   else if (args.includes('--files')) changes = args.slice(args.indexOf('--files') + 1).filter((a) => !a.startsWith('--')).map((path) => ({ status: 'M', path }));
-  else if (opt('--base')) changes = parseNameStatus(git(root, ['diff', '--name-status', '-M', `${opt('--base')}...${opt('--head') ?? 'HEAD'}`]));
-  else { console.error('usage: scope_sections.mjs --base <ref> [--head <ref>] | --files <path>... | --full [--json | --github-output]'); process.exit(2); }
+  else if (opt('--base')) changes = changesAgainst(root, opt('--base'), args.includes('--worktree') ? undefined : opt('--head') ?? 'HEAD');
+  else { console.error('usage: scope_sections.mjs --base <ref> [--head <ref> | --worktree] | --files <path>... | --full [--json | --github-output]'); process.exit(2); }
   d ??= decide(changes, map);
   if (args.includes('--json')) console.log(JSON.stringify(d, null, 2));
   else {

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, ALWAYS } from './scope_sections.mjs';
+import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, addedExports, ALWAYS } from './scope_sections.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -76,10 +76,10 @@ t('fail closed: a file no suite claims runs everything', scope(M('desk/bin/lone.
 t('fail closed: a new unclaimed file runs everything', scope([{ status: 'A', path: 'desk/bin/new.mjs' }]), 'full: no suite claims desk/bin/new.mjs');
 t('fail closed: a claimed file beside an unclaimed one', scope(M('desk/bin/lib.sh', 'desk/bin/lone.mjs')), 'full: no suite claims desk/bin/lone.mjs');
 t('tests/run.sh runs everything', scope(M('tests/run.sh')), 'full: tests/run.sh is shared by every suite');
-t('a test helper runs everything', scope(M('tests/helper.mjs')), 'full: tests/helper.mjs is shared by every suite');
-t('a fixture runs everything', scope(M('tests/fixtures/a.md')), 'full: tests/fixtures/a.md is shared by every suite');
+t('a test helper no suite claims runs everything', scope(M('tests/helper.mjs')), 'full: no suite claims tests/helper.mjs');
+t('a fixture no suite claims runs everything', scope(M('tests/fixtures/a.md')), 'full: no suite claims tests/fixtures/a.md');
 t('desk-env.mjs runs everything', scope(M('desk/bin/desk-env.mjs')), 'full: desk/bin/desk-env.mjs is shared by every suite');
-t('install.sh runs everything', scope(M('install.sh')), 'full: install.sh is shared by every suite');
+t('install.sh no suite claims runs everything', scope(M('install.sh')), 'full: no suite claims install.sh');
 t('a workflow runs everything', scope(M('.github/workflows/tests.yml')), 'full: .github/workflows/tests.yml is shared by every suite');
 t('a root file runs everything', scope(M('.gitignore')), 'full: .gitignore is a root file');
 t('a deletion runs everything', scope([{ status: 'D', path: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was deleted');
@@ -94,6 +94,50 @@ t('DS-920 a covers: glob claims the suites it matches', [[...(rmap.claims.get('t
 t('DS-920 a changed suite runs the suite that covers it', [rscope(M('tests/test_drive.sh')), rscope(M('tests/test_pass.mjs'))], ['test_drive.sh test_lint.sh test_replay.sh', 'test_lint.sh test_pass.mjs']);
 t('DS-920 a covered suite does not pass on what it names', rscope(M('desk/bin/drive.sh')), 'test_drive.sh test_lint.sh');
 
+// DS-818: root documents and scripts, and files under tests/ that are not suites, are claimed like any
+// other file; desk-env.mjs gaining exports runs the suites that use them.
+const claimed = {
+  ...tree,
+  'desk-config.md': '# config',
+  'skills/writing/SKILL.md': '# writing',
+  'tests/compare_pass.sh': '#!/usr/bin/env bash\nnode "$(dirname "$0")/compare_pass.mjs"',
+  'tests/compare_pass.mjs': 'export {}',
+  'tests/pass_setup.sh': 'setup() { :; }',
+  'tests/prose_scan.mjs': 'export {}',
+  'tests/fixtures/prose_baseline.json': '{}',
+  'tests/test_install.sh': '# suite: install\nbash "$SRC/install.sh"',
+  'tests/test_config.mjs': "// suite: config\nread(join(R, 'desk-config.md'))",
+  'tests/test_compare.sh': '# suite: compare\nbash "$S/compare_pass.sh" main',
+  'tests/test_pass_x.sh': '# suite: pass x\n. "$S/pass_setup.sh"',
+  'tests/test_prose.mjs': "// suite: prose\n// covers: skills/writing/**\nimport { scan } from './prose_scan.mjs';\nread('tests/fixtures/prose_baseline.json')",
+  'tests/test_env_user.mjs': "// suite: env user\nimport { newThing } from '../desk/bin/desk-env.mjs';",
+};
+const cmap = buildMap(Object.keys(claimed), (p) => claimed[p]);
+const cscope = (ch) => { const d = decide(ch, cmap); return `${d.scope}: ${d.scope === 'full' ? d.reason : d.suites.join(' ')}`; };
+t('DS-818 AC4 desk-config.md runs the suites that claim it', cscope(M('desk-config.md')), 'some: test_config.mjs test_lint.sh');
+t('DS-818 AC5 install.sh runs the suites that claim it', cscope(M('install.sh')), 'some: test_install.sh test_lint.sh');
+t('DS-818 AC6 compare_pass.sh, compare_pass.mjs and pass_setup.sh run the suites that claim each', [cscope(M('tests/compare_pass.sh')), cscope(M('tests/compare_pass.mjs')), cscope(M('tests/pass_setup.sh'))], ['some: test_compare.sh test_lint.sh', 'some: test_compare.sh test_lint.sh', 'some: test_lint.sh test_pass_x.sh']);
+t('DS-818 AC7 skill prose and the prose baseline run the prose suites', cscope(M('skills/writing/SKILL.md','tests/fixtures/prose_baseline.json', 'tests/prose_scan.mjs')), 'some: test_lint.sh test_prose.mjs');
+t('DS-818 a root file that is not a document or a script still runs everything', cscope(M('.gitignore')), 'full: .gitignore is a root file');
+t('DS-818 tests/run.sh and the scoping script stay foundational', [cscope(M('tests/run.sh')), cscope(M('tests/suite_env.sh')), cscope(M('tests/scope_sections.mjs'))].map((s) => s.split(':')[0]), ['full', 'full', 'full']);
+const E = (exports) => [{ status: 'M', path: 'desk/bin/desk-env.mjs', exports }];
+t('DS-818 AC2 desk-env.mjs gaining exports runs the suites that use them', [cscope(E(['newThing'])), cscope([...E(['newThing']), ...M('install.sh')])], ['some: test_env_user.mjs test_lint.sh', 'some: test_env_user.mjs test_install.sh test_lint.sh']);
+t('DS-818 AC3 any other desk-env.mjs change runs everything', cscope(E(undefined)), 'full: desk/bin/desk-env.mjs is shared by every suite');
+const env = 'import { x } from "./y.mjs";\n\nexport const one = 1;\n\nexport function two(a) {\n  return a;\n}\n';
+t('DS-818 addedExports: new exports, in any place, with comments', addedExports(env, 'import { x } from "./y.mjs";\n\nexport const one = 1;\n// three\nexport const three = (a) => a;\n\nexport function two(a) {\n  return a;\n}\n/** four */\nexport async function four() {}\nexport const FIVE = [\'a\'];\n'), ['three', 'four', 'FIVE']);
+t('DS-818 addedExports: an unchanged module adds none', addedExports(env, env), []);
+t('DS-818 addedExports: an edited, removed or reordered statement is not export-only', [
+  addedExports(env, env.replace('return a', 'return a + 1')),
+  addedExports(env, env.replace('export const one = 1;\n', '')),
+  addedExports(env, 'import { x } from "./y.mjs";\n\nexport function two(a) {\n  return a;\n}\nexport const one = 1;\n'),
+], [null, null, null]);
+t('DS-818 addedExports: a new statement that is not an export, or runs code on load, is not export-only', [
+  addedExports(env, `${env}function helper() {}\n`),
+  addedExports(env, `${env}export const read = readFileSync('x');\n`),
+  addedExports(env, `${env}export default 1;\n`),
+  addedExports(env, `${env}main();\n`),
+], [null, null, null, null]);
+
 // ---- this repo -----------------------------------------------------------------------------------
 const real = repoMap(R);
 const listed = execFileSync('git', ['-C', R, 'ls-files', 'tests/test_*.sh', 'tests/test_*.mjs'], { encoding: 'utf8' }).trim().split('\n').map((f) => f.slice(6)).sort();
@@ -104,7 +148,7 @@ for (const f of ['desk/bin/base-gate.mjs', 'desk/bin/with-lock.sh']) {
   const d = decide(M(f), real);
   t(`${f} selects test_batch_e2e.sh or runs everything`, d.scope === 'full' || d.suites.includes('test_batch_e2e.sh'), true);
 }
-t('a suite with claims: imports claims nothing it only names', [...real.claims.values()].filter((s) => s.has('test_scope_sections.mjs')).length, 0);
+t('a suite with claims: imports claims nothing it only names, only what it imports', [...real.claims].filter(([, s]) => s.has('test_scope_sections.mjs')).map(([p]) => p), ['tests/scope_sections.mjs']);
 // A suite that walks the repo tree must say what it reads with a covers: line, or what it reads is unclaimed.
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
@@ -120,6 +164,11 @@ for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
 t('DS-920 AC4 a changed pass suite runs test_compare_pass.sh', ['test_pass_other_repo.sh', 'test_pass_spawns.sh'].map((s) => decide(M(`tests/${s}`), real).suites.includes('test_compare_pass.sh')), [true, true]);
 const MERGE_DRIVER_SUITES = ['loop', 'reruns', 'approval', 'holds', 'review', 'tree'].map((s) => `test_merge_driver_${s}.sh`);
 t('merge-driver.sh reaches every merge driver suite', MERGE_DRIVER_SUITES.filter((s) => !decide(M('desk/bin/merge-driver.sh'), real).suites.includes(s)), []);
+// DS-818 AC4 to AC6 on this repo: each runs the suites that claim it, not every suite.
+for (const f of ['desk-config.md', 'install.sh', 'tests/compare_pass.sh', 'tests/compare_pass.mjs', 'tests/pass_setup.sh']) {
+  const d = decide(M(f), real);
+  t(`DS-818 ${f} runs the suites that claim it`, [d.scope, d.suites], ['some', real.suites.map((s) => s.file).filter((s) => ALWAYS.includes(s) || real.claims.get(f)?.has(s))]);
+}
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');

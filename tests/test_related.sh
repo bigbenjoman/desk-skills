@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # suite: related tests (tests/related.sh runs the suites scope_sections.mjs picks, else every suite)
 # tests/related.sh in a scratch repo holding copies of it, tests/run.sh and tests/scope_sections.mjs,
-# and three toy suites: test_a.sh names lib/a.sh, test_b.sh names lib/b.sh, test_lint.sh always runs.
+# a toy desk/bin/desk-env.mjs, and four toy suites: test_a.sh, test_b.sh and test_c.sh name lib/a.sh,
+# lib/b.sh and lib/c.sh (test_c.sh also an export desk-env.mjs gains), test_lint.sh always runs.
 # Scratch HOME and repo only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
@@ -18,13 +19,16 @@ export PATH="$T/bin:$PATH"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
-R="$T/repo"; mkdir -p "$R/tests" "$R/lib" "$R/hooks"
+R="$T/repo"; mkdir -p "$R/tests" "$R/lib" "$R/hooks" "$R/desk/bin"
 cp "$S/related.sh" "$S/run.sh" "$S/suite_env.sh" "$S/scope_sections.mjs" "$R/tests/"
 printf 'print("ok attribution hook stub")\n' > "$R/hooks/deny-ai-attribution.py"
-for n in a b; do
+for n in a b c; do
   printf 'echo %s\n' "$n" > "$R/lib/$n.sh"
   printf '# runs lib/%s.sh\necho "ok suite %s"\n' "$n" "$n" > "$R/tests/test_$n.sh"
 done
+# test_c.sh also uses an export desk-env.mjs does not have yet.
+printf '# and calls newThing from desk-env.mjs\n' >> "$R/tests/test_c.sh"
+printf 'export const one = 1;\n\nexport function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
 printf 'echo "ok suite lint"\n' > "$R/tests/test_lint.sh"
 git -C "$R" init -q -b main; git -C "$R" add -A; git -C "$R" commit -q -m init
 git -C "$R" update-ref refs/remotes/origin/main HEAD
@@ -46,7 +50,7 @@ git -C "$R" reset -q --hard HEAD~1
 
 printf 'x\n' > "$R/.gitignore"; git -C "$R" add .gitignore; git -C "$R" commit -q -m 'root file'
 related
-check "a full scope runs every suite"                        '[ $rc -eq 0 ] && ran a && ran b && ran lint && [[ "$out" == *"scope full against origin/main, so every suite runs"* ]]'
+check "a full scope runs every suite"                        '[ $rc -eq 0 ] && ran a && ran b && ran lint && [[ "$out" == *"scope full against origin/main (.gitignore is a root file), so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD~1
 
 printf 'echo b2\n' > "$R/lib/b.sh"
@@ -56,8 +60,48 @@ git -C "$R" checkout -q -- lib/b.sh
 
 git -C "$R" rm -q lib/b.sh
 related
-check "an uncommitted deletion runs every suite" '[ $rc -eq 0 ] && ran a && ran b && [[ "$out" == *"lib/b.sh was deleted or renamed against origin/main, so every suite runs"* ]]'
+check "an uncommitted deletion runs every suite" '[ $rc -eq 0 ] && ran a && ran b && [[ "$out" == *"scope full against origin/main (lib/b.sh was deleted), so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD
+
+# DS-818 AC1: run.sh's -j, from DESK_TEST_JOBS, else run.sh's default of one at a time.
+related
+check "DS-818 AC1 by default suites run one at a time"       '[ $rc -eq 0 ] && ran a && [[ "$out" != *"suites at once"* ]]'
+out=$(cd "$R" && DESK_TEST_JOBS=2 bash tests/related.sh 2>&1); rc=$?
+check "DS-818 AC1 DESK_TEST_JOBS sets how many run at once"  '[ $rc -eq 0 ] && ran a && ran lint && [[ "$out" == *"up to 2 suites at once"* ]]'
+printf 'x\n' > "$R/.gitignore"; git -C "$R" add .gitignore; git -C "$R" commit -q -m 'root file'
+out=$(cd "$R" && DESK_TEST_JOBS=2 bash tests/related.sh 2>&1); rc=$?
+check "DS-818 AC1 and so does a run of every suite"          '[ $rc -eq 0 ] && ran b && [[ "$out" == *"up to 2 suites at once"* ]]'
+git -C "$R" reset -q --hard HEAD~1
+
+# DS-818 AC2: a change that only adds exports to desk-env.mjs runs the suites that use them.
+printf '\n// The second thing.\nexport function newThing() {\n  return 3;\n}\n' >> "$R/desk/bin/desk-env.mjs"; git -C "$R" commit -q -am 'add newThing'
+related
+check "DS-818 AC2 a new desk-env.mjs export runs the suites using it, with the branch's other suites" '[ $rc -eq 0 ] && [[ "$out" == *"scope some against origin/main: test_a.sh test_c.sh test_lint.sh"* ]] && ! ran b'
+# AC3: changing or removing an existing export runs every suite.
+printf 'export const one = 9;\n\nexport function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
+related
+check "DS-818 AC3 a changed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+printf 'export function two() {\n  return 2;\n}\n' > "$R/desk/bin/desk-env.mjs"
+related
+check "DS-818 AC3 a removed desk-env.mjs export runs every suite" '[ $rc -eq 0 ] && ran b && [[ "$out" == *"(desk/bin/desk-env.mjs is shared by every suite), so every suite runs"* ]]'
+git -C "$R" reset -q --hard HEAD~1
+
+# DS-818 AC8: related.sh and CI's pull request plan choose the same suites for one branch. main moves
+# on (lib/c.sh) and is merged into the branch, which also has an uncommitted edit; CI then sees the
+# pull request's merge commit with that edit committed.
+git -C "$R" checkout -q main; printf 'echo c2\n' > "$R/lib/c.sh"; git -C "$R" commit -q -am 'main moves'
+git -C "$R" update-ref refs/remotes/origin/main HEAD; git -C "$R" checkout -q fix/x
+git -C "$R" merge -q --no-edit origin/main
+printf 'echo b2\n' > "$R/lib/b.sh"
+related
+local_suites=$(printf '%s\n' "$out" | grep -m 1 '^related: scope some' | grep -oE 'test_[a-z]+\.sh' | tr '\n' ' ')
+git -C "$R" commit -q -am 'the edit'; git -C "$R" checkout -q --detach origin/main; git -C "$R" merge -q --no-ff --no-edit fix/x
+: > "$T/gh_out"
+(cd "$R" && GITHUB_OUTPUT="$T/gh_out" node tests/scope_sections.mjs --base HEAD^1 --head HEAD --github-output >/dev/null)
+ci_suites=$(grep -m 1 '^suites=' "$T/gh_out" | grep -oE 'test_[a-z]+\.sh' | tr '\n' ' ')
+out="local: $local_suites ci: $ci_suites"
+check "DS-818 AC8 related.sh and CI choose the same suites"  '[ "$local_suites" = "test_a.sh test_b.sh test_lint.sh " ] && [ "$ci_suites" = "$local_suites" ]'
+git -C "$R" checkout -q fix/x
 
 cp "$R/tests/scope_sections.mjs" "$T/scope_sections.mjs"
 printf 'process.exit(1);\n' > "$R/tests/scope_sections.mjs"
