@@ -56,11 +56,6 @@ export function toFront(q, key) {
   return 'moved to the front of the spawn order';
 }
 
-// The `set` pairs that record a ticket done on PR #n, which is not merged yet, out of a park: the pass
-// once it opened the draft itself (pass.mjs finishPush), and the orchestrator once it finished the
-// park's last step (queue.mjs finish). The next pass then takes the PR through review, undraft and merge.
-export const doneOnPr = (n, summary) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`, `result.summary=${summary}`];
-
 const pairsOf = (pairs) => pairs.map((p) => {
   const i = p.indexOf('=');
   if (i < 0) throw new Error(`expected key=value, got: ${p}`);

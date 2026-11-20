@@ -564,6 +564,18 @@ export function parseStateChecks(items) {
   }
   return { checks, errors };
 }
+// The §4 State check of kind external that passed at the head ({ name, login }), or null: every one of
+// its runs there completed with success. It reads that outside reviewer's review at the head, so its
+// pass is the head's review, and nothing waits on desk's own verdict there.
+export function externalPassed(checks, stateChecks) {
+  const latest = latestPerCheck(checks ?? []);
+  for (const sc of stateChecks ?? []) {
+    if (sc.kind !== 'external') continue;
+    const hits = latest.filter((c) => c.name === sc.name);
+    if (hits.length && hits.every((c) => c.status === 'completed' && c.conclusion === 'success')) return { name: sc.name, login: sc.login };
+  }
+  return null;
+}
 // The gate's failing checks that are state checks, each with its kind. lineOf(f) is the run's error
 // line, where it was read: one listed as approval whose line says no verdict it accepts is at the head
 // failed its verdict step, so it takes kind verdict, with `listed` the kind §4 gives it.
@@ -812,6 +824,7 @@ if (isMain) {
         number: pr.number, title: pr.title ?? '', sha: pr.headRefOid, head: pr.headRefName, base: pr.baseRefName, isDraft: pr.isDraft,
         mergeState: pr.mergeStateStatus, reviewDecision: pr.reviewDecision || 'NONE', autoMerge: !!pr.autoMergeRequest,
         gate: { ...gate, failedRuns: [...ids], failedJobs, stateFailing: state },
+        externalReview: externalPassed(checks, stateChecks),
         holds: held.map((h) => ({ glob: h.glob, why: h.why, routine: h.routine ?? null, files: h.files.slice(0, 5), count: h.files.length })),
         holdsMet: owned.satisfied.map(({ glob, why }) => ({ glob, why })),
         defaultBranch, holdsApply: pr.baseRefName === defaultBranch,

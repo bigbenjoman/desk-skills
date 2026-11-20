@@ -49,7 +49,8 @@
 //                                             perm-or-unset and budget prints, as shell assignments for
 //                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
-//   node desk-env.mjs paths                   print KEY=value lines for the shell
+//   node desk-env.mjs paths [--machine]       print KEY=value lines for the shell (--machine: only the ones
+//                                             no repo is needed for, DESK_SKILLS_DIR among them)
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
@@ -68,6 +69,8 @@
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
+//                                             (harmStep) SWAP-GROWING, OOM-KILL and TMPFS-HIGH on the
+//                                             harm signals, and OOM-UNKNOWN once when dmesg cannot be read
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -135,7 +138,7 @@
 //                                             email), ignoring DESK_SUBSCRIPTION
 //   node desk-env.mjs subscription set <slug> <default|email>
 //                                             write that repo's Subscription row, naming the previous value
-import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -529,31 +532,59 @@ function parseConfigFile(path) {
   return parsed;
 }
 
+// How many rows of a config file are unanswered: the value (first span of the value column, as every
+// read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
+// keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
+export const MACHINE_FALLBACK_ROWS = ['autopilot worker concurrency', 'memory ceiling for parallel work (gb)', 'test worker cap under the test lock'];
+export function unansweredRows(path) {
+  if (!path || !existsSync(path)) return 0;
+  return tableLines(readFileSync(path, 'utf8')).rows
+    .filter(({ cells, label, header }) => !MACHINE_FALLBACK_ROWS.includes(norm(label)) && cellItems(cells[settingCol(header)] ?? '')[0] === 'TODO')
+    .length;
+}
+
 // A value cell's items: every backtick span, except those in a trailing parenthesised note
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
   // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-  // copied into a value, the doubled backticks are display only.
-  const cell = raw.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
-  const spans = [...stripTrailingNote(cell).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
-  return spans.length ? spans : [cell];
+  // copied into a value, the doubled backticks are display only. The note goes before they do, since
+  // a note may hold longer runs they are part of. A cell has one trailing note, so a parenthesis before
+  // it is value text (`` `A` (CI: `B`) (note) `` is A and B): only where none trailed the cell is one
+  // looked for again after, a note inside that display form.
+  const undoubled = (s) => s.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
+  const whole = raw.trim();
+  const noted = stripTrailingNote(whole);
+  const cell = noted === whole ? stripTrailingNote(undoubled(whole)) : undoubled(noted);
+  const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  return spans.length ? spans : [undoubled(raw)];
 }
 
 // The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
-// Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
+// Parens inside code spans are value text (a regex like `(-FIX)?`), so they are skipped. A
 // cell that is only a note, or whose last paren never opens, is returned whole.
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
+  const inSpan = codeSpanMask(cell);
   let depth = 0;
-  let inSpan = false;
   for (let i = cell.length - 1; i >= 0; i--) {
+    if (inSpan[i]) continue;
     const c = cell[i];
-    if (c === '`') inSpan = !inSpan;
-    else if (inSpan) continue;
-    else if (c === ')') depth++;
+    if (c === ')') depth++;
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;
+}
+
+// A code span as CommonMark reads one: a run of N backticks opens a span that closes at the next run of
+// exactly N on its line, so ```` ```x ```` is one span; a run never closed is text. evidence.mjs reads
+// a PR body's spans by it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
+// Which characters sit inside a code span.
+function codeSpanMask(s) {
+  const mask = new Array(s.length).fill(false);
+  for (const m of s.matchAll(CODE_SPAN)) mask.fill(true, m.index, m.index + m[0].length);
+  return mask;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
@@ -593,6 +624,12 @@ export function machineValue(key) {
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
+// How many runs may hold the test lock at once: DESK_TEST_LOCK_SLOTS when set, else the profile's
+// test-lock-slots; anything but a whole number from 1 is 1. with-lock.sh is this rule's shell twin.
+export function testLockSlots() {
+  const v = String(process.env.DESK_TEST_LOCK_SLOTS || machineValue('test-lock-slots') || '').trim();
+  return /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+}
 
 // ---- cost sources --------------------------------------------------------------------------
 // One per computer, beside the machine profile: which GitHub repo, Vercel team and AWS profile bill
@@ -864,9 +901,9 @@ export function reviewPlan(rows, clean, root) {
 }
 
 // The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
-export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
-// Rows a worker runs only under their lock, never bare.
-export const LOCK_ONLY = new Set(['storybook-cmd']);
+export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'lint-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
+// Rows a worker runs only under their lock, never bare. A type-aware lint is as heavy as a typecheck.
+export const LOCK_ONLY = new Set(['storybook-cmd', 'lint-cmd']);
 export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
@@ -1635,9 +1672,9 @@ export function parsePs(text, columns) {
   return rows;
 }
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list.
-export function psRows(columns) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export function psRows(columns, env = {}) {
+  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -1690,6 +1727,73 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
   if (state?.fired || now - since < windowMs) return { state: { since, fired: !!state?.fired }, line: null };
   const mins = Math.round((now - since) / 60000);
   return { state: { since, fired: true }, line: `SUSTAINED-HIGH: avail=${avail.toFixed(1)}G below ${band}G for ${mins}m with nothing heavy running` };
+}
+
+// The harm signals the watch also reads, which preceded real damage where the host's free memory did
+// not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM kill newer than the
+// watch's first reading (`oom` is each kill's key as oomKills reads it, its kernel timestamp or its
+// line; null when the kernel log cannot be read, undefined off Linux, where none is watched),
+// and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
+// leak). Each line is said once, and again only after the signal has cleared.
+//   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
+export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4 } = {}) {
+  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
+  const lines = [];
+  if (swapGiB != null) {
+    const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
+    const low = Math.min(...swap.map((x) => x.gib));
+    const grew = swapGiB - low;
+    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
+    st.swapFired = grew >= swapGrowGiB ? true : grew < swapGrowGiB / 2 ? false : st.swapFired;
+    st.swap = swap;
+  }
+  if (oom === undefined) { /* not watched on this platform */ } else if (oom === null) {
+    if (!st.oomUnread) lines.push('OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched');
+    st.oomUnread = true;
+  } else {
+    st.oomUnread = false;
+    // A kill is new when its line was not in the last reading: the ring buffer dropping old kill
+    // lines, even while a new kill writes them out, hides nothing. Each line is keyed by its
+    // timestamp, or its whole text in a log with none (printk.time off).
+    const keys = oom.map(String);
+    if (st.oomKeys != null) {
+      const was = new Set(st.oomKeys);
+      const fresh = keys.filter((k) => !was.has(k)).length;
+      if (fresh) lines.push(`OOM-KILL: the kernel killed ${fresh} process(es) for memory: drop to the ladder's lowest count`);
+    }
+    st.oomKeys = keys;
+  }
+  if (tmpGiB != null) {
+    if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
+    st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
+  }
+  return { state: st, lines };
+}
+
+// The OOM kills in a kernel log, each keyed by its timestamp in seconds since boot, or by its whole
+// line where it has none: one `Out of memory: Killed process` line per kill, global or a cgroup's
+// (`Memory cgroup out of memory: …`); the `oom-kill:` summary beside a global one is not counted.
+export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out of memory: Killed process/i.test(l))
+  .map((l) => { const m = /^\[\s*(\d+(?:\.\d+)?)\]/.exec(l); return m ? Number(m[1]) : l.trim(); });
+
+// What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
+// when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
+export function harmSample() {
+  // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
+  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null };
+  const m = linuxMeminfo();
+  const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
+  let oom = null;
+  try {
+    const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
+    oom = oomKills(out);
+  } catch { /* dmesg_restrict, or no dmesg */ }
+  let tmpGiB = null;
+  try {
+    const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
+    if (tmpfs) { const st = statfsSync('/tmp'); tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB; }
+  } catch { /* not Linux */ }
+  return { swapGiB, oom, tmpGiB };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -2028,7 +2132,7 @@ const printRead = (cmd, id) => {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2201,10 +2305,18 @@ if (isMain) {
         break;
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
-        for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        for (const [id, r] of Object.entries(CONFIG_ROWS)) {
+          // A row `list` refuses is not set, whatever its first item reads as through `get`.
+          let refused = null;
+          try { configValues(id); } catch (e) { if (!(e instanceof DeskConfigError)) throw e; refused = e.message; }
+          console.log(`get  ${id} -> §${r.section} "${r.row}" = ${refused ? `(not readable: ${refused})` : configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        }
         break;
       case 'paths': {
-        const lines = Object.entries(PATHS).map(([k, f]) => [k, f()]);
+        // --machine: only the entries no repo is needed for, so a caller outside a configured repo
+        // can still find desk's own directories.
+        const keys = args[0] === '--machine' ? MACHINE_PATHS : Object.keys(PATHS);
+        const lines = keys.map((k) => [k, PATHS[k]()]);
         for (const [k, v] of lines) console.log(`${k}=${shellQuote(v)}`);
         break;
       }
@@ -2234,6 +2346,7 @@ if (isMain) {
           const cfg = { band: sustainedBandGiB(), windowMs: opt('--window', 300) * 1000 };
           const intervalMs = opt('--interval', 30) * 1000;
           let state = null;
+          let harm = null;
           let unread = null;
           for (;;) {
             // A sample whose processes cannot be read is skipped, said once until ps reads again.
@@ -2245,6 +2358,10 @@ if (isMain) {
             const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy }, cfg);
             state = r.state;
             if (r.line) console.log(r.line);
+            // --window is the avail watch's; the harm signals keep their own ten-minute window.
+            const h = harmStep(harm, { now: Date.now(), ...harmSample() });
+            harm = h.state;
+            for (const l of h.lines) console.log(l);
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }
@@ -2351,6 +2468,10 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
+      // unanswered <config.md>: how many of its rows are still `TODO` (install.sh's per-repo line).
+      case 'unanswered':
+        console.log(unansweredRows(args[0]));
+        break;
       case 'drift': {
         const ai = args.indexOf('--app');
         if (ai >= 0) {
@@ -2637,6 +2758,8 @@ if (isMain) {
         process.exit(2);
         break;
       }
+      case 'lease':
+        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
       default:
         console.error(deskEnvUsage());
         process.exit(2);

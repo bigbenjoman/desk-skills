@@ -202,7 +202,7 @@ def repo_activity(repo, start, end):
         (raised if actions[0] == "raised" else touched).append(row)
 
     scope = "" if repo.scope == "this" else f", {desk_repos.SCOPE_LABELS[repo.scope]}"
-    print(f"# Jira activity for {me['displayName']} in {project or repo.slug} ({repo.slug}{scope}), {window.label(start)}\n")
+    print(f"# Jira activity for {me['displayName']} in {project or repo.slug} ({repo.slug}{scope}), {window.label(start, end)}\n")
     if not raised and not touched:
         print("No Jira activity in the window.\n")
         return
@@ -243,7 +243,7 @@ def main():
     window.add_day_argument(ap)
     desk_repos.add_include_argument(ap)
     args = ap.parse_args()
-    start, end = window.resolve(args.day)
+    start, end = window.resolve(args.day, since=args.since, since_for=args.since_for)
     repos, current = desk_repos.load_all(args.include)
     if current is None:
         print("Not inside a git repo: run from the repo the check-out is for.")

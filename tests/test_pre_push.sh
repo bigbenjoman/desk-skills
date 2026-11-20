@@ -33,12 +33,19 @@ cd "$R" || exit 1
 config(){ # config <Pre-push checks cell, or nothing for no row>
   { printf '## 0. Repo\n| Field | Value |\n|---|---|\n| Default branch | `main` |\n\n'
     printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Typecheck | `sub: sh tc.sh` |\n'
+    [ -n "${LINTROW:-}" ] && printf '| Lint | %s |\n' "$LINTROW"
     [ -n "${1:-}" ] && printf '| Pre-push checks | %s |\n' "$1"; } > "$DESK_CONFIG"
 }
 ROW='`sh gen.sh` `sub: sh tc.sh` `sh lint.sh`'
 commit(){ echo "$1" >> "$R/notes"; git add notes; git commit -q -m "$1"; }
 push(){ rm -f "$T/ran"; out=$(git push "$@" 2>&1); rc=$?; ran=$(tr '\n' ' ' < "$T/ran" 2>/dev/null); }
 remote(){ git --git-dir="$T/origin.git" rev-parse -q --verify "$1" 2>/dev/null; }
+# hold <name>: takes the test lock in the background, as with-lock.sh gives it to a suite, and returns
+# once it is held, with its pid in $holder. It holds the lock until `release <name>` writes $T/<name>.go,
+# so how long it holds is the test's to say, not a sleep's (a holder never released gives up after 30 s).
+hold(){ bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/$1'; i=0; while [ ! -e '$T/$1.go' ] && [ \$i -lt 600 ]; do sleep 0.05; i=\$((i + 1)); done" & holder=$!
+  local n=0; while [ ! -f "$T/$1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done; }
+release(){ : > "$T/$1.go"; }
 
 # ---- no row: exactly as today ----
 config
@@ -82,28 +89,31 @@ git checkout -q -- notes
 
 # ---- the typecheck item and the box-wide test lock ----
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `pre-push-lock-timeout-s` | `0` | test |\n' > "$DESK_MACHINE"
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/held'; sleep 3" & holder=$!
-n=0; while [ ! -f "$T/held" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold held
 push origin main
 check "lock busy past the timeout: typecheck skipped, the rest ran" '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ]'
 check "the skip says CI will run it"                  '[[ "$out" == *"skip  sh tc.sh (in sub): the box-wide test lock stayed busy for 0s; CI will run it"* ]]'
 # A filtered typecheck is not the Typecheck row's exact text, and is as heavy, so its name takes the lock too.
 config '`sh gen.sh` `sub: sh tc.sh typecheck` `sh lint.sh`'; commit filtered; push origin main
 check "an item naming typecheck takes the lock"       '[ $rc -eq 0 ] && [ "$ran" = "gen lint " ] && [[ "$out" == *"skip  sh tc.sh typecheck (in sub): the box-wide test lock stayed busy for 0s"* ]]'
+# A type-aware lint is as heavy as a typecheck, so a §4 Lint item takes the lock too, with arguments added or not.
+LINTROW='`sh lint.sh`' config '`sh gen.sh` `sh lint.sh`'; commit lintlock; push origin main
+check "DS-855 an item equal to a Lint item takes the lock" '[ $rc -eq 0 ] && [ "$ran" = "gen " ] && [[ "$out" == *"skip  sh lint.sh: the box-wide test lock stayed busy for 0s"* ]]'
+LINTROW='`sh lint.sh`' config '`sh gen.sh` `sh lint.sh --strict`'; commit lintargs; push origin main
+check "DS-855 a Lint item with arguments added takes the lock" '[ $rc -eq 0 ] && [ "$ran" = "gen " ] && [[ "$out" == *"skip  sh lint.sh --strict: the box-wide test lock stayed busy for 0s"* ]]'
 config "$ROW"
 
 # with-lock.sh --timeout on its own
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c "echo ran >> '$T/wl'" 2>&1); rc=$?
 check "with-lock --timeout: exits 75 while held, command not run" '[ $rc -eq 75 ] && [ ! -f "$T/wl" ] && [[ "$out" == *"gave up waiting for the tsc lock after 0s"* ]]'
-wait "$holder"
+release held; wait "$holder"
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 3' 2>&1); rc=$?
 check "with-lock --timeout: a free lock runs the command, keeps its status" '[ $rc -eq 3 ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout soon true 2>&1); rc=$?
 check "with-lock --timeout: a non-number is refused"  '[ $rc -eq 2 ]'
 # The test lock has slots: the machine profile's test-lock-slots row, overridden by DESK_TEST_LOCK_SLOTS
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `2` | test |\n' > "$DESK_MACHINE"
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot1'; sleep 3" & h1=$!
-n=0; while [ ! -f "$T/slot1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold slot1; h1=$holder
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 4' 2>&1); rc=$?
 check "with-lock slots: a second command runs beside the first" '[ $rc -eq 4 ]'
 # Slot 1 is the original path, so an older copy of the script, which knows only that path, queues
@@ -113,15 +123,14 @@ if command -v flock >/dev/null 2>&1; then
 else
   check "with-lock slots: slot 1 is held at the original path" '[ -d "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.1.d" ]'
 fi
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/slot2'; sleep 3" & h2=$!
-n=0; while [ ! -f "$T/slot2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold slot2; h2=$holder
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 true 2>&1); rc=$?
 check "with-lock slots: a third waits while both slots are held" '[ $rc -eq 75 ]'
 out=$(DESK_TEST_LOCK_SLOTS=3 bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 5' 2>&1); rc=$?
 check "with-lock slots: DESK_TEST_LOCK_SLOTS wins over the profile" '[ $rc -eq 5 ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" browser --timeout 0 sh -c 'exit 6' 2>&1); rc=$?
 check "with-lock slots: the browser lock is its own" '[ $rc -eq 6 ]'
-wait "$h1" "$h2"
+release slot1; release slot2; wait "$h1" "$h2"
 check "with-lock slots: every slot released" '[ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.2.d" ]'
 mkdir -p "$DESK_LOCK_DIR/desk-test.lock.d" "$DESK_LOCK_DIR/desk-test.lock.2.d"
 echo 999999 > "$DESK_LOCK_DIR/desk-test.lock.d/pid"; echo 999998 > "$DESK_LOCK_DIR/desk-test.lock.2.d/pid"
@@ -130,8 +139,7 @@ check "with-lock slots: a dead holder's slot is taken over" '[ $rc -eq 7 ]'
 # §4 Suite weight light: a repo's test lock becomes the light lock, apart from the heavy test lock.
 cp "$DESK_CONFIG" "$T/config.bak" 2>/dev/null || :
 printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Suite weight | `light` |\n' > "$DESK_CONFIG"
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/light1'; sleep 3" & h3=$!
-n=0; while [ ! -f "$T/light1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold light1; h3=$holder
 out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 8' 2>&1); rc=$?
 check "suite weight light: a typecheck runs beside a light suite, on the test lock" '[ $rc -eq 8 ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 true 2>&1); rc=$?
@@ -141,20 +149,18 @@ if command -v flock >/dev/null 2>&1; then
 else
   check "suite weight light: it holds the light lock, not the test lock" '[ -d "$DESK_LOCK_DIR/desk-light.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ]'
 fi
-wait "$h3"
+release light1; wait "$h3"
 printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Suite weight | `heavy` |\n' > "$DESK_CONFIG"
-DESK_TEST_LOCK_SLOTS=1 bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/heavy1'; sleep 3" & h4=$!
-n=0; while [ ! -f "$T/heavy1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+DESK_TEST_LOCK_SLOTS=1 hold heavy1; h4=$holder
 out=$(DESK_TEST_LOCK_SLOTS=1 bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 true 2>&1); rc=$?
 check "suite weight heavy: a suite holds the test lock as before" '[ $rc -eq 75 ]'
-wait "$h4"
+release heavy1; wait "$h4"
 if [ -f "$T/config.bak" ]; then mv "$T/config.bak" "$DESK_CONFIG"; else rm -f "$DESK_CONFIG"; fi
 rm -f "$DESK_MACHINE"
-out=$(bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/one'; sleep 2" 2>&1) & h3=$!
-n=0; while [ ! -f "$T/one" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold one; h3=$holder
 out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 true 2>&1); rc=$?
 check "with-lock slots: no profile row keeps one slot" '[ $rc -eq 75 ]'
-wait "$h3"
+release one; wait "$h3"
 # A leading -- is optional without --cwd: `with-lock.sh browser -- <cmd>` runs <cmd>, not `--`
 out=$(bash "$SRC/desk/bin/with-lock.sh" browser -- sh -c 'echo ran; exit 3' 2>&1); rc=$?
 check "with-lock <lock> -- <cmd>: runs the command under the lock" '[ $rc -eq 3 ] && [ "$out" = ran ]'
@@ -212,10 +218,9 @@ config; head_run
 check "--head with no row: nothing runs, exit 0"      '[ $rc -eq 0 ] && [ -z "$ran" ]'
 config "$ROW"
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `pre-push-lock-timeout-s` | `0` | test |\n' > "$DESK_MACHINE"
-bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/held2'; sleep 3" & holder=$!
-n=0; while [ ! -f "$T/held2" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+hold held2
 commit j; head_run
-wait "$holder"; rm -f "$DESK_MACHINE"; push origin main
+release held2; wait "$holder"; rm -f "$DESK_MACHINE"; push origin main
 check "a pass with a check skipped on the lock is not recorded" '[ $rc -eq 0 ] && [ "$ran" = "gen tc lint " ]'
 
 echo "pre-push: $PASS checks passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

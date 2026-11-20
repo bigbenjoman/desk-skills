@@ -42,3 +42,7 @@ section 1), then `AUTOPILOT_PARK` with "awaiting approval" in the question. **Th
 not the block**: a worker can print a flawless block and then post anyway, which is why the
 command is denied rather than discouraged. Everything else the config grants (pushing,
 the draft PR, the review post) still happens before you park, so only the Jira step is left.
+The pass keeps the park file's `approve` with the park and needs-you shows it whole, so the
+orchestrator relays it from there rather than from your log. The file adds to the block and never
+replaces it. A park on any other write you may not make (a PR comment, a description edit) keeps its
+text the same way.

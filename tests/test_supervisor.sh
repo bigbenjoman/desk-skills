@@ -342,12 +342,16 @@ verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"n
 : > "$T/pass.calls"
 out=$(tick); out=$(tick)
 check "DS-269 an idle batch with a failed ticket runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
-# The first idle is 4s old by the recheck, so a 3s interval runs a pass after it only if that pass
-# did not record the idle again.
-sleep 4
-out=$(DESK_IDLE_RECHECK_MS=1 tick)
+# backdate <seconds>: moves the recorded idle that far into the past, as if the batch had sat idle that
+# long, so an interval passes without the test waiting it out. Each case below backdates 10 minutes
+# and sets a 5-minute interval: a tick on a loaded machine never takes the difference.
+backdate(){ node -e 'const fs = require("fs"), f = process.argv[1], s = JSON.parse(fs.readFileSync(f, "utf8")); s.idle_at = new Date(Date.parse(s.idle_at) - Number(process.argv[2]) * 1000).toISOString(); fs.writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1"; }
+# The first idle is 10 minutes old by the recheck, so a 5-minute interval runs a pass after it only if
+# that pass did not record the idle again.
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-269 AC1 once the interval has passed, the next tick runs a pass anyway" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "a park is answered, or 30 minutes pass with anything parked, failed or held behind a blocker in no batch" "$LOG"'
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-269 AC1 that pass starts the interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}}}' b3
 out=$(tick); out=$(DESK_IDLE_RECHECK_MS=1 tick)
@@ -357,7 +361,8 @@ mkdir -p "$T/state/briefings"
 printf '# Briefing for P\n\n## Answer from the user (2020-01-01T09:30:00Z)\n\nan answer the last pass already had\n' > "$T/state/briefings/P.md"
 out=$(tick); out=$(tick)
 check "DS-269 AC5 an answer older than the idle wakes nothing" '[ "$(count "$T/pass.calls")" = 4 ]'
-sleep 1
+# The idle is 10 minutes old (inside the 30-minute recheck), so an answer stamped this second is after it.
+backdate 600
 printf '\n## Answer from the user (%s)\n\nblue\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$T/state/briefings/P.md"
 out=$(tick)
 check "DS-269 AC5 an answer to a park never handed on ends the idle: a pass runs" '[ "$(count "$T/pass.calls")" = 5 ]'
@@ -371,13 +376,13 @@ queue true '{}' '{"H":{"key":"H","state":"parked","held_by":"X-1","held_outside"
 : > "$T/pass.calls"
 out=$(tick); out=$(tick)
 check "DS-815 an idle batch held behind an outside blocker runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
-sleep 4
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC1 once the interval has passed, a batch held only behind an outside blocker runs a pass" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"H":{"key":"H","state":"parked","held_by":"A","held_outside":"X-9","park":{"question":"held by orchestrator: blocked by A"}}}' b7
 : > "$T/pass.calls"
-out=$(tick); sleep 4
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+out=$(tick); backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
 
@@ -387,15 +392,16 @@ queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":
 : > "$T/pass.calls"
 out=$(tick)
 check "DS-852 the idle line names the shorter interval while a park waits on a run" 'grep -q "(2 minutes while a park waits on an Actions run or a PR.s checks)" "$LOG"'
-sleep 4
-out=$(DESK_RUN_RECHECK_MS=3000 tick)
+backdate 600
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
 check "DS-852 AC2 once the run interval has passed, an idle batch waiting on a run runs a pass, well inside the idle interval" '[ "$(count "$T/pass.calls")" = 2 ]'
-out=$(DESK_RUN_RECHECK_MS=3000 tick)
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
 check "DS-852 AC2 that pass starts the run interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","clears_when":{"kind":"none"}}}}' b10
-: > "$T/pass.calls"
-out=$(tick); sleep 4
-out=$(DESK_RUN_RECHECK_MS=3000 tick)
+# P's answer from the idle-recheck cases above is not this batch's: backdated past it, the idle would read it as new.
+rm -f "$T/state/briefings/P.md"; : > "$T/pass.calls"
+out=$(tick); backdate 600
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
 check "DS-852 AC6 an idle batch with no park on a run or checks keeps the idle interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b11
 

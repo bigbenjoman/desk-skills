@@ -50,6 +50,12 @@ export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key,
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
 
+// A parked ticket recorded done on PR #pr, its park cleared: the `queue.mjs set` fields the pass writes
+// when it opens a refused worker's draft itself, and queue.mjs finish when the orchestrator finished the
+// last step. draft_pr only while the PR is a draft.
+export const doneOnPr = (pr, { draft = false, summary }) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr}`,
+  ...(draft ? [`draft_pr=${pr}`] : []), `result.summary=${summary}`];
+
 // The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
 // ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
 export const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
@@ -125,16 +131,27 @@ const APPROVE_FIELDS = ['kind', 'target', 'body'];
 // object: { approve: {kind, target, body}, missing: null }, the body kept verbatim. Where it has
 // none and its question asks for an approval (or the object lacks a field), `approve` is null and
 // `missing` names what the park file lacks, so the pass reports the park incomplete. Neither: both null.
+// A file on another question than the one parked on is an earlier round's, read as no file. A PR
+// number given as a number is its target as text.
 export function parkApproval(stateDir, key, question) {
-  const rec = readPark(stateDir, key);
-  const a = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
+  const file = readPark(stateDir, key);
+  const fileQ = String(file?.question ?? '').trim();
+  const rec = file && fileQ === String(question ?? '').trim() ? file : null;
+  const raw = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
+  const a = raw && typeof raw.target === 'number' ? { ...raw, target: String(raw.target) } : raw;
   const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
   if (a && !lacks.length) return { approve: { kind: a.kind.trim(), target: a.target.trim(), body: a.body }, missing: null };
   if (!a && !asksApproval(question)) return { approve: null, missing: null };
   return { approve: null, missing: a
     ? `its park file's approve object has no ${lacks.join(', ')}`
-    : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
+    : file?.approve && !rec
+      ? `its park file is on another question ("${fileQ}") than the one parked on, so its approve is an earlier round's`
+      : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
 }
+
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
 
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.

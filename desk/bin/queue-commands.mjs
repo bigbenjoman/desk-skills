@@ -4,6 +4,7 @@
 export const QUEUE_COMMANDS = Object.freeze({
   init: ['--standing', '--if-batch'],
   add: [],
+  adopt: ['--filed'],
   admit: ['--by', '--hold', '--hold-outside', '--hold-merge', '--hold-spine'],
   hold: [],
   'backfill-holds': ['--dry-run'],
@@ -14,8 +15,8 @@ export const QUEUE_COMMANDS = Object.freeze({
   requeue: [],
   stop: [],
   handback: [],
-  'step-done': [],
   finish: ['--pr'],
+  'step-done': [],
   'follow-ran': [],
   approve: [],
   reject: [],

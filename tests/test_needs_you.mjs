@@ -108,6 +108,7 @@ put('delta', { port: 3400, beat: 3, tickets: { 'D-1': { state: 'running', lane: 
 put('epsilon', { port: 3600 });
 
 const N = await import('../desk/bin/needs-you.mjs');
+const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
 const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
 const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
@@ -182,7 +183,8 @@ t('DS-324 AC3 a later run with nothing changed still leaves them out', N.collect
 
 // ---- A spine approval runs as its own repo, and what is left for the person is shown, not refused
 const s7 = N.record({ word: 'alpha', ticket: 'A-7', action: 'approve' });
-const gh = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '';
+// The listings above read each repo's red-main issues (`issue list`); the approve's own call is the rest.
+const gh = (existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '').split('\n').filter((l) => !l.startsWith('issue list ')).join('\n');
 t('approve undrafts the PR in the spine\'s repo, under its config, not this checkout\'s', gh.trim(), 'pr ready 41 --repo acme/alpha');
 t('approve that leaves the merge to the person is recorded, and says so', `${s7.ok} ${queueOf('alpha').tickets['A-7'].state} ${/merge PR #41 yourself/.test(s7.line)}`, 'true done true');
 
@@ -723,6 +725,13 @@ t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker t
 t('DS-433 AC3 a green PR GitHub requires an approving review on asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: an approving review is required. Review and approve it on GitHub; desk then merges it.');
 t('DS-433 AC1 a green PR with no merge note, the driver\'s to merge, lists nothing', xi.some((i) => i.t.key === 'X-1'), false);
 
+// #752: a PR the merge driver found with no mergeability answer for past its limit is the person's.
+put('wr', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'W-1': greenPr(97, { merge_blocked: 'merge ref: GitHub has not worked out whether #97 conflicts with its base at d97777777 for 75 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch' }),
+} });
+t('#752 a wedged merge ref is the person\'s, saying how to give it a fresh one', N.collect({ word: 'wr' }).items.find((i) => i.t.key === 'W-1')?.need,
+  'PR #97 looks stuck on GitHub: GitHub has not worked out whether #97 conflicts with its base for 75 minutes, and starts no run for that head. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.');
+
 // ---- DS-420: a red PR the merge driver declined is the person's as its reason says, never called green.
 const redPr = (pr, more = {}) => { const g = greenPr(pr, more); return { ...g, pr_status: { ...g.pr_status, checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] } }; };
 put('xi420', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
@@ -983,6 +992,7 @@ put('ypsilon', { port: 4950, beat: 1, supervised: true, tickets: {
   'Y-2': { state: 'parked', lane: 'A', park: { question: refused, since: minsAgo(40), unpushed } },
   'Y-3': { state: 'triaged', lane: 'A', session_id: 'sess-y3', worktree_busy: { why: heldWhy, at: minsAgo(10) }, prev_park: { question: refused, since: minsAgo(40), round: 1 } },
   'Y-4': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(40) } },
+  'Y-5': { state: 'parked', lane: 'A', park: { question: 'post the comment below on ABC-9?', since: minsAgo(40), approve: { kind: 'jira-comment', target: 'ABC-9', body: 'Line one.\n"Quoted" line two.' } } },
 } });
 const yr = () => loadRepos().find((x) => x.slug === 'acme__ypsilon');
 const yItems = () => Object.fromEntries(N.collect({ word: 'ypsilon' }).items.map((i) => [i.t.key, i]));
@@ -994,6 +1004,10 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
+  yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
+t('#775 and its one line, which the session asks from, points to that text',
+  yLine('Y-5').includes('post the comment below on ABC-9? Its exact text awaiting approval follows this line: show it verbatim before you ask.'), true);
 t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
   `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
 t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');
@@ -3287,6 +3301,69 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-839 AC2 and an end line', list[at + 2 + body.split('\n').length], '--- end of AP-1\'s text awaiting approval ---');
   const other = list.findIndex((l) => l.startsWith('approve839 AP-2 '));
   t('DS-839 a park with nothing to approve has no block under it', /awaiting approval/.test(list[other + 1] ?? ''), false);
+}
+
+// ---- DS-925: an open ci-main-red issue assigned to the person is one item, read through gh on listing
+{
+  put('red925', { port: 4925, beat: 1, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+  const issue = { number: 12, title: 'main is red: a CI lane on main is failing, cancelled or stale', url: 'https://github.com/acme/red925/issues/12', createdAt: minsAgo(30) };
+  const reads = { ...N.READS, ciRed: (r) => (r.slug === 'acme__red925' ? [issue] : []) };
+  const reds = () => N.collect({ word: 'red925', reads }).items.filter((i) => i.kind === 'ci-red');
+  const s = reds();
+  t('DS-925 one item an issue, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ci-red:12 standing');
+  t('DS-925 its need names the issue and what to do', s[0]?.need, 'main is red in acme/red925: issue #12 (main is red: a CI lane on main is failing, cancelled or stale, https://github.com/acme/red925/issues/12) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked');
+  t('DS-925 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  writeFileSync(GH_LOG, '');
+  N.needsCount(loadRepos(Date.now(), 'red925').find((r) => r.slug === 'acme__red925' && r.batch == null));
+  t('DS-925 desk-q\'s count reads no gh', readFileSync(GH_LOG, 'utf8').includes('issue list'), false);
+  writeFileSync(GH_LOG, '');
+  N.collect({ word: 'red925' });
+  t('DS-925 listing asks gh for the open issues assigned to the person', readFileSync(GH_LOG, 'utf8').includes('issue list --repo acme/red925 --label ci-main-red --state open --assignee @me'), true);
+  put('quiet925', { port: 4926 });
+  const quiet = { ...N.READS, ciRed: (r) => (r.slug === 'acme__quiet925' ? [{ ...issue, url: 'https://github.com/acme/quiet925/issues/12' }] : []) };
+  t('DS-925 the whole list reads a quiet repo the home screen does not show', N.collect({ reads: quiet }).items.filter((i) => i.kind === 'ci-red').map((i) => `${i.r.slug} ${i.t.key}`).join(), 'acme__quiet925 ci-red:12');
+  t('DS-925 no read, no item', N.collect({ word: 'red925', reads: null }).items.filter((i) => i.kind === 'ci-red').length, 0);
+  const done = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'done', reads });
+  t('DS-925 done records nothing and says what clears it', `${done.ok} ${done.line} ${reds().length}`, 'true red925 ci-red:12: noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing. 1');
+  const off = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'not-now', reads });
+  t('DS-925 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+}
+
+// ---- #756: a base red under the batch's PRs is one item, naming the checks, the PRs held and the last merges
+{
+  const hold = (checks, since, held = true) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since, held });
+  const st = (pr, red, o = {}) => ({ pr, state: 'OPEN', head: 'h', checks: red.map((name) => ({ name, status: 'completed', conclusion: 'failure' })), ...o });
+  const ticket = (pr, base_red, o = {}) => ({ state: 'done', result: { pr }, base_red, pr_status: st(pr, base_red?.checks ?? []), ...o });
+  put('red756', { port: 4756, beat: 1, tickets: {
+    'B-1': ticket(31, hold(['tests'], minsAgo(40))),
+    'B-2': ticket(32, hold(['lint', 'tests'], minsAgo(20))),
+    // Held on two checks, one of them green since: only the red one is named.
+    'B-3': ticket(37, hold(['tests', 'typecheck'], minsAgo(10)), { pr_status: st(37, ['tests']) }),
+    // Two workflows' checks of one name, the later run green: the other is still red, so it is still held.
+    'B-4': ticket(38, hold(['e2e'], minsAgo(10)), { pr_status: st(38, [], { checks: [{ name: 'e2e', status: 'completed', conclusion: 'failure', runId: '5' }, { name: 'e2e', status: 'completed', conclusion: 'success', runId: '9' }] }) }),
+    'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
+    'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
+    // Records that are not holds now: a PR closed unmerged, one green at the head the hold read, one at
+    // a new head, and one taking a fix try beside its base red check.
+    'X-1': ticket(33, hold(['tests'], minsAgo(120)), { pr_status: st(33, ['tests'], { state: 'CLOSED' }) }),
+    'X-2': ticket(34, hold(['tests'], minsAgo(120)), { pr_status: st(34, []) }),
+    'X-3': ticket(35, hold(['tests'], minsAgo(120)), { pr_status: st(35, ['tests'], { head: 'h2' }) }),
+    'X-4': ticket(36, hold(['tests'], minsAgo(120), false)),
+  } });
+  const reds = () => N.collect({ word: 'red756' }).items.filter((i) => i.kind === 'base-red');
+  const s = reds();
+  t('#756 one item for the base, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'base-red:default standing');
+  t('#756 its need names the checks, the open PRs held and the last merges desk made, newest first', s[0]?.need,
+    `the default branch is red on "e2e", "lint" and "tests", so #31 (B-1), #32 (B-2), #37 (B-3) and #38 (B-4) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
+  t('#756 it is aged from the earliest open hold', s[0]?.since, Date.parse(minsAgo(40)));
+  t('#756 desk-q\'s count lists it', N.needsCount(loadRepos(Date.now(), 'red756').find((r) => r.slug === 'acme__red756' && r.batch == null)).items.some((i) => i.item.kind === 'base-red'), true);
+  const done = N.record({ word: 'red756', ticket: 'base-red:default', action: 'done' });
+  t('#756 done records nothing and says what clears it', `${done.ok} ${reds().length}`, 'true 1');
+  const off = N.record({ word: 'red756', ticket: 'base-red:default', action: 'not-now' });
+  t('#756 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) },
+    'G-3': ticket(42, hold(['tests'], minsAgo(5)), { pr_status: st(42, []) }) } });
+  t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
