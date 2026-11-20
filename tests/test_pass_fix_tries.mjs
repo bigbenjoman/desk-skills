@@ -122,6 +122,14 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('#902 whatever the reviewer check failed on', applied(signinFindings)[0]?.call?.fix?.kind, 'review');
   const elsewhere = drive(s, { feedback: { ...fb, head: 'd'.repeat(40), review: { id: 'R1', verdict: { p0: '1' }, body: 'x' } }, reads: () => reads() });
   t('#902 a review read at another head is not worked, and the hold stands', j([applied(elsewhere).length, elsewhere.find((a) => a.type === 'gate-hold')?.on]), j([0, true]));
+  const personOnly = { id: 'R2', verdict: { p0: '0', p1: '0', gaps: '1' }, body: "### Requirement gaps\n- PERSON'S CALL · AC2: \"x\" — only the person can settle it\n" };
+  const toPerson = drive(s, { feedback: { ...fb, review: personOnly }, reads: () => reads() });
+  t('#902 a review whose only gap is the person\'s goes to them, and the hold lifts', j([applied(toPerson)[0]?.call?.call, toPerson.find((a) => a.type === 'gate-hold')?.on]), j(['stuck', false]));
+  const noList = drive(s, { feedback: { ...fb, review: { id: 'R3', verdict: { p0: '1' }, body: 'no list' } }, reads: () => reads() });
+  t('#902 a review that yields no call keeps its hold', j([applied(noList).length, noList.find((a) => a.type === 'gate-hold')?.on]), j([0, true]));
+  const p0 = { id: 'R4', verdict: { p0: '1', p1: '0' }, body: '### P0 (1)\n- src/a.ts:3 the refund rollback deletes the event' };
+  const masked = drive(s, { feedback: { ...fb, review: null, gateReview: p0 }, reads: () => reads() });
+  t('#902 a gate reviewer\'s review is worked though desk\'s own later verdict is clean', applied(masked)[0]?.call?.fix?.kind, 'review');
   const signin = drive(snap([[tk(), verdictPr]], { ...base, reviewer: { key: 'reviewer-signin', kind: 'auth', why: 'signed out' } }), { feedback: fb, reads: () => reads({ reads: { atHead: () => stale } }) });
   t('#881 a reviewer that cannot be read still holds the review', j(signin), j([{ type: 'reads', key: 'T-1', dirty: false, dirtyFiles: null }, { type: 'feedback', key: 'T-1', pr: 697, gate: true }, { type: 'gate-hold', key: 'T-1', on: true }]));
 }

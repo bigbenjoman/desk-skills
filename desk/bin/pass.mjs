@@ -792,12 +792,9 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
-// desk's verdict logins and §4 Gate reviewers' together, as loginIn reads a list; desk's alone where the
-// row does not read.
+// §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
 const gateHandle = () => {
-  let gate = null;
-  try { gate = E.gateReviewers(); } catch { /* the reviewer check says it */ }
-  return [conflictHandle, ...(gate ?? [])].filter(Boolean).join(',') || null;
+  try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
 };
 // A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
@@ -4170,16 +4167,19 @@ function fixReads(t, s, dirty, dirtyFiles) {
     },
   });
 }
-// With `gate`, a §4 Gate reviewer's desk-review counts as the PR's review too: a PR the reviewer check
-// holds still gets its findings fixed (pass/fix-tries.mjs heldTry).
+// With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
+// it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
+// it. A PR the reviewer check holds still gets those findings fixed (pass/fix-tries.mjs heldTry).
 function readFeedback(n, gate = false) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
   try {
     const payload = JSON.parse(r.out);
-    const read = readThreads(payload, { handle: gate ? gateHandle() : conflictHandle, clean: E.configValue('clean-verdict') });
-    return read && { ...read, payload };
+    const clean = E.configValue('clean-verdict');
+    const read = readThreads(payload, { handle: conflictHandle, clean });
+    const g = gate && gateHandle();
+    return read && { ...read, payload, ...(gate ? { gateReview: (g && readThreads(payload, { handle: g, clean })?.review) || null } : {}) };
   } catch { return null; }
 }
 // Replies on each thread a finished feedback try worked, then resolves it: -> the ids resolved. Each

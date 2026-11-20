@@ -108,7 +108,8 @@ function* fixTry(t, p, s) {
 }
 
 // A PR the reviewer check holds. The hold is for a review that is missing or stale, so a review at the
-// head with findings, desk's or a §4 Gate reviewer's (`gate` on the read), still goes to a review fix.
+// head that is not clean, a §4 Gate reviewer's (`gate` on the read) or else desk's own, still goes to a
+// review fix, or to the person for the gaps only they settle; the hold lifts only where one goes.
 // Where the check fails only because the gate counts another account (kind `mismatch`), desk still
 // posts its verdicts and the merge driver counts them though the gate does not, so a head the driver
 // would hold for want of a clean verdict gets its review try now, while the gate is red. Nothing else
@@ -116,13 +117,14 @@ function* fixTry(t, p, s) {
 function* heldTry(t, p, s) {
   const reads = yield { type: 'reads', key: t.key, dirty: false, dirtyFiles: null };
   const fb = yield { type: 'feedback', key: t.key, pr: p.pr, gate: true };
-  const findings = !!fb?.review && fb.head === p.head;
-  // A PR with findings to fix is not held: the hold is recorded, and listed, only where it holds.
-  yield { type: 'gate-hold', key: t.key, on: !findings };
-  if (!fb || fb.head !== p.head) return;
-  let c = null;
-  if (findings) c = findingsFix(t, p, s, fb, reads);
-  else if (s.reviewer?.kind === 'mismatch') {
+  const atHead = !!fb && fb.head === p.head;
+  const review = atHead ? fb.gateReview ?? fb.review : null;
+  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement }) : null;
+  // The hold is recorded, and listed, only where nothing goes to the PR's findings.
+  yield { type: 'gate-hold', key: t.key, on: !worked };
+  if (!atHead) return;
+  let c = worked;
+  if (!review && s.reviewer?.kind === 'mismatch') {
     const { carry, scope, baseMerge } = reads.moves();
     const r = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), base: s.base, baseMerge });
     c = r?.call === 'requeue' ? r : null;
