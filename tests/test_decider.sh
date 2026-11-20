@@ -41,7 +41,6 @@ EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
@@ -88,6 +87,9 @@ printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell
 chmod +x "$T/fakes/claude" "$T/fakes/osascript" "$T/fakes/gh" "$T/fakes/notify-send" "$T/fakes/powershell.exe"
 export PATH="$T/fakes:$PATH"
 
+# Every module the copied files import, linked from the source, once the fakes are written so none
+# is linked over (a fake written through a link would overwrite the real module).
+node "$S/link_imports.mjs" "$B" "$T/bin" supervisor.mjs || exit 1
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
 LOG="$T/state/supervisor.log"
 # Sessions started since the last mark, from the supervisor's own log line: written before the tick

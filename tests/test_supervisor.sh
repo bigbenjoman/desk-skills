@@ -47,7 +47,6 @@ config yes yes
 # The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
 # installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
 cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -109,6 +108,9 @@ printf '#!/bin/sh\necho OPEN\n' > "$T/fakes/gh"
 chmod +x "$T/bin/merge-driver.sh" "$T/fakes/launchctl" "$T/fakes/osascript" "$T/fakes/gh"
 export PATH="$T/fakes:$PATH"
 
+# Every module the copied files import, linked from the source, once the fakes are written so none
+# is linked over (a fake written through a link would overwrite the real module).
+node "$S/link_imports.mjs" "$B" "$T/bin" supervisor.mjs installed.mjs || exit 1
 sup(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" "$@" 2>&1); }
 tick(){ sup tick --foreground; }
 # queue <supervised> <approved json> <tickets json> [batch]

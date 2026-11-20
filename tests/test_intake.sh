@@ -52,7 +52,8 @@ config yes
 
 # intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs queue-store.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+# Run, not imported: queue.mjs records each ticket intake admits, and answer.mjs answers as /desk-needs-you does.
+for f in queue.mjs answer.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -120,6 +121,9 @@ printf '#!/bin/sh\nexit 1\n' | tee "$T/fakes/notify-send" > "$T/fakes/powershell
 chmod +x "$T/fakes/"* "$T/bin/triage.sh" "$T/bin/merge-driver.sh"
 export PATH="$T/fakes:$PATH"
 
+# Every module the copied files import, linked from the source, once the fakes are written so none
+# is linked over (a fake written through a link would overwrite the real module).
+node "$S/link_imports.mjs" "$B" "$T/bin" intake.mjs supervisor.mjs epic-plan.mjs || exit 1
 intake(){ (cd "$T/repo" && node "$T/bin/intake.mjs" run --force "$@" 2>&1); }
 tick(){ (cd "$T/repo" && node "$T/bin/supervisor.mjs" tick --foreground 2>&1); }
 search(){ printf '{"issues":[%s]}\n' "$(printf '{"key":"%s"},' "$@" | sed 's/,$//')" > "$T/search.json"; }
