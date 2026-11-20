@@ -3,11 +3,11 @@
 // (DESK_MERGE_LOG names another file). Every desk path that merges writes here, so a merger sees that
 // another is already on the PR before it merges, and the person and desk-q can read who did.
 //
-//   merge-log.mjs claim <PR> <sha> --by <who> [--not-armed] [--repo <owner/name>]
+//   merge-log.mjs claim <PR> <sha> --by <who> [--repo <owner/name>]
 //       before merging: refused (exit 11, naming the other) when another merger claimed the PR in the
 //       last CLAIM_MS, recorded it merged, or armed auto-merge not since disarmed; otherwise records the
-//       claim (exit 0). --not-armed says GitHub shows the PR's auto-merge off: an `armed` record no
-//       longer holds it, and is closed with a `disarmed` line.
+//       claim (exit 0). An `armed` record is checked against GitHub at the claim: off there, it no
+//       longer holds the PR, and is closed with a `disarmed` line.
 //   merge-log.mjs record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--repo <owner/name>] [--why <text>]
 //       after: what happened. `armed` is auto-merge armed, which GitHub merges later; whoever turns it
 //       off records `disarmed`, which releases the PR.
@@ -18,6 +18,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { EXIT } from './batch-state.mjs';
 import { lock, unlock } from './dir-lock.mjs';
@@ -47,8 +48,7 @@ function locked(path, fn) {
 // event on it is `armed` (auto-merge, until it is disarmed or failed: anyone who disarms it records
 // `disarmed`); or one whose last event is a claim made within CLAIM_MS. The same merger's own events
 // never block it.
-// `notArmed`: GitHub says the PR's auto-merge is off, so no `armed` record holds it, whoever turned it
-// off (a person in GitHub's UI, GitHub itself, or a desk disarm whose record was lost).
+// `notArmed`: GitHub shows the PR's auto-merge off, so no `armed` record holds it (claim reads it).
 export function otherMerger(events, { repo, pr, by, now = Date.now(), notArmed = false }) {
   const mine = events.filter((e) => e.repo === repo && String(e.pr) === String(pr));
   const merged = [...mine].reverse().find((e) => e.event === 'merged');
@@ -66,12 +66,28 @@ export function otherMerger(events, { repo, pr, by, now = Date.now(), notArmed =
 }
 export const eventLine = (e) => `${e.at}  ${e.repo}#${e.pr}  ${e.event}  at ${String(e.sha ?? '?').slice(0, 12)}  by ${e.by}${e.why ? `  (${e.why})` : ''}`;
 
-export function claim({ repo, pr, sha, by, now = Date.now(), notArmed = false, path = logPath() }) {
+// Whether GitHub shows the PR's auto-merge armed now: true, false, or null when it could not be read.
+export function ghArmed(repo, pr) {
+  const r = spawnSync('gh', ['pr', 'view', String(pr), '--repo', repo, '--json', 'autoMergeRequest'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (r.status !== 0) return null;
+  try { return JSON.parse(r.stdout).autoMergeRequest != null; } catch { return null; }
+}
+
+export function claim({ repo, pr, sha, by, now = Date.now(), armedNow = ghArmed, path = logPath() }) {
   return locked(path, () => {
     const events = readLog(path);
-    // An armed record GitHub no longer bears out is closed in the log, so it reads true from now on.
-    const stale = notArmed && otherMerger(events, { repo, pr, by, now })?.event === 'armed';
-    if (stale) append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event: 'disarmed', why: 'GitHub shows auto-merge off' }, path);
+    // An armed record is checked against GitHub, read now under the lock: auto-merge turned off
+    // anywhere (GitHub's UI, GitHub itself, a disarm whose record was lost) releases it, and it is
+    // closed in the log so it reads true from then on. Unreadable, the hold stands.
+    let notArmed = false;
+    if (otherMerger(events, { repo, pr, by, now })?.event === 'armed') {
+      const armed = armedNow(repo, pr);
+      if (armed === null) return { ok: false, why: `${repo}#${pr} has auto-merge armed in the merge log, and GitHub could not be read to check it is still on: not merging` };
+      if (!armed) {
+        append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event: 'disarmed', why: 'GitHub shows auto-merge off' }, path);
+        notArmed = true;
+      }
+    }
     const other = otherMerger(events, { repo, pr, by, now, notArmed });
     if (other) return { ok: false, why: `${repo}#${pr} is already ${other.event === 'claim' ? 'claimed' : other.event} by ${other.by} (${other.at}, at ${String(other.sha ?? '?').slice(0, 12)}): not merging` };
     append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event: 'claim' }, path);
@@ -88,10 +104,9 @@ const isMain = (() => {
 if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v ?? ''; };
-  const notArmed = args.includes('--not-armed'); if (notArmed) args.splice(args.indexOf('--not-armed'), 1);
   const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr');
   const [cmd, pr, sha] = args;
-  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> [--not-armed] | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--why <text>] | show [--pr <n>]   [--repo <owner/name>]';
+  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--why <text>] | show [--pr <n>]   [--repo <owner/name>]';
   const die = (m) => { console.error(`merge-log: ${m}`); process.exit(EXIT.SHOW_PERSON); };
   let repo = repoFlag;
   if (!repo) { try { repo = E.ghRepo(); } catch (e) { die(`no --repo, and §0 GitHub repo could not be read (${e.message})`); } }
@@ -101,7 +116,7 @@ if (isMain) {
   }
   if (!['claim', 'record'].includes(cmd) || !/^[1-9][0-9]*$/.test(pr ?? '') || !/^[0-9a-f]{7,40}$/.test(sha ?? '') || !by) die(usage);
   if (cmd === 'claim') {
-    const r = claim({ repo, pr, sha, by, notArmed });
+    const r = claim({ repo, pr, sha, by });
     if (!r.ok) die(r.why);
     console.log(`claimed ${repo}#${pr} at ${sha.slice(0, 12)} for ${by}`);
   } else {
