@@ -305,6 +305,9 @@ has('#816 a drafted channel update is settled by reading the channel', skill, 'R
 has('#816 it is asked only when no read can settle it', skill, 'Only when no read can (no Slack connector, or §3 bars that channel)');
 has('#816 every check a read can answer is run before handing over', skill, '**Check before posting**: only what no read settles. Before handing over, run every check a\n  read §3 grants can answer');
 lacks('#816 an unread channel is no longer handed over by default', skill, 'If Slack can\'t confirm they posted one');
+has('#830 an unread channel names the Slack role under Missing sources', skill, 'saying why,\n  and name the Slack role under Missing sources with its fix.');
+has('#830 a Slack row that is not yes bars the read', skill, 'is not `yes`; an `ask` row\n  bars it only once the user says no to the read');
+has('#830 a missing permission\'s fix is the row and /desk-setup', skill, 'for a permission, the §3 row to set to `yes`\n  with `/desk-setup`');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
 has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
 has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
