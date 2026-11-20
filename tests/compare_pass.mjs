@@ -98,25 +98,30 @@ function normalizer(roots) {
   };
 }
 
-// Each tree makes its own commits, whose SHAs differ with the second they were made in, so each SHA,
-// whole or abbreviated, is named by the order it first appears in within one run: the same commit at
-// the same step reads alike. Per run, not per suite: two commits a tree made in the same second can
-// share a SHA there and not on the other tree, which would shift every later run's names.
+// Each tree makes its own commits, whose SHAs differ with the second they were made in, so a SHA,
+// whole or abbreviated, is not compared by its value: text matches with each SHA in it as <SHA>
+// (tokens), and the SHAs of matched text must then stand one for one across the run (pairer): the
+// same commit at the same step reads alike, and one commit where the other tree has two differs.
+// Per run, not per suite: two commits a tree made in the same second can share a SHA there and not on
+// the other tree, which would put every later run out of step.
 // A SHA needs a letter and a digit, as a number or a word has not both, except at the lengths the
 // pass abbreviates to (9 and 12) and a whole one: one in about 70 nine-character abbreviations is all
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
-// `fix-<id>.md`) is named the same way, digits or not: each tree's pass started at a different time.
-// Ports are named the same way: two runs take different free ports, but two tickets given one port on
-// one tree and two on the other still differ.
+// `fix-<id>.md`) is treated the same way, digits or not: each tree's pass started at a different time.
+// Ports are treated the same way: two runs take different free ports, but two tickets given one port
+// on one tree and two on the other still differ.
 // Text the pass cut short ("…") is cut at a different place on each tree, so a SHA or port in it can be
-// whole on one and cut, or gone, on the other. It names nothing new for the run: one the run has
-// named keeps that name, as does one cut short ("4a1f…", "port=47…") that starts only one of those,
-// and any other is named within that text alone (<SHA?1>). So the names after it stay in step.
+// whole on one and cut, or gone, on the other. Only the SHAs and ports before the word the cut falls
+// in and after the "…" are paired (sameCut): one cut short, or past the cut on one tree only, pairs
+// with nothing, so the values after it stay in step whichever tree cut.
+// What is shown of a difference names each tree's SHAs and ports by the order they first appear in
+// (renamer), and within text the pass cut short, by that text alone (<SHA?1>).
 const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
 function namer(tag) {
   const seen = new Map();
   return {
+    seen,
     name: (x) => { if (!seen.has(x)) seen.set(x, `<${tag}${seen.size + 1}>`); return seen.get(x); },
     find(x, isCut) {
       if (seen.has(x) || !isCut) return seen.get(x);
@@ -127,7 +132,7 @@ function namer(tag) {
 }
 function renamer() {
   const sha = namer('SHA'), port = namer('PORT');
-  return (s) => {
+  const rename = (s) => {
     // Ports first, so a port cut short is not taken for a SHA.
     if (!s.includes('…')) return s.replace(PORT, (_, pre, p) => pre + port.name(p)).replace(SHA, (x) => sha.name(x));
     const own = (tag) => { const m = new Map(); return (x) => { if (!m.has(x)) m.set(x, `<${tag}?${m.size + 1}>`); return m.get(x); }; };
@@ -135,6 +140,43 @@ function renamer() {
     const isCut = (all, at, x) => all[at + x.length] === '…';
     return s.replace(PORT, (m, pre, p, at, all) => pre + (port.find(p, isCut(all, at, m)) ?? ownPort(p)))
       .replace(SHA, (x, at, all) => sha.find(x, isCut(all, at, x)) ?? ownSha(x));
+  };
+  rename.seen = { SHA: sha.seen, PORT: port.seen };
+  return rename;
+}
+
+// A normalized string with each port and SHA in it as <PORT> or <SHA>, and those values in order,
+// each marked when the pass cut it short. Ports first, so a port cut short is not taken for a SHA.
+function tokens(s) {
+  const found = [];
+  const mark = (tag, v, cut) => { found.push({ tag, v, cut }); return `\u0001${found.length - 1}\u0002`; };
+  const marked = s.replace(PORT, (m, pre, p, at, all) => pre + mark('PORT', p, all[at + m.length] === '…'))
+    .replace(SHA, (x, at, all) => mark('SHA', x, all[at + x.length] === '…'));
+  const vals = [];
+  const key = marked.replace(/\u0001(\d+)\u0002/g, (_, i) => { vals.push(found[i]); return `<${found[i].tag}>`; });
+  return { key, vals };
+}
+
+// The SHAs and ports of matched text, paired base to head across one run: each value stands for one
+// value on the other tree, both ways. A pair of texts whose values break that differs.
+function pairer() {
+  let fwd = new Map(), back = new Map();
+  const id = (v) => `${v.tag} ${v.v}`;
+  return {
+    seed(tag, a, b) { fwd.set(`${tag} ${a}`, `${tag} ${b}`); back.set(`${tag} ${b}`, `${tag} ${a}`); },
+    // x and y match, and pairs says which of x's values stands where each of y's does.
+    check(x, y, pairs) {
+      const f = new Map(fwd), bk = new Map(back);
+      for (const [i, j] of pairs) {
+        const a = x.vals[i], b = y.vals[j];
+        if (a.cut || b.cut) continue;
+        const ka = id(a), kb = id(b);
+        if ((f.get(ka) ?? kb) !== kb || (bk.get(kb) ?? ka) !== ka) return false;
+        f.set(ka, kb); bk.set(kb, ka);
+      }
+      fwd = f; back = bk;
+      return true;
+    },
   };
 }
 
@@ -150,6 +192,13 @@ const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) ?
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
+}
+// A normalized queue value or output line: as shown (text, and shape with its times as <TIME>, its
+// SHAs and ports named by rn), and as matched (cmp, with its times, SHAs and ports as tags, and times
+// and vals, those taken out).
+function item(s, rn) {
+  const t = tokens(s), shown = timed(rn(s)), k = timed(t.key);
+  return { text: shown.text, shape: shown.shape, cmp: k.shape, times: k.times, vals: t.vals };
 }
 
 // When a tree's runs of one suite started, to find the run a time was made in or worked out for.
@@ -184,40 +233,49 @@ function sameTime(a, b, run, cb, ch) {
   return false;
 }
 const count = (s) => s.split('<TIME>').length - 1;
+const valCount = (s) => (s.match(/<(?:SHA|PORT)>/g) || []).length;
 // Text the pass cuts at a length ends there with "…", perhaps with more after it. As a path, port or
 // SHA before the cut is longer on one tree than the other, the two cut at different places: they match
 // when the shorter head starts the other side and both end alike. The word the cut fell in is checked
 // up to the first digit, path or placeholder in it, or a run of hex letters it ends in, which may be a
 // SHA, port or path the cut left part of: that part must start the other side's word there.
+// Two that match give the pairs of their SHAs and ports to hold one for one (pairer): those before the
+// word the cut falls in, and those after the "…". Two that do not give null.
 const cutWord = (w) => w.replace(/[\d/<].*$/, '').replace(/[a-f]*$/i, '');
 function sameCut(x, y, eqTime) {
   const parts = (v) => {
-    const i = v.shape.indexOf('…');
+    const i = v.cmp.indexOf('…');
     if (i < 0) return null;
-    const before = v.shape.slice(0, i), word = /\S*$/.exec(before)[0];
-    return { head: before.slice(0, before.length - word.length), word, tail: v.shape.slice(i + 1) };
+    const before = v.cmp.slice(0, i), word = /\S*$/.exec(before)[0];
+    return { head: before.slice(0, before.length - word.length), word, tail: v.cmp.slice(i + 1) };
   };
-  let px = parts(x), py = parts(y);
-  if (!px && !py) return false;
-  if (!px || (py && py.head.length < px.head.length)) { [x, y] = [y, x]; [px, py] = [py, px]; }
+  let px = parts(x), py = parts(y), swapped = false;
+  if (!px && !py) return null;
+  if (!px || (py && py.head.length < px.head.length)) { [x, y] = [y, x]; [px, py] = [py, px]; swapped = true; }
   const { head, tail } = px;
   // A cut in the first word leaves nothing to compare, which would match anything.
-  if (!/\w/.test(head)) return false;
+  if (!/\w/.test(head)) return null;
   const ok = py ? py.head.startsWith(head) && py.tail === tail
-    : y.shape.length >= head.length + tail.length && y.shape.startsWith(head) && y.shape.endsWith(tail);
-  if (!ok) return false;
+    : y.cmp.length >= head.length + tail.length && y.cmp.startsWith(head) && y.cmp.endsWith(tail);
+  if (!ok) return null;
   const fx = cutWord(px.word);
   if (py && py.head.length === head.length) {
     const fy = cutWord(py.word);
-    if (!fx.startsWith(fy) && !fy.startsWith(fx)) return false;
-  } else if (!/^\S*/.exec(y.shape.slice(head.length))[0].startsWith(fx)) return false;
+    if (!fx.startsWith(fy) && !fy.startsWith(fx)) return null;
+  } else if (!/^\S*/.exec(y.cmp.slice(head.length))[0].startsWith(fx)) return null;
   const nh = count(head), nt = count(tail);
-  return x.times.slice(0, nh).every((t, i) => eqTime(t, y.times[i]))
+  const timesOk = x.times.slice(0, nh).every((t, i) => eqTime(t, y.times[i]))
     && x.times.slice(x.times.length - nt).every((t, i) => eqTime(t, y.times[y.times.length - nt + i]));
+  if (!timesOk) return null;
+  const pairs = [];
+  for (let i = 0; i < valCount(head); i++) pairs.push([i, i]);
+  for (let i = 1; i <= valCount(tail); i++) pairs.push([x.vals.length - i, y.vals.length - i]);
+  return swapped ? pairs.map(([a, b]) => [b, a]) : pairs;
 }
+// Whether x and y match: null if not, else the pairs of their SHAs and ports to hold one for one.
 const same = (x, y, run, cb, ch) => {
   const eqTime = (a, b) => sameTime(a, b, run, cb, ch);
-  if (x.shape === y.shape) return x.times.every((t, i) => eqTime(t, y.times[i]));
+  if (x.cmp === y.cmp) return x.times.every((t, i) => eqTime(t, y.times[i])) ? x.vals.map((_, i) => [i, i]) : null;
   return sameCut(x, y, eqTime);
 };
 // A value or line is shown by its shape, unless only its times differ from the other side's: then
@@ -228,7 +286,7 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
 // by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
 // the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does,
-// and a port (a `port` field) is named as a printed one is (renamer). A queue stamp, which says when
+// and a port (a `port` field) is compared as a printed one is (tokens, pairer). A queue stamp, which says when
 // the pass last wrote a ticket or started its worker, lands wherever the load of the machine put that
 // write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
 // string.
@@ -281,18 +339,19 @@ function runs(dir) {
   return m;
 }
 
-// The lines outside a longest common subsequence: what only the base printed, and only the head.
+// The lines outside a longest common subsequence: what only the base printed, and only the head; and
+// the lines it matched, in order, as [base, head].
 function lineDiff(a, b, eq = (x, y) => x === y) {
   const L = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
   for (let i = a.length - 1; i >= 0; i--) {
     for (let j = b.length - 1; j >= 0; j--) L[i][j] = eq(a[i], b[j]) ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
   }
-  const base = [], head = [];
+  const base = [], head = [], matched = [];
   let i = 0, j = 0;
   while (i < a.length && j < b.length) {
-    if (eq(a[i], b[j])) { i++; j++; } else if (L[i + 1][j] >= L[i][j + 1]) base.push(a[i++]); else head.push(b[j++]);
+    if (eq(a[i], b[j])) matched.push([a[i++], b[j++]]); else if (L[i + 1][j] >= L[i][j + 1]) base.push(a[i++]); else head.push(b[j++]);
   }
-  return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)) };
+  return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)), matched };
 }
 
 function diff([baseDir, headDir, baseRoot, headRoot]) {
@@ -327,17 +386,28 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
       const lines = [], nb = renamer(), nh = renamer();
       if (rb.exit !== rh.exit || rb.signal !== rh.signal) lines.push(`  exit: base ${rb.signal || rb.exit}, head ${rh.signal || rh.exit}`);
       const qb = flatten(rb, norm, nb), qh = flatten(rh, norm, nh);
-      const eq = (x, y) => same(x, y, n, cb, ch);
+      const match = (x, y) => same(x, y, n, cb, ch), pair = pairer();
+      // A ticket keyed by an id each tree made up is one ticket on both by its name in the key, so the
+      // values behind one name are a pair from the start.
+      for (const tag of ['SHA', 'PORT']) {
+        const byName = new Map([...nh.seen[tag]].map(([v, name]) => [name, v]));
+        for (const [v, name] of nb.seen[tag]) if (byName.has(name)) pair.seed(tag, v, byName.get(name));
+      }
+      const held = (x, y) => { const p = match(x, y); return p != null && pair.check(x, y, p); };
       for (const k of [...new Set([...qb.keys(), ...qh.keys()])].sort()) {
-        const vb = qb.has(k) ? timed(nb(qb.get(k))) : null, vh = qh.has(k) ? timed(nh(qh.get(k))) : null;
-        if (vb && vh && eq(vb, vh)) continue;
+        const vb = qb.has(k) ? item(qb.get(k), nb) : null, vh = qh.has(k) ? item(qh.get(k), nh) : null;
+        if (vb && vh && held(vb, vh)) continue;
         const sb = vb ? show(vb, vh ? [vh] : []) : '(absent)', sh = vh ? show(vh, vb ? [vb] : []) : '(absent)';
         lines.push(`  queue ${k}: base ${sb}, head ${sh}`);
       }
-      const ob = norm(rb.out).split('\n').map((l) => timed(nb(l))), oh = norm(rh.out).split('\n').map((l) => timed(nh(l)));
-      const d = lineDiff(ob, oh, eq);
-      for (const l of d.base) lines.push(`  output base: ${show(l, d.head)}`);
-      for (const l of d.head) lines.push(`  output head: ${show(l, d.base)}`);
+      const ob = norm(rb.out).split('\n').map((l) => item(l, nb)), oh = norm(rh.out).split('\n').map((l) => item(l, nh));
+      const d = lineDiff(ob, oh, (x, y) => match(x, y) != null);
+      // Matched lines whose SHAs or ports do not stand one for one differ too, where they were printed.
+      const differs = new Set([...d.base, ...d.head]);
+      for (const [x, y] of d.matched) if (!pair.check(x, y, match(x, y))) { differs.add(x); differs.add(y); }
+      const db = ob.filter((l) => differs.has(l)), dh = oh.filter((l) => differs.has(l));
+      for (const l of db) lines.push(`  output base: ${show(l, dh)}`);
+      for (const l of dh) lines.push(`  output head: ${show(l, db)}`);
       if (lines.length) { differ++; say(`${where}:`); lines.forEach((l) => say(l)); }
     }
   }
