@@ -433,7 +433,7 @@ check "DS-606 a pass that finds a worker exited records the head its worktree wa
   '[ "$(field W-9 state)" = "\"parked\"" ] && [ "$(field W-9 worker_head.sha)" = "\"$W9_HEAD\"" ]'
 # W-11 is ahead with a head no worker of its own left; W-12's push is refused by origin; W-13 has an
 # uncommitted change on its last worker's head. W-10's origin ref is stale, its head already pushed.
-for k in 11 12 13 14 15 16 17 18 19; do wb_clone "W-$k"; q add "W-$k"; done
+for k in 11 12 13 14 15 16 17 18 19 20; do wb_clone "W-$k"; q add "W-$k"; done
 q set W-11 "worker_head={\"sha\":\"$(git -C "$T/wt/W-11" rev-parse HEAD)\"}"; git -C "$T/wt/W-11" commit -q --allow-empty -m "by hand"
 git -C "$T/wt/W-12" commit -q --allow-empty -m "worker's"; q set W-12 "worker_head={\"sha\":\"$(git -C "$T/wt/W-12" rev-parse HEAD)\"}"
 q set W-13 "worker_head={\"sha\":\"$(git -C "$T/wt/W-13" rev-parse HEAD)\"}"; echo b >> "$T/wt/W-13/a.txt"
@@ -457,8 +457,9 @@ for k in 14 15 16; do
 done
 # W-17's worker folded its fix into origin's c with an amend, so c's patch changed; W-18's re-made c by
 # hand after a reset, with its fix in another file, so the head still holds c's change. W-19's rebased c,
-# then reset away from it and committed e: c is in neither its head nor its tree.
-for k in 17 18 19; do
+# then reset away from it and committed e: c is in neither its head nor its tree. W-20's c was amended on
+# origin by someone else, author, date and subject kept, after the worker pushed it.
+for k in 17 18 19 20; do
   echo c > "$T/wt/W-$k/c.txt"; git -C "$T/wt/W-$k" add c.txt; git -C "$T/wt/W-$k" commit -q -m c
   git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
 done
@@ -468,11 +469,15 @@ git -C "$T/wt/W-18" add c.txt e.txt; git -C "$T/wt/W-18" commit -q -m "c, with i
 git -C "$T/wt/W-19" commit -q --amend --no-edit --date=now; git -C "$T/wt/W-19" reset -q --hard HEAD~1
 echo e > "$T/wt/W-19/e.txt"; git -C "$T/wt/W-19" add e.txt; git -C "$T/wt/W-19" commit -q -m e
 W19_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)
-for k in 17 18 19; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; done
+git clone -q -b fix/W-20 "$T/wb-origin.git" "$T/other-W-20"; echo humanfix >> "$T/other-W-20/c.txt"
+git -C "$T/other-W-20" commit -q -a --amend --no-edit; git -C "$T/other-W-20" push -q -f origin fix/W-20 2>/dev/null
+echo w > "$T/wt/W-20/w.txt"; git -C "$T/wt/W-20" add w.txt; git -C "$T/wt/W-20" commit -q -m w
+W20_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-20)
+for k in 17 18 19 20; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; done
 W17_HEAD=$(git -C "$T/wt/W-17" rev-parse HEAD); W18_HEAD=$(git -C "$T/wt/W-18" rev-parse HEAD)
 W14_HEAD=$(git -C "$T/wt/W-14" rev-parse HEAD); W15_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)
 W16_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)
-for k in 11 12 13 14 15 16 17 18 19 9; do wb_fix "W-$k"; done
+for k in 11 12 13 14 15 16 17 18 19 20 9; do wb_fix "W-$k"; done
 printf '#!/bin/sh\nwhile read o n r; do [ "$r" = refs/heads/fix/W-12 ] && { echo "W-12 is protected" >&2; exit 1; }; done; exit 0\n' > "$T/wb-origin.git/hooks/pre-receive"
 chmod +x "$T/wb-origin.git/hooks/pre-receive"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -504,11 +509,13 @@ check "and one whose head holds origin's change by its tree, after a reset, is l
 q set W-18 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "one rewritten, then reset away from origin's commit, is not overwritten: held" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)" = "$W19_ORIGIN" ] && field W-19 worktree_busy.why | grep -qF "but origin/fix/W-19 has 1 commit(s) the head does not hold by their patch"'
+check "nor one whose commit someone amended on origin, author, date and subject kept: held" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-20)" = "$W20_ORIGIN" ] && field W-20 worktree_busy.why | grep -qF "but origin/fix/W-20 has 1 commit(s) the head does not hold by their patch"'
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \
   'grep -q "^W-10 " "$T/wb-spawns" && [ "$(field W-10 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-10: WORKTREE IN USE"'
-for k in 10 11 12 13 14 15 16 17 18 19; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
+for k in 10 11 12 13 14 15 16 17 18 19 20; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
 
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its

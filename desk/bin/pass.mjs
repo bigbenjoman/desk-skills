@@ -2934,17 +2934,24 @@ function busyWorktree(t, { push = false } = {}) {
 }
 // Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for (`lost`,
 // its '+ <sha>' lines) are still the head's when either holds, and the reason, else null:
-// - each is rewritten in the head: a commit since the merge base keeps its author, author date and subject,
-//   as a rebase, an amend or a fixup folded into it does. A commit dropped (a reset away, a rebase that
-//   drops it) or someone else's pushed since has none, so it holds;
+// - each is rewritten in the head by this worktree: this worktree once held it (it is reachable from an
+//   entry of the branch's or HEAD's reflog), and a commit since the merge base keeps its author, author
+//   date and subject, as a rebase, an amend or a fixup folded into it does. A commit dropped (a reset
+//   away, a rebase that drops it) has no such commit, and one someone rewrote on origin (an amend pushed
+//   over the worker's) was never in this worktree, so either holds;
 // - the head holds their change: origin's diff from the merge base applies to it in reverse.
+const REFLOG_ENTRIES = 200;
 function heldAnyway(git, wt, branch, tip, lost) {
   const base = git(['merge-base', 'HEAD', tip]);
   if (!base) return null;
   const who = (range) => (git(['log', '--no-walk=unsorted', '--format=%ae %ad %s', '--date=raw', ...range]) ?? '').split('\n').filter(Boolean);
   const ours = new Set((git(['log', '--format=%ae %ad %s', '--date=raw', `${base}..HEAD`]) ?? '').split('\n').filter(Boolean));
-  const theirs = who(lost.map((l) => l.slice(2).trim()));
-  if (theirs.length === lost.length && theirs.every((x) => ours.has(x))) {
+  const shas = lost.map((l) => l.slice(2).trim());
+  const theirs = who(shas);
+  const entries = [...new Set([`refs/heads/${branch}`, 'HEAD']
+    .flatMap((ref) => (git(['reflog', 'show', '--format=%H', '-n', String(REFLOG_ENTRIES), ref]) ?? '').split('\n').filter(Boolean)))];
+  const local = entries.length ? new Set((git(['rev-list', ...entries, `^${base}`]) ?? '').split('\n').filter(Boolean)) : new Set();
+  if (theirs.length === shas.length && theirs.every((x) => ours.has(x)) && shas.every((x) => local.has(x))) {
     return `each is rewritten in it: a commit there keeps its author, author date and subject`;
   }
   if (shOut('sh', ['-c', 'git -C "$1" diff --binary "$2" "$3" | git -C "$1" apply --check -R --cached', 'sh', wt, base, tip]).ok) {
