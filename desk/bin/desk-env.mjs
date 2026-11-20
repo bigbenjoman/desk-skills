@@ -2598,6 +2598,9 @@ if (isMain) {
         if (sub === 'detect') {
           for (const k of M.HARDWARE_KEYS) console.log(`${k.padEnd(18)} ${hw[k]}`);
           if (!profile) { console.log(`\nno profile at ${path}: desk-env machine propose shows the sizes it would write`); break; }
+          const problems = M.profileProblems(profile);
+          if (problems.length) console.log(`\nrows in ${path} it cannot read (desk-env machine set <key>=<value> rewrites one):`);
+          for (const p of problems) console.log(`  ${p}`);
           // Listed before the no-sizes stop: `machine set` can start a profile holding only an override.
           const ovr = M.sizingOverrides(profile, proposal);
           if (ovr.length) console.log('\noverrides kept (a re-write keeps them; desk-env machine write --drop-override <key> drops one):');
