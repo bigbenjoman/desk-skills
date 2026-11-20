@@ -279,9 +279,10 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
   });
 }
 
-// Takes a lease, waiting up to `wait` seconds for it. With the kind off, takes nothing.
+// Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
+// `poll` ms and calling `onWait(why)` at the first refusal it waits past. With the kind off, takes nothing.
 // -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
-export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
     poolOf(req.kind, req.key, offCaps(caps));
@@ -289,12 +290,14 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   }
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
+  let waiting = false;
   for (;;) {
     const final = now() >= until;
     const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode });
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : {}) };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
-    sleepSync(Math.max(1, Math.min(POLL_MS, until - now())));
+    if (!waiting) { waiting = true; onWait?.(r.refused); }
+    sleepSync(Math.max(1, Math.min(poll, until - now())));
   }
 }
 

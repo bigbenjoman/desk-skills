@@ -365,7 +365,7 @@ if (mode === 'triage') {
   const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
   const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
   // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
-  const NODE_BIN_LINT = ['eslint', 'biome', 'oxlint', 'stylelint'];
+  const NODE_BIN_LINT = E.LINT_BINS;
 
   // ---- files ---------------------------------------------------------------------------------
   // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
