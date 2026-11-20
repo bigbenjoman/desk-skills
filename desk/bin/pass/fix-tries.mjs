@@ -74,8 +74,8 @@ function* fixTry(t, p, s) {
   // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
   // only on the gate, so it still goes to its own fix below.
   const gated = !dirty && !tree && reviewerGated(p, s);
-  yield { type: 'gate-hold', key: t.key, on: gated };
-  if (gated) { if (s.reviewer?.kind === 'mismatch') yield* heldReview(t, p, s); return; }
+  if (gated) { yield* heldTry(t, p, s); return; }
+  yield { type: 'gate-hold', key: t.key, on: false };
   if (dirty || tree) {
     const row = (yield { type: 'human-seen', key: t.key, pr: n }) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const { perm, key } = s.conflictRows[row];
@@ -107,18 +107,35 @@ function* fixTry(t, p, s) {
   yield { type: 'apply', key: t.key, pr: n, head: p.head, call: c };
 }
 
-// A PR the reviewer check holds only because the gate counts another account (kind `mismatch`): desk
-// still posts its verdicts, and the merge driver counts them though the gate does not. So a head the
-// driver would hold for want of a clean verdict gets its review try now, while the gate is red, and not
-// once the gate clears. Nothing else goes to it: a review at the head that is not clean waits, as do red
-// checks and threads.
-function* heldReview(t, p, s) {
+// A PR the reviewer check holds. The hold is for a review that is missing or stale, so a review at the
+// head that is not clean, a §4 Gate reviewer's (`gate` on the read) or else desk's own, still goes to a
+// review fix, or to the person for the gaps only they settle; the hold lifts only where one goes.
+// Where the check fails only because the gate counts another account (kind `mismatch`), desk still
+// posts its verdicts and the merge driver counts them though the gate does not, so a head the driver
+// would hold for want of a clean verdict gets its review try now, while the gate is red. Nothing else
+// goes to it: red checks and threads wait.
+function* heldTry(t, p, s) {
   const reads = yield { type: 'reads', key: t.key, dirty: false, dirtyFiles: null };
-  const fb = yield { type: 'feedback', key: t.key, pr: p.pr };
-  if (!fb || fb.head !== p.head || fb.review) return;
-  const { carry, scope, baseMerge } = reads.moves();
-  const c = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), base: s.base, baseMerge });
-  if (c?.call === 'requeue') yield { type: 'apply', key: t.key, pr: p.pr, head: p.head, call: c };
+  const fb = yield { type: 'feedback', key: t.key, pr: p.pr, gate: true };
+  const atHead = !!fb && fb.head === p.head;
+  const review = atHead ? fb.gateReview ?? fb.review : null;
+  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement }) : null;
+  // The hold is recorded, and listed, only where nothing goes to the PR's findings.
+  yield { type: 'gate-hold', key: t.key, on: !worked };
+  if (!atHead) return;
+  let c = worked;
+  if (!review && s.reviewer?.kind === 'mismatch') {
+    const { carry, scope, baseMerge } = reads.moves();
+    const r = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), base: s.base, baseMerge });
+    c = r?.call === 'requeue' ? r : null;
+  }
+  if (c) yield { type: 'apply', key: t.key, pr: p.pr, head: p.head, call: c };
+}
+// The review fix a ready PR's review at its head that is not clean gets (reviewFix), marked ready.
+function findingsFix(t, p, s, fb, reads) {
+  const comments = () => reads.comments(fb.review.id);
+  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement });
+  return rf?.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
 }
 
 // A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
@@ -139,9 +156,8 @@ function* feedbackCall(t, p, s, waived, reads) {
   if (settled.length < worked.length && !s.dry) return null;
   const { judgement } = s;
   if (fb.review) {
-    const comments = () => reads.comments(fb.review.id);
-    const rf = reviewFix(t, { pr: n, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement });
-    if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
+    const rf = findingsFix(t, p, s, fb, reads);
+    if (rf) return rf;
   }
   const ff = !s.feedbackFirst ? null
     : feedbackFix(t, { pr: n, head: p.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
