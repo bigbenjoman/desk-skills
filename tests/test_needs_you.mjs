@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -18,16 +20,32 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 
 const T = mkdtempSync(join(tmpdir(), 'desk-needs-you-'));
 mkdirSync(join(T, 'bin'));
+// A fake's rule, as a script's body: the fake in bin/ runs it as its own process, and the suite's in-process
+// reads (launchctl's and STUB's, below) call the same function. Self-contained: it takes its paths as arguments.
+const fakeScript = (fn, ...args) => `#!${process.execPath}\nconst r = (${fn})(${args.join(', ')});\nif (r.err) process.stderr.write(r.err + '\\n');\nprocess.stdout.write(r.out ?? '');\nprocess.exit(r.code);\n`;
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
-writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
-writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
+const LOADED = join(T, 'bin', 'loaded');
+const launchctlPrint = (loaded, target) => {
+  const { readFileSync } = require('node:fs');
+  let labels = [];
+  try { labels = readFileSync(loaded, 'utf8').split('\n'); } catch { /* none loaded */ }
+  return { code: labels.includes(String(target ?? '').split('/').pop()) ? 0 : 1 };
+};
+writeFileSync(join(T, 'bin', 'launchctl'), fakeScript(launchctlPrint, JSON.stringify(LOADED), 'process.argv[3]'), { mode: 0o755 });
+writeFileSync(LOADED, 'com.desk-skills.supervisor.acme__alpha\n');
 // A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none, and
 // `pr list --repo <r> --state <s>` with prs/list-<s>.json, or nothing.
 const GH_LOG = join(T, 'gh.log');
 const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
+const prView = (dir, pr) => {
+  const { readFileSync, existsSync } = require('node:fs');
+  const f = `${dir}/${pr}.json`;
+  return existsSync(f) ? { code: 0, out: readFileSync(f, 'utf8') } : { code: 1, err: `GraphQL: Could not resolve to a PullRequest (${pr})` };
+};
+writeFileSync(join(T, 'bin', 'gh-pr-view'), fakeScript(prView, JSON.stringify(GH_PRS), 'process.argv[2]'), { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
-  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n` +
+  `if [ "$1 $2" = "pr view" ]; then exec "$(dirname "$0")/gh-pr-view" "$3"; fi\n` +
   `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\n` +
   `if [ "$1 $2" = "pr create" ]; then echo "https://github.com/$4/pull/931"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
@@ -109,17 +127,17 @@ put('epsilon', { port: 3600 });
 
 // ---- DS-929: an in-process collect or refresh starts no process. Every child process this suite's own
 // process starts goes through these wrappers (syncBuiltinESMExports carries them into the modules' named
-// imports). launchctl, which loadRepos asks once per supervised batch, is answered here as bin/launchctl
-// answers it, from bin/loaded. A gh, git, desk-jira or launchctl process started while a collect or refresh
+// imports). launchctl, which loadRepos asks once per supervised batch, is answered here by bin/launchctl's
+// own rule (launchctlPrint). A gh, git, desk-jira or launchctl process started while a collect or refresh
 // runs on the suite's stubs (onStubs, below) is recorded, and the last check reads that none was.
 // The cli() runs still start needs-you.mjs and the fakes in bin/, end to end.
-const { createRequire, syncBuiltinESMExports } = await import('node:module');
-const cpCjs = createRequire(import.meta.url)('node:child_process');
-const FAKED = new Set(['gh', 'git', 'desk-jira', 'launchctl']);let onStubDepth = 0;
+const cpCjs = require('node:child_process');
+const FAKED = new Set(['gh', 'git', 'desk-jira', 'launchctl']);
+let onStubDepth = 0;
 const startedOnStubs = [];
 const launchctlHere = (args) => {
-  const loaded = readFileSync(join(T, 'bin', 'loaded'), 'utf8').split('\n').includes(String(args[1] ?? '').split('/').pop());
-  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: loaded ? 0 : 1, signal: null };
+  const { code } = launchctlPrint(LOADED, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
 };
 for (const f of ['spawnSync', 'execFileSync', 'execSync', 'spawn', 'execFile', 'exec']) {
   const real = cpCjs[f];
@@ -141,8 +159,8 @@ const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
 // real read passes it (DS-546 AC3's git, the follow gates' git, DS-925's ciRed), and its starts are not counted.
 const STUB = {
   pr: (_r, pr) => {
-    const f = join(GH_PRS, `${pr}.json`);
-    return existsSync(f) ? { v: JSON.parse(readFileSync(f, 'utf8')), err: '' } : { v: null, err: `GraphQL: Could not resolve to a PullRequest (${pr})` };
+    const { code, out, err } = prView(GH_PRS, pr);
+    return code === 0 ? { v: JSON.parse(out), err: '' } : { v: null, err };
   },
   ticket: () => null,
   git: () => null,
@@ -163,29 +181,14 @@ const N = { ...NY, collect: onStubs(NY.collect), refresh: onStubs(NY.refresh) };
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
 const cliRan = new Set();
 const cli = (...args) => { cliRan.add(args[0]); const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
-// A CLI command run in this process, as needs-you.mjs's own entry runs it, for a check that tests what the
-// command decides rather than the script: list, left, record and ask. Each command keeps cli() runs too,
-// end to end, and the last checks read that it did (DS-929 AC2).
+// A CLI command run in this process through needs-you.mjs's own run(), which its entry prints, for a check
+// that tests what the command decides rather than the script. list runs on STUB, as collect and refresh do
+// here; record, left and ask on their own reads, as before. Each command keeps cli() runs too, end to end,
+// and the last checks read that it did (DS-929 AC2).
 const here = (cmd, ...rest) => {
-  const lines = [];
-  const out = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
-  try {
-    if (cmd === 'list' && rest.length <= 1) lines.push([...N.refresh({ word: rest[0] ?? null }), N.listText(N.collect({ word: rest[0] ?? null }))].join('\n'));
-    else if (cmd === 'left' && rest.length <= 1) lines.push(N.leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = N.record({ word, ticket, action, text });
-      lines.push(res.line);
-      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) return out(11);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = N.ask({ word: rest[0], text: rest[1] });
-      lines.push(res.line);
-      if (!res.ok) return out(11);
-    } else throw new Error(`here() does not run: ${[cmd, ...rest].join(' ')}`);
-  } catch (e) { return out(11, `${e.message}\n`); }
-  return out(0);
+  if (cmd !== 'list') return NY.run([cmd, ...rest]);
+  onStubDepth++;
+  try { return NY.run([cmd, ...rest], { reads: STUB }); } finally { onStubDepth--; }
 };
 
 // ---- AC1: every item desk-q counts, in every repo, and nothing it does not
@@ -353,8 +356,8 @@ writeFileSync(join(xs, 'orchestrators', 'q.json'), JSON.stringify({ queue: xq, b
 const xList = here('list', 'alpha');
 t('DS-310 AC3 the item names the named batch, as record takes it', xList.out.split('\n').some((l) => l.startsWith('alpha:X-1 X-2 parked') && l.includes('| Which banner? |')), true);
 t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named batch\'s', `${xList.out.includes('\nalpha A-2 ')} ${/^@ alpha · X-1 \(feat\/x\): run by the supervisor/m.test(xList.out)}`, 'true true');
-t('DS-310 AC3 the named batch on its own lists only its items', here('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
-const x2 = here('record', 'alpha:X-1', 'X-2', 'resume', 'the red one');
+t('DS-310 AC3 the named batch on its own lists only its items', cli('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
+const x2 = cli('record', 'alpha:X-1', 'X-2', 'resume', 'the red one');
 const xQueue = () => JSON.parse(readFileSync(xq, 'utf8'));
 t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['X-2', '--all', 'the red one'], queue: xq }));
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
@@ -3330,7 +3333,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
-  t('#811 an empty ask is refused', here('ask', 'ask811', '  ').code, 11);
+  t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
 }
 
 // ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item

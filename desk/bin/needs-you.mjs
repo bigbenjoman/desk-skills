@@ -2169,36 +2169,48 @@ export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word)
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
 }
 
+// One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
+// with. `reads` is what list's refresh and collect, and record, read through (READS where none is given).
+export function run(argv, { reads } = {}) {
+  const [cmd, ...rest] = argv;
+  const lines = [];
+  const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
+  const at = reads === undefined ? {} : { reads };
+  try {
+    if (cmd === 'list' && rest.length <= 1) {
+      const settled = refresh({ word: rest[0] ?? null, ...at });
+      lines.push([...settled, listText(collect({ word: rest[0] ?? null, ...at }))].join('\n'));
+    }
+    else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
+    else if (cmd === 'record' && rest.length >= 3) {
+      const [word, ticket, verb, ...more] = rest;
+      // An override names its decision id before the choice.
+      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
+      const res = record({ word, ticket, action, text, ...at });
+      lines.push(res.line);
+      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to, ...at });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+  } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
+  return end(0);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null });
-      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
-    }
-    else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      // An override names its decision id before the choice.
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = record({ word, ticket, action, text });
-      console.log(res.line);
-      if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'move' && rest.length === 3) {
-      const [word, ticket, to] = rest;
-      const res = record({ word, ticket, action: 'move', text: to });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = ask({ word: rest[0], text: rest[1] });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"');
-  } catch (e) { refuse(e.message); }
+  const { code, out, err } = run(process.argv.slice(2));
+  process.stdout.write(out);
+  process.stderr.write(err);
+  process.exitCode = code;
 }
