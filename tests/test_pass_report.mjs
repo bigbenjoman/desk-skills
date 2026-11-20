@@ -212,6 +212,10 @@ const vsnap = (tickets, fields = {}) => {
   // A clears-when still to be restated stays in `parked`: that is how the decider is asked to restate it.
   const u = vsnap([waits('U-1', { kind: 'unreadable', text: 'when the deploy looks fine', at: '2026-11-20T10:00:00Z' })]);
   t('DS-852 an unreadable clears-when stays parked, for the decider to restate', j(verdictOf(u).parked.map((p) => p.key)), j(['U-1']));
+  // A park on a PR merging whose PR conflicts with its base (a park note) is the person's: it cannot merge on its own.
+  const c = vsnap([waits('C-1', { kind: 'pr-merged', pr: 12 })], { parkNotes: new Map([['C-1', 'PR #12 conflicts with main']]) });
+  t('DS-852 a park on a conflicting PR is parked for the person, with its note', j(verdictOf(c).parked), j([{ key: 'C-1', question: 'C-1?', note: 'PR #12 conflicts with main' }]));
+  t('DS-852 without the note, a park on a PR merging is the pass\'s', j(verdictOf(vsnap([waits('C-1', { kind: 'pr-merged', pr: 12 })])).parked), '[]');
   // A production-broken park is pushed whatever it waits on.
   const pb = vsnap([{ key: 'S-7', state: 'parked', lane: 'A', park: { question: 'PRODUCTION BROKEN: checkout is down', clears_when: { kind: 'run-completed', run: 9 } } }]);
   t('DS-852 a production-broken park on a run is still pushed', j(decideVerdict(pb).filter((a) => a.type === 'push')),
