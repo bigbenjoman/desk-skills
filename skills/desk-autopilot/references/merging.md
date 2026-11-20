@@ -14,6 +14,16 @@ head, a whole fresh review and CI run. The cost is quadratic in how many you hol
 batch carried to all-open-before-any-merged pays a conflict resolution and a re-review for each PR
 ahead of it, none of which exist had each merged when it first went green.
 
+**A PR you open in the batch has a ticket.** The merge driver merges only the queue's tickets, so
+a PR opened with none (a fix for a flaky test the batch keeps hitting, say) has no owner: nothing
+merges it, and nothing lists it while it waits. Adopt it as you open it,
+`queue.mjs adopt <KEY> <PR>`: it is taken in as done on that PR, by its branch, so the driver merges
+it with the rest and the pass and desk-q show it. Its key is an id from §4 Other work id patterns
+(with no tracker, `issue-<n>` or a slug). Never make one up in the tracker's pattern: the driver
+moves that ticket to Done when the PR merges, so a tracker key goes in only as the ticket filed for
+this PR, with `--filed`. The PR must be yours (§1 GitHub handle) and open into the batch's base. No
+worker takes it: a draft, a finding or a red check is settled on the PR itself.
+
 **This section applies as written where config §3 `autopilot-merge` and `pr-merge-green` are both
 `yes`, or where the user approved merging this batch at Stage 3 (the queue's `approved.merge` is
 `true`; the §3 table under *Read the config first*).** Where neither holds, do everything below except the merge itself:
