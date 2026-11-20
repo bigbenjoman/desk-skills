@@ -110,43 +110,28 @@ t('window: a date', win?.date, '2026-10-01');
 t('window: the window is one whole day', win?.hours, 24);
 t('window: the label', win?.label, 'Thursday 1 October 2026');
 
-// #814: a second check-out of the same day starts where the last one for that destination ended.
-const since = probe(`import os, window
-from datetime import datetime, date
-os.environ['DESK_CHECKOUT_STAMP'] = os.path.join(${JSON.stringify(FAKE)}, 'checkout-last.json')
+// #814: a second check-out of the same day starts where the previous one was posted.
+const since = probe(`import window
+from datetime import datetime
 tue = lambda h, m=0: datetime(2026, 10, 27, h, m)
 hm = lambda r: r[0].strftime('%Y-%m-%d %H:%M')
-A, B = '#team-a', 'repo:acme__b'
-none_yet = hm(window.resolve('today', tue(18), since='auto', scope=A))
-window.mark(A, date(2026, 10, 27), tue(12, 30))
-window.mark(B, date(2026, 10, 26), tue(9, 15))
 print(json.dumps({
-  'none_yet': none_yet, 'auto': hm(window.resolve('today', tue(18), since='auto', scope=A)),
-  'last': window.last_checkout(A, date(2026, 10, 27)).strftime('%H:%M'),
-  'other_dest': hm(window.resolve('today', tue(18), since='auto', scope='#team-c')),
-  'morning_for_yesterday': hm(window.resolve('today', tue(18), since='auto', scope=B)),
-  'yesterday_itself': hm(window.resolve('yesterday', tue(18), since='auto', scope=B)),
-  'whole': hm(window.resolve('today', tue(18), since='none', scope=A)),
-  'hhmm': hm(window.resolve('today', tue(18), since='15:45', scope=A)),
-  'iso': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().isoformat(), scope=A)),
-  'later_than_now': hm(window.resolve('today', tue(12), since='auto', scope=A)),
-  'default_none': hm(window.resolve('today', tue(18))),
-  'scope_dest': window.scope_of(type('R', (), {'destination': '#x', 'slug': 's'})()),
-  'scope_repo': window.scope_of(type('R', (), {'destination': None, 'slug': 's'})()),
-  'label': window.label(window.resolve('today', tue(18), since='auto', scope=A)[0])}))`);
-t('#814 with no check-out recorded, the window is the whole day', since?.none_yet, '2026-10-27 00:00');
-t('#814 the window starts at the destination\'s last check-out that day', since?.auto, '2026-10-27 12:30');
-t('#814 mark records the check-out, last reads it', since?.last, '12:30');
-t('#814 another destination\'s check-out leaves this one\'s window whole', since?.other_dest, '2026-10-27 00:00');
-t('#814 a morning check-out that covered yesterday leaves today whole', since?.morning_for_yesterday, '2026-10-27 00:00');
-t('#814 and does not narrow yesterday either, being after it ended', since?.yesterday_itself, '2026-10-26 00:00');
-t('#814 --since none covers the whole day (a redraft, or nothing posted)', since?.whole, '2026-10-27 00:00');
+  'whole': hm(window.resolve('today', tue(18))),
+  'none': hm(window.resolve('today', tue(18), since='none')),
+  'hhmm': hm(window.resolve('today', tue(18), since='15:45')),
+  'iso': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().isoformat())),
+  'other_day': hm(window.resolve('today', tue(18), since=datetime(2026, 10, 26, 17).astimezone().isoformat())),
+  'later_than_now': hm(window.resolve('today', tue(12), since='15:00')),
+  'yesterday_hhmm': hm(window.resolve('yesterday', tue(18), since='12:30')),
+  'label': window.label(window.resolve('today', tue(18), since='12:30')[0])}))`);
+t('#814 with no previous check-out, the window is the whole day', since?.whole, '2026-10-27 00:00');
+t('#814 --since none covers the whole day', since?.none, '2026-10-27 00:00');
 t('#814 --since takes HH:MM on the day', since?.hhmm, '2026-10-27 15:45');
 t('#814 --since takes an ISO timestamp', since?.iso, '2026-10-27 16:05');
-t('#814 a check-out not yet past (later than now) leaves it whole', since?.later_than_now, '2026-10-27 00:00');
-t('#814 resolve without since covers the whole day, as before', since?.default_none, '2026-10-27 00:00');
-t('#814 a stamp is kept per destination, else per repo', `${since?.scope_dest} ${since?.scope_repo}`, '#x repo:s');
-t('#814 the label names where the window starts', since?.label, 'Tuesday 27 October 2026, from 12:30 (the last check-out)');
+t('#814 a check-out posted on another day leaves the window whole', since?.other_day, '2026-10-27 00:00');
+t('#814 a time not yet past leaves it whole', since?.later_than_now, '2026-10-27 00:00');
+t('#814 HH:MM is on the day covered, not today', since?.yesterday_hhmm, '2026-10-26 12:30');
+t('#814 the label names where the window starts', since?.label, 'Tuesday 27 October 2026, from 12:30 (the previous check-out)');
 
 // desk_repos.py: every configured repo, scoped against the current one, read through desk-env.
 const repos = probe(`import desk_repos as d
@@ -206,7 +191,7 @@ t('claude: exits 0', claude.status, 0);
 const co = claude.stdout;
 has('claude: four sessions in the window, less the withheld one', co, '— 3 sessions');
 const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
-has('#814 from a 15:00 check-out, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the last check-out)`);
+has('#814 from a check-out posted at 15:00, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the previous check-out)`);
 lacks('#814 work the earlier check-out covered is not listed again', after, 'photo folders');
 has('claude: the worktree session is labelled with its worktree', co, 'acme__app (worktree APP-12)');
 has('claude: its branch', co, 'branches: fix/APP-12-redirect');
