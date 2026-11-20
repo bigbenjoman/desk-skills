@@ -125,7 +125,7 @@ export function newestReading({ dirs = stateDirs(), files = [], login = null, no
 // A log's events, kept while its size, modified time and inode hold: an open desk-q rereads every two
 // seconds, and every pass is a new process that reads every repo's recent logs, gzipped rounds whole.
 // So they are kept on disk too (eventsCachePath), and a pass parses only a log that changed since one
-// did (DS-794: re-reading the gzipped rounds was most of a pass's own CPU).
+// did: gunzipping the rounds again is most of a pass's own CPU.
 const parsed = new Map();
 export const eventsCachePath = (dir = usageDir()) => join(dir, 'log-events.json');
 let disk = null, diskPath = null, diskDirty = false;

@@ -227,7 +227,7 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
-// A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs, DS-794).
+// A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
 const PR_READS = prReads();
 // A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
 const sh = (cmd, args, opts = {}) => {
@@ -1801,7 +1801,7 @@ const budgetFiles = (key) => {
 };
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
 // tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
-// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted (DS-794).
+// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
 const lineCounts = new Map();
 const GIT_BIG = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 };
 const trees = new Map();

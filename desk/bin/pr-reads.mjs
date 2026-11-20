@@ -1,6 +1,6 @@
-// PR reads kept for one pass (DS-794). Several steps of a pass read the same PR (its status, a park's
-// clear, a hold, the undraft check, the base gate), each a gh call of about half a second, and gh calls
-// were most of a pass's time. Every `gh pr view <n> --repo <r> --json <fields>` (with no other flag, or
+// PR reads kept for one pass. Several steps of a pass read the same PR (its status, a park's clear, a
+// hold, the undraft check, the base gate), each a gh call of about half a second, and a pass spends
+// most of its time waiting on such calls. Every `gh pr view <n> --repo <r> --json <fields>` (with no other flag, or
 // `--jq .<one field>` asking for that field alone) keeps the fields it read, by PR, and a later one
 // whose fields were all read already is answered from them. A PR's body and comments are always read
 // again: an upload or a ledger comment changes them without going through the pass's own runner. Any

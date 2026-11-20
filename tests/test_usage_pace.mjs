@@ -116,9 +116,8 @@ t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage(
 t('DS-465 AC4 unit: a wider `recent` reads it', P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real, recent: P.WEEK_MS }).seven_day?.utilization, 0.4);
 writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
 t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
-// DS-794: every pass is a new process, and gunzipping each recent round again was most of a pass's own
-// CPU. A log's events are kept on disk by its path, size, modified time and inode, so a new process
-// reads an unchanged round from there. Its bytes are swapped for garbage of the same length, its time
+// Every pass is a new process, and gunzipping each recent round again is most of a pass's own CPU.
+// A log's events are kept on disk by its path, size, modified time and inode, so a new process reads an unchanged round from there. Its bytes are swapped for garbage of the same length, its time
 // put back: only the cache can still give 0.55.
 {
   process.env.DESK_USAGE_DIR = join(T, 'usage-794');
