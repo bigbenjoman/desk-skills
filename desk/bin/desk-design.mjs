@@ -1017,26 +1017,16 @@ export function propose(src, { root, dir, ref, worktrees }) {
 // Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
 // this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
 // whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
-// board is not one. With several links it must sit beside <url> itself: on a line linking it, and on a
-// line linking several, in a clause (split at ";" and sentence ends outside a bracketed link) whose
-// only link is <url>. A note
-// sharing a clause with two links could be about either, so it clears neither: a note about one
-// artifact never clears another.
+// board is not one. With several links it must sit on a line whose only link is <url>: a note on a line
+// linking two artifacts could be about either, so it clears neither, and a note about one artifact
+// never clears another.
 export function usesNoBoard(section, url, key) {
   const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
   const qualifier = `(?:exists?|yet|(?:on|in|from)\\s+(?:this|the|that|its\\s+epic['’]s)\\s+(?:canvas|artifact|design))`;
   const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
   const text = String(section ?? '');
-  const only = (s) => { const k = claudeDesignLinks(s); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
-  const beside = (l) => {
-    if (claudeDesignLinks(l).length < 2) return [l].filter(only);
-    // A bracketed link ([label|url], [label](url)) is held whole while splitting, so punctuation in its
-    // label never parts the label from its URL.
-    const held = [];
-    const masked = l.replace(/\[[^\]\n]*\](?:\([^)\n]*\))?/g, (m) => `\u0000${held.push(m) - 1}\u0000`);
-    return masked.split(/;|[.!?](?=\s)/).map((c) => c.replace(/\u0000(\d+)\u0000/g, (_, i) => held[i])).filter(only);
-  };
-  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').flatMap(beside).join('\n') : text);
+  const only = (l) => { const k = claudeDesignLinks(l); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
+  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).join('\n') : text);
 }
 
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is

@@ -267,16 +267,16 @@ t('DS-860 AC2: a no-board note on one link leaves another blocking', sev(`* Epic
 t('DS-860 AC2: a note beside a longer URL does not clear its prefix', sev(`No board for DS-70: https://claude.ai/design/p/other-v2\nBuild the Order summary board: https://claude.ai/design/p/other`), 'advisory blocking');
 t('DS-860 AC2: "no board for DS-70\'s empty state" blocks', sev(`Build the Order summary board on ${URL1}. No board for DS-70’s empty state.`), 'blocking');
 t('DS-860 AC1: "no board on this canvas for this ticket" is advisory', sev(`Epic canvas: ${URL1}. There is no board on this canvas for this ticket.`), 'advisory');
-t('DS-860 AC2: a note beside one of two links on a line leaves the other blocking', sev(`[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)`), 'advisory blocking');
-t('DS-860 AC2: a note before the first of two links on a line clears only that one', sev(`No board for this ticket on [A](${URL1}); build the Order summary board on [B](https://claude.ai/design/p/other)`), 'advisory blocking');
-t('DS-860 AC2: a note after the second link on a line clears only that one', sev(`Build the Order summary board on [A](${URL1}); [B](https://claude.ai/design/p/other) has no board for this ticket`), 'blocking advisory');
-t('DS-860 AC2: a note between two links, about the second, clears only the second', sev(`Build the Order summary board on [A](${URL1}); no board for this ticket on [B](https://claude.ai/design/p/other)`), 'blocking advisory');
-t('DS-860 AC2: a Jira link labelled with the note clears only its own link', sev(`[A|${URL1}]: implement the Order Summary board; [No board for this ticket|https://claude.ai/design/p/other]`), 'blocking advisory');
-t('DS-860 AC2: a note in one clause with two links clears neither', sev(`[A](${URL1}) and [B](https://claude.ai/design/p/other): no board for this ticket`), 'blocking blocking');
-t('DS-860 AC2: a semicolon in a link\'s label does not part it from its URL', sev(`[Build Order Summary|${URL1}] and [No board for this ticket; epic reference only|https://claude.ai/design/p/other]`), 'blocking blocking');
-t('DS-860 AC2: a sentence end in a Markdown label does not part it from its URL', sev(`Order summary: [A](${URL1}); [Epic canvas. No board for this ticket](https://claude.ai/design/p/other)`), 'blocking advisory');
+// A note on a line linking two artifacts could be about either, wherever it sits, so it clears neither.
+for (const [where, line] of [
+  ['beside the first link', `[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)`],
+  ['between the links, about the second', `Build the Order summary board on [A](${URL1}); no board for this ticket on [B](https://claude.ai/design/p/other)`],
+  ['in the second link\'s Jira label', `[A|${URL1}]: implement the Order Summary board; [No board for this ticket|https://claude.ai/design/p/other]`],
+  ['in a label holding a semicolon', `[Build Order Summary|${URL1}] and [No board for this ticket; epic reference only|https://claude.ai/design/p/other]`],
+  ['in a label holding brackets', `Build Order Summary on [A](${URL1}) and see [Epic canvas [reference], no board for this ticket; background only](https://claude.ai/design/p/other)`],
+]) t(`DS-860 AC2: a note ${where} on a line linking two artifacts clears neither`, sev(line), 'blocking blocking');
 const fact2 = designFact(`h2. Design\n[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
-t('DS-860: triage\'s design fact keeps a canvas on the same line as another\'s no-board note', fact2.canvases.map((c) => c.url).join(' '), 'https://claude.ai/design/p/other');
+t('DS-860: triage\'s design fact keeps both canvases a line links beside a no-board note', fact2.canvases.length, 2);
 const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
 t('DS-860: triage\'s design fact leaves out a canvas the ticket uses no board from', fact.canvases.length, 0);
 
