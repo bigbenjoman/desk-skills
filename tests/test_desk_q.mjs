@@ -2622,7 +2622,7 @@ try {
   const LEASES = join(dirname(BIN), 'leases.mjs');
   const sleepers = [];
   const alive = () => { const c = spawn('sleep', ['300'], { stdio: 'ignore' }); sleepers.push(c); return c.pid; };
-  const dirs = { live: join(L.T, 'leases-live'), none: join(L.T, 'leases-none'), bad: join(L.T, 'leases-bad') };
+  const dirs = { live: join(L.T, 'leases-live'), none: join(L.T, 'leases-none'), bad: join(L.T, 'leases-bad'), lapsed: join(L.T, 'leases-lapsed') };
   for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
   const take = (d, kind, key, ttl, label) => spawnSync('node', [LEASES, 'acquire', kind, key, '--ttl', String(ttl), '--label', label, '--pid', String(alive())],
     { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d } }).stdout.trim();
@@ -2664,6 +2664,12 @@ try {
     live.find((l) => /^ {2}slot +shadow/.test(l)), '  slot           shadow  1 would-refuse in 24h · each of the last 7 days, newest first: 1 2 3 4 5 6 7');
   t('DS-911 desk-q changes neither the store nor the log',
     readFileSync(join(dirs.live, 'leases.json'), 'utf8') + readFileSync(join(dirs.live, 'leases.log.jsonl'), 'utf8') === kept, true);
+  // A lease past twice its TTL, which `desk-env lease list` would sweep, writing the store and logging the lapse.
+  age(dirs.lapsed, take(dirs.lapsed, 'port', '4102', 900, 'voicepa worker VPL-2'), 2000);
+  const snapshot = () => readdirSync(dirs.lapsed).sort().map((f) => `${f}\n${readFileSync(join(dirs.lapsed, f), 'utf8')}`).join('\n');
+  const before = snapshot();
+  t('DS-911 desk-q leaves a lapsed lease in the store for the lease commands to sweep, writing and logging nothing',
+    `${section(dirs.lapsed).leases[1]} | ${snapshot() === before}`, '  No leases are held. | true');
   t('DS-911 AC5 no leases and no shadow conflicts: the section says no leases are held',
     section(dirs.none).leases.join('\n'), 'Leases\n  No leases are held.\n  No shadow would-refuse in the last 7 days.');
   const bad = section(dirs.bad);
