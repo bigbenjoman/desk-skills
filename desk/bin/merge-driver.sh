@@ -107,8 +107,9 @@
 # loops like a green head, and once merged a ticket naming the check, the PR, the head SHA and the
 # failing run is filed with `desk-jira create` where §3 jira-create is yes (otherwise the log names
 # its body file). A row that does not parse stops the driver at start.
-# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
-# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
+# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands, the
+# merge log's `merged` line (merge-log.mjs) names the PR, that head, the ticket and this driver; a
+# refused merge writes `failed`, never `merged`. Then `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
 # is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key, by
 # anyone, is then moved to §4 Done state and read back; this is the only close anywhere in the batch.
@@ -1174,7 +1175,7 @@ EOF_RESOLVE
     log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
   fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
-    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
+    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged ${key:+--ticket "$key"} --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
     # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
     if [ -n "$carried" ]; then
@@ -1202,7 +1203,7 @@ EOF_RESOLVE
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0
   fi
-  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
+  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed ${key:+--ticket "$key"} --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
   else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
   return 1
