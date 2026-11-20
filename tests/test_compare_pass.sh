@@ -128,6 +128,19 @@ fieldtree cutport1 '' 'failed: set A-1 port=47704… — fetching failed\n  RUNN
 fieldtree cutport2 '' 'failed: set A-1 port=47705 idl… — fetching failed\n  RUNNING  A-2  on localhost:47802'
 cmp "$T/cutport1" "$T/cutport2"
 check "DS-819 AC1 a port cut short on one tree does not shift the names of the ports after it" "$same0"
+fieldtree cutport3 '' 'failed: set A-1 port=4… — fetching failed\n  RUNNING  A-2  on localhost:47801\n  RUNNING  A-3  on localhost:47802'
+fieldtree cutport4 '' 'failed: set A-1 port=47705 idl… — fetching failed\n  RUNNING  A-2  on localhost:47802\n  RUNNING  A-3  on localhost:47803'
+cmp "$T/cutport3" "$T/cutport4"
+check "DS-819 AC1 a port cut to its first digit does not give its name to the ports after it" "$same0"
+fieldtree cutport5 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING  A-2  on localhost:47704\n  RUNNING  A-3  on localhost:47704'
+fieldtree cutport6 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING  A-2  on localhost:47705\n  RUNNING  A-3  on localhost:47706'
+cmp "$T/cutport5" "$T/cutport6"
+check "DS-819 AC1 after a cut port, two tickets on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head:   RUNNING  A-3  on localhost:<PORT2>"'
+# A SHA cut short, all digits on one tree and not on the other: the next SHA has one name on both.
+fieldtree cutsha1 '' 'failed: set A-1 ref 332065893… — fetching failed\nhead at 1b2c3d4e5'
+fieldtree cutsha2 '' 'failed: set A-1 ref 4a1f0c2e9… — fetching failed\nhead at 5f6a7b8c9'
+cmp "$T/cutsha1" "$T/cutsha2"
+check "DS-819 AC3 a SHA cut short, all digits on one tree, does not shift the names of the SHAs after it" "$same0"
 
 fieldtree git1 'why: "fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9'
 fieldtree git2 'why: "fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9'

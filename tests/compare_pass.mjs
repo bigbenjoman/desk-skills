@@ -107,34 +107,35 @@ function normalizer(roots) {
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is named the same way, digits or not: each tree's pass started at a different time.
-// One the pass cut short ("4a1f0c2…", once it shows a letter and a digit) takes the name of the whole one it starts, seen before it or after, so a SHA whole on one tree and cut
-// on the other takes one name on both and the names after it stay in step.
 // Ports are named the same way: two runs take different free ports, but two tickets given one port on
 // one tree and two on the other still differ.
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{2,40}(?=…)/g;
+// Text the pass cut short ("…") is cut at a different place on each tree, so a SHA or port in it can be
+// whole on one and cut, or gone, on the other. It names nothing new for the run: one the run has
+// named keeps that name, as does one cut short ("4a1f…", "port=47…") that starts only one of those,
+// and any other is named within that text alone (<SHA?1>). So the names after it stay in step.
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b[0-9a-f]{1,40}(?=…)/g;
 function namer(tag) {
-  const whole = new Map(), cut = new Map();
-  let n = 0;
-  return (x, isCut) => {
-    if (isCut) {
-      for (const [k, v] of whole) if (k.startsWith(x)) return v;
-      for (const [k, v] of cut) if (k.startsWith(x) || x.startsWith(k)) return v;
-      cut.set(x, `<${tag}${++n}>`);
-      return cut.get(x);
-    }
-    if (!whole.has(x)) {
-      let v;
-      for (const [k, c] of cut) if (x.startsWith(k)) { v = c; break; }
-      whole.set(x, v ?? `<${tag}${++n}>`);
-    }
-    return whole.get(x);
+  const seen = new Map();
+  return {
+    name: (x) => { if (!seen.has(x)) seen.set(x, `<${tag}${seen.size + 1}>`); return seen.get(x); },
+    find(x, isCut) {
+      if (seen.has(x) || !isCut) return seen.get(x);
+      const starts = [...seen.keys()].filter((k) => k.startsWith(x));
+      return starts.length === 1 ? seen.get(starts[0]) : undefined;
+    },
   };
 }
 function renamer() {
   const sha = namer('SHA'), port = namer('PORT');
-  const isCut = (s, at, x) => s[at + x.length] === '…';
-  return (s) => s.replace(SHA, (x, at, all) => sha(x, isCut(all, at, x)))
-    .replace(PORT, (m, pre, p, at, all) => pre + port(p, isCut(all, at, m)));
+  return (s) => {
+    // Ports first, so a port cut short is not taken for a SHA.
+    if (!s.includes('…')) return s.replace(PORT, (_, pre, p) => pre + port.name(p)).replace(SHA, (x) => sha.name(x));
+    const own = (tag) => { const m = new Map(); return (x) => { if (!m.has(x)) m.set(x, `<${tag}?${m.size + 1}>`); return m.get(x); }; };
+    const ownSha = own('SHA'), ownPort = own('PORT');
+    const isCut = (all, at, x) => all[at + x.length] === '…';
+    return s.replace(PORT, (m, pre, p, at, all) => pre + (port.find(p, isCut(all, at, m)) ?? ownPort(p)))
+      .replace(SHA, (x, at, all) => sha.find(x, isCut(all, at, x)) ?? ownSha(x));
+  };
 }
 
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
@@ -333,7 +334,7 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
         const sb = vb ? show(vb, vh ? [vh] : []) : '(absent)', sh = vh ? show(vh, vb ? [vb] : []) : '(absent)';
         lines.push(`  queue ${k}: base ${sb}, head ${sh}`);
       }
-      const ob = nb(norm(rb.out)).split('\n').map(timed), oh = nh(norm(rh.out)).split('\n').map(timed);
+      const ob = norm(rb.out).split('\n').map((l) => timed(nb(l))), oh = norm(rh.out).split('\n').map((l) => timed(nh(l)));
       const d = lineDiff(ob, oh, eq);
       for (const l of d.base) lines.push(`  output base: ${show(l, d.head)}`);
       for (const l of d.head) lines.push(`  output head: ${show(l, d.base)}`);
