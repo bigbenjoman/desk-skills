@@ -51,9 +51,11 @@ because a check-out written first thing is for the day before. Say which day you
 one line. Evidence from outside the day is context, not content.
 
 **A second check-out of the same day starts where the first ended.** Step 2 reads the
-destination back (the channel's, or the file's, previous check-out). If one was posted earlier the
-same day, run the collectors again with `--since <the time it was posted>`: their window then starts
-there, and their headers say `from HH:MM`. A draft never sent posted nothing, so it moves nothing.
+destination back (the channel's, or the file's, previous check-out). If one that covered this same
+day (its header or date names it) was posted during it, run the collectors again with `--since <the
+time it was posted>`: their window then starts there, and their headers say `from HH:MM`. A
+check-out for an earlier day, even one posted this morning, leaves the window whole, and a draft
+never sent posted nothing, so it moves nothing.
 Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
 day and say so. Say the window in your one line.
 

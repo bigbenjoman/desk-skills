@@ -36,13 +36,13 @@ def _target(day, now):
 
 
 def _since(value, target):
-    value = (value or "none").strip().lower()
-    if value == "none":
+    raw = (value or "none").strip()
+    if raw.lower() == "none":
         return None
     try:
-        return datetime.combine(target, datetime.strptime(value, "%H:%M").time()).astimezone()
+        return datetime.combine(target, datetime.strptime(raw, "%H:%M").time()).astimezone()
     except ValueError:
-        return datetime.fromisoformat(value).astimezone()
+        return datetime.fromisoformat(raw).astimezone()
 
 
 def resolve(day="auto", now=None, since="none"):

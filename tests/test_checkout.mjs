@@ -123,6 +123,8 @@ print(json.dumps({
   'other_day': hm(window.resolve('today', tue(18), since=datetime(2026, 10, 26, 17).astimezone().isoformat())),
   'later_than_now': hm(window.resolve('today', tue(12), since='15:00')),
   'yesterday_hhmm': hm(window.resolve('yesterday', tue(18), since='12:30')),
+  'utc_z': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))),
+  'none_upper': hm(window.resolve('today', tue(18), since='NONE')),
   'label': window.label(window.resolve('today', tue(18), since='12:30')[0])}))`);
 t('#814 with no previous check-out, the window is the whole day', since?.whole, '2026-10-27 00:00');
 t('#814 --since none covers the whole day', since?.none, '2026-10-27 00:00');
@@ -131,6 +133,8 @@ t('#814 --since takes an ISO timestamp', since?.iso, '2026-10-27 16:05');
 t('#814 a check-out posted on another day leaves the window whole', since?.other_day, '2026-10-27 00:00');
 t('#814 a time not yet past leaves it whole', since?.later_than_now, '2026-10-27 00:00');
 t('#814 HH:MM is on the day covered, not today', since?.yesterday_hhmm, '2026-10-26 12:30');
+t('#814 a UTC timestamp ending in Z (as an API gives it) is read, not refused', since?.utc_z, '2026-10-27 16:05');
+t('#814 none in any case covers the whole day', since?.none_upper, '2026-10-27 00:00');
 t('#814 the label names where the window starts', since?.label, 'Tuesday 27 October 2026, from 12:30 (the previous check-out)');
 
 // desk_repos.py: every configured repo, scoped against the current one, read through desk-env.
@@ -287,6 +291,8 @@ has('#818 a private channel is found too', skill, '`channel_types` `public_chann
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
+has('#814 only a check-out that covered the same day moves the window', skill, 'If one that covered this same\nday (its header or date names it) was posted during it');
+has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });
