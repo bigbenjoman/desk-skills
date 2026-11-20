@@ -59,7 +59,7 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   # AC2: no -j, desk-env missing or test-cap unset: a quarter of the cores, at least 1.
   out=$(PATH="$BARE" "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
   check "AC2 $at no desk-env on PATH: $quarter at once ($cores cores)" '[ $rc -eq 0 ] && [ "$(jobs_of)" = "$quarter" ]'
-  out=$(CAP= PATH="$STUB:$PATH" "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
+  out=$(CAP='' PATH="$STUB:$PATH" "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
   check "AC2 $at test-cap unset: $quarter at once" '[ $rc -eq 0 ] && [ "$(jobs_of)" = "$quarter" ]'
 
   # AC3: -j 1 runs one at a time in name order, whatever the recorded durations.
@@ -90,7 +90,7 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   cpu=$(printf '%s' "$out" | grep -oE '"cpu_s":[0-9.]+' | grep -oE '[0-9.]+$' | tr -d .)
   check "AC6 $at its CPU seconds are the suites' own" '[ -n "$cpu" ] && [ $((10#$cpu)) -ge $((10#$burn)) ]'
   n=$(wc -l < "$LOGF")
-  out=$(TEST_RUNS_LOG= "$B" "$R/run.sh" --no-hook-test -j 1 test_one.sh 2>&1)
+  out=$(TEST_RUNS_LOG='' "$B" "$R/run.sh" --no-hook-test -j 1 test_one.sh 2>&1)
   check "AC6 $at a run with TEST_RUNS_LOG empty (a run.sh a suite starts) records nothing" '[ "$(wc -l < "$LOGF")" = "$n" ]'
 }
 
