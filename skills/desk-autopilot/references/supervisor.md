@@ -12,7 +12,11 @@ the loop, so a batch keeps moving while no session is open and after a reboot. `
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
 `.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
 and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
-on (`loginctl enable-linger`), and install says when it is off. `uninstall` removes it, and no further passes run for that repo. `status` shows the agent, the
+on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
+and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
+Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
+the supervisor's distro is not your default), with "Stop the task if it runs longer than 3 days" turned
+off; install says this on WSL. `uninstall` removes it, and no further passes run for that repo. `status` shows the agent, the
 batch and the log's tail. Each tick, for a batch handed over at Stage 4:
 
 - skips while a pass holds `<state>/orchestrator.lock`, or the previous tick's pass still runs, and
