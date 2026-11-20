@@ -308,6 +308,11 @@ lacks('#816 an unread channel is no longer handed over by default', skill, 'If S
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
 has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
 has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
+has('#829 a batch\'s own sessions are never items', skill, 'A triage, preflight or worker session is evidence\n  for the ticket it worked, never work in its own right');
+has('#829 a parked ticket with no PR needs a Jira or GitHub change that day', skill, '**A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it\n  that day');
+has('#829 described by that change, not by the session', skill, 'and the item says what that change was. A session\n  alone is not a change.');
+has('#829 DESK_CHECKOUT_NAME_BATCH names the batch in one line', skill, 'set `DESK_CHECKOUT_NAME_BATCH=1`');
+has('#829 that line names the items by key', skill, 'Then one line after\n  the substantive work names the items a batch built by key');
 has('#819 the read wins over the collector\'s', skill, 'That read wins over the collector\'s: `MERGED` is `(merged)`, an open PR no longer a draft is\n  `(in review)`');
 has('#819 only isDraft true is a draft', skill, 'only `isDraft` true is\n  a draft');
 has('#819 a failed read keeps the collector\'s state and says so', skill, 'If that read fails, use the collector\'s state and name the PR under **Check before\n  posting** as read earlier in the run.');
