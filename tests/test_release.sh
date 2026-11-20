@@ -38,9 +38,10 @@ EOF
 
 # desk-skills: a scratch origin and the checkout cloned from it on main. Its install.sh records each
 # run with its arguments and how much it read on stdin, and writes installed.json as the real one does.
+# It prints $T/install.out where there is one, as the real one prints what installed.mjs restart said.
 git init -q -b main "$T/seed"
-printf '#!/bin/sh\necho "installed args=$* stdin=$(wc -c | tr -d " ")" >> "%s/install.calls"\nprintf %s "$(git rev-parse HEAD)" > "%s/desk/installed.json"\n' \
-  "$T" "'{\"commit\": \"%s\"}\n'" "$T" > "$T/seed/install.sh"
+printf '#!/bin/sh\necho "installed args=$* stdin=$(wc -c | tr -d " ")" >> "%s/install.calls"\nprintf %s "$(git rev-parse HEAD)" > "%s/desk/installed.json"\n[ -f "%s/install.out" ] && cat "%s/install.out"\ntrue\n' \
+  "$T" "'{\"commit\": \"%s\"}\n'" "$T" "$T" "$T" > "$T/seed/install.sh"
 chmod +x "$T/seed/install.sh"
 git -C "$T/seed" add install.sh; git -C "$T/seed" commit -q -m one
 git init -q --bare -b main "$T/origin.git"; git -C "$T/seed" push -q "$T/origin.git" main
@@ -152,9 +153,16 @@ git -C "$T/desk-src" clean -fq -- added.txt
 mkdir -p "$T/desk-src/.playwright-mcp" "$T/desk-src/docs/brand"
 echo a > "$T/desk-src/.playwright-mcp/log.txt"; echo b > "$T/desk-src/docs/brand/logo.svg"
 printf '{"version":1,"batch":"r","tickets":{"R-4":{"key":"R-4","state":"running","stage":"4/9"},"R-5":{"key":"R-5","state":"triaged"}}}\n' > "$T/queue.json"
+# What installed.mjs restart says, in install.sh's section and again in its summary: one driver
+# restarted, one left running mid-loop.
+restart_said='  merge driver for r (pid 111): left running on the old code, it is mid-loop and may be merging; a supervisor tick moves it to the new code once it waits between loops
+  merge driver for r batch b: restarted on the new code (pid 222 -> 333) for R-4'
+printf '%s\n        %s\n' "$restart_said" "$restart_said" > "$T/install.out"
 step 2026-10-27T09:26:00Z
+rm "$T/install.out"
 printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
-check "#773 the install line names the running workers that pick it up" 'grep -q "installed, main.s tests check passed on it; running workers that pick it up on their next call: .*R-4\"" <<< "$out" && ! grep -q "R-5" <<< "$out"'
+check "#773 the install line names the running workers that pick it up" 'grep -q "installed, main.s tests check passed on it; running workers that pick it up on their next call: .*R-4;" <<< "$out" && ! grep -q "R-5" <<< "$out"'
+check "DS-841 the install line says which merge driver it restarted, once, and not the one left running" 'grep -q "R-4; merge driver restarted on the new code, so its log.s .*merge driver exited 143.* is this restart: r batch b (pid 222 -> 333)\"" <<< "$out" && [ "$(grep -o "pid 222 -> 333" <<< "$out" | wc -l | tr -d " ")" = 1 ] && ! grep -q "pid 111" <<< "$out" && mlog | grep -q "merge driver restarted on the new code.*r batch b (pid 222 -> 333)"'
 check "AC1 the checkout is fast-forwarded to origin/main's head" '[ "$(srchead)" = "$new" ]'
 check "AC1 install.sh runs once with nothing on stdin"      '[ "$(calls install)" = 1 ] && grep -qx "installed args=--any-branch stdin=0" "$T/install.calls"'
 check "AC1 installed.json names the new commit"             '[ "$(installed)" = "$new" ]'
