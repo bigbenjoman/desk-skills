@@ -61,6 +61,7 @@ import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, pr
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
+import { latest as latestMerge, readLog as readMergeLog } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
@@ -3137,10 +3138,27 @@ function timingFields(r, F, x, h, now) {
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 
+// The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
+// PR the log has no entry for was merged outside desk, unless it merged before the log's first entry.
+// An open PR with no entry has nothing to say. { text, outside }, or null.
+export function mergeOf(r, t, events) {
+  const pr = t.result?.pr;
+  if (pr == null) return null;
+  const e = latestMerge(events, { repo: r.slug.replace('__', '/'), pr });
+  const head = (x) => String(x.sha ?? '?').slice(0, 12);
+  if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${head(e)}`, outside: false };
+  if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${head(e)}`, outside: false };
+  const mergedAt = t.merged_at ?? (prStatusOf(t)?.state === 'MERGED' ? prStatusOf(t).merged_at ?? '' : null);
+  if (mergedAt == null) return null;
+  const began = timeOf(events[0]?.at);
+  if (began == null || (timeOf(mergedAt) ?? Infinity) < began) return { text: `#${pr} merged before desk kept a merge log, so who merged it is not recorded`, outside: false };
+  return { text: `#${pr} merged outside desk: the merge log has no entry for it`, outside: true };
+}
+
 // `jiraUrl` adds the Jira line the interactive screen opens with o. `open` is the interactive screen's
 // set of what a, y and f unfold ('a' blockers, 'y' why lane, 'f' files); null, as in plain output,
 // shows all of it. `can` says which of them has more to show.
-function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), checkin = false, open = null } = {}) {
+function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), checkin = false, open = null, mergeLog = null } = {}) {
   const t = r.q.tickets[key];
   const k = shownState(r.q, t, r.ctx);
   const row = r.rows.find((x) => x.t.key === key) ?? r.prs.find((x) => x.t.key === key);
@@ -3237,6 +3255,8 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const files = (tr.files_in_scope ?? []).map((f) => `  ${f}`);
   if (files.length) out.push(segLine([['Files in scope', BOLD], [` · ${files.length}`, DIM]]), ...folded('f', files, files, (n) => `${n} more`), '');
   if (t.collides_with) out.push(segLine([['Never runs with ', BOLD], [String(t.collides_with).split('|').join(', '), DIM]]));
+  const merge = t.result?.pr != null ? mergeOf(r, t, mergeLog ?? readMergeLog()) : null;
+  if (merge) field('Merge', [[merge.text, merge.outside ? WARN : null]]);
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]
