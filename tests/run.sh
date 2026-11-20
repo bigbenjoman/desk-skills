@@ -11,6 +11,7 @@
 #                                         one piece, in name order. -j 1 runs them one after another in
 #                                         name order. Without -j: `desk-env get test-cap`, else a quarter
 #                                         of the cores (at least 1).
+# Every suite's TMPDIR is a symlink to the real temporary directory, on Linux as on a Mac.
 # Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
 # to ~/.desk-autopilot/test-runs.jsonl ($TEST_RUNS_LOG): its date, suites, job count, wall and CPU
 # seconds, and the one-minute load average at its start.
@@ -40,6 +41,11 @@ T="$(cd "$(dirname "$0")" && pwd)"
 # nothing: only the outer run is a run.
 runs_log=${TEST_RUNS_LOG-$HOME/.desk-autopilot/test-runs.jsonl}; export TEST_RUNS_LOG=
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
+# Every suite's TMPDIR is a symlink to the real temporary directory, as a Mac's /var/folders is (under
+# /var, itself a link to /private/var), so a test that confuses a path with its resolved form fails
+# on Linux too.
+ln -s "$(cd "${TMPDIR:-/tmp}" && pwd -P)" "$OUT/tmp" || exit 1
+export TMPDIR="$OUT/tmp"
 # The run's template repos (tests/lib/repo_template.sh): built once, shared by every suite in it. Not
 # a DESK_* name: suites see no DESK_* variable but the ones suite_env.sh keeps (test_run_env.sh).
 export REPO_TPL_ROOT="$OUT/tpl"
