@@ -30,7 +30,7 @@ cat "$T/pr.json"
 EOF
 chmod +x "$T/fakes/gh"
 export PATH="$T/fakes:$PATH"
-pr(){ printf '{"headRefName":"%s","state":"%s"}\n' "$1" "${2:-OPEN}" > "$T/pr.json"; }
+pr(){ printf '{"headRefName":"%s","state":"%s","isCrossRepository":%s}\n' "$1" "${2:-OPEN}" "${3:-false}" > "$T/pr.json"; }
 
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
 # f <KEY> <path>: the JSON of that ticket's field at that dotted path.
@@ -48,7 +48,7 @@ check "AC1: finish records the ticket done"                           '[ $rc -eq
 check "AC1: its PR is the result, and its draft PR as the pass records" '[ "$(f F-1 result.pr)" = 41 ] && [ "$(f F-1 draft_pr)" = 41 ]'
 check "AC1: its park and handoff stage are cleared"                    '[ "$(f F-1 park)" = null ] && [ "$(f F-1 handoff_stage)" = null ]'
 check "AC1: its summary says who recorded it and what the park was"   '[[ "$(f F-1 result.summary)" == *"recorded done by the orchestrator"*"jira comment refused"* ]]'
-check "AC1: the PR was read from the config repo"                     'grep -q "pr view 41 --repo acme/widgets --json headRefName,state" "$T/gh.calls"'
+check "AC1: the PR was read from the config repo"                     'grep -q "pr view 41 --repo acme/widgets --json headRefName,state,isCrossRepository" "$T/gh.calls"'
 
 # AC2: a ticket held behind it waits on its PR's merge, as behind any done ticket, and is not stuck.
 q add F-2; q set F-2 state=triaged lane=A branch=feat/F-2-thing; q hold F-2 F-1
@@ -77,6 +77,9 @@ rm -f "$T/gh.fail"
 pr feat/F-5-thing CLOSED
 before=$(sum); q finish F-5 --pr 44
 check "a closed PR is refused"                                         '[ $rc -ne 0 ] && [[ "$out" == *"PR #44 is closed, not open"* ]] && [ "$(sum)" = "$before" ]'
+pr feat/F-5-thing OPEN true
+before=$(sum); q finish F-5 --pr 44
+check "a fork's PR on a same-named branch is refused"                 '[ $rc -ne 0 ] && [[ "$out" == *"PR #44 is from a fork"* ]] && [ "$(sum)" = "$before" ]'
 pr feat/F-1-thing OPEN
 before=$(sum); q finish F-1 --pr 41
 check "a ticket already done is refused"                               '[ $rc -ne 0 ] && [[ "$out" == *"F-1 is not parked"* ]] && [ "$(sum)" = "$before" ]'
@@ -94,6 +97,13 @@ for k in F-6 F-7; do
   before=$(sum); q finish "$k" --pr 45
   check "a park awaiting the person's answer is refused (${c%%:*})" '[ $rc -ne 0 ] && [[ "$out" == *"$k waits on the person"*"answer"* ]] && [ "$(sum)" = "$before" ]'
 done
+
+# A feature spine parked on a step of its own: the pass checks its specs as it records it done, so
+# finish leaves it to a requeue. (Last, as it makes this a feature batch.)
+parked F-8; q set-batch feature=true spine=F-8
+pr feat/F-8-thing OPEN
+before=$(sum); q finish F-8 --pr 46
+check "a feature spine is refused, pointing to requeue"               '[ $rc -ne 0 ] && [[ "$out" == *"F-8 is its feature batch'"'"'s spine"*"queue.mjs requeue F-8"* ]] && [ "$(sum)" = "$before" ]'
 
 # AC6: the recovery row for a park on a single remaining step names the command.
 check "AC6: the recovery reference names queue.mjs finish on that row" 'grep -E "^\| a worker.s .AUTOPILOT_PARK. on a single remaining step" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md" | grep -q "queue.mjs finish <TICKET> --pr <n>"'

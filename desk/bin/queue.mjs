@@ -14,6 +14,7 @@ import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
+import { isSpineOf, ownsSpecsOf } from './pass/shared.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
@@ -447,7 +448,7 @@ function stepDone(q, key) {
 
 // A parked ticket whose last step the orchestrator finished itself, recorded done on its own open PR
 // (doneOnPr), so the next pass reviews, undrafts and merges it as any done ticket's. A spine or epic
-// plan park is the person's approval, never a step to finish. `pr` is { head, state } or { error }, read
+// plan park is the person's approval, never a step to finish. `pr` is { head, state, fork } or { error }, read
 // before the lock.
 function finish(q, key, n, pr) {
   const t = ticket(q, key);
@@ -455,10 +456,14 @@ function finish(q, key, n, pr) {
   if (t.state === 'running') throw new Error(`${key} has a live worker (it is running), so its park is not finished yet: let it end, or stop it (queue.mjs stop ${key}). ${none}`);
   if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked on a step of its own (it is ${t.state}${isHeld(t) ? ', held' : ''}), so there is no park to finish. ${none}`);
   if (spinePark(t) || planPark(t)) throw new Error(`${key} waits on the person's answer (${t.park.question}), not on a step to finish, so only that answer moves it on. ${none}`);
+  // The pass checks a feature spine's specs, or a child's owned ones, as it records the ticket done
+  // (pass.mjs recordDone); recorded done here, that check would never run.
+  if (isSpineOf(q, t) || ownsSpecsOf(q, t)) throw new Error(`${key} is ${isSpineOf(q, t) ? "its feature batch's spine" : 'a feature child that owns criteria'}, whose specs the pass checks when it records it done: requeue it to finish (queue.mjs requeue ${key}). ${none}`);
   refuseLeft(t, key, 'recorded done');
   if (pr.error) throw new Error(`PR #${n} could not be read from GitHub (${pr.error}). ${none}`);
   if (!t.branch) throw new Error(`${key} records no branch, so PR #${n}'s head ${pr.head} cannot be matched to it. ${none}`);
   if (pr.head !== t.branch) throw new Error(`PR #${n}'s head branch is ${pr.head}, not ${key}'s branch ${t.branch}. ${none}`);
+  if (pr.fork) throw new Error(`PR #${n} is from a fork, so it is not ${key}'s own PR. ${none}`);
   if (pr.state !== 'OPEN') throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open. ${none}`);
   applySet(t, doneOnPr(n, `PR #${n} recorded done by the orchestrator, after it finished the last step its worker parked on: ${String(t.park?.question ?? '').slice(0, 120)}`));
   save(q);
@@ -737,8 +742,8 @@ if (cmd === 'finish') {
   if (!repo) finishPr = { error: 'config §0 names no GitHub repo' };
   else {
     try {
-      const v = JSON.parse(execFileSync('gh', ['pr', 'view', n, '--repo', repo, '--json', 'headRefName,state'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
-      finishPr = { head: v.headRefName, state: v.state };
+      const v = JSON.parse(execFileSync('gh', ['pr', 'view', n, '--repo', repo, '--json', 'headRefName,state,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+      finishPr = { head: v.headRefName, state: v.state, fork: v.isCrossRepository === true };
     } catch (e) {
       finishPr = { error: String(e.stderr || e.message).trim().split('\n').pop() || 'gh pr view failed' };
     }
