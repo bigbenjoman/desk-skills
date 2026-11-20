@@ -837,10 +837,22 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Commit-attribution hook"
 
-install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
-chmod +x "$HOOK"
-ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
-wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+write_hook=1
+# A hook script desk never installed here (no pristine copy) is another tool's of the same name, and
+# can guard a repo desk has no config for yet: asked, as desk-jira is, and kept with no terminal.
+if [ -f "$HOOK" ] && ! cmp -s "$SRC/hooks/deny-ai-attribution.py" "$HOOK" && [ ! -f "$PRISTINE/.claude/hooks/deny-ai-attribution.py" ]; then
+  note "your ~/.claude/hooks/deny-ai-attribution.py was not installed by desk (another tool's, or your own)"
+  note "desk's blocks AI attribution only in a repo whose desk config sets §5 AI attribution to forbidden, so a repo yours guards has none until /desk-setup writes its config"
+  confirm "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" || write_hook=0
+fi
+if [ "$write_hook" = 1 ]; then
+  install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
+  chmod +x "$HOOK"
+  ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
+  wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+else
+  warn "kept your ~/.claude/hooks/deny-ai-attribution.py; desk's attribution rules do not run until it is replaced"
+fi
 
 # register_hook <check|apply> <script name> <command> <timeout> <matcher or ""> <event>...
 # Every desk hook in settings.json goes through this. A hook counts as registered on an event when a
