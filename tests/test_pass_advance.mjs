@@ -144,17 +144,16 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
 
 // The text a park's write waits on, from the worker's park file: only for the question it parked on.
 {
-  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
-  const { tmpdir } = await import('node:os');
-  const { join } = await import('node:path');
-  const { parkApproval } = await import('../desk/bin/batch-state.mjs');
   const dir = mkdtempSync(join(tmpdir(), 'park-approve-'));
   mkdirSync(join(dir, 'parks'));
   const write = (o) => writeFileSync(join(dir, 'parks', 'P-1.json'), JSON.stringify(o));
   write({ question: 'post the comment?', approve: { kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' } });
   t('#775 a park file naming the question parked on gives its text', j(parkApproval(dir, 'P-1', 'post the comment?').approve), j({ kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' }));
   t('#775 an earlier round\'s file, on another question, gives nothing', j(parkApproval(dir, 'P-1', 'which colour?')), j({ approve: null, missing: null }));
-  t('#775 nor does it stand in for a park awaiting approval on another question', parkApproval(dir, 'P-1', 'post this comment, awaiting approval?').approve, null);
+  t('#775 nor does it stand in for a park awaiting approval on another question, which names the mismatch', parkApproval(dir, 'P-1', 'post this comment, awaiting approval?').missing,
+    'its park file is on another question ("post the comment?") than the one parked on, so its approve is an earlier round\'s');
+  write({ question: 'post the review?', approve: { kind: 'pr-review', target: 42, body: 'LGTM' } });
+  t('#775 a PR number given as a number is its target', j(parkApproval(dir, 'P-1', 'post the review?').approve), j({ kind: 'pr-review', target: '42', body: 'LGTM' }));
   write({ question: 'post the comment?' });
   t('#775 a file with no approve gives nothing', parkApproval(dir, 'P-1', 'post the comment?').approve, null);
   t('#775 no file gives nothing', parkApproval(dir, 'P-2', 'x').approve, null);

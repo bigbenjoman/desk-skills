@@ -2487,7 +2487,7 @@ const tailBrief = (t) => `## Your PR has merged: run only the steps after the me
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
-function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null, login = null } = {}) {
+function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
@@ -2637,7 +2637,7 @@ async function spawnHandoff(t, pick) {
   if (refused) return parkIt(refused);
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }), { login: pick.login });
+  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -2718,7 +2718,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   attempts += 1;
   const model = models.off ? '' : models[tierFor({ key })];
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...pick.vars };
-  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true, login: pick.login });
+  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
   if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
@@ -3049,7 +3049,7 @@ for (const t of spawnable) {
 
   const resumed = resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
-  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed, login: pick.login });
+  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.limit) {

@@ -24,7 +24,7 @@ it has already actioned. So:
 ## A park means the worker is already gone
 
 A worker cannot block under `dontAsk` (every wait primitive, `timeout … until`, `sleep`, `Monitor`,
-`inotifywait`, is refused) so it prints `AUTOPILOT_PARK`, messages you, and exits within a turn or
+`inotifywait`, is refused) so it writes its park file, prints `AUTOPILOT_PARK` and exits within a turn or
 two. Treat every park as "worker gone now". Any answer that needs the user arrives after it left,
 so a worker parked holding an approved Jira comment exits and nothing receives the answer.
 

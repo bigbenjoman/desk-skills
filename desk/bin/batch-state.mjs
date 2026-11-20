@@ -131,17 +131,22 @@ const APPROVE_FIELDS = ['kind', 'target', 'body'];
 // object: { approve: {kind, target, body}, missing: null }, the body kept verbatim. Where it has
 // none and its question asks for an approval (or the object lacks a field), `approve` is null and
 // `missing` names what the park file lacks, so the pass reports the park incomplete. Neither: both null.
-// A file on another question than the one parked on is an earlier round's, read as no file.
+// A file on another question than the one parked on is an earlier round's, read as no file. A PR
+// number given as a number is its target as text.
 export function parkApproval(stateDir, key, question) {
   const file = readPark(stateDir, key);
-  const rec = file && String(file.question ?? '').trim() === String(question ?? '').trim() ? file : null;
-  const a = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
+  const fileQ = String(file?.question ?? '').trim();
+  const rec = file && fileQ === String(question ?? '').trim() ? file : null;
+  const raw = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
+  const a = raw && typeof raw.target === 'number' ? { ...raw, target: String(raw.target) } : raw;
   const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
   if (a && !lacks.length) return { approve: { kind: a.kind.trim(), target: a.target.trim(), body: a.body }, missing: null };
   if (!a && !asksApproval(question)) return { approve: null, missing: null };
   return { approve: null, missing: a
     ? `its park file's approve object has no ${lacks.join(', ')}`
-    : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
+    : file?.approve && !rec
+      ? `its park file is on another question ("${fileQ}") than the one parked on, so its approve is an earlier round's`
+      : 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve' };
 }
 
 // The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and

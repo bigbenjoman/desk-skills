@@ -97,7 +97,8 @@ where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 
-1. **Write the park file**, `$DESK_STATE/parks/<TICKET>.json`: `{"question": "<one line>"}`. A
+1. **Write the park file**, `$DESK_STATE/parks/<TICKET>.json`: `{"question": "<one line>"}`, the
+   same text as your `AUTOPILOT_PARK` line. A
    park on a write config §3 does not grant says "awaiting approval" and adds the write, verbatim:
    `"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`
    (or `jira-transition`, `jira-edit`, `jira-ticket`, `pr-body`, `pr-review`). needs-you prints
