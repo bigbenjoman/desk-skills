@@ -167,7 +167,7 @@ export function* decideUndraft(snap) {
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
-      { ...passCfg, now: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
+      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it

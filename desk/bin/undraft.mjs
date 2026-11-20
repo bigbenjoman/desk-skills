@@ -723,7 +723,8 @@ export function personHold(t, n, redrafts = []) {
 // for a required check that never reported, stale(base, head, branch, baseHead) -> staleTriggers's
 // { behind, reopen } for one the pass's base sync or reopen starts, runOf(runId), cancels(name) and now
 // for a check stuck pending (stuckCall), fault(check) -> gate.mjs runnerFault's why for a red check the
-// runner killed or lost, or null, and rerunsOk(name), the reruns GitHub accepted at this head }.
+// runner killed or lost, or null, rerunsOk(name), the reruns GitHub accepted at this head, and passAt,
+// the pass's ISO time, from which a head with no mergeability answer is aged }.
 export function undraftCall(t, pr, cfg) {
   const n = pr.number;
   if (cfg.spine) return null;
@@ -759,8 +760,8 @@ export function undraftCall(t, pr, cfg) {
     // head first had no answer (kept on the undraft record), it goes to the person after
     // UNKNOWN_LIMIT_MS, naming what gives it a fresh merge ref.
     const was = t.undraft;
-    const since = (was?.call === 'wait' || was?.call === 'person') && was.pr === n && was.sha === pr.head && was.unknown_since ? was.unknown_since : cfg.now ?? null;
-    const mins = since && cfg.now ? Math.floor((Date.parse(cfg.now) - Date.parse(since)) / 60000) : 0;
+    const since = (was?.call === 'wait' || was?.call === 'person') && was.pr === n && was.sha === pr.head && was.unknown_since ? was.unknown_since : cfg.passAt ?? null;
+    const mins = since && cfg.passAt ? Math.floor((Date.parse(cfg.passAt) - Date.parse(since)) / 60000) : 0;
     const said = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`;
     if (mins * 60000 >= UNKNOWN_LIMIT_MS) {
       return { ...person(`${said} at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`,

@@ -990,7 +990,7 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   const NOW = '2026-11-20T12:00:00.000Z';
   const ago = (m) => new Date(Date.parse(NOW) - m * 60000).toISOString();
   const wedged = (undraft, head = HEAD) => undraftCall({ key: 'T-752', undraft }, { number: 752, head, mergeable: 'UNKNOWN', mergeState: 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO), head)], checks: [] },
-    { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], now: NOW });
+    { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: NOW });
   const first = wedged(undefined);
   t('#752 a first pass with no answer waits, from now', `${first?.call} ${first?.unknown_since}`, `wait ${NOW}`);
   const later = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(30) });
@@ -1009,7 +1009,7 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   const HEAD752 = HEAD;
   const pass = (t, now) => {
     const c = undraftCall(t, { number: 752, head: HEAD752, mergeable: 'UNKNOWN', mergeState: 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO))], checks: [] },
-      { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], now });
+      { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: now });
     const rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: HEAD752, carried_from: null, pr: 752, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}) };
     const w = undraftWrite(t, rec, { dry: false, at: now });
     return { c, t: w ? { ...t, undraft: JSON.parse(w.fields[0].slice('undraft='.length)) } : t, wrote: !!w };
