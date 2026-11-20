@@ -147,7 +147,8 @@ if (a[0] === 'pr' && a[1] === 'list') {
   fs.writeFileSync(F, JSON.stringify(prs));
 } else if (a[0] === 'pr' && a[1] === 'merge') {
   const p = prs[a[2]];
-  if (!p || p.state !== 'open' || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
+  // "refuse": a PR GitHub will not merge, whatever its head.
+  if (!p || p.state !== 'open' || p.refuse || at('--match-head-commit') !== p.sha) { console.error('merge refused'); process.exit(1); }
   p.state = 'merged';
   fs.writeFileSync(F, JSON.stringify(prs));
   fs.appendFileSync('$T/merges.log', a[2] + ' ' + p.base + ' ' + at('--match-head-commit') + '\n');

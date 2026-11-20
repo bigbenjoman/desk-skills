@@ -244,6 +244,12 @@ no `>>` redirect: a redirect outside the working directory prompts every time, w
 rules say. **Where the batch is handed to the supervisor, do not start one**: it starts the driver for a
 handed-over batch and starts it again after a reboot (*The supervisor*).
 
+Each merge it makes is a `merged` line in the merge log naming the PR, the head it merged at, the
+ticket and the driver as the merger; a refused merge is a `failed` line, never `merged`.
+`node ~/.claude/desk/bin/merge-log.mjs show --pr <n> --latest` prints a PR's latest outcome as one
+JSON line (merged, else armed and not since disarmed: who, at which head, when), and prints nothing
+when the log has none.
+
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes` (first
 resolving each thread an earlier desk-review by that handle opened, once the latest desk-review
