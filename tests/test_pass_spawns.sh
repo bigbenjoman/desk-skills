@@ -1114,6 +1114,16 @@ fbt FB-41 triaged src/big.ts; fbt FB-42 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
   'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
+# A review try changes no file: running, it fills no place of a file; ready, it waits on none.
+fbq fbf '1'
+fbt FB-51 running src/big.ts; q set FB-51 session_id=live-51 'fix={"kind":"rereview","try":1,"of":2,"pr":51,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'
+fbt FB-52 triaged src/big.ts
+fbt FB-53 running src/edge.ts; q set FB-53 session_id=live-53
+fbt FB-54 triaged src/edge.ts; q set FB-54 'fix={"kind":"rereview","try":1,"of":2,"pr":54,"head":"bbb","what":"review its head","at":"T0"}' result.pr=54
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 a running review try fills no place: a ticket naming the same file starts" 'spawned FB-52'
+check "#1001 a ready review try is not held back behind a worker editing its files" '! echo "$out" | grep "^held back by a collision:" | grep -qF "FB-54"'
+check "#1001 negative control: a ticket naming a file a running worker edits is still held" 'q set FB-52 state=triaged >/dev/null; fbt FB-55 triaged src/edge.ts; out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep "^held back by a collision:" | grep -qF "FB-55 (src/edge.ts has 1 running of its 1: FB-53)"'
 # fbrow <row>: what desk-env reads the row as, "<big> <small> <serial globs joined by +> <bad>".
 fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \

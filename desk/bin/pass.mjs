@@ -1826,11 +1826,16 @@ const placesFor = (f) => {
   const k = configuredPlaces(f);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
 };
+// A review try (kind rereview) reviews its PR's head and changes no file, so it neither waits on a
+// file's places nor fills one.
+const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
+const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
   const holds = [];
+  if (reviewOnlyTry(r)) return holds;
   for (const f of budgetFiles(r.key)) {
-    const by = [...runningKeys].filter((k) => k !== r.key && budgetFiles(k).includes(f));
+    const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
     if (!by.length) continue;
     const k = placesFor(f);
     if (by.length >= k) holds.push({ file: f, k, by });
@@ -2487,6 +2492,7 @@ async function resumeKilled(t) {
   if (refused) return fail(refused);
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 
 // The review a fix worker runs and posts, as `desk-env review-cmd` prints it; null with no rows to read.
@@ -2647,6 +2653,7 @@ function spawnCloud(t) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${started}`);
   report.spawned.push(`${t.key} in a cloud session: ${s.url}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 
 async function spawnHandoff(t, pick) {
@@ -2687,6 +2694,7 @@ async function spawnHandoff(t, pick) {
   if (spawnRefused) return fail(spawnRefused);
   report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
   return undefined;
 }
 
@@ -3139,6 +3147,7 @@ for (const t of spawnable) {
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
   report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
+  if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
 const lockQueueHeldText = lockQueueHeld.length
   ? `${LOCK_QUEUE.line}: holding new workers and resumes into Stage 4 (${lockQueueHeld.join(', ')}); they start once the queue drains below ${LOCK_QUEUE.at}`
