@@ -49,7 +49,8 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   and handed on goes in the next report in `<state>/supervisor.log` and in the batch notes;
 - once a pass reports the batch idle, runs nothing more for it until the queue changes (a new batch,
   or a ticket admitted or requeued into this one), a park is answered, or, with anything parked,
-  failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes. A pass asks
+  failed or held behind a blocker in no batch, `DESK_IDLE_RECHECK_MS` (30 minutes) passes, or
+  `DESK_RUN_RECHECK_MS` (2 minutes) while a park waits on an Actions run or a PR's checks. A pass asks
   GitHub whether a held ticket's outside blockers landed at most once in that interval, busy batch or
   idle.
 

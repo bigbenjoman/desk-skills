@@ -431,6 +431,12 @@ export const settlesByScript = (t) => {
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
 
+// A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so
+// an idle batch holding one is rechecked every RUN_RECHECK_MS (supervisor.mjs), not IDLE_RECHECK_MS.
+const RUN_KINDS = new Set(['run-completed', 'checks-pass']);
+export const waitingOnRun = (t) => settlesByScript(t) && RUN_KINDS.has(t.park.clears_when.kind);
+export const RUN_RECHECK_MS = Number(process.env.DESK_RUN_RECHECK_MS) || 2 * 60 * 1000;
+
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
 export const laneUnchecked = (r) => needsPersonLane(r) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
