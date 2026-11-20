@@ -275,6 +275,7 @@ for (const [where, line] of [
   ['in a label holding a semicolon', `[Build Order Summary|${URL1}] and [No board for this ticket; epic reference only|https://claude.ai/design/p/other]`],
   ['in a label holding brackets', `Build Order Summary on [A](${URL1}) and see [Epic canvas [reference], no board for this ticket; background only](https://claude.ai/design/p/other)`],
 ]) t(`DS-860 AC2: a note ${where} on a line linking two artifacts clears neither`, sev(line), 'blocking blocking');
+t('DS-860 AC2: a phrase never runs across a two-link line left out between two lines', sev(`See [canvas](${URL1}). No board for\n[the empty state](${URL1}) (see [reference](https://claude.ai/design/p/other)).\nThis ticket implements [Order Summary](${URL1}).`), 'blocking blocking');
 const fact2 = designFact(`h2. Design\n[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
 t('DS-860: triage\'s design fact keeps both canvases a line links beside a no-board note', fact2.canvases.length, 2);
 const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });

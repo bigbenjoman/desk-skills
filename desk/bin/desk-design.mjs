@@ -1026,7 +1026,8 @@ export function usesNoBoard(section, url, key) {
   const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
   const text = String(section ?? '');
   const only = (l) => { const k = claudeDesignLinks(l); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
-  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).join('\n') : text);
+  // Each kept line is tested alone: joined, a phrase could run across a line left out between them.
+  return claudeDesignLinks(text).length > 1 ? text.split('\n').filter(only).some((l) => re.test(l)) : re.test(text);
 }
 
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
