@@ -475,8 +475,9 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
-  allow.push(...NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', '.', `${d}${t}`).map((c) => rule(c, '')))));
-  deny.push(...BIN_FORMS.map((b) => `Bash(${b}/with-lock.sh tsc *node_modules/.bin/*..*)`));
+  const lintBins = NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', '.', `${d}${t}`)));
+  allow.push(...lintBins.map((c) => rule(c, '')));
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments

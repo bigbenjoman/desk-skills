@@ -272,6 +272,10 @@ check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.
       "./node_modules/.bin/./prisma migrate reset" "node $W/node_modules/prisma/build/index.js migrate reset --force"'
 check "tsx scripts still run from the worktree"            'ok "node $W/node_modules/tsx/dist/cli.mjs scratch.ts" && no "node $W/node_modules/tsx/../vitest/vitest.mjs"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
+settings '`bash tests/run.sh`' '| Typecheck | `web: ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json` |' '| Lint | `web: node_modules/.bin/eslint -c ../eslint.config.js .` |'
+check "DS-855 the lint binaries .. deny leaves a configured directory item holding .. allowed" \
+  'ok "$L tsc --cwd web -- ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js ." && no "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc --cwd . -- node_modules/.bin/biome check ../x"'
+settings '`bash tests/run.sh` `sub: bash tests/sub.sh`' '| Typecheck | `bash tests/tc.sh` |' "$(perm3 ask)"
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 # okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
 okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }  # bash32: ok the |& is inside a perl regex, not a pipe
