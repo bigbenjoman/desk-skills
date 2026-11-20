@@ -23,11 +23,12 @@ or `desk-jira lint body.md [<type>] [field=value ...]` for a draft, read as `cre
 It prints one line per finding and exits 1 on any blocking one:
 
 - **Blocking**, what makes triage ask or a worker park: no acceptance criteria (Given/When/Then
-  lines in a `{code}` or `{noformat}` block under the criteria heading count; a block with none
-  does not); an open decision
+  lines in a `{code}` or `{noformat}` block under the criteria heading count, and are checked as
+  prose criteria are; a block with no Given line does not); an open decision
   (TBD, TODO, decide, proposal for, needs a decision, or a question mark in Outcome, the criteria or
   Out of scope); no design link and no `No UI.` line (any URL in the Design section counts, and a
-  Figma or Claude Design URL anywhere in the description); Size unset (not asked of a Subtask); a
+  Figma URL anywhere in the description; a Claude Design link counts only in the Design section,
+  where the saved-copy check reads it); Size unset (not asked of a Subtask); a
   criterion that needs a Jira write, a live production run or an operator step; and `desk-design`'s
   finding for a Claude Design link with no saved copy (advisory once autopilot has snapshotted the
   canvas, since the worker saves it).

@@ -17,7 +17,7 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
+import { FIGMA_URL, baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 
@@ -45,11 +45,10 @@ const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
 const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
-// A Given/When/Then line: one opening with Given or Then (after a list mark or an AC1: label), or a
-// one-line "given …, when …, then …". When alone is left out: it opens code (Kotlin, Ruby) too.
-const GWT = /^\W*(?:AC\d+\W*)?(?:given|then)\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
-// A design-tool URL counts wherever the description has it: Figma, or a Claude Design artifact.
-const DESIGN_URL = /https?:\/\/(?:[a-z0-9-]+\.)*(?:figma\.com\/|claude\.ai\/design\b)/i;
+// A Given/When/Then criterion: a line opening with Given (after a list mark or an AC1: label), or a
+// one-line "given …, when …, then …". When and Then alone are left out: both open code lines too
+// (a shell `then`, Kotlin's `when`).
+const GWT = /^\W*(?:AC\d+\W*)?given\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
@@ -82,15 +81,18 @@ export function lintTicket(t, { root, dir, ref } = {}) {
   const keyPattern = keyRegex();
   const sec = (re) => secs.find((s) => re.test(s.name));
   const filled = (s) => !!s && s.lines.some((l) => l.text.trim());
-  const all = secs.flatMap((s) => s.lines);
 
   // ---- blocking ----
+  // Criteria written as Given/When/Then inside a {code}/{noformat} block or fence count, so blankCode
+  // emptied them: the section's lines are read again from the source, and every check below reads
+  // them as it reads prose criteria.
   const criteria = sec(CRITERIA);
-  // Criteria written as Given/When/Then inside a {code}/{noformat} block or fence count: blankCode
-  // empties the section, so its lines are read again from the source.
   const raw = String(t.text ?? '').split(/\r?\n/);
-  const gwt = !!criteria && criteria.lines.some((l) => GWT.test(raw[l.n - 1] ?? ''));
-  if (!filled(criteria) && !gwt) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
+  if (criteria?.lines.some((l) => !l.text.trim() && GWT.test(raw[l.n - 1] ?? ''))) {
+    criteria.lines = criteria.lines.map((l) => ({ n: l.n, text: raw[l.n - 1] ?? '' }));
+  }
+  const all = secs.flatMap((s) => s.lines);
+  if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
     const p = prose(l.text);
@@ -105,7 +107,9 @@ export function lintTicket(t, { root, dir, ref } = {}) {
 
   const design = sec(/^design\b/i);
   const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
-  if (!noUi && !DESIGN_URL.test(t.text ?? '') && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
+  // A Figma URL counts wherever the description has it. A Claude Design link counts only in the
+  // Design section, where the saved-copy check and triage look for it.
+  if (!noUi && !FIGMA_URL.test(t.text ?? '') && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
     add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." there');
   }
 
