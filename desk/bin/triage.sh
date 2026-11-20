@@ -122,6 +122,20 @@ if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
 RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_RUN_BIN" 2>/dev/null || true)"
 
+# An earlier triage's open questions and person steps, which this one carries forward unless the
+# ticket or the person has settled them since: its record is kept aside as <ticket>.prev.json before
+# this pass removes it, and stays there until a pass finishes (a failed pass leaves it for the next).
+PREV="$STATE/triage/$TICKET.prev.json"
+[ -f "$OUT" ] && cp "$OUT" "$PREV"
+EARLIER="$(node -e '
+const fs = require("fs");
+let d; try { d = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); } catch { process.exit(0); }
+const asks = (Array.isArray(d.unknowns) ? d.unknowns : []).map((u) => (u && typeof u === "object" ? u.question : u)).map((x) => String(x ?? "").trim()).filter(Boolean);
+const steps = (Array.isArray(d.ben_steps) ? d.ben_steps : []).map((x) => String(x?.step ?? "").trim()).filter(Boolean);
+const out = [...asks.map((q) => `- question: ${q}`), ...steps.map((x) => `- person step: ${x}`)];
+if (out.length) console.log(out.join("\n"));
+' "$PREV" 2>/dev/null || true)"
+
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
 no branch or worktree.
@@ -223,6 +237,14 @@ ${RECORDED:+
 criterion or any other, and judge the lane and scope with them applied.
 
 $RECORDED
+}${EARLIER:+
+**Left open by an earlier triage of $TICKET.** Each still holds unless the text of the ticket, a
+comment or what is settled above now answers or removes it. Keep each that holds, word for word: a question
+in \`unknowns\` (in an ask category when it was one), a person step in \`ben_steps\`. List each you
+drop in \`dropped_earlier\`, saying what settles it. One neither kept nor listed is carried forward
+as it was.
+
+$EARLIER
 }
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
@@ -244,6 +266,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
   "prior_art": ["<branch or PR that already touches these files, and in one clause what it does — opposite intent, same intent, or partial. Empty if none found.>"],
   "blocker_needs": {"<KEY of an open blocker>": {"needs": "build|merge|none", "why": "<one line>"}},
   "ben_steps": [{"step": "<a step only the user can take, from the routing file's list>", "blocker": "<the proposed blocker ticket's summary: what the user does, and what it unblocks>"}],
+  "dropped_earlier": [{"item": "<an earlier triage's question or person step, word for word>", "why": "<what in the ticket, a comment or the settled answers settles it>"}],
   "renders": <true if the change alters what a user sees, so Stage 5 evidence is required>,
   "needs_db": <true if verifying it needs a database, seed, or integration test>,
   "needs_local": <null, or one clause naming what verifying it needs that only this computer has: a local dev server, the browser, local stub binaries, a local service, a clone of another repo to read. A cloud session has the repo from GitHub and nothing else>
@@ -252,6 +275,7 @@ Write ONLY this JSON to $OUT — no prose, no code fence:
 files_in_scope drives collision detection across the batch, so be concrete and do not pad it.
 unknowns and already_met are [] when there are none.
 ben_steps is [] when the ticket needs no step only the user can take.
+dropped_earlier is [] when no earlier triage left anything open, or you dropped none of it.
 blocker_needs has one entry per open "is blocked by" link, and is {} when the ticket has none.
 PROMPT_END
 
@@ -576,6 +600,47 @@ fi
 # With every canvas snapshotted or saved on the base, an unknown or a lane (park) reason asking for
 # boards to be snapshotted or exported is false, and would only park the ticket for the user. The lane
 # stays: only the false clause goes from its reason.
+# What an earlier triage left open and this one neither kept nor dropped with a reason is carried
+# forward as it was: a question to the user's questions (taken off any call this pass took on it), a
+# person step to ben_steps. Each drop is kept with its reason, and both are said.
+if [ -f "$PREV" ]; then
+  node - "$OUT" "$PREV" <<'CARRY_END' || { echo "FAIL: $TICKET triage record's earlier questions could not be carried forward" >&2; exit 1; }
+const fs = require('fs');
+const [out, prev] = process.argv.slice(2);
+const d = JSON.parse(fs.readFileSync(out, 'utf8'));
+let p = {};
+try { p = JSON.parse(fs.readFileSync(prev, 'utf8')); } catch { /* an unreadable earlier record carries nothing */ }
+const norm = (x) => String(x ?? '').trim().replace(/\s+\(recommended: [^)]*\)$/, '').replace(/\s+/g, ' ').toLowerCase();
+const said = (x) => (x && typeof x === 'object' ? x.question ?? x.step : x);
+const dropped = (Array.isArray(d.dropped_earlier) ? d.dropped_earlier : [])
+  .filter((x) => x && String(x.item ?? '').trim() && String(x.why ?? '').trim())
+  .map((x) => ({ item: String(x.item).trim(), why: String(x.why).trim() }));
+const gone = new Set(dropped.map((x) => norm(x.item)));
+d.unknowns = Array.isArray(d.unknowns) ? d.unknowns : [];
+d.ben_steps = Array.isArray(d.ben_steps) ? d.ben_steps : [];
+const carried = [];
+for (const u of Array.isArray(p.unknowns) ? p.unknowns : []) {
+  const q = String(said(u) ?? '').trim();
+  if (!q || gone.has(norm(q)) || d.unknowns.some((x) => norm(said(x)) === norm(q))) continue;
+  d.unknowns.push(typeof u === 'string' ? u.trim() : q);
+  if (Array.isArray(d.decided)) d.decided = d.decided.filter((x) => norm(x?.question) !== norm(q));
+  carried.push(`question: ${q}`);
+}
+for (const s of Array.isArray(p.ben_steps) ? p.ben_steps : []) {
+  const step = String(s?.step ?? '').trim();
+  if (!step || gone.has(norm(step)) || d.ben_steps.some((x) => norm(x?.step) === norm(step))) continue;
+  d.ben_steps.push({ step, blocker: String(s.blocker ?? step).trim() });
+  carried.push(`person step: ${step}`);
+}
+d.dropped_earlier = dropped;
+if (carried.length) d.carried_earlier = carried;
+fs.writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+if (carried.length) console.log(`[triage] ${d.ticket}  carried ${carried.length} earlier item(s) forward, neither kept nor settled: ${carried.join('; ')}`);
+for (const x of dropped) console.log(`[triage] ${d.ticket}  dropped an earlier item: ${x.item} (${x.why})`);
+CARRY_END
+  rm -f "$PREV"
+fi
+
 node - "$OUT" <<'SNAPPED_END'
 const fs = require('fs');
 const out = process.argv[2];

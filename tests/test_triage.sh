@@ -476,6 +476,28 @@ check "DS-649 AC1: the first pass and the challenge each run with FORCE_PROMPT_C
   '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/cache")" = "1 1 " ]'
 rm -f "$T/cache"
 
+# #826: what an earlier triage left open (a question, a person step) is carried forward unless this
+# pass keeps it or drops it saying what settles it.
+REC="$T/state/triage/fix-thing.json"
+earlier(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface","unknowns":["Which legal copy goes in the footer?"],"ben_steps":[{"step":"apply the migration to production","blocker":"apply it, unblocking fix-thing"}]}\n' > "$REC"; }
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "#826 the first pass is told what the earlier triage left open, to keep or drop with a reason" \
+  'P0 | grep -qF "Left open by an earlier triage of fix-thing" && P0 | grep -qF -- "- question: Which legal copy goes in the footer?" && P0 | grep -qF -- "- person step: apply the migration to production" && P0 | grep -qF "\"dropped_earlier\": [{\"item\""'
+check "#826 a pass that keeps neither carries both forward, and says so" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns[0]")" = "Which legal copy goes in the footer?" ] && [ "$(lc ".ben_steps[0].step")" = "apply the migration to production" ] && [[ "$out" == *"carried 2 earlier item(s) forward, neither kept nor settled"* ]] && [ ! -f "$T/state/triage/fix-thing.prev.json" ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_EXTRA=',"dropped_earlier":[{"item":"Which legal copy goes in the footer?","why":"the description now quotes the copy"}],"ben_steps":[{"step":"apply the migration to production","blocker":"apply it, unblocking fix-thing"}]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "#826 a question dropped with what settles it is not carried, and the drop is said and kept" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 0 ] && [ "$(lc ".dropped_earlier[0].why")" = "the description now quotes the copy" ] && [[ "$out" == *"dropped an earlier item: Which legal copy goes in the footer? (the description now quotes the copy)"* ]] && [[ "$out" != *"carried"* ]]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_EXTRA=',"unknowns":[{"question":"Which legal copy goes in the footer?","category":"wording","options":["short","long"],"recommended":"short"}]' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "#826 an earlier question this pass took as a call of its own goes back to the user, the call taken off" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns[0]")" = "Which legal copy goes in the footer?" ] && [ "$(lc "[.decided[]? | select(.question == \"Which legal copy goes in the footer?\")] | length")" = 0 ]'
+rm -f "$STUB_LOG".* "$REC" "$T/state/triage/fix-thing.prev.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "#826 with no earlier triage, nothing is said of one" '[ $rc -eq 0 ] && ! P0 | grep -qF "Left open by an earlier triage" && [ "$(lc ".carried_earlier // \"none\"")" = none ]'
+
 check "shellcheck: no flag parsed as a command (SC2215) in desk/bin" \
   '! command -v shellcheck >/dev/null || ! shellcheck -S warning -f gcc "$B"/*.sh 2>/dev/null | grep -q SC2215'
 
