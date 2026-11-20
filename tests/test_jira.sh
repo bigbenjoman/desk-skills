@@ -557,6 +557,9 @@ gwtblock '```' '```' 'if [ -f x ]|then|  echo ok|fi'
 check "DS-824 AC3 lint: a shell block with then on its own line is still no acceptance criteria" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
 gwtblock '```' '```' 'Given a draft|When lint runs|Then it shows TBD'
 check "DS-824 lint: an open decision in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* leaves a decision open"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '/^1\. AC1/ { print "```"; print "Given a draft"; print "Then it lists each finding"; print "```"; print "```"; print "No UI."; print "echo TODO"; print "```"; next } { print }' > "$LD/gwt2.md"
+lint "$LD/gwt2.md" customfield_10208=M
+check "DS-824 lint: another block under the criteria heading stays code" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link" && ! printf "%s\n" "$out" | grep -q -e "no acceptance criteria" -e "leaves a decision open"'
 gwtblock '{noformat}' '{noformat}' 'Given the job|When it runs|Then p95 in production is under 300 ms'
 check "DS-824 lint: a production run in preformatted criteria is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: line [0-9]* is a criterion the worker cannot do in its branch, a live production run"'
 clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://www.figma.com/design/Ab/x?node-id=1-2" }' > "$LD/figmaref.md"

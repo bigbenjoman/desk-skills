@@ -22,16 +22,17 @@ import { configValue, isNone, stateDir } from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
-// code reads as prose and line numbers still match the source.
-function blankCode(text) {
+// code reads as prose and line numbers still match the source. Each block's line numbers are pushed
+// onto `blocks`, one array per block.
+function blankCode(text, blocks = []) {
   let fence = null; let macro = false;
-  return String(text ?? '').split(/\r?\n/).map((l) => {
-    if (macro) { if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
-    if (fence) { if (l.trim().startsWith(fence)) fence = null; return ''; }
+  return String(text ?? '').split(/\r?\n/).map((l, i) => {
+    if (macro) { blocks.at(-1).push(i + 1); if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
+    if (fence) { blocks.at(-1).push(i + 1); if (l.trim().startsWith(fence)) fence = null; return ''; }
     const f = /^\s*(`{3,}|~{3,})/.exec(l);
-    if (f) { fence = f[1]; return ''; }
+    if (f) { fence = f[1]; blocks.push([i + 1]); return ''; }
     const m = /\{(?:code|noformat)(?::[^}]*)?\}/i.exec(l);
-    if (m) { if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
+    if (m) { blocks.push([i + 1]); if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
     return l;
   });
 }
@@ -76,7 +77,8 @@ export function keyRegex(value = configValue) {
 export function lintTicket(t, { root, dir, ref } = {}) {
   const findings = [];
   const add = (severity, rule, message) => findings.push({ severity, rule, message });
-  const lines = blankCode(t.text);
+  const code = [];
+  const lines = blankCode(t.text, code);
   const secs = sections(lines.join('\n'));
   const keyPattern = keyRegex();
   const sec = (re) => secs.find((s) => re.test(s.name));
@@ -84,12 +86,15 @@ export function lintTicket(t, { root, dir, ref } = {}) {
 
   // ---- blocking ----
   // Criteria written as Given/When/Then inside a {code}/{noformat} block or fence count, so blankCode
-  // emptied them: the section's lines are read again from the source, and every check below reads
-  // them as it reads prose criteria.
+  // emptied them: each block under the criteria heading holding a Given/When/Then line is read again
+  // from the source, and every check below reads it as it reads prose criteria. Other blocks there
+  // (a shell example, sample output) stay blank.
   const criteria = sec(CRITERIA);
-  const raw = String(t.text ?? '').split(/\r?\n/);
-  if (criteria?.lines.some((l) => !l.text.trim() && GWT.test(raw[l.n - 1] ?? ''))) {
-    criteria.lines = criteria.lines.map((l) => ({ n: l.n, text: raw[l.n - 1] ?? '' }));
+  if (criteria) {
+    const raw = String(t.text ?? '').split(/\r?\n/);
+    const own = new Set(criteria.lines.map((l) => l.n));
+    const back = new Set(code.filter((b) => own.has(b[0]) && b.some((n) => GWT.test(raw[n - 1] ?? ''))).flat());
+    if (back.size) criteria.lines = criteria.lines.map((l) => (back.has(l.n) ? { n: l.n, text: raw[l.n - 1] ?? '' } : l));
   }
   const all = secs.flatMap((s) => s.lines);
   if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
