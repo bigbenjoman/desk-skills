@@ -6,7 +6,7 @@
 //           cancelled or skipped run says nothing about the code;
 //   macOS - its latest run on main that ran the suite failed or was cancelled (a cancelled run is
 //           usually the job timeout, which GitHub reports as cancelled), or its latest such run that
-//           was not cancelled is more than STALE_MS old. A run that passed with only its plan job
+//           was not cancelled is more than STALE_MS old with no run on main queued or in progress. A run that passed with only its plan job
 //           run (the schedule, skipping the suite because a lane run had just passed) counts as neither.
 // While one is red, one issue labelled ci-main-red is open and assigned to OWNER; it is commented when
 // a run goes red, and commented and closed once every lane is green and fresh.
@@ -23,9 +23,10 @@ import { execFileSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-export const DUE_MS = 24 * 3600e3;
-export const STALE_MS = 36 * 3600e3;
-export const LABEL = 'ci-main-red';
+const DUE_MS = 24 * 3600e3;
+const STALE_MS = 36 * 3600e3;
+const LABEL = 'ci-main-red';
+const IN_FLIGHT = new Set(['queued', 'in_progress', 'waiting', 'pending', 'requested']);
 const FAILED = new Set(['failure', 'timed_out', 'startup_failure']);
 const SILENT = new Set(['cancelled', 'skipped']);
 const LANE_EVENTS = new Set(['push', 'workflow_dispatch']);
@@ -53,8 +54,10 @@ export function testsLane(runs) {
   return { red: FAILED.has(r.conclusion), line: `tests: ${short(r)}` };
 }
 
-// `runs` newest first; a run with `skipped: true` skipped the suite. -> { red, line }
-export function macosLane(runs, now) {
+// `runs` newest first; a run with `skipped: true` skipped the suite. `running`: a run on main is queued or
+// in progress, so it is the latest run and the lane is not stale (the nightly gate can leave up to about
+// 48 h between suite runs, and a push in that gap finishes its tests run first). -> { red, line }
+export function macosLane(runs, now, running = false) {
   const ran = runs.filter((r) => !r.skipped && r.conclusion !== 'skipped');
   const last = ran[0];
   if (!last) return { red: true, line: 'macOS: no run on main that ran the suite' };
@@ -62,7 +65,7 @@ export function macosLane(runs, now) {
   if (FAILED.has(last.conclusion) || last.conclusion === 'cancelled') reds.push(`latest ${last.event} run ${short(last)}`);
   const done = ran.find((r) => r.conclusion !== 'cancelled');
   if (!done) reds.push('stale: no run on main finished without being cancelled');
-  else if (now - at(done) > STALE_MS) reds.push(`stale: the latest run that finished started ${hours(now - at(done))} ago (${short(done)})`);
+  else if (now - at(done) > STALE_MS && !running) reds.push(`stale: the latest run that finished started ${hours(now - at(done))} ago (${short(done)})`);
   return reds.length ? { red: true, line: `macOS: ${reds.join('; ')}` } : { red: false, line: `macOS: ${short(last)}` };
 }
 
@@ -102,7 +105,9 @@ function alarm(env, now) {
     if (r.conclusion === 'success') r.skipped = !ranSuite(JSON.parse(gh(['run', 'view', String(r.databaseId), '--json', 'jobs'])).jobs ?? []);
     if (!r.skipped && !SILENT.has(r.conclusion)) break;
   }
-  const lanes = [testsLane(tests), macosLane(macos, now)];
+  const running = JSON.parse(gh(['run', 'list', '--workflow', 'nightly-macos.yml', '--branch', 'main', '--limit', '10', '--json', 'databaseId,status']))
+    .some((r) => IN_FLIGHT.has(r.status) && r.databaseId !== trigger?.databaseId);
+  const lanes = [testsLane(tests), macosLane(macos, now, running)];
   for (const l of lanes) console.log(l.line);
   try { gh(['label', 'create', LABEL, '--color', 'B60205', '--description', 'a CI lane on main is red, cancelled or stale']); } catch { /* it exists */ }
   const issue = JSON.parse(gh(['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;

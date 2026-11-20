@@ -2,7 +2,7 @@ name: ci main red
 
 # Red main is visible: one open issue labelled ci-main-red, assigned to the repo's owner, while the
 # latest `tests` push run on main is red, or the macOS lane's latest run is red, cancelled or more than
-# 36 h old. It is commented with each red run, and commented and closed once every lane is green and
+# 36 h old with none queued or running. It is commented with each red run, and commented and closed once every lane is green and
 # fresh (tests/ci_main_red.mjs). It runs after each run of either workflow, and daily, so a lane that
 # stopped running still goes stale. It runs on the default branch's copy of this file and of the
 # script, with an issues-write token, and reads only run metadata through gh: it never checks out the

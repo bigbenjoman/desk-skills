@@ -32,6 +32,10 @@ t('35 h is still fresh', mac(run('success', 35)).red, false);
 t('the age is the latest not-cancelled run, past a cancelled one', /started 50 h ago/.test(mac(run('cancelled', 2), run('success', 50)).line), true);
 t('only cancelled runs: red and stale', /stale: no run on main finished without being cancelled/.test(mac(run('cancelled', 2), run('cancelled', 26)).line), true);
 t('no run at all is red', mac().red, true);
+// The gate skips a schedule after a lane run under 24 h old, so up to about 48 h can pass between suite
+// runs; a push in that gap finishes its tests run before its macOS run, which is then running.
+t('over 36 h old with a run on main in progress: not stale', macosLane([run('success', 40)], NOW, true).red, false);
+t('a run in progress does not hide a failure', macosLane([run('failure', 40)], NOW, true).red, true);
 // A scheduled run that skipped the suite counts as neither a result nor freshness.
 t('a skipped schedule run does not freshen a stale lane', mac(run('success', 1, { event: 'schedule', skipped: true }), run('success', 40)).red, true);
 t('nor hide a red one', mac(run('success', 1, { event: 'schedule', skipped: true }), run('failure', 20)).red, true);
@@ -82,7 +86,10 @@ try {
   writeFileSync(join(BIN, 'gh'), `#!/bin/sh
 printf '%s\\n' "$*" >> "${LOG}"
 case "$1 $2" in
-  "run list") w=$4; cat "${T}/runs-$w.json" ;;
+  "run list") w=$4; case "$*" in
+    *"--status completed"*) cat "${T}/runs-$w.json" ;;
+    *) if [ -f "${T}/live-$w.json" ]; then cat "${T}/live-$w.json"; else echo '[]'; fi ;;
+  esac ;;
   "run view") cat "${T}/jobs-$3.json" ;;
   "issue list") cat "${T}/issues.json" ;;
   "issue create") echo "https://github.com/acme/x/issues/42" ;;
@@ -119,6 +126,15 @@ exit 0
   const c = cli(['alarm'], { RUN_ID: '6', RUN_NAME: 'macOS', RUN_EVENT: 'push', RUN_URL: 'u6', RUN_SHA: 'eeeeeee', RUN_CONCLUSION: 'success', RUN_CREATED: live(0) });
   t('alarm: the unlisted trigger is read first, and settles it', c.gh.filter((l) => l.startsWith('run view')).join(' | '), 'run view 6 --json jobs');
   t('alarm: every lane green and fresh closes the issue', c.gh.filter((l) => /^issue (comment|close) 9/.test(l)).length, 2);
+
+  // A tests push run finishes while that push's macOS run, after a 40 h gap, is still running.
+  put('issues.json', []);
+  put('runs-nightly-macos.yml.json', [{ databaseId: 3, conclusion: 'success', event: 'push', url: 'u3', headSha: 'ddddddd', createdAt: live(40) }]);
+  put('live-nightly-macos.yml.json', [{ databaseId: 7, status: 'in_progress' }, { databaseId: 3, status: 'completed' }]);
+  const g = cli(['alarm'], { RUN_ID: '8', RUN_NAME: 'tests', RUN_EVENT: 'push', RUN_URL: 'u8', RUN_SHA: 'fffffff', RUN_CONCLUSION: 'success', RUN_CREATED: live(0) });
+  t('alarm: a macOS run in progress keeps an old lane from reading stale', `${g.gh.some((l) => l.startsWith('issue create'))} ${g.out.trim().split('\n').pop()}`, 'false main is green and no issue is open');
+  put('live-nightly-macos.yml.json', []);
+  t('alarm: with none running, the same lane is stale', cli(['alarm']).gh.some((l) => l.startsWith('issue create')), true);
 
   put('runs-nightly-macos.yml.json', [{ databaseId: 3, conclusion: 'success', event: 'push', url: 'u3', headSha: 'ddddddd', createdAt: live(3) }]);
   t('nightly-due: a green push 3 h ago skips the suite', cli(['nightly-due', '--github-output']).out.trim(), 'due=false');
