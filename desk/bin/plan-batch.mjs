@@ -25,6 +25,8 @@ import { perTicketDb } from './health.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 
 const AS_JSON = process.argv.includes('--json');
+// --keep-order: spawn in the order the tickets were named (blockers still first), not by what they gate.
+const KEEP_ORDER = process.argv.includes('--keep-order');
 const plan = [];
 const say = (s) => (AS_JSON ? plan.push(s) : console.log(s));
 function verdict(status, message, needsPerson = []) {
@@ -37,8 +39,8 @@ const refuse = (message) => process.exit(verdict('error', message));
 crashShowsPerson((e) => verdict('error', describeCrash(e)));
 const STATE = stateDir();
 const QUEUE = join(runBin(), 'queue.mjs');
-const tickets = process.argv.slice(2).filter((a) => a !== '--json');
-if (!tickets.length) refuse('usage: plan-batch.mjs [--json] <TICKET> [<TICKET> ...]');
+const tickets = process.argv.slice(2).filter((a) => a !== '--json' && a !== '--keep-order');
+if (!tickets.length) refuse('usage: plan-batch.mjs [--json] [--keep-order] <TICKET> [<TICKET> ...]');
 
 const records = [];
 for (const t of tickets) {
@@ -435,9 +437,26 @@ const topo = (list) => {
   }
   return out;
 };
-// Spawn order keeps the order the tickets were named in, so a gate the user names first starts first;
-// the merge order puts the larger blast radius first. The holds keep the two consistent where it matters.
-const order = topo(ours);
+// How many tickets in the batch each one holds, directly or through another (preds, transitively).
+const gates = (() => {
+  const succ = {};
+  for (const [t, ps] of Object.entries(preds)) for (const p of ps) (succ[p] ??= []).push(t);
+  const out = {};
+  for (const r of ours) {
+    const seen = new Set(); const stack = [...(succ[r.ticket] ?? [])];
+    while (stack.length) { const t = stack.pop(); if (seen.has(t) || t === r.ticket) continue; seen.add(t); stack.push(...(succ[t] ?? [])); }
+    out[r.ticket] = seen.size;
+  }
+  return out;
+})();
+const filesOf = (r) => (Array.isArray(r.files_in_scope) ? r.files_in_scope.length : 0);
+// Spawn order starts the tickets that gate the most others first, so a late hub never leaves worker
+// slots idle while its dependents wait; among tickets that gate none, the one with fewer planned files
+// first; then the order named. --keep-order keeps the named order. Blockers always start before what
+// they block (topo). The merge order puts the larger blast radius first; the holds keep the two
+// consistent where it matters.
+const order = topo(KEEP_ORDER ? ours : ours.slice().sort((a, b) => gates[b.ticket] - gates[a.ticket]
+  || (gates[a.ticket] === 0 && gates[b.ticket] === 0 ? filesOf(a) - filesOf(b) : 0) || named(a) - named(b)));
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
 // What a ticket that needs a database will actually get.
@@ -582,6 +601,11 @@ if (collisions.length) {
 }
 if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 
+const spawning = order.filter((r) => admitted.includes(r));
+if (spawning.length > 1) {
+  say(`\nSPAWN ORDER — ${KEEP_ORDER ? 'as named (--keep-order), blockers first' : 'the tickets that gate the most others first, then the fewest planned files, then as named; blockers first'}:`);
+  spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${filesOf(r)} planned file(s)`));
+}
 if (merging.length) {
   say(`\nMERGE ORDER — largest blast radius first (${KIND_ORDER.join(', ')}):`);
   merging.forEach((r, i) => {
