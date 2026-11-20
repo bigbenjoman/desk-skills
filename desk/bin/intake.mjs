@@ -759,7 +759,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     base: () => (moveTo(b)
       ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to ${moveTo(b)} (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
-    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session`,
+    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session, or, if this session is the one that runs it, run that yourself`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
   }[code]?.() ?? null);
   const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart ? 'free' : null), b);

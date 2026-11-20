@@ -59,7 +59,7 @@ self-contained export, so ask once more for one that is, or for the artifact to 
 ## 1. Admit
 
 ```bash
-node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
+node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front] [--session]
 ```
 
 - `<TICKET>...`: every ticket the user named, in one call, so a blocker named alongside what it
@@ -68,6 +68,10 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front]
 - `--front`: only when the user asks for it first, or calls it urgent ("ASAP", "next"). It moves a
   ticket already in a batch too, unless its worker has started, it is finished, or the user placed it
   (`queue.mjs move`): the line after `is already in batch` says which.
+- `--session`: only when this session runs the batch (it started it with `/desk-autopilot`, and
+  runs its passes). A batch a session runs refuses the call without it (`is run by a session, not
+  the supervisor`): if that session is this one, run the same call again with `--session`; never
+  message yourself, and never run `queue.mjs admit` instead.
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
