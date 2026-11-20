@@ -97,7 +97,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('reviewerGated reads that PR as held', reviewerGated(verdictPr, s), true);
   t('and not with no failing reviewer check', reviewerGated(verdictPr, { ...s, reviewer: null }), false);
   const as = drive(s);
-  t('a held PR marks its hold and gets nothing else', j(as), j([{ type: 'gate-hold', key: 'T-1', on: true }]));
+  t('a held PR reads its review, with gate reviewers\' counted, then marks its hold and gets nothing else', j(as), j([{ type: 'reads', key: 'T-1', dirty: false, dirtyFiles: null }, { type: 'feedback', key: 'T-1', pr: 697, gate: true }, { type: 'gate-hold', key: 'T-1', on: true }]));
 }
 
 // Held only because the gate counts another account, a head the merge driver would hold for want
@@ -110,14 +110,20 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const stale = { clean: false, why: 'its review verdict is for bbbbbbbbb, not the head' };
   const as = drive(s, { feedback: fb, reads: () => reads({ reads: { atHead: () => stale } }) });
   const c = applied(as)[0]?.call;
-  t('#881 a mismatch-held PR with a stale verdict marks its hold and gets a review try', j([as[0], c?.call, c?.fix?.kind, c?.fix?.ready, c?.fix?.held]), j([{ type: 'gate-hold', key: 'T-1', on: true }, 'requeue', 'rereview', true, true]));
+  t('#881 a mismatch-held PR with a stale verdict marks its hold and gets a review try', j([as.find((a) => a.type === 'gate-hold'), c?.call, c?.fix?.kind, c?.fix?.ready, c?.fix?.held]), j([{ type: 'gate-hold', key: 'T-1', on: true }, 'requeue', 'rereview', true, true]));
   t('#881 its try says why', c?.fix?.what, 'review its head: its review verdict is for bbbbbbbbb, not the head');
   const clean = drive(s, { feedback: fb, reads: () => reads({ reads: { atHead: () => ({ clean: true }) } }) });
   t('#881 one whose head has a clean verdict gets nothing', applied(clean).length, 0);
   const findings = drive(s, { feedback: { ...fb, review: { id: 'R1', verdict: { p0: '0', p1: '1' }, body: '### P1 (1)\n- a.ts:1 x' } }, reads: () => reads({ reads: { atHead: () => stale } }) });
-  t('#881 nor one with a review at its head that is not clean: its fix waits', applied(findings).length, 0);
+  const fx = applied(findings)[0]?.call;
+  t('#902 one with a review at its head that is not clean gets a review fix, out of draft', j([fx?.call, fx?.fix?.kind, fx?.fix?.ready]), j(['requeue', 'review', true]));
+  t('#902 and is not marked held', j(findings.find((a) => a.type === 'gate-hold')), j({ type: 'gate-hold', key: 'T-1', on: false }));
+  const signinFindings = drive(snap([[tk(), verdictPr]], { ...base, reviewer: { key: 'reviewer-signin', kind: 'auth', why: 'signed out' } }), { feedback: { ...fb, review: { id: 'R1', verdict: { p0: '1', p1: '0' }, body: '### P0 (1)\n- a.ts:1 x' } }, reads: () => reads() });
+  t('#902 whatever the reviewer check failed on', applied(signinFindings)[0]?.call?.fix?.kind, 'review');
+  const elsewhere = drive(s, { feedback: { ...fb, head: 'd'.repeat(40), review: { id: 'R1', verdict: { p0: '1' }, body: 'x' } }, reads: () => reads() });
+  t('#902 a review read at another head is not worked, and the hold stands', j([applied(elsewhere).length, elsewhere.find((a) => a.type === 'gate-hold')?.on]), j([0, true]));
   const signin = drive(snap([[tk(), verdictPr]], { ...base, reviewer: { key: 'reviewer-signin', kind: 'auth', why: 'signed out' } }), { feedback: fb, reads: () => reads({ reads: { atHead: () => stale } }) });
-  t('#881 a reviewer that cannot be read still holds the review', j(signin), j([{ type: 'gate-hold', key: 'T-1', on: true }]));
+  t('#881 a reviewer that cannot be read still holds the review', j(signin), j([{ type: 'reads', key: 'T-1', dirty: false, dirtyFiles: null }, { type: 'feedback', key: 'T-1', pr: 697, gate: true }, { type: 'gate-hold', key: 'T-1', on: true }]));
 }
 
 // A green PR: its review threads are read, and a stale stuck record is cleared.

@@ -511,7 +511,7 @@ export function refusedIn(rec, login, own) {
 // The same, read from the last health run at `state`.
 export const refusedLogin = (state, login, own) => refusedIn(readRecord(state), login, own);
 
-const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
+const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, except a fix for a review at its head with findings, and build workers still start';
 // A mismatch still lets through the review the merge driver needs (pass/fix-tries.mjs heldReview): it
 // counts desk's verdict though the gate does not.
 export const MISMATCH_WORDS = ', except the review a head with no clean verdict needs, which the merge driver counts though the gate does not';

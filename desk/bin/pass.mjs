@@ -792,6 +792,13 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
+// desk's verdict logins and §4 Gate reviewers' together, as loginIn reads a list; desk's alone where the
+// row does not read.
+const gateHandle = () => {
+  let gate = null;
+  try { gate = E.gateReviewers(); } catch { /* the reviewer check says it */ }
+  return [conflictHandle, ...(gate ?? [])].filter(Boolean).join(',') || null;
+};
 // A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
 // or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
@@ -3801,9 +3808,10 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
-    // findings fixes included, as out of draft.
-    const held = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
+    // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
+    // as out of draft. A review at the head with findings is not held: the hold is for a review that is
+    // missing or stale, and those findings are the fix worker's whatever the reviewer check says.
+    const held = !hold && ['review', 'checks'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
     markGateHold(t, s, held);
     // Unless the check fails only because the gate counts another account: the merge driver still
     // counts desk's verdict, so a head with none that holds still gets its review while the gate is red.
@@ -4152,7 +4160,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
       'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
       'human-seen': (a) => humanSeen(a.pr),
       reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
-      feedback: (a) => readFeedback(a.pr),
+      feedback: (a) => readFeedback(a.pr, a.gate),
       'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
       'check-build': (a) => {
         const { t } = fixTicket(a.key);
@@ -4162,13 +4170,15 @@ function fixReads(t, s, dirty, dirtyFiles) {
     },
   });
 }
-function readFeedback(n) {
+// With `gate`, a §4 Gate reviewer's desk-review counts as the PR's review too: a PR the reviewer check
+// holds still gets its findings fixed (pass/fix-tries.mjs heldTry).
+function readFeedback(n, gate = false) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
   try {
     const payload = JSON.parse(r.out);
-    const read = readThreads(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') });
+    const read = readThreads(payload, { handle: gate ? gateHandle() : conflictHandle, clean: E.configValue('clean-verdict') });
     return read && { ...read, payload };
   } catch { return null; }
 }
