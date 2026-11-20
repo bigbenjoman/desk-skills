@@ -25,7 +25,7 @@ t('#881 no AUTOPILOT_ name is both a marker and a variable', doubled(a), []);
 t('#881 AUTOPILOT_PARK is a marker', [a.markers.includes('AUTOPILOT_PARK'), a.variables.includes('AUTOPILOT_PARK')], [true, false]);
 t('#881 AUTOPILOT_BUDGET_USD is a variable', [a.variables.includes('AUTOPILOT_BUDGET_USD'), a.markers.includes('AUTOPILOT_BUDGET_USD')], [true, false]);
 t('#881 the registry reads markers.mjs', [a.markers, a.variables], [[...MARKERS], [...ENV]]);
-t('#881 every listed name is one the code uses', [...a.markers, ...a.variables].filter((n) => !used[n]), []);
+t('#881 every listed name is one the code uses outside markers.mjs', [...a.markers, ...a.variables].filter((n) => !(used[n] ?? []).some((f) => f !== 'desk/bin/markers.mjs')), []);
 t('#881 harvest reads every marker', MARKERS.filter((n) => ![...`${n}: x`.matchAll(MARKER)].some((m) => m[1] === n)), []);
 
 // The checks above, on a tree that breaks them: they name the name and the file.

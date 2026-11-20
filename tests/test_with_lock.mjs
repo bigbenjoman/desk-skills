@@ -28,7 +28,8 @@ const text = readFileSync(script, 'utf8');
 // #881 AC5
 t('#881 the usage line lists every class the script accepts, and only those', mismatched(text), []);
 t('#881 the usage line is read', usageLocks(text).length > 0, true);
-const added = text.replace('<test|tsc|browser|light|nolock>', '<test|tsc|browser|light|nolock|gpu>');
+const usage = usageLocks(text);
+const added = text.replace(`<${usage.join('|')}>`, `<${[...usage, 'gpu'].join('|')}>`);
 t('#881 a class added to the usage line alone is named', added === text ? 'usage line not found' : mismatched(added), ['gpu: in the usage line, not accepted']);
 const accepted = text.replace(/(\n\s*)browser\)/, '$1browser|gpu)');
 t('#881 a class added to the case alone is named', accepted === text ? 'case arm not found' : mismatched(accepted), ['gpu: accepted, not in the usage line']);

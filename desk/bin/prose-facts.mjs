@@ -36,7 +36,8 @@ export const autopilot = () => ({ markers: [...MARKERS], variables: [...ENV] });
 export const states = () => [...STATES];
 
 // What a skill may name of where things live: the variables `desk-env paths` prints (machine: the
-// ones shared by every repo), and the files under a batch's state folder, `<KEY>` for the ticket.
+// ones shared by every repo), and the files batch-state.mjs reads under a batch's state folder
+// (STATE_PATHS), `<KEY>` for the ticket.
 export const statePaths = () => ({ vars: [...PATH_VARS], machine: [...MACHINE_PATHS], state: { ...STATE_PATHS } });
 
 // The lock classes with-lock.sh's usage line lists: `usage: with-lock.sh <test|tsc|…>`.
