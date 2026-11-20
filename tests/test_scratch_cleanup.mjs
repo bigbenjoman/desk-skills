@@ -13,8 +13,16 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const DIR = dirname(fileURLToPath(import.meta.url));
 const files = readdirSync(DIR);
 
-const direct = files.filter((f) => f.endsWith('.mjs') && f !== 'scratch.mjs' && /mkdtempSync\(join\(tmpdir\(\)/.test(readFileSync(join(DIR, f), 'utf8')));
+const suites = files.filter((f) => f.endsWith('.mjs') && f !== 'scratch.mjs').map((f) => [f, readFileSync(join(DIR, f), 'utf8')]);
+// A temp dir straight under the temp dir, by any spelling (tmpdir(), os.tmpdir(), a TMPDIR read), is one
+// nothing removes; one made inside a scratch() directory goes with it.
+const direct = suites.filter(([, s]) => /mkdtempSync\((?:join\()?\s*(?:\w+\.)?tmpdir\(\)|mkdtempSync\([^)]*TMPDIR/.test(s)).map(([f]) => f);
 t('no .mjs suite makes a temp dir that nothing removes: each uses scratch()', direct.join(', '), '');
+// The import sits among the suite's own leading imports: one pasted into a generated script's text
+// imports nothing, and the suite dies on its first scratch() call.
+const leading = (s) => s.slice(0, s.search(/^(?!import |\/\/|\s*$|\} from |  ).*$/m));
+const unimported = suites.filter(([, s]) => /\bscratch\(/.test(s) && !/^import \{ scratch \} from '\.\/scratch\.mjs';?$/m.test(leading(s))).map(([f]) => f);
+t('every suite that calls scratch() imports it with its own imports, not inside a script it writes', unimported.join(', '), '');
 
 const shells = files.filter((f) => f.endsWith('.sh') && f !== 'run.sh').filter((f) => /mktemp -d/.test(readFileSync(join(DIR, f), 'utf8')));
 const untrapped = shells.filter((f) => {
