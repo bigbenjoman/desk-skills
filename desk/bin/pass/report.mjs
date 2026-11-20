@@ -16,6 +16,7 @@
 //   { type: 'park-inputs', key, question, inputs }  a put-off park's refreshed inputs, written only
 //                                          while the ticket is still parked on `question`
 import { isHeld, batchIdle, waitingOnRead, settlesByScript } from '../batch-state.mjs';
+import { restating } from '../clears-when.mjs';
 import { promotionHolds } from '../gate.mjs';
 import { lookup, inputsHash } from '../not-now.mjs';
 import { urgentParks } from '../digest.mjs';
@@ -206,6 +207,12 @@ export function decideGroups(s) {
 //   followPending            a follow-step checker running or still to start (pass/follow-steps.mjs)
 //   spawned                  how many tickets this pass spawned
 // -> { waiting, parked, idle, status, needsYou }
+// A park a pass settles by checking its recorded clears-when. One still to be restated is not: it stays
+// in `parked`, the only way the decider (decider.mjs deciderItems) is asked to restate it.
+const passChecks = (t) => settlesByScript(t) && !restating(t.park.clears_when);
+// Each park the person could be shown: its own reason, not put off, and no live read the pass is running.
+const ownParks = (s) => Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t))
+  .map((t) => ({ t, p: { key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) } }));
 export function verdictOf(s) {
   const r = s.report;
   const waiting = [
@@ -214,8 +221,7 @@ export function verdictOf(s) {
     ...r.personStalls,
     ...s.blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
   ];
-  const parked = Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t) && !settlesByScript(t))
-    .map((t) => ({ key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) }));
+  const parked = ownParks(s).filter(({ t }) => !passChecks(t)).map(({ p }) => p);
   const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
@@ -223,13 +229,16 @@ export function verdictOf(s) {
 }
 
 // The verdict's opening line, and the parks that are pushed now rather than shown in the session (a
-// park reading production broken), given the snapshot verdictOf takes plus `slug`.
+// park reading production broken, whatever it waits on), given the snapshot verdictOf takes plus `slug`.
+// An idle batch still holding a park a pass settles is not finished: the line says how many wait.
 export function decideVerdict(s) {
   const v = verdictOf(s);
   const acts = [];
+  const waits = Object.values(s.queue.tickets).filter((t) => passChecks(t) || waitingOnRead(t)).length;
   if (v.needsYou.length) acts.push(line(`NOTIFY: ${v.needsYou.length} item(s) need you — ${[...new Set(v.needsYou)].join(', ')}`));
+  else if (v.idle && waits) acts.push(line(`NOTIFY: nothing needs you — ${waits} park(s) wait on a condition a pass checks, and are requeued once it holds`));
   else if (v.idle) acts.push(line('NOTIFY: the batch is finished — nothing left to run'));
-  for (const p of urgentParks(v.parked, s.slug)) acts.push({ type: 'push', push: p });
+  for (const p of urgentParks(ownParks(s).map(({ p }) => p), s.slug)) acts.push({ type: 'push', push: p });
   return acts;
 }
 

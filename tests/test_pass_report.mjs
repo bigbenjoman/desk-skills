@@ -209,6 +209,18 @@ const vsnap = (tickets, fields = {}) => {
   const v = verdictOf(s);
   t('DS-852 AC1 a park on a run or checks, or a live read, is not parked for the person', j(v.parked.map((p) => p.key)), j(['S-2', 'S-3', 'S-4']));
   t('DS-852 AC1, AC3, AC4 NOTIFY names a park on none or one only the person settles, never one on a run', lines(decideVerdict(s))[0], 'NOTIFY: 3 item(s) need you — S-2, S-3, S-4');
+  // A clears-when still to be restated stays in `parked`: that is how the decider is asked to restate it.
+  const u = vsnap([waits('U-1', { kind: 'unreadable', text: 'when the deploy looks fine', at: '2026-11-20T10:00:00Z' })]);
+  t('DS-852 an unreadable clears-when stays parked, for the decider to restate', j(verdictOf(u).parked.map((p) => p.key)), j(['U-1']));
+  // A production-broken park is pushed whatever it waits on.
+  const pb = vsnap([{ key: 'S-7', state: 'parked', lane: 'A', park: { question: 'PRODUCTION BROKEN: checkout is down', clears_when: { kind: 'run-completed', run: 9 } } }]);
+  t('DS-852 a production-broken park on a run is still pushed', j(decideVerdict(pb).filter((a) => a.type === 'push')),
+    j([{ type: 'push', push: { key: 'urgent:o__r:S-7', text: 'S-7: PRODUCTION BROKEN: checkout is down' } }]));
+  // An idle batch whose only park waits on a run is not finished.
+  const idleRun = vsnap([waits('S-1', { kind: 'run-completed', run: 44719886024 }), { key: 'D-1', state: 'done', result: { pr: 5 } }], { prStates: { 5: 'MERGED' } });
+  t('DS-852 AC1 an idle batch waiting on a run is idle', verdictOf(idleRun).idle, true);
+  t('DS-852 AC1 its NOTIFY line names no ticket and does not call the batch finished', j(lines(decideVerdict(idleRun))),
+    j(['NOTIFY: nothing needs you — 1 park(s) wait on a condition a pass checks, and are requeued once it holds']));
 }
 {
   const done = vsnap([{ key: 'D-1', state: 'done', result: { pr: 5 } }], { prStates: { 5: 'MERGED' } });
