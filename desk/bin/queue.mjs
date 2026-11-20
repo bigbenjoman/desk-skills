@@ -57,7 +57,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'finish', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -445,6 +445,25 @@ function stepDone(q, key) {
   return `${key}: the approved step is recorded done (${s.step}); ${msg}`;
 }
 
+// A parked ticket whose last step the orchestrator finished itself, recorded done on its own open PR
+// with the fields pass.mjs finishPush writes for a draft it opened, so the next pass reviews, undrafts
+// and merges it as any done ticket's. `pr` is { number, head, state } or { error }, read before the lock.
+function finish(q, key, n, pr) {
+  const t = ticket(q, key);
+  const none = 'Nothing was changed';
+  if (t.state === 'running') throw new Error(`${key} has a live worker (it is running), so its park is not finished yet: let it end, or stop it (queue.mjs stop ${key}). ${none}`);
+  if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked on a step of its own (it is ${t.state}${isHeld(t) ? ', held' : ''}), so there is no park to finish. ${none}`);
+  refuseLeft(t, key, 'recorded done');
+  if (pr.error) throw new Error(`PR #${n} could not be read from GitHub (${pr.error}). ${none}`);
+  if (!t.branch) throw new Error(`${key} records no branch, so PR #${n}'s head ${pr.head} cannot be matched to it. ${none}`);
+  if (pr.head !== t.branch) throw new Error(`PR #${n}'s head branch is ${pr.head}, not ${key}'s branch ${t.branch}. ${none}`);
+  if (pr.state !== 'OPEN') throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open. ${none}`);
+  applySet(t, ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`,
+    `result.summary=PR #${n} recorded done by the orchestrator, after it finished the last step its worker parked on: ${String(t.park?.question ?? '').slice(0, 120)}`]);
+  save(q);
+  return `${key} recorded done on PR #${n} (${pr.head}): the next pass takes it through review, undraft and merge as any done ticket's, and what is held behind it is released once it merges`;
+}
+
 // What a ticket joining feature batch `q` waits for, as plan-batch holds every child it seeds: its epic
 // while that is parked on its drafted plan (epic-plan.mjs), and its spine until that is done.
 const spineHolds = (q, key) => [
@@ -692,7 +711,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'finish', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -706,6 +725,22 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
   if (t?.worktree && existsSync(t.worktree)) {
     const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
     prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
+  }
+}
+// finish's gh read likewise runs before the lock; finish() acts on its result, error included.
+let finishPr = null;
+if (cmd === 'finish') {
+  const [key, flag, n] = args;
+  if (!key || flag !== '--pr' || !/^\d+$/.test(n ?? '') || args.length !== 3) throw new Error('usage: queue.mjs finish <TICKET> --pr <n>');
+  const repo = hereRepo();
+  if (!repo) finishPr = { error: 'config §0 names no GitHub repo' };
+  else {
+    try {
+      const v = JSON.parse(execFileSync('gh', ['pr', 'view', n, '--repo', repo, '--json', 'headRefName,state'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+      finishPr = { head: v.headRefName, state: v.state };
+    } catch (e) {
+      finishPr = { error: String(e.stderr || e.message).trim().split('\n').pop() || 'gh pr view failed' };
+    }
   }
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
@@ -1000,6 +1035,11 @@ switch (cmd) {
     const [key] = args;
     if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
     console.log(stepDone(q, key));
+    break;
+  }
+
+  case 'finish': {
+    console.log(finish(q, args[0], Number(args[2]), finishPr));
     break;
   }
 
