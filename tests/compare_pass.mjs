@@ -64,8 +64,11 @@ function record(argv) {
 
 // --- diff ---
 
-// An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b/g;
+// An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds;
+// or an elapsed wall time as worker-cost.mjs wallTime prints one ("0m 01s", "2h 05m"), which two runs
+// a second apart print differently.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+h \d\dm\b|\b\d+m \d\ds\b/g;
+const SPAN = /^(\d+)([hm]) (\d\d)([ms])$/;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
 // The machine's memory as the pass read it, a process id, and a repo slug hashed from its scratch path.
@@ -106,9 +109,12 @@ function renamer() {
 
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
 const SLACK = 15_000;
-const ms = (t) => (/^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')));
-// A time printed to the minute is up to a minute short of the time it stands for.
-const slack = (t) => (/ UTC$/.test(t) ? SLACK + 60_000 : SLACK);
+// An elapsed wall time reads as its length in ms, which is matched as a time is, within the slack.
+const spanMs = (m) => (m[2] === 'h' ? Number(m[1]) * 3_600_000 + Number(m[3]) * 60_000 : Number(m[1]) * 60_000 + Number(m[3]) * 1000);
+const ms = (t) => { const m = SPAN.exec(t); return m ? spanMs(m) : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
+// A time printed to the minute is up to a minute short of the time it stands for, as is a wall time
+// in hours and minutes.
+const slack = (t) => (/ UTC$|^\d+h \d\dm$/.test(t) ? SLACK + 60_000 : SLACK);
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
