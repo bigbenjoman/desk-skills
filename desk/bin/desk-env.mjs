@@ -1685,7 +1685,8 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
     st.oomUnread = false;
     if (st.oom0 == null) st.oom0 = oom;
     if (oom > (st.oomSeen ?? st.oom0)) lines.push(`OOM-KILL: the kernel killed ${oom - (st.oomSeen ?? st.oom0)} process(es) for memory: drop to the ladder's lowest count`);
-    st.oomSeen = Math.max(oom, st.oomSeen ?? st.oom0);
+    // A count that falls is the kernel's ring buffer wrapping past old lines: count on from there.
+    st.oomSeen = oom < (st.oomSeen ?? st.oom0) ? oom : Math.max(oom, st.oomSeen ?? st.oom0);
   }
   if (tmpGiB != null) {
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
@@ -1699,7 +1700,7 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
 export const oomKills = (dmesg) => (String(dmesg).match(/out of memory: Killed process/gi) ?? []).length;
 
 // What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
-// when it is a tmpfs. Each is null where it cannot be read (macOS has none of them).
+// when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
 export function harmSample() {
   // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
   if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null };

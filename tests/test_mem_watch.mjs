@@ -52,6 +52,7 @@ t('#758 the same growth spread past the window is silent', harm([hs(0, 1), hs(11
 t('#758 it fires again only after it clears', harm([hs(0, 1), hs(2, 3.5), hs(14, 3.5), hs(26, 3.5), hs(27, 3.5), hs(30, 6)]).length, 2);
 t('#758 an OOM kill already in the log at the start is not news', harm([hs(0, 1, 4), hs(1, 1, 4)]).length, 0);
 t('#758 a new OOM kill fires, once per kill', JSON.stringify(harm([hs(0, 1, 4), hs(1, 1, 5), hs(2, 1, 5)])), JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory: drop to the ladder's lowest count"]));
+t('#758 a kill after the kernel log wrapped past old ones still fires', harm([hs(0, 1, 5), hs(1, 1, 2), hs(2, 1, 3)]).length, 1);
 t('#758 an unreadable kernel log is said once', JSON.stringify(harm([hs(0, 1, null), hs(1, 1, null)])), JSON.stringify(['OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched']));
 t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, 0, 5), hs(1, 1, 0, 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
 t('#758 off Linux nothing is watched and nothing said', harm([{ now: 0, swapGiB: null, oom: undefined, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: undefined, tmpGiB: null }]).length, 0);
