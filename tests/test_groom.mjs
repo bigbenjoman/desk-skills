@@ -12,7 +12,7 @@ const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The scan's desk/bin modules come from this checkout, not an older install under ~/.claude.
 process.env.DESK_ENV_MJS = join(SRC, 'desk', 'bin', 'desk-env.mjs')
 const { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf, groom, stepWords, holdLine } = await import('../skills/desk-groom/bin/groom-scan.mjs')
+  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf, groom, stepWords, holdLine, scanFindings, scanText } = await import('../skills/desk-groom/bin/groom-scan.mjs')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
 let fails = 0
 const t = (name, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`) }
@@ -184,10 +184,37 @@ writeFileSync(join(cfg, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|
 writeFileSync(join(cfg, 'jira-email'), 'me@example.com'); writeFileSync(join(cfg, 'atlassian-token'), 'good-token', { mode: 0o600 })
 
 const run = (...a) => spawnSync('node', [SCAN, ...a], { cwd: R, env, encoding: 'utf8' })
+// The one end-to-end scan: desk-jira against the stub. Every other scan reads the same fixture in-process.
 const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--json')
 t('scan exits 0', r.status, 0)
 if (r.status !== 0) console.log(r.stderr)
-const found = r.status === 0 ? JSON.parse(r.stdout) : []
+
+// What `desk-jira <cmd> --json` prints from tests/stub_jira.py, answered from the fixture with no process.
+const stubIssue = (k) => {
+  const i = fixture.issues[k]
+  return i ? { key: k, fields: { summary: k, status: { name: 'To Do', statusCategory: { key: 'new' } }, issuetype: { name: 'Task', subtask: false, hierarchyLevel: 0 }, issuelinks: [], ...i }, names: i._names ?? {} } : null
+}
+const jiraFake = (cmd, k) => {
+  if (cmd === 'search') return { issues: fixture.search.map(stubIssue).filter(Boolean), isLast: true }
+  if (cmd === 'children') return (fixture.children[k] ?? []).map(stubIssue).filter(Boolean)
+  if (cmd === 'get') {
+    const i = stubIssue(k)
+    if (!i) throw Object.assign(new Error('HTTP 404'), { stderr: 'desk-jira: HTTP 404' })
+    return i
+  }
+  throw new Error(`no in-process answer for desk-jira ${cmd}`)
+}
+const stubRequests = () => (existsSync(join(T, 'requests.log')) ? readFileSync(join(T, 'requests.log'), 'utf8').split('\n').filter(Boolean).length : 0)
+let inProcessRequests = 0
+const scanIn = (o) => {
+  const before = stubRequests()
+  try {
+    return { status: 0, ...JSON.parse(JSON.stringify(scanFindings({ repo: R, default: 'main', project: 'KAN', ...o }, { jira: jiraFake, stepLabels: [], inputLabels: [] }))) }
+  } catch (err) { return { status: 2, error: err.message } } finally { inProcessRequests += stubRequests() - before }
+}
+const full = { priority: P, fields: S, size: S, done: 'Done', 'in-progress': 'In Progress' }
+const found = scanIn(full).findings ?? []
+t('the CLI scan finds what the in-process scan finds from the same data', r.status === 0 && r.stdout.trim() === JSON.stringify(found, null, 2), true)
 const of = (check, ticket) => found.filter((f) => f.check === check && f.ticket === ticket)
 const cmds = (check, ticket) => of(check, ticket).flatMap((f) => f.propose)
 
@@ -387,9 +414,9 @@ const writes = spawnSync('grep', ['-cE', '"method": "(PUT|DELETE)"|issueLink"|/t
 t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
-const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 46 open tickets, \d+ findings/.test(text.stdout), true)
-t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text.stdout), true)
+const text = scanText(scanIn({ priority: P, fields: S }), 'main')
+t('the text form counts the tickets', /^groom-scan: 46 open tickets, \d+ findings/.test(text), true)
+t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text), true)
 writeFileSync(join(T, 'scan.json'), r.stdout)
 writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
 const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))
@@ -433,9 +460,9 @@ t('DS-240 AC1 the scan wrote nothing to Jira', jiraWrites(), 0)
 // AC2: a queue whose batch runs KAN-21, holds KAN-11 and KAN-30, and finished KAN-14
 const Q = join(T, 'queue.json')
 writeFileSync(Q, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-21': { state: 'running' }, 'KAN-11': { state: 'parked' }, 'KAN-30': { state: 'triaged' }, 'KAN-14': { state: 'done' } } }))
-const rq = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q, '--json')
+const rq = scanIn({ ...full, queue: Q })
 t('DS-240 AC2 the scan with a queue exits 0', rq.status, 0)
-const inQ = rq.status === 0 ? JSON.parse(rq.stdout) : []
+const inQ = rq.findings ?? []
 const names = (f, k) => [f.ticket, f.other, ...f.propose, ...(f.options ?? [])].some((s) => new RegExp(`\\b${k}\\b`).test(s ?? ''))
 const on = (k) => inQ.filter((f) => names(f, k))
 t('DS-240 AC2 a running ticket gets no proposal', on('KAN-21').map((f) => [f.check, f.kind, f.propose.length]), [['duplicate', 'left', 0], ['loose', 'left', 0]])
@@ -445,7 +472,7 @@ t('DS-240 AC2 a left candidate gets no verifier', on('KAN-21').some((f) => f.ver
 t('DS-240 AC2 a ticket the batch finished is groomed as before', cmds('blocker', 'KAN-13'), inQ.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').flatMap((f) => f.propose))
 t('DS-240 AC2 every other finding is unchanged', inQ.filter((f) => f.kind !== 'left').length, found.filter((f) => !['KAN-21', 'KAN-11', 'KAN-30'].some((k) => names(f, k))).length)
 writeFileSync(join(T, 'bad-queue.json'), '{')
-t('DS-240 AC2 an unreadable queue stops the scan', run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json')).status, 2)
+t('DS-240 AC2 an unreadable queue stops the scan', (({ status, error }) => [status, /^could not read the batch queue /.test(error)])(scanIn({ queue: join(T, 'bad-queue.json') })), [2, true])
 t('DS-240 AC2 no queue file is no batch', batchOf(null).running, false)
 t('DS-240 AC2 held: a key the batch now holds exits 1', [run('held', '--queue', Q, 'KAN-12', 'KAN-14').status, run('held', '--queue', Q, 'KAN-12', 'KAN-21').stdout.trim()], [0, 'left alone: KAN-21 is running in batch groom-7'])
 
@@ -458,8 +485,7 @@ writeFileSync(join(T, 'two', 'batches', 'X-1', 'queue.json'), JSON.stringify({ b
 writeFileSync(join(T, 'two', 'batches', '.done', 'X-0', 'queue.json'), JSON.stringify({ batch: 'X-0', tickets: { 'KAN-12': { state: 'parked' } } }))
 t('DS-306 AC4 held: a key the named batch holds exits 1, naming that batch', [run('held', '--queue', Q2, 'KAN-13').status, run('held', '--queue', Q2, 'KAN-13', 'KAN-21').stdout.trim()], [1, 'left alone: KAN-13 is running in batch X-1\nleft alone: KAN-21 is running in batch groom-7'])
 t('DS-306 AC4 a ticket a named batch finished, or an archived batch holds, is not held', run('held', '--queue', Q2, 'KAN-12').status, 0)
-const rq2 = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q2, '--json')
-const inQ2 = rq2.status === 0 ? JSON.parse(rq2.stdout) : []
+const inQ2 = scanIn({ ...full, queue: Q2 }).findings ?? []
 t('DS-306 AC4 the scan leaves the named batch\'s ticket alone, naming its batch', inQ2.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').map((f) => [f.kind, f.propose.length, /KAN-13 is running in batch X-1/.test(f.left)]), [['left', 0, true]])
 t('DS-306 AC4 and still the standing batch\'s', on('KAN-21').map((f) => f.left).join(' | '), inQ2.filter((f) => names(f, 'KAN-21')).map((f) => f.left).join(' | '))
 t('DS-306 batchesOf keeps the standing batch\'s name for a hand-off, and every batch\'s keys', (() => { const b = batchesOf([{ batch: 's', tickets: {} }, { batch: 'X-1', tickets: { 'A-1': { state: 'done' } } }]); return [b.name, b.running, [...b.keys]] })(), ['s', false, ['A-1']])
@@ -541,6 +567,8 @@ const pr170 = run('priority', 'KAN-170', '--queue', Q, '--json')
 const pj = pr170.status === 0 ? JSON.parse(pr170.stdout) : {}
 t('DS-240 AC3 priority from Jira: the open child not in the queue', [pr170.status, (pj.list ?? []).map((x) => x.key), pj.inBatch, pj.batch], [0, ['KAN-172'], ['KAN-171'], { name: 'groom-7', supervised: false }])
 t('DS-240 AC3 the queue is not written', spawnSync('cat', [Q], { encoding: 'utf8' }).stdout, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-171': { state: 'running' } } }))
+
+t('every scan but the CLI one read Jira in-process, sending the stub nothing', inProcessRequests, 0)
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)
