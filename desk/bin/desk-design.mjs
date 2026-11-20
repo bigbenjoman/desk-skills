@@ -1038,23 +1038,16 @@ export function designFact(text, { root, dir, ref, state }) {
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
 // the link's kind is unknown, so it blocks.
-// A Design section saying this ticket has no board of its own yet ("no board for this ticket yet",
-// "this ticket has no board", "its board does not exist yet"): a canvas it links is the epic's, with
-// nothing for this ticket to save.
-const NO_BOARD = [
-  /\bno\s+(?:board|screen|frame)s?\s+(?:(?:for|in)\s+this\s+(?:ticket|story|task)\s+)?(?:(?:exists?|is\s+drawn)\s+)?yet\b/gi,
-  /\bno\s+(?:board|screen|frame)s?\s+(?:exists?\s+)?for\s+this\s+(?:ticket|story|task)\b/gi,
-  /\b(?:this\s+(?:ticket|story|task)|it)\s+has\s+no\s+(?:board|screen|frame)s?\b/gi,
-  /\b(?:its|this\s+(?:ticket|story|task)['’]s)\s+(?:board|screen|frame)s?\s+(?:(?:does|do|is|are)\s*n['’o]?t|not)\s+(?:yet\s+)?(?:exist|drawn|designed|made)/gi,
-];
-// Said only when the no-board phrase is the section's one mention of a board, screen or frame: a
-// section that names or uses one anywhere else ("the Checkout board; it has no screens for mobile",
-// "Board: Cart", "Frames 3-5") has a board, whatever it says it leaves out.
+// A Design section whose own line says the ticket has no board yet ("No board yet.", "No board for
+// this ticket yet.", as `No UI.` is written): a canvas it links is the epic's, with nothing for this
+// ticket to save. Only such a line counts, never prose around a board, and only when no other line
+// of the section names a board, screen or frame: free text about what a board leaves out ("it has
+// no screens for mobile") is too easily misread, and reading it wrong drops the design.
+const NO_BOARD_LINE = /^[ \t]*(?:[-*#]+[ \t]*)?no\s+(?:board|screen|frame)s?(?:\s+(?:for|in)\s+this\s+(?:ticket|story|task))?(?:\s+(?:exists?|is\s+drawn))?(?:\s+yet)?[ \t]*\.?[ \t]*$/gim;
 const saysNoBoard = (section) => {
   const text = String(section ?? '');
-  if (!NO_BOARD.some((re) => text.search(re) >= 0)) return false;
-  const rest = NO_BOARD.reduce((t, re) => t.replace(re, ' '), text);
-  return !/\b(?:board|screen|frame)s?\b/i.test(rest);
+  if (text.search(NO_BOARD_LINE) < 0) return false;
+  return !/\b(?:board|screen|frame)s?\b/i.test(text.replace(NO_BOARD_LINE, ''));
 };
 
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {

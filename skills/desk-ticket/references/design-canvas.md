@@ -38,8 +38,10 @@ file name, saves it as `assets/<id>.<ext>` and points the boards at it, and save
 **Before reading any file for a `blocking` line, check who owns the artifact.** `check` cannot see
 ownership. An artifact the Artifact listing marks as created outside the user's organisation, or
 one whose read returns a summary rather than its files, is not saved: ask for access or an export,
-and say so in the triage. An `advisory` line saying the ticket has no board of its own yet means
-the canvas is the epic's and there is nothing to save for this ticket.
+and say so in the triage. A ticket that links its epic's canvas but uses no board from it says so on
+a line of its own in the Design section, as `No UI.` is written: `No board yet.` (or `No board for
+this ticket yet.`). `check` then gives an `advisory` saying there is nothing to save. Prose saying
+the same is not read, and a section that names a board anywhere else still blocks.
 
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
 (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and

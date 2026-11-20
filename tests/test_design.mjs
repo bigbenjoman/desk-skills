@@ -240,7 +240,7 @@ t('check: saved and named is clean', checkTicket(issue(`h2. Design\n${URL1} · d
 t('check: saved but the path not named is advisory', checkTicket(issue(`h2. Design\n${URL1}`), { root: r1, dir: DIR }).map((f) => f.severity).join(' '), 'advisory');
 t('check: No UI is clean', checkTicket(issue('h2. Design\nNo UI.'), { root: r5, dir: DIR }).length, 0);
 // #747: a canvas linked for the epic, with no board of this ticket's yet, is nothing to save.
-for (const said of ['No board for this ticket exists yet.', 'The epic canvas; this ticket has no board yet.', "Its board doesn't exist yet.", "This ticket's screen is not yet drawn."]) {
+for (const said of ['No board for this ticket exists yet.', 'No board yet.', '* No screens for this ticket yet', 'no board']) {
   const f = checkTicket(issue(`h2. Design\nEpic canvas: ${URL1}\n${said}`), { root: r5, dir: DIR });
   t(`#747 a section saying "${said}" is advisory, nothing to save`, `${f.map((x) => x.severity).join(' ')} ${/nothing to save/.test(f[0]?.message ?? '')}`, 'advisory true');
 }
@@ -248,8 +248,12 @@ for (const said of ['Board: Checkout. No mobile screens.', 'Use the Order summar
   'Use board Checkout. No board changes needed elsewhere.', 'The board is not yet drawn for mobile, use desktop board Cart.', 'Board: Checkout. No board for this ticket exists yet on mobile.',
   'No new screen is required; use the existing Checkout screen.', 'Use the Checkout board; it has no screens for mobile.', 'Use the Cart board. No screen changes yet.',
   'Build from the Checkout board; no frames need changing for this ticket.', "Use the Checkout board. Its frames don't exist yet for tablet, follow desktop.",
-  'No board changes are required for this ticket; use the existing Checkout board.']) {
-  t(`#747 a section using a board, saying "${said}", still blocks`, checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
+  'No board changes are required for this ticket; use the existing Checkout board.', 'Use the Checkout canvas; it has no screens for mobile.',
+  'Build from the linked design. Its screens are not yet designed for mobile.', 'Follow the Checkout canvas; it has no frames for tablet, use desktop.',
+  'No screens for this ticket on mobile; build desktop from the Checkout canvas.', 'This ticket has no board changes.', 'No board yet.\nUse the Checkout board.',
+  // Prose saying there is none is not read: only a line of its own, as `No UI.` is written.
+  'The epic canvas; this ticket has no board yet.', "Its board doesn't exist yet."]) {
+  t(`#747 a section saying "${said}" still blocks`, checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
 }
 t('check: a markdown ticket file', checkTicket({ key: 'fix-x', text: `## Design\n${URL1}\n## Out of scope` }, { root: r5, dir: DIR })[0].severity, 'blocking');
 // desk-jira's .md conversion escapes - and _ inside a code span, so Jira holds {{docs/design/DS\-50/}}.
