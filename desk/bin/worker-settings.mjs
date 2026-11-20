@@ -476,9 +476,13 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
-  const lintBins = NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', '.', `${d}${t}`)));
+  // A lint binary runs at the root and in each directory a §4 item names, so a worker lints one file
+  // from its workspace package. Its `..` deny gives way to a configured item that holds one.
+  const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
+  const lintBins = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
+  const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
   allow.push(...lintBins.map((c) => rule(c, '')));
-  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`));
+  deny.push(...lintBins.filter((c) => !configured.some((k) => k.startsWith(c) && k.slice(c.length).includes('..'))).map((c) => `Bash(${c}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments

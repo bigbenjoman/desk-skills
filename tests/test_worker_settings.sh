@@ -277,6 +277,10 @@ check "AC12 the same with .. refused"                      'no "./node_modules/.
 settings '`bash tests/run.sh`' '| Typecheck | `web: ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json` |' '| Lint | `web: node_modules/.bin/eslint -c ../eslint.config.js .` |'
 check "DS-855 the lint binaries .. deny leaves a configured directory item holding .. allowed" \
   'ok "$L tsc --cwd web -- ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js ." && no "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc --cwd . -- node_modules/.bin/biome check ../x"'
+settings '`apps/web: bash tests/run.sh`' '| Dev server | `packages/app: bash dev.sh` |'
+check "#1039 a lint binary runs under the tsc lock in each directory a §4 item names" \
+  'ok "$L tsc --cwd packages/app -- ./node_modules/.bin/eslint src/a.ts" "$L tsc --cwd $W/packages/app node_modules/.bin/eslint src/a.ts" "$L tsc --cwd apps/web -- ./node_modules/.bin/biome check x.ts" \
+      && no "$L nolock --cwd packages/app -- ./node_modules/.bin/eslint src/a.ts" "$L tsc --cwd packages/app -- ./node_modules/.bin/eslint ../x" "$L tsc --cwd packages/other -- ./node_modules/.bin/eslint a.ts"'
 settings '`bash tests/run.sh` `sub: bash tests/sub.sh`' '| Typecheck | `bash tests/tc.sh` |' "$(perm3 ask)"
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 # okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
