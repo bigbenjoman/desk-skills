@@ -617,15 +617,19 @@ export function prParkWaits(q, parked = () => true) {
 
 // The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,
 // and `concurrency_user` keeps their number while the ladder lowers `concurrency` on memory, so the
-// orchestrator can return to it. Never above the §3b cap.
-export function batchConcurrency(q, { def, cap }) {
+// orchestrator can return to it. Never above the §3b cap. `mem` ({ avail, start } in GiB: available
+// memory and the ladder's line) says whether memory is what lowered it: with available memory at or
+// above the line, the ladder lowers nothing, whatever the footprint ceiling reads.
+export function batchConcurrency(q, { def, cap }, mem = null) {
   const raw = Number(q.concurrency ?? def);
   const n = Math.min(raw, cap);
   const user = q.concurrency_by === 'user' ? Number(q.concurrency_user ?? raw) : null;
   const capped = raw > cap ? `, capped at the §3b cap of ${cap}` : '';
   const why = user == null ? (raw === def ? `the §3b default${capped}` : `set by the ladder (§3b default ${def})${capped}`)
     : raw === user ? `set by the user${capped}`
-      : raw < user ? `lowered on memory from the user's ${user}${capped}: raise back to ${user} once memory allows`
+      : raw < user ? (mem && mem.start > 0 && mem.avail >= mem.start
+        ? `below the user's ${user}${capped}, though available memory is ${mem.avail.toFixed(1)}G, at or above the ladder's ${mem.start}G line, so memory did not lower it, and the footprint ceiling is no reason to: set it back to ${user}`
+        : `lowered on memory from the user's ${user}${capped}${mem && mem.start > 0 ? ` (available memory ${mem.avail.toFixed(1)}G, under the ladder's ${mem.start}G line)` : ''}: raise back to ${user} once memory allows`)
         : `above the user's ${user}${capped}: the ladder keeps the user's number, so set it back to ${user}`;
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }

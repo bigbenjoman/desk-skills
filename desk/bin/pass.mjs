@@ -1676,12 +1676,6 @@ const tierFor = (t) => {
   return E.modelTier({ lane: t.lane, size });
 };
 
-// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
-// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
-// default 2 / 3). The report says whose number it is.
-const CONC = batchConcurrency(fresh, E.concurrencyLimits());
-const concurrency = CONC.n;
-
 // Memory gate. Weighing only budget and concurrency would leave the whole memory ladder resting on
 // the orchestrator remembering to apply it between passes — and its context is deliberately flat,
 // so it forgets, and a session restart forgets for certain. Gate on "room to
@@ -1696,6 +1690,11 @@ const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
+// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
+// default 2 / 3). The report says whose number it is, and whether memory lowered it.
+const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
+const concurrency = CONC.n;
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
 // test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
 // and none resumes into a stage that runs suites, since each would only join the queue. Every other
