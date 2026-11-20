@@ -85,6 +85,16 @@ check "a held ticket is refused"                                       '[ $rc -n
 q finish F-5 41
 check "a call without --pr is refused with its usage"                  '[ $rc -ne 0 ] && [[ "$out" == *"usage: queue.mjs finish <TICKET> --pr <n>"* ]] && [ "$(sum)" = "$before" ]'
 
+# A spine awaiting approval, or an epic's plan awaiting an answer, has an open PR on its own branch too,
+# but its park is the person's call: finish never clears it.
+for k in F-6 F-7; do
+  if [ "$k" = F-6 ]; then c='spine awaiting approval: specs passed'; else c='feature plan awaiting your answer: 3 children'; fi
+  q add "$k"; q set "$k" state=triaged lane=A "branch=feat/$k-thing"; q set "$k" state=parked "park={\"question\":\"$c\"}"
+  pr "feat/$k-thing" OPEN
+  before=$(sum); q finish "$k" --pr 45
+  check "a park awaiting the person's answer is refused (${c%%:*})" '[ $rc -ne 0 ] && [[ "$out" == *"$k waits on the person"*"answer"* ]] && [ "$(sum)" = "$before" ]'
+done
+
 # AC6: the recovery row for a park on a single remaining step names the command.
 check "AC6: the recovery reference names queue.mjs finish on that row" 'grep -E "^\| a worker.s .AUTOPILOT_PARK. on a single remaining step" "$S/../skills/desk-autopilot/references/orchestrator-recovery.md" | grep -q "queue.mjs finish <TICKET> --pr <n>"'
 

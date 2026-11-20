@@ -24,7 +24,7 @@ import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
-import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
+import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS, doneOnPr } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
@@ -446,20 +446,21 @@ function stepDone(q, key) {
 }
 
 // A parked ticket whose last step the orchestrator finished itself, recorded done on its own open PR
-// with the fields pass.mjs finishPush writes for a draft it opened, so the next pass reviews, undrafts
-// and merges it as any done ticket's. `pr` is { number, head, state } or { error }, read before the lock.
+// (doneOnPr), so the next pass reviews, undrafts and merges it as any done ticket's. A spine or epic
+// plan park is the person's approval, never a step to finish. `pr` is { head, state } or { error }, read
+// before the lock.
 function finish(q, key, n, pr) {
   const t = ticket(q, key);
   const none = 'Nothing was changed';
   if (t.state === 'running') throw new Error(`${key} has a live worker (it is running), so its park is not finished yet: let it end, or stop it (queue.mjs stop ${key}). ${none}`);
   if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked on a step of its own (it is ${t.state}${isHeld(t) ? ', held' : ''}), so there is no park to finish. ${none}`);
+  if (spinePark(t) || planPark(t)) throw new Error(`${key} waits on the person's answer (${t.park.question}), not on a step to finish, so only that answer moves it on. ${none}`);
   refuseLeft(t, key, 'recorded done');
   if (pr.error) throw new Error(`PR #${n} could not be read from GitHub (${pr.error}). ${none}`);
   if (!t.branch) throw new Error(`${key} records no branch, so PR #${n}'s head ${pr.head} cannot be matched to it. ${none}`);
   if (pr.head !== t.branch) throw new Error(`PR #${n}'s head branch is ${pr.head}, not ${key}'s branch ${t.branch}. ${none}`);
   if (pr.state !== 'OPEN') throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open. ${none}`);
-  applySet(t, ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`,
-    `result.summary=PR #${n} recorded done by the orchestrator, after it finished the last step its worker parked on: ${String(t.park?.question ?? '').slice(0, 120)}`]);
+  applySet(t, doneOnPr(n, `PR #${n} recorded done by the orchestrator, after it finished the last step its worker parked on: ${String(t.park?.question ?? '').slice(0, 120)}`));
   save(q);
   return `${key} recorded done on PR #${n} (${pr.head}): the next pass takes it through review, undraft and merge as any done ticket's, and what is held behind it is released once it merges`;
 }
