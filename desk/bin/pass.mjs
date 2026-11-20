@@ -3492,6 +3492,10 @@ const prReads = {};
 const postMergeWritten = new Set();
 // Ticket o took PR n's post-merge criteria: read for it, and named no other ticket as their owner.
 const tookPostMerge = (o, n) => !!o && String(o.post_merge_read ?? '') === String(n) && !o.post_merge_by;
+// Ticket o is done on this repo's PR n: one needs-you recorded done on another repo's PR of the same
+// number (elsewhereDone) keeps that PR's url, and is not.
+const onThisPr = (o, n) => !!o && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n)
+  && (!o.pr_status?.url || String(o.pr_status.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase()));
 // Ticket o, as read this pass, takes merged PR n's post-merge criteria (s.post_merge) as follow-on
 // steps, or with `by` ({ key, holds(queue) }) is stamped read naming by.key, only while by.holds.
 function readPostMerge(o, n, s, by = null) {
@@ -3504,7 +3508,7 @@ function readPostMerge(o, n, s, by = null) {
   const ok = [stateOf(o), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(o)];
   const named = by ? [`post_merge_by=${by.key}`] : o.post_merge_by ? ['post_merge_by=null'] : [];
   const args = ['set', o.key, ...steps, `post_merge_read=${n}`, ...named];
-  const w = QW.apply(args, { when: (x, cur) => ok.includes(stateOf(x)) && (!by || by.holds(cur)) });
+  const w = QW.apply(args, { when: (x, cur) => onThisPr(x, n) && ok.includes(stateOf(x)) && (!by || by.holds(cur)) });
   if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
   if (w.ok && !w.skipped) postMergeWritten.add(o.key);
   if (w.ok && !w.skipped && later.length) {
@@ -3567,23 +3571,26 @@ for (const t of Object.values(qNow.tickets)) {
   // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
   // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's. A PR recorded
   // on two done tickets gives its criteria to one: the one, live or archived, that already took them,
-  // else the lowest key among the live ones, as an archived ticket is never written. Whichever of them
+  // else the lowest key among the live ones, as an archived ticket is never written. A ticket recorded
+  // done on another repo's PR of the same number is on neither list. Whichever of them
   // the pass reaches first writes the owner's share too, so an owner whose kept status names no criteria
   // (needs-you's done) still gets them. Each other is stamped read with no steps and names the owner
   // (post_merge_by), so the person is not asked for the same check twice, and only while, under the lock,
   // the owner has taken them: an owner dropped or changed before its write lands leaves the criteria
   // owed to every ticket on the PR, not stamped away.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n) && !postMergeWritten.has(t.key)) {
-    const onPr = [...Object.values(qNow.tickets), ...Object.values(archivedOf(qNow))]
-      .filter((o) => o?.key && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n));
-    const took = onPr.find((o) => o.key !== t.key && tookPostMerge(o, n));
-    const owner = took ?? qNow.tickets[onPr.map((o) => String(o.key)).filter((k) => Object.hasOwn(qNow.tickets, k)).sort()[0]] ?? t;
+    // Live and archived entries apart: a readmitted ticket has both under one key.
+    const live = Object.values(qNow.tickets).filter((o) => o?.key && onThisPr(o, n));
+    const gone = Object.values(archivedOf(qNow)).filter((o) => o?.key && onThisPr(o, n));
+    const tookLive = live.find((o) => o.key !== t.key && tookPostMerge(o, n));
+    const took = tookLive ?? gone.find((o) => o.key !== t.key && tookPostMerge(o, n));
+    const owner = took ?? live.sort((a, b) => (String(a.key) < String(b.key) ? -1 : 1))[0] ?? t;
     if (owner.key === t.key) readPostMerge(t, n, s);
     else {
       if (!took && !postMergeWritten.has(owner.key)) readPostMerge(owner, n, s);
       // An archived owner that took them stays so; a live one must still have them under the lock.
-      const archived = !!took && !Object.hasOwn(qNow.tickets, took.key);
-      readPostMerge(t, n, s, { key: owner.key, holds: (cur) => (Object.hasOwn(cur?.tickets ?? {}, owner.key) ? tookPostMerge(cur.tickets[owner.key], n) : archived) });
+      const holds = took && !tookLive ? () => true : (cur) => { const o = Object.hasOwn(cur?.tickets ?? {}, owner.key) ? cur.tickets[owner.key] : null; return onThisPr(o, n) && tookPostMerge(o, n); };
+      readPostMerge(t, n, s, { key: owner.key, holds });
     }
   }
 }
