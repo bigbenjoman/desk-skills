@@ -198,10 +198,31 @@ session('dddd4444-self', APP, [
   { type: 'assistant', timestamp: at(17), message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } },
   user(at(17, 1), 'SECRET-AFTER the check-out started, APP-99'),
 ]);
+const skillLoad = (ts) => ({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } });
+// The session that drafted a 15:00 check-out: real work first, then the skill load just before the post.
+session('eeee5555-midday', APP, [
+  user(at(13), 'Investigate the APP-50 flaky login test please'),
+  said(at(13, 10), 'Fixed.', [{ name: 'Edit', input: {} }]),
+  skillLoad(at(14, 55)),
+  user(at(15, 5), 'MIDDAY-POSTED looks good, send it to the channel'),
+  said(at(15, 6), 'Posted.', [{ name: 'Bash', input: { command: 'ls' } }]),
+]);
+// A session that drafted a check-out last week and was resumed for real work on the day.
+session('ffff6666-resumed', APP, [
+  skillLoad(before),
+  user(at(14), 'Carry on with APP-60, the export bug, from where we left it'),
+  said(at(14, 10), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
 const claude = script('claude_activity.py', '--day', DAY);
 t('claude: exits 0', claude.status, 0);
 const co = claude.stdout;
-has('claude: four sessions in the window, less the withheld one', co, '— 3 sessions');
+has('claude: six sessions in the window, less the withheld one', co, '— 5 sessions');
+const second = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
+lacks('#832 the session that drafted the earlier check-out is not listed after it', second, 'eeee5555');
+lacks('#832 nor what it did once the skill loaded', second, 'MIDDAY-POSTED');
+has('#832 its work before the skill load is kept when the window covers it', co, 'APP-50');
+lacks('#832 and still nothing after the load', co, 'MIDDAY-POSTED');
+has('#832 a check-out drafted on an earlier day does not cut a session resumed since', co, 'APP-60');
 const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
 has('#814 from a check-out posted at 15:00, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the previous check-out)`);
 lacks('#814 work the earlier check-out covered is not listed again', after, 'photo folders');
@@ -298,6 +319,7 @@ has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
 has('#1008 the window starts where the previous check-out ended, the evening before included', skill, 'their window then starts where that check-out stopped, the evening before\nincluded, so nothing posted between it and midnight drops out');
+has('#832 a draft from a previous check-out says in one line what it covers', skill, 'When the window starts at a previous check-out (step 1), say so in one line under the header');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');

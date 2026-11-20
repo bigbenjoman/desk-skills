@@ -8,8 +8,10 @@ and prints one compact block per session: repo, branches, what the human asked,
 and how the session ended. The output is evidence for a check-out, not the
 check-out itself, so it stays terse.
 
-A session that loads the desk-checkout skill is cut off at that point, so the
-drafting session never reports itself and needs no session ID.
+A session that loads the desk-checkout skill is cut off at that point, even when the
+load came before the window (from the window's first day on), so neither the drafting
+session nor the one that drafted the previous check-out reports itself, and neither
+needs a session ID.
 
 Every session under those folders is considered, whatever repo it ran in. Its scope
 comes from the per-repo desk configs (see desk_repos.py): a session whose directory is under
@@ -174,6 +176,9 @@ def read_session(path, since, until):
         "texts": [], "tools": Counter(), "commits": [], "prs": set(), "tickets": Counter(),
         "first": None, "last": None, "entrypoint": None,
     }
+    # A skill load from the window's first day on is a check-out being drafted; an older one is
+    # a session resumed since, whose later work is real.
+    drafting_from = since.replace(hour=0, minute=0, second=0, microsecond=0)
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
@@ -181,10 +186,10 @@ def read_session(path, since, until):
             except json.JSONDecodeError:
                 continue
             when = entry_time(entry)
+            if when is not None and when >= drafting_from and loads_self(entry):
+                break  # everything after this is a check-out being drafted, an earlier one's too
             if when is None or not (since <= when < until):
                 continue
-            if loads_self(entry):
-                break  # everything after this is the check-out being drafted
             s["cwd"] = entry.get("cwd") or s["cwd"]
             s["entrypoint"] = entry.get("entrypoint") or s["entrypoint"]
             if entry.get("gitBranch") and entry["gitBranch"] != "HEAD":
