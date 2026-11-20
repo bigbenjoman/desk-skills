@@ -513,17 +513,19 @@ export function buildCall(gate, cfg, n, head, t) {
 
 // A red gate whose every failing check §4 Check builds names, while §3 ci-rerun is not yes: the pass
 // builds none and re-runs none, and no change on the branch builds it, so it is the person's, with the
-// command and why it was not built. Null otherwise.
+// command and why it was not built, and whatever else holds the gate. A cancelled or timed-out check
+// tested nothing, so no build is blamed for it. Null otherwise.
 export function unbuiltCall(gate, cfg, n, head) {
   const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
   const failing = gate.failing;
-  if (cfg.rerun === 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  if (cfg.rerun === 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name) || INTERRUPTED.has(f.conclusion))) return null;
   const names = [...new Set(failing.map((f) => f.name))];
   const checks = names.map((x) => `"${x}"`).join(', ');
   const command = [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const others = (gate.reasons ?? []).filter((r) => !names.some((x) => r.includes(`"${x}"`)));
   return {
     call: 'person',
-    why: `${checks} red at ${String(head ?? '?').slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so the pass neither runs \`${command}\` nor re-runs the check`,
+    why: `${checks} red at ${String(head ?? '?').slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so the pass neither runs \`${command}\` nor re-runs the check${others.length ? `; its checks are not green besides: ${others.join('; ')}` : ''}`,
     action: `run \`${command}\` at the head of #${n}, then re-run ${checks}`,
   };
 }

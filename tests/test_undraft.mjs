@@ -335,6 +335,10 @@ for (const rerun of ['ask', 'no']) {
 }
 t('DS-863 AC3 negative control: ci-rerun not yes beside a red check the row does not name, a fix worker gets it as before',
   buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }], null, { rerun: 'no' })?.call, 'checks');
+t('DS-863 AC3 negative control: ci-rerun not yes, a cancelled build check is not blamed on a missing build',
+  buildPr([{ ...FLOWS, conclusion: 'cancelled' }], null, { rerun: 'no' })?.why.includes('was not built'), false);
+t('DS-863 AC3 a required check that never reported is named beside the unbuilt one',
+  buildPr([FLOWS], null, { rerun: 'no', required: ['tests', 'deploy'] })?.why.endsWith('nor re-runs the check; its checks are not green besides: required check "deploy" has not reported'), true);
 t('DS-863 AC3 negative control: ci-rerun not yes while a check still runs, the draft waits for it first',
   buildPr([FLOWS, { ...LINT_OTHER, runId: 31 }], null, { rerun: 'no' })?.call, 'wait');
 
