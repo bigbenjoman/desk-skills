@@ -58,6 +58,11 @@ t('#758 a log with no timestamps keys each kill by its line', harm([hs(0, 1, ['K
 t('#758 and a kill there that pushes an old one out, the count unchanged, still fires', harm([hs(0, 1, ['Killed process 1 (a)', 'Killed process 2 (b)']), hs(1, 1, ['Killed process 2 (b)', 'Killed process 3 (c)'])]).length, 1);
 t('#758 an unreadable kernel log is said once', JSON.stringify(harm([hs(0, 1, null), hs(1, 1, null)])), JSON.stringify(['OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched']));
 t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, [], 5), hs(1, 1, [], 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
+const ino = (min, used, total = 1_048_576) => ({ now: min * 60_000, swapGiB: 1, oom: [], tmpGiB: 0, tmpInodes: { used, total } });
+t('a tmpfs /tmp past 80% of its inodes fires once, naming the count and what to run', JSON.stringify(harm([ino(0, 900_000), ino(1, 950_000)])),
+  JSON.stringify(['TMPFS-INODES: /tmp (tmpfs) has used 86% of its inodes (900,000 of 1,048,576); once all are used no shell on this computer can start: see what holds them (du --inodes -s /tmp/* | sort -n | tail)']));
+t('below it, silent', harm([ino(0, 500_000), ino(1, 700_000)]).length, 0);
+t('it fires again only after the use falls back below 60%', harm([ino(0, 900_000), ino(1, 700_000), ino(2, 900_000), ino(3, 500_000), ino(4, 900_000)]).length, 2);
 t('#758 off Linux nothing is watched and nothing said', harm([{ now: 0, swapGiB: null, oom: undefined, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: undefined, tmpGiB: null }]).length, 0);
 const kernel = [
   '[ 812.1] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task=node,pid=4100,uid=1000',

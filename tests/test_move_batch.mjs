@@ -1,16 +1,16 @@
 // suite: move-batch (a standing batch on a base moves to its epic's own batch slot)
 // move-batch.mjs against fixture queues and state folders in a throwaway HOME and DESK_HOME.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-move-batch-'));
+const T = scratch('desk-move-batch-');
 const HOME = join(T, 'home');
 const DESK_HOME = join(T, 'deskhome');
 const SLUG = 'acme__widgets';

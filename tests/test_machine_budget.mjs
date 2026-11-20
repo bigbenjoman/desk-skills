@@ -2,18 +2,18 @@
 // The real pass.mjs in a throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT holding a machine profile and
 // several repos' configs and queues, with stub claude, gh, setup-worktree and spawn-worker; one case
 // per DS-147 criterion. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(SRC, 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-machine-budget-'));
+const T = scratch('desk-machine-budget-');
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'DESK_MACHINE', 'DESK_MEM_CEILING_GB', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN',
   'AUTOPILOT_RERUN', 'AUTOPILOT_PORT_FLOOR', 'AUTOPILOT_MIN_AVAIL_GB', 'AUTOPILOT_BATCH_BUDGET_USD', 'DESK_UPLOAD_APPROVED']) delete process.env[k];

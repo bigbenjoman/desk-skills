@@ -3,14 +3,14 @@
 // What a worker tests before pushing (related tests, or the full suites when a change reaches past the
 // import graph), and the `desk-env mem status` line. Scratch repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { decide, runs, parseNameStatus, workspacePackages, sharedPackages, takesFiles, isConfig, uncoveredWorkspaces, packageManager, workspaceTestCmd } from '../desk/bin/test-scope.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
-const T = mkdtempSync(join(tmpdir(), 'desk-test-scope-'));
+const T = scratch('desk-test-scope-');
 
 // ---- the decision, on fixture diffs ---------------------------------------------------------
 const ws = join(T, 'ws');

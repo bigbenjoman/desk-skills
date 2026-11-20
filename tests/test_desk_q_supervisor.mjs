@@ -2,18 +2,18 @@
 // desk-q's supervisor command against fixture repos under a temporary HOME, DESK_HOME and
 // DESK_CONFIG_ROOT, with a fake supervisor.mjs (DESK_SUPERVISOR_MJS) that keeps each repo's agent
 // state in a file and a fake platform (DESK_PLATFORM). Nothing touches launchd, systemd or your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-q.mjs');
 // Real path, so the cwd the fake reports (macOS's /var is /private/var) matches the configured root.
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-q-sup-')));
+const T = realpathSync(scratch('desk-q-sup-'));
 const SUP = join(T, 'sup');
 mkdirSync(SUP, { recursive: true });
 

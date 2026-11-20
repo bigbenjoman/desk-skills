@@ -1,11 +1,11 @@
 // suite: with-lock (the lock classes its usage line lists are exactly the ones it accepts)
 // covers: desk/bin/with-lock.sh desk/bin/prose-facts.mjs
-import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { usageLocks } from '../desk/bin/prose-facts.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -35,7 +35,7 @@ const accepted = text.replace(/(\n\s*)browser\)/, '$1browser|gpu)');
 t('#881 a class added to the case alone is named', accepted === text ? 'case arm not found' : mismatched(accepted), ['gpu: accepted, not in the usage line']);
 
 // The real script runs a command under each listed class, and refuses one it does not list.
-const lockDir = mkdtempSync(join(tmpdir(), 'with-lock-'));
+const lockDir = scratch('with-lock-');
 try {
   const env = { ...process.env, DESK_LOCK_DIR: lockDir, DESK_TEST_LOCK_SLOTS: '1' };
   const run = (cls) => spawnSync('bash', [script, cls, '--', 'true'], { env, encoding: 'utf8' });

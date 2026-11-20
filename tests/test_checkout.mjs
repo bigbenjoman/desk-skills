@@ -2,11 +2,11 @@
 // Runs the check-out scripts under skills/desk-checkout/scripts/ (window.py, desk_repos.py,
 // claude_activity.py, github_activity.py, jira_activity.py) against a throwaway HOME, a scratch desk
 // config root and fake `gh` and `desk-jira` on PATH: no real GitHub, Jira or ~/.claude.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, utimesSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, utimesSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const has = (name, text, part) => t(name, text.includes(part), true);
@@ -14,7 +14,7 @@ const lacks = (name, text, part) => t(name, text.includes(part), false);
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPTS = join(REPO, 'skills', 'desk-checkout', 'scripts');
 
-const R = mkdtempSync(join(tmpdir(), 'desk-checkout-'));
+const R = scratch('desk-checkout-');
 const HOME = join(R, 'home');
 const CFG = join(R, 'cfg');
 const BIN = join(R, 'bin');

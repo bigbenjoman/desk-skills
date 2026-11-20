@@ -69,8 +69,8 @@
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
-//                                             (harmStep) SWAP-GROWING, OOM-KILL and TMPFS-HIGH on the
-//                                             harm signals, and OOM-UNKNOWN once when dmesg cannot be read
+//                                             (harmStep) SWAP-GROWING, OOM-KILL, TMPFS-HIGH and TMPFS-INODES on
+//                                             the harm signals, and OOM-UNKNOWN once when dmesg cannot be read
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -1733,11 +1733,13 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
 // not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM kill newer than the
 // watch's first reading (`oom` is each kill's key as oomKills reads it, its kernel timestamp or its
 // line; null when the kernel log cannot be read, undefined off Linux, where none is watched),
-// and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
-// leak). Each line is said once, and again only after the signal has cleared.
-//   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
-export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4 } = {}) {
-  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
+// a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
+// leak), and a tmpfs /tmp with `inodeShare` or more of its fixed count of inodes used (`tmpInodes`:
+// { used, total }): once every one is used, no file can be made there, and every shell on the machine,
+// Claude Code's included, stops. Each line is said once, and again only after the signal has cleared.
+//   sample { now, swapGiB, oom, tmpGiB, tmpInodes }  ->  { state, lines }
+export function harmStep(state, { now, swapGiB, oom, tmpGiB, tmpInodes }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4, inodeShare = 0.8 } = {}) {
+  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, oomUnread: false, ...state };
   const lines = [];
   if (swapGiB != null) {
     const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
@@ -1767,6 +1769,13 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
     st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
   }
+  if (tmpInodes?.total > 0) {
+    const share = tmpInodes.used / tmpInodes.total;
+    if (share >= inodeShare && !st.inodesFired) {
+      lines.push(`TMPFS-INODES: /tmp (tmpfs) has used ${Math.round(share * 100)}% of its inodes (${tmpInodes.used.toLocaleString('en-US')} of ${tmpInodes.total.toLocaleString('en-US')}); once all are used no shell on this computer can start: see what holds them (du --inodes -s /tmp/* | sort -n | tail)`);
+    }
+    st.inodesFired = share >= inodeShare ? true : share < inodeShare * 0.75 ? false : st.inodesFired;
+  }
   return { state: st, lines };
 }
 
@@ -1780,7 +1789,7 @@ export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out 
 // when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
 export function harmSample() {
   // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
-  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null };
+  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null, tmpInodes: null };
   const m = linuxMeminfo();
   const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
   let oom = null;
@@ -1788,12 +1797,16 @@ export function harmSample() {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
     oom = oomKills(out);
   } catch { /* dmesg_restrict, or no dmesg */ }
-  let tmpGiB = null;
+  let tmpGiB = null, tmpInodes = null;
   try {
     const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
-    if (tmpfs) { const st = statfsSync('/tmp'); tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB; }
+    if (tmpfs) {
+      const st = statfsSync('/tmp');
+      tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB;
+      tmpInodes = { used: st.files - st.ffree, total: st.files };
+    }
   } catch { /* not Linux */ }
-  return { swapGiB, oom, tmpGiB };
+  return { swapGiB, oom, tmpGiB, tmpInodes };
 }
 
 // ---- misc ----------------------------------------------------------------------------------

@@ -4,11 +4,11 @@
 // into the default branch and writes nothing, a required check only a full job reports is flagged,
 // and the saving is estimated from a measure report or left out with how to measure.
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { profileJobs, profile, profileReport, fullIf, checkIsJob, parseWorkflow } from '../desk/bin/desk-ci.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -169,7 +169,7 @@ t('measure summary', tm.split('\n').at(-1), 'summary: jobs=9 light=3 full=6 chan
 t('no required checks read is said', tm.includes('note: no required checks read'), true);
 
 // ---- the CLI: prints the plan and writes nothing
-const dir = mkdtempSync(join(tmpdir(), 'desk-ci-profile-'));
+const dir = scratch('desk-ci-profile-');
 try {
   const wfDir = join(dir, 'workflows');
   mkdirSync(wfDir);

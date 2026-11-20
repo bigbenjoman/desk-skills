@@ -4,11 +4,11 @@
 // file, so import.meta.url is the real path while process.argv[1] keeps the linked one: a guard that
 // compares them unresolved never fires, and the script exits 0 having printed nothing.
 // Scratch directories only.
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, symlinkSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -28,7 +28,7 @@ t('every guard compares real paths on both sides',
   guards.filter(({ l }) => !(real('process\\.argv\\[1\\]').test(l) && real('fileURLToPath\\(import\\.meta\\.url\\)').test(l))).map(({ f }) => f), []);
 
 // The install's layout: bin -> current/bin, current -> releases/<commit>, releases/<commit>/bin -> this checkout's.
-const S = mkdtempSync(join(tmpdir(), 'bin-guard-'));
+const S = scratch('bin-guard-');
 mkdirSync(join(S, 'releases/abc'), { recursive: true });
 symlinkSync(join(root, 'desk/bin'), join(S, 'releases/abc/bin'));
 symlinkSync('releases/abc', join(S, 'current'));

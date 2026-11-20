@@ -2,11 +2,11 @@
 // claims: imports (repo file names below are test data, not what this suite runs)
 // tests/scope_sections.mjs on a made-up tree, then on this repo, then tests/run.sh's suite filter.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildMap, decide, mentions, globRe, loads, parseNameStatus, repoMap, ALWAYS } from './scope_sections.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -124,7 +124,7 @@ t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-p
 const cli = spawnSync(process.execPath, [join(R, 'tests/scope_sections.mjs'), '--files', 'desk/bin/merge-driver.sh', '--json'], { encoding: 'utf8' });
 const j = JSON.parse(cli.stdout || '{}');
 t('cli --files --json', [cli.status, j.scope, j.suites?.includes('test_merge_driver_loop.sh'), j.shells?.includes('desk/bin/merge-driver.sh')], [0, 'some', true, true]);
-const T = mkdtempSync(join(tmpdir(), 'desk-scope-'));
+const T = scratch('desk-scope-');
 try {
   const out = join(T, 'out');
   writeFileSync(out, '');

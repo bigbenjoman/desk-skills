@@ -1,11 +1,11 @@
 // suite: push-retry (a worker's push, retried while GitHub answers with a 5xx)
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseClearsWhen } from '../desk/bin/clears-when.mjs';
 import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -161,7 +161,7 @@ r = await run(['origin', 'b'], [{ status: 1, out: FORMAT }]);
 t('and says nothing over a real failing check', r.said, []);
 
 // The CLI, against a stub git that prints $STUB_OUT and exits $STUB_RC.
-const dir = mkdtempSync(join(tmpdir(), 'push-retry-'));
+const dir = scratch('push-retry-');
 const log = join(dir, 'calls');
 writeFileSync(join(dir, 'git'), `#!/bin/sh\necho "$*" >> "${log}"\nprintf '%s\\n' "$STUB_OUT" >&2\nexit "$STUB_RC"\n`);
 chmodSync(join(dir, 'git'), 0o755);
