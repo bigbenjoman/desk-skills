@@ -22,6 +22,8 @@ t('doubled display backticks', items('`` `A` `B` `` (see `C`)'), 'A | B');
 t('no spans: the cell is the item', items('none (no tracker)'), 'none (no tracker)');
 t('DS-844 AC3 a note holding a fenced example in runs of three backticks adds no item', items('`a` `b` (write ```evidence``` as ```` ```evidence ```` then `c`)'), 'a | b');
 t('DS-844 AC3 an unclosed run in the note is text, not a span', items('`a` (one ``` here, `c`)'), 'a');
+t('DS-844 a note inside the doubled display form adds no item', items('`` `ABC` (not `parent`) ``'), 'ABC');
+t('DS-844 a none row copied in the doubled display form with its note is none alone', items('`` `none` (not `pr-evidence.yml`) ``'), 'none');
 
 // End to end: `desk-env list` on a §4 row that carries a note.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');

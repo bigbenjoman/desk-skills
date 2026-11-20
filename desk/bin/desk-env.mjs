@@ -499,9 +499,11 @@ function parseConfigFile(path) {
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
   // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-  // copied into a value, the doubled backticks are display only.
+  // copied into a value, the doubled backticks are display only. The note goes before they do, since
+  // a note may hold longer runs they are part of, and again after, for a note inside that display form.
   const undoubled = (s) => s.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
-  const spans = [...undoubled(stripTrailingNote(raw.trim())).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  const cell = stripTrailingNote(undoubled(stripTrailingNote(raw.trim())));
+  const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
   return spans.length ? spans : [undoubled(raw)];
 }
 
@@ -521,17 +523,15 @@ function stripTrailingNote(cell) {
   return cell;
 }
 
-// Which characters sit inside a code span, as CommonMark reads one: a run of N backticks opens a span
-// that closes at the next run of exactly N, so ```` ```x ```` is one span; a run never closed is text.
+// A code span as CommonMark reads one: a run of N backticks opens a span that closes at the next run of
+// exactly N on its line, so ```` ```x ```` is one span; a run never closed is text. evidence.mjs reads
+// a PR body's spans by it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
+// Which characters sit inside a code span.
 function codeSpanMask(s) {
   const mask = new Array(s.length).fill(false);
-  const runs = [...s.matchAll(/`+/g)];
-  for (let r = 0; r < runs.length; r++) {
-    const close = runs.findIndex((m, j) => j > r && m[0].length === runs[r][0].length);
-    if (close < 0) continue;
-    mask.fill(true, runs[r].index, runs[close].index + runs[close][0].length);
-    r = close;
-  }
+  for (const m of s.matchAll(CODE_SPAN)) mask.fill(true, m.index, m.index + m[0].length);
   return mask;
 }
 
