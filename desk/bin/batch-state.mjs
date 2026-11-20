@@ -125,6 +125,11 @@ export function crashShowsPerson(report = (e) => console.error(describeCrash(e))
   process.on('unhandledRejection', die);
 }
 
+// How long an idle batch with anything parked, failed or held outside goes without a pass
+// (supervisor.mjs), and how long a pass goes without asking GitHub again whether a ticket's outside
+// blockers landed (pass/parks.mjs decideOutsideHolds): a busy batch passes every tick.
+export const IDLE_RECHECK_MS = Number(process.env.DESK_IDLE_RECHECK_MS) || 30 * 60 * 1000;
+
 export const HELD_PREFIX = 'held by orchestrator';
 // A held ticket whose worker queue.mjs stop ended: held behind no blocker, so only the person starts it.
 export const STOPPED_PREFIX = `${HELD_PREFIX}: stopped by queue.mjs stop`;
@@ -139,6 +144,19 @@ export const isHeld = (t) => t?.state === 'parked' && String(t.park?.question ??
 // reason (triagePark) with holds kept beside the park. Every reader that follows a chain of holds asks
 // this, so a lane C or D, size, design or step park held behind a sibling reads as held to all of them.
 export const holdsKept = (t) => isHeld(t) || (triagePark(t) && String(t.held_by ?? '').split('|').some(Boolean));
+
+// A blocker outside the batch Done this long with its code merged only into another branch is raised to
+// the person (pass/parks.mjs `unpromoted`, needs-you's unpromoted item).
+export const UNPROMOTED_AFTER_MS = 24 * 3600_000;
+// The blockers ticket `t` is still held behind outside its batch that the pass recorded as merged only
+// into another branch, Done UNPROMOTED_AFTER_MS or more by `now`: [[key, {branch, pr, state, since, promote?}]].
+export const unpromotedHolds = (t, now = Date.now()) => (holdsKept(t) ? Object.entries(t.unpromoted ?? {}) : [])
+  .filter(([b, u]) => u?.branch && String(t.held_by ?? '').split('|').includes(b) && String(t.held_outside ?? '').split('|').includes(b)
+    && now - Date.parse(u.since) >= UNPROMOTED_AFTER_MS);
+// An unpromoted record's promotion PR state as words: "a draft", "open" or "red".
+export const promotionState = (u) => (u.state === 'draft' ? 'a draft' : u.state);
+// An unpromoted record's promotion PR: "no promotion PR", or "promotion PR #N, a draft" / ", open" / ", red".
+export const promotionWords = (u) => (u.pr == null ? 'no promotion PR' : `promotion PR #${u.pr}, ${promotionState(u)}`);
 
 // The keys of `q`'s held tickets that wait behind `key`: held by it, or by a ticket held behind it.
 export function heldBehindOf(q, key) {
@@ -599,15 +617,19 @@ export function prParkWaits(q, parked = () => true) {
 
 // The batch's worker count and whose it is. `concurrency_by: 'user'` marks a count the user set,
 // and `concurrency_user` keeps their number while the ladder lowers `concurrency` on memory, so the
-// orchestrator can return to it. Never above the §3b cap.
-export function batchConcurrency(q, { def, cap }) {
+// orchestrator can return to it. Never above the §3b cap. `mem` ({ avail, start } in GiB: available
+// memory and the ladder's line) says whether memory is what lowered it: with available memory at or
+// above the line, the ladder lowers nothing, whatever the footprint ceiling reads.
+export function batchConcurrency(q, { def, cap }, mem = null) {
   const raw = Number(q.concurrency ?? def);
   const n = Math.min(raw, cap);
   const user = q.concurrency_by === 'user' ? Number(q.concurrency_user ?? raw) : null;
   const capped = raw > cap ? `, capped at the §3b cap of ${cap}` : '';
   const why = user == null ? (raw === def ? `the §3b default${capped}` : `set by the ladder (§3b default ${def})${capped}`)
     : raw === user ? `set by the user${capped}`
-      : raw < user ? `lowered on memory from the user's ${user}${capped}: raise back to ${user} once memory allows`
+      : raw < user ? (mem && mem.start > 0 && mem.avail >= mem.start
+        ? `below the user's ${user}${capped}, though available memory is ${mem.avail.toFixed(1)}G, at or above the ladder's ${mem.start}G line, so memory did not lower it, and the footprint ceiling is no reason to: set it back to ${user}`
+        : `lowered on memory from the user's ${user}${capped}${mem && mem.start > 0 ? ` (available memory ${mem.avail.toFixed(1)}G, under the ladder's ${mem.start}G line)` : ''}: raise back to ${user} once memory allows`)
         : `above the user's ${user}${capped}: the ladder keeps the user's number, so set it back to ${user}`;
   return { n, user, line: `workers: concurrency ${raw === n ? n : `${raw} → ${n}`}, ${why}` };
 }

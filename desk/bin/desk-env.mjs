@@ -30,7 +30,7 @@
 //   node desk-env.mjs branch-check <name>     exit 1, saying why, if the name is no usable ticket branch
 //   node desk-env.mjs perm-or-unset <id>      as perm, but exit 3 (no output) when the row is unset
 //   node desk-env.mjs ticket-kind <id>        print tracker|work-id|base|issue|slug, exit 2 if the id is not accepted
-//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop (PERMISSION_KEYS; unset -> no),
+//   node desk-env.mjs perm <permission id>    print yes|ask|no|never|stop, or merged for branch-delete (PERMISSION_KEYS; unset -> no),
 //                                             exit 3 if no repo config is found
 //   node desk-env.mjs key <permission id>     print the §3 key it maps to
 //   node desk-env.mjs merge-grant             print config|batch|none, a tab, and why (mergeGrant); exit 1
@@ -257,6 +257,8 @@ export const PERMISSION_KEYS = Object.freeze({
   'codex-review': 'codex-review',
   'ci-protection': 'ci-protection',
   'gh-close-linked-issue': 'gh-close-linked-issue',
+  'gh-issue-create': 'gh-issue-create',
+  'gh-issue-comment': 'gh-issue-comment',
   'autopilot-workers': 'autopilot-workers',
   'autopilot-worker-mode': 'autopilot-worker-mode',
   'autopilot-merge': 'autopilot-merge',
@@ -345,6 +347,7 @@ export const CONFIG_ROWS = Object.freeze({
   'baseline-checks': { section: '4', row: 'Baseline checks' },
   'test-cmd': { section: '4', row: 'Unit tests' },
   'related-test-cmd': { section: '4', row: 'Related tests' },
+  'suite-weight': { section: '4', row: 'Suite weight' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
   'storybook-cmd': { section: '4', row: 'Storybook' },
   'build-cmd': { section: '4', row: 'Build' },
@@ -895,12 +898,26 @@ const rowMissing = (parsed, id) => parsed.exists && !parsed.sections?.['3']?.byK
 export const permissionMissing = (id) => rowMissing(parseConfig(), id);
 // Another repo's, by slug; false with no config.
 export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => rowMissing(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
+// The §3 values a row takes beyond yes, ask and no: branch-delete's merged deletes a local branch only
+// once its PR merged and the base holds all it has (merged-branch.mjs).
+const EXTRA_VALUES = { 'branch-delete': ['merged'] };
+export const permValues = (key) => ['yes', ...(EXTRA_VALUES[key] ?? []), 'ask', 'no'];
+// A §3 value: one of permValues, or never or stop; anything else is a no.
+const permValue = (key, v) => new RegExp(`^(${[...permValues(key), 'never', 'stop'].join('|')})\\b`, 'i').exec(v.trim())?.[1].toLowerCase() ?? 'no';
+// Whether <base> already holds all <head> has: merging head into base changes base's tree in nothing.
+// A squash or rebase merge leaves no ancestry, so this is the test that it landed. `git` is
+// (...args) -> {ok, out}.
+export function baseHolds(git, base, head) {
+  const baseTree = git('rev-parse', `${base}^{tree}`);
+  const tree = git('merge-tree', '--write-tree', base, head);
+  return baseTree.ok && tree.ok && tree.out.split('\n')[0] === baseTree.out;
+}
 function permissionIn(parsed, id) {
   const key = PERMISSION_KEYS[id];
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const v = parsed.sections?.['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return 'no';
-  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
+  return permValue(key, v);
 }
 // Tri-state for guard rows, where "unset" must mean the strict default rather than `no`:
 // returns yes|ask|no|never|stop, or null when the row is missing, blank or TODO. A value it cannot
@@ -910,7 +927,7 @@ export function permissionOrUnset(id) {
   if (!key) throw new Error(`desk-env: unknown permission id "${id}" (known: ${Object.keys(PERMISSION_KEYS).join(', ')})`);
   const v = parseConfig().sections['3']?.byKey[norm(key)]?.value;
   if (unset(v)) return null;
-  return /^(yes|ask|no|never|stop)\b/i.exec(v.trim())?.[1].toLowerCase() ?? 'no';
+  return permValue(key, v);
 }
 export const permissionKey = (id) => PERMISSION_KEYS[id];
 
@@ -1196,9 +1213,13 @@ export const binDir = () => join(deskHome(), 'bin');
 // to a person or written into settings stay binDir(), which follows the current release.
 export function runBin() {
   const here = dirname(fileURLToPath(import.meta.url));
+  return releaseDirOf(here) ? here : binDir();
+}
+// The release folder a real bin path belongs to (<DESK_HOME>/releases/<name>/bin), or null outside one.
+export function releaseDirOf(bin, home = deskHome()) {
   let releases;
-  try { releases = join(realpathSync(deskHome()), 'releases'); } catch { return binDir(); }
-  return dirname(dirname(here)) === releases && basename(here) === 'bin' ? here : binDir();
+  try { releases = join(realpathSync(home), 'releases'); } catch { return null; }
+  return dirname(dirname(bin)) === releases && basename(bin) === 'bin' ? dirname(bin) : null;
 }
 // Batch state is per repo, so autopilot can run in two repos at once without sharing a queue. A repo
 // holds its standing batch at these paths and each named batch (DESK_BATCH, an epic key) nested under
@@ -1851,7 +1872,8 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   // A §3 row whose Recommended value is a permission takes a permission: a typo would read as `no`.
   if (sec === '3' && t.header[0] === 'key') {
     const rec = cellItems(t.cells[t.header.indexOf('recommended')] ?? '')[0] ?? '';
-    if (/^(yes|ask|no)\b/i.test(rec) && !/^(yes|ask|no)\b/.test(v)) throw new DeskConfigError(`desk-env add-row: §3 ${t.label} takes yes, ask or no, not "${v}"`);
+    const takes = permValues(t.label);
+    if (takes.includes(rec.split(/[\s(]/)[0].toLowerCase()) && !takes.includes(v.split(/[\s(]/)[0])) throw new DeskConfigError(`desk-env add-row: §3 ${t.label} takes ${takes.slice(0, -1).join(', ')} or ${takes.at(-1)}, not "${v}"`);
   }
   const cells = t.cells.slice();
   cells[col] = `\`${v}\`${note.trim() ? ` (${note.trim().replace(/\n/g, ' ')})` : ''}`;

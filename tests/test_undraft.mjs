@@ -753,6 +753,13 @@ t('DS-316 a head whose first parents pass the reviewed commit by is not a carry'
 // Its only commit since is a clean merge of the base, but its first parent is older than the reviewed commit.
 g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
 t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
+// An empty commit adds nothing, so with clean base merges it carries the verdict too.
+g('checkout', '-q', '-b', 'pr6', A); g('commit', '-q', '--allow-empty', '-m', 'empty'); const E = g('rev-parse', 'HEAD');
+t('#881 an empty commit alone carries the verdict', carries(A, E), true);
+g('merge', '-q', '--no-edit', 'main'); g('commit', '-q', '--allow-empty', '-m', 'empty again'); g('merge', '-q', '--no-edit', 'main');
+t('#881 base merges and empty commits together carry it', carries(A, g('rev-parse', 'HEAD')), true);
+put('b.txt', 'pr work, changed after\n'); commit('own change after');
+t('#881 an own commit among them still does not', carries(A, g('rev-parse', 'HEAD')), false);
 rmSync(dir, { recursive: true, force: true });
 
 // With the review-reuse lever on, a verdict carries past a rebase or any base merge only while
@@ -962,6 +969,18 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('#806 negative control: beside a red required check the words are unchanged', `${req?.call} | ${req?.action}`, 'checks | fix or re-run the checks on #806');
   const missing = optPr([{ name: 'types', status: 'completed', conclusion: 'success' }, report]);
   t('#806 negative control: nor beside a required check that has not reported', missing?.action, 'fix or re-run the checks on #806');
+}
+
+// A red check beside checks still running is a wait on CI, not the person's or a fix worker's, as long
+// as a running check has an Actions run that stuckCall can time out.
+{
+  const ci = (checks) => rerunPr(checks, { required: ['CI gate', 'Review gate'] });
+  const live = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'Build, typecheck, lint & unit tests', status: 'in_progress', conclusion: null, runId: 32 }, { name: 'Integration tests', status: 'in_progress', conclusion: null, runId: 33 }]);
+  t('#897 a red gate beside checks still running waits on them', `${live?.call} | ${live?.why}`, 'wait | checks still running (Build, typecheck, lint & unit tests, Integration tests)');
+  const done = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'CI gate', status: 'completed', conclusion: 'success', runId: 34 }]);
+  t('#897 once every check has finished, the red one goes on as before', done?.call, 'checks');
+  const status = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'external CI', status: 'in_progress', conclusion: null, runId: null }]);
+  t('#897 one pending with no run to time out does not hold a red draft', status?.call, 'checks');
 }
 
 process.exit(fails ? 1 : 0);

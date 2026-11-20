@@ -63,6 +63,8 @@ if [ "${STUB_LIMIT:-}" = "$n" ]; then
   exit 1
 fi
 [ "${STUB_NOREC:-}" = "$n" ] && { echo "STUB-STDOUT"; exit 1; }
+# Call STUB_TIMEOUT writes nothing and ends as desk_timeout ends a call it cut off.
+[ "${STUB_TIMEOUT:-}" = "$n" ] && exit 124
 # Call STUB_REFUSED answers with the file it names, a recorded run the API refused.
 [ "${STUB_REFUSED_AT:-}" = "$n" ] && { cat "$STUB_REFUSED"; exit 1; }
 if [ "$n" = 0 ]; then
@@ -217,6 +219,10 @@ rm -f "$STUB_LOG".* "$TLOG"; stale
 out=$(STUB_LANE=A STUB_NOREC=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-505 AC3: any other run that writes no record fails as before, though an earlier record was on disk" \
   '[ $rc -eq 1 ] && [ ! -f "$T/state/triage/fix-thing.json" ] && grep -qF "FAIL: fix-thing produced no triage record at $T/state/triage/fix-thing.json" <<< "$out" && [[ "$out" != *"USAGE LIMIT"* ]]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"
+out=$(STUB_LANE=A STUB_TIMEOUT=0 bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-814 AC2: a first pass cut off at its timeout says it timed out" \
+  '[ $rc -eq 1 ] && grep -qxF "FAIL: fix-thing produced no triage record: claude timed out after 600s (log: $TLOG)" <<< "$out"'
 # DS-812: a run the API refused with 403 (tests/fixtures/api-refused-403.jsonl, recorded from a real
 # triage behind a Cloudflare block) is named as that, not as the session limit.
 rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json" "$TLOG"

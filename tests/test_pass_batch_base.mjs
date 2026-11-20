@@ -13,7 +13,7 @@ const SRC = 'c'.repeat(40);
 const WT = '/wt/feat-x';
 const PUSH = { perm: 'yes', key: 'batch-base-push', ok: true };
 const snap = (queue = {}, fields = {}) => ({
-  queue: { tickets: {}, ...queue }, base: 'feat/x', source: 'main', willSpawn: true, epicOn: false, epicOpen: false, sliceBad: null,
+  queue: { tickets: {}, ...queue }, base: 'feat/x', source: 'main', willSpawn: true, epicOpen: false, sliceBad: null,
   behindMax: 20, gateBusy: false, resumeHeld: null, registry: registryView({ live: [] }), fixKey: 'BASE-feat-x', fixRoom: true,
   noFixRoom: 'memory: 2.0G available, under the 6G spawn gate', conflictPerm: 'yes', push: PUSH, passBy: 'session',
   passAt: '2026-11-18T12:00:00.000Z', usageHold: null, repoLogin: { dir: '/login' }, baselineOn: false, dry: false, now: NOW, ...fields,
@@ -25,7 +25,7 @@ const READS = {
   behind: 3, worktree: { ok: true, path: WT, made: false }, sync: { ok: true, merged: 3 }, 'origin-sha': (a) => (a.branch === 'main' ? SRC : HEAD),
   'note-conflict': null, 'fix-log': { raw: Buffer.alloc(0), text: '', recent: false, bytes: 0 }, 'end-try': null, 'fix-login': { dir: '/login' }, lifted: false,
 };
-const WRITES = ['report', 'base-line', 'set-batch', 'kill', 'usage-hold', 'usage-stop', 'drop-ref', 'fetch', 'synced', 'baseline', 'open-promotion', 'next-promotion'];
+const WRITES = ['report', 'base-line', 'set-batch', 'kill', 'usage-hold', 'usage-stop', 'drop-ref', 'fetch', 'synced', 'baseline'];
 function drive(decide, s, answers = {}, reads = READS, writes = WRITES) {
   const handlers = Object.fromEntries([...Object.keys(reads), ...writes].map((type) => [type, (a) => {
     const v = Object.hasOwn(answers, type) ? answers[type] : reads[type];
@@ -164,10 +164,7 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('the baseline is recorded before a pass that spawns, with the record settled first', j(types(sync(snap({}, { baselineOn: true }))).slice(-2)), j(['synced', 'baseline']));
   t('not with Baseline checks off', types(sync(snap())).includes('baseline'), false);
   t('nor when the sync holds spawns', types(sync(snap({ feature: true }, { baselineOn: true }), { sync: { ok: false, why: 'x' } })).includes('baseline'), false);
-  t('a feature batch with no promotion PR opens one', j(sync(snap({ feature: true })).filter((a) => a.type === 'open-promotion')), j([{ type: 'open-promotion', path: WT }]));
-  t('one with an open promotion PR follows it', j(sync(snap({ feature: true, promotion: { pr: 9 } })).filter((a) => a.type === 'next-promotion')), j([{ type: 'next-promotion', path: WT, promotion: { pr: 9 } }]));
-  const epic = { 'T-1': { key: 'T-1', state: 'done', merged_at: '2026-11-18T10:00:00.000Z', result: { pr: 1 } } };
-  t('an epic batch with every child merged opens its epic PR', j(sync(snap({ tickets: epic, epic: 'E-1', base: 'feat/x' }, { epicOn: true })).filter((a) => a.type === 'open-promotion')), j([{ type: 'open-promotion', path: WT, carry: {} }]));
+  // The promotion or epic PR it opens next is tests/test_pass_promotion_pr.mjs's.
 }
 
 // The baseline checks.

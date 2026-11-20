@@ -88,7 +88,11 @@ with `status` `idle`: keep the loop going. Two states come to you as an exit 11,
   already that question, so what is held behind it is not STUCK (below): only a blocker that
   finished with no PR, closed its PR unmerged or is not in the batch comes to you as STUCK. A
   blocker in no batch that the ticket was admitted behind (`held_outside`) is not STUCK: the pass
-  lifts it once it is Done in Jira and its PR has merged to the batch's base. In a batch the
+  lifts it once it is Done in Jira and its PR has merged to the batch's base. One Done in Jira for a
+  day or more (its resolution date) whose PR merged into another branch no PR has promoted is raised
+  once, as a desk-needs-you `held` item naming that branch and its promotion PR's state (none,
+  draft, open or red), and desk-q shows that state in place of a date: the user promotes the branch
+  or starts the ticket without it. In a batch the
   supervisor runs, the pass also admits such a blocker into the batch (`intake.mjs admit`, `--into`
   a named batch), once per held ticket (a triage a usage limit cut off does not count, and is tried
   again once it lifts) and at most three a pass, unless it is the person's step, is outside §4 Jira

@@ -91,7 +91,13 @@ export function archiveDone(file, q, now = new Date().toISOString()) {
   const moving = Object.keys(q.tickets ?? {}).filter((k) => archivable(q, k));
   if (!moving.length) return [];
   const a = readArchive(file);
-  for (const k of moving) a.tickets[k] = { ...q.tickets[k], archived_at: now };
+  // A ticket archived before, admitted again and finished, keeps when it was first admitted
+  // (first_added_at), so the batch's worker cost still counts that first admission's rounds.
+  for (const k of moving) {
+    const was = a.tickets[k];
+    const first = [was?.first_added_at, was?.added_at, q.tickets[k].first_added_at].filter(Boolean).sort()[0];
+    a.tickets[k] = { ...q.tickets[k], ...(first && first !== q.tickets[k].added_at ? { first_added_at: first } : {}), archived_at: now };
+  }
   writeJsonAtomic(archivePath(file), a);
   for (const k of moving) delete q.tickets[k];
   return moving;

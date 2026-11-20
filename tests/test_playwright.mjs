@@ -96,5 +96,12 @@ const noPw = signin({ DESK_PLAYWRIGHT: '' });
 t('signin: no Playwright exits 6', noPw.status, 6);
 t('signin: and names what it tried', noPw.stderr.includes(join(dir, 'desk', 'playwright')), true);
 
+// --help prints the usage and exit codes and opens no browser (a Playwright that would sign in is
+// on the path); an unknown argument is refused.
+const help = spawnSync(process.execPath, [join(BIN, 'github-signin.mjs'), '--help'], { encoding: 'utf8', env: { ...process.env, HOME: dir, DESK_PLAYWRIGHT: fake, FAKE_LOGIN: 'octocat', DESK_BROWSER_PROFILE: join(dir, 'help-profile') } });
+t('signin: --help exits 0 with its usage and exit codes', help.status === 0 && help.stdout.includes('node ~/.claude/desk/bin/github-signin.mjs') && help.stdout.includes('Exit codes: 0 signed in') && !help.stdout.includes('//'), true);
+t('signin: and opens no browser: nothing is saved', existsSync(sessionFile(join(dir, 'help-profile'))) || existsSync(join(dir, 'help-profile')), false);
+t('signin: an unknown argument exits 2, naming it', (() => { const r = spawnSync(process.execPath, [join(BIN, 'github-signin.mjs'), '--bogus'], { encoding: 'utf8', env: { ...process.env, HOME: dir, DESK_PLAYWRIGHT: fake, FAKE_LOGIN: 'octocat', DESK_BROWSER_PROFILE: join(dir, 'bogus2-profile') } }); return `${r.status} ${r.stderr.includes('"--bogus"')} ${existsSync(join(dir, 'bogus2-profile'))}`; })(), '2 true false');
+
 for (const r of [repo, desk, none, dir]) rmSync(r, { recursive: true, force: true });
 process.exit(fails ? 1 : 0);

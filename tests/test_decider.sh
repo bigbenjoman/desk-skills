@@ -561,5 +561,27 @@ check "DS-563 AC3: on a usage hold no decider starts, and the restate's hour sta
   '[ "$(calls)" = "$n" ] && [ "$(cw R3)" = unreadable ] && [ "$at" != 2026-01-01T00:00:00Z ] && node -e "process.exit(Date.now() - Date.parse(process.argv[1]) < 600000 ? 0 : 1)" "$at" && grep -q "^decider: the hour to restate an unreadable clears-when starts again once one runs: R3$" "$LOG"'
 verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
 
+# ---- the base sync line is one item whatever its wording; a new base head is one new session --
+ids=$(node --input-type=module -e "
+import { deciderItems } from '$B/decider.mjs';
+import { createHash } from 'node:crypto';
+const id = (l, o) => deciderItems({ waiting: [l] }, {}, null, o)[0];
+const a = id('base sync: merging main into feat conflicts — feat is 21 commit(s) behind main', { baseSha: 'b1' });
+const b = id('base sync: feat is 3 commit(s) behind main and config §3 batch-base-push is \"ask\" — spawning carries on', { baseSha: 'b2' });
+const t = id('W: DRAFT — PR #9 stays draft: x');
+const today = 'wait-' + createHash('sha256').update(['W', 'DRAFT', '9'].join(String.fromCharCode(0))).digest('hex').slice(0, 12);
+console.log([a.id === b.id, a.base, b.base, t.id === today, t.base === undefined].join(' '));")
+check "DS-809 AC1/AC3: base sync lines share one id and carry the base head; a ticket line's id is as before" '[ "$ids" = "true b1 b2 true true" ]'
+mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
+git -C "$T/repo" init -q && git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m one && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+printf '{"version":1,"batch":"b1","base":"feat","supervised":true,"approved":{},"tickets":{}}\n' > "$DESK_QUEUE"
+sync(){ verdict "$(waits "[\"base sync: merging main into feat conflicts, nothing pushed. Conflicting files: a.mjs — feat is $1 commit(s) behind main, more than the 20 it may lag and still spawn, so nothing spawns this pass\"]")"; }
+for n in 21 22 23; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC1: three passes whose base sync line differs only in its commit count start one session" '[ "$(calls)" = 1 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
+git -C "$T/repo" -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m two && git -C "$T/repo" update-ref refs/remotes/origin/feat HEAD
+for n in 24 25; do sync "$n"; out=$(tick); settle; done
+check "DS-809 AC2: handed on and unanswered, a new base head starts one new session, and later passes none" '[ "$(calls)" = 2 ] && [ "$(handed | grep -c "^base sync|")" = 1 ]'
+verdict '{"status":"nothing_yet","code":10,"message":"x","waiting":[],"parked":[],"notify":false,"push":[]}'
+
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

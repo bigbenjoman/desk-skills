@@ -14,7 +14,7 @@ export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
   AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
-  DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills"
+  DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills" DESK_TRIAGE_RETRY_MS=0
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
@@ -70,7 +70,9 @@ cat "$T/search.json"
 EOF
 # Triage: copies the set record for the ticket into the state of the batch it runs in, or fails while
 # $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
-# It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
+# It fails its first run while $T/recs/<KEY>.failonce exists, and every run on a login refusal while
+# $T/recs/<KEY>.authfails does, and leaves its record behind refused as malformed, as triage.sh can,
+# while $T/recs/<KEY>.badrec does. It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
 # `end <KEY>` in $T/triage.events. It stops at the usage limit in $T/recs/<KEY>.limit, or in a named
 # batch only, in $T/recs/<KEY>.batchlimit.
 cat > "$T/bin/triage.sh" <<EOF
@@ -81,6 +83,9 @@ trap 'echo "end \$1" >> "$T/triage.events"' EXIT
 [ -f "$T/recs/\$1.sleep" ] && sleep "\$(cat "$T/recs/\$1.sleep")"
 [ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
+[ -f "$T/recs/\$1.failonce" ] && { rm -f "$T/recs/\$1.failonce"; echo "FAIL: \$1 produced no triage record at \$DESK_AUTOPILOT_STATE/triage/\$1.json" >&2; exit 1; }
+[ -f "$T/recs/\$1.authfails" ] && { echo "FAIL: \$1 produced no triage record: HTTP 401. That is the login, not the session limit" >&2; exit 1; }
+[ -f "$T/recs/\$1.badrec" ] && { mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"; echo "FAIL: \$1 triage record is malformed" >&2; exit 1; }
 [ -f "$T/recs/\$1.limit" ] && { echo "[triage] reading \$1" >&2; echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.limit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 [ -n "\${DESK_BATCH:-}" ] && [ -f "$T/recs/\$1.batchlimit" ] && { echo "USAGE LIMIT: \$1 \$(cat "$T/recs/\$1.batchlimit") (log: \$DESK_AUTOPILOT_STATE/triage/\$1.log)" >&2; exit 3; }
 mkdir -p "\$DESK_AUTOPILOT_STATE/triage"; cp "$T/recs/\$1.json" "\$DESK_AUTOPILOT_STATE/triage/\$1.json"
@@ -520,6 +525,13 @@ printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","
 rec H-7 A; n=$(count "$T/triage.calls")
 out=$(admit H-7); rc=$?
 check "admit: a session-run batch is refused before any triage, pointing at that session" '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = "$n" ] && grep -q "is run by a session, not the supervisor: send these tickets to that session" <<< "$out"'
+check "#877 the refusal names the command that session admits with" 'grep -q "let it admit them with node .*intake.mjs admit H-7 --session$" <<< "$out"'
+out=$(admit H-7 --session); rc=$?
+check "#877 with --session, the session that runs the batch admits into it" '[ $rc -ne 11 ] && [ "$(qget tickets.H-7.state)" = triaged ] && [ "$(qget supervised)" = false ] && grep -q "^admitted H-7 by hand into batch s1" <<< "$out"'
+check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks up H-7$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
+AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
+check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
+check "#877 desk-admit runs the --session command when this session runs the batch" 'grep -q "If this session runs that batch, run the command the line names" "$S/../skills/desk-admit/SKILL.md"'
 rm -f "$DESK_QUEUE"; config ask '`none`'
 out=$(admit H-7); rc=$?
 check "admit: with no batch and autopilot-workers not yes, it points at /desk-autopilot" '[ $rc -eq 11 ] && [ ! -f "$DESK_QUEUE" ] && grep -q "run /desk-autopilot H-7" <<< "$out"'
@@ -650,6 +662,23 @@ touch "$T/promos.fails"
 check "DS-816 a promotion list GitHub cannot read is unread, not false" '[ "$(landed L-1)" = null ] && [ "$(landed L-5)" = true ]'
 rm -f "$T/promos.fails"
 check "DS-816 AC4: admit holds a blocker outside only while it is unpromoted" '[ "$(outside L-1 L-2 L-3 L-4 L-5)" = "L-3,L-4" ]'
+# DS-811: where an unlanded blocker's code waits: the branch its PR merged into, and that branch's open
+# promotion PR into main, by state.
+unpromoted(){ (cd "$T/repo" && node -e 'import(process.argv[2]).then((m) => console.log(JSON.stringify(m.unpromotedBase(process.argv[1], "main"))))' "$1" "$T/bin/intake.mjs"); }
+check "DS-811 a blocker merged into a branch with no promotion PR names the branch and none" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":null,\"state\":\"none\"}" ]'
+printf '%s\n' '[{"number":96,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"name":"lint","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"test","status":"COMPLETED","conclusion":"FAILURE"}]}]' > "$T/promos.json"
+check "DS-811 a promotion PR with a failed check is red" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":96,\"state\":\"red\"}" ]'
+printf '%s\n' '[{"number":96,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"name":"test","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-11-18T10:00:00Z","detailsUrl":"https://github.com/a/b/actions/runs/1/job/1"},{"name":"test","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-11-18T11:00:00Z","detailsUrl":"https://github.com/a/b/actions/runs/2/job/2"}]}]' > "$T/promos.json"
+check "DS-811 a check that failed and then passed on a later run is not red" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":96,\"state\":\"open\"}" ]'
+printf '%s\n' '[{"number":97,"headRefName":"epic/L3","baseRefName":"main","isDraft":true,"statusCheckRollup":[]}]' > "$T/promos.json"
+check "DS-811 a draft one is draft" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":97,\"state\":\"draft\"}" ]'
+printf '%s\n' '[{"number":98,"headRefName":"epic/L3","baseRefName":"main","isDraft":false,"statusCheckRollup":[{"context":"deploy","state":"SUCCESS"}]}]' > "$T/promos.json"
+check "DS-811 a green one is open" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":98,\"state\":\"open\"}" ]'
+touch "$T/promos.fails"
+check "DS-811 a promotion PR GitHub cannot read is null" '[ "$(unpromoted L-3)" = null ]'
+rm -f "$T/promos.fails"
+printf '%s\n' '[{"number":5,"state":"MERGED","title":"fix: M-1 x","headRefName":"fix/M-1-x","baseRefName":"main","mergedAt":"2026-11-01T10:00:00Z"}]' > "$T/prs.json"
+check "DS-811 one merged only into main is not elsewhere" '[ "$(unpromoted M-1)" = null ]'
 rm -f "$T/prs.json" "$T/promos.json"
 mkdir -p "$T/children"
 cat > "$T/bin/expand-parent.mjs" <<EOF
@@ -715,7 +744,7 @@ ci main "main, 'feat/**'"; ci feat%2FE-5-a-feature 'main'
 # A plan the drafter cannot write leaves no batch behind.
 touch "$T/claude.fails"; before=$(cat "$DESK_QUEUE")
 out=$(admit E-8 --by ben); rc=$?
-check "DS-351: an epic whose plan cannot be drafted is refused with why, and its batch discarded" '[ $rc -eq 11 ] && grep -q "^not admitted E-8: an epic, and its feature batch was not started: the plan drafter failed (claude: session limit); batch E-8 discarded$" <<< "$out" && [ ! -e "$EB/E-8" ] && [ ! -e "$ES/E-8" ]'
+check "DS-351: an epic whose plan cannot be drafted is refused with why, and its batch discarded" '[ $rc -eq 11 ] && grep -q "^not admitted E-8: an epic, and its feature batch was not started: the plan drafter failed (claude: session limit); batch E-8 discarded$" <<< "$out" && [ ! -e "$EB/E-8" ] && [ "$(ls "$ES/E-8")" = triage ] && [ -f "$ES/E-8/triage/E-6.json" ]'
 rm -f "$T/claude.fails"
 
 out=$(admit E-5 --by ben); rc=$?
@@ -1241,6 +1270,37 @@ check "DS-507 AC2: the child's end follows, and no epic line is printed twice" '
 rec SF-1 A '"type":"Epic","branch":"feat/SF-1-lines"'; epicget SF-1; rec SF-2 A; touch "$T/recs/SF-2.fails"; printf 'SF-2\n' > "$T/children/SF-1"
 out=$(admit SF-1 --by ben); rc=$?
 check "DS-507 AC2: a child's triage that left no record says so before the epic is refused" '[ $rc -eq 11 ] && grep -Eq "^triage: done SF-2 no record \([0-9]+s\)$" <<< "$out" && grep -q "^not admitted SF-1: an epic, and its feature batch was not started: child SF-2 could not be triaged" <<< "$out"'
+# A child's failed triage is run once more; a second failure names its class, and the discard keeps the
+# records already written, so admitting the epic again triages only the child that has none.
+rec SR-1 A '"type":"Epic","branch":"feat/SR-1-retry"'; epicget SR-1; rec SR-2 A; rec SR-3 A; touch "$T/recs/SR-3.failonce"; printf 'SR-2\nSR-3\n' > "$T/children/SR-1"
+rm -f "$T/triage.calls"; out=$(admit SR-1 --by ben); rc=$?
+check "DS-814 AC1: a child whose triage fails once is tried once more, and the batch starts" '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SR-1 SR-2 SR-3 SR-3 " ] && grep -qx "triage: SR-3 failed (unknown), so it is tried once more in 0s" <<< "$out" && [ "$(eget SR-1 tickets.SR-3.held_by)" = SR-1 ]'
+check "DS-814 AC1: the retry waits 60 seconds unless overridden" '[ "$(env -u DESK_TRIAGE_RETRY_MS node --input-type=module -e "import { TRIAGE_RETRY_MS } from \"$B/epic-plan.mjs\"; console.log(TRIAGE_RETRY_MS)")" = 60000 ]'
+rec SA-1 A '"type":"Epic","branch":"feat/SA-1-auth"'; epicget SA-1; rec SA-2 A; rec SA-3 A; touch "$T/recs/SA-3.authfails"; printf 'SA-2\nSA-3\n' > "$T/children/SA-1"
+rm -f "$T/triage.calls"; out=$(admit SA-1 --by ben); rc=$?
+check "DS-814 AC2: a child whose triage fails twice stops the epic, naming the child and its error class" '[ $rc -eq 11 ] && [ ! -e "$EB/SA-1" ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SA-1 SA-2 SA-3 SA-3 " ] && grep -qx "not admitted SA-1: an epic, and its feature batch was not started: child SA-3 could not be triaged, twice (auth: FAIL: SA-3 produced no triage record: HTTP 401. That is the login, not the session limit); batch SA-1 discarded" <<< "$out"'
+kept(){ node -e 'const k=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(Object.keys(k).map((c)=>`${c}@${k[c].base}`).join(" "))' "$ES/$1/triage/kept.json"; }
+check "DS-814 AC3: the discard keeps the triage records, listing only the child triaged in full" '[ "$(ls "$ES/SA-1")" = triage ] && [ -f "$ES/SA-1/triage/SA-2.json" ] && [ "$(kept SA-1)" = "SA-2@feat/SA-1-auth" ]'
+rm -f "$T/recs/SA-3.authfails" "$T/triage.calls"; out=$(admit SA-1 --by ben); rc=$?
+check "DS-814 AC3: admitted again, only the child with no triage record is triaged" '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SA-1 SA-3 " ] && grep -qx "triage: kept SA-2.s record from an earlier start of batch SA-1" <<< "$out" && [ "$(eget SA-1 tickets.SA-2.held_by)" = SA-1 ]'
+# A record triage refused is left on disk, as triage.sh leaves it, and is never reused: only a child
+# listed in kept.json is, and only while its listing is recent.
+rec SL-1 A '"type":"Epic","branch":"feat/SL-1-lint"'; epicget SL-1; rec SL-2 A; rec SL-3 A; touch "$T/recs/SL-3.badrec"; printf 'SL-2\nSL-3\n' > "$T/children/SL-1"
+rm -f "$T/triage.calls"; out=$(admit SL-1 --by ben); rc=$?
+check "DS-814 AC2: a child whose record is refused twice is named with the lint class" '[ $rc -eq 11 ] && grep -q "child SL-3 could not be triaged, twice (lint: FAIL: SL-3 triage record is malformed)" <<< "$out" && [ -f "$ES/SL-1/triage/SL-3.json" ] && [ "$(kept SL-1)" = "SL-2@feat/SL-1-lint" ]'
+node -e 'const f=process.argv[1], k=JSON.parse(require("fs").readFileSync(f,"utf8")); k["SL-2"].at=new Date(Date.now()-7*3600e3).toISOString(); require("fs").writeFileSync(f, JSON.stringify(k))' "$ES/SL-1/triage/kept.json"
+rm -f "$T/recs/SL-3.badrec" "$T/triage.calls"; out=$(admit SL-1 --by ben); rc=$?
+check "DS-814 AC3: a record refused, or listed longer ago than six hours, is triaged again" '[ $rc -eq 0 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "SL-1 SL-2 SL-3 " ] && ! grep -q "^triage: kept" <<< "$out"'
+# A slot holding only kept records is cleared by a discard, which refuses a slot with nothing in it.
+rec SK-1 A '"type":"Epic","branch":"feat/SK-1-left"'; epicget SK-1; rec SK-2 A; touch "$T/recs/SK-2.authfails"; printf 'SK-2\n' > "$T/children/SK-1"
+out=$(admit SK-1 --by ben); mkdir -p "$ES/SK-1/triage"
+out=$(cd "$T/repo" && node "$T/bin/batch.mjs" discard SK-1 2>&1); rc=$?
+check "DS-814 AC3: a discard removes a slot that holds only kept triage records" '[ $rc -eq 0 ] && [ ! -e "$ES/SK-1" ] && grep -q "had only the triage records an earlier start kept" <<< "$out"'
+out=$(cd "$T/repo" && node "$T/bin/batch.mjs" discard SK-1 2>&1); rc=$?
+check "DS-814 AC3: and refuses once nothing is left" '[ $rc -eq 11 ] && grep -q "no batch SK-1 in this repo: nothing removed" <<< "$out"'
+rm -f "$T/recs/SK-2.authfails"
+classes=$(node --input-type=module -e "import { triageErrorClass as c } from '$B/epic-plan.mjs'; console.log([c({ status: null, signal: 'SIGTERM', stderr: '' }), c({ status: 1, stderr: 'FAIL: X produced no triage record: claude timed out after 600s (log: /x.log)' }), c({ status: 1, stderr: 'FAIL: X triage record is malformed: bad lane. Triage it again.' }), c({ status: 1, stderr: 'FAIL: X not triaged: no subscription here, and triage never runs on another login' }), c({ status: 1, stderr: 'triage: claude exited 1' })].join(' '))")
+check "DS-814 AC2: a failed triage's class is read from how it ended and its last stderr line" '[ "$classes" = "timeout timeout lint auth unknown" ]'
 # Those triages leave the rest free to say they finished: SG-2 ends during SG-3's triage as SG-1's child,
 # and SJ-2 during SJ-1's triage again in the feature batch it joins.
 after(){ sed -n "/^triage: done $1 /,\$p" <<< "$out" | grep -q "^triage: done $2 "; }

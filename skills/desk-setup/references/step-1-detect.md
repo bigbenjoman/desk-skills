@@ -16,7 +16,9 @@ check makes one real request and the Jira checks make read-only API calls.
 gh repo view --json nameWithOwner,defaultBranchRef,description
 # §1 you
 gh api user --jq .login
-git log -n 50 --format='%an <%ae>' | sort | uniq -c | sort -rn | head -3   # the author this repo's commits use
+mine=(); for a in "$(gh api user --jq .login 2>/dev/null)" "$(git config user.email)"; do [ -n "$a" ] && mine+=(--author="$a"); done
+[ ${#mine[@]} -gt 0 ] && git log --all --since=1.year "${mine[@]}" --format='%an <%ae>%x09%ce' \
+  | grep -v $'\tnoreply@github.com$' | cut -f1 | sort | uniq -c | sort -rn | head -3   # your own commits' author, not GitHub's merges
 git config user.name; git config user.email
 # §2 paths
 git rev-parse --path-format=absolute --git-common-dir     # parent = primary repo root
@@ -343,6 +345,13 @@ How to turn what you find into rows:
   runs that suite in full. A turbo or nx script that fans out over packages has no related form:
   propose each package's runner in its directory, or `none`. `none` keeps workers on the full
   suites, and changes nothing else.
+- **Suite weight.** `heavy` unless every item that runs under the test lock is light on memory:
+  each Unit tests, Related tests and Integration tests item (all three move to the light lock).
+  Light is shell tests, small node or Python scripts, a headless browser driven one page at a time.
+  A Jest or Vitest suite of any size, a database-backed integration suite, or anything that has
+  needed the Test worker cap, is `heavy`. Propose `light` only with a
+  reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
+  typechecks share, onto a box-wide light lock of their own.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
@@ -431,11 +440,31 @@ How to turn what you find into rows:
   copy lives inline. Each is declinable like any other rule.
 - **People.** For a solo repo propose `you` in every role and say so. For a team repo, propose from
   collaborators and CODEOWNERS; the user names the roles.
+- **Git author (§1).** Propose the most common identity on the user's own commits across every
+  branch, from the detect block: it leaves out commits GitHub committed (squash and web merges, whose
+  author is the `id+login@users.noreply.github.com` address GitHub stamps), which fill a squash-merge
+  repo's default branch. When `git config user.email` differs from the proposal, show it beside it.
+  With neither a GitHub login nor a `git config user.email`, it prints nothing: ask for the identity.
 - **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's
   own instructions then decide the wording), otherwise ask. If the user picks `forbidden`, offer to
   also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
+- **Whose commits count for AI attribution.** The count in the detect block takes every author's
+  commit messages line by line, so on a squash-merge repo it counts teammates' trailers, often many
+  times over. "Recent commits" in the item above are the user's own: count those commits, by the
+  user's §1 Git author email(s) (one `--author` each) across every branch, and the same for everyone,
+  each as commits whose message carries a trailer, not lines:
+
+  ```bash
+  ai='co-authored-by: *claude|generated with \[?claude code'
+  git log --all -n 200 --author='<email>' --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"   # yours
+  git log --all -n 200 --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"                      # everyone's
+  ```
+
+  Propose `allowed` only when the user's own commits carry one. When only other authors' do, say so,
+  with both counts, and ask, recommending nothing from them: what teammates do is not what this repo
+  allows.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
 - **Ticket format.** While the row is `TODO`, propose `default`: desk-jira's
   `references/ticket-template.md`, the layouts every desk path that files a ticket uses. Show its

@@ -260,6 +260,15 @@ out=$(cd "$C" && "$J" create Story dropped body.md customfield_10208=M customfie
 check "create names a field that came back empty" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  customfield_10207: (empty - the write did not stick)$" && printf "%s" "$out" | grep -q "^  customfield_10208: M$"'
 out=$(cd "$C" && "$J" create Story dropped-labels body.md customfield_10208=M customfield_10207=P2 'labels=["a"]' --no-lint 2>&1); rc=$?
 check "create names a list field that came back as []" '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^  labels: (empty - the write did not stick)$"'
+sent_labels() { jq -sc '[.[] | select(.method == "POST" and .path == "/rest/api/2/issue")] | last | .body | fromjson | .fields.labels' "$LOG"; }
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels=ux, needs-copy,' --no-lint 2>&1); rc=$?
+check "create sends labels=a,b as an array, as Jira takes it" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"ux\",\"needs-copy\"]" ] && printf "%s" "$out" | grep -q "^  labels: "'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 labels=solo --no-lint 2>&1); rc=$?
+check "and one label as an array of one" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"solo\"]" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels=["j"]' --no-lint 2>&1); rc=$?
+check "a JSON array of labels passes as it is" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"j\"]" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels= ["k"]' --no-lint 2>&1); rc=$?
+check "even with a space before it" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"k\"]" ]'
 out=$(cd "$C" && "$J" create Subtask s body.md --no-lint 2>&1); rc=$?
 check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
 

@@ -274,6 +274,9 @@ t('DS-422 kinds and a bare check', sc(['🌿 Local Adversarial Code Review: verd
 t('DS-422 a check name may hold ": "', sc(['Gate: title: approval']), JSON.stringify({ checks: [{ name: 'Gate: title', kind: 'approval' }], errors: [] }));
 t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [] }));
 t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
+t('#737 external names the reviewer login', sc(['🔐 Review gate: external agent-pullbot']), JSON.stringify({ checks: [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }], errors: [] }));
+t('#737 external with no login is an error', parseStateChecks(['🔐 Review gate: external']).errors.length, 1);
+t('#737 a failing external check carries its login', JSON.stringify(stateFailing([{ name: '🔐 Review gate' }], parseStateChecks(['🔐 Review gate: external agent-pullbot']).checks)), JSON.stringify([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }]));
 t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
   JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
 {
@@ -353,10 +356,56 @@ rmSync(gtmp, { recursive: true, force: true });
   const holders = new Set([11, 12]);
   t('DS-662 waiters: every unheld with-lock test|tsc wrapper and childless flock, whatever the worktree', lockWaiters({ procs, holders }), 3);
   t('DS-662 waiters: none when ps cannot be read', lockWaiters({ procs: null, holders }), null);
+  // A light suite (§4 Suite weight) waits on the light lock, which holds no heavy run back: not counted.
+  const light = [...procs, { pid: 81, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh' },
+    { pid: 91, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }];
+  t('a run waiting on the light lock is no waiter on the test lock', lockWaiters({ procs: light, holders }), 3);
+  // But a worker's suite on the light lock is still running or waiting: it is never taken for wedged.
+  const { suiteWait } = await import('../desk/bin/suite-wait.mjs');
+  const wt = '/w/T-1';
+  const at = (procs, cwds) => suiteWait(wt, { procs, cwds, holders: new Set() });
+  const runs = [{ pid: 100, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }, { pid: 101, ppid: 100, args: 'bash tests/run.sh' }];
+  t('a light suite running in the worktree is its suite', at(runs, [{ pid: 100, cwd: wt }]), 'suite');
+  t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
+  t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
   t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
     JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
   t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
   const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
   t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');
+}
+// Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
+{
+  const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');
+  const procs = [
+    { pid: 11, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder and its command
+    { pid: 12, ppid: 11, args: 'bash tests/run.sh' },
+    { pid: 41, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock holder, queued 20 min before its command started
+    { pid: 42, ppid: 41, args: 'pnpm test' },
+    { pid: 51, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a waiter
+    { pid: 61, ppid: 1, args: 'vim notes.md' }, // a reused pid a stale flock holder file still names
+  ];
+  const now = Date.parse('2026-11-20T12:00:00Z');
+  const ages = new Map([[11, 2530], [12, 2529], [41, 3900], [42, 2700], [51, 30], [61, 60]]);
+  const stamps = new Map([[11, now - 2529000], [12, now - 2529000], [61, now - 600000]]);
+  const cwds = [{ pid: 11, cwd: '/home/u/code/repo-a' }, { pid: 41, cwd: '/home/u/code/wt/B-1' }, { pid: 61, cwd: '/home/u' }];
+  const runs = lockHolderRuns({ procs, holders: new Set([11, 12, 61]), cwds, ages, stamps, now });
+  t('a holder is named once, not with its command beside it; a waiter and a reused pid not at all', runs.map((r) => r.pid).join(','), '11,41');
+  t('its age is from its holder file, or a flock\'s command, both made once the lock is taken, not its wait', runs.map((r) => r.seconds).join(','), '2529,2700');
+  // A holder that exec'd into its command (a slotted flock): its file, not its youngest subprocess.
+  const execd = [{ pid: 70, ppid: 1, args: 'bash tests/run.sh' }, { pid: 71, ppid: 70, args: 'bash tests/test_x.sh' }];
+  t('an exec\'d holder with subprocesses is aged from its holder file', lockHolderRuns({ procs: execd, holders: new Set([70]), cwds: [], ages: new Map([[70, 2520], [71, 5]]), stamps: new Map([[70, now - 2400000]]), now })[0]?.seconds, 2400);
+  const home = process.env.HOME;
+  process.env.HOME = '/home/u';
+  try {
+    t('each with where it runs and how long its run has gone', holdersText(runs),
+      '~/code/repo-a: /bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, held 42m; ~/code/wt/B-1: flock /tmp/desk-test.lock pnpm test, held 45m');
+  } finally { process.env.HOME = home; }
+  t('one whose directory and age cannot be read is named by its pid', holdersText(lockHolderRuns({ procs, holders: new Set(), cwds: null, ages: null, now }).slice(0, 1)), 'pid 41: flock /tmp/desk-test.lock pnpm test, held for an unknown time');
+  t('a file-named pid whose age cannot be read names nobody', lockHolderRuns({ procs, holders: new Set([11, 12]), cwds, ages: null, stamps, now }).map((r) => r.pid).join(','), '41');
+  t('no holders when ps cannot be read', lockHolderRuns({ procs: null, holders: new Set(), cwds, ages, stamps, now }).length, 0);
+  t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
+  t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
+  t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
 }
 process.exit(fails ? 1 : 0);

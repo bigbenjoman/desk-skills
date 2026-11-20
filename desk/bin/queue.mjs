@@ -9,21 +9,23 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
-import { handoffTarget, writeHandback } from './handoff.mjs';
+import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
+import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
 import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels } from './desk-env.mjs';
+  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -204,6 +206,10 @@ function passRunning() {
 // Read before the queue lock (the registry read can outlast another writer's wait for it), for the
 // ticket `requeue` names on the command line, as { key, session, park }.
 let exitedPark = null;
+// Read before the queue lock too, for the ticket `handback` names: { key, worktree, branch, recordedPr,
+// pr, fetchError }, its own open PR (handoff.mjs openPrOf), whether its head could be fetched, and the
+// queue fields that chose it, checked again under the lock.
+let prePr = null;
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
@@ -294,7 +300,29 @@ function handback(q, key, note) {
   // skip the rest of its build.
   const never = neverStep(String(t.park?.question ?? ''));
   if (never) throw new Error(`${key} parked mid-build on ${never}, which no worker is allowed, so a worker starting at self-review would skip the rest of its build. Finish it in an interactive session: /desk-ticket ${key}`);
-  const missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  let missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  // Its own open PR on another branch is where its work is: the worktree moves onto that branch, the
+  // queued one kept as a backup, unless the queued one holds commits the PR does not. The PR was read
+  // and fetched before the queue lock (prePr).
+  let repointed = '';
+  const pre = prePr?.key === key ? prePr : null;
+  if (pre && (pre.worktree !== t.worktree || pre.branch !== t.branch || pre.recordedPr !== ownPr(t))) {
+    throw new Error(`${key}'s worktree, branch or recorded PR changed while its PR was being read, so nothing was handed back: run this again`);
+  }
+  // With the queued branch in place, a PR none recorded is taken only when its head branch names the
+  // ticket: a title can mention another ticket's key.
+  const found = pre?.pr ?? null;
+  const pr = found && (found.recorded || missing || prNames(key)({ headRefName: found.head })) ? found : null;
+  const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr, fetchError: pre?.fetchError });
+  // A PR found only by naming the ticket does not outrank a queued branch that is in place with work of
+  // its own: that one is handed back as before.
+  const unrecordedOverWork = moved?.ahead && !missing && !pr.recorded;
+  if (moved?.why && !unrecordedOverWork) throw new Error(`${key}: ${moved.why}. Finish it in an interactive session: /desk-ticket ${key}`);
+  if (moved?.branch) {
+    repointed = `; its branch ${t.branch} re-pointed to its open PR #${pr.number}'s ${moved.branch}${moved.backup ? `, the old one kept as ${moved.backup}` : ''}`;
+    t.branch = moved.branch;
+    missing = handoffTarget({ worktree: t.worktree, branch: t.branch });
+  }
   if (missing) throw new Error(`${key}: ${missing}, so no worker can start it at Stage 4b. Finish it in an interactive session: /desk-ticket ${key}`);
   const at = new Date().toISOString();
   const was = { handoff_stage: t.handoff_stage, lane: t.lane };
@@ -303,11 +331,16 @@ function handback(q, key, note) {
   // park behind with the requeue, so it needs no change.
   Object.assign(t, { handoff_stage: '4b', ...(t.lane === 'C' ? { lane: 'B' } : {}) });
   let msg;
-  try { msg = requeue(q, key, { handedBack: true }); } catch (e) { Object.assign(t, was); throw e; }
+  try { msg = requeue(q, key, { handedBack: true }); } catch (e) {
+    Object.assign(t, was);
+    // The worktree has already moved, so the queue records where it now is even though nothing is requeued.
+    if (repointed) { save(q); e.message += `. Not requeued, but${repointed.slice(1)}, and the queue records it`; }
+    throw e;
+  }
   // After the requeue, so a refused one leaves an earlier handoff briefing as it was.
   const path = writeHandback(stateDir(), { key, lane: was.lane, note, at });
   saveAnswer(stateDir(), key, `The person did the step this ticket parked for an interactive session on, and handed it back: ${note}`, at);
-  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
+  return `${key} handed back to a worker that starts at Stage 4b (self-review), with the note in ${path} and its briefing${was.lane === 'C' ? '; lane C → B, since its session step is done' : ''}${repointed}; ${msg.replace(/; it starts again at Stage 4b, where its last session was handed off/, '')}`;
 }
 
 // queue.mjs stop: one running ticket's worker ended, what its worktree holds committed on its branch,
@@ -448,6 +481,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     }
   }
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
+  // Config §3b "Worker location", applied as plan-batch applies it to each ticket it seeds.
+  const location = workerLocation();
+  const placed = placement(r, location, {
+    feature: featureRole(q.feature === true ? { spine: q.spine, owners: q.owners } : null, key),
+    effort: location === 'cloud' && leverOn('effort'),
+  });
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
   // holds it behind the open ones once its own park is settled.
@@ -460,10 +499,12 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
+    ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
     added_at: new Date().toISOString(),
   };
   const merges = mergeAfter.length ? `; merges only once ${mergeAfter.join(', ')} ${mergeAfter.length === 1 ? 'is' : 'are'} Done` : '';
-  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}`;
+  const runs = location === 'cloud' ? `; ${runsText(placed)}` : '';
+  return `${park && holds.length ? `${park}; then held behind ${holds.join(', ')}` : holds.length ? `held behind ${holds.join(', ')}` : park ?? `triaged${unknowns ? `, ${unknowns} question(s) open` : ''}`}${merges}${runs}`;
 }
 
 // The holds each lane, size or design park in `q` with no held_by should carry beside its park: its
@@ -650,12 +691,20 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
+}
+// handback's gh read and git fetch can outlast another writer's wait for the queue lock, so they run first.
+if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
+  const t = readQueue(QUEUE).tickets?.[args[0]];
+  if (t?.worktree && existsSync(t.worktree)) {
+    const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
+    prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
+  }
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
@@ -961,9 +1010,8 @@ switch (cmd) {
     try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
     if (!key || !Array.isArray(ran) || !ran.length || ran.some((s) => typeof s?.step !== 'string') || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of {step, after}> <ISO time>');
     const t = ticket(q, key);
-    const same = (a, b) => a?.step === b.step && (a?.after ?? 'merge') === (b.after ?? 'merge');
-    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
-    applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
+    const { left, fields } = settleSteps(t.follow_on, ran, at);
+    if (fields.length) applySet(t, fields);
     save(q);
     console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded done${left.length ? `, ${left.length} kept` : ''}`);
     break;

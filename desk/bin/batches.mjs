@@ -42,6 +42,11 @@ export function batchHolding(key, slug = E.repoSlug()) {
 
 export const label = (b) => b.name ?? 'the standing batch';
 
+// A named slot `p` (E.batchPaths) left by an epic start discarded with its children's triage records
+// kept (batch.mjs discard --keep-triage): no queue, and a state folder holding only triage/. Nothing
+// runs there, so a discard or a move into the slot clears it.
+export const onlyKeptTriage = (p) => !existsSync(p.queue) && existsSync(p.state) && readdirSync(p.state).every((f) => f === 'triage');
+
 // The named slot a standing batch on a base moves to (move-batch.mjs): its epic's, or, where its queue
 // names no epic (its tickets come from several), one named after its base branch, with each run of
 // characters a batch name cannot hold made a '-'. -> {name, by: 'epic' | 'branch'} or {why}.
@@ -101,7 +106,7 @@ export function lastPromotion(tickets, mergedAt) {
 }
 
 // Whether a feature batch's last promotion PR has merged, so it takes no more tickets: as a pass
-// recorded it (pass.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
+// recorded it (pass/promotion-pr.mjs nextPromotion), or with every ticket merged before it. GitHub is asked only
 // when no pass has recorded it.
 export const lastPromotionRecorded = (q) => q?.promotion?.pr != null && (q.promotion.merged ?? []).some((m) => String(m.pr) === String(q.promotion.pr));
 function promoted(q) {

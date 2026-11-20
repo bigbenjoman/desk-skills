@@ -313,7 +313,8 @@ const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'def
 const holdRow = (at = RESET, name = 'b') => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [], login_dir: dirOf(name) });
 const SEEN = join(T, 'decider-login');
 const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
-writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
+// Written aside and renamed into place, so the caller polling for the file never reads it empty.
+writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}.tmp.$$" && mv "${SEEN}.tmp.$$" "${SEEN}"\n`, { mode: 0o755 });
 // In a child with the world's environment, from the repo: the decider's spawn environment (or `none`
 // when it started nothing), epic planning's headless environment, and call-login.mjs's answer for triage.
 const calling = (env) => {

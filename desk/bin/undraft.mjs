@@ -170,18 +170,26 @@ export function verdictAtHead(reviews, handle, head, clean, carry, scope = null)
 }
 
 // Whether a review verdict posted on `from` still holds at `head`: `head` is reached from `from` by
-// merges of the base alone, each a two-parent merge whose second parent is on `base` and whose tree
-// is exactly the one git merges the two to (git merge-tree), so it resolved no conflict and added
-// nothing, and the PR's own commits are the ones reviewed. git(args) runs git and returns { ok, out };
-// false whenever git cannot say.
+// merges of the base and empty commits alone. Each merge is a two-parent merge whose second parent is
+// on `base` and whose tree is exactly the one git merges the two to (git merge-tree), so it resolved
+// no conflict and added nothing; each empty commit has one parent and that parent's tree. The PR's own
+// commits are the ones reviewed. git(args) runs git and returns { ok, out }; false whenever git cannot
+// say.
 export function verdictCarries({ from, head, base, git }) {
-  const chain = baseMergeChain({ from, head, base, git });
-  return !!chain && chain.every(([c, ours, theirs]) => {
-    const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
-    const tree = git(['rev-parse', `${c}^{tree}`]);
-    return merged.ok && tree.ok && merged.out.split('\n')[0] === tree.out;
-  });
+  const chain = firstParentChain({ from, head, base, git });
+  return !!chain && chain.every((c) => (c.length === 2
+    ? isEmptyCommit(c, git)
+    : isBaseMerge(c, base, git) && cleanMerge(c, git)));
 }
+const treeOf = (c, git) => { const r = git(['rev-parse', `${c}^{tree}`]); return r.ok ? r.out : null; };
+// A one-parent commit with its parent's tree: it changes nothing.
+const isEmptyCommit = ([c, parent], git) => { const t = treeOf(c, git); return !!t && t === treeOf(parent, git); };
+// A merge whose tree is the one git merges its two parents to.
+const cleanMerge = ([c, ours, theirs], git) => {
+  const merged = git(['merge-tree', '--write-tree', '--no-messages', ours, theirs]);
+  const tree = treeOf(c, git);
+  return merged.ok && !!tree && merged.out.split('\n')[0] === tree;
+};
 
 // The first-parent chain from `from` down to `head`, newest first, as [commit, ours, theirs, …] each;
 // null when `head` does not descend from `from` that way, or whenever git cannot say.
@@ -196,12 +204,6 @@ function firstParentChain({ from, head, base, git }) {
 }
 // A two-parent merge whose second parent is on `base`.
 const isBaseMerge = ([, , theirs, ...more], base, git) => !!theirs && !more.length && git(['merge-base', '--is-ancestor', theirs, base]).ok;
-
-// That chain when every commit on it is a merge from the base; null otherwise.
-function baseMergeChain({ from, head, base, git }) {
-  const chain = firstParentChain({ from, head, base, git });
-  return chain && chain.every((c) => isBaseMerge(c, base, git)) ? chain : null;
-}
 
 // Whether a merge from the base, conflicts resolved or not, last moved `head` since `from`: the newest
 // commit on the chain is one. Commits of the PR's own before it (a fix try's worker's) do not matter:
@@ -349,7 +351,7 @@ export const reviewScope = ({ reuse, from, head, base, body, git }) => (reuse
 
 // Whether a review posted on `from` holds at `head`, as every carry reads it, so the pass and the merge
 // driver never disagree: with the review-reuse lever on (`reuse`), only while the files it rests on
-// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base alone
+// (from the review's `body`) are unchanged (restsOnCarries); off, across clean merges of the base and empty commits alone
 // (verdictCarries).
 export const reviewCarries = ({ reuse, from, head, base, body, git }) => (reuse
   ? restsOnCarries({ from, head, base, files: restsOn(body), git })
@@ -371,7 +373,7 @@ export function undraftComment(verdict, head, clean, carried = null, range = nul
     return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it is ${carriedTo(head, range)}.\n\n> \`${line}\``;
   }
   if (carried) {
-    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base.\n\n> \`${line}\``;
+    return `Out of draft: the ${what} posted on ${short(carried)} is clean under §4 Clean review verdict (\`${clean}\`), and it holds on this head (${short(head)}): every commit since is a clean merge of the base or an empty commit.\n\n> \`${line}\``;
   }
   return `Out of draft: the ${what} posted on this head (${short(head)}) is clean under §4 Clean review verdict (\`${clean}\`).\n\n> \`${line}\``;
 }
@@ -759,7 +761,8 @@ export function undraftCall(t, pr, cfg) {
   }
   // A wait on a check that will never finish is no wait: it is re-run, or put to the person.
   const stuck = () => stuckCall(gate, pr.checks, cfg, n);
-  if (gate.state === 'pending') return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  const running = () => stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  if (gate.state === 'pending') return running();
   // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
   // base and reopens the PR so it gets a run.
   if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
@@ -783,6 +786,12 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
+  // Past the reruns and builds, which start at once, checks still running are a wait, whatever is red so
+  // far: a gate that reads the others (a review or CI gate) is red until they finish, so a fix worker or
+  // the person gets the draft only once every check has finished. Only a check with an Actions run, which
+  // stuckCall can time out, holds it: a status or app check with no run could pend forever unseen.
+  const watched = latestPerCheck(pr.checks ?? []).some((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
+  if (red && watched) return running();
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));

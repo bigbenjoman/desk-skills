@@ -1,9 +1,9 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
-import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
+import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS } from './fixtures/pullbot-review.mjs';
 import { errorLinesIn } from '../desk/bin/evidence.mjs';
 let fails = 0;
@@ -714,6 +714,39 @@ t('DS-558 two review tries per head: tried twice here, it is the person\'s', ver
   + ' ' + verdictTry(tk({ fix_tries: [{ ...vt.fix }, { ...vt.fix }] }), stateRed, { required: ['tests'], stateChecks: STATE })?.call, 'requeue stuck');
 t('DS-422 AC4 a red approval check alone sends no worker', verdictTry(tk(), pr([ok('tests'), red('🔐 Review gate', '7')]), { required: ['tests'], stateChecks: STATE }), null);
 t('DS-422 a draft is undraft.mjs\'s, not this', verdictTry(tk(), { ...stateRed, isDraft: true }, { required: ['tests'], stateChecks: STATE }), null);
+
+// #737: a gate reading an outside reviewer's review (kind external) gets no desk review: it waits for that
+// reviewer at the head, then sends the reviewer's findings to a fix worker.
+const OLD_737 = 'c'.repeat(40);
+const EXT = [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }];
+const extRed = pr([ok('tests'), red('🔐 Review gate', '88')]);
+const bot = (oid, body, state = 'COMMENTED', id = 'R1') => ({ id, author: { login: 'agent-pullbot' }, body, state, commit: { oid } });
+const extPl = (reviews, threads = []) => ({ data: { repository: { pullRequest: { headRefOid: HEAD, reviews: { nodes: reviews }, reviewThreads: { nodes: threads } } } } });
+const thread = (id, review, body, resolved = false) => ({ id, isResolved: resolved, path: 'src/a.ts', line: 3, comments: { nodes: [{ author: { login: 'agent-pullbot' }, body, pullRequestReview: { id: review } }] } });
+const extCtx = (payload) => ({ required: ['tests'], stateChecks: EXT, external: (login) => externalReview(payload, login) });
+t('#737 no review of the bot\'s at the head: it waits, with no desk review posted', verdictTry(tk(), extRed, extCtx(extPl([bot(OLD_737, 'P0: old')])))?.call, 'wait');
+const ex737 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P0 (1): src/a.ts drops the row', 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P0 drops the row'), thread('T2', 'R1', 'fixed already', true)])));
+t('#737 its review at the head goes to a feedback fix try, not a review try', `${ex737?.call} ${ex737?.fix.kind}`, 'requeue feedback');
+t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review at the head: P0 (1)")}`, 'T1,body true');
+const extStuck = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '', 'APPROVED')])));
+t('#737 reviewed at the head with nothing to work, still red: the person\'s', extStuck?.call, 'stuck');
+t('#737 an external check\'s error line saying no verdict is at the head sends no review try', gateTry(tk(), pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['no review verdict is at the head'] }]), { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
+t('#737 externalReview reads no payload as null', externalReview({}, 'agent-pullbot'), null);
+// #925: whatever an external gate's text names (protected files, an approval, a missing review), it
+// waits for its reviewer: no protected-files try, and the wait says so.
+const protRed = pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['Approval required — 1 protected file(s): `supabase/migrations/1.sql`'] }]);
+t('#925 an external gate asking a protected-path approval gets no protected-files try', gateTry(tk(), protRed, { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
+t('#925 nor does a draft', draftGateTry(tk(), { ...protRed, isDraft: true }, { required: ['tests'], stateChecks: EXT }), null);
+t('#925 a non-external check asking the same still gets one', gateTry(tk(), protRed, { ...ctx({ stateChecks: [] }), base: 'main' })?.fix?.kind, 'protected');
+const w925 = verdictTry(tk(), protRed, extCtx(extPl([])));
+t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w925?.call} ${w925?.why}`, 'wait its "🔐 Review gate" check reads agent-pullbot\'s review, so it waits for agent-pullbot to review the head');
+t('#737 the try is marked for the outside reviewer', JSON.stringify(ex737?.fix.external), JSON.stringify({ login: 'agent-pullbot', check: '🔐 Review gate' }));
+t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk({ fix: ex737.fix })).includes("Post no desk review on this PR: agent-pullbot's next review of the head you push is what the check reads."), true);
+t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);
+t('#737 the thread reply says the outside reviewer reviews next', feedbackReply(ex737.fix, 'd'.repeat(40)).includes('agent-pullbot reviews that head next'), true);
+t('#737 a plain feedback try still asks for a desk review', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: feedbackFix(tk(), { pr: 1, head: HEAD, decision: 'CHANGES_REQUESTED', threads: [{ id: 'T', text: 'x' }] }).fix }))), true);
+t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
+t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);
 
 // DS-433 AC2: a green PR the merge driver holds for want of a clean review at its head goes back for review.
@@ -1018,4 +1051,8 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
 }
 
+// A requeued fix try's row reads where its worker is: it starts at the stage the try begins at, and
+// its task asks for the stage markers it prints from there.
+t('a fix try starts at Stage 3, a review try at 4b, a capture try at 5', ['checks', 'review', 'protected', 'rereview', 'capture'].map((kind) => fixStartStage({ kind })).join(' '), '3/9 3/9 3/9 4b/9 5/9');
+t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as you reach each stage you run, starting with 4b\/9/.test(fixTask({ key: 'T-1', fix: { kind: 'rereview', try: 1, of: 2, pr: 7, head: 'a'.repeat(40), what: 'x' } })), true);
 process.exit(fails ? 1 : 0);

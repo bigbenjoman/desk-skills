@@ -43,10 +43,14 @@ const h = (s) => createHash('sha256').update(String(s)).digest('hex').slice(0, 1
 const readJson = (path, fallback) => { try { return JSON.parse(readFileSync(path, 'utf8')); } catch { return fallback; } };
 
 // What a WAITING ON YOU line waits on, for its id: its ticket, its class (`DRAFT`, `STUCK`, `READY TO
-// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. A line
-// with no class is keyed on all of it.
+// MERGE`) and the PR it names, so a line whose check states or reason reword keeps its id. The batch's
+// base sync line is keyed on its label alone, as its cause and commit count change pass to pass. Any
+// other line with no class is keyed on all of it.
+const BASE_SYNC = 'base sync';
+export const baseSyncLine = (line) => String(line).split(':')[0] === BASE_SYNC;
 function waitKey(line) {
   const s = String(line);
+  if (baseSyncLine(s)) return BASE_SYNC;
   const m = /^([^:]*): ([A-Z][A-Z ]*[A-Z]) — /.exec(s);
   if (!m) return s;
   const pr = /PR #(\d+)/.exec(s.slice(m[0].length));
@@ -78,7 +82,9 @@ export function samePark(a, b, ticket = '') {
 // last requeue cleared, whether this one asks the same thing, and the clears-when it had when listed.
 // A triaged ticket's line carries its open questions word for word (openQuestionsOf). A park's `note`
 // (its PR conflicting with the base, say) goes in its text, never its id, so the item stays one item.
-export function deciderItems(v, q = {}, state = null) {
+// The base sync line carries `baseSha`, origin's head of the batch base, as its `base`: one handed on
+// is dropped once that moves (pruneHanded), so a new base gets one new session.
+export function deciderItems(v, q = {}, state = null, { baseSha = null } = {}) {
   const tickets = q.tickets ?? {};
   const parked = (Array.isArray(v?.parked) ? v.parked : []).map((p) => {
     const prev = tickets[p.key]?.prev_park ?? null;
@@ -93,7 +99,8 @@ export function deciderItems(v, q = {}, state = null) {
   });
   const waiting = (Array.isArray(v?.waiting) ? v.waiting : []).map((line) => {
     const label = String(line).split(':')[0];
-    const item = { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null };
+    const item = { id: `wait-${h(waitKey(line))}`, ticket: label, kind: tickets[label] ? 'waiting' : 'batch', text: String(line), lane: tickets[label]?.lane ?? null, state: tickets[label]?.state ?? null,
+      ...(baseSyncLine(line) && baseSha ? { base: baseSha } : {}) };
     const questions = item.state === 'triaged' ? openQuestionsOf(state, label, tickets[label]) : [];
     return questions.length ? { ...item, questions } : item;
   });
@@ -199,7 +206,7 @@ export function handItems(state, handed, now = new Date()) {
   const added = [];
   for (const h of handed) {
     if (r[h.item.id] && !answered(state, r[h.item.id])) continue;
-    r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString() };
+    r[h.item.id] = { id: h.item.id, ticket: h.item.ticket, kind: h.item.kind, text: h.item.text, why: h.why, at: now.toISOString(), ...(h.item.base ? { base: h.item.base } : {}) };
     added.push(h);
   }
   if (added.length) writeHanded(state, r);
@@ -214,14 +221,19 @@ export function dropHanded(state, ids) {
 }
 
 // Drops every handed item the latest pass no longer lists: it was settled some other way. One it still
-// lists keeps its time and takes the line's latest wording. The archive check's own items (kind
-// `archive`, batch.mjs) are no pass's, and that check drops them.
+// lists keeps its time and takes the line's latest wording, unless it was handed on at another base
+// than the item now names, which drops it too. The archive check's own items (kind `archive`,
+// batch.mjs) are no pass's, and that check drops them.
 export function pruneHanded(state, items) {
   const r = readHanded(state);
-  const live = new Map(items.map((i) => [i.id, i.text]));
-  const kept = Object.fromEntries(Object.entries(r).filter(([id, e]) => live.has(id) || e.kind === 'archive'));
-  const reworded = Object.entries(kept).filter(([id, e]) => live.has(id) && e.text !== live.get(id));
-  for (const [id, e] of reworded) e.text = live.get(id);
+  const live = new Map(items.map((i) => [i.id, i]));
+  const moved = (e, i) => !!(e.base && i.base && e.base !== i.base);
+  const kept = Object.fromEntries(Object.entries(r).filter(([id, e]) => (live.has(id) && !moved(e, live.get(id))) || e.kind === 'archive'));
+  const reworded = Object.entries(kept).filter(([id, e]) => live.has(id) && (e.text !== live.get(id).text || (!e.base && live.get(id).base)));
+  for (const [id, e] of reworded) {
+    e.text = live.get(id).text;
+    if (live.get(id).base) e.base = live.get(id).base;
+  }
   if (Object.keys(kept).length !== Object.keys(r).length || reworded.length) writeHanded(state, kept);
   return kept;
 }
@@ -338,29 +350,37 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
 // { wait }, starting nothing, when the subscription is at its limit, no login here is signed in to it,
 // or the pass's last health check found the API refusing its login (health.mjs refusedLogin), which
 // that check's own item names to the person.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env = process.env, claude = 'claude', now = new Date() }) {
+  const run = startHeadless({ state, kind: 'decider', id: now.toISOString().replace(/[:.]/g, '-'), effort: DECIDER_EFFORT, addDirs: [state], cwd, env, claude, now,
+    settings: deciderSettings({ bin, state, judgement }), prompt: deciderPrompt({ slug, report, items, rules, bin, state, webRead, targets, judgement }) });
+  return run.wait ? run : { ...run, items, targets };
+}
+
+// Starts one short headless session detached, on the repo's subscription (call-login.mjs), its settings,
+// prompt and `--output-format json` result written to <state>/<kind>/<id>.*. -> { id, pid, started, out,
+// login }, or { wait }, starting nothing, when no login can take it now or the pass's last health check
+// found the API refusing its login (health.mjs refusedLogin).
+export function startHeadless({ state, kind, id, settings, prompt, addDirs, effort, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
   if (wait) return { wait };
   const refused = refusedLogin(state, login, login ? loginOf(callerEnv.CLAUDE_CONFIG_DIR) : null);
   if (refused) return { wait: `its login${login ? ` ${login.name}` : ''} failed its health check, ${refused}` };
-  const dir = join(state, 'decider');
+  const dir = join(state, kind);
   mkdirSync(dir, { recursive: true });
-  const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
-  const settings = join(dir, `${id}.settings.json`);
-  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state, judgement }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, state, webRead, targets, judgement });
+  const file = join(dir, `${id}.settings.json`);
+  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');
   const child = spawn(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-    '--permission-mode', 'dontAsk', '--settings', settings, '--add-dir', state, '--effort', DECIDER_EFFORT], {
+    '--permission-mode', 'dontAsk', '--settings', file, ...addDirs.flatMap((d) => ['--add-dir', d]), '--effort', effort], {
     // One short session: the 5-minute prompt cache costs less to write than the 1-hour one.
     cwd, env: { ...env, FORCE_PROMPT_CACHING_5M: '1' }, detached: true, stdio: ['ignore', fd, fd],
   });
   closeSync(fd);
   child.on('error', () => {});
   child.unref();
-  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items, targets, login: login?.name ?? null };
+  return { id, pid: child.pid ?? null, started: now.toISOString(), out, login: login?.name ?? null };
 }
 
 // The payload on the last `mark` line of a headless session's `--output-format json` text:
@@ -375,14 +395,21 @@ export function markedResult(text, mark) {
   try { return { cost, payload: JSON.parse(line.trimStart().slice(mark.length)) }; } catch { return { cost, error: `an unreadable ${mark} line` }; }
 }
 
+// A headless session's marked payload from its output file `out`: {cost, payload}, or {cost, error} when
+// there is none to read, with `limit: true` when the usage limit stopped it.
+export function readMarked(out, mark) {
+  let text = '';
+  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
+  const r = markedResult(text, mark);
+  if (r.error && usageLimit(text).last?.kind === 'limit') return { cost: r.cost, error: 'stopped at the usage limit', limit: true };
+  return r;
+}
+
 // The session's answer from its JSON result: {cost, settled: {id: did}, handed: {id: why}} or
 // {cost, error} when there is no result line to read, with `limit: true` when the usage limit refused it.
 export function readResult(out) {
-  let text = '';
-  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
-  const { cost, error, payload: r } = markedResult(text, RESULT_MARK);
-  if (error && usageLimit(text).last?.kind === 'limit') return { cost, error: 'stopped at the usage limit', limit: true };
-  if (error) return { cost, error };
+  const { cost, error, limit, payload: r } = readMarked(out, RESULT_MARK);
+  if (error) return { cost, error, ...(limit ? { limit } : {}) };
   const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
   return { cost, settled: pairs(r.settled, 'did'), handed: pairs(r.handed, 'why') };
 }

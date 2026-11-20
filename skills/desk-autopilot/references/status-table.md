@@ -77,3 +77,7 @@ of a pass says what its preflight cost too. Each row also gives
 the worker's first-turn input (the prompt each run started on), and under it one line per stage
 with the input and output tokens from that stage marker to the next; tokens before the first marker
 are `start-up`. A worker whose log has no usage figures reads `unknown` there too.
+
+The table counts every ticket of this batch, those the pass has already moved to the queue's archive
+included, whose logs stay in the state directory. Where no idle pass has printed it (new tickets
+kept the batch from going idle), print it for the report with `node ~/.claude/desk/bin/worker-cost.mjs`.

@@ -160,6 +160,7 @@ const errorLines = (c) => checkLines(c).filter((l) => !approvalFiles(l));
 // A red §4 State check, as what clears it: it reads the PR's state, not its code, so no fix try turns it green.
 const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
+  : kind === 'external' ? 'a §4 State check, which reads an outside reviewer\'s review at the head and not the code, so only that reviewer\'s review of a new head turns it green'
   : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
 const withLines = (mine, checks) => {
   const latest = latestPerCheck(checks ?? []);
@@ -611,7 +612,7 @@ export function personReviewFix(t, { pr, head, why }) {
 // (resolvable). Out of tries, or tried at this head already, it is the person's, naming each thread.
 // threads: [{ id, text }], text as review-threads.mjs threadLine names it.
 const threadCount = (n) => `${n} unresolved thread${n === 1 ? '' : 's'}`;
-export function feedbackFix(t, { pr, head, decision, threads }) {
+export function feedbackFix(t, { pr, head, decision, threads, external = null }) {
   const left = threads ?? [];
   const changes = decision === 'CHANGES_REQUESTED';
   if (!head || (!left.length && !changes)) return null;
@@ -625,7 +626,7 @@ export function feedbackFix(t, { pr, head, decision, threads }) {
     const named = left.map((x) => x.text).join('; ');
     return { call: 'stuck', why: `review feedback still open after ${tries(triesMade(done))}: ${what}${named ? ` — ${named}` : ''}` };
   }
-  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text }) => ({ id, text })) });
+  return nextTry(done, pr, head, { kind: 'feedback', what: `review feedback: ${what}`, decision: decision ?? null, threads: left.map(({ id, text }) => ({ id, text })), ...(external ? { external } : {}) });
 }
 // The threads a finished feedback try quoted that the pass replies on and resolves: its worker
 // finished, did not park, and pushed past the try's head. [] otherwise.
@@ -635,7 +636,7 @@ export function resolvable(t, head) {
   return (f.threads ?? []).filter((x) => x.id && !(f.resolved ?? []).includes(x.id));
 }
 // The reply the pass posts on a thread a feedback try worked, before resolving it.
-export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of ${f.of} at ${String(head).slice(0, 12)}: the worker's reply, naming this thread, is on the PR's conversation, and a fresh desk-review is posted on that head. Reopen this thread if it still stands.`;
+export const feedbackReply = (f, head) => `Worked by desk's fix try ${f.try} of ${f.of} at ${String(head).slice(0, 12)}: the worker's reply, naming this thread, is on the PR's conversation, and ${f.external ? `${f.external.login} reviews that head next` : 'a fresh desk-review is posted on that head'}. Reopen this thread if it still stands.`;
 
 // A draft with no review verdict the pass can read at its head (undraft.mjs `review`: none posted, one
 // it cannot read, or one for an older head) goes to a review worker, which reviews the head and posts
@@ -676,6 +677,8 @@ export function verdictTry(t, s, ctx) {
   if (gate.pending.length) return null;
   const red = stateFailing(gate.failing, ctx.stateChecks).filter((f) => f.kind === 'verdict');
   const asReady = (c) => (c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c);
+  const ext = externalTry(t, s, ctx, gate);
+  if (ext !== undefined) return ext;
   if (red.length) {
     if (ctx.settled) return null;
     const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
@@ -684,11 +687,41 @@ export function verdictTry(t, s, ctx) {
   // The driver reaches its hold only on a head it would otherwise merge: green, or red only on a waiver.
   const failing = [...new Set(gate.failing.map((f) => f.name))];
   if (gate.state !== 'pass' && !(failing.length && ctx.waived?.(failing))) return null;
+  return driverReviewTry(t, s, ctx);
+}
+
+// A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
+// reviewer's to clear, so desk posts no review for it, and its review feedback goes ahead of desk's own
+// feedback route (feedbackFix's merge-feedback-first, whose reviewDecision stays changes-requested
+// until that reviewer reviews again). With no review of theirs at the head it waits ({ call: 'wait' },
+// which the pass reports; null while a check is still pending); with one,
+// its open threads and its review's text go to a fix worker as review feedback (`external` on the try:
+// the worker posts no desk review, and the PR waits for that reviewer's next review). undefined where
+// no such check is red. ctx: { required, advisory, stateChecks, external(login) (review-threads.mjs
+// externalReview) }; gate: evaluateGate's read of s, where the caller has it.
+export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] })) {
+  const reds = stateFailing(gate.failing, ctx.stateChecks).filter((x) => x.kind === 'external');
+  if (!reds.length) return undefined;
+  if (gate.pending.length) return null;
+  const f = reds[0];
+  const r = ctx.external?.(f.login);
+  // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
+  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
+  const body = r.body ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').slice(0, 500)}` }] : [];
+  const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
+  return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
+}
+
+// The try a ready PR's head needs where the merge driver would hold it for want of a clean verdict,
+// on what ctx.atHead() reads (verdictTry): a review worker, out of draft and `held`, for none or a stale
+// one, and the person for a review at the head that no fix worker took. null where the head's verdict is
+// clean or nothing waits on one. ctx: { atHead, base, baseMerge }.
+export function driverReviewTry(t, s, ctx) {
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };
-  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge, targeted: at.targeted }));
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
+  const c = reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge, targeted: at.targeted });
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true, held: true } } : c;
 }
 
 // A ready PR held by a red check whose error lines (pr_status checks[].errors, which the pass reads)
@@ -706,10 +739,11 @@ export function gateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const gate = readGate(s, ctx);
   if (!gate) return null;
-  const lines = errorLinesOf(s, gate);
+  const lines = errorLinesOf(s, gate, ctx);
   const prot = protectedTry(t, s, lines, false);
   if (prot) return prot;
-  const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict').map((x) => x.name));
+  // An external reviewer's check is never one a desk review clears, whatever its error line says.
+  const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict' || x.kind === 'external').map((x) => x.name));
   const stale = lines.filter((x) => !verdictChecks.has(x.name) && staleVerdict(x.line));
   if (!stale.length) return null;
   // Another red check a worker can fix is fixCall's: its fix worker reviews the head it pushes, so a
@@ -727,9 +761,12 @@ function readGate(s, ctx) {
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   return gate.state === 'fail' && !gate.pending.length ? gate : null;
 }
-// The error lines of the gate's failing checks, each with its check's name.
-const errorLinesOf = (s, gate) => {
-  const failing = new Set(gate.failing.map((f) => f.name));
+// The error lines of the gate's failing checks, each with its check's name. A §4 State check of kind
+// external is left out: what it asks (a protected-path approval, a review) its outside reviewer gives,
+// so no protected-files or review try is sent for it (externalTry waits for that reviewer instead).
+const errorLinesOf = (s, gate, ctx = {}) => {
+  const external = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'external').map((x) => x.name));
+  const failing = new Set(gate.failing.map((f) => f.name).filter((n) => !external.has(n)));
   return (s.checks ?? []).filter((c) => failing.has(c.name)).flatMap((c) => (c.errors ?? []).map((line) => ({ name: c.name, line })));
 };
 // The protected-files try for the files these error lines ask an approval for, where one is left
@@ -750,7 +787,7 @@ function protectedTry(t, s, lines, draft) {
 export function draftGateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== true || !s.head) return null;
   const gate = readGate(s, ctx);
-  return gate ? protectedTry(t, s, errorLinesOf(s, gate), true) : null;
+  return gate ? protectedTry(t, s, errorLinesOf(s, gate, ctx), true) : null;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
@@ -978,7 +1015,9 @@ export function fixBrief(t, review = null) {
       mergedTreeLine(f),
       'Do not run the check build yourself: once you push, the pass runs it at your new head and re-runs the check.');
   } else if (f.kind === 'feedback') {
-    lines.push(`Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
+    lines.push(f.external
+      ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads.`
+      : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
     if (f.threads?.length) {
       lines.push('Its unresolved review threads:', '');
       for (const x of f.threads) lines.push(`- ${x.text}`);
@@ -1061,7 +1100,16 @@ function targetedBrief(x) {
 const findingKinds = (findings) => (findings?.some((x) => x.sev === 'P2') ? 'P2' : 'P0 and P1');
 
 // The prompt a fix worker starts with (spawn-worker.sh's AUTOPILOT_TASK). `review` as reviewStep reads it.
+// The stage a fix try's worker starts at, so a requeued worker's row reads where it is from its spawn
+// rather than 0/9: a review try reviews (4b), a capture try takes screenshots (5), and every other try
+// changes the branch (3), then verifies, self-reviews and pushes.
+export const fixStartStage = (fix) => (fix?.kind === 'rereview' ? '4b/9' : fix?.kind === 'capture' ? '5/9' : '3/9');
+const stageMarkers = (fix) => ` Print AUTOPILOT_STAGE as you reach each stage you run, starting with ${fixStartStage(fix)}, as the contract's Reporting section says: a worker that prints none reads as stuck at its start.`;
+// The task a fix try's worker carries out (fixTaskText), with the stage markers it prints.
 export function fixTask(t, review = null) {
+  return `${fixTaskText(t, review)}${stageMarkers(t.fix)}`;
+}
+function fixTaskText(t, review = null) {
   const f = t.fix;
   const afterReview = `, then ${reviewStep(review, 'the new head')}`;
   if (f.kind === 'renames') {
@@ -1093,7 +1141,8 @@ export function fixTask(t, review = null) {
   const gaps = f.kind === 'gaps', instruction = f.kind === 'instruction';
   // A draft's red checks or conflict are fixed in draft and reviewed again, as a review fix is, and so
   // is a ready PR's review feedback or review, and whatever the person sent back.
-  const reviewed = f.kind === 'review' || f.kind === 'feedback' || personCall(f) || f.draft === true;
+  // An outside reviewer's feedback is reviewed again by that reviewer, never by desk.
+  const reviewed = f.kind === 'review' || (f.kind === 'feedback' && !f.external) || personCall(f) || f.draft === true;
   const inDraft = reviewed && !f.ready && f.kind !== 'feedback';
   const how = f.kind === 'conflict' && f.check
     ? `merge origin/${f.base} into your branch (git merge, never a rebase or a force push) and change your branch's own side, renumbering its migration after ${f.base}'s head, until every item \`desk-env cmds merged-tree-check-cmd\` prints passes on the merged tree: this task is your authority to change it`
