@@ -8,7 +8,8 @@
 // `utilization` (0–1) and `resetsAt` (epoch seconds). The window resets at `resetsAt`, read rather
 // than assumed. A session writes one at its start and seldom another, so a reading is about as old
 // as the newest worker start; the probe call (usage-probe.mjs) fills the gaps.
-import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync, writeFileSync, renameSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { dirname, join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { resetText } from './usage-limit.mjs';
@@ -159,9 +160,8 @@ function saveDiskCache(now) {
   if (!diskDirty) return;
   diskDirty = false;
   const keep = Object.fromEntries(Object.entries(disk).filter(([p, r]) => now - r?.mtimeMs <= WEEK_MS && existsSync(p)));
-  const tmp = `${diskPath}.${process.pid}.tmp`;
   if (!existsSync(dirname(diskPath))) return;
-  try { writeFileSync(tmp, JSON.stringify(keep)); renameSync(tmp, diskPath); } catch { /* read again next time */ }
+  try { writeJsonAtomic(diskPath, keep); } catch { /* read again next time */ }
 }
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a

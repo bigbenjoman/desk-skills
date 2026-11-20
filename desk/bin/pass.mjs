@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { tryLockFile, filePid } from './dir-lock.mjs';
+import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
 import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
@@ -229,17 +229,26 @@ try {
 
 // A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
 const PR_READS = prReads();
+// `fresh: true` on a read that decides a write: it is always made, as the PR may have changed since
+// outside the pass (a background base gate, the merge driver, a person), and what it reads is kept.
+// Counts the git calls that may move a ref, so what was read from one (treeOf) is read again after.
+let refsMoved = 0;
+const REF_MOVES = new Set(['fetch', 'push', 'pull', 'merge', 'reset', 'update-ref', 'rebase']);
+const beforeRun = (cmd, args, fresh) => {
+  if (cmd === 'git' && REF_MOVES.has(args[args[0] === '-C' ? 2 : 0])) refsMoved++;
+  return fresh ? undefined : PR_READS.before(cmd, args);
+};
 // A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
-const sh = (cmd, args, opts = {}) => {
-  const kept = PR_READS.before(cmd, args);
+const sh = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
   if (kept !== undefined) return kept;
   try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
-const shOut = (cmd, args, opts = {}) => {
-  const kept = PR_READS.before(cmd, args);
+const shOut = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
   if (kept !== undefined) return { ok: true, out: kept };
   try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
@@ -1111,8 +1120,8 @@ const cached = (key, read) => {
   if (c.e) throw c.e;
   return c.v;
 };
-const readOrThrow = (what, cmd, args) => {
-  const r = shOut(cmd, args);
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
   if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
   return r.out;
 };
@@ -1831,12 +1840,14 @@ const linesOfBlob = (sha) => {
     // Only blobs still on a listed ref are kept, so the file holds about one entry per counted file.
     const live = new Set([...trees.values()].flatMap((t) => (t ? [...t.values()] : [])));
     const keep = Object.fromEntries(Object.entries(blobLines).filter(([s]) => live.has(s)));
-    const tmp = `${LINE_COUNTS_FILE}.${process.pid}.tmp`;
-    try { writeFileSync(tmp, JSON.stringify(keep)); renameSync(tmp, LINE_COUNTS_FILE); } catch { /* counted again next pass */ }
+    try { writeJsonAtomic(LINE_COUNTS_FILE, keep); } catch { /* counted again next pass */ }
   }
   return n;
 };
+// A fetch, push or sync since the trees were listed may have moved the base: they are listed again.
+let treesAt = 0;
 const linesOnBase = (f) => {
+  if (treesAt !== refsMoved) { treesAt = refsMoved; trees.clear(); lineCounts.clear(); }
   if (!lineCounts.has(f)) {
     const base = E.batchBase() ?? DEFAULT_BRANCH;
     let n = 0;
@@ -2116,8 +2127,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'usage-hold': (a) => { USAGE_HOLD = a.hold; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
-      // A base push moves its PRs' merge state, and syncBase pushes without sh or shOut.
-      sync: (a) => (PR_READS.clear(), syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() })),
+      // A base push moves its PRs' merge state and the base's refs, and syncBase runs git without sh or shOut.
+      sync: (a) => (PR_READS.clear(), refsMoved++, syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() })),
       'drop-ref': (a) => { sh('git', ['-C', MAIN, 'update-ref', '-d', a.ref], quiet); },
       'note-conflict': (a) => noteConflict(a.what, a.entry),
       fetch: () => { fetchBase({ tolerant: true }); },
@@ -2936,7 +2947,7 @@ function fixTryStale(t) {
   const headBound = Boolean(f.head) && !ran && redraftable(f);
   const what = `${tryLabel(f)} on PR #${f.pr}`;
   let v = null;
-  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
+  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'], { fresh: true })); } catch (e) {
     report.waiting.push(`${t.key}: its ${what} was not ${verb}: the PR could not be read to check it is still open${headBound ? ' at the try\'s head' : ''} (${e.message}). The next pass reads it again`);
     return true;
   }
@@ -4530,7 +4541,7 @@ if (featureBase) {
         return sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
       },
       'pr-draft': (a) => {
-        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, fresh: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
       },
       'undo-ready': (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO, '--undo']),
       flush: () => flushQueue(),
