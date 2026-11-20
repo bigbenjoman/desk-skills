@@ -76,8 +76,8 @@ const MEM = /\b((?:vmmem|avail|rss)=)[0-9.]+[KMGT]?i?B?|\b[0-9.]+[KMGT]i?B?(?= a
 const PID = /\b(pid:? |"pid":\s*)\d+/g;
 const SLUG = /\b(local__[\w.-]*?)-[0-9a-f]{8}\b/g;
 // A port the pass took from what was free on the machine when it ran ("port=47704", "port 47704"),
-// named per run as a SHA is (renamer).
-const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)(\d{2,5})\b/g;
+// named per run as a SHA is (renamer), and like a SHA not named when the pass cut it short.
+const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)(\d{2,5})\b(?!…)/g;
 // git words one refused fetch differently, depending on which side of the connection reports it first.
 const UPLOAD_PACK = /\bfatal: (?:remote error: |git )?upload-pack: /g;
 
