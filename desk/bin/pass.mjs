@@ -896,8 +896,7 @@ const ADVANCE_HANDLERS = {
   'exit-code': (a, s) => exitCodeOf(a.key, s.t.session_id),
   uncommitted: (a, s) => {
     if (!s.t.worktree || !existsSync(s.t.worktree)) return null;
-    const st = shOut('git', ['-C', s.t.worktree, 'status', '--porcelain']);
-    return st.ok ? st.out.split('\n').filter((l) => l.trim()).length : null;
+    try { return uncommitted(s.t.worktree).length; } catch { return null; }
   },
   fail: (a) => markFailed(a.key, a.why, { tail: a.tail }),
 };

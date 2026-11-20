@@ -1,7 +1,7 @@
 // The pure helpers more than one phase of a pass uses, and the snapshot every phase starts from. Each
 // takes what it reads as arguments: none starts a process, calls git, gh or Jira, or writes the queue.
 // A helper that does any of those stays in pass.mjs as an action handler.
-import { isNone } from '../desk-env.mjs';
+import { isNone, CONFIG_ROWS } from '../desk-env.mjs';
 import { resetText, limitName } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
@@ -137,7 +137,7 @@ export const fixTryQuote = (f) => (f.kind === 'review' ? { ...(f.findings?.lengt
 // What a session stopped at the per-worker budget gets on top of that budget, once, to commit, push
 // and finish its stage (resume=budget).
 export const BUDGET_RESUME_USD = 5;
-export const WORKER_BUDGET_ROW = 'config §3b "Autopilot per-worker budget (USD)"';
+export const WORKER_BUDGET_ROW = `config §${CONFIG_ROWS['worker-budget'].section} "${CONFIG_ROWS['worker-budget'].row}"`;
 // The stages a session hands off to, in stage order: Object.keys lists an integer-like key (7) before '4b'.
 export const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
 export const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
