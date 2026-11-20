@@ -40,8 +40,9 @@ cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 EOF
 echo "RECOVERY RULES: a lane C or D park is never requeued" > "$T/skills/desk-autopilot/references/orchestrator-recovery.md"
 
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs installed.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 cat > "$T/bin/pass.mjs" <<EOF
 import { readFileSync } from 'node:fs';
 const v = JSON.parse(readFileSync('$T/verdict.json', 'utf8'));
@@ -50,6 +51,7 @@ process.exitCode = v.code;
 EOF
 echo "console.log(JSON.stringify({ status: 'not_due', push: null }));" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The fake claude: its arguments one per line in claude.args.<n>, then whatever $T/claude.mode says:
 # requeue <KEY> (un-park it and say so), hand (hand every item on), hang, or none (no result line).
 cat > "$T/fakes/claude" <<EOF
@@ -533,7 +535,6 @@ console.log(readFileSync('$T/cache.seen', 'utf8'), JSON.stringify(env) === befor
 check "DS-649 AC2: the decider runs with FORCE_PROMPT_CACHING_5M=1, the caller's env unchanged" '[ "$out" = "1 true" ]'
 
 # ---- DS-563 AC3: a clears-when no form read goes to the decider to restate, and to the person only as none ----
-ln -s "$B/queue.mjs" "$T/bin/queue.mjs"
 cw(){ node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]?.park?.clears_when?.kind)' "$DESK_QUEUE" "$1"; }
 unpark(){ queue "{\"$1\":{\"key\":\"$1\",\"state\":\"parked\",\"lane\":\"A\",\"park\":{\"question\":\"$2\",\"since\":\"2026-11-01T09:00:00Z\",\"clears_when\":{\"kind\":\"unreadable\",\"text\":\"KAN-1086s fix PR is merged to main\",\"why\":\"x\"}}}}"; verdict "$(parked "$1" "$2")"; }
 mark; rm -f "$T/state/handed.json"; echo "hand" > "$T/claude.mode"
