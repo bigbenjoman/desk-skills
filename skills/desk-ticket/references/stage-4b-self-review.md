@@ -60,6 +60,10 @@ mid-round, even in a file the PR did not touch, so the review attests a tree nob
 `git status --porcelain` after every round; a dirty tree is an aborted round: save the stray diff,
 restore, re-run, and say in the review that a round was discarded.
 
+This ticket's own resume file is not a stray edit. Read the tree file by file and leave it out, as
+`/desk-review` does: `git status --porcelain --untracked-files=all | grep -vE
+'^\?\? \.claude/desk-ticket-[^/]+\.json$'` printing nothing is a clean round.
+
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
 finder can find something in. The branch has been read whole once by round 2, so from round 2 a
 round reads only the fix range (the commits since the previous round's reviewed SHA, which goes in

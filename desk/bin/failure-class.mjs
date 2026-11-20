@@ -110,3 +110,11 @@ export function baseSplit(failing, head, held, read) {
   const record = checks.length || cleared.length ? { class: 'base red', head, merge_base: at?.merge_base ?? read.mergeBase(), checks, cleared, ...(late.length ? { latest: late } : {}) } : null;
   return { red, latest, unknown, mine, record };
 }
+
+// The base red record a fix call leaves on its ticket (`c.base_red`, null to clear): it keeps the pass its
+// hold began at (`since`, `at` for one new), so the person's base red item is aged from there, and one
+// after a cleared hold (no checks left) begins anew. `held`: the call holds the PR on it, with no fix try.
+export function keptHold(was, c, at) {
+  if (!c.base_red) return c.base_red ?? null;
+  return { ...c.base_red, since: (was?.checks?.length ? was.since : null) ?? at, held: c.call === 'held' };
+}

@@ -60,7 +60,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -103,7 +103,7 @@ export function logMarkers(h, t) {
 // One running ticket's turn: its actions, in the order the pass carries them out.
 export function* decideAdvance(s) {
   const { t, log, registry } = s;
-  if (t.location === 'cloud' && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
+  if (runsInCloud(t) && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
   if (!log) return;
   const { h } = log;
   const live = registry.read && !!t.session_id && registry.liveSids.has(t.session_id);

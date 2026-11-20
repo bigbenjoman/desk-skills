@@ -50,6 +50,17 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
+**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
+channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
+date names it>`: their window then starts where that check-out stopped, the evening before
+included, so nothing posted between it and midnight drops out, and their headers say from when. One
+written the next morning for its own day covered only that day, so the window starts at midnight.
+A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
+read again for its state now (step 3).
+Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
+day and say so. Say the window in your one line.
+
 ## 2. Gather
 
 Run the three collectors in one Bash call, from inside the repo (they use its config to decide
@@ -119,6 +130,17 @@ repo) and PR number first, then by topic. One item per piece of work, not one pe
 headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
 and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+- **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
+  for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
+  join it to is left out.
+- **A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it
+  that day (a status move, a comment, a commit), and the item says what that change was. A session
+  alone is not a change.
+- **To have the batch named**, set `DESK_CHECKOUT_NAME_BATCH=1` in your shell or the `env` block of
+  `~/.claude/settings.json` (`printenv DESK_CHECKOUT_NAME_BATCH` reads it). Then one line after
+  the substantive work names the items a batch built by key, e.g. "Built by an autopilot batch:
+  ABC-12, ABC-14.", and the items themselves still read as above. Unset, or any other value, no
+  such line.
 
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR
@@ -130,7 +152,15 @@ For each item, settle:
   open PR that is only an approval gate (it is not one of the substantive §4 Required checks, or
   §4 Branch protection says it waits on a reviewer) means it's waiting on a human approval. If the
   post is written the morning after, check what moved overnight: a PR merged or a deploy gone
-  green since the collectors' day belongs in the item's state.
+  green since the collectors' day belongs in the item's state. **Read each PR's state again as you
+  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`):
+  the collectors ran earlier, and a PR undrafted, approved or merged since is described as it is now.
+  That read wins over the collector's: `MERGED` is `(merged)`, an open PR no longer a draft is
+  `(in review)` (or waiting on the approval its review decision shows), and only `isDraft` true is
+  a draft. If that read fails, use the collector's state and name the PR under **Check before
+  posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
+  `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
+  state stays as its source gave it.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:
@@ -153,8 +183,9 @@ Then sort:
 - Anything the collectors mark **NOT work for this check-out** or **Other desk repo**. List it
   under the draft so the user can pull one back in.
 - Messages Claude drafted for the user to send (a Slack reply, an update to one of the §4 Slack
-  channels). If Slack can't confirm they posted one, don't present its content as announced. Use
-  the facts, and put "was the <channel> update sent?" under Check before posting.
+  channels), unless they posted it. Read the channel or thread after the draft's time to see: their
+  message there settles it. Only when no read can (no Slack connector, or §3 bars that channel),
+  use the facts and put "was the <channel> update sent?" under Check before posting, saying why.
 - Claude Code housekeeping: auth errors, `/login`, model switching, context-size prompts.
 - Anything sensitive, from any source (meeting notes, DMs, private channels, transcripts): HR,
   pay, probation, investor terms, individual performance, personal matters, customer or user
@@ -177,6 +208,8 @@ short version:
 - Only say what the sources support. Where you inferred a status or a cause, don't hedge
   inside the post. Put the claim in the checklist below instead.
 - Stay as long as the day warrants. A quiet day is five lines, and that's fine.
+- Leave out what the previous check-out already said, unless its state has moved since (a PR it
+  called in review that has merged is news; the same merge again is not).
 
 ## 5. Hand over
 
@@ -200,8 +233,13 @@ from a heredoc. On WSL a copy may not reach the Windows desktop, so the printed 
 to that. When §4 Check-out destination is a file path, also write it there as the table at the top
 says, and give the path. Under it, briefly:
 
-- **Check before posting**: every inferred claim, each with its source ("#1534 shown in
-  review from Claude's narration; GitHub says open"). Then each meeting left out for want of
+- **Check before posting**: only what no read settles. Before handing over, run every check a
+  read §3 grants can answer (a PR's state on GitHub, a ticket's in Jira, whether a message reached
+  a channel) and put the answer in the post. What is left, each with its source and the read that
+  was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
+  narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
+  read again when its line was written ("#1534's state is from the collectors, read earlier in the
+  run"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.

@@ -120,13 +120,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
 check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
-# Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
+# Requeued for a fix try on the PR its session opened: the session is over, so a local worker takes the
+# try on its branch at origin's tip, never a new cloud session.
 rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
-q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
+q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","checks":[{"name":"Lint","runId":"7"}]}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
-check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
-check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
+check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: PR #40 from cloud session"'
+q set CW-3 state=done
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
 effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
@@ -1114,6 +1117,16 @@ fbt FB-41 triaged src/big.ts; fbt FB-42 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
   'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
+# A review try changes no file: running, it fills no place of a file; ready, it waits on none.
+fbq fbf '1'
+fbt FB-51 running src/big.ts; q set FB-51 session_id=live-51 'fix={"kind":"rereview","try":1,"of":2,"pr":51,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'
+fbt FB-52 triaged src/big.ts
+fbt FB-53 running src/edge.ts; q set FB-53 session_id=live-53
+fbt FB-54 triaged src/edge.ts; q set FB-54 'fix={"kind":"rereview","try":1,"of":2,"pr":54,"head":"bbb","what":"review its head","at":"T0"}' result.pr=54
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 a running review try fills no place: a ticket naming the same file starts" 'spawned FB-52'
+check "#1001 a ready review try is not held back behind a worker editing its files" '! echo "$out" | grep "^held back by a collision:" | grep -qF "FB-54"'
+check "#1001 negative control: a ticket naming a file a running worker edits is still held" 'q set FB-52 state=triaged >/dev/null; fbt FB-55 triaged src/edge.ts; out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep "^held back by a collision:" | grep -qF "FB-55 (src/edge.ts has 1 running of its 1: FB-53)"'
 # fbrow <row>: what desk-env reads the row as, "<big> <small> <serial globs joined by +> <bad>".
 fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \

@@ -54,7 +54,8 @@ const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync'
 // says it (its `at` aside) or on a dry run.
 export function undraftWrite(t, rec, { dry, at: now }) {
   const was = t.undraft ?? {};
-  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) return null;
+  // unknown_since too, so a record from before it was kept gains one on its first pass with no answer.
+  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr', 'unknown_since'].some((k) => (was[k] ?? null) !== (rec[k] ?? null))) return null;
   // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
   // when it became theirs, not from each pass that rewords it.
   const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? now : now;
@@ -166,7 +167,7 @@ export function* decideUndraft(snap) {
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
-      { ...passCfg, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
+      { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
     if (!c) continue;
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
@@ -182,7 +183,7 @@ export function* decideUndraft(snap) {
       hold = ev.hold;
     }
     let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: head ?? null, carried_from: null, pr: n }
-      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n };
+      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}) };
     // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
     // as out of draft. A review at the head with findings is not held: the hold is for a review that is
     // missing or stale, and those findings are the fix worker's whatever the reviewer check says.

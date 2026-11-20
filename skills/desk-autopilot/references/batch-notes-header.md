@@ -20,7 +20,7 @@ measured on, ~16GB of a 24GB grant. Nothing inside the guest can see that limit.
 "Test worker cap under the test lock" (and its lower figure while available memory is in the hold
 band of §3b "Spawn gate (available memory)"), appended as `--maxWorkers=<cap>` **only to a Jest or
 Vitest command**; never to pytest or another runner, which rejects the flag. `with-lock.sh`
-serialises suites *and* typechecks on one lock, so exactly one suite runs machine-wide at a time.
+serialises suites, typechecks *and* lints on one lock, so exactly one runs machine-wide at a time.
 Do not raise the cap without re-reading available memory.
 
 Each command comes from `desk-env cmds <id>` as `DIR<TAB>CMD` (`DIR` is `.` at the worktree root).
@@ -30,6 +30,7 @@ Run it in its directory with `--cwd`, never as `cd <dir> && …`:
     ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <CMD> [<test files>]                      # pytest, others
     ~/.claude/desk/bin/with-lock.sh test --cwd <DIR> -- <integration CMD> --maxWorkers=<half the cap> <file>
     ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <typecheck CMD>
+    ~/.claude/desk/bin/with-lock.sh tsc  --cwd <DIR> -- <lint CMD> [<files>]
 
 (Each `<CMD>` with §4 Command prefix in front unless it is `none`.)
 
@@ -58,6 +59,11 @@ to the lower cap. Do not spend retries proving the denial.
 A typecheck is one multi-GB process (more under load). **`with-lock.sh tsc` takes the same lock as
 suites**: two locks let one worker run a suite while another ran a typecheck, each correctly
 believing it was serialised, and OOM-killed a full suite. Never typecheck outside it.
+
+**A lint is heavy work too: run every §4 Lint item through `with-lock.sh tsc`**, at the root as well
+as in a directory, and a targeted run on a few files as well as the whole row. A type-aware lint
+(typescript-eslint with a project service) builds the same program a typecheck does, 1 to 3 GB, and
+a bare lint beside another worker's locked suite is the overlap that ran a host out of memory.
 
 **Your database variables are yours or blank.** Every §4 Database URL variable in your worktree
 points at your own per-ticket database, or is blank when none was made. Never fill a blank one in:

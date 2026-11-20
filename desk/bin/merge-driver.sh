@@ -107,8 +107,9 @@
 # loops like a green head, and once merged a ticket naming the check, the PR, the head SHA and the
 # failing run is filed with `desk-jira create` where §3 jira-create is yes (otherwise the log names
 # its body file). A row that does not parse stops the driver at start.
-# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands,
-# `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
+# The merge is pinned with `--match-head-commit <the sha the gate evaluated>`. Once it lands, the
+# merge log's `merged` line (merge-log.mjs) names the PR, that head, the ticket and this driver; a
+# refused merge writes `failed`, never `merged`. Then `queue.mjs merged <TICKET>` records merged_at on the ticket and its line in <state>/eta-history.jsonl,
 # and puts the merge time beside the ticket's first ship estimate in <state>/eta.jsonl. Where §4 Tracker
 # is jira and §3 jira-close-own-merged is yes, a ticket with no other PR still open on its key, by
 # anyone, is then moved to §4 Done state and read back; this is the only close anywhere in the batch.
@@ -137,6 +138,7 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
+#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer at a head before the queue asks the person (default 3600)
 #
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
 # gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
@@ -946,12 +948,33 @@ NODE
   esac
 }
 
+# A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
+# that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
+# run started for the head. Past UNKNOWN_LIMIT_SECS the queue asks the person for a new commit, which
+# gives it a fresh merge ref. Any answer, or another head, starts it again and clears the note.
+UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-3600}"
+unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
+  local f="$SD/unknown-$1" was="" at="" now age
+  if [ "$4" != UNKNOWN ]; then
+    if [ -f "$f" ]; then rm -f "$f"; blocked_clear "$3" "merge ref:"; fi
+    return 0
+  fi
+  read -r was at < "$f" 2>/dev/null || true
+  now=$(date +%s)
+  if [ "$was" != "$2" ] || [ -z "$at" ]; then printf '%s %s\n' "$2" "$now" > "$f"; blocked_clear "$3" "merge ref:"; return 0; fi
+  age=$(( now - at ))
+  [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
+  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( age / 60 )) minutes — its merge ref looks wedged; the person pushes a new commit"
+  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( age / 60 )) minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
+  unknown_age "$n" "$sha" "$key" "$ms"
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }
@@ -1089,7 +1112,12 @@ EOF_RESOLVE
 
   # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
   # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
-  if [ -n "$REVIEW_HOLD" ]; then
+  # A §4 State check of kind external that passed at the head read that outside reviewer's review
+  # there: that review is the head's, so desk's own verdict is not wanted as well.
+  external_ok=$(printf '%s' "$g" | jq -r '.externalReview // empty | "\(.name) (\(.login))"')
+  if [ -n "$REVIEW_HOLD" ] && [ -n "$external_ok" ]; then
+    log "#$n its review at ${sha:0:9} is the outside reviewer's: $external_ok passed there, so no desk verdict is needed at that head"
+  elif [ -n "$REVIEW_HOLD" ]; then
     verdict=$(head_verdict "$n" "$want")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
@@ -1147,7 +1175,7 @@ EOF_RESOLVE
     log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
   fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
-    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
+    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged ${key:+--ticket "$key"} --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
     # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
     if [ -n "$carried" ]; then
@@ -1175,7 +1203,7 @@ EOF_RESOLVE
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0
   fi
-  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
+  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed ${key:+--ticket "$key"} --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
   else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
   return 1
