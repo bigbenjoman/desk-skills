@@ -184,8 +184,9 @@ export const liveReadsUnparsed = (readRow) => (readRow.errors.length
 
 // A review try (kind rereview) reviews its PR's head and changes no file.
 export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
-// A cloud ticket back on its open PR for a review try: a review reads the PR's head and pushes nothing,
-// so a local worker takes it on the session's branch, checked out from origin (setup-worktree.sh with
-// DESK_BRANCH_FROM_ORIGIN), where any other try on that branch stays the session's.
-export const cloudReviewHere = (t) => t?.location === 'cloud' && t.result?.pr != null && reviewOnlyTry(t);
-export const runsInCloud = (t) => t?.location === 'cloud' && !cloudReviewHere(t);
+// A cloud ticket runs in the cloud only until its PR is read (result.pr): the session is then over, and its
+// branch is on origin with no session pushing to it. Any work after that, a fix try of any kind or a
+// rework, is a local worker's on that branch at origin's tip (setup-worktree.sh with
+// DESK_BRANCH_FROM_ORIGIN), which pushes there; nothing reads it for a cloud session again.
+export const cloudPrHere = (t) => t?.location === 'cloud' && t.result?.pr != null;
+export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);
