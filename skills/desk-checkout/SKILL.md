@@ -145,7 +145,9 @@ For each item, settle:
   That read wins over the collector's: `MERGED` is `(merged)`, an open PR no longer a draft is
   `(in review)` (or waiting on the approval its review decision shows), and only `isDraft` true is
   a draft. If that read fails, use the collector's state and name the PR under **Check before
-  posting** as read earlier in the run.
+  posting** as read earlier in the run. Read only in a repo the GitHub collector read (its
+  `read-own-work` `yes`, or `ask` and the user agreed). Never read a PR in any other repo: its
+  state stays as its source gave it.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:

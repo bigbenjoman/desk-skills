@@ -304,6 +304,8 @@ has('#819 the read wins over the collector\'s', skill, 'That read wins over the 
 has('#819 only isDraft true is a draft', skill, 'only `isDraft` true is\n  a draft');
 has('#819 a failed read keeps the collector\'s state and says so', skill, 'If that read fails, use the collector\'s state and name the PR under **Check before\n  posting** as read earlier in the run.');
 has('#819 Check before posting lists it', skill, 'each PR whose state could not be\n  read again when its line was written');
+has('#819 only in a repo the GitHub collector was allowed to read', skill, 'Read only in a repo the GitHub collector read (its\n  `read-own-work` `yes`, or `ask` and the user agreed)');
+has('#819 and never in any other repo', skill, 'Never read a PR in any other repo: its\n  state stays as its source gave it.');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });
