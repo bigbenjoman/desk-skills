@@ -624,6 +624,12 @@ export function machineValue(key) {
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
+// How many runs may hold the test lock at once: DESK_TEST_LOCK_SLOTS when set, else the profile's
+// test-lock-slots; anything but a whole number from 1 is 1. with-lock.sh is this rule's shell twin.
+export function testLockSlots() {
+  const v = String(process.env.DESK_TEST_LOCK_SLOTS || machineValue('test-lock-slots') || '').trim();
+  return /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+}
 
 // ---- cost sources --------------------------------------------------------------------------
 // One per computer, beside the machine profile: which GitHub repo, Vercel team and AWS profile bill

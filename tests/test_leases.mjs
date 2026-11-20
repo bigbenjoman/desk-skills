@@ -199,6 +199,39 @@ try {
     t('AC12: the lock is let go after', existsSync(lockDir), false);
   }
 
+  // A live owner's lease survives a command run under another TZ (macOS reads start times with ps,
+  // which prints local time).
+  {
+    const d = fresh(); const a = owner();
+    cli(d, ['acquire', 'port', '4107', '--ttl', '60', '--pid', String(a.pid)], { TZ: 'Asia/Tokyo' });
+    const r = cli(d, ['list', '--json'], { TZ: 'America/New_York' });
+    t('a lease taken under one TZ is still live under another', r.out.split('\n').filter(Boolean).length, 1);
+  }
+
+  // The heavy pool is sized as the test lock sizes it: a DESK_TEST_LOCK_SLOTS that is not a whole
+  // number is 1 slot, not the profile's.
+  {
+    const d = fresh(); const a = owner(); const b = owner();
+    const machine = join(S, 'machine-slots.md');
+    writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `test-lock-slots` | `3` | test |\n');
+    const bogus = { DESK_MACHINE: machine, DESK_TEST_LOCK_SLOTS: 'many' };
+    cli(d, ['acquire', 'slot', 'test', '--ttl', '60', '--pid', String(a.pid)], bogus);
+    const r = cli(d, ['acquire', 'slot', 'tsc', '--ttl', '60', '--pid', String(b.pid)], bogus);
+    t('a bad DESK_TEST_LOCK_SLOTS is one heavy slot', `${r.code} ${r.err.startsWith('refused: the heavy slot is held by')}`, '3 true');
+    t('without it the profile sizes the pool', cli(d, ['acquire', 'slot', 'tsc', '--ttl', '60', '--pid', String(b.pid)], { DESK_MACHINE: machine }).code, 0);
+  }
+
+  // preview-build-slots is set with desk-env machine set, and sizes each Vercel team's pool.
+  {
+    const d = fresh(); const o = [owner(), owner(), owner()];
+    const machine = join(S, 'machine-preview.md');
+    const set = spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), 'machine', 'set', 'preview-build-slots=2'], { encoding: 'utf8', cwd: S, env: env({ DESK_MACHINE: machine }) });
+    t('machine set writes preview-build-slots', set.status, 0);
+    const got = o.map((c) => cli(d, ['acquire', 'preview-build', 'acme', '--ttl', '600', '--pid', String(c.pid)], { DESK_MACHINE: machine }));
+    t('two preview builds for a team, then refused', got.map((r) => r.code), [0, 0, 3]);
+    t('the refusal names the pool', got[2].err.includes('all 2 preview-build slots for acme are held'), true);
+  }
+
   // An unreadable store is exit 4 and left as it is.
   {
     const d = fresh(); mkdirSync(d, { recursive: true });

@@ -18,7 +18,7 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { HOME, expandHome, machineValue } from './desk-env.mjs';
+import { HOME, expandHome, machineValue, testLockSlots } from './desk-env.mjs';
 
 export const EXIT_OK = 0;
 export const EXIT_USAGE = 2;
@@ -43,10 +43,10 @@ export const storeFile = (dir = leaseDir()) => join(dir, 'leases.json');
 export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
 const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
-// The pools' sizes: the heavy slots from test-lock-slots (DESK_TEST_LOCK_SLOTS wins, as in
-// with-lock.sh), preview builds per Vercel team from preview-build-slots, memory from memory-ceiling-gb.
+// The pools' sizes: the heavy slots as the test lock has them (testLockSlots), preview builds per
+// Vercel team from preview-build-slots, memory from memory-ceiling-gb.
 export const capacities = () => ({
-  heavy: whole(process.env.DESK_TEST_LOCK_SLOTS) ?? whole(machineValue('test-lock-slots')) ?? 1,
+  heavy: testLockSlots(),
   previewBuild: whole(machineValue('preview-build-slots')) ?? 1,
   mem: whole(machineValue('memory-ceiling-gb')),
 });
@@ -99,7 +99,9 @@ export function startTimes(pids) {
   }
   let text;
   try {
-    text = execFileSync('ps', ['-o', 'pid=,stat=,lstart=', '-p', want.join(',')], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' }, stdio: ['ignore', 'pipe', 'ignore'] });
+    // lstart prints local time, so it is read in UTC and the C locale (as hooks/desk-handoff.py
+    // does): a command run under another TZ must read the same string for the same process.
+    text = execFileSync('ps', ['-o', 'pid=,stat=,lstart=', '-p', want.join(',')], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' }, stdio: ['ignore', 'pipe', 'ignore'] });
   } catch (e) {
     if (e.status !== 1) throw new Error(`could not read process start times with ps: ${e.message}`);
     text = String(e.stdout ?? ''); // ps exits 1 when some pid is not running
@@ -267,7 +269,7 @@ export function leaseCli(args, { dir = leaseDir(), out = (s) => console.log(s), 
       const { pos, opt } = parseArgs(rest, ['ttl', 'units', 'wait', 'label', 'pid']);
       const [kind, key, extra] = pos;
       if (extra != null) throw usage(`acquire takes a kind and a key, not "${extra}"`);
-      if (!KINDS.includes(kind)) throw usage(`unknown lease kind "${kind ?? ''}": want one of ${KINDS.join(', ')}`);
+      poolOf(kind, key); // a bad kind or key is named before a missing --ttl
       if (opt.ttl == null) throw usage('acquire needs --ttl <seconds>');
       const ttl = whole(opt.ttl);
       if (!ttl) throw usage(`--ttl is a whole number of seconds, 1 or more, not "${opt.ttl}"`);

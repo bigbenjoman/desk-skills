@@ -1757,7 +1757,7 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
     held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
-    slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
+    slots: E.testLockSlots(),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();

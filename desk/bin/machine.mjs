@@ -29,6 +29,9 @@ const SIZING_RULES = Object.freeze({
   'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+  // No proposal makes this one: the lease broker (leases.mjs) reads it, 1 when unset, and only
+  // `desk-env machine set` writes it.
+  'preview-build-slots': { ok: wholeAtLeast(1), want: 'a whole number of preview builds at once per Vercel team, 1 or more' },
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
