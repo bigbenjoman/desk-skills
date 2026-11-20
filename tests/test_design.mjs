@@ -240,11 +240,15 @@ t('check: saved and named is clean', checkTicket(issue(`h2. Design\n${URL1} · d
 t('check: saved but the path not named is advisory', checkTicket(issue(`h2. Design\n${URL1}`), { root: r1, dir: DIR }).map((f) => f.severity).join(' '), 'advisory');
 t('check: No UI is clean', checkTicket(issue('h2. Design\nNo UI.'), { root: r5, dir: DIR }).length, 0);
 // #747: a canvas linked for the epic, with no board of this ticket's yet, is nothing to save.
-for (const said of ['No board for this ticket exists yet.', 'The epic canvas; this ticket has no board yet.', "Its board doesn't exist yet.", 'The screen is not yet drawn.']) {
+for (const said of ['No board for this ticket exists yet.', 'The epic canvas; this ticket has no board yet.', "Its board doesn't exist yet.", "This ticket's screen is not yet drawn."]) {
   const f = checkTicket(issue(`h2. Design\nEpic canvas: ${URL1}\n${said}`), { root: r5, dir: DIR });
   t(`#747 a section saying "${said}" is advisory, nothing to save`, `${f.map((x) => x.severity).join(' ')} ${/nothing to save/.test(f[0]?.message ?? '')}`, 'advisory true');
 }
-t('#747 one naming its board still blocks', checkTicket(issue(`h2. Design\n${URL1} — board: Order summary`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
+for (const said of ['Board: Checkout. No mobile screens.', 'Use the Order summary board; no other boards apply.', 'Board: Cart — no screen changes beyond this board.', 'Frames 3-5 of the canvas; no new frames.',
+  'Use board Checkout. No board changes needed elsewhere.', 'The board is not yet drawn for mobile, use desktop board Cart.', 'Board: Checkout. No board for this ticket exists yet on mobile.',
+  'No new screen is required; use the existing Checkout screen.']) {
+  t(`#747 a section using a board, saying "${said}", still blocks`, checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
+}
 t('check: a markdown ticket file', checkTicket({ key: 'fix-x', text: `## Design\n${URL1}\n## Out of scope` }, { root: r5, dir: DIR })[0].severity, 'blocking');
 // desk-jira's .md conversion escapes - and _ inside a code span, so Jira holds {{docs/design/DS\-50/}}.
 t('check: wiki-escaped code spans read as written', checkTicket(issue(`h2. Design\n{{${URL1}}} · {{docs/design/DS\\-50/}}`), { root: r1, dir: DIR }).length, 0);

@@ -1038,9 +1038,18 @@ export function designFact(text, { root, dir, ref, state }) {
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
 // the link's kind is unknown, so it blocks.
-// A Design section saying the ticket has no board of its own yet ("no board for this ticket yet",
-// "its board does not exist yet"): a canvas it links is the epic's, with nothing for this ticket to save.
-export const NO_BOARD = /\bno\s+(?:\w+\s+)?(?:board|screen|frame)s?\b|\b(?:board|screen|frame)s?\b[^.\n]{0,60}\b(?:(?:does|do|is|are)\s*n[o']t|not\s+yet)\s+(?:yet\s+)?(?:exist|drawn|designed|made)/i;
+// A Design section saying this ticket has no board of its own yet ("no board for this ticket yet",
+// "this ticket has no board", "its board does not exist yet"): a canvas it links is the epic's, with
+// nothing for this ticket to save. Each phrase ties the missing board to this ticket, so a section
+// that only says what a board leaves out ("no mobile screens") is not read as one.
+const NO_BOARD = [
+  /\bno\s+(?:board|screen|frame)s?\b[^.\n]{0,40}\b(?:yet|for\s+this\s+(?:ticket|story|task))\b/i,
+  /\b(?:this\s+(?:ticket|story|task)|it)\s+has\s+no\s+(?:board|screen|frame)s?\b/i,
+  /\b(?:its|this\s+(?:ticket|story|task)['’]s)\s+(?:board|screen|frame)s?\b[^.\n]{0,30}\b(?:(?:does|do|is|are)\s*n['’o]?t|not)\s+(?:yet\s+)?(?:exist|drawn|designed|made)/i,
+];
+// A section naming the board it uses ("Board: Checkout") has one, whatever else it says.
+const NAMES_BOARD = /\b(?:board|screen|frame)s?\s*:/i;
+const saysNoBoard = (section) => !NAMES_BOARD.test(section) && NO_BOARD.some((re) => re.test(section));
 
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
@@ -1057,7 +1066,7 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   if (links.length) { try { onBase = savedAt(root, dir, ref); } catch { /* no such ref */ } }
   for (const url of links) {
     const saved = onBase.find((c) => canonicalUrl(c.url) === canonicalUrl(url));
-    if (!saved && NO_BOARD.test(section)) {
+    if (!saved && saysNoBoard(section)) {
       findings.push({ severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says this ticket has no board of its own yet, so there is nothing to save` });
     } else if (!saved) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
