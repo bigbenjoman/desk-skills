@@ -1,8 +1,9 @@
 #!/usr/bin/env node
-// Dev-server ports a peer session claimed, machine-wide, in ~/.desk-autopilot/port-claims.jsonl
+// Dev-server ports a peer session that runs no autopilot batch claimed, machine-wide, in ~/.desk-autopilot/port-claims.jsonl
 // (DESK_PORT_CLAIMS names another file): one JSON line per claim or release. The orchestrator records
 // what a peer's handshake said it holds, and every pass skips those ports when it gives a worker one,
-// whether or not the peer's server is up at that moment.
+// whether or not the peer's server is up at that moment. Another batch's ports are never recorded here:
+// every pass already skips its workers' ports, and its published range is the one its own pass uses.
 //
 //   port-claims.mjs claim <port | from-to> --by <who> [--hours <n>]
 //       records <who>'s claim, replacing any earlier one of theirs; it lapses after <n> hours (default
@@ -52,7 +53,8 @@ export function parseRange(text) {
   return { from, to };
 }
 
-const append = (e, path) => { mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `${JSON.stringify(e)}\n`); };
+// Each line starts on a line of its own, so a torn last line (a write cut off) never swallows it.
+const append = (e, path) => { mkdirSync(dirname(path), { recursive: true }); appendFileSync(path, `\n${JSON.stringify(e)}\n`); };
 export function claim({ from, to, by, hours = CLAIM_HOURS, now = Date.now(), path = claimsPath() }) {
   append({ at: new Date(now).toISOString(), by, event: 'claim', from, to, until: new Date(now + hours * 3600 * 1000).toISOString() }, path);
 }

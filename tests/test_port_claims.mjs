@@ -35,8 +35,9 @@ t('#823 a release frees that peer\'s ports', ports(NOW + 4000), '3005,3006');
 t('#823 a claim lapses after its hours', ports(NOW + 1000 + P.CLAIM_HOURS * H + 1), '');
 P.claim({ from: 5000, to: 5001, by: 'peer C', hours: 1, now: NOW, path });
 t('#823 --hours sets when it lapses', [ports(NOW + H - 1).includes('5000'), ports(NOW + H + 1).includes('5000')], [true, false]);
-appendFileSync(path, '{"by": "torn\n');
-t('#823 a torn line is skipped, never fatal', ports(NOW + 4000), '3005,3006,5000,5001');
+appendFileSync(path, '{"by": "torn');
+P.claim({ from: 6000, to: 6000, by: 'peer E', now: NOW, path });
+t('#823 a torn last line is skipped, and the claim after it still holds', ports(NOW + 4000), '3005,3006,5000,5001,6000');
 t('#823 parseRange reads one port and a range', [P.parseRange('3001'), P.parseRange('3001-3004')], [{ from: 3001, to: 3001 }, { from: 3001, to: 3004 }]);
 t('#823 and refuses what it cannot read', ['abc', '3004-3001', '70000', `3000-${3000 + P.MAX_PORTS}`].map((r) => Boolean(P.parseRange(r).error)), [true, true, true, true]);
 
