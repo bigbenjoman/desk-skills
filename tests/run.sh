@@ -24,6 +24,8 @@ T="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=suite_env.sh
 . "$T/suite_env.sh"
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
+# The run's template repos (tests/lib/repo_template.sh): built once, shared by every suite in it.
+export DESK_TPL_ROOT="$OUT/tpl"
 pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
 # this waits for every job, so a lock held around run.sh is not released while a suite still runs.

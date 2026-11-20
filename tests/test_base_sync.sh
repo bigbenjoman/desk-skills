@@ -49,16 +49,23 @@ EOF
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/git" "$T/stub/kill"
 export PATH="$T/stub:$PATH" DESK_HOME="$T/desk" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 
-# fresh <case> [batch-base-push value] [base]: an origin holding main and feat/x, with main two commits
-# ahead, a primary checkout on main, and a queue with one triaged ticket. No base when <base> is -.
+# The repos every case starts from: an origin holding main and feat/x, with main two commits ahead,
+# and a primary checkout on main.
+# shellcheck source=lib/repo_template.sh
+. "$S/lib/repo_template.sh"; export DESK_TPL_ROOT="${DESK_TPL_ROOT:-$T/tpl}"
+base_sync_repos(){
+  git init -q --bare "$1/origin.git" && git init -q "$1/repo" && git -C "$1/repo" remote add origin "$1/origin.git" &&
+  echo base > "$1/repo/a.txt" && git -C "$1/repo" add a.txt && git -C "$1/repo" commit -q -m init &&
+  git -C "$1/repo" push -q origin main main:feat/x &&
+  git -C "$1/repo" commit -q --allow-empty -m one && git -C "$1/repo" commit -q --allow-empty -m two &&
+  git -C "$1/repo" push -q origin main
+}
+repo_template base_sync base_sync_repos || exit 1
+# fresh <case> [batch-base-push value] [base]: a copy of those repos, and a queue with one triaged
+# ticket. No base when <base> is -.
 fresh(){
   C="$T/$1"; mkdir -p "$C/state" "$C/wt"
-  git init -q --bare "$C/origin.git"
-  git init -q "$C/repo"; git -C "$C/repo" remote add origin "$C/origin.git"
-  echo base > "$C/repo/a.txt"; git -C "$C/repo" add a.txt; git -C "$C/repo" commit -q -m init
-  git -C "$C/repo" push -q origin main main:feat/x
-  git -C "$C/repo" commit -q --allow-empty -m one; git -C "$C/repo" commit -q --allow-empty -m two
-  git -C "$C/repo" push -q origin main
+  repo_copy base_sync "$C" || exit 1
   local perm=${2:-yes}
   cat > "$C/config.md" <<EOF
 ## 0. Repo
