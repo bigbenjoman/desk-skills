@@ -443,6 +443,21 @@ How to turn what you find into rows:
   also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
   `.claude/settings.local.json` (backed up first), so Claude Code does not add it in the first place;
   the hook is the backstop.
+- **Whose commits count for AI attribution.** The count in the detect block takes every author's
+  commit messages line by line, so on a squash-merge repo it counts teammates' trailers, often many
+  times over. "Recent commits" in the item above are the user's own: count those commits, by the
+  user's §1 Git author email(s) (one `--author` each) across every branch, and the same for everyone,
+  each as commits whose message carries a trailer, not lines:
+
+  ```bash
+  ai='co-authored-by: *claude|generated with \[?claude code'
+  git log --all -n 200 --author='<email>' --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"   # yours
+  git log --all -n 200 --format='%B%x00' | tr -d '\n' | tr '\0' '\n' | grep -ciE "$ai"                      # everyone's
+  ```
+
+  Propose `allowed` only when the user's own commits carry one. When only other authors' do, say so,
+  with both counts, and ask, recommending nothing from them: what teammates do is not what this repo
+  allows.
 - **Repo instructions.** List `CLAUDE.md` / `AGENTS.md` / similar that exist; they win over §5.
 - **Ticket format.** While the row is `TODO`, propose `default`: desk-jira's
   `references/ticket-template.md`, the layouts every desk path that files a ticket uses. Show its
