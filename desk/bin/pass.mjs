@@ -797,8 +797,8 @@ const resumeRefusal = (t, why) => resumeRefusalOf(RESUME, t, why);
 
 // A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
 // it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
-// branch, which the merge driver matches it by. Its tracker steps are left undone: the session has no
-// tracker access, and the report says so.
+// branch, which the merge driver matches it by. The session has no tracker access, so the tracker steps
+// a local worker's Stage 8 makes are made here, on its behalf (tracker_steps=due, below).
 function advanceCloud(t) {
   const c = t.cloud ?? {};
   // A session whose details were not recorded after it started has only `started` (spawnCloud).
@@ -814,8 +814,8 @@ function advanceCloud(t) {
   const cloud = { ...c, pr_at: pr.createdAt };
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
-    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -3366,6 +3366,62 @@ for (const t of Object.values(queue().tickets)) {
   }
   q('set', t.key, `follow_on_comment=${new Date().toISOString()}`);
   report.advanced.push(`${t.key} follow-on for after PR #${pr} merges → ticket comment`);
+}
+
+// ---- a cloud ticket's tracker steps ---------------------------------------
+// A cloud session has no tracker access, so once its PR shows (advanceCloud: tracker_steps=due) the
+// pass makes the steps a local worker's Stage 8 would: the PR-link comment under §3 jira-comment
+// (posted once: its marker is looked for first) and the move to §4 Review state under §3
+// jira-transition, by the transition whose target is that state (none: no move; a ticket already in
+// it or in §4 Done state is not moved back). A step whose row is not yes is put to the person once,
+// with its command; a failed read or write is tried again next pass.
+for (const t of Object.values(queue().tickets)) {
+  if (t.tracker_steps !== 'due') continue;
+  const pr = t.result?.pr;
+  if (DRY) { report.advanced.push(`${t.key} tracker steps (dry run): would comment PR #${pr} and move it to §4 Review state`); continue; }
+  const kind = E.ticketKind(t.key);
+  if (!onJira || !kind.ok || kind.kind !== 'tracker' || pr == null) { q('set', t.key, 'tracker_steps=none'); continue; }
+  const url = `https://github.com/${GH_REPO}/pull/${pr}`;
+  const mark = `(${t.key}/desk-autopilot cloud PR)`;
+  const body = `PR #${pr}, opened by a cloud session: ${url} ${mark}`;
+  const did = []; const asks = []; let failed = null;
+  const last = (r) => r.out.split('\n').pop();
+  const comment = E.permission('jira-comment');
+  if (comment !== 'yes') asks.push(`config §3 ${E.permissionKey('jira-comment')} is "${comment}": post the PR link with desk-jira comment ${t.key} "${body}"`);
+  else {
+    const seen = shOut('desk-jira', ['comments', t.key]);
+    if (!seen.ok) failed = `its comments could not be read (${last(seen)})`;
+    else if (!seen.out.includes(mark)) {
+      const r = shOut('desk-jira', ['comment', t.key, body]);
+      if (r.ok) did.push(`commented the link to PR #${pr}`); else failed = `the PR-link comment was refused (${last(r)})`;
+    }
+  }
+  const review = String(E.configValue('review-state') ?? '').trim();
+  if (!failed && review && !E.isNone(review)) {
+    const move = E.permission('jira-transition');
+    if (move !== 'yes') asks.push(`config §3 ${E.permissionKey('jira-transition')} is "${move}": move it to ${review} with desk-jira transition ${t.key} <the transition to ${review}> (desk-jira transitions ${t.key} lists them)`);
+    else {
+      const got = shOut('desk-jira', ['get', t.key, '--json']);
+      let status = null;
+      try { status = JSON.parse(got.out)?.fields?.status?.name ?? null; } catch { /* unread */ }
+      const done = String(E.configValue('done-state') ?? '').trim();
+      if (!got.ok || !status) failed = `its status could not be read (${last(got)})`;
+      else if (![review, done].some((x) => x && x.toLowerCase() === status.toLowerCase())) {
+        const list = shOut('desk-jira', ['transitions', t.key]);
+        const to = list.ok ? list.out.split('\n').map((l) => l.split('\t')).find((c) => c[2]?.replace(/^-> /, '').trim().toLowerCase() === review.toLowerCase()) : null;
+        if (!list.ok) failed = `its transitions could not be read (${last(list)})`;
+        else if (!to) asks.push(`no transition from ${status} leads to ${review}: move it by hand (desk-jira transitions ${t.key} lists what it can do)`);
+        else {
+          const r = shOut('desk-jira', ['transition', t.key, to[0]]);
+          if (r.ok) did.push(`moved it from ${status} to ${review}`); else failed = `the move to ${review} was refused (${last(r)})`;
+        }
+      }
+    }
+  }
+  if (failed) { report.failed.push(`${t.key}: cloud PR #${pr}'s tracker steps not all made, ${failed}: tried again next pass`); continue; }
+  q('set', t.key, `tracker_steps=${new Date().toISOString()}`);
+  if (did.length) report.advanced.push(`${t.key} cloud PR #${pr} → tracker: ${did.join(', and ')}`);
+  for (const a of asks) report.waiting.push(`${t.key}: cloud PR #${pr}'s tracker step is yours: ${a}`);
 }
 
 // ---- outside blockers ----------------------------------------------------

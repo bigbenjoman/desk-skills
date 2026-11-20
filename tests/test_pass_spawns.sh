@@ -113,6 +113,7 @@ node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.str
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
 check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -qF "CW-1: PR #31 from cloud session" && echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
 cloud_ticket CW-2; : > "$T/cloud-fail"
@@ -935,6 +936,38 @@ rm -f "$T/state-mx/passes.jsonl"; mkdir -p "$T/state-mx/passes.jsonl"
 out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
 check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
   'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
+
+# ---- a cloud ticket's tracker steps: made by the pass, since the session has no tracker access ------
+# The fake desk-jira logs each call: C-1 and C-2 are In Progress with a transition to In Review, C-3 is
+# already In Review. C-2's config does not grant jira-transition.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/cj-calls"
+case "\$1" in
+  comments) [ -f "$T/cj-said-\$2" ] && cat "$T/cj-said-\$2"; exit 0 ;;
+  comment) echo "\$3" > "$T/cj-said-\$2" ;;
+  get) [ "\$2" = C-3 ] && s="In Review" || s="In Progress"; printf '{"key":"%s","fields":{"status":{"name":"%s"}}}\n' "\$2" "\$s" ;;
+  transitions) printf '21\tStart review\t-> In Review\n31\tClose\t-> Done\n' ;;
+  transition) echo "\$2 -> In Review" ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+for v in y:yes a:ask; do sed -e "s#^\(| \`pr-images\` .*\)\$#\1\\
+| \`jira-comment\` | Comment | \`yes\` | \`yes\` |\\
+| \`jira-transition\` | Move | \`yes\` | \`${v#*:}\` |#" "$T/config.md" > "$T/config-cj${v%%:*}.md"
+  printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `C-[0-9]+` |\n| Review state | `In Review` |\n| Done state | `Done` |\n' >> "$T/config-cj${v%%:*}.md"; done
+export DESK_QUEUE="$T/queue-cj.json" DESK_AUTOPILOT_STATE="$T/state-cj"; mkdir -p "$T/state-cj/logs"; q init cj
+for k in C-1 C-3; do q add "$k"; q set "$k" state=done location=cloud "result.pr=5${k#C-}" tracker_steps=due; done
+out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a cloud ticket's PR-link comment and its move to §4 Review state are made by the pass" \
+  'grep -qx "comment C-1 PR #51, opened by a cloud session: https://github.com/acme/widgets/pull/51 (C-1/desk-autopilot cloud PR)" "$T/cj-calls" && grep -qx "transition C-1 21" "$T/cj-calls" && echo "$out" | grep -qF "C-1 cloud PR #51 → tracker: commented the link to PR #51, and moved it from In Progress to In Review" && [ "$(field C-1 tracker_steps)" != "\"due\"" ]'
+check "one already in §4 Review state is commented on, never moved" '! grep -q "^transition C-3" "$T/cj-calls" && grep -q "^comment C-3 " "$T/cj-calls"'
+: > "$T/cj-calls"; q set C-1 tracker_steps=due; out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a comment already on the ticket is not posted again" '! grep -q "^comment C-1" "$T/cj-calls"'
+q add C-2; q set C-2 state=done location=cloud result.pr=52 tracker_steps=due
+out=$(DESK_CONFIG="$T/config-cja.md" node "$B/pass.mjs" 2>&1)
+check "a step whose §3 row is not yes is the person's, with its command" \
+  '! grep -q "^transition C-2" "$T/cj-calls" && echo "$out" | grep -qF "C-2: cloud PR #52'"'"'s tracker step is yours: config §3 jira-transition is \"ask\": move it to In Review with desk-jira transition C-2"'
 
 # ---- DS-573: a parked ticket whose own PR merged before its Jira tail was done goes back to a worker
 # for its after-merge steps only. PR 701, 703 and 704 merged, 702 is open; MT-3 is done in Jira. GitHub's
