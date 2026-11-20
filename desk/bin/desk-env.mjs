@@ -542,15 +542,20 @@ export function cellItems(raw) {
 // The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
 // Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
 // cell that is only a note, or whose last paren never opens, is returned whole.
+// A code span, read as CommonMark does: a run of backticks closes only on a run of its own length, and
+// a run with no partner is left as text. evidence.mjs reads PR bodies with it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
+  // Which characters sit inside a code span, so a note quoting ``` or ```` stays in step.
+  const inSpan = new Array(cell.length).fill(false);
+  for (const m of cell.matchAll(CODE_SPAN)) for (let k = m.index; k < m.index + m[0].length; k++) inSpan[k] = true;
   let depth = 0;
-  let inSpan = false;
   for (let i = cell.length - 1; i >= 0; i--) {
+    if (inSpan[i]) continue;
     const c = cell[i];
-    if (c === '`') inSpan = !inSpan;
-    else if (inSpan) continue;
-    else if (c === ')') depth++;
+    if (c === ')') depth++;
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;
