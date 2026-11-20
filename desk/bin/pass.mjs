@@ -3871,10 +3871,10 @@ if (drafts.length) {
 }
 function saveUndraft(t, rec) {
   const was = t.undraft ?? {};
-  // since: when this call began, kept while the call stays the same, so a person's step is aged from
+  // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
   // when it became theirs, not from each pass that rewords it.
-  const since = was.call === rec.call ? was.since ?? was.at ?? PASS_AT : PASS_AT;
-  if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT, since })}`);
+  const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? PASS_AT : PASS_AT;
+  if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at })}`);
 }
 // The person's own undraft releases their hold: recorded as out of draft, so putting it back holds it again.
 for (const { t, s } of undrafted) {

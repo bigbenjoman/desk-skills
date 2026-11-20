@@ -767,9 +767,9 @@ put('ds494', { port: 4610, beat: 1, supervised: true, merge: 'yes', tickets: {
   'E-2': stuckPr(202, [lintRed, ...passed], why375([{ name: LINT }])),
 } });
 const e494 = Object.fromEntries(N.collect({ word: 'ds494' }).items.map((i) => [i.t.key, i]));
-// #897: a PR held for the person is aged from when it became theirs (undraft.since), not from its admit.
+// A PR held for the person is aged from when it became theirs (undraft.at), not from its admit.
 put('ds897', { port: 4612, beat: 1, supervised: true, merge: 'yes', tickets: {
-  'G-1': { ...stuckPr(301, [lintRed, ...passed], why375([{ name: LINT }])), undraft: { call: 'person', why: 'w', at: minsAgo(2), since: minsAgo(5) } },
+  'G-1': { ...stuckPr(301, [lintRed, ...passed], why375([{ name: LINT }])), undraft: { call: 'person', why: 'w', at: minsAgo(5) } },
 } });
 const g897 = N.collect({ word: 'ds897' }).items.find((i) => i.t.key === 'G-1');
 t('#897 a PR item is aged from when it became the person\'s, not from its admit', Math.round((NOW - g897?.since) / 60000), 5);
