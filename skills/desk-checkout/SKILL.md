@@ -73,7 +73,8 @@ python3 $S/jira_activity.py --day $D; python3 $S/github_activity.py --day $D; py
 ```
 
 `claude_activity.py` cuts off any session at the point where it loads this skill, so the
-drafting session never reports itself.
+drafting session never reports itself, and nor does the one that drafted an earlier check-out that
+day.
 
 | Source | How | Permission (per repo) | What it's good for |
 |---|---|---|---|
@@ -204,6 +205,8 @@ layout; `references/style.md` has the conventions and a worked example for when 
 short version:
 - The header is whatever their previous check-out used; with none, `Check-out`, with the day if it
   isn't today.
+- When the window starts at a previous check-out (step 1), say so in one line under the header, e.g.
+  `Since my 12:00 check-out:`, so nobody reads the post as the whole day.
 - Lead each item with the problem in plain words, then the fix and its state.
   Use `(merged)`, `(in review)`, `(raised)`, `WIP`, `waiting on @Name`.
 - Name tickets by their key (`ABC-1891`) and PRs as `#1533`. Slack auto-links neither, so don't add

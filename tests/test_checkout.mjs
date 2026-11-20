@@ -2,7 +2,7 @@
 // Runs the check-out scripts under skills/desk-checkout/scripts/ (window.py, desk_repos.py,
 // claude_activity.py, github_activity.py, jira_activity.py) against a throwaway HOME, a scratch desk
 // config root and fake `gh` and `desk-jira` on PATH: no real GitHub, Jira or ~/.claude.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync, existsSync, utimesSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -181,6 +181,7 @@ const session = (id, cwd, entries) => {
   const dir = join(HOME, '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${id}.jsonl`), entries.map((e) => JSON.stringify({ cwd, entrypoint: 'cli', ...e })).join('\n'));
+  return join(dir, `${id}.jsonl`);
 };
 const user = (ts, text) => ({ type: 'user', timestamp: ts, message: { content: text } });
 const said = (ts, text, tools = []) => ({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'text', text }, ...tools.map((input) => ({ type: 'tool_use', ...input }))] } });
@@ -192,17 +193,72 @@ session('aaaa1111-app', join(R, 'acme__app-worktrees', 'APP-12'), [
 ]);
 session('bbbb2222-else', join(R, 'scratch'), [user(at(11), 'Reorganise my photo folders by year please'), said(at(11, 5), 'Done.', [{ name: 'Bash', input: { command: 'ls' } }])]);
 session('cccc3333-other', join(R, 'acme__other'), [user(at(12), 'Work on OTH-7 in the other repo please'), said(at(12, 5), 'On it.', [{ name: 'Bash', input: { command: 'ls' } }])]);
+const skillLoad = (ts) => ({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } });
 session('dddd4444-self', APP, [
   user(at(16), 'Wrap up the docs for APP-40 before the end of day'),
   said(at(16, 5), 'Done.', [{ name: 'Edit', input: {} }]),
-  { type: 'assistant', timestamp: at(17), message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } },
+  skillLoad(at(17)),
   user(at(17, 1), 'SECRET-AFTER the check-out started, APP-99'),
+]);
+// The session that drafted a 15:00 check-out: real work first, then the skill load just before the post.
+session('eeee5555-midday', APP, [
+  user(at(13), 'Investigate the APP-50 flaky login test please'),
+  said(at(13, 10), 'Fixed.', [{ name: 'Edit', input: {} }]),
+  skillLoad(at(14, 55)),
+  user(at(15, 5), 'MIDDAY-POSTED looks good, send it to the channel'),
+  said(at(15, 6), 'Posted.', [{ name: 'Bash', input: { command: 'ls' } }]),
+]);
+// A session that drafted a check-out last week and was resumed for real work on the day.
+session('ffff6666-resumed', APP, [
+  skillLoad(before),
+  user(at(14), 'Carry on with APP-60, the export bug, from where we left it'),
+  said(at(14, 10), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+// A session that drafted the 09:00 check-out (for the day before) and was worked in after the 15:00 one.
+session('gggg7777-morning', APP, [
+  skillLoad(at(9)),
+  user(at(15, 30), 'Now the APP-70 CSV import, please'),
+  said(at(15, 40), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+// A load in another repo's session just after the midday draft's: another check-out, not this one's.
+session('llll1212-otherco', join(R, 'acme__other'), [skillLoad(at(14, 58))]);
+// A 16:30 check-out drafted in a session closed at 16:25, before the post, and one that drafted a
+// check-out at 16:00 and was worked in after the 16:30 one.
+const closed = session('jjjj1010-closed', APP, [skillLoad(at(16, 20)), user(at(16, 25), 'Save it as a draft, I will post it')]);
+utimesSync(closed, new Date(at(16, 25)), new Date(at(16, 25)));
+session('kkkk1111-fourpm', APP, [
+  skillLoad(at(16)),
+  user(at(17, 30), 'Back to APP-90, the invoice rounding'),
+  said(at(17, 40), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+// The evening before: a morning check-out's session worked in after the 17:30 post, and the session that drafted that post.
+const sun = (h, m = 0) => new Date(2026, 9, 25, h, m).toISOString();
+session('hhhh8888-sunday', APP, [
+  skillLoad(sun(9)),
+  user(sun(18), 'Look at the APP-80 retry queue before bed'),
+  said(sun(18, 10), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+session('iiii9999-sunpost', APP, [
+  skillLoad(sun(17, 20)),
+  user(sun(17, 35), 'EVENING-POSTED thanks, all sent'),
+  said(sun(17, 36), 'Posted.', [{ name: 'Bash', input: { command: 'ls' } }]),
 ]);
 const claude = script('claude_activity.py', '--day', DAY);
 t('claude: exits 0', claude.status, 0);
 const co = claude.stdout;
-has('claude: four sessions in the window, less the withheld one', co, '— 3 sessions');
+has('claude: six sessions in the window, less the withheld one', co, '— 5 sessions');
 const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
+lacks('#832 the session that drafted the earlier check-out is not listed after it', after, 'eeee5555');
+lacks('#832 nor what it did once the skill loaded', after, 'MIDDAY-POSTED');
+has('#832 a session that drafted an earlier check-out that day still lists its work after the previous one', after, 'APP-70');
+has('#832 its work before the skill load is kept when the window covers it', co, 'APP-50');
+lacks('#832 and still nothing after the load', co, 'MIDDAY-POSTED');
+has('#832 a check-out drafted on an earlier day does not cut a session resumed since', co, 'APP-60');
+const fourThirty = script('claude_activity.py', '--day', DAY, '--since', '16:30').stdout;
+has('#832 a drafting session closed before its post is still the one cut, not an earlier drafter worked in since', fourThirty, 'APP-90');
+const evening = script('claude_activity.py', '--day', DAY, '--since', new Date(2026, 9, 25, 17, 30).toISOString(), '--since-for', '2026-10-25').stdout;
+lacks('#832 from a check-out posted the evening before, the session that drafted it is not listed', evening, 'EVENING-POSTED');
+has('#832 but a session that drafted that morning\'s check-out lists its evening work', evening, 'APP-80');
 has('#814 from a check-out posted at 15:00, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the previous check-out)`);
 lacks('#814 work the earlier check-out covered is not listed again', after, 'photo folders');
 has('claude: the worktree session is labelled with its worktree', co, 'acme__app (worktree APP-12)');
@@ -298,6 +354,7 @@ has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
 has('#1008 the window starts where the previous check-out ended, the evening before included', skill, 'their window then starts where that check-out stopped, the evening before\nincluded, so nothing posted between it and midnight drops out');
+has('#832 a draft from a previous check-out says in one line what it covers', skill, 'When the window starts at a previous check-out (step 1), say so in one line under the header');
 has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
