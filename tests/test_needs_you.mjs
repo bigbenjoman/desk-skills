@@ -8,6 +8,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -18,16 +20,32 @@ const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 
 const T = mkdtempSync(join(tmpdir(), 'desk-needs-you-'));
 mkdirSync(join(T, 'bin'));
+// A fake's rule, as a script's body: the fake in bin/ runs it as its own process, and the suite's in-process
+// reads (launchctl's and STUB's, below) call the same function. Self-contained: it takes its paths as arguments.
+const fakeScript = (fn, ...args) => `#!${process.execPath}\nconst r = (${fn})(${args.join(', ')});\nif (r.err) process.stderr.write(r.err + '\\n');\nprocess.stdout.write(r.out ?? '');\nprocess.exit(r.code);\n`;
 // macOS, with a fake launchctl that has each label in bin/loaded loaded.
-writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\ngrep -qxF "${2##*/}" "$(dirname "$0")/loaded" 2>/dev/null || exit 1\nexit 0\n', { mode: 0o755 });
-writeFileSync(join(T, 'bin', 'loaded'), 'com.desk-skills.supervisor.acme__alpha\n');
+const LOADED = join(T, 'bin', 'loaded');
+const launchctlPrint = (loaded, target) => {
+  const { readFileSync } = require('node:fs');
+  let labels = [];
+  try { labels = readFileSync(loaded, 'utf8').split('\n'); } catch { /* none loaded */ }
+  return { code: labels.includes(String(target ?? '').split('/').pop()) ? 0 : 1 };
+};
+writeFileSync(join(T, 'bin', 'launchctl'), fakeScript(launchctlPrint, JSON.stringify(LOADED), 'process.argv[3]'), { mode: 0o755 });
+writeFileSync(LOADED, 'com.desk-skills.supervisor.acme__alpha\n');
 // A fake gh that logs its arguments, and answers `pr view <n>` with prs/<n>.json, failing with none, and
 // `pr list --repo <r> --state <s>` with prs/list-<s>.json, or nothing.
 const GH_LOG = join(T, 'gh.log');
 const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
+const prView = (dir, pr) => {
+  const { readFileSync, existsSync } = require('node:fs');
+  const f = `${dir}/${pr}.json`;
+  return existsSync(f) ? { code: 0, out: readFileSync(f, 'utf8') } : { code: 1, err: `GraphQL: Could not resolve to a PullRequest (${pr})` };
+};
+writeFileSync(join(T, 'bin', 'gh-pr-view'), fakeScript(prView, JSON.stringify(GH_PRS), 'process.argv[2]'), { mode: 0o755 });
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
-  `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n` +
+  `if [ "$1 $2" = "pr view" ]; then exec "$(dirname "$0")/gh-pr-view" "$3"; fi\n` +
   `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\n` +
   `if [ "$1 $2" = "pr create" ]; then echo "https://github.com/$4/pull/931"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
@@ -42,11 +60,25 @@ const BIN = join(env.DESK_HOME, 'bin');
 mkdirSync(BIN, { recursive: true });
 for (const f of readdirSync(REAL_BIN)) if (f !== 'answer.mjs') symlinkSync(join(REAL_BIN, f), join(BIN, f));
 const ANSWERS = join(T, 'answers.log');
+// The fake answer.mjs logs its call, then runs the real one in its own process (one node, not two). Its
+// launchctl prints are answered in that process by bin/launchctl's own rule, as the suite's are below:
+// every repo load asks once per supervised batch, so a fake launchctl process per ask cost about 23
+// node starts per answer once the fixture holds that many batches (DS-929 AC3).
 writeFileSync(join(BIN, 'answer.mjs'), `import { appendFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
 appendFileSync(${JSON.stringify(ANSWERS)}, JSON.stringify({ args: process.argv.slice(2), queue: process.env.DESK_QUEUE }) + '\\n');
-const r = spawnSync(process.execPath, [${JSON.stringify(join(REAL_BIN, 'answer.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });
-process.exit(r.status ?? 1);
+const launchctlPrint = ${launchctlPrint};
+const cp = require('node:child_process');
+const spawnSync = cp.spawnSync;
+cp.spawnSync = function (cmd, args, ...rest) {
+  if (String(cmd).split('/').pop() !== 'launchctl' || args?.[0] !== 'print') return spawnSync.call(this, cmd, args, ...rest);
+  const { code } = launchctlPrint(${JSON.stringify(LOADED)}, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
+};
+syncBuiltinESMExports();
+process.argv[1] = ${JSON.stringify(join(REAL_BIN, 'answer.mjs'))};
+await import(process.argv[1]);
 `);
 const answers = () => (existsSync(ANSWERS) ? readFileSync(ANSWERS, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
 
@@ -107,11 +139,72 @@ put('gamma', { port: 3300, beat: 120, tickets: { 'G-1': parked('A', 240, 'Retry 
 put('delta', { port: 3400, beat: 3, tickets: { 'D-1': { state: 'running', lane: 'A' } } });
 put('epsilon', { port: 3600 });
 
-const N = await import('../desk/bin/needs-you.mjs');
+// ---- DS-929: an in-process collect or refresh starts no process. Every child process this suite's own
+// process starts goes through these wrappers (syncBuiltinESMExports carries them into the modules' named
+// imports). launchctl, which loadRepos asks once per supervised batch, is answered here by bin/launchctl's
+// own rule (launchctlPrint). A gh, git, desk-jira or launchctl process started while a collect or refresh
+// runs on the suite's stubs (onStubs, below) is recorded, and the last check reads that none was.
+// The cli() runs still start needs-you.mjs and the fakes in bin/, end to end.
+const cpCjs = require('node:child_process');
+const FAKED = new Set(['gh', 'git', 'desk-jira', 'launchctl']);
+let onStubDepth = 0;
+const startedOnStubs = [];
+const launchctlHere = (args) => {
+  const { code } = launchctlPrint(LOADED, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
+};
+for (const f of ['spawnSync', 'execFileSync', 'execSync', 'spawn', 'execFile', 'exec']) {
+  const real = cpCjs[f];
+  cpCjs[f] = function (cmd, ...rest) {
+    const bin = String(cmd).trim().split(/\s+/)[0].split('/').pop();
+    const args = Array.isArray(rest[0]) ? rest[0] : [];
+    if (f === 'spawnSync' && bin === 'launchctl' && args[0] === 'print') return launchctlHere(args);
+    if (onStubDepth > 0 && FAKED.has(bin)) startedOnStubs.push(`${bin} ${args.join(' ')}`.trim());
+    return real.call(this, cmd, ...rest);
+  };
+}
+syncBuiltinESMExports();
+
+const NY = await import('../desk/bin/needs-you.mjs');
 const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
 const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
+// The reads every in-process collect and refresh is given unless a case passes its own: GitHub's PRs from
+// the fixtures the fake gh serves (onGitHub), and no ticket status, worktree, fetch, merged PR elsewhere or
+// red-main issue, which is what the real reads find under this suite's fakes. A case that means to test a
+// real read passes it (DS-546 AC3's git, the follow gates' git, DS-925's ciRed), and its starts are not counted.
+const STUB = {
+  pr: (_r, pr) => {
+    const { code, out, err } = prView(GH_PRS, pr);
+    return code === 0 ? { v: JSON.parse(out), err: '' } : { v: null, err };
+  },
+  ticket: () => null,
+  git: () => null,
+  fetch: () => false,
+  merged: () => null,
+  ciRed: () => [],
+};
+// collect and refresh as the suite calls them: on that batch's repos, loaded here as the CLI loads them, and
+// on STUB, unless the case passes its own reads (null too).
+const realReads = new Set(Object.values(NY.READS));
+const onStubs = (fn) => (o = {}) => {
+  const reads = 'reads' in o ? o.reads : STUB;
+  const counted = !Object.values(reads ?? {}).some((r) => realReads.has(r));
+  if (counted) onStubDepth++;
+  try { return fn({ ...o, repos: o.repos ?? loadRepos(o.now ?? Date.now(), o.word ?? null), reads }); } finally { if (counted) onStubDepth--; }
+};
+const N = { ...NY, collect: onStubs(NY.collect), refresh: onStubs(NY.refresh) };
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
-const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+const cliRan = new Set();
+const cli = (...args) => { cliRan.add(args[0]); const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
+// A CLI command run in this process through needs-you.mjs's own run(), which its entry prints, for a check
+// that tests what the command decides rather than the script. list runs on STUB, as collect and refresh do
+// here; record, left and ask on their own reads, as before. Each command keeps cli() runs too, end to end,
+// and the last checks read that it did (DS-929 AC2).
+const here = (cmd, ...rest) => {
+  if (cmd !== 'list') return NY.run([cmd, ...rest]);
+  onStubDepth++;
+  try { return NY.run([cmd, ...rest], { reads: STUB }); } finally { onStubDepth--; }
+};
 
 // ---- AC1: every item desk-q counts, in every repo, and nothing it does not
 const c = N.collect();
@@ -176,7 +269,7 @@ t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} 
 const n4 = N.record({ word: 'alpha', ticket: 'A-4', action: 'not-now' });
 t('AC8 a hold put off is in the register too, and stays held', `${n4.ok} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8').includes('"ticket":"A-4"')} ${queueOf('alpha').tickets['A-4'].held_by}`, 'true true A-9');
 // DS-324 AC1, AC3: a put-off item is not listed again, on this run or a later one, and the count leaves it out.
-const offList = cli('list', 'alpha');
+const offList = here('list', 'alpha');
 t('DS-324 AC1 a put-off park and hold are not listed', `${N.collect({ word: 'alpha' }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key))} ${/^alpha A-[46] /m.test(offList.out)}`, 'false false');
 t('DS-324 AC1 the count line leaves them out and says so', offList.out.trim().split('\n').at(-1), `${offList.out.split('\n').filter((l) => / \| /.test(l)).length} items in 1 repo. 2 put off with not-now, left out until they change.`);
 t('DS-324 AC3 a later run with nothing changed still leaves them out', N.collect({ word: 'alpha', repos: loadRepos(NOW + 86400000) }).items.some((i) => ['A-4', 'A-6'].includes(i.t.key)), false);
@@ -192,7 +285,7 @@ t('approve that leaves the merge to the person is recorded, and says so', `${s7.
 t('AC9 one repo', N.collect({ word: 'beta' }).items.map((i) => `${i.r.name} ${i.t.key}`).join(), 'beta B-1');
 
 // ---- AC10: nothing needing the person is one line
-t('AC10 nothing in a named repo', cli('list', 'delta').out.trim(), 'Nothing needs you in delta.');
+t('AC10 nothing in a named repo', here('list', 'delta').out.trim(), 'Nothing needs you in delta.');
 const quiet = loadRepos().filter((r) => ['delta', 'epsilon'].includes(r.name));
 t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing needs you.');
 
@@ -242,7 +335,7 @@ const back = N.collect({ word: 'alpha' }).items;
 t('DS-324 AC2 a hold whose blocker went done is listed again, saying what changed', /^A-9 finished with no PR: let it start \(Changed since it was put off on \d{4}-\d\d-\d\d: blockers A-9:none → A-9:done; need .*\.\)$/.test(back.find((i) => i.t.key === 'A-4')?.need ?? ''), true);
 t('DS-324 AC2 a park whose inputs changed is listed again, saying what changed', /^PRODUCTION BROKEN: checkout returns 500 \(Changed since it was put off on \d{4}-\d\d-\d\d: pr-head \(new\) → bbb\.\)$/.test(back.find((i) => i.t.key === 'A-6')?.need ?? ''), true);
 t('DS-376 AC3, AC4 both count the changed ones as needing you, and the cell is the count alone with none put off',
-  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${cli('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
+  `${needsCell()} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha')).shown} ${back.length} ${here('left', 'alpha').out.split('\n')[0]}`, '4 4 4 desk-q counts 4 items needing you in alpha.');
 // DS-324 AC1, AC3: two holds with the same words are put off each on its own; the second does not bring the first back.
 const held = (k) => ({ key: k, state: 'parked', lane: 'A', held_by: 'A-9', added_at: minsAgo(25), park: { question: `held by orchestrator: blocked by A-9 — starts once their PRs merge (${k})` } });
 const tq = queueOf('alpha');
@@ -275,7 +368,7 @@ writeFileSync(xq, JSON.stringify({ version: 1, batch: 'x1-batch', base: 'feat/x'
   'X-2': { key: 'X-2', added_at: minsAgo(600), ...parked('A', 400, 'Which banner?') },
   'X-3': { key: 'X-3', added_at: minsAgo(600), ...parked('A', 5, 'Which footer?') } } }));
 writeFileSync(join(xs, 'orchestrators', 'q.json'), JSON.stringify({ queue: xq, batch: 'x1-batch', pid: 1, at: minsAgo(1) }));
-const xList = cli('list', 'alpha');
+const xList = here('list', 'alpha');
 t('DS-310 AC3 the item names the named batch, as record takes it', xList.out.split('\n').some((l) => l.startsWith('alpha:X-1 X-2 parked') && l.includes('| Which banner? |')), true);
 t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named batch\'s', `${xList.out.includes('\nalpha A-2 ')} ${/^@ alpha · X-1 \(feat\/x\): run by the supervisor/m.test(xList.out)}`, 'true true');
 t('DS-310 AC3 the named batch on its own lists only its items', cli('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
@@ -418,12 +511,12 @@ put('iota', { port: 3900, beat: 1, supervised: true, tickets: {
 const iota = N.collect({ word: 'iota' }).items;
 const i1 = iota.find((i) => i.t.key === 'I-1');
 t('DS-323 AC1 a draft with review gaps offers answer first, then done and not-now', `${i1?.need} | ${i1?.actions.map((a) => a[0]).join()}`, 'PR #71 is a draft, and its code review left 2 requirement gaps. Desk could not read the review to quote the gaps, so read them on the PR. Say how to settle them; a worker on the PR carries out your call. | answer,done,resume,not-now');
-t('DS-323 AC1 its listed line recommends the answer', cli('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
+t('DS-323 AC1 its listed line recommends the answer', here('list', 'iota').out.split('\n').some((l) => l.startsWith('iota I-1 pr') && l.includes('| 1. answer (recommended:')), true);
 const i2 = iota.find((i) => i.t.key === 'I-2');
 t('DS-323 AC3 a draft an older pass recorded as not green, whose only red checks were skipped, says CI does not run on a draft, and to undraft it', i2?.need, 'PR #72 is a draft, and CI does not run on drafts, so its checks were skipped. Undraft it so they run; then merge it on GitHub once its checks are green.');
 t('DS-323 AC1 a PR with no review gaps takes no answer', `${i2?.actions.map((a) => a[0]).join()} ${N.record({ word: 'iota', ticket: 'I-2', action: 'answer', text: 'x' }).ok}`, 'done,resume,not-now false');
 const call323 = 'Split gap 1 into its own ticket; fix gap 2 in this PR';
-const gr = cli('record', 'iota', 'I-1', 'answer', call323);
+const gr = here('record', 'iota', 'I-1', 'answer', call323);
 const i1q = queueOf('iota').tickets['I-1'];
 const ghLog = readFileSync(GH_LOG, 'utf8');
 t('DS-323 AC2 the answer is posted on the PR', `${gr.code} ${ghLog.includes('pr comment 71 --repo acme/iota --body') && ghLog.includes(`> ${call323}`)}`, '0 true');
@@ -482,7 +575,7 @@ put('mu', { port: 4200, beat: 1, supervised: true, tickets: {
 const mu = Object.fromEntries(N.collect({ word: 'mu' }).items.map((i) => [i.t.key, i]));
 t('DS-345 AC1 a findings draft with gaps offers answer first', mu['M-1']?.actions.map((a) => a[0]).join(), 'answer,done,resume,not-now');
 const call345 = 'Drop the 7-day row for the old subscription; keep the rest';
-const mr = cli('record', 'mu', 'M-1', 'answer', call345);
+const mr = here('record', 'mu', 'M-1', 'answer', call345);
 const m1q = queueOf('mu').tickets['M-1'];
 t('DS-345 AC2 the call is posted on the PR', `${mr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 81 --repo acme/mu --body')}`, '0 true');
 t('DS-345 AC2 and a fix worker on the branch is queued with it', `${m1q.state} ${m1q.fix?.kind} ${m1q.fix?.pr} ${m1q.fix?.head} ${m1q.fix?.answer === call345}`, 'triaged gaps 81 h81 true');
@@ -539,7 +632,7 @@ t('DS-513 AC1 negative: a reason from an older head offers no answer', pg['PG-2'
 t('DS-513 AC3 a finding that outlasted its tries beside the person\'s gap offers answer and fix, and names the gap', `${pg['PG-3']?.actions.map((a) => a[0]).join()} ${pg['PG-3']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,fix,done,resume,not-now true');
 t('DS-513 AC3 a code gap that outlasted its try beside the person\'s gap offers answer', `${pg['PG-4']?.actions.map((a) => a[0]).join()} ${pg['PG-4']?.need.includes("only you can settle: PERSON'S CALL · AC2")}`, 'answer,done,resume,not-now true');
 const pgCall = 'Accept AC2 as built';
-const pgr = cli('record', 'pg', 'PG-1', 'answer', pgCall);
+const pgr = here('record', 'pg', 'PG-1', 'answer', pgCall);
 const pgq = queueOf('pg').tickets['PG-1'];
 t('DS-513 AC1 the call is posted and a worker is queued on the ready PR', `${pgr.code} ${readFileSync(GH_LOG, 'utf8').includes('pr comment 85 --repo acme/pg --body')} ${pgq.state} ${pgq.fix?.kind} ${pgq.fix?.ready} ${pgq.fix?.answer === pgCall}`, '0 true triaged gaps true true');
 
@@ -561,13 +654,13 @@ t('DS-501 AC1 a PR with review gaps and a plain open PR both offer resume, with 
   `${sg0['SG-1']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.map((a) => a[0]).join()} ${sg0['SG-2']?.actions.find((a) => a[0] === 'resume')?.[1]}`,
   'answer,done,resume,not-now done,resume,not-now null');
 t('DS-501 AC1 negative: a closed PR does not', sg0['SG-6']?.actions.map((a) => a[0]).join(), 'drop,requeue,not-now');
-t('DS-501 AC1 its listed line says what resume does', cli('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
+t('DS-501 AC1 its listed line says what resume does', here('list', 'instr').out.split('\n').some((l) => l.startsWith('instr SG-2 pr') && /\d\. resume \(resume "<instruction>" keeps it for the next worker/.test(l)), true);
 
 // AC2: GitHub is read first, then the instruction is kept and the ticket goes back on its branch.
 const loggedBefore = readFileSync(GH_LOG, 'utf8').length;
 const told = 'Fix the issues, then send it back\nand keep the title';
 onGitHub(92, { state: 'OPEN', isDraft: false, headRefOid: 'live92' });
-const resumed = cli('record', 'instr', 'SG-2', 'resume', told);
+const resumed = here('record', 'instr', 'SG-2', 'resume', told);
 const sg2 = sq()['SG-2'];
 const sgBrief = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__instr', 'briefings', 'SG-2.md'), 'utf8');
 t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', '--all', told])} true`);
@@ -594,7 +687,7 @@ t('DS-501 triage call: requeued whoever runs the batch, with no message to send'
 const untouched = (k) => `${sq()[k].state} ${sq()[k].fix}`;
 const answersBefore = answers().length;
 onGitHub(93, { state: 'MERGED', isDraft: false, headRefOid: 'h93', mergedAt: minsAgo(1) });
-const sMerged = cli('record', 'instr', 'SG-3', 'resume', 'x');
+const sMerged = here('record', 'instr', 'SG-3', 'resume', 'x');
 t('DS-501 AC3 a PR merged since the last pass is refused, saying why', `${sMerged.code} ${/PR #93 is merged, so no worker can carry out an instruction on it/.test(sMerged.out + sMerged.err)} ${untouched('SG-3')}`, '11 true done undefined');
 onGitHub(94, { state: 'CLOSED', isDraft: false, headRefOid: 'h94' });
 const sClosed = N.record({ word: 'instr', ticket: 'SG-4', action: 'resume', text: 'x' });
@@ -664,7 +757,7 @@ const studia = N.collect({ word: 'studia' }).items;
 t('a repo pinned to an off subscription is one item, and its queued ticket is none', studia.map((i) => `${i.t.key} ${i.kind}`).join(), 'subscription-off subscription-off');
 t('its need names the repo, the email and the command that moves it', studia[0]?.need,
   'acme__studia is pinned to ops@studia.example, which is off (claude work-2), so no new work starts for it: move it to another subscription (desk-env subscription set acme__studia <default|email>), or set work-2 unused (desk-env logins set claude work-2 unused)');
-t('and desk-q\'s NEEDS YOU count, and left, count it', `${N.needsCount(loadRepos().find((r) => r.name === 'studia')).shown} ${cli('left', 'studia').out.split('\n')[0]}`, '1 desk-q counts 1 item needing you in studia.');
+t('and desk-q\'s NEEDS YOU count, and left, count it', `${N.needsCount(loadRepos().find((r) => r.name === 'studia')).shown} ${here('left', 'studia').out.split('\n')[0]}`, '1 desk-q counts 1 item needing you in studia.');
 t('it offers done and not-now, and done is recorded', `${studia[0]?.actions.map((a) => a[0]).join()} ${N.record({ word: 'studia', ticket: 'subscription-off', action: 'done' }).ok}`, 'done,not-now true');
 const { needText: rowText } = await import('../desk/bin/desk-q.mjs');
 const lr = loadRepos().find((r) => r.name === 'lambda');
@@ -797,7 +890,7 @@ t('DS-375 AC3 a §4 Check builds check names its command as what unblocks it', s
 t('DS-375 AC4 a step outside GitHub: done is offered but not recommended, and says what the step is',
   `${sg['S-2']?.actions.map(([a]) => a).join()} ${recommends(sg['S-2'])} ${sg['S-2']?.actions[0][2]}`,
   'done,resume,not-now false the step is outside GitHub (./scripts/ensure-flows-image.sh); it drops off once "Flows image" is green');
-t('DS-375 AC4 its listed line carries no recommendation', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
+t('DS-375 AC4 its listed line carries no recommendation', here('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-2 pr') && !l.includes('recommended')), true);
 t('DS-375 AC5 a §4 Pre-merge steps step is named from the config, with no done recommended',
   `${sg['S-3']?.need} | ${recommends(sg['S-3'])}`, `PR #103: "${LINT}" (failed at "Check portal schema mirror") needs a step outside GitHub: apply the PR's migrations to staging first. Do that step; desk then merges it once its checks are green. | false`);
 t('DS-375 AC4 beside a check on GitHub, it drops off only once every check it is stuck on is green',
@@ -1145,7 +1238,7 @@ const gh657 = {
   187: { state: 'OPEN', files: [{ path: 'package.json' }], statusCheckRollup: green657 },
   188: { state: 'OPEN', files: signed657, statusCheckRollup: green657 },
 };
-const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...N.READS, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
+const h657 = Object.fromEntries(N.collect({ word: 'hold657', reads: { ...STUB, pr: (r, pr) => ({ v: gh657[pr] ?? null, err: '' }) } }).items.map((i) => [i.t.key, i]));
 const step657 = (pr, why = why657) => `PR #${pr} is under a merge hold, so desk never merges it itself: "${why}" (prompts/**, 1 file(s), e.g. prompts/call.md).`;
 const ask657 = ' Do what it asks first, then merge it on GitHub; the ticket is then done.';
 t('DS-657 AC5 a sign-off hold whose file is changed and checks are green says its step is done and only the merge is left', h657['S-1']?.need,
@@ -1216,14 +1309,14 @@ const q1 = N.record({ word: 'psi', ticket: 'Q-1', action: 'done' });
 t('DS-378 AC1 done on a PR still open says GitHub still shows it unmerged', `${q1.ok} ${q1.line}`, 'false psi Q-1: GitHub still shows PR #141 unmerged, so it stays on your list with that note.');
 t('DS-378 AC1 it is read from the repo\'s GitHub', readFileSync(GH_LOG, 'utf8').includes('pr view 141 --repo acme/psi --json state,mergedAt,isDraft,headRefOid'), true);
 t('DS-378 AC1 it is listed again with that note', /^\(You said done at \d{4}-\d\d-\d\d \d\d:\d\d UTC, and GitHub still showed it unmerged\.\)$/.test(psi()['Q-1']?.note ?? ''), true);
-const q1Line = cli('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
+const q1Line = here('list', 'psi').out.split('\n').find((l) => l.startsWith('psi Q-1 pr')) ?? '';
 t('DS-378 AC1 the listed line keeps the need and the note whole', q1Line.includes(`| ${psi()['Q-1'].need} ${psi()['Q-1'].note} |`), true);
 // AC4 on the listed line: a long recorded text a need quotes never takes the next step off it.
 const longHold = withHead(psiPr(147, { merge_blocked: `merge hold: ${'needs a sign-off on a very long list of held paths, '.repeat(6)}` }));
 const qhl = queueOf('psi'); qhl.tickets['Q-7'] = { key: 'Q-7', ...longHold };
 writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 t('DS-378 AC4 a long merge hold still says what happens next on its listed line',
-  (cli('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
+  (here('list', 'psi').out.split('\n').find((l) => l.includes('| PR #147 ')) ?? '').includes('Do what it asks first, then merge it on GitHub; the ticket is then done. |'), true);
 delete qhl.tickets['Q-7']; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__psi', 'queue.json'), JSON.stringify(qhl));
 // ---- DS-411: a merge hold's item names its step, the routine desk did not run, or the step it failed at
 const migr = 'merge hold: apply the migration to staging and production first — prisma/migrations/**, 1 file(s), e.g. prisma/migrations/2026_brand/migration.sql';
@@ -1334,7 +1427,7 @@ const chi = Object.fromEntries(N.collect({ word: 'chi' }).items.map((i) => [i.t.
 t('DS-379 AC3 a stuck capture try says what to do', chi['C-1']?.need,
   'PR #151 is a draft, and desk\'s capture try could not take 2 of its screenshots, so nothing desk has can fill their cells. Edit the PR body so no cell is left; the next pass then takes it out of draft.');
 t('DS-379 AC3 its note names each screen and the worker\'s reason, whole', chi['C-1']?.note, `(Not taken: s-2-before.png, s-2-after.png. The capture try said: ${said379})`);
-const c1Line = cli('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
+const c1Line = here('list', 'chi').out.split('\n').find((l) => l.startsWith('chi C-1 pr')) ?? '';
 t('DS-379 AC3 the listed line keeps the need and the note whole', c1Line.includes(`| ${chi['C-1'].need} ${chi['C-1'].note} |`), true);
 t('DS-379 AC3 one screen with nothing said still names it', `${chi['C-2']?.need} ${chi['C-2']?.note}`,
   'PR #152 is a draft, and desk\'s capture try could not take one of its screenshots, so nothing desk has can fill its cell. Edit the PR body so no cell is left; the next pass then takes it out of draft. (Not taken: a-after.png.)');
@@ -1441,7 +1534,7 @@ const fs = join(env.HOME, '.desk-autopilot', 'acme__omega', 'batches', 'F-1');
 mkdirSync(dirname(fq), { recursive: true });
 writeFileSync(fq, JSON.stringify({ version: 1, batch: 'f1-batch', base: 'feat/f', concurrency: 1, supervised: true, tickets: { 'F-2': { key: 'F-2', state: 'running', lane: 'A', added_at: minsAgo(60) } } }));
 const fQueue = () => JSON.parse(readFileSync(fq, 'utf8'));
-const omegaList = cli('list', 'omega').out.split('\n');
+const omegaList = here('list', 'omega').out.split('\n');
 t('DS-380 a parked ticket offers move, naming the running batch and its base', omegaList.some((l) => l.startsWith('omega M-1 parked') && l.includes('move (move <batch> takes it out of this batch and queues it in another, its next worker on that base: F-1 (on feat/f))')), true);
 const m1 = N.record({ word: 'omega', ticket: 'M-1', action: 'move', text: 'F-1' });
 const mv1 = fQueue().tickets['M-1'];
@@ -1643,7 +1736,7 @@ const nu = () => N.collect({ word: 'nu' }).items;
 t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,N-5 parked,unset:worker-web-read config');
 const nuRow = nu().find((i) => i.kind === 'config');
 t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("§3 worker-web-read is not set in nu's config, so desk reads it as no, and 2 tickets parked on it (N-1 and N-2). Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
-t('DS-389 AC3 the list shows it as one line', cli('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
+t('DS-389 AC3 the list shows it as one line', here('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
 const stillUnset = N.record({ word: 'nu', ticket: 'unset:worker-web-read', action: 'done' });
 t('DS-389 AC3 done while the row is still unset requeues nothing', `${stillUnset.ok} ${queueOf('nu').tickets['N-1'].state} ${/still not set/.test(stillUnset.line)}`, 'false parked true');
 const nuConfig = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__nu', 'config.md');
@@ -1682,7 +1775,7 @@ t('DS-577 AC8 one item for the repo, and no per-PR item for the PRs it holds', r
 t('DS-577 AC8 its note names the five PRs it holds', rvItem?.note, 'Held on it: PR #301 (RV-1), PR #302 (RV-2), PR #303 (RV-3), PR #304 (RV-4) and PR #305 (RV-5).');
 t('DS-577 AC8 its need names both logins and what it holds', `${rvItem?.need.includes(rvWhy)} ${/no PR red only on that gate gets a review or fix try; build workers still start$/.test(rvItem?.need)} ${rvItem?.actions.map((a) => a[0]).join()}`, 'true true done,not-now');
 t('DS-577 AC8 desk-q counts it once, beside the PRs it does not hold', N.needsCount(N.collect({ word: 'rv' }).scope[0]).shown, 3);
-t('DS-577 AC8 the list shows it as one line', cli('list', 'rv').out.split('\n').filter((l) => l.startsWith('rv reviewer reviewer')).length, 1);
+t('DS-577 AC8 the list shows it as one line', here('list', 'rv').out.split('\n').filter((l) => l.startsWith('rv reviewer reviewer')).length, 1);
 const rvDone = N.record({ word: 'rv', ticket: 'reviewer', action: 'done' });
 t('DS-577 AC8 done records nothing and says the next pass checks again', `${rvDone.ok} ${/next pass checks the account again/.test(rvDone.line)}`, 'true true');
 {
@@ -1776,7 +1869,7 @@ writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__omicron', 'orchestrators'
   batch: 'omicron-batch', pid: 2, at: minsAgo(1), pass: minsAgo(20), next: new Date(NOW + 2 * 60000).toISOString() }));
 const runOf = (word) => N.listText(N.collect({ word })).split('\n').find((l) => l.startsWith('@ '));
 t('DS-396 AC1 an idle supervised batch says the supervisor runs it and an answer wakes it, not passes stopped',
-  `${runOf('omicron')} ${/passes stopped/i.test(cli('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
+  `${runOf('omicron')} ${/passes stopped/i.test(here('left', 'omicron').out)}`, '@ omicron: run by the supervisor; an answer wakes it, and its next pass picks the answer up false');
 t('DS-396 AC3 a batch with no supervisor agent loaded and no pass for 20 minutes still says passes stopped',
   /^@ pi: passes stopped; answers wait until they resume\. To resume: /.test(runOf('pi') ?? ''), true);
 t('DS-396 AC4 desk-q counts the idle supervised batch live, so its answered park waits rather than needing you',
@@ -1802,7 +1895,7 @@ const sigmaQ = () => readFileSync(join(env.DESK_HOME, 'repos', 'acme__sigma', 'q
 const sgItems = () => N.collect({ word: 'sigma' }).items;
 const verbs = (k) => sgItems().find((i) => i.t.key === k)?.actions.map((a) => a[0]).join();
 t('DS-399 AC1 a lane D session item with its worktree offers resume beside open and not-now', `${sgItems().find((i) => i.t.key === 'S-1')?.kind} ${verbs('S-1')}`, 'session open,resume,done,drop,not-now');
-t('DS-399 AC1 the list line says what resume does', cli('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
+t('DS-399 AC1 the list line says what resume does', here('list', 'sigma').out.split('\n').some((l) => l.startsWith('sigma S-1 session') && l.includes('2. resume (once its step is done, resume "<what you did>" hands it back to a worker that starts at self-review)')), true);
 t('DS-399 a lane C park no worker ever worked has no worktree to start in, so no resume', verbs('S-2'), 'open,done,drop,not-now');
 t('DS-399 a park on a step no worker is allowed is not offered resume, worktree or not', verbs('S-4'), 'open,done,drop,not-now');
 const sgBefore = sigmaQ();
@@ -1938,7 +2031,7 @@ const kp = () => N.collect({ word: 'kappa407' }).items;
 t('DS-407 AC2 one item for the step, and none for each PR waiting on it', kp().map((i) => `${i.t.key} ${i.kind}`).join(), 'step:OPS-9 step');
 t('DS-407 AC2 it names the step and every PR and ticket waiting on it', kp()[0].need.startsWith('OPS-9 ("Apply the billing migration") is a step only you can take, and 3 tickets wait to merge on it: PR #71 (K-1), PR #72 (K-2) and K-3 (being built). Do it and move OPS-9 to Done in Jira'), true);
 t('DS-407 its actions are done and not-now', kp()[0].actions.map((a) => a[0]).join(), 'done,not-now');
-t('DS-407 the list prints it as a line of its batch', cli('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
+t('DS-407 the list prints it as a line of its batch', here('list', 'kappa407').out.split('\n').some((l) => l.startsWith('kappa407 step:OPS-9 step')), true);
 const kpCount = () => N.needsCount(loadRepos().find((r) => r.name === 'kappa407'));
 t('DS-407 desk-q counts the step as needing you, as the list shows it', `${kpCount().shown} ${kpCount().putOff}`, '1 0');
 const kpDone = N.record({ word: 'kappa407', ticket: 'step:OPS-9', action: 'done' });
@@ -2162,7 +2255,8 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     'G-2': merged(95, c.merge, [PROD]),
     'G-3': merged(96, c.unpushed, [STAGING]),
   } });
-  const fi = (word) => N.collect({ word }).items.filter((i) => i.kind === 'follow');
+  // The gates are read from those refs with real git, the one real read these collects are given.
+  const fi = (word) => N.collect({ word, reads: { ...STUB, git: N.READS.git } }).items.filter((i) => i.kind === 'follow');
   const byKey = (word) => Object.fromEntries(fi(word).map((i) => [i.t.key, i]));
   let g = byKey('prod785');
   t('DS-785 AC3 a production step whose merge is on main but not on the production ref is not listed; the merge and main steps are, one item per gate',
@@ -2175,6 +2269,9 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
     g['follow:G-1']?.actions.find(([a]) => a === 'done')?.[1].includes("PR #95's own checks"), true);
   t('DS-788 AC3 a step with no §3 row says nothing about a §3 row', /§3/.test(`${g['follow:G-1']?.need}${g['follow:G-1:main']?.need}`), false);
   t('DS-785 negative: a main step whose merge commit origin/main does not reach is not listed', 'follow:G-3:main' in g, false);
+  const gateDirs = new Set();
+  N.collect({ word: 'prod785', reads: { ...STUB, git: (dir) => { gateDirs.add(dir); return null; } } });
+  t('DS-929 AC1 a collect reads the gates through the git read it is given, in the repo root', [...gateDirs].join(), c.root);
   t('DS-785 desk-q counts only the listed items', N.needsCount(loadRepos().find((r) => r.slug === 'acme__prod785')).shown, 2);
   const done785 = N.record({ word: 'prod785', ticket: 'follow:G-1', action: 'done' });
   const g1 = queueOf('prod785').tickets['G-1'];
@@ -2240,7 +2337,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('reb785', { ...reb, tickets: { 'R-1': merged(97, rb.unpushed, [PROD]) }, ...rebBatch(null) });
   t('DS-785 fix try: a rebase-promoted child with no promotion merge commit recorded waits', Object.keys(byKey('reb785')).join(), '');
   const promoReads = [];
-  N.refresh({ word: 'reb785', reads: { ...N.READS, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
+  N.refresh({ word: 'reb785', reads: { ...STUB, fetch: () => true, pr: (r, pr, more) => { promoReads.push(`${pr}${more}`); return { v: pr === 1003 && more === ',mergeCommit' ? { mergeCommit: { oid: rebased } } : null, err: '' }; } } });
   t('DS-785 fix try: list\'s refresh reads the promotion PR\'s merge commit and records it, and the production step is listed unqualified',
     `${promoReads.includes('1003,mergeCommit')} ${queueOf('reb785').promotion_commits?.['1003'] === rebased} ${Object.keys(byKey('reb785')).join()} ${/^R-1 is on production\. Check: open Osteopaths in the production portal\. Then say done\.$/.test(byKey('reb785')['follow:R-1:production']?.need ?? '')}`,
     'true true follow:R-1:production true');
@@ -2268,7 +2365,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   const i7 = commits('idle785');
   put('idle785', { ...cfg, port: 4791, tickets: { 'N-1': merged(97, null, [STAGING]), 'N-2': merged(98, i7.merge, [PROD]) } });
   const fetches = [];
-  N.refresh({ word: 'idle785', reads: { ...N.READS, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
+  N.refresh({ word: 'idle785', reads: { ...STUB, fetch: (dir) => { fetches.push(dir); return true; }, pr: (r, pr, more) => ({ v: pr === 97 && more === ',mergeCommit' ? { mergeCommit: { oid: i7.merge } } : null, err: '' }) } });
   t('DS-785 list\'s refresh fetches the repo root once and records the merge commit no record had',
     `${fetches.length} ${queueOf('idle785').tickets['N-1'].pr_status?.merge_commit === i7.merge} ${Object.keys(byKey('idle785')).join()}`, '1 true follow:N-1:main');
 
@@ -3195,7 +3292,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     'S-6': { state: 'failed', lane: 'A', merged_at: minsAgo(20) },
   } });
   // GitHub knows S-4's merged PR in web799 only; no repo's queue records it.
-  const reads = { ...N.READS, merged: (slug, key) => (slug === 'acme__web799' && key === 'S-4' ? { pr: 77, mergedAt: minsAgo(30) } : null) };
+  const reads = { ...STUB, merged: (slug, key) => (slug === 'acme__web799' && key === 'S-4' ? { pr: 77, mergedAt: minsAgo(30) } : null) };
   const zen = () => Object.fromEntries(N.collect({ word: 'zen799', reads }).items.map((i) => [i.t.key, i]));
   const items = zen();
   const first = (i) => `${i?.kind} | ${i?.actions[0][0]} | ${i?.actions[0][1]}`;
@@ -3208,7 +3305,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     'held | done | its PR #3117 merged in acme/web799: done records it done here from that PR, and the tickets held behind it can start | done,admit,answer,not-now');
   t('DS-799 AC4 a stopped ticket whose PR in another repo is unmerged offers no done', items['S-2']?.actions.map((a) => a[0]).includes('done'), false);
   t('DS-799 AC4 a merge in another repo before this ticket\'s own merge here offers no done', items['S-6']?.actions.map((a) => a[0]).includes('done'), false);
-  const issueReads ={ ...N.READS, merged: () => ({ pr: 21, mergedAt: minsAgo(30) }) };
+  const issueReads ={ ...STUB, merged: () => ({ pr: 21, mergedAt: minsAgo(30) }) };
   const mine = N.collect({ word: 'mine799', reads: issueReads }).items.find((i) => i.t.key === 'issue-3');
   t('DS-799 AC4 an issue key merged in another repo is that repo\'s own issue, so offers no done', `${mine?.kind} ${mine?.actions.map((a) => a[0]).includes('done')}`, 'stopped false');
 
@@ -3233,12 +3330,12 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const asks = () => N.collect({ word: 'ask811' }).items.filter((i) => i.kind === 'ask');
   const a1 = cli('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
   t('#811 ask records it and says so', `${a1.code} ${a1.out.trim()}`, '0 ask811 ask:1: recorded; /desk-needs-you and desk-q list it until you say done.');
-  cli('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
-  cli('ask', 'ask811', 'Merge PR #12 once its checks are green');
+  here('ask', 'ask811', 'File the follow-up issue drafted in the handoff');
+  here('ask', 'ask811', 'Merge PR #12 once its checks are green');
   const items = asks();
   t('#811 a repo with no batch lists each ask once, as its own item', items.map((i) => `${i.t.key}|${i.need}|${i.actions.map((a) => a[0]).join()}`).join(' ; '),
     'ask:1|File the follow-up issue drafted in the handoff|done,not-now ; ask:2|Merge PR #12 once its checks are green|done,not-now');
-  t('#811 the list shows it', cli('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
+  t('#811 the list shows it', here('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
   const standing = loadRepos(Date.now(), 'ask811').find((r) => r.slug === 'acme__ask811' && r.batch == null);
   t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
   const askScreen = strip(repoScreen(standing));
@@ -3246,7 +3343,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
   const { shownRepos } = await import('../desk/bin/desk-q.mjs');
   t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
-  t('#811 left counts them', cli('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
+  t('#811 left counts them', here('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
   const off = N.record({ word: 'ask811', ticket: 'ask:2', action: 'not-now' });
   t('#811 not-now puts one off', `${off.ok} ${asks().map((i) => i.t.key).join()}`, 'true ask:1');
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
@@ -3288,7 +3385,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 {
   put('red925', { port: 4925, beat: 1, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
   const issue = { number: 12, title: 'main is red: a CI lane on main is failing, cancelled or stale', url: 'https://github.com/acme/red925/issues/12', createdAt: minsAgo(30) };
-  const reads = { ...N.READS, ciRed: (r) => (r.slug === 'acme__red925' ? [issue] : []) };
+  const reads = { ...STUB, ciRed: (r) => (r.slug === 'acme__red925' ? [issue] : []) };
   const reds = () => N.collect({ word: 'red925', reads }).items.filter((i) => i.kind === 'ci-red');
   const s = reds();
   t('DS-925 one item an issue, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ci-red:12 standing');
@@ -3298,10 +3395,10 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   N.needsCount(loadRepos(Date.now(), 'red925').find((r) => r.slug === 'acme__red925' && r.batch == null));
   t('DS-925 desk-q\'s count reads no gh', readFileSync(GH_LOG, 'utf8').includes('issue list'), false);
   writeFileSync(GH_LOG, '');
-  N.collect({ word: 'red925' });
+  N.collect({ word: 'red925', reads: { ...STUB, ciRed: N.READS.ciRed } });
   t('DS-925 listing asks gh for the open issues assigned to the person', readFileSync(GH_LOG, 'utf8').includes('issue list --repo acme/red925 --label ci-main-red --state open --assignee @me'), true);
   put('quiet925', { port: 4926 });
-  const quiet = { ...N.READS, ciRed: (r) => (r.slug === 'acme__quiet925' ? [{ ...issue, url: 'https://github.com/acme/quiet925/issues/12' }] : []) };
+  const quiet = { ...STUB, ciRed: (r) => (r.slug === 'acme__quiet925' ? [{ ...issue, url: 'https://github.com/acme/quiet925/issues/12' }] : []) };
   t('DS-925 the whole list reads a quiet repo the home screen does not show', N.collect({ reads: quiet }).items.filter((i) => i.kind === 'ci-red').map((i) => `${i.r.slug} ${i.t.key}`).join(), 'acme__quiet925 ci-red:12');
   t('DS-925 no read, no item', N.collect({ word: 'red925', reads: null }).items.filter((i) => i.kind === 'ci-red').length, 0);
   const done = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'done', reads });
@@ -3346,6 +3443,11 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     'G-3': ticket(42, hold(['tests'], minsAgo(5)), { pr_status: st(42, []) }) } });
   t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
+
+// ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
+// no gh, git, desk-jira or launchctl process.
+t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
+t('DS-929 AC2 every CLI command still has a run end to end', [...cliRan].sort().join(), 'ask,left,list,record');
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);
