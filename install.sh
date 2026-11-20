@@ -1298,6 +1298,7 @@ section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
 configured=0
+SHADOWED=""
 for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
@@ -1307,6 +1308,16 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   todos="$(grep -c '^|.*`TODO`' "$c" 2>/dev/null || true)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
+  # A user-level skill (a vendored one this install links, say) with the name of a skill the repo
+  # ships itself can load in place of the repo's copy. Read-only; each pair goes in the summary.
+  root="$(DESK_CONFIG="$c" node "$SRC/desk/bin/desk-env.mjs" get repo-root 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || continue
+  pairs="$(bash "$SRC/skills/desk-setup/bin/user-skill-copies.sh" "$root" 2>/dev/null | grep '^  WARN  user-level ' | sed 's/^  WARN  user-level //' || true)"
+  [ -n "$pairs" ] || continue
+  n="$(printf '%s\n' "$pairs" | wc -l | tr -d ' ')"
+  warn "$slug: $n user-level skill path(s) shadow a skill this repo ships, so either copy can load (listed at the end)"
+  SHADOWED="$SHADOWED$(printf '%s\n' "$pairs" | sed "s|^|  $slug: |")
+"
 done
 [ "$configured" = 0 ] && note "no repo is configured yet: run /desk-setup inside each repo you want desk in"
 note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/desk-config.template.md"
@@ -1365,6 +1376,11 @@ if [ -n "$WROTE" ]; then
   echo "Written or moved, because these paths are desk-owned (an edited copy is backed up"
   echo "under $BACKUP first):"
   printf '%s' "$WROTE"
+fi
+if [ -n "$SHADOWED" ]; then
+  echo "Shadowed: a user-level skill with the name of one a configured repo ships, so either can load."
+  echo "The repo's copy is the one its CI and teammates use; remove a user-level one by hand to run it:"
+  printf '%s' "$SHADOWED"
 fi
 if [ -n "$RUNNING" ]; then
   echo "Running autopilot (merge drivers and supervisor agents):"
