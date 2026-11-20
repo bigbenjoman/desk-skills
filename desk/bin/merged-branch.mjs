@@ -46,7 +46,8 @@ export function tidy({ pr, branches, perm, base, cwd }) {
     if (!h.why) return `left ${b} (${h.tip}): it holds work ${base} lacks, so deleting it is a question`;
     const wt = checkedOut(b, cwd);
     if (wt) return `left ${b} (${h.why}): it is checked out in ${wt}`;
-    const del = ['update-ref', '-d', `refs/heads/${b}`, h.tip];
+    // --no-deref: a symbolic branch ref is deleted itself, never the branch it points at.
+    const del = ['update-ref', '--no-deref', '-d', `refs/heads/${b}`, h.tip];
     if (perm === 'merged' || perm === 'yes') {
       const d = sh('git', del, cwd);
       return d.ok ? `deleted ${b} (${h.why}; restore: git branch ${b} ${h.tip})` : `left ${b}: it could not be deleted at ${h.tip} (${lastLine(d)})`;

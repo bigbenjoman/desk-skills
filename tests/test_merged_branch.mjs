@@ -43,7 +43,7 @@ let out = run('no', ['feat', 'extra'], squash);
 t('no: a squash-merged branch is left, naming the row', out[0], 'left feat (merging it into main changes nothing): config §3 branch-delete is no');
 t('no: nothing is deleted', has('feat') && has('extra'), true);
 out = run('ask', ['feat'], squash);
-t('ask: it is named with the command to run once agreed, pinned to the tip checked', out[0], `ready to delete feat (merging it into main changes nothing), config §3 branch-delete is ask: git update-ref -d refs/heads/feat ${head}`);
+t('ask: it is named with the command to run once agreed, pinned to the tip checked', out[0], `ready to delete feat (merging it into main changes nothing), config §3 branch-delete is ask: git update-ref --no-deref -d refs/heads/feat ${head}`);
 t('ask: and not deleted', has('feat'), true);
 // The pinned command refuses once the branch has moved, so an approval given for one tip never
 // deletes another.
@@ -67,6 +67,11 @@ t('merged: the merged ones are gone, the other kept', `${has('exact')} ${has('fe
 git('branch', 'feat', head);
 out = run('yes', ['feat'], { ...pr, state: 'OPEN' });
 t('a PR not merged deletes nothing, at any value', `${out[0]} ${has('feat')}`, 'left feat: PR #7 is open, not merged true');
+
+// A symbolic branch ref is deleted itself, never the branch it points at.
+git('symbolic-ref', 'refs/heads/sym', 'refs/heads/main');
+out = run('merged', ['sym'], squash);
+t('a symbolic branch ref is deleted, not the branch it names', `${out[0].startsWith('deleted sym (')} ${has('sym')} ${has('main')}`, 'true false true');
 
 // desk-env reads `merged` for branch-delete only: on any other row it is not a value, so a `no`.
 const cfg = join(T, 'config.md');
