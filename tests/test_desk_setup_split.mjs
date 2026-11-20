@@ -42,6 +42,7 @@ const REWRITTEN = [
   ['#827', 'and **§3 / §3b as the first option of each question**', 1], // a start from another repo is one table to confirm
   ['#827', 'Offer it as the starting point; ask the row.', 1],
   ['#827', 'Four per round, as many rounds as it takes. |', 1],
+  ['#827', '**Before the autopilot round, say this plainly:**', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 

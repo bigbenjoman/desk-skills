@@ -24,22 +24,28 @@ it unlocks and what it exposes, the alternatives, and the harness rules it maps 
 **Starting from another repo** (`/desk-setup from <repo>`, or chosen at step 0), the §3 and §3b rows
 are not asked one by one:
 
-1. Settle, unasked, the rows this repo forces, and say which and why: the Jira rounds when §4
+1. Settle, unasked, the rows this repo's §4 forces, and say which and why: the Jira rounds when §4
    Tracker is `none` (`no`), `pr-auto-merge` when §4 Repo merge settings have auto-merge off
-   (`no`), a row that needs a §4 Local database or Staging this repo lacks (`no`), and each
-   consistency check below that follows from another row.
-2. Show every other row in one table: the row, the start-point repo's answer, the Recommended
-   value where it differs (Branch protection `none` included, as above), and for each `yes` what
-   it unlocks and exposes **in this repo**. A row the start-point repo has no answer for shows the
-   Recommended value, marked new.
-3. One `AskUserQuestion`: use the table as shown (Recommended), edit some rows (ask only the rows
-   the user names, one question per row), or ask every row (the rounds above).
-4. Then the consistency checks below, as ever. A `yes` written this way is one the user chose in
-   this conversation: it was in the table they confirmed.
+   (`no`), and a row that needs a §4 Local database or Staging this repo lacks (`no`).
+2. Show every other row in one table, with one **will write** value each: the start-point repo's
+   answer, unless a rule here names another for this repo (Branch protection `none` above, say),
+   with the other value beside it (`start-point: yes`, `Recommended: ask`) and the rule that chose.
+   For each `yes`, what it unlocks and exposes **in this repo**. A row the start-point repo has no
+   answer for writes the Recommended value, marked new. When the table writes `autopilot-workers`
+   `yes`, the autopilot statement below comes first.
+3. One `AskUserQuestion`: write the table as shown, edit some rows (ask only the rows the user
+   names, one question per row), or ask every row (the rounds above).
+4. Then the consistency checks below, on the rows as confirmed. Where an edit turns on a row whose
+   dependents the start-point repo had off (`autopilot-workers` from `no` to `yes`, say), ask those
+   dependents. A `yes` written this way is one the user chose in this conversation: it was in the
+   table they confirmed.
 
-The Subscription row and the dev-server port are still asked on their own, as the core says.
+Kept out of the table, and never copied from the start-point repo: the Subscription row and the
+dev-server port (asked on their own, as the core says), and the Phase 0 levers and Codex review rows
+(set as the core's *§3b: the autonomy rows* says: they are not asked).
 
-**Before the autopilot round, say this plainly:** autopilot runs detached `claude -p` workers, one
+**Before the autopilot round, or a start-point table that writes `autopilot-workers` `yes`, say this
+plainly:** autopilot runs detached `claude -p` workers, one
 per ticket, in their own worktrees of this repo. They edit code, push, open PRs, post to Jira and,
 with `autopilot-merge`, merge once §4 Required checks are green, **with nobody watching**. Anything
 they are not granted, they park and ask about rather than guess. A worker never has more than the
