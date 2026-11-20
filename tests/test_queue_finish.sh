@@ -51,8 +51,8 @@ check "AC1: its summary says who recorded it and what the park was"   '[[ "$(f F
 check "AC1: the PR was read from the config repo"                     'grep -q "pr view 41 --repo acme/widgets --json headRefName,state" "$T/gh.calls"'
 
 # AC2: a ticket held behind it waits on its PR's merge, as behind any done ticket, and is not stuck.
-q add F-2; q hold F-2 F-1
-check "AC2: a ticket held behind it waits on its merge"               '[ "$(node --input-type=module -e "import { waitingOnMerge, prStatusOf } from \"$B/batch-state.mjs\"; const q = JSON.parse((await import(\"node:fs\")).readFileSync(process.argv[1], \"utf8\")); console.log(waitingOnMerge(q, q.tickets[\"F-2\"]))" "$DESK_QUEUE")" = true ]'
+q add F-2; q set F-2 state=triaged lane=A branch=feat/F-2-thing; q hold F-2 F-1
+check "AC2: a ticket held behind it waits on its merge"               '[ "$(node --input-type=module -e "import { waitingOnMerge } from \"$B/batch-state.mjs\"; const q = JSON.parse((await import(\"node:fs\")).readFileSync(process.argv[1], \"utf8\")); console.log(waitingOnMerge(q, q.tickets[\"F-2\"]))" "$DESK_QUEUE")" = true ]'
 
 # AC3: PR #42's head is another branch.
 parked F-3
