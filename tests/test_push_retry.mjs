@@ -71,19 +71,28 @@ const NFF = { status: 1, out: ' ! [rejected] b -> b (non-fast-forward)' };
 let r = await run(['origin', 'b'], [OK]);
 t('pushed first time: one push, no wait', [r.code, r.calls.length, r.slept], [0, 1, []]);
 
-// The preview-build slot: taken before the push, given back only when the push fails.
-const slotted = async (answers, taken) => {
-  const log = []; const said = [];
-  const slot = { take: (w) => { log.push(`take ${w}`); return taken; }, give: (id) => { log.push(`give ${id}`); } };
-  const code = await pushWithRetry(parseArgs(['origin', 'b']), { git: () => answers.shift(), sleep: async () => {}, now: () => 0, say: (l) => said.push(l), slot });
-  return { code, log, said };
+// The preview-build slot: taken before the push without waiting, given back only when the push fails.
+const slotted = async (answers, taken, args = ['origin', 'b']) => {
+  const log = []; const said = []; const calls = [];
+  const slot = { take: () => { log.push('take'); return taken; }, give: (id) => { log.push(`give ${id}`); } };
+  const git = (a) => { calls.push(a.join(' ')); return answers.shift(); };
+  const code = await pushWithRetry(parseArgs(args), { git, sleep: async () => {}, now: () => 0, say: (l) => said.push(l), slot });
+  return { code, log, said, calls };
 };
 let sl = await slotted([OK], { id: 'L-1' });
-t('a push takes the preview-build slot first, waiting up to 180s, and keeps it when it pushes', [sl.code, sl.log], [0, ['take 180']]);
+t('a push takes the preview-build slot first and keeps it when it pushes', [sl.code, sl.log], [0, ['take']]);
 sl = await slotted([NFF], { id: 'L-2' });
-t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take 180', 'give L-2']]);
-sl = await slotted([OK], { why: 'the preview-build slot was not taken (gave up waiting)' });
-t('a slot still taken after the wait: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (gave up waiting): pushing anyway']]);
+t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take', 'give L-2']]);
+sl = await slotted([OK], { busy: 'held by #7' });
+t('a slot another build holds: exit 76, nothing pushed, naming the wait and the push to run after it',
+  [sl.code, sl.calls, /desk-env preview-slot --wait 540 'a push of b'/.test(sl.said[0]) && / --slot <that id> origin b\./.test(sl.said[0])], [76, [], true]);
+sl = await slotted([NFF], null, ['--slot', 'L-9', 'origin', 'b']);
+t('--slot <id> pushes on that lease, taking none, and gives it back when the push fails', [sl.code, sl.log, sl.calls], [1, ['give L-9'], ['push origin b']]);
+sl = await slotted([OK], null, ['--slot', 'none', 'origin', 'b']);
+t('--slot none pushes without one', [sl.code, sl.log], [0, []]);
+t('--slot takes a lease id or none, nothing else', [parseArgs(['--slot', 'x', 'origin', 'b']), parseArgs(['--slot']), parseArgs(['--slot', 'L-1', '--more', 'origin', 'b'])?.slot], [null, null, 'L-1']);
+sl = await slotted([OK], { why: 'the preview-build slot was not taken (store unreadable)' });
+t('a slot that could not be read: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (store unreadable): pushing anyway']]);
 r = await run(['origin', 'b'], [E5, E5, OK]);
 t('AC1 a 5xx then a success: retried with growing waits, exit 0', [r.code, r.slept], [0, [30, 60]]);
 r = await run(['origin', 'b'], [E5]);

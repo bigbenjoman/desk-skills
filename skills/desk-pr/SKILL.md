@@ -176,7 +176,7 @@ Then, right before a push you make yourself, take the preview slot: `desk-env pr
 Where §4 Vercel names a team, a push starts a preview build, and builds on a shared builder kill each
 other, so it waits (up to 10 minutes) for the one in flight; with no team it does nothing. Exit 75 (it
 gave up waiting): push anyway and say so in the `pre-push` slot. An autopilot worker's
-`push-retry.mjs` takes it itself.
+`push-retry.mjs` takes it itself and says what to run when it is taken (its exit 76).
 
 Fill the `pre-push` slot of the §1 block from the run.
 
