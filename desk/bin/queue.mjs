@@ -1285,14 +1285,19 @@ function doneLabel(t) {
 function tableRows(q, { stages = true, asks = {} } = {}) {
   const rows = Object.values(q.tickets);
   const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
-  rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
+  // A ticket handed off between sessions (handoff pending, pass.mjs) is triaged until its next session
+  // starts, which a preflight can take minutes over: it reads as a handoff beside the running rows,
+  // not as a fresh ticket.
+  const handingOff = (t) => t.state === 'triaged' && t.handoff === 'pending' && !isHeld(t) && !(questionsOpen(t) > 0);
+  const rank = (t) => (handingOff(t) ? order.running : order[t.state] ?? 9);
+  rows.sort((a, b) => rank(a) - rank(b));
   const head = `batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}`;
   const out = [];
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
-    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
+    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
@@ -1306,6 +1311,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
+      : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';
