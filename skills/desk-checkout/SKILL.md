@@ -115,6 +115,11 @@ The same piece of work shows up in several sources: a Claude session, a PR, a Ji
 Slack thread can all be one item. Join them by ticket key (§4 Ticket key pattern of each in-scope
 repo) and PR number first, then by topic. One item per piece of work, not one per source.
 
+**Work a batch did is the person's work, reported the same way.** The Claude collector lists each
+headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
+and Jira item like any other session, and report what changed and where it stands. Never what ran
+it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR
   title, or what the user asked Claude.
