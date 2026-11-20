@@ -34,7 +34,7 @@ for s in 1 2 3; do (repo_template two two_repos && repo_copy two "$T/c$s") || ec
 out=$(cat "$T/out")
 check "AC1 three suites asking for one template build it once" '[ "$(builds)" = 1 ] && [ -z "$out" ]'
 check "AC1 each case has its own copy" '[ -f "$T/c1/repo/a.txt" ] && [ -f "$T/c3/repo/a.txt" ] && echo b > "$T/c1/repo/a.txt" && [ "$(cat "$T/c3/repo/a.txt")" = a ]'
-check "AC1 a copy pushes to its own origin, not the template'"'"'s" 'git -C "$T/c2/repo" commit -q --allow-empty -m mine && git -C "$T/c2/repo" push -q origin main && [ "$(git -C "$T/c2/origin.git" rev-parse main)" = "$(git -C "$T/c2/repo" rev-parse HEAD)" ] && [ "$(git -C "$T/c2/origin.git" rev-parse main)" != "$(git -C "$DESK_TPL_ROOT/two/origin.git" rev-parse main)" ]'
+check "AC1 a copy pushes to its own origin, not the template's" 'git -C "$T/c2/repo" commit -q --allow-empty -m mine && git -C "$T/c2/repo" push -q origin main && [ "$(git -C "$T/c2/origin.git" rev-parse main)" = "$(git -C "$T/c2/repo" rev-parse HEAD)" ] && [ "$(git -C "$T/c2/origin.git" rev-parse main)" != "$(git -C "$DESK_TPL_ROOT/two/origin.git" rev-parse main)" ]'
 check "AC1 nothing is left behind but the template" '[ "$(ls "$DESK_TPL_ROOT")" = two ]'
 
 # AC2: two suites start at once and neither finds the template built: one builds, the other waits for
@@ -72,7 +72,7 @@ repo_copy two "$T/c4"
 check "AC3 SHAs are the same on every run" '[ "$(git -C "$T/c4/repo" rev-parse HEAD)" = "$(git -C "$T/c1/origin.git" rev-parse main)" ]'
 check "AC3 commit dates are pinned" '[ "$(git -C "$T/c4/repo" log -1 --format="%at %ct")" = "1577836800 1577836800" ]'
 check "AC3 a copy holds no path of any template" '! grep -rqF "$T/run" "$T/c4" "$T/c1" && ! grep -rqF "$DESK_TPL_ROOT" "$DESK_TPL_ROOT/two"'
-check "AC3 a copy'"'"'s remote is its own origin" '[ "$(git -C "$T/c4/repo" remote get-url origin)" = "$T/c4/origin.git" ]'
+check "AC3 a copy's remote is its own origin" '[ "$(git -C "$T/c4/repo" remote get-url origin)" = "$T/c4/origin.git" ]'
 
 echo; echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
