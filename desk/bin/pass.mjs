@@ -52,7 +52,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -1712,6 +1712,10 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
+// The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
+// or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
+// resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
+const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
 // Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
@@ -1719,7 +1723,7 @@ const lockQueueHolds = (r) => {
   if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
-  const round = existsSync(join(WORKTREES, r.key)) ? roundStage(r.last_round?.stage) : null;
+  const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
   return !round || SUITE_STAGES.includes(round);
 };
 const lockQueueHeld = [];
@@ -2521,7 +2525,9 @@ function fixturesBrief(key, wt, { heading = true } = {}) {
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
-  const stage = roundStage(round?.stage);
+  // An unfinished fix try is never resumed as a desk-ticket round (resumedStage): its next worker gets
+  // the try's own task again (fixTask), whatever stage the last one reached.
+  const stage = resumedStage(t);
   if (!stage || !kept) return { stage: null, brief: '', line: '' };
   const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
@@ -3042,7 +3048,7 @@ for (const t of spawnable) {
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
-  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
+  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? (t.fix && !t.fix.finished ? fixStartStage(t.fix) : '0/9')}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
