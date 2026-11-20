@@ -2582,10 +2582,10 @@ try {
   const at = (h) => new Date(NOW - h * 3600000).toISOString();
   const W937 = world({ merges: { port: 3700, conc: '2 / 3', beat: 1, queue: { batch: 'mg', concurrency: 2, tickets: {
     'MG-1': { state: 'done', result: { pr: 21 }, merged_at: at(2) },
-    'MG-2': { state: 'done', result: { pr: 22 }, pr_status: { pr: 22, state: 'OPEN' } },
+    'MG-2': { state: 'done', result: { pr: 22 }, pr_status: { pr: 22, state: 'OPEN', checks: [] } },
     'MG-3': { state: 'done', result: { pr: 23 }, merged_at: at(2) },
     'MG-4': { state: 'done', result: { pr: 24 }, merged_at: at(30) },
-    'MG-5': { state: 'done', result: { pr: 25 }, pr_status: { pr: 25, state: 'OPEN' } },
+    'MG-5': { state: 'done', result: { pr: 25 }, pr_status: { pr: 25, state: 'OPEN', checks: [] } },
   } } } });
   const sha = 'abcdef0123456789abcdef0123456789abcdef01';
   const ev = (pr, event, by, h, repo = 'acme/merges') => JSON.stringify({ at: at(h), repo, pr: String(pr), sha, by, event });
