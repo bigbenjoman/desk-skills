@@ -1672,9 +1672,9 @@ export function parsePs(text, columns) {
   return rows;
 }
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list.
-export function psRows(columns) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export function psRows(columns, env = {}) {
+  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -2759,7 +2759,7 @@ if (isMain) {
         break;
       }
       case 'lease':
-        process.exit((await import('./leases.mjs')).leaseCli(args));
+        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
       default:
         console.error(deskEnvUsage());
         process.exit(2);

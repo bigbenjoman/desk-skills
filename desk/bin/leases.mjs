@@ -12,13 +12,20 @@
 //
 // Exit codes: 0 granted (or released, or already gone), 2 usage, 3 refused, 4 store unreadable,
 // 75 gave up waiting (with-lock.sh's code).
+//
+// This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
+// through desk-env's top-level await never settles (node exits 13). What it needs from desk-env
+// (machineValue, testLockSlots, psRows) is passed in as `env`: desk-env passes its own, and this
+// file's CLI imports desk-env itself.
 import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
-import { HOME, expandHome, machineValue, testLockSlots } from './desk-env.mjs';
+
+const HOME = process.env.HOME || homedir();
+const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
 
 export const EXIT_OK = 0;
 export const EXIT_USAGE = 2;
@@ -44,16 +51,16 @@ export const logFile = (dir = leaseDir()) => join(dir, 'leases.log.jsonl');
 
 const whole = (v) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) > 0 ? Number(v) : null);
 // The pools' sizes: the heavy slots as the test lock has them (testLockSlots), preview builds per
-// Vercel team from preview-build-slots, memory from memory-ceiling-gb.
-export const capacities = () => ({
-  heavy: testLockSlots(),
-  previewBuild: whole(machineValue('preview-build-slots')) ?? 1,
-  mem: whole(machineValue('memory-ceiling-gb')),
+// Vercel team from preview-build-slots, memory from memory-ceiling-gb. `env` is desk-env's exports.
+export const capacities = (env) => ({
+  heavy: env.testLockSlots(),
+  previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
+  mem: whole(env.machineValue('memory-ceiling-gb')),
 });
 
 // The pool a lease of `kind` on `key` draws from: { pool, key, capacity, one, many }, `one` naming it
-// when it holds one unit and `many` its units when it holds more.
-export function poolOf(kind, key, caps = capacities()) {
+// when it holds one unit and `many` its units when it holds more. `caps` is capacities().
+export function poolOf(kind, key, caps) {
   const k = String(key ?? '').trim();
   if (!KINDS.includes(kind)) throw usage(`unknown lease kind "${kind ?? ''}": want one of ${KINDS.join(', ')}`);
   if (!k) throw usage(`a ${kind} lease needs a key`);
@@ -82,8 +89,8 @@ export function poolOf(kind, key, caps = capacities()) {
 }
 
 // Each pid's process start time, or null for one not running (a zombie counts as exited): from /proc
-// on Linux, from one ps call for them all elsewhere. -> Map pid -> start.
-export function startTimes(pids) {
+// on Linux, from one ps read (`psRows`, desk-env's) for them all elsewhere. -> Map pid -> start.
+export function startTimes(pids, psRows) {
   const want = [...new Set(pids.filter((p) => Number.isInteger(p) && p > 0))];
   const out = new Map(want.map((p) => [p, null]));
   if (!want.length) return out;
@@ -97,18 +104,10 @@ export function startTimes(pids) {
     }
     return out;
   }
-  let text;
-  try {
-    // lstart prints local time, so it is read in UTC and the C locale (as hooks/desk-handoff.py
-    // does): a command run under another TZ must read the same string for the same process.
-    text = execFileSync('ps', ['-o', 'pid=,stat=,lstart=', '-p', want.join(',')], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C', TZ: 'UTC0' }, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch (e) {
-    if (e.status !== 1) throw new Error(`could not read process start times with ps: ${e.message}`);
-    text = String(e.stdout ?? ''); // ps exits 1 when some pid is not running
-  }
-  for (const line of text.split('\n')) {
-    const m = /^\s*(\d+)\s+(\S+)\s+(.+?)\s*$/.exec(line);
-    if (m && out.has(Number(m[1])) && !m[2].startsWith('Z')) out.set(Number(m[1]), m[3]);
+  // lstart prints local time, so it is read in UTC and the C locale (as hooks/desk-handoff.py
+  // does): a command run under another TZ must read the same string for the same process.
+  for (const r of psRows('pid=,stat=,lstart=', { LC_ALL: 'C', TZ: 'UTC0' })) {
+    if (out.has(r.pid) && !r.stat.startsWith('Z')) out.set(r.pid, r.lstart);
   }
   return out;
 }
@@ -158,7 +157,7 @@ function sweep(store, log, starts) {
     return false;
   });
 }
-const ownerStarts = (store, more = []) => startTimes([...store.leases.map((l) => l.owner.pid), ...more]);
+const ownerStarts = (store, env, more = []) => startTimes([...store.leases.map((l) => l.owner.pid), ...more], env.psRows);
 
 const holderText = (l) => `${l.label} (pid ${l.owner.pid}, lease ${l.id}${l.units > 1 ? `, ${l.units} units` : ''})`;
 // Why an acquire of `units` from pool `p` is refused, with `holders` holding `held` units of it.
@@ -170,12 +169,13 @@ export function refusal(p, units, holders, held) {
 }
 
 // One try at a lease. req: { kind, key, units, ttl, label, pid, final, waited }; a refused try is
-// logged only when `final` (a refuse with no wait, else gave-up). -> { lease } or { refused: why }.
-export function tryAcquire(req, { dir = leaseDir(), caps = capacities(), now = Date.now } = {}) {
+// logged only when `final` (a refuse with no wait, else gave-up). `env` is desk-env's exports.
+// -> { lease } or { refused: why }.
+export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const p = poolOf(req.kind, req.key, caps);
   if (req.units > p.capacity) throw usage(`this asks for ${req.units} of ${p.many}, more than the ${p.capacity} there are`);
   return withStore(dir, (store, log) => {
-    const starts = ownerStarts(store, [req.pid]);
+    const starts = ownerStarts(store, env, [req.pid]);
     sweep(store, log, starts);
     const start = starts.get(req.pid);
     if (start == null) throw usage(`the owner pid ${req.pid} is not running`);
@@ -196,12 +196,12 @@ export function tryAcquire(req, { dir = leaseDir(), caps = capacities(), now = D
 }
 
 // Takes a lease, waiting up to `wait` seconds for it. -> { code, lease?, why? }.
-export function acquire(req, { dir = leaseDir(), caps = capacities(), now = Date.now } = {}) {
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
   for (;;) {
     const final = now() >= until;
-    const r = tryAcquire({ ...req, final, waited: wait }, { dir, caps, now });
+    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now });
     if (r.lease) return { code: EXIT_OK, lease: r.lease };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
     sleepSync(Math.max(1, Math.min(POLL_MS, until - now())));
@@ -209,9 +209,9 @@ export function acquire(req, { dir = leaseDir(), caps = capacities(), now = Date
 }
 
 // Gives back lease `id`, which only its owner (`pid`) may. -> { code, why }.
-export function release(id, pid, { dir = leaseDir() } = {}) {
+export function release(id, pid, { env, dir = leaseDir() }) {
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store));
+    sweep(store, log, ownerStarts(store, env));
     const l = store.leases.find((x) => x.id === id);
     if (!l) return { code: EXIT_OK, why: `lease ${id} was already gone` };
     if (l.owner.pid !== pid) return { code: EXIT_REFUSED, why: `refused: lease ${id} is held by pid ${l.owner.pid}, and only its owner releases it` };
@@ -222,9 +222,9 @@ export function release(id, pid, { dir = leaseDir() } = {}) {
 }
 
 // The live leases, after lapsing those whose owner has gone.
-export function list({ dir = leaseDir() } = {}) {
+export function list({ env, dir = leaseDir() }) {
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store));
+    sweep(store, log, ownerStarts(store, env));
     return store.leases;
   });
 }
@@ -261,15 +261,16 @@ const ownerPid = (v) => {
   return n;
 };
 
-// The CLI: prints what happened and returns the exit code.
-export function leaseCli(args, { dir = leaseDir(), out = (s) => console.log(s), err = (s) => console.error(s) } = {}) {
+// The CLI: prints what happened and returns the exit code. `env` is desk-env's exports.
+export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log(s), err = (s) => console.error(s) }) {
   const [sub, ...rest] = args;
   try {
     if (sub === 'acquire') {
       const { pos, opt } = parseArgs(rest, ['ttl', 'units', 'wait', 'label', 'pid']);
       const [kind, key, extra] = pos;
       if (extra != null) throw usage(`acquire takes a kind and a key, not "${extra}"`);
-      poolOf(kind, key); // a bad kind or key is named before a missing --ttl
+      const caps = capacities(env);
+      poolOf(kind, key, caps); // a bad kind or key is named before a missing --ttl
       if (opt.ttl == null) throw usage('acquire needs --ttl <seconds>');
       const ttl = whole(opt.ttl);
       if (!ttl) throw usage(`--ttl is a whole number of seconds, 1 or more, not "${opt.ttl}"`);
@@ -277,21 +278,21 @@ export function leaseCli(args, { dir = leaseDir(), out = (s) => console.log(s), 
       if (!units) throw usage(`--units is a whole number, 1 or more, not "${opt.units}"`);
       if (opt.wait != null && !/^\d+(\.\d+)?$/.test(opt.wait)) throw usage(`--wait is a number of seconds, not "${opt.wait}"`);
       const wait = opt.wait == null ? 0 : Number(opt.wait);
-      const r = acquire({ kind, key, units, ttl, wait, label: String(opt.label ?? '').trim() || 'unlabelled', pid: ownerPid(opt.pid) }, { dir });
+      const r = acquire({ kind, key, units, ttl, wait, label: String(opt.label ?? '').trim() || 'unlabelled', pid: ownerPid(opt.pid) }, { env, dir, caps });
       if (r.lease) out(r.lease.id); else err(r.why);
       return r.code;
     }
     if (sub === 'release') {
       const { pos, opt } = parseArgs(rest, ['pid']);
       if (pos.length !== 1) throw usage('release takes one lease id');
-      const r = release(pos[0], ownerPid(opt.pid), { dir });
+      const r = release(pos[0], ownerPid(opt.pid), { env, dir });
       (r.code === EXIT_OK ? out : err)(r.why);
       return r.code;
     }
     if (sub === 'list') {
       const { pos, opt } = parseArgs(rest, [], ['json']);
       if (pos.length) throw usage(`list takes no arguments, not "${pos[0]}"`);
-      const leases = list({ dir });
+      const leases = list({ env, dir });
       if (opt.json) for (const l of leases) out(listJson(l));
       else if (!leases.length) out('no leases');
       else { out(LIST_HEAD); for (const l of leases) out(listRow(l)); }
@@ -309,4 +310,5 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (isMain) process.exit(leaseCli(process.argv.slice(2)));
+// Run directly, nothing is mid-evaluation, so desk-env can be imported here.
+if (isMain) process.exit(leaseCli(process.argv.slice(2), { env: await import('./desk-env.mjs') }));
