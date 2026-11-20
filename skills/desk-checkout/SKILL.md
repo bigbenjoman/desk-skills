@@ -130,7 +130,9 @@ For each item, settle:
   open PR that is only an approval gate (it is not one of the substantive §4 Required checks, or
   §4 Branch protection says it waits on a reviewer) means it's waiting on a human approval. If the
   post is written the morning after, check what moved overnight: a PR merged or a deploy gone
-  green since the collectors' day belongs in the item's state.
+  green since the collectors' day belongs in the item's state. **Read each PR's state again as you
+  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`):
+  the collectors ran earlier, and a PR undrafted, approved or merged since is described as it is now.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:

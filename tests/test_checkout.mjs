@@ -255,6 +255,7 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
