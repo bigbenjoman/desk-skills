@@ -55,6 +55,10 @@ mismatch is pushed once as `health:<slug>:reviewer`, naming both logins; a sign-
 only on a §4 State check (`desk-env list state-checks`) of kind verdict, which the pass records as
 `gate_hold`, and needs-you lists it as one `reviewer` item naming those PRs.
 
+A mismatch still lets one try through: a head with no clean desk-review verdict, or a stale one, gets
+its review worker while the gate is red, since the merge driver counts desk's verdict though the gate
+does not. A sign-in it cannot read holds that review too, as its verdict could not post.
+
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,

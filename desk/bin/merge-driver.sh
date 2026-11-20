@@ -54,7 +54,7 @@
 #   - no clean review at its head            where §4 Local review command is set, green is not enough:
 #                                            the latest desk-review verdict must be clean at the head
 #                                            (§4 Clean review verdict; review-threads.mjs verdict), or
-#                                            carried to it by clean merges of the base alone (undraft.mjs
+#                                            carried to it by clean base merges and empty commits alone (undraft.mjs
 #                                            verdictCarries), or with the review-reuse lever on by a
 #                                            rebase or base merge that moved none of the files its review
 #                                            rests on (restsOnCarries). A carried P2 does not hold it. Held, it is

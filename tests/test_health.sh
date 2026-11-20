@@ -532,6 +532,7 @@ check "DS-577 AC1 a mismatch is one repo item, health:<slug>:reviewer"  '[[ "$(p
 check "DS-577 AC1 it names both logins"                                  'grep -qF "the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman" <<< "$out"'
 check "DS-577 AC1 read from the default gh login with no Review account" '[ "$(lastdir)" = default ]'
 check "DS-577 AC3 it holds no spawn"                                     'grep -q "^health: all checks pass" <<< "$out" && grep -q "reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns" <<< "$out"'
+check "#881 a mismatch says the review the merge driver needs still goes" 'grep -qF "except the review a head with no clean verdict needs, which the merge driver counts though the gate does not" <<< "$out"'
 
 echo agent-pullbot > "$T/ghuser"
 hl
