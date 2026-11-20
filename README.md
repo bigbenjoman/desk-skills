@@ -551,6 +551,19 @@ node ~/.claude/desk/bin/bench-pr-text.mjs --tasks <tasks.json> --max-budget-usd 
 node ~/.claude/desk/bin/bench-pr-text.mjs report --tasks <tasks.json> [--out <dir>] [--blind <dir>]
 ```
 
+### A second Claude login
+
+desk runs every repo's work on this computer's default Claude login, unless a repo is pinned to
+another. To add a login from the command line:
+
+1. `CLAUDE_CONFIG_DIR=~/.claude-logins/<name> claude`, then `/login` with the other account, and quit.
+2. `desk-env logins check` lists it with its account and plan once it is signed in.
+3. `desk-env logins default claude <name>` makes it the default for every repo here, or
+   `desk-env subscription set <repo slug> <email>` pins one repo to it (that repo's config §3b
+   Subscription).
+
+desk-q does the same in view 6: press `a` to add a login, then choose the default there.
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
