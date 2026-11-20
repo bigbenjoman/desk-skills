@@ -121,12 +121,13 @@ confident false verdict. If the ref is missing the search could not run: no find
   > or service that assigns it, at the reviewed revision: `git grep -n -I -e "<the value or its
   > field>" <TIP>`. Name that file in FILES READ, and check the branch against every value the
   > source can set, not only the one the diff names. If the source is not in the reviewed tree
-  > (another repository, a third-party API), say so before FILES READ in one line,
-  > `SOURCE NOT READ: <value>: <why>`, and raise no finding that rests on what the source sets.
+  > (another repository, a third-party API), report that as a `FINDING` with `severity: PREMISE`
+  > at the changed line that branches on the value, titled `source not read: <value>: <why>`, and
+  > raise no other finding that rests on what the source sets.
 
-  `<TIP>` is substituted as in the diff command. A seat's `SOURCE NOT READ` line goes in the
-  report under `UNPROVEN PREMISES` (Phase 6), so the unread source shows rather than reading as a
-  clean pass.
+  `<TIP>` is substituted as in the diff command. The `PREMISE` is reported under `UNPROVEN
+  PREMISES` (Phase 6) like any other, so the unread source shows rather than reading as a clean
+  pass, and it fits the codex call's "only FINDING blocks".
 
 **After the round, `git status --porcelain`.** The tree was clean at Phase 0, so anything listed now,
 other than this skill's own scratch files (`desk-review-codex-brief-<run>.txt`, any

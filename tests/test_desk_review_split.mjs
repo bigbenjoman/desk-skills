@@ -202,8 +202,8 @@ t('DS-834 AC1 the paragraph sends the finder to where the value is set', tracePa
 t('DS-834 AC1 and has it name that file in FILES READ', tracePara.includes('Name that file in FILES READ'), true);
 t('DS-834 AC1 every Claude finder\'s prompt carries it word for word', norm(find).includes('Every Claude finder\'s prompt, the simplicity finder\'s included, then carries the paragraph under *Tracing a server-set value* (below), word for word'), true);
 t('DS-834 AC2 a diff that branches on no such value reads as before', /^Where the diff branches on a value an API or server state sets/.test(tracePara) && norm(find).includes('a diff that branches on no such value reads exactly as before'), true);
-t('DS-834 AC3 an unread source is said, and no finding rests on it', tracePara.includes('`SOURCE NOT READ: <value>: <why>`, and raise no finding that rests on what the source sets'), true);
-t('DS-834 AC3 the report lists it under UNPROVEN PREMISES', norm(read('phase-6-report.md')).includes('`SOURCE NOT READ: <value>: <why>` line (Phase 3, *Tracing a server-set value*) is one'), true);
+t('DS-834 AC3 an unread source is a PREMISE at the branching line, and no other finding rests on it', tracePara.includes('report that as a `FINDING` with `severity: PREMISE` at the changed line that branches on the value, titled `source not read: <value>: <why>`, and raise no other finding that rests on what the source sets'), true);
+t('DS-834 AC3 the report lists it under UNPROVEN PREMISES', norm(find).includes('The `PREMISE` is reported under `UNPROVEN PREMISES` (Phase 6) like any other'), true);
 t('DS-834 AC4 the codex brief carries the same paragraph', norm(find).includes('After it, the brief carries the *Tracing a server-set value* paragraph (below), word for word.'), true);
 t('DS-834 the do-not-survey rule stays in the codex brief', norm(find.replace(/^ *> ?/gm, '')).includes('Do not survey the repository.'), true);
 

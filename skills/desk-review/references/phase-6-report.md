@@ -34,9 +34,7 @@ UNPROVEN PREMISES (1)
 → posting to #742
 ```
 
-`UNPROVEN PREMISES` are posted in the review body and counted in no field of the verdict. A seat's
-`SOURCE NOT READ: <value>: <why>` line (Phase 3, *Tracing a server-set value*) is one, listed at the
-changed line that branches on the value.
+`UNPROVEN PREMISES` are posted in the review body and counted in no field of the verdict.
 
 The last line says what is about to happen: `→ posting to #<n>`, `→ not posting (--no-comment)`,
 `→ not posting: no PR for this branch`, or `→ not posting: §3 <key> is no`.
