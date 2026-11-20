@@ -745,6 +745,14 @@ t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk(
 t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);
 t('#737 the thread reply says the outside reviewer reviews next', feedbackReply(ex737.fix, 'd'.repeat(40)).includes('agent-pullbot reviews that head next'), true);
 t('#737 a plain feedback try still asks for a desk review', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: feedbackFix(tk(), { pr: 1, head: HEAD, decision: 'CHANGES_REQUESTED', threads: [{ id: 'T', text: 'x' }] }).fix }))), true);
+// A finding in the outside reviewer's review text is named as that, with its file:line, never as a thread.
+const body989 = extCtx(extPl([bot(HEAD, 'P2 (1): src/a.ts:3 drops the row')]));
+const ex989 = verdictTry(tk(), extRed, body989);
+t('#989 a review-body finding is named as the review body, with its file:line', ex989?.fix.what, "review feedback: agent-pullbot's review body (findings at src/a.ts:3)");
+t('#989 beside a thread, each is named for what it is', verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P2: src/b.ts:9 x')], [thread('T1', 'R1', 'P1 y')])))?.fix.what, "review feedback: 1 unresolved thread, agent-pullbot's review body (findings at src/b.ts:9)");
+t('#989 a feedback try that pushed nothing has spent its try at that head: the person\'s, not requeued at the same number',
+  verdictTry(tk({ fix_tries: [{ try: 1, head: HEAD, kind: 'feedback', what: ex989.fix.what, at: 'T0' }] }), extRed, body989)?.call, 'stuck');
+t('#989 the brief says a carried finding keeps the outside reviewer\'s check red', fixBrief(tk({ fix: ex989.fix })).includes('carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK)'), true);
 t('#737 externalTry is undefined with no external check red', externalTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE }), undefined);
 t('#737 and waits while a check is pending', externalTry(tk(), pr([{ name: 'tests', status: 'in_progress' }, red('🔐 Review gate', '88')]), extCtx(extPl([bot(HEAD, 'P0')]))), null);
 t('DS-422 a red verdict check beside an unclean review at the head is reviewFix\'s, as before', verdictTry(tk(), stateRed, { required: ['tests'], stateChecks: STATE, settled: true }), null);

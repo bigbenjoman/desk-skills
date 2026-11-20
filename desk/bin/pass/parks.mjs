@@ -35,6 +35,8 @@ import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
+import { personCall } from '../fix-tries.mjs';
+import { tryLabel } from './fix-tries.mjs';
 
 // ---- parks whose condition cleared ---------------------------------------------
 // A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
@@ -68,7 +70,8 @@ export function decideLapsedRestates(s) {
 
 // Each clearable park in turn: those on "base contains" where `onBase`, every other one where not.
 //
-// The snapshot: tickets, onBase, dry, putOff (the keys whose park the person put off with not-now).
+// The snapshot: tickets, onBase, dry, putOff (the keys whose park the person put off with not-now), passAt
+// (when the pass started, ISO).
 export function* decideClears(s) {
   for (const t of Object.values(s.tickets)) {
     if (clearable(t) && (t.park.clears_when.kind === BASE_CONTAINS) === s.onBase) yield* settleClear(t, s);
@@ -116,6 +119,19 @@ function* settleClear(t, s) {
   if (own.pr != null) {
     if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own.pr} merged`, `result.pr=${own.pr}`] }) {
       yield say(t.key, 'clears', `${t.key}: "${what}" holds and its PR #${own.pr} merged: recorded done`);
+    }
+    return;
+  }
+  // A fix try parked before its worker started was drafted from the PR as it read then, and the park
+  // is what changed since: it is dropped, not spawned, as fixTryStale drops one whose PR moved, and the
+  // ticket is done on its PR again, so the PR's reading drafts the try it needs now. A person's call
+  // (gaps, an instruction, a review sent back) and a renames try are theirs, so they still spawn.
+  const f = t.fix;
+  if (f && !f.finished && !f.started && f.pr != null && !personCall(f) && !f.person && f.kind !== 'renames') {
+    const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
+    if (yield { type: 'write', key: t.key, fields: [`fix.finished=${s.passAt}`, `fix.ended=parked before its worker started, and "${what}" holds`, 'fix.no_worker=true',
+      `fix_tries=${JSON.stringify(tries)}`, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${f.pr}`] }) {
+      yield say(t.key, 'clears', `${t.key}: "${what}" holds: its ${tryLabel(f)} on PR #${f.pr}, parked before its worker started, is dropped, and the PR is read again for what it needs now`);
     }
     return;
   }

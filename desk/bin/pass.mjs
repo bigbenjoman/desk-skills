@@ -1243,7 +1243,7 @@ const runClears = (onBase) => runSteps({
   name: onBase ? 'parks waiting on the base' : 'parks whose condition cleared',
   snapshot: () => {
     const { tickets } = queue();
-    return { tickets, onBase, dry: DRY, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
+    return { tickets, onBase, dry: DRY, passAt: PASS_AT, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
   },
   decide: decideClears,
   handlers: CLEARS_HANDLERS,
@@ -2614,7 +2614,7 @@ function spawnCloud(t) {
   // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
   // base. The person resumes the session, or fixes the branch.
   if (t.result?.pr != null) {
-    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
+    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `${tryLabel(t.fix)} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
       `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
       `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
     q('park', t.key, line);
@@ -3136,7 +3136,7 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 const lockQueueHeldText = lockQueueHeld.length
