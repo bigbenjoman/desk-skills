@@ -116,8 +116,9 @@ export function runningWorkers(q) {
 }
 
 // Running workers in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
-// the queues that cannot be read.
-function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
+// the queues that cannot be read. `rows(q)` picks a queue's rows to judge (runningWorkers by default),
+// and `label(t)` adds to each one's name.
+function othersRunning(selfQueue, { self = false, where = () => true, rows = runningWorkers, label = () => '' } = {}) {
   const queues = otherQueues({ self: selfQueue });
   if (self && selfQueue && existsSync(selfQueue)) {
     try { queues.unshift({ slug: selfSlug(), q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug: selfSlug(), error: e.message }); }
@@ -125,7 +126,7 @@ function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
   const running = []; const unreadable = [];
   for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of runningWorkers(q)) if (where(t)) running.push(`${slug} ${t.key}`);
+    for (const t of rows(q)) if (where(t)) running.push(`${slug} ${t.key}${label(t)}`);
   }
   return { running, unreadable };
 }
@@ -269,6 +270,10 @@ function newestPassed(git, src, base, head) {
 
 // A worker at Stage 7, which may be pushing.
 const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
+// A ticket handed off to Stage 7 whose session has not started yet: it is triaged with its handoff
+// pending (pass.mjs), not running, and its next spawn would start on whatever bin is installed then.
+const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && t.location !== 'cloud';
+const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? {}).filter((t) => !runningHere(t) && awaitingStage7(t))];
 
 // The notification for main's failed check, which release.json gives to the repo whose pass first saw
 // it fail. That repo returns it from every pass while origin/main is still at that commit, whatever
@@ -347,19 +352,23 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
 
-    const o = othersRunning(selfQueue, { self: true, where: atStage7 });
-    const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
+    const o = othersRunning(selfQueue, { self: true, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
+      label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
+    const pushing = [...o.running, ...o.unreadable];
     if (pushing.length) {
       lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')}`);
       return { lines };
     }
 
+    // The workers still running here pick the new bin up on their next call to it.
+    const live = othersRunning(selfQueue, { self: true }).running;
     const u = updateDesk(src, { to });
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}`);
-    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}`);
+    const reach = live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : '';
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };
   } finally { lock.release(); }
 }
