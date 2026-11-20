@@ -188,8 +188,9 @@ def read_session(path, since, until, drafting_from=None):
             when = entry_time(entry)
             if when is None:
                 continue
-            if drafting_from is not None and drafting_from <= when < since and loads_self(entry):
-                s["drafted"] = when
+            if drafting_from is not None and drafting_from <= when < since and loads_self(entry) \
+                    and in_scope(entry.get("cwd")):
+                s["drafted"] = when  # only a load for this check-out, not another repo's
             if not (since <= when < until):
                 continue
             if loads_self(entry):
@@ -288,18 +289,20 @@ def main():
         return
 
     # A window that starts at a previous check-out: the session that drafted it is the one whose
-    # skill load came last before the post, from the post's own day on. It is cut at that load, as
-    # this session is at its own, so it is housekeeping from there; earlier loads are left alone,
-    # since a session that drafted a morning check-out may have done real work later.
+    # skill load for this check-out came last before the post, from the post's own day on. It is
+    # cut at that load, as this session is at its own, so it is housekeeping from there; earlier
+    # loads are left alone, since a session that drafted a morning check-out may have done real
+    # work later. Candidates are every transcript touched since that day began, so a drafting
+    # session closed before its draft was posted still counts.
     previous = since != until - timedelta(days=1)
     drafting_from = datetime.combine(since.date(), time.min).astimezone() if previous else None
-    read = [read_session(path, since, until, drafting_from) for path in find_files(since)]
+    read = [read_session(path, since, until, drafting_from) for path in find_files(drafting_from or since)]
     drafted = [s for s in read if s["drafted"]]
     drafter = max(drafted, key=lambda s: s["drafted"]) if drafted else None
 
     sessions, workers, withheld = [], [], {}
     for s in read:
-        if s is drafter or not s["first"]:
+        if not s["first"]:
             continue
         # Per-repo permission: a configured repo's own §3 read-transcripts decides; a session in
         # no configured repo follows the current repo's row.
@@ -307,6 +310,8 @@ def main():
         ok, note = desk_repos.allowed(owner, "read-transcripts")
         if not ok:
             withheld[note] = withheld.get(note, 0) + 1
+            continue
+        if s is drafter:
             continue
         # A session with no tool calls and one short prompt is a probe ("reply with just OK").
         if not s["tools"] and sum(len(p) for p in s["prompts"]) < 60:
