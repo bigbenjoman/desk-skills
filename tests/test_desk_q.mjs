@@ -2669,7 +2669,9 @@ try {
   const bad = section(dirs.bad);
   t('DS-911 AC6 an unreadable store: the section says so and shows the reset command',
     bad.leases[1], `  ▲ The lease store ${join(dirs.bad, 'leases.json')} is unreadable: ${(() => { try { JSON.parse('{ not json'); } catch (e) { return e.message; } })()}. To start an empty one: desk-env lease reset --reason <why>`);
-  t('DS-911 AC6 and the rest of desk-q renders as before', unclocked(bad.out.replace(/\nLeases\n[\s\S]*$/, '')) === unclocked(section(dirs.none).out.replace(/\nLeases\n[\s\S]*$/, '')), true);
+  // Free memory and the clock move between the two runs, so numbers are masked.
+  const rest = (out) => unclocked(out.replace(/\nLeases\n[\s\S]*$/, '')).replace(/\d+(\.\d+)?/g, 'N');
+  t('DS-911 AC6 and the rest of desk-q renders as before', rest(bad.out) === rest(section(dirs.none).out) && /^ {2}desk-skills /m.test(bad.out), true);
   for (const c of sleepers) c.kill();
 }
 
