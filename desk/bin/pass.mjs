@@ -53,7 +53,7 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
@@ -1244,7 +1244,7 @@ const runClears = (onBase) => runSteps({
   name: onBase ? 'parks waiting on the base' : 'parks whose condition cleared',
   snapshot: () => {
     const { tickets } = queue();
-    return { tickets, onBase, dry: DRY, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
+    return { tickets, onBase, dry: DRY, passAt: PASS_AT, putOff: new Set(Object.values(tickets).filter(putOff).map((t) => t.key)) };
   },
   decide: decideClears,
   handlers: CLEARS_HANDLERS,
@@ -2616,7 +2616,7 @@ function spawnCloud(t) {
   // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
   // base. The person resumes the session, or fixes the branch.
   if (t.result?.pr != null) {
-    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `fix try ${t.fix.try} of ${t.fix.of} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
+    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `${tryLabel(t.fix)} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
       `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
       `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
     q('park', t.key, line);
@@ -2880,7 +2880,7 @@ function fixTryStale(t) {
   const verb = resumed ? 'resumed' : ran ? 'spawned again' : 'spawned';
   // A renames fix holds the merge as an instruction does (merge-driver.sh instruction_held), so a moved
   // head does not end it either: its worker updates the migrations at the new head.
-  const headBound = Boolean(f.head) && !ran && !personCall(f) && !f.person && f.kind !== 'renames';
+  const headBound = Boolean(f.head) && !ran && redraftable(f);
   const what = `${tryLabel(f)} on PR #${f.pr}`;
   let v = null;
   try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
@@ -2900,8 +2900,7 @@ function fixTryStale(t) {
   if (DRY) { report.done.push(`${line} (dry run: nothing recorded)`); return true; }
   // A try whose worker ran stays a try made. Its spawn cleared result, so the PR is put back for the
   // done tickets' reading below.
-  const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
-  const unrun = ran ? [] : ['fix.no_worker=true', `fix_tries=${JSON.stringify(tries)}`];
+  const unrun = ran ? [] : unrunFields(t, f);
   q('set', t.key, `fix.finished=${PASS_AT}`, `fix.ended=${ended}`, ...unrun, `result.pr=${f.pr}`, 'state=done', 'handoff=null', ...(resumed ? ['resume=null'] : []), 'worktree_busy=null');
   if (merged) q('merged', t.key, ...(v.mergedAt ? [v.mergedAt] : []));
   report.done.push(merged ? `${line}, recorded merged` : line);
@@ -3138,7 +3137,7 @@ for (const t of spawnable) {
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
   if (fixStarted(t).length) q('set', t.key, ...fixStarted(t));
-  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (fix try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} port=${port} db=${database} model=${model || 'default'}${pick.line}${renamed}${resumed.line}${t.fix && !t.fix.finished ? (t.fix.kind === 'gaps' ? ` (the person's call on PR #${t.fix.pr}'s review gaps)` : t.fix.kind === 'capture' ? ` (capture try on PR #${t.fix.pr})` : t.fix.kind === 'rereview' ? (t.fix.extra ? ` (extra review try on PR #${t.fix.pr}, after a merge from the base)` : ` (review try ${t.fix.try} of ${t.fix.of} on PR #${t.fix.pr})`) : ` (${tryLabel(t.fix)} on PR #${t.fix.pr})`) : ''}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
 }
 const lockQueueHeldText = lockQueueHeld.length
