@@ -125,8 +125,8 @@ export function newestReading({ dirs = stateDirs(), files = [], login = null, no
 
 // A log's events, kept while its size, modified time and inode hold: an open desk-q rereads every two
 // seconds, and every pass is a new process that reads every repo's recent logs, gzipped rounds whole.
-// So they are kept on disk too (eventsCachePath), and a pass parses only a log that changed since one
-// did: gunzipping the rounds again is most of a pass's own CPU.
+// So a gzipped round's are kept on disk too (eventsCachePath), and a pass gunzips only a round no
+// earlier read has: gunzipping the rounds again is most of a pass's own CPU.
 const parsed = new Map();
 export const eventsCachePath = (dir = usageDir()) => join(dir, 'log-events.json');
 let disk = null, diskPath = null, diskDirty = false;
@@ -142,14 +142,17 @@ const sameFile = (had, st) => had && had.size === st.size && had.mtimeMs === st.
 function eventsOf(path, st) {
   const had = parsed.get(path);
   if (sameFile(had, st)) return had.events;
-  const kept = diskCache()[path];
+  // Only a gzipped round goes on disk: it is written once, whole, and never again in place, while a
+  // live log or a probe's output can be rewritten at the same size within the same millisecond.
+  const onDisk = path.endsWith('.gz');
+  const kept = onDisk ? diskCache()[path] : undefined;
   const text = sameFile(kept, st) ? null : tail(path, st.size);
   // A log that could not be read is no reading this time, and is kept nowhere, so the next read tries it again.
   if (text === undefined) return [];
   const events = sameFile(kept, st) ? kept.events : windowEvents(text);
   const rec = { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, events };
   parsed.set(path, rec);
-  if (!sameFile(kept, st)) { disk[path] = rec; diskDirty = true; }
+  if (onDisk && !sameFile(kept, st)) { disk[path] = rec; diskDirty = true; }
   return events;
 }
 // Writes what this read parsed, dropping logs not written to in a week (no read looks that far back)

@@ -140,6 +140,13 @@ t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({
   // the same size, time and inode is read, not taken as no reading from the cache.
   writeFileSync(gz, body); utimesSync(gz, s + 1, s + 1);
   t('DS-794 a read that failed is kept nowhere, so the next process reads the round again', child(), '0.55');
+  // A live log can be rewritten at the same size within the same millisecond, so only rounds go on disk.
+  const live = join(B, 'logs', 'B-4.log');
+  writeFileSync(live, `${event(0.61, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log is read', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.61);
+  writeFileSync(live, `${event(0.62, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log rewritten at the same size and time is read again by a new process', child(), '0.62');
+  rmSync(live);
   rmSync(gz);
   delete process.env.DESK_USAGE_DIR;
 }

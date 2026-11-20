@@ -2182,19 +2182,19 @@ function readEpicPr(qx) {
 
 // A feature batch's promotion PR as GitHub has it: { pr, state, isDraft, head, checks }, or
 // { pr, unreadable }, or null with none recorded or one merged.
-function readPromotionPr(qx) {
-  const r = readBasePr(qx, 'statusCheckRollup');
+function readPromotionPr(qx, opts) {
+  const r = readBasePr(qx, 'statusCheckRollup', opts);
   if (!r || r.unreadable) return r;
   const { p, v } = r;
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
 // The batch's recorded promotion or epic PR read from GitHub with `extra` beside its state, draft and
 // head: { p (the record), v (gh's answer) }, or { pr, unreadable }, or null with none open.
-function readBasePr(qx, extra) {
+function readBasePr(qx, extra, { fresh = false } = {}) {
   const p = qx.promotion;
   if (p?.pr == null || p.merged_at) return null;
   let v = null;
-  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
+  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, fresh, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
   return v?.state ? { p, v } : { pr: p.pr, unreadable: true };
 }
 // The checks an open promotion PR fails, by name, or null when it fails none. A draft with children
@@ -4569,8 +4569,8 @@ async function promotionChecksStep(qx) {
   const p = qx.promotion ?? {};
   const clear = () => { if (p.red && !DRY) q('set-batch', 'promotion.red=null'); };
   // Read again here: the base sync may have moved its head and the base gate put it back to draft since
-  // the pass began.
-  const now = promoPr ? readPromotionPr(qx) : null;
+  // the pass began, and its checks may have turned since. It decides a write, so it is made fresh.
+  const now = promoPr ? readPromotionPr(qx, { fresh: true }) : null;
   // Unread, what was recorded stands until a pass can read it, and a PR this pass found red keeps the
   // batch from idling until one does.
   if (now?.unreadable && p.pr === now.pr) { out.push(`promotion PR #${now.pr}: its checks could not be read; the next pass tries again`); return !!p.red || promoRed != null; }
