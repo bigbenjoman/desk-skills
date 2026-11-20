@@ -381,6 +381,24 @@ out=$(DESK_IDLE_RECHECK_MS=3000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
 
+# ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"wait for the run","clears_when":{"kind":"run-completed","run":44719886024}}}}' b9
+: > "$T/pass.calls"
+out=$(tick)
+check "DS-852 the idle line names the shorter interval while a park waits on a run" 'grep -q "(2 minutes while a park waits on an Actions run or a PR.s checks)" "$LOG"'
+sleep 4
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC2 once the run interval has passed, an idle batch waiting on a run runs a pass, well inside the idle interval" '[ "$(count "$T/pass.calls")" = 2 ]'
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC2 that pass starts the run interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","clears_when":{"kind":"none"}}}}' b10
+: > "$T/pass.calls"
+out=$(tick); sleep 4
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC6 an idle batch with no park on a run or checks keeps the idle interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+queue true '{}' "$DONE" b11
+
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)

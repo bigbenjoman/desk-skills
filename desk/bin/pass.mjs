@@ -4367,13 +4367,15 @@ for (const t of stuck) report.waiting.push(stoppedHold(t)
 // holds, waits on itself: one line names the cycle. The PR is read for its merge state, which the done
 // tickets' reads above never cover for a held ticket's PR, so a conflict is said there, or on the park's
 // own item when there is no cycle (`parkNotes`, read into the verdict). No fix try goes to it: the hold
-// may still be the person's to settle.
+// may still be the person's to settle. A PR closed unmerged is noted the same way: the park can never
+// clear, and a note keeps it with the person rather than the pass (pass/report.mjs verdictOf).
 const parkNotes = new Map();
 {
   const states = new Map();
   const conflictOf = (n) => {
     if (!states.has(n)) states.set(n, readPrStatus(n));
     const s = states.get(n);
+    if (s?.state === 'CLOSED') return `PR #${n} was closed without merging`;
     return s?.state === 'OPEN' && s.mergeState === 'DIRTY' ? `PR #${n} conflicts with ${s.base ?? REPO_DEFAULT}` : null;
   };
   for (const w of prParkWaits(qNow, (t) => !putOff(t) && !waitingOnRead(t))) {
@@ -4383,6 +4385,14 @@ const parkNotes = new Map();
     const holds = w.path.slice(0, -1).map((k, i) => `${k} is held behind ${rest[i]}`);
     report.waiting.push(`${w.park}: CYCLE — ${andList([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${andList(holds)}` +
       `${conflict ? `. ${conflict}` : ''}. Neither moves until you answer ${w.park}'s park or release ${owner} (${E.releaseCommand(owner)})`);
+  }
+  // A park on another repo's PR merging (prParkWaits reads only this repo's) is noted once that PR
+  // is closed unmerged, through the read the park check already made. A read that fails leaves it
+  // unnoted: the park check says it could not check.
+  for (const t of Object.values(qNow.tickets ?? {})) {
+    const c = t.park?.clears_when;
+    if (t.state !== 'parked' || isHeld(t) || c?.kind !== 'pr-merged' || !c.repo || putOff(t) || waitingOnRead(t)) continue;
+    try { if (clearsRead.pr(c.pr, c.repo)?.state === 'CLOSED') parkNotes.set(t.key, `PR ${c.repo}#${c.pr} was closed without merging`); } catch { /* unread */ }
   }
 }
 if (parkNotes.size) out.push(`PARK NOTES: ${[...parkNotes].map(([k, n]) => `${k} (${n})`).join(', ')}`);
