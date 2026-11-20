@@ -3486,6 +3486,8 @@ const drafts = [];
 const undrafted = [];
 const reopens = [];
 const prReads = {};
+// The PRs whose post-merge criteria a ticket took this pass (below).
+const stepsGiven = new Set();
 for (const t of Object.values(qNow.tickets)) {
   // A fix try is over once its worker has finished: later spawns are no longer that try's.
   if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) {
@@ -3540,11 +3542,14 @@ for (const t of Object.values(qNow.tickets)) {
   // this is written skips it whole, so the next pass adds the criteria to what done left. Steps the worker
   // declared for after the merge win over the criteria: the two word one check differently, so both would
   // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
-  // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
+  // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's. A PR recorded
+  // on two tickets gives its criteria to the first only: the other is stamped read with no steps, so the
+  // person is not asked for the same check twice.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
     const have = t.follow_on_done ? [] : t.follow_on ?? [];
     const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
-    const later = declared ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
+    const elsewhere = stepsGiven.has(String(n)) || Object.values(qNow.tickets).some((o) => o !== t && o?.result?.pr != null && String(o.result.pr) === String(n) && String(o.post_merge_read ?? '') === String(n));
+    const later = declared || elsewhere ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
     const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
     // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
     const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
@@ -3552,6 +3557,7 @@ for (const t of Object.values(qNow.tickets)) {
     const args = ['set', t.key, ...steps, `post_merge_read=${n}`];
     const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
     if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+    if (w.ok && !w.skipped) stepsGiven.add(String(n));
     if (w.ok && !w.skipped && later.length) {
       merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
     }

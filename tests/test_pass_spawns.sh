@@ -844,6 +844,10 @@ unmade(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; i
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a PR recorded on two tickets is read once, and each keeps its status, so the merge driver's owes its review no longer" \
   '[ "$(grep -c "pr view 715 " "$T/gh-calls")" = 1 ] && [ "$(field PM-15 pr_status.pr)" = 715 ] && [ "$(field PM-16 pr_status.pr)" = 715 ] && [ "$(field PM-16 post_merge_read)" = 715 ] && [ "$(unmade PM-16)" = false ] && [ "$(unmade PM-15)" = false ]'
+check "DS-796 and its review's post-merge criteria go to one of the two tickets, so the person is not asked for each twice" \
+  '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 nor on a later pass" '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
