@@ -343,9 +343,11 @@ How to turn what you find into rows:
   runs that suite in full. A turbo or nx script that fans out over packages has no related form:
   propose each package's runner in its directory, or `none`. `none` keeps workers on the full
   suites, and changes nothing else.
-- **Suite weight.** `heavy` unless every Unit tests item is light on memory: shell tests, small
-  node or Python scripts, a headless browser driven one page at a time. A Jest or Vitest suite of
-  any size, or anything that has needed the Test worker cap, is `heavy`. Propose `light` only with a
+- **Suite weight.** `heavy` unless every item that runs under the test lock is light on memory:
+  each Unit tests, Related tests and Integration tests item (all three move to the light lock).
+  Light is shell tests, small node or Python scripts, a headless browser driven one page at a time.
+  A Jest or Vitest suite of any size, a database-backed integration suite, or anything that has
+  needed the Test worker cap, is `heavy`. Propose `light` only with a
   reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
   typechecks share, onto a box-wide light lock of their own.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
