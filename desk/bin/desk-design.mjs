@@ -1040,14 +1040,20 @@ export function designFact(text, { root, dir, ref, state }) {
 // the link's kind is unknown, so it blocks.
 // A Design section whose own line says the ticket has no board yet ("No board yet.", "No board for
 // this ticket yet.", as `No UI.` is written): a canvas it links is the epic's, with nothing for this
-// ticket to save. Only such a line counts, never prose around a board, and only when no other line
-// of the section names a board, screen or frame: free text about what a board leaves out ("it has
-// no screens for mobile") is too easily misread, and reading it wrong drops the design.
-const NO_BOARD_LINE = /^[ \t]*(?:[-*#]+[ \t]*)?no\s+(?:board|screen|frame)s?(?:\s+(?:for|in)\s+this\s+(?:ticket|story|task))?(?:\s+(?:exists?|is\s+drawn))?(?:\s+yet)?[ \t]*\.?[ \t]*$/gim;
+// ticket to save. Only such a line counts, never prose, and only in a section that holds nothing else
+// but the link: each other line is a link, with at most a short label before it ("Epic canvas: <url>").
+// Any other text may name a board by a word no list could hold, and reading it wrong drops the design.
+const NO_BOARD_LINE = /^[ \t]*(?:[-*#]+[ \t]*)?no\s+(?:board|screen|frame)s?(?:\s+(?:for|in)\s+this\s+(?:ticket|story|task))?(?:\s+(?:exists?|is\s+drawn))?(?:\s+yet)?[ \t]*\.?[ \t]*$/i;
+const LINK = /\[[^\]|]*\|[^\]]*\]|\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/g;
+const linkOnly = (line) => {
+  if (!LINK.test(line)) return false;
+  LINK.lastIndex = 0;
+  const label = line.replace(LINK, ' ').replace(/^[ \t]*[-*#]+/, '').replace(/[{}·:|()[\]]/g, ' ').trim();
+  return label.split(/\s+/).filter(Boolean).length <= 3;
+};
 const saysNoBoard = (section) => {
-  const text = String(section ?? '');
-  if (text.search(NO_BOARD_LINE) < 0) return false;
-  return !/\b(?:board|screen|frame)s?\b/i.test(text.replace(NO_BOARD_LINE, ''));
+  const lines = String(section ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  return lines.some((l) => NO_BOARD_LINE.test(l)) && lines.every((l) => NO_BOARD_LINE.test(l) || linkOnly(l));
 };
 
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
