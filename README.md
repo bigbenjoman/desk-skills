@@ -240,7 +240,9 @@ Linux (WSL needs `systemd=true` under `[boot]` in `/etc/wsl.conf`), with no Clau
 Install it once per repo, from inside the repo. Its agent runs a pass at login and every 3 minutes for a
 batch the orchestrator handed over at Stage 4, and appends each report to `<state>/supervisor.log`. On
 Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
-off. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+off. On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every
+terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs
+`wsl.exe --exec sleep infinity`; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
 that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
 log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
