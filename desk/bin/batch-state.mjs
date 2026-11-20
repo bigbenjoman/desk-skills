@@ -578,13 +578,17 @@ export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked
 // A predecessor failed or parked for a reason of its own is already a question for the person, so the
 // tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
 // ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
-function holdLeadsTo(q, t, prState, seen) {
+function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!holdsKept(t) || seen.has(t)) return null;
   // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
   // the batch is not settled while either waits.
   if (dateHeld(t)) return [];
+  // A ticket's answer is the same by whichever path the walk reaches it (one cut short by the path is
+  // on a cycle, which answers null from anywhere), so it is read once per walk: a dense held_by graph
+  // (each ticket naming every one before it) has exponentially many paths.
+  if (memo.has(t)) return memo.get(t);
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');
@@ -595,11 +599,13 @@ function holdLeadsTo(q, t, prState, seen) {
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
     else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
-    else { const up = holdLeadsTo(q, pt, prState, seen); parks = up && [...parks, ...up]; }
+    else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
   }
   seen.delete(t);
-  return parks && [...new Set(parks)];
+  const out = parks && [...new Set(parks)];
+  memo.set(t, out);
+  return out;
 }
 
 // A held ticket is still going somewhere on its own: every predecessor progressing or merged.

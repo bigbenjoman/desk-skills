@@ -85,5 +85,35 @@ const armedCli = cliGh('claim', '40', 'beef123', '--by', D).status;
 writeFileSync(answer, '{"autoMergeRequest":null}');
 t('#809 the CLI checks GitHub: armed there holds, off there releases', [armedCli, cliGh('claim', '40', 'beef123', '--by', D).status], [11, 0]);
 
+// DS-835: the ticket on a record, and a PR's latest outcome.
+M.record({ repo: R, pr: 50, sha: 'f0f0f0f', by: D, event: 'merged', ticket: 'DS-1', now: NOW, path });
+t('DS-835 AC1 a record names the ticket it was given', M.readLog(path).filter((e) => e.pr === '50').map((e) => e.ticket), ['DS-1']);
+const ev = [
+  { repo: R, pr: '60', event: 'claim', by: S, sha: 'a1', at: '1' },
+  { repo: R, pr: '60', event: 'armed', by: S, sha: 'a1', at: '2' },
+  { repo: 'acme/other', pr: '60', event: 'merged', by: D, sha: 'z9', at: '3' },
+  { repo: R, pr: '61', event: 'armed', by: S, sha: 'b1', at: '1' },
+  { repo: R, pr: '61', event: 'disarmed', by: D, sha: 'b1', at: '2' },
+  { repo: R, pr: '62', event: 'armed', by: S, sha: 'c1', at: '1' },
+  { repo: R, pr: '62', event: 'merged', by: D, sha: 'c2', at: '2' },
+  { repo: R, pr: '62', event: 'disarmed', by: D, sha: 'c2', at: '3' },
+  { repo: R, pr: '63', event: 'claim', by: D, sha: 'd1', at: '1' },
+  { repo: R, pr: '63', event: 'failed', by: D, sha: 'd1', at: '2' },
+];
+const pick = (pr, repo = R) => { const e = M.latest(ev, { repo, pr }); return e && [e.event, e.by, e.sha, e.at].join(' '); };
+t('DS-835 AC3 an armed PR reads as armed, with who, head and time', pick(60), `armed ${S} a1 2`);
+t('DS-835 AC3 another repo\'s line for the same number is not this PR', pick(60, 'acme/other'), `merged ${D} z9 3`);
+t('DS-835 AC3 armed then disarmed reads as no outcome', pick(61), null);
+t('DS-835 AC3 a merge outranks a later disarm', pick(62), `merged ${D} c2 2`);
+t('DS-835 AC2 a claim then a failure is no merged entry', pick(63), null);
+t('DS-835 AC4 a PR with no lines has none', pick(64), null);
+const l1 = cli('show', '--pr', '50', '--latest');
+t('DS-835 AC3 CLI: show --latest prints the latest outcome as JSON', [l1.status, JSON.parse(l1.stdout).event, JSON.parse(l1.stdout).ticket], [0, 'merged', 'DS-1']);
+const empty = spawnSync('node', [BIN, 'show', '--pr', '7', '--latest', '--repo', R], { encoding: 'utf8', env: { ...process.env, DESK_MERGE_LOG: join(T, 'none', 'merges.jsonl') } });
+t('DS-835 AC4 CLI: with no log yet, show --latest prints nothing and exits 0', [empty.status, empty.stdout, empty.stderr], [0, '', '']);
+t('DS-835 CLI: show --latest needs --pr', cli('show', '--latest').status, 11);
+const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2');
+t('DS-835 CLI: record --ticket writes the ticket', [c5.status, M.readLog(path).find((e) => e.pr === '51')?.ticket], [0, 'DS-2']);
+
 console.log(fails ? `${fails} FAILED` : 'all merge log checks passed');
 process.exit(fails ? 1 : 0);

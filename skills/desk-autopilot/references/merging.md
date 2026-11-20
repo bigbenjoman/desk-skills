@@ -125,7 +125,11 @@ with those lines in its brief, once per PR and outside the two tries (`extra` in
 the stuck reason quotes the line. A check
 §4 Checks workers can't fix names is never a worker's. A PR red only on such a check is stuck with
 `<check> · <what fixes it>`. A PR red on one beside a fixable check is requeued for the fixable one,
-and its briefing says the other is not the worker's to fix. desk-q shows each ticket's try and
+and its briefing says the other is not the worker's to fix. A required check that no GitHub Actions
+run of the repo reports (a deploy or preview service's status), red on three or more ready PRs at
+once, reads as that platform failing: the pass says so once, and a PR red only on it is held
+(`OUTAGE`) with no fix try or stuck answer, naming the step: once the platform is back, redeploy
+there or push to the PR. A PR also red on another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 
@@ -243,6 +247,12 @@ nohup ~/.claude/desk/bin/merge-driver.sh --tickets "ABC-1 ABC-2 ABC-3" --deps "A
 no `>>` redirect: a redirect outside the working directory prompts every time, whatever the allow
 rules say. **Where the batch is handed to the supervisor, do not start one**: it starts the driver for a
 handed-over batch and starts it again after a reboot (*The supervisor*).
+
+Each merge it makes is a `merged` line in the merge log naming the PR, the head it merged at, the
+ticket and the driver as the merger; a refused merge is a `failed` line, never `merged`.
+`node ~/.claude/desk/bin/merge-log.mjs show --pr <n> --latest` prints a PR's latest outcome as one
+JSON line (merged, else armed and not since disarmed: who, at which head, when), and prints nothing
+when the log has none.
 
 It loops every ~2 minutes over the batch's **ready** (non-draft) PRs by config §1's handle, **one at
 a time**: skips a PR with outstanding review feedback where `merge-feedback-first` is `yes` (first

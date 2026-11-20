@@ -918,7 +918,9 @@ or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cann
 `bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
 runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
 `HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
-output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
+output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
+left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
+`spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
 when nothing differs, 1 when something does, and 2 when a run was not compared.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision

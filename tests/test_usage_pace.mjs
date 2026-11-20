@@ -116,6 +116,40 @@ t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage(
 t('DS-465 AC4 unit: a wider `recent` reads it', P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real, recent: P.WEEK_MS }).seven_day?.utilization, 0.4);
 writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
 t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
+// Every pass is a new process, and gunzipping each recent round again is most of a pass's own CPU.
+// A log's events are kept on disk by its path, size, modified time and inode, so a new process reads an unchanged round from there. Its bytes are swapped for garbage of the same length, its time
+// put back: only the cache can still give 0.55.
+{
+  process.env.DESK_USAGE_DIR = join(T, 'usage-794');
+  mkdirSync(P.usageDir(), { recursive: true });
+  const gz = join(B, 'logs', 'B-3.log.round1.gz');
+  const s = Math.ceil(Date.now() / 1000) + 2;
+  const body = gzipSync(`${event(0.55, resetIn(real, 2 * DAY))}\n`);
+  writeFileSync(gz, body); utimesSync(gz, s, s);
+  t('DS-794 the round is read', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.55);
+  t('DS-794 and its events are kept on disk', JSON.stringify(JSON.parse(readFileSync(P.eventsCachePath(), 'utf8'))[gz]?.events?.map((e) => e.seven_day?.utilization)), '[0.55]');
+  writeFileSync(gz, Buffer.alloc(body.length, 0x78)); utimesSync(gz, s, s);
+  const child = (extra = {}) => spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const P = await import(${JSON.stringify(join(BIN, 'usage-pace.mjs'))}); console.log(P.newestUsage({ dirs: P.stateDirs({ self: ${JSON.stringify(A)}, root: ${JSON.stringify(root)} }), now: ${real} })?.utilization ?? null);`],
+  { encoding: 'utf8', env: { ...process.env, ...extra } }).stdout.trim();
+  t('DS-794 a new process takes the unchanged round from the cache, not by gunzipping it', child(), '0.55');
+  t('DS-794 with no cache it would have read the round again (the garbage is no reading)', child({ DESK_USAGE_DIR: join(T, 'usage-794-none') }), '0.5');
+  utimesSync(gz, s + 1, s + 1);
+  t('DS-794 a round whose time changed is read again', child(), '0.5');
+  // That read failed (the bytes are not gzip), so nothing was kept for it: the round readable again at
+  // the same size, time and inode is read, not taken as no reading from the cache.
+  writeFileSync(gz, body); utimesSync(gz, s + 1, s + 1);
+  t('DS-794 a read that failed is kept nowhere, so the next process reads the round again', child(), '0.55');
+  // A live log can be rewritten at the same size within the same millisecond, so only rounds go on disk.
+  const live = join(B, 'logs', 'B-4.log');
+  writeFileSync(live, `${event(0.61, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log is read', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.61);
+  writeFileSync(live, `${event(0.62, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log rewritten at the same size and time is read again by a new process', child(), '0.62');
+  rmSync(live);
+  rmSync(gz);
+  delete process.env.DESK_USAGE_DIR;
+}
 // A named batch's logs sit under its repo's state directory, in batches/<name>/.
 const dirsOf = (self) => JSON.stringify(P.stateDirs({ self, root }).sort());
 t('DS-305 AC5 unit: with only standing batches, the directories are the repos\'', dirsOf(A), JSON.stringify([A, B]));

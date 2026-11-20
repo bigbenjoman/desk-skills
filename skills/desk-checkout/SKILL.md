@@ -130,6 +130,17 @@ repo) and PR number first, then by topic. One item per piece of work, not one pe
 headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
 and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+- **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
+  for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
+  join it to is left out.
+- **A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it
+  that day (a status move, a comment, a commit), and the item says what that change was. A session
+  alone is not a change.
+- **To have the batch named**, set `DESK_CHECKOUT_NAME_BATCH=1` in your shell or the `env` block of
+  `~/.claude/settings.json` (`printenv DESK_CHECKOUT_NAME_BATCH` reads it). Then one line after
+  the substantive work names the items a batch built by key, e.g. "Built by an autopilot batch:
+  ABC-12, ABC-14.", and the items themselves still read as above. Unset, or any other value, no
+  such line.
 
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR

@@ -624,6 +624,12 @@ export function machineValue(key) {
   return unset(v) ? null : v;
 }
 export const machineWhy = (key) => machineProfile()?.sizing[key]?.why || null;
+// How many runs may hold the test lock at once: DESK_TEST_LOCK_SLOTS when set, else the profile's
+// test-lock-slots; anything but a whole number from 1 is 1. with-lock.sh is this rule's shell twin.
+export function testLockSlots() {
+  const v = String(process.env.DESK_TEST_LOCK_SLOTS || machineValue('test-lock-slots') || '').trim();
+  return /^\d+$/.test(v) && Number(v) >= 1 ? Number(v) : 1;
+}
 
 // ---- cost sources --------------------------------------------------------------------------
 // One per computer, beside the machine profile: which GitHub repo, Vercel team and AWS profile bill
@@ -1666,9 +1672,9 @@ export function parsePs(text, columns) {
   return rows;
 }
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
-// partial or empty list.
-export function psRows(columns) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'] });
+// partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
+export function psRows(columns, env = {}) {
+  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -2126,7 +2132,7 @@ const printRead = (cmd, id) => {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2752,6 +2758,8 @@ if (isMain) {
         process.exit(2);
         break;
       }
+      case 'lease':
+        process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
       default:
         console.error(deskEnvUsage());
         process.exit(2);

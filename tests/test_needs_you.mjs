@@ -166,6 +166,7 @@ for (const f of ['spawnSync', 'execFileSync', 'execSync', 'spawn', 'execFile', '
 syncBuiltinESMExports();
 
 const NY = await import('../desk/bin/needs-you.mjs');
+const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
 const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
 // The reads every in-process collect and refresh is given unless a case passes its own: GitHub's PRs from
 // the fixtures the fake gh serves (onGitHub), and no ticket status, worktree, fetch, merged PR elsewhere or
@@ -3404,6 +3405,43 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-925 done records nothing and says what clears it', `${done.ok} ${done.line} ${reds().length}`, 'true red925 ci-red:12: noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing. 1');
   const off = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'not-now', reads });
   t('DS-925 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+}
+
+// ---- #756: a base red under the batch's PRs is one item, naming the checks, the PRs held and the last merges
+{
+  const hold = (checks, since, held = true) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since, held });
+  const st = (pr, red, o = {}) => ({ pr, state: 'OPEN', head: 'h', checks: red.map((name) => ({ name, status: 'completed', conclusion: 'failure' })), ...o });
+  const ticket = (pr, base_red, o = {}) => ({ state: 'done', result: { pr }, base_red, pr_status: st(pr, base_red?.checks ?? []), ...o });
+  put('red756', { port: 4756, beat: 1, tickets: {
+    'B-1': ticket(31, hold(['tests'], minsAgo(40))),
+    'B-2': ticket(32, hold(['lint', 'tests'], minsAgo(20))),
+    // Held on two checks, one of them green since: only the red one is named.
+    'B-3': ticket(37, hold(['tests', 'typecheck'], minsAgo(10)), { pr_status: st(37, ['tests']) }),
+    // Two workflows' checks of one name, the later run green: the other is still red, so it is still held.
+    'B-4': ticket(38, hold(['e2e'], minsAgo(10)), { pr_status: st(38, [], { checks: [{ name: 'e2e', status: 'completed', conclusion: 'failure', runId: '5' }, { name: 'e2e', status: 'completed', conclusion: 'success', runId: '9' }] }) }),
+    'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
+    'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
+    // Records that are not holds now: a PR closed unmerged, one green at the head the hold read, one at
+    // a new head, and one taking a fix try beside its base red check.
+    'X-1': ticket(33, hold(['tests'], minsAgo(120)), { pr_status: st(33, ['tests'], { state: 'CLOSED' }) }),
+    'X-2': ticket(34, hold(['tests'], minsAgo(120)), { pr_status: st(34, []) }),
+    'X-3': ticket(35, hold(['tests'], minsAgo(120)), { pr_status: st(35, ['tests'], { head: 'h2' }) }),
+    'X-4': ticket(36, hold(['tests'], minsAgo(120), false)),
+  } });
+  const reds = () => N.collect({ word: 'red756' }).items.filter((i) => i.kind === 'base-red');
+  const s = reds();
+  t('#756 one item for the base, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'base-red:default standing');
+  t('#756 its need names the checks, the open PRs held and the last merges desk made, newest first', s[0]?.need,
+    `the default branch is red on "e2e", "lint" and "tests", so #31 (B-1), #32 (B-2), #37 (B-3) and #38 (B-4) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
+  t('#756 it is aged from the earliest open hold', s[0]?.since, Date.parse(minsAgo(40)));
+  t('#756 desk-q\'s count lists it', N.needsCount(loadRepos(Date.now(), 'red756').find((r) => r.slug === 'acme__red756' && r.batch == null)).items.some((i) => i.item.kind === 'base-red'), true);
+  const done = N.record({ word: 'red756', ticket: 'base-red:default', action: 'done' });
+  t('#756 done records nothing and says what clears it', `${done.ok} ${reds().length}`, 'true 1');
+  const off = N.record({ word: 'red756', ticket: 'base-red:default', action: 'not-now' });
+  t('#756 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) },
+    'G-3': ticket(42, hold(['tests'], minsAgo(5)), { pr_status: st(42, []) }) } });
+  t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started

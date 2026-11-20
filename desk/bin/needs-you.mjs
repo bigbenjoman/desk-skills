@@ -76,6 +76,8 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
+// PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
 // `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
 // ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
 // the next pass clears it once the base is current).
@@ -102,6 +104,7 @@ import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, approvalText, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
+import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -1060,6 +1063,39 @@ function promotionItems(r) {
       since: timeOf(red.since) } }];
 }
 
+// ---- the base red under a batch's PRs (fix-tries.mjs againstBase, kept on each ticket as base_red) ---
+// A check red on the base holds every PR it fails on without a fix try (BASE RED), and no worker repairs
+// the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
+// desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
+// each hold clears once its check passes there, and the item goes with the last.
+const BASE_RED = 'base-red:';
+const BASE_RED_MERGES = 3;
+function baseRedItems(r) {
+  const tickets = Object.values(r.q?.tickets ?? {});
+  // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
+  // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
+  // `live` is each held ticket's checks still red on its PR, the only ones the item names.
+  const liveOf = (t) => {
+    const b = t.base_red, st = prStatusOf(t);
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
+    // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
+  };
+  const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
+  if (!held.length) return [];
+  const base = r.q.base ?? 'the default branch';
+  const checks = [...new Set(held.flatMap((x) => x.live))].sort();
+  const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
+  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
+    .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
+  const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
+  return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,
+    item: { kind: 'base-red', repoLevel: true, checks,
+      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map((x) => prOf(x.t)))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
+      actions: [['done', 'the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last'], ['not-now']],
+      since: timeOf(held.map((x) => x.t.base_red.since).filter(Boolean).sort()[0]) } }];
+}
+
 // ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
 // A ticket is queued in one repo at most, so a copy here beside one in another configured repo's batch
 // is one item on this copy, keyed by its ticket. The copy held behind blockers its own batch lacks and
@@ -1617,7 +1653,7 @@ export function needsCount(r) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...duplicateItems(b)])) {
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
     if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
@@ -1687,6 +1723,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
     }
   }
   for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
@@ -1783,7 +1820,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2116,6 +2153,7 @@ function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
     return say(true, 'done, so it is off your list.');
   }
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
+  if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
   if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');

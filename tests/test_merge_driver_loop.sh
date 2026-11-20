@@ -44,6 +44,10 @@ check "DS-552 AC3: with §4 Merged-tree check unset it merges as before, logging
 check "AC4: the held ticket is released to triaged"                  '[ "$(qf T-3 .state)" = triaged ] && [ "$(qf T-3 .held_by)" = null ] && echo "$out" | grep -q "RELEASED T-3"'
 check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-3 ]'
 check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-1 .merged_at)" != null ] && [ "$(jq -r .key "$T/state/eta-history.jsonl")" = T-1 ] && [ "$(jq -r .merged_at "$T/state/eta-history.jsonl")" = "$(qf T-1 .merged_at)" ]'
+ml101=$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 --latest)
+check "DS-835 AC1: the merged entry names the PR, its head, the ticket and the merge driver" \
+  '[ "$(jq -r "[.event, .pr, .sha, .ticket, .repo] | join(\" \")" <<< "$ml101")" = "merged 101 $SHA1 T-1 acme/widgets" ] && jq -e ".by | startswith(\"merge-driver \")" <<< "$ml101" >/dev/null'
+check "DS-835 AC3: the reader gives the latest entry back with its time" 'jq -e ".at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\")" <<< "$ml101" >/dev/null && ! echo "$out" | grep -q "merge not written to the merge log"'
 
 check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
 
@@ -243,6 +247,15 @@ printf '#!/bin/sh\nmv "%s/state/merge-driver.log" "%s/state/moved.log"\n' "$T" "
 loops 2 --log
 check "DS-759: a driver whose log was moved re-opens merge-driver.log on its next loop" '[ $rc -eq 143 ] && grep -q "merge driver up" "$T/state/moved.log" && grep -q "merge driver exited 143$" "$T/state/merge-driver.log" && ! grep -q "merge driver exited" "$T/state/moved.log"'
 rm -f "$T/between.1" "$T/state/moved.log" "$T/state/merge-driver.log" "$T/sleeps"
+
+# ---- DS-835: a merge GitHub refuses leaves no merged entry in the merge log -----------------------
+SHA835=8358358358358358358358358358358358358358
+q add T-835 Task A; q set T-835 branch=fix/T-835 state=done result.pr=835
+echo "{ \"835\": { \"head\": \"fix/T-835\", \"base\": \"main\", \"sha\": \"$SHA835\", \"state\": \"open\", \"draft\": false, \"refuse\": true, \"checks\": [[\"test\", \"SUCCESS\"]] } }" > "$T/prs.json"
+loop; loop
+check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket, and has no merged entry" \
+  'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
+q drop T-835
 
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
 # A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.
