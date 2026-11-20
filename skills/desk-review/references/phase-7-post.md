@@ -28,7 +28,8 @@ verdict**: it posts at a head nothing reviewed, and a review marker there would 
 **Never post a second verdict at a SHA that already has one with different counts.** A wrong count
 needs a new run, because a gate reads the newest verdict and a re-count is indistinguishable from
 editing the result until it passes. **The one exception is a gap the person accepted after it
-posted** (`phase-5-requirements.md`, *A gap the person accepted*): re-run verdict.mjs on that round's results with
+posted** (`phase-5-requirements.md`, *A gap the person accepted*): re-run verdict.mjs on that round's results (a
+worker: the copy under `$DESK_STATE/reviews/<KEY>/`; with none kept, a fresh round) with
 only the accepted gaps moved from `gaps` into `accepted`, same round and same `since`, and post it at
 the same SHA with the `--accepted` section in the body. Any other change, a finding or a gap nobody
 accepted, is a new run.

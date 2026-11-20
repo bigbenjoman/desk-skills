@@ -73,6 +73,7 @@ check "desk-design render allowed under the browser lock only" 'allows "Bash($B/
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
 check "DS-676 stitch-boards allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/stitch-boards.mjs:*)" && ! allows "Bash(node $B/stitch-boards.mjs:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
+check "its review results folder in the state dir is writable, and no other ticket's" 'allows "Edit(/$T/state/reviews/fix-thing/**)" && ! allows "Edit(/$T/state/reviews/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `apps/web: pnpm build-storybook` |'
