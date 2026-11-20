@@ -588,6 +588,14 @@ export function instructionFix(t, { pr, head, ready, answer }) {
 }
 // A fix that carries out what the person said, rather than repairing what the pass found.
 export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
+// A try drafted from the PR as it read then, so dropped rather than spawned once the PR moved past it or
+// it was parked before its worker started: not a person's call, a review they sent back, or a renames
+// try, each of which its worker carries out at the PR as it is now.
+export const redraftable = (f) => !personCall(f) && !f?.person && f?.kind !== 'renames';
+// The queue fields that drop try f as one no worker ran: marked no_worker, and taken out of fix_tries,
+// so it counts against none of the PR's tries.
+export const unrunFields = (t, f) => ['fix.no_worker=true',
+  `fix_tries=${JSON.stringify((t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished)))}`];
 
 // The findings a review stuck reason quotes (reviewFix's `stuck` why, `P0: <text>; P2: <text>`), as
 // { sev, text }; [] for a reason that is not a review's, or quotes none.

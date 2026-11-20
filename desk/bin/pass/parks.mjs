@@ -35,7 +35,7 @@ import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
-import { personCall } from '../fix-tries.mjs';
+import { redraftable, unrunFields } from '../fix-tries.mjs';
 import { tryLabel } from './fix-tries.mjs';
 
 // ---- parks whose condition cleared ---------------------------------------------
@@ -127,10 +127,9 @@ function* settleClear(t, s) {
   // ticket is done on its PR again, so the PR's reading drafts the try it needs now. A person's call
   // (gaps, an instruction, a review sent back) and a renames try are theirs, so they still spawn.
   const f = t.fix;
-  if (f && !f.finished && !f.started && f.pr != null && !personCall(f) && !f.person && f.kind !== 'renames') {
-    const tries = (t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished));
-    if (yield { type: 'write', key: t.key, fields: [`fix.finished=${s.passAt}`, `fix.ended=parked before its worker started, and "${what}" holds`, 'fix.no_worker=true',
-      `fix_tries=${JSON.stringify(tries)}`, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${f.pr}`] }) {
+  if (f && !f.finished && !f.started && f.pr != null && redraftable(f)) {
+    if (yield { type: 'write', key: t.key, fields: [`fix.finished=${s.passAt}`, `fix.ended=parked before its worker started, and "${what}" holds`,
+      ...unrunFields(t, f), 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${f.pr}`] }) {
       yield say(t.key, 'clears', `${t.key}: "${what}" holds: its ${tryLabel(f)} on PR #${f.pr}, parked before its worker started, is dropped, and the PR is read again for what it needs now`);
     }
     return;
