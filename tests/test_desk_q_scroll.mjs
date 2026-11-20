@@ -4,7 +4,7 @@
 // DESK_HOME and DESK_CONFIG_ROOT. It counts subprocess starts and file reads, never milliseconds, so it
 // holds on a loaded machine.
 import cp from 'node:child_process';
-import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import fs, { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';

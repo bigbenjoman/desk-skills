@@ -12,7 +12,6 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-report.mjs');
 const dir = realpathSync(scratch('bench-report-test-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8' });
 
 const tok = (uncached, cacheWrite, cacheRead, output) => ({ uncached, cacheWrite, cacheRead, output });

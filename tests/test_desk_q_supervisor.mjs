@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSyn
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -22,7 +23,6 @@ mkdirSync(SUP, { recursive: true });
 const FAKE = join(T, 'supervisor.mjs');
 writeFileSync(FAKE, `import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, basename } from 'node:path';
-import { scratch } from './scratch.mjs';
 const dir = ${JSON.stringify(SUP)};
 const [sub, ...rest] = process.argv.slice(2);
 const name = basename(process.env.DESK_REPO_DIR);

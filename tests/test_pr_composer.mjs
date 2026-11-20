@@ -14,6 +14,7 @@ import { findComposer, NO_COMPOSER } from '../desk/bin/pr-composer.mjs';
 import { uploadSandbox } from './upload_harness.mjs';
 import { findPlaywright, importPlaywright, loadSessionCookies } from '../desk/bin/find-playwright.mjs';
 import { browserProfile, psRows } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
@@ -133,7 +134,6 @@ if (!pw.entry) {
   // upload-images.mjs end to end in a real browser, its PR page served from a fixture.
   writeFileSync(join(T, 'served-pw.mjs'), `
 import { readFileSync } from 'node:fs';
-import { scratch } from './scratch.mjs';
 const real = await import(${JSON.stringify(pw.entry)});
 export const chromium = { launchPersistentContext: async (_profile, opts) => {
   const browser = await real.chromium.launch({ headless: true });

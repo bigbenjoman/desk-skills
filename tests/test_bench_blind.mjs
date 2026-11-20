@@ -1,6 +1,6 @@
 // suite: bench blind (diffs exported under random letters, scores joined back to arms)
 // covers: desk/bin/bench-rubric.md
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,6 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const SCRIPT = join(BIN, 'bench-blind.mjs');
 const dir = realpathSync(scratch('bench-blind-test-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8' });
 
 const ARMS = [

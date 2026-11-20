@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { scratch } from './scratch.mjs';
 const require = createRequire(import.meta.url);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -65,7 +66,6 @@ const ANSWERS = join(T, 'answers.log');
 // node starts per answer once the fixture holds that many batches (DS-929 AC3).
 writeFileSync(join(BIN, 'answer.mjs'), `import { appendFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { scratch } from './scratch.mjs';
 const require = createRequire(import.meta.url);
 appendFileSync(${JSON.stringify(ANSWERS)}, JSON.stringify({ args: process.argv.slice(2), queue: process.env.DESK_QUEUE }) + '\\n');
 const launchctlPrint = ${launchctlPrint};

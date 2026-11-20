@@ -8,6 +8,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -200,7 +201,6 @@ mkdirSync(dirname(def), { recursive: true });
 writeFileSync(def, '{}\n');
 const py = spawnSync('python3', ['-I', '-c', `import sys; sys.dont_write_bytecode = True; sys.path.insert(0, ${JSON.stringify(join(ROOT, 'skills', 'desk-checkout', 'scripts'))})
 import claude_activity as a, os
-import { scratch } from './scratch.mjs';
 from datetime import datetime, timedelta
 print(sorted(os.path.basename(f) for f in a.find_files(datetime.now() - timedelta(days=1))))`], { encoding: 'utf8', env: process.env });
 t('AC10 both logins\' sessions are listed', py.stdout.trim(), "['S-CLAIM.jsonl', 'S-DEF.jsonl']");

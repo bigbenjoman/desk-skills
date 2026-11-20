@@ -17,7 +17,6 @@ const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringi
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-replay.mjs');
 const dir = realpathSync(scratch('bench-replay-test-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 
 const OPUS = { 'claude-opus-4-5': { inputTokens: 10, outputTokens: 40, cacheCreationInputTokens: 100, cacheReadInputTokens: 900 } };
 const reply = (text, modelUsage = OPUS) => JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, total_cost_usd: 0.05, modelUsage });

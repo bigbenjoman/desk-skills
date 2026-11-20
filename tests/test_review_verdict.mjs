@@ -3,8 +3,7 @@
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
@@ -296,7 +295,6 @@ for (const anchor of ['pullrequestreview-311', 'discussion_r12']) {
 
 // ---- the CLI, and SKILL.md's documented forms
 const T = scratch('desk-verdict-')
-process.on('exit', () => rmSync(T, { recursive: true, force: true }))
 writeFileSync(join(T, 'ok.json'), JSON.stringify(base()))
 writeFileSync(join(T, 'bad.json'), JSON.stringify(base({ gaps: undefined })))
 const ok = spawnSync('node', [SCRIPT, join(T, 'ok.json')], { encoding: 'utf8' })

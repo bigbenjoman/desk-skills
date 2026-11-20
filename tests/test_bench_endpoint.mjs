@@ -11,6 +11,7 @@ import { baseUrlProblem, endpointArms, endpointEnv, loginReach, readKey } from '
 import { bodyAllowance, withKey } from '../desk/bin/endpoint-proxy.mjs';
 import { armSettings } from '../desk/bin/bench.mjs';
 import { HOME } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -21,7 +22,7 @@ const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin'
 const fx = JSON.parse(readFileSync(new URL('./fixtures/opencode-go-responses.json', import.meta.url), 'utf8'));
 const dir = realpathSync(scratch('bench-endpoint-test-'));
 let upstream = null;
-process.on('exit', () => { try { upstream?.kill('SIGKILL'); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
+process.on('exit', () => { try { upstream?.kill('SIGKILL'); } catch { /* gone */ } });
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };
@@ -112,7 +113,6 @@ chmodSync(join(bin, 'claude'), 0o755);
 const upstreamScript = join(dir, 'upstream.mjs');
 writeFileSync(upstreamScript, `import http from 'node:http';
 import fs from 'node:fs';
-import { scratch } from './scratch.mjs';
 const [portFile, log, good] = process.argv.slice(2);
 const body = fs.readFileSync(good, 'utf8');
 http.createServer((req, res) => {

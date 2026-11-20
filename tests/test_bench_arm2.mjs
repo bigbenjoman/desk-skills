@@ -17,7 +17,6 @@ const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, '..', 'desk', 'bin', 'bench-arm2.mjs');
 const dir = realpathSync(scratch('bench-arm2-test-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };

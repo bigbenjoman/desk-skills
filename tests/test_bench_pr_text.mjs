@@ -15,7 +15,6 @@ const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; 
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const dir = realpathSync(scratch('bench-pr-text-test-'));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);
 const gitEnv = { ...process.env, HOME: home, GIT_CONFIG_GLOBAL: join(dir, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1' };

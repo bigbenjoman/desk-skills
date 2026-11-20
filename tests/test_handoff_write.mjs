@@ -1,5 +1,5 @@
 // suite: handoff briefing write command and lenient readers (raw control characters in strings)
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,6 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 
 const HANDOFF = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'handoff.mjs');
 const T = scratch('handoff-write-');
-process.on('exit', () => rmSync(T, { recursive: true, force: true }));
 const state = join(T, 'state');
 mkdirSync(state, { recursive: true });
 const write = (...args) => spawnSync('node', [HANDOFF, 'write', ...args], { encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: state } });

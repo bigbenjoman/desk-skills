@@ -3,8 +3,7 @@
 // per DS-238 criterion (per ticket) and per DS-239 criterion (per epic), plus the close rule a
 // verifier's results go through. Nothing reads the real Jira, GitHub or this checkout's history.
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, realpathSync, existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { scratch } from './scratch.mjs';
@@ -45,7 +44,7 @@ t('AC1 an open PR on the key vetoes', closeVerdict({ ticket: 'K-1', criteria: [m
 // ---- fixture repo: origin/main holds the files the tickets cite, and the work landed under KAN-50
 const T = realpathSync(scratch('desk-groom-'))
 let stub = null
-process.on('exit', () => { if (stub) stub.kill(); rmSync(T, { recursive: true, force: true }) })
+process.on('exit', () => { if (stub) stub.kill() })
 writeFileSync(join(T, 'gitconfig'), '[user]\n\temail = t@example.com\n\tname = t\n[init]\n\tdefaultBranch = main\n')
 const env = { ...process.env, HOME: join(T, 'home'), GIT_CONFIG_GLOBAL: join(T, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1',
   DESK_CONFIG_ROOT: join(T, 'home', '.config', 'desk'), DESK_ENV_MJS: join(SRC, 'desk', 'bin', 'desk-env.mjs'), PATH: `${join(SRC, 'bin')}:${process.env.PATH}` }

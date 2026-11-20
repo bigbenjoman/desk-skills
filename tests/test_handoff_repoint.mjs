@@ -2,7 +2,7 @@
 // covers: desk/bin/handoff.mjs desk/bin/queue.mjs
 // Each case is a throwaway origin and worktree, a queue under a throwaway DESK_HOME, and a fake gh whose
 // `pr list` answers with $T/prs.json. Nothing touches your real ~/.claude, state or GitHub.
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +13,6 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const T = scratch('handoff-repoint-');
-process.on('exit', () => rmSync(T, { recursive: true, force: true }));
 for (const k of Object.keys(process.env)) if (k.startsWith('DESK_') || k.startsWith('AUTOPILOT_')) delete process.env[k];
 
 mkdirSync(join(T, 'bin'));

@@ -11,7 +11,6 @@ const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; 
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'skill-eval.mjs');
 const dir = scratch('skill-eval-');
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 
 // A stub claude: logs each call, replies with the prompt plus the skill's marker when its SKILL.md was
 // appended. SLOW sleeps past the timeout; CRASH-BASE exits 1 without the skill.
