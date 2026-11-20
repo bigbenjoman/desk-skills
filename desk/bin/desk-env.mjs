@@ -1662,7 +1662,8 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
 
 // The harm signals the watch also reads, which preceded real damage where the host's free memory did
 // not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM-killer line newer
-// than the watch's start (`oom` is the count of such lines, null when the kernel log cannot be read),
+// than the watch's start (`oom` is the count of such lines, null when the kernel log cannot be read,
+// undefined off Linux, where none is watched),
 // and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
 // leak). Each line is said once, and again only after the signal has cleared.
 //   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
@@ -1677,7 +1678,7 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
     st.swapFired = grew >= swapGrowGiB ? true : grew < swapGrowGiB / 2 ? false : st.swapFired;
     st.swap = swap;
   }
-  if (oom == null) {
+  if (oom === undefined) { /* not watched on this platform */ } else if (oom === null) {
     if (!st.oomUnread) lines.push('OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched');
     st.oomUnread = true;
   } else {
@@ -1693,15 +1694,21 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
   return { state: st, lines };
 }
 
+// The OOM kills in a kernel log: one `Out of memory: Killed process` line per kill, global or a
+// cgroup's (`Memory cgroup out of memory: …`); the `oom-kill:` summary beside a global one is not counted.
+export const oomKills = (dmesg) => (String(dmesg).match(/out of memory: Killed process/gi) ?? []).length;
+
 // What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
 // when it is a tmpfs. Each is null where it cannot be read (macOS has none of them).
 export function harmSample() {
+  // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
+  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null };
   const m = linuxMeminfo();
   const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
   let oom = null;
   try {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
-    oom = (out.match(/Out of memory: Killed process|oom-kill:/g) ?? []).length;
+    oom = oomKills(out);
   } catch { /* dmesg_restrict, or no dmesg */ }
   let tmpGiB = null;
   try {

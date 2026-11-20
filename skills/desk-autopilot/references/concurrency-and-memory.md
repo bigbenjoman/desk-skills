@@ -124,6 +124,20 @@ never write a shell loop around `render` and `mem status` instead, which Claude 
 time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
 runaway process is a call to make from the monitor, not a park.
 
+**On Linux the watch also reads the signals that came before real harm**, beside `avail`, each said
+once until it clears:
+
+- `SWAP-GROWING`: swap used up 2 GiB or more within 10 minutes. Hold new spawns until it settles.
+- `OOM-KILL`: the kernel killed a process for memory since the watch started. Drop to the ladder's
+  lowest count (§3b "Spawn gate (available memory)" `drop to`), and read which process it was in
+  `dmesg` before raising again.
+- `TMPFS-HIGH`: `/tmp` is a tmpfs holding 4 GiB or more. Memory pressure pushes it to swap, which
+  looks like a leak and is not one: see what holds it before lowering anything.
+- `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
+  unwatched. Say so in the batch notes.
+
+Say which line moved the count when you lower it. On macOS none of these is read.
+
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has
 completed, naming each failed one), `pr-watch.mjs head <n> <sha>` (one line with the new sha once

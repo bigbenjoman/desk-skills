@@ -1,7 +1,7 @@
 // suite: memory watch (avail band, heavy processes)
 // The sustained-high watch and what counts as heavy: fixture `ps` output and stubbed memory
 // figures only; nothing reads this computer.
-import { heavyFromPs as heavyFromRows, parsePs, sustainedBandGiB, sustainedStep, harmStep } from '../desk/bin/desk-env.mjs';
+import { heavyFromPs as heavyFromRows, parsePs, sustainedBandGiB, sustainedStep, harmStep, oomKills } from '../desk/bin/desk-env.mjs';
 const heavyFromPs = (text, self) => heavyFromRows(parsePs(text, 'pid=,args='), self);
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -54,6 +54,12 @@ t('#758 an OOM kill already in the log at the start is not news', harm([hs(0, 1,
 t('#758 a new OOM kill fires, once per kill', JSON.stringify(harm([hs(0, 1, 4), hs(1, 1, 5), hs(2, 1, 5)])), JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory: drop to the ladder's lowest count"]));
 t('#758 an unreadable kernel log is said once', JSON.stringify(harm([hs(0, 1, null), hs(1, 1, null)])), JSON.stringify(['OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched']));
 t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, 0, 5), hs(1, 1, 0, 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
-t('#758 a figure that cannot be read (macOS) says nothing', harm([{ now: 0, swapGiB: null, oom: 0, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: 0, tmpGiB: null }]).length, 0);
+t('#758 off Linux nothing is watched and nothing said', harm([{ now: 0, swapGiB: null, oom: undefined, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: undefined, tmpGiB: null }]).length, 0);
+const kernel = [
+  '[ 812.1] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task=node,pid=4100,uid=1000',
+  '[ 812.1] Out of memory: Killed process 4100 (node) total-vm:9000000kB, anon-rss:7000000kB',
+  '[ 901.4] Memory cgroup out of memory: Killed process 5200 (vitest) total-vm:4000000kB',
+].join('\n');
+t('#758 one kill is one count, its oom-kill: summary aside; a cgroup kill counts too', oomKills(kernel), 2);
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1); }

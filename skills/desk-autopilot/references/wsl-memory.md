@@ -12,16 +12,8 @@ by Windows and a 24GB grant, the working ceiling was ~16GB, ~19GB on swap, and c
 host exhaustion within 15 minutes while guest `avail` still read 7.4GB, so the ladder alone said only
 "hold". Do not alarm on Windows' own free memory: it drops under a few GB in normal use with no harm
 in the guest, and throttling on it slows the batch for nothing. The signals that came before real
-harm are the guest's, and `desk-env mem watch` reads them beside `avail`:
-
-- `SWAP-GROWING`: swap used up 2 GiB or more within 10 minutes. Hold new spawns until it settles.
-- `OOM-KILL`: the kernel killed a process for memory since the watch started. Drop to the ladder's
-  lowest count (§3b "Spawn gate (available memory)" `drop to`), and read which process it was in
-  `dmesg` before raising again.
-- `TMPFS-HIGH`: `/tmp` is a tmpfs holding 4 GiB or more. Memory pressure pushes it to swap, which
-  looks like a leak and is not one: see what holds it before lowering anything.
-- `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
-  unwatched. Say so in the batch notes.
+harm are the guest's; `desk-env mem watch` reads them on every Linux host (concurrency-and-memory.md
+says what each line asks).
 
 Before acting on an alert, split it: a large `Cached` with low `AnonPages` in `/proc/meminfo` is page
 cache WSL returns lazily (`autoMemoryReclaim=gradual` in `.wslconfig` helps). If the host is low while
