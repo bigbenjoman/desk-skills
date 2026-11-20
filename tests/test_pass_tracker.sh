@@ -987,4 +987,41 @@ ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1]
 check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
   'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
 
+# ---- DS-854: with Jira, the fix ticket's body is sent from the batch state dir, which desk-jira accepts
+# The fake desk-jira applies desk-jira's path check to the body, with $DESK_STATE as the only allowed
+# root ($T is itself a temp dir, which the real check would also allow). $T/jira-refuse refuses it anyway.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+[ "\$1" = create ] || exit 0
+real=\$(cd "\$(dirname "\$4")" && pwd -P)/\$(basename "\$4")
+st=\$(cd "\${DESK_STATE:-/nonexistent}" 2>/dev/null && pwd -P)
+if [ ! -f "$T/jira-refuse" ] && [ -n "\$st" ]; then case "\$real" in "\$st"/*) echo "created J-900"; exit 0 ;; esac; fi
+echo "desk-jira: refusing to send \$4 (\$real): a body, field=@file or attachment must be inside this repo's worktree (none here), \\\$DESK_STATE or a temp dir (\\\$TMPDIR, /tmp)" >&2; exit 1
+EOF
+chmod +x "$T/stub/desk-jira"
+jconfig(){
+  uconfig yes
+  awk -v g="$1" '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `" g "` |" }' "$T/config-u.md" > "$T/config-ej.md"
+  printf '| Evidence workflow | `pr-evidence.yml` |\n\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n' >> "$T/config-ej.md"
+}
+export DESK_CONFIG="$T/config-ej.md" DESK_QUEUE="$T/queue-ej.json" DESK_AUTOPILOT_STATE="$T/state-ej"
+mkdir -p "$T/state-ej/logs" "$T/state-ej/evidence-runs"; : > "$T/admits"; : > "$T/jira-calls"
+q init ej; q add E-806; q set E-806 state=done result.pr=806
+printf '{"workflow":"pr-evidence.yml","runId":"9806","url":"https://github.com/acme/widgets/actions/runs/9806","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-ej/evidence-runs/806-$HEAD_A.json"
+bodies(){ find "$T/state-ej/evidence-runs" -name 'fix-*.md' | wc -l | tr -d ' '; }
+jconfig ask; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC2 jira-create ask: no ticket is created and the item names the setting" \
+  '! grep -q "^create " "$T/jira-calls" && [ "$(field E-806 undraft.call)" = "\"person\"" ] && field E-806 undraft.why | grep -q "jira-create.* to be .*yes.* (it is .*ask"'
+jconfig yes; touch "$T/jira-refuse"; out=$(node "$B/pass.mjs" 2>&1)
+body=$(find "$T/state-ej/evidence-runs" -name 'fix-*.md')
+check "DS-854 AC3 a refused create is quoted with the body file's real path, its id included" \
+  '[ "$(bodies)" = 1 ] && echo "$out" | grep -qF "refusing to send $body" && field E-806 undraft.why | grep -qF "$(basename "$body")"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC4 the next refused try reuses the body file rather than leaving another" '[ "$(bodies)" = 1 ] && [ "$(grep -c "^create " "$T/jira-calls")" = 2 ]'
+rm -f "$T/jira-refuse"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC1 desk-jira accepts the body from the batch state dir and the fix is admitted" \
+  'grep -q "^admit J-900 --by evidence$" "$T/admits" && echo "$out" | grep -q "evidence: filed J-900 .*admitted to the batch" && [ "$(field E-806 undraft.call)" = "\"evidence-fix\"" ] && ! echo "$out" | grep -q "DRAFT — PR #806"'
+check "DS-854 AC4 and once filed, the body file is removed" '[ "$(bodies)" = 0 ]'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

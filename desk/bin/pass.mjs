@@ -3951,14 +3951,18 @@ function fileEvidenceFix(g) {
     const grant = E.permission('jira-create');
     if (grant !== 'yes') return { why: `filing it needs config §3 ${E.permissionKey('jira-create')} to be "yes" (it is "${grant}")` };
     mkdirSync(EVIDENCE_DIR, { recursive: true });
-    const file = join(EVIDENCE_DIR, `fix-${id}.md`);
+    // One body file per failure, rewritten on each try and removed once filed, so refused tries
+    // leave one file, not one a pass.
+    const file = join(EVIDENCE_DIR, `fix-${createHash('sha1').update(g.key).digest('hex').slice(0, 8)}.md`);
     // A workflow fix is small: S, in the §4 Size field, or the body's first line where there is none.
     const sizeField = String(E.configValue('jira-size-field') ?? '').trim();
     const sized = sizeField && !E.isNone(sizeField);
     writeFileSync(file, sized ? body : `Size: S\n\n${body}`);
-    const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])]);
+    // desk-jira sends a body only from inside $DESK_STATE (or the repo or a temp dir).
+    const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])], { env: { ...process.env, DESK_STATE: STATE } });
     fix = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.out)?.[1];
     if (!r.ok || !fix) return { why: `desk-jira create was refused (${r.out.split('\n').pop()})` };
+    try { unlinkSync(file); } catch { /* already gone */ }
   } else {
     fix = `evidence-fix-${id}`;
     mkdirSync(join(STATE, 'tickets'), { recursive: true });
