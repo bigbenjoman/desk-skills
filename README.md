@@ -878,6 +878,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
+desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to

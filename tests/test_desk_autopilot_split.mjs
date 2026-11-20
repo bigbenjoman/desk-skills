@@ -34,6 +34,7 @@ t('AC1 desk-autopilot is still on UNSPLIT while its core is over 20 KB', unsplit
 
 // AC4: each heading, table row and paragraph of the old file is in exactly one file, word for word.
 const REWRITTEN = [
+  ['#746', 'Read the `CONFIG` file it prints. **`EXISTS=no` means stop**', 1], // read through desk-env show: the rows, not the prose or the §3c ledger
   ['DS-361', 'the handoff briefing in its system prompt in place of the sibling notes', 1], // the briefing moved to the first message
   ['DS-397', '(under `waiting` too when no merge driver is running)', 1], // the pass releases a due hold itself
   ['DS-397', '(no merge grants), you release it:', 1],
@@ -64,6 +65,7 @@ const REWRITTEN = [
   ['#735', 'macOS the row reads as `session`, since the supervisor needs launchd.', 1],
   ['DS-793', 'never chained. Jira Blocks links win over the kinds', 1], // a chain holds each ticket behind every earlier one it shares a file with
   ['DS-815', 'or a ticket admitted or requeued into this one).', 1], // an idle batch is rechecked on an interval, held outside its batch included
+  ['#775', 'a summary defeats the gate while looking like it honoured it', 1], // the exact body is also kept as the park's `approve`
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',

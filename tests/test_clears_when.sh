@@ -40,7 +40,8 @@ cat > "$T/config.md" <<EOF
 | \`git-force-with-lease\` | Force-push with a lease | \`ask\` | \`ask\` |
 EOF
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 printf 'echo "[spawn] ticket=$1"\n' > "$T/desk/bin/spawn-worker.sh"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 # gh: a PR is $T/gh/pr-<n>.json (none is a failed read), a branch's merged PR $T/gh/merged-<branch with

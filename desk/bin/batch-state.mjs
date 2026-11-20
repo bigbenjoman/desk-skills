@@ -113,6 +113,21 @@ export function openQuestion(stateDir, t) {
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
 
+// The text a worker's park waits on approval of, from its park file's `approve` ({kind, target, body}),
+// or null: kept only when the file's question is the one the worker parked on, so an earlier round's
+// file is never read as this one's, and only with a body to relay.
+export function parkApprove(stateDir, t, question) {
+  let f;
+  try { f = JSON.parse(readFileSync(join(stateDir, 'parks', `${t}.json`), 'utf8')); } catch { return null; }
+  const a = f?.approve;
+  if (!a || typeof a.body !== 'string' || !a.body.trim() || String(f.question ?? '').trim() !== String(question ?? '').trim()) return null;
+  return { kind: String(a.kind ?? 'write'), target: a.target == null ? null : String(a.target), body: a.body };
+}
+
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
+
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.
 export const failedWhy = (t) => String(t?.failed?.why ?? '').trim() || String(t?.park?.question ?? '').trim()
@@ -430,6 +445,12 @@ export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
+
+// A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so
+// an idle batch holding one is rechecked every RUN_RECHECK_MS (supervisor.mjs), not IDLE_RECHECK_MS.
+const RUN_KINDS = new Set(['run-completed', 'checks-pass']);
+export const waitingOnRun = (t) => settlesByScript(t) && RUN_KINDS.has(t.park.clears_when.kind);
+export const RUN_RECHECK_MS = Number(process.env.DESK_RUN_RECHECK_MS) || 2 * 60 * 1000;
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
