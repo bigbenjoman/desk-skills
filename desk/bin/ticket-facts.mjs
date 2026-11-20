@@ -171,7 +171,7 @@ for (const f of ['blockers', 'own_epic_blockers', 'other_links', 'size', 'reposi
 function design(text) {
   try {
     const { root = process.cwd(), dir = null, ref = baseRef(root) } = designRoot();
-    rec.design = designFact(text, { root, dir, ref, state: stateDir() });
+    rec.design = designFact(text, { root, dir, ref, state: stateDir(), key });
   } catch (e) { rec.design_error = lastLine(e) || 'design not read'; }
 }
 

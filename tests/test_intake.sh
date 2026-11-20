@@ -50,9 +50,11 @@ EOF
 }
 config yes
 
-# intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
+# intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver,
+# and links to the real modules (link_bin, after the fakes).
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs queue-store.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -98,6 +100,7 @@ process.exitCode = 10;
 EOF
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/digest.calls', 'checkin\\\\n');\nconsole.log(JSON.stringify({ status: 'not_due', push: null }));\n" "$T" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
 # A PR list is whatever $T/prs.json holds (none by default); one by --head and --base is the PRs in
 # $T/promos.json with that head and base, or a failure while $T/promos.fails exists. The workflows at a
@@ -681,6 +684,7 @@ printf '%s\n' '[{"number":5,"state":"MERGED","title":"fix: M-1 x","headRefName":
 check "DS-811 one merged only into main is not elsewhere" '[ "$(unpromoted M-1)" = null ]'
 rm -f "$T/prs.json" "$T/promos.json"
 mkdir -p "$T/children"
+rm -f "$T/bin/expand-parent.mjs" "$T/bin/plan-batch.mjs"
 cat > "$T/bin/expand-parent.mjs" <<EOF
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 const key = process.argv[2], s = process.env.DESK_AUTOPILOT_STATE;

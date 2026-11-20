@@ -463,7 +463,6 @@ for k in 10 11 12 13; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/
 # PR body in its log. R-1 parked on a scope call it recommends an option for; R-2's recommendation is a
 # money call, never taken.
 export DESK_QUEUE="$T/queue-rc.json" DESK_AUTOPILOT_STATE="$T/state-rc"; mkdir -p "$T/state-rc/logs"
-ln -s "$B/answer.mjs" "$T/desk/bin/answer.mjs"
 # Into the §3 table: later sections appended tables of their own after it.
 node -e 'const f = process.argv[1], fs = require("fs"); fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/^(\| `autopilot-workers` .*\n)/m, "$1| `git-push` | Push | `yes` | `yes` |\n| `pr-open` | Open a PR | `yes` | `yes` |\n"))' "$T/config.md"
 cat > "$T/stub/gh" <<EOF

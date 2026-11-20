@@ -44,10 +44,12 @@ EOF
 }
 config yes yes
 
-# The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
-# installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
+# The supervisor copied beside the fakes below and links to the real modules (link_bin, after them),
+# so it runs the fakes next to it. installed.mjs is copied too: it restarts the merge driver beside it,
+# which must be the fake.
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -74,6 +76,7 @@ console.log(JSON.stringify(d));
 EOF
 # The maintenance step an idle tick runs: no window.
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The merge driver, whose output the supervisor sends to merge-driver.log. By default it ends as the
 # real one does, with its exit line; driver.mode `fail` stops it at once as a signed-out gh does, and
 # `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
@@ -441,7 +444,7 @@ held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
 # tail): the node writing its version has finished by then.
 OLDREL="$DESK_HOME/releases/old0"; mkdir -p "$OLDREL/bin"; printf '{"commit":"old0","release":"old0"}\n' > "$OLDREL/release.json"
 cp "$T/bin/merge-driver.sh" "$T/bin/installed.mjs" "$OLDREL/bin/"
-for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$T/bin/$f" "$OLDREL/bin/$f"; done
+link_bin "$T/bin" "$OLDREL/bin"
 olddriver(){
   kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
