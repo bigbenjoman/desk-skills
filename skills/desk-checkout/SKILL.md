@@ -142,6 +142,10 @@ For each item, settle:
   green since the collectors' day belongs in the item's state. **Read each PR's state again as you
   write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`):
   the collectors ran earlier, and a PR undrafted, approved or merged since is described as it is now.
+  That read wins over the collector's: `MERGED` is `(merged)`, an open PR no longer a draft is
+  `(in review)` (or waiting on the approval its review decision shows), and only `isDraft` true is
+  a draft. If that read fails, use the collector's state and name the PR under **Check before
+  posting** as read earlier in the run.
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:
@@ -218,7 +222,9 @@ says, and give the path. Under it, briefly:
   read §3 grants can answer (a PR's state on GitHub, a ticket's in Jira, whether a message reached
   a channel) and put the answer in the post. What is left, each with its source and the read that
   was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
-  narration; GitHub not readable: §3 read-own-work is no"). Then each meeting left out for want of
+  narration; GitHub not readable: §3 read-own-work is no"), and each PR whose state could not be
+  read again when its line was written ("#1534's state is from the collectors, read earlier in the
+  run"). Then each meeting left out for want of
   attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
   line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
