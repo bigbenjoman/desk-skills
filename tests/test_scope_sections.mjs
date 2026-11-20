@@ -179,7 +179,16 @@ t('DS-818 fix try: a quote or slash in a regex, or a line break in a block comme
   addedExports(env, `${env}// doc   main();\nexport const p8 = 1;\n`),
   addedExports(env, `${env}export const p9 = 1n + 1;\n`),
   addedExports(env, `${env}export function p10() {} <!-- x\n`),
-], Array(19).fill(null));
+  addedExports(env, `${env}export function proce\\u0073s() {}\n`),
+  addedExports(env, `${env}export function th\\u0065n(resolve) { throw new Error('load'); }\n`),
+  addedExports(env, `${env}export function then() {}\n`),
+  addedExports(env, `${env}export const p11 = +1n;\n`),
+  addedExports('const t = `\nhelp\n`;\nconsole.log(t);\n', 'const t = `\nexport const zq = 1\nhelp\n`;\nconsole.log(t);\n'),
+  addedExports('const t = `\nhelp\n`;\nconsole.log(t);\n', 'const t = `\n// zq\nhelp\n`;\nconsole.log(t);\n'),
+  addedExports('function g() {}\n(g)();\n', 'function g() {}\nexport const zq = 0\n(g)();\n'),
+  addedExports('const x = 1\n+ 2;\n', 'const x = 1\nexport function zq() {}\n+ 2;\n'),
+], Array(27).fill(null));
+t('DS-818 fix try: a shebang, imports and import.meta in the old module still let a new export count', addedExports('#!/usr/bin/env node\nimport { a } from "./a.mjs";\nexport const here = import.meta.url;\n', '#!/usr/bin/env node\nimport { a } from "./a.mjs";\nexport const here = import.meta.url;\nexport function zq() {}\n'), ['zq']);
 t('DS-818 fix try: a slash JavaScript reads as a regex counts as one', addedExports(env, `${env}export const p4 = () => a + /x; main(); 1/;\n`), ['p4']);
 t('DS-818 fix try: a regex with , or ; in a class or a {n,m}, and a / after a postfix ++ or a .property, still count', addedExports(env, `${env}export const SEP = /[,;]\\d{1,3}/;\nexport const sep = (s) => s.split(/[,;]+/);\nexport function step(i, o) {\n  i++ / 2;\n  return o.in / 2;\n}\n`), ['SEP', 'sep', 'step']);
 t('DS-818 fix try: a template with substitutions in a body still counts', addedExports(env, `${env}export const label = (a, b) => \`\${a}: \${ {x: b}.x } \${\`in \${b}\`}\`;\nexport function say(n) {\n  return \`\${n} \${n === 1 ? 'item' : 'items'}\`;\n}\n`), ['label', 'say']);

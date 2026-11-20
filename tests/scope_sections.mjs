@@ -83,7 +83,25 @@ function groupEnd(text, close, wrap) {
   return -1;
 }
 const asExpression = (p) => `(${p}\n)`;
-const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)n?(?![\w$.])/gi;
+// Whole top-level chunks of a module as script that compiles where the module does: imports and export
+// lists become `;`, `export` comes off a declaration, `import.meta` is renamed, and a `#!` line (only
+// allowed first, before the 'use strict' compiles() adds) is dropped.
+const asScript = (chunks) => chunks.map((c) => (/^import\s*[{*'"\w]/.test(c) && !/^import\s*\(/.test(c)) || /^export\s*[{*]/.test(c) ? ';' : c.replace(/^export\s+(?:default\s+)?/, ''))
+  .join('\n').replace(/^#!.*/, '').replace(/\bimport\.meta\b/g, 'import_meta');
+// Only comments: every line a line comment (which any line terminator ends), or one block comment whose
+// first `*/` is its end.
+const isComment = (c) => /^\/\/[^\n\r\p{Zl}\p{Zp}]*(?:\n\/\/[^\n\r\p{Zl}\p{Zp}]*)*$/u.test(c) || /^\/\*(?:(?!\*\/)[\s\S])*\*\/$/.test(c);
+// Whether a new chunk can go in after the first `i` old chunks without changing them: the old code up
+// to there compiles (so no bracket, string, template or comment is open), and the next old statement
+// starts with a name, which cannot carry on the statement before it the way `(`, `[`, `.` or an
+// operator can.
+function boundary(old, i) {
+  if (i > 0 && !compiles(asScript(old.slice(0, i)))) return false;
+  const next = old.slice(i).find((c) => !isComment(c));
+  return !next || (/^[A-Za-z_$]/.test(next) && !/^(?:in|instanceof)(?![\w$])/.test(next));
+}
+// No BigInt (`n` is left as a letter, so it is refused): `+1n` and `1n + 1` throw on load.
+const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)(?![\w$.])/gi;
 // A value built only of literals: a regex, or strings, numbers, true, false and null and arrays and
 // objects of them. No call, member access, template, reference or spread.
 function literal(value) {
@@ -92,7 +110,7 @@ function literal(value) {
   const bare = v.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(NUMBER, '0')
     .replace(/([{,]\s*)(?:[A-Za-z_$][\w$]*|""|0)\s*:/g, '$1');
   if (/["0\]}a-z]\s*\[/.test(bare)) return false;
-  // A sign only in front of a number, never between two values (`1n + 1` throws on load).
+  // A sign only in front of a number, never between two values.
   const signless = bare.replace(/(^|[[{,:])(\s*)[+-](?=\s*0)/g, '$1$2');
   return /^[\s"0[\]{},:]*(?:(?:true|false|null)(?![\w$])[\s"0[\]{},:]*)*$/.test(signless);
 }
@@ -113,12 +131,13 @@ function fnValue(v) {
 // A new top-level statement that declares an export and runs nothing when the module loads: a function
 // declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
 // static members and extends run on load) or any other value is refused, and so is a name the old module
-// already uses or a global's: declaring it there would change what the unchanged code refers to. HTML-like
-// comments (`<!--`, `-->`) are refused: a script reads them as comments and a module does not.
+// already uses or a global's (declaring it would change what the unchanged code refers to), a name
+// written with an escape, and `then` (it makes the module's namespace a thenable, which `import()`
+// calls). HTML-like comments (`<!--`, `-->`) are refused: a script reads them as comments, a module not.
 function newExport(chunk, before) {
   if (/<!--|-->/.test(chunk)) return null;
   let name = null;
-  const fn = chunk.match(/^export\s+((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)[\s\S]*)$/);
+  const fn = chunk.match(/^export\s+((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)\s*\([\s\S]*)$/);
   if (fn) {
     const end = groupEnd(fn[1], '}', asExpression);
     if (end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end))) name = fn[2];
@@ -126,21 +145,20 @@ function newExport(chunk, before) {
     const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
     if (c && (literal(c[2]) || fnValue(c[2]))) name = c[1];
   }
-  if (!name || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
+  if (!name || name === 'then' || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
   return name;
 }
 // The names a change to a module only adds as exports, or null when it does anything else: every old
-// top-level statement is still there unchanged and in order, and each new one is a comment or a
-// newExport().
+// top-level statement is still there unchanged and in order, each new one goes in at a boundary(), and
+// each is a comment or a newExport().
 export function addedExports(before, after) {
   const old = topLevel(before);
   const names = [];
   let i = 0;
   for (const c of topLevel(after)) {
     if (i < old.length && c === old[i]) { i++; continue; }
-    // Only comments: every line a line comment (which any line terminator ends), or one block comment
-    // whose first `*/` is its end.
-    if (/^\/\/[^\n\r  ]*(?:\n\/\/[^\n\r  ]*)*$/.test(c) || /^\/\*(?:(?!\*\/)[\s\S])*\*\/$/.test(c)) continue;
+    if (!boundary(old, i)) return null;
+    if (isComment(c)) continue;
     const name = newExport(c, before);
     if (!name) return null;
     names.push(name);
