@@ -35,6 +35,8 @@ git -C "$T/repo" remote add origin "$T/origin.git"; git -C "$T/repo" push -q ori
 # config [<Worker models row value>]: no value leaves the row out, which reads as `default`. $SLICE, when
 # set, is the Promotion slice size row. $AUTHOR is the §1 Git author name / email cell.
 AUTHOR='`Pat Tester <pat@example.com>` (from recent commits)'
+# The suites that source this file pass config its argument, which shellcheck cannot see from here.
+# shellcheck disable=SC2120
 config(){ local models="" slice=""; [ -n "${1:-}" ] && models="| Worker models | \`default\` | \`$1\` |"
   [ -n "${SLICE:-}" ] && slice="| Promotion slice size (children) | \`8\` | \`$SLICE\` |"
   [ -n "$slice" ] && models="${models:+$models
