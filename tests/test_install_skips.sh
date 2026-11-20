@@ -83,8 +83,6 @@ left(){ for f in "${OLD[@]}"; do [ -e "$f" ] && echo "$f"; done; }
 mkdir -p "$HOME/.agents/.desk-pristine/.claude/desk/bin"
 echo old > "$HOME/.claude/desk/bin/retired-tool.mjs"; echo old > "$HOME/.agents/.desk-pristine/.claude/desk/bin/retired-tool.mjs"
 echo mine > "$HOME/.claude/desk/bin/my-own.sh"
-# Another tool's hook script of the same name as desk's, which desk never installed (#733).
-mkdir -p "$HOME/.claude/hooks"; printf '#!/usr/bin/env python3\n# theirs\n' > "$HOME/.claude/hooks/deny-ai-attribution.py"
 
 # --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
 # No git protocol allowed: the guard's fetch never reaches the network or this checkout's origin refs.
@@ -95,9 +93,8 @@ rc=$?
 summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
 check "install.sh exits 0" '[ $rc -eq 0 ]'
 check "summary has a Skipped (no terminal) block with the count" \
-  '[[ "$summary" == "Skipped (no terminal): 11 prompt(s)"* ]]'
+  '[[ "$summary" == "Skipped (no terminal): 10 prompt(s)"* ]]'
 for q in "Make one real codex call to prove it can answer?" \
-         "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" \
          "Register the attribution hook in ~/.claude/settings.json (backed up first)?" \
          "Register the update notice in ~/.claude/settings.json (backed up first)?" \
          "Register the context handoff in ~/.claude/settings.json (backed up first)?" \
@@ -109,8 +106,6 @@ for q in "Make one real codex call to prove it can answer?" \
          "Install claude-statusline (settings.json backed up first)?"; do
   check "listed: $q" '[[ "$summary" == *"  SKIP  $q"* ]]'
 done
-check "#733 another tool's hook script is kept with no terminal, and the install says so" \
-  '[ "$(sed -n 2p "$HOME/.claude/hooks/deny-ai-attribution.py")" = "# theirs" ] && [[ "$out" == *"kept your ~/.claude/hooks/deny-ai-attribution.py"* ]]'
 check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
 check "DS-224 AC6: with nothing running, the summary says so in one line" \
@@ -180,5 +175,18 @@ check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.jso
 q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" desk-q --plain --all 2>&1)"
 check "desk-q is on PATH and runs from any directory" \
   '[ -x "$HOME/.local/bin/desk-q" ] && [[ "$q_out" == "◆ "* ]] && [[ "$q_out" == *" workers running │ "* ]] && [[ "$q_out" == *"  r  "*"no batch"* ]]'
+
+# #733: another tool's hook script of the same name, which desk never installed (no pristine copy), on
+# an install with no terminal: replacing it is asked and skipped, the file kept, and it is not registered.
+rm -f "$HOME/.agents/.desk-pristine/.claude/hooks/deny-ai-attribution.py"
+printf '#!/usr/bin/env python3\n# theirs\n' > "$HOME/.claude/hooks/deny-ai-attribution.py"
+out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
+check "#733 replacing another tool's hook script is asked, and skipped with no terminal" \
+  '[[ "$summary" == *"  SKIP  Replace your ~/.claude/hooks/deny-ai-attribution.py with desk'"'"'s (yours is backed up first)?"* ]]'
+check "#733 the file is kept, and the install says so" \
+  '[ "$(sed -n 2p "$HOME/.claude/hooks/deny-ai-attribution.py")" = "# theirs" ] && [[ "$out" == *"kept your ~/.claude/hooks/deny-ai-attribution.py"* ]]'
+check "#733 a kept hook script is not registered or described as desk's" \
+  '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

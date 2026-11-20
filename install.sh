@@ -889,8 +889,11 @@ PY
 }
 
 settings_hook() { register_hook "$1" deny-ai-attribution.py "python3 \"$HOOK\"" 10 Bash PreToolUse; }
-rc=0; settings_hook check || rc=$?
+rc=0
+# A hook script kept as yours is not desk's to register, nor to describe as desk's: its registration is left as it is.
+if [ "$write_hook" = 1 ]; then settings_hook check || rc=$?; else rc=3; fi
 case "$rc" in
+  3) note "registration left as it is: the hook script there is yours, not desk's" ;;
   0) ok "already registered in ~/.claude/settings.json" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the hook" ;;
   *)
