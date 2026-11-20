@@ -142,7 +142,13 @@ for (const [name, out, want] of [
   ['packages missing beside a check that ran and failed is a failing check', 'pre-push: FAIL  pnpm format:check (1s, exit 1)\n WARN  Local package.json exists, but node_modules missing, did you mean to install?\n[warn] b.txt\n[warn] Code style issues found in the above file.', null],
   ['DS-803 AC3 a real formatting failure is not one', FORMAT, null],
   ['nor is a refusal with no hook in it', 'sh: turbo: command not found\n ! [remote rejected] b -> b (pre-receive hook declined)', null],
+  ['DS-808 AC3 Prisma\'s missing env var names the variable', 'pre-push: FAIL  bun run db:generate (1s, exit 1)\nFailed to load config file "/x/prisma.config.ts" as a TypeScript/JavaScript module. Error: PrismaConfigEnvError: Cannot resolve environment variable: DATABASE_URL.', '`DATABASE_URL` (environment variable not set)'],
+  ['and its older wording', 'pre-push: FAIL  pnpm prisma validate (1s, exit 1)\nerror: Environment variable not found: DATABASE_URL.', '`DATABASE_URL` (environment variable not set)'],
+  ['and a shell\'s set -u', 'pre-push: FAIL  sh check.sh (0s, exit 1)\ncheck.sh: line 3: API_KEY: unbound variable', '`API_KEY` (environment variable not set)'],
+  ['and dash\'s wording of it', 'pre-push: FAIL  sh check.sh (0s, exit 2)\ncheck.sh: 3: API_KEY: parameter not set', '`API_KEY` (environment variable not set)'],
 ]) t(name, hookEnvFailure(out), want);
+t('DS-808 AC3 a missing env var is quoted as an environment failure naming it',
+  refusalLine('pre-push: FAIL  bun run db:generate (1s, exit 1)\nPrismaConfigEnvError: Cannot resolve environment variable: DATABASE_URL.').startsWith('the pre-push hook could not run its checks here: `DATABASE_URL` (environment variable not set), an environment failure, not a failing check'), true);
 // Compared, not printed: tests/run.sh fails a suite on any output line holding the hook's word for a failed check.
 t('DS-803 AC2 it is quoted as an environment failure, not a formatting one',
   refusalLine(VPL861) === 'the pre-push hook could not run its checks here: `turbo` (command not found), an environment failure, not a failing check (pre-push: FAIL  pnpm format:check (1s, exit 1))', true);

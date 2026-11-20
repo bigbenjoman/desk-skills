@@ -32,7 +32,8 @@ export function transientPush(out) {
 }
 
 // A pre-push hook that could not run its checks, rather than one a check failed: what it lacked, as
-// `turbo` (command not found) or `node_modules` (packages not installed), or null. A shell names a
+// `turbo` (command not found), `DATABASE_URL` (environment variable not set) or `node_modules`
+// (packages not installed), or null. A shell names a
 // missing command in one of three forms: bash `turbo: command not found`, dash `sh: 1: turbo: not
 // found`, zsh `zsh: command not found: turbo`.
 const NOT_FOUND = [
@@ -48,12 +49,23 @@ const NO_PACKAGES = /\bnode_modules missing\b/;
 const NOT_LOADED = /\bCannot find (?:module|package) '([^']+)'/g;
 const isPackage = (spec) => !/^(?:\.{1,2}(?:[/\\]|$)|[/\\]|[A-Za-z]:[/\\]|file:)/.test(spec);
 const packageNotLoaded = (s) => [...s.matchAll(NOT_LOADED)].some((m) => isPackage(m[1]));
+// An environment variable the hook's check needs and the worktree's env files do not set: Prisma's two
+// forms, and a shell's `set -u`.
+const NO_ENV_VAR = [
+  /\bCannot resolve environment variable: ([A-Za-z_][A-Za-z0-9_]*)/,
+  /\bEnvironment variable not found: ([A-Za-z_][A-Za-z0-9_]*)/,
+  /^\s*(?:\S+: )*(?:line \d+: )?([A-Za-z_][A-Za-z0-9_]*): (?:unbound variable|parameter not set)\s*$/m,
+];
 export function hookEnvFailure(out) {
   const s = String(out ?? '');
   if (!HOOK_FAILED.test(s)) return null;
   for (const re of NOT_FOUND) {
     const m = re.exec(s);
     if (m) return `\`${m[1]}\` (command not found)`;
+  }
+  for (const re of NO_ENV_VAR) {
+    const m = re.exec(s);
+    if (m) return `\`${m[1]}\` (environment variable not set)`;
   }
   return NO_PACKAGES.test(s) && packageNotLoaded(s) ? '`node_modules` (packages not installed)' : null;
 }
