@@ -3492,13 +3492,16 @@ const prReads = {};
 const postMergeWritten = new Set();
 // Ticket o took PR n's post-merge criteria: read for it, and named no other ticket as their owner.
 const tookPostMerge = (o, n) => !!o && String(o.post_merge_read ?? '') === String(n) && !o.post_merge_by;
-// Ticket o is done on this repo's PR n: one needs-you recorded done on another repo's PR of the same
-// number (elsewhereDone) keeps that PR's url, and is not.
-const onThisPr = (o, n) => !!o && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n)
-  && (!o.pr_status?.url || String(o.pr_status.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase()));
+// Ticket o is done on PR n of the repo PR url `url` names: one needs-you recorded done on another
+// repo's PR of the same number (elsewhereDone) keeps that PR's url, and is not. Judged against the url
+// GitHub gave the PR, not the remote's spelling of the repo, which a rename leaves behind.
+const repoOfPr = (url) => String(url ?? '').toLowerCase().split('/pull/')[0];
+const onThisPr = (o, n, url) => !!o && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n)
+  && (!o.pr_status?.url || repoOfPr(o.pr_status.url) === repoOfPr(url));
 // Ticket o, as read this pass, takes merged PR n's post-merge criteria (s.post_merge) as follow-on
 // steps, or with `by` ({ key, holds(queue) }) is stamped read naming by.key, only while by.holds.
 function readPostMerge(o, n, s, by = null) {
+  const url = s.url ?? `https://github.com/${GH_REPO}/pull/${n}`;
   const have = o.follow_on_done ? [] : o.follow_on ?? [];
   const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
   const later = declared || by ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
@@ -3508,7 +3511,7 @@ function readPostMerge(o, n, s, by = null) {
   const ok = [stateOf(o), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(o)];
   const named = by ? [`post_merge_by=${by.key}`] : o.post_merge_by ? ['post_merge_by=null'] : [];
   const args = ['set', o.key, ...steps, `post_merge_read=${n}`, ...named];
-  const w = QW.apply(args, { when: (x, cur) => onThisPr(x, n) && ok.includes(stateOf(x)) && (!by || by.holds(cur)) });
+  const w = QW.apply(args, { when: (x, cur) => onThisPr(x, n, url) && ok.includes(stateOf(x)) && (!by || by.holds(cur)) });
   if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
   if (w.ok && !w.skipped) postMergeWritten.add(o.key);
   if (w.ok && !w.skipped && later.length) {
@@ -3577,20 +3580,36 @@ for (const t of Object.values(qNow.tickets)) {
   // (needs-you's done) still gets them. Each other is stamped read with no steps and names the owner
   // (post_merge_by), so the person is not asked for the same check twice, and only while, under the lock,
   // the owner has taken them: an owner dropped or changed before its write lands leaves the criteria
-  // owed to every ticket on the PR, not stamped away.
+  // owed to every ticket on the PR, not stamped away. Their criteria come from a read of the PR this
+  // pass, never one ticket's kept status: one kept from before the last review would otherwise be given
+  // to the owner in place of what the owner's own read finds.
   if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n) && !postMergeWritten.has(t.key)) {
+    const url = s.url ?? `https://github.com/${GH_REPO}/pull/${n}`;
     // Live and archived entries apart: a readmitted ticket has both under one key.
-    const live = Object.values(qNow.tickets).filter((o) => o?.key && onThisPr(o, n));
-    const gone = Object.values(archivedOf(qNow)).filter((o) => o?.key && onThisPr(o, n));
-    const tookLive = live.find((o) => o.key !== t.key && tookPostMerge(o, n));
-    const took = tookLive ?? gone.find((o) => o.key !== t.key && tookPostMerge(o, n));
-    const owner = took ?? live.sort((a, b) => (String(a.key) < String(b.key) ? -1 : 1))[0] ?? t;
-    if (owner.key === t.key) readPostMerge(t, n, s);
-    else {
-      if (!took && !postMergeWritten.has(owner.key)) readPostMerge(owner, n, s);
-      // An archived owner that took them stays so; a live one must still have them under the lock.
-      const holds = took && !tookLive ? () => true : (cur) => { const o = Object.hasOwn(cur?.tickets ?? {}, owner.key) ? cur.tickets[owner.key] : null; return onThisPr(o, n) && tookPostMerge(o, n); };
-      readPostMerge(t, n, s, { key: owner.key, holds });
+    const live = Object.values(qNow.tickets).filter((o) => o?.key && onThisPr(o, n, url));
+    const gone = Object.values(archivedOf(qNow)).filter((o) => o?.key && onThisPr(o, n, url));
+    let pm = s;
+    if ([...live, ...gone].some((o) => o.key !== t.key)) {
+      if (!(n in prReads)) {
+        const r = readPrStatus(n);
+        if (r) {
+          prReads[n] = r;
+          q('set', t.key, `pr_status=${JSON.stringify(withErrors(withUntriggered(withHistory(r, t.pr_status)), t.pr_status))}`);
+        }
+      }
+      pm = prReads[n] ?? null;
+    }
+    if (pm?.state === 'MERGED' && (pm.post_merge ?? []).length) {
+      const tookLive = live.find((o) => o.key !== t.key && tookPostMerge(o, n));
+      const took = tookLive ?? gone.find((o) => o.key !== t.key && tookPostMerge(o, n));
+      const owner = took ?? live.sort((a, b) => (String(a.key) < String(b.key) ? -1 : 1))[0] ?? t;
+      if (owner.key === t.key) readPostMerge(t, n, pm);
+      else {
+        if (!took && !postMergeWritten.has(owner.key)) readPostMerge(owner, n, pm);
+        // An archived owner that took them stays so; a live one must still have them under the lock.
+        const holds = took && !tookLive ? () => true : (cur) => { const o = Object.hasOwn(cur?.tickets ?? {}, owner.key) ? cur.tickets[owner.key] : null; return onThisPr(o, n, pm.url ?? url) && tookPostMerge(o, n); };
+        readPostMerge(t, n, pm, { key: owner.key, holds });
+      }
     }
   }
 }
