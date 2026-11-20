@@ -40,6 +40,9 @@ T="$(cd "$(dirname "$0")" && pwd)"
 # nothing: only the outer run is a run.
 runs_log=${TEST_RUNS_LOG-$HOME/.desk-autopilot/test-runs.jsonl}; export TEST_RUNS_LOG=
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
+# The run's template repos (tests/lib/repo_template.sh): built once, shared by every suite in it. Not
+# a DESK_* name: suites see no DESK_* variable but the ones suite_env.sh keeps (test_run_env.sh).
+export REPO_TPL_ROOT="$OUT/tpl"
 pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
 # this waits for every job, so a lock held around run.sh is not released while a suite still runs.
