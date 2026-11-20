@@ -87,6 +87,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
@@ -940,10 +941,10 @@ function gateHeld(r, t, s) {
 export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).held;
 // A ticket's steps split by their gates: `ready` listed now (each with its note, `checked` where it is a
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
-// checker passed is neither. A runnable one not yet passed or failed is `hidden` while its checker runs
-// (up to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
+// checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
+// to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
 function followSplit(r, t, now = Date.now()) {
-  const ready = [], waiting = [], hidden = [];
+  const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
   const running = !!t.follow_run && now - Date.parse(t.follow_run.started) < FOLLOW_TIMEOUT_MS;
@@ -952,13 +953,14 @@ function followSplit(r, t, now = Date.now()) {
     if (c?.result === 'pass') continue;
     const g = gateHeld(r, t, s);
     if (!g.held) { waiting.push(s); continue; }
-    const checked = followKind(s, labels) === 'runnable';
+    // A step a checker ran stays its own, whatever the labels read now.
+    const checked = settled(c) || followKind(s, labels) === 'runnable';
     const runnable = checked && !settled(c);
-    if (runnable && (running || !waited)) { hidden.push(s); continue; }
+    if (runnable && (running || !waited)) continue;
     const note = runnable ? [g.note, 'no follow-step checker has passed or failed it yet'].filter(Boolean).join('; ') : g.note;
     ready.push({ s, note, on: g.on, at: g.at, checked, ...(settled(c) ? { failed: c } : {}) });
   }
-  return { ready, waiting, hidden };
+  return { ready, waiting };
 }
 // A merged PR whose kept status names criteria its review left for after the merge, which the pass has
 // not made follow-on steps yet (pass.mjs post_merge_read), is held off the list until it has: its item
@@ -970,15 +972,18 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // A ticket's ready steps are one item per gate: `follow:<KEY>` for the merge's, `follow:<KEY>:<gate>` for
 // the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
 // gate that opens after the list was read is a new item rather than one taken as run unseen. A checker's
-// steps are an item of their own (`…:checked`), listed once none under its gate is still hidden: a
-// result coming in later would otherwise join an item the person was already shown.
+// step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
+// result comes in on its own time, and would otherwise join an item the person was already shown.
+const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
 function followItems(r) {
   return followsOf(r).flatMap((t) => {
-    const { ready, waiting, hidden } = followSplit(r, t);
-    const groups = GATES.flatMap((g) => [false, true].map((checked) => ({ g, checked, ready: ready.filter((x) => gateOf(x.s) === g && x.checked === checked) })))
-      .filter((x) => x.ready.length && !(x.checked && hidden.some((s) => gateOf(s) === x.g)));
-    return groups.map(({ g, checked, ready: shown }, i) => ({
-      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${checked ? ':checked' : ''}` },
+    const { ready, waiting } = followSplit(r, t);
+    const groups = GATES.flatMap((g) => {
+      const here = ready.filter((x) => gateOf(x.s) === g);
+      return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
+    }).filter((x) => x.ready.length);
+    return groups.map(({ g, id, ready: shown }, i) => ({
+      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${id ? `:checked:${id}` : ''}` },
       item: followItem(r, t, { gate: g, ready: shown, waiting: i === 0 ? waiting : [] }),
     }));
   });
