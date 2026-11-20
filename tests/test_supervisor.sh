@@ -425,7 +425,7 @@ held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
 # tail): the node writing its version has finished by then.
 OLDREL="$DESK_HOME/releases/old0"; mkdir -p "$OLDREL/bin"; printf '{"commit":"old0","release":"old0"}\n' > "$OLDREL/release.json"
 cp "$T/bin/merge-driver.sh" "$T/bin/installed.mjs" "$OLDREL/bin/"
-for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$T/bin/$f" "$OLDREL/bin/$f"; done
+node "$S/link_imports.mjs" "$B" "$OLDREL/bin" installed.mjs || exit 1
 olddriver(){
   kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
