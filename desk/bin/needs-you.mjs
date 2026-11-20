@@ -1426,7 +1426,11 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
     // What its worktree holds that origin does not, as the last pass read it.
-    const note = t.park?.unpushed ? `${capital(t.park.unpushed)}.` : undefined;
+    // The text a gated write waits on (the worker's park file `approve`, kept by the pass), whole and
+    // on this one line: JSON keeps its line breaks, so it is relayed verbatim.
+    const ap = t.park?.approve;
+    const approval = ap?.body ? `Awaiting approval, its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}` : '';
+    const note = [t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
     if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };

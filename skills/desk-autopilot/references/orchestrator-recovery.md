@@ -65,6 +65,11 @@ with no running worker and 2 for a key the queue does not hold. Stopping every w
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
 you go idle, which is the one wait that works.
 
+Sessions see and message only those on their own login. A worker on another login than yours (the
+repo's §3b Subscription, or a borrowed login) cannot reach you, nor you it: its briefing says so,
+and its park reaches you at your next pass. A park on a write it may not make keeps the exact text
+as the park's `approve` (`{kind, target, body}`), which needs-you shows whole: relay that, verbatim.
+
 ## Answering a live worker
 
 The `<state>/answers/<TICKET>.txt` mailbox is read only by a worker that is **parked on a
