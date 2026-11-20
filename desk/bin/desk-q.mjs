@@ -2866,6 +2866,8 @@ const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
 const PUT_OFF = 'putoff';
+// TITLE for a Needs you item that is not a ticket row, by its kind; any other kind shows as itself.
+const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
@@ -2918,11 +2920,24 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
     [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
+  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
+  // Needs you row too, so the count above never names more than the table shows.
+  // A put-off item goes under Put off, grey, as a put-off ticket row does.
+  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
+  const itemRow = (k) => ({ t, item }) => segRow(null, [
+    [`  ${rpad('-', 4)}  ${pad(cut(t.key.replace(/^follow:/, ''), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    ...fitSegs([[String(item.need ?? '').replace(/\s+/g, ' ').trim(), k === PUT_OFF ? GREY : null]], nw - 2, nw),
+    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(ITEM_TITLE[item.kind] ?? item.kind ?? '', tw)}`, null],
+  ], null);
+  const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
-    return g.length ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
+    const extra = extraOf[k] ?? [];
+    const n = g.length + extra.length;
+    return n ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${n}`, GREY]], null), ...g.map(row), ...extra.map(itemRow(k))] : [];
   });
-  const foot = !list.length ? ['  No unfinished tickets.'] : ['', ...stateKey(list.map(gk), width)];
+  const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...offItems.map(() => PUT_OFF)];
+  const foot = !shownKs.length ? ['  No unfinished tickets.'] : ['', ...stateKey(shownKs, width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
   return { head: fit, rows, foot };
 }

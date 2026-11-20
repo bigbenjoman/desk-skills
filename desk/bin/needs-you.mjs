@@ -1568,11 +1568,14 @@ function stampItem(r, x, item) {
 // is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
 // counted once, through its step item. A reader that draws "not in rows" as put off counts
 // `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
+// `items` are the counted items that are not ticket rows (steps, follow-ons, asks, sign-ins, …), each
+// { r, t, item }, so a reader can draw a row for every one it counts; `offItems` those put off.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [], held = [];
-  let putOff = 0, steps = 0;
+  let putOff = 0;
+  const items = [], offItems = [];
   for (const x of [...countedBatchRows(r), ...needsRows(r)]) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
@@ -1580,23 +1583,23 @@ export function needsCount(r) {
   }
   const live = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
   for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...duplicateItems(b)])) {
-    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   const own = (r.batches ?? [r]).filter((x) => x.q);
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own)]) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  return { shown: rows.length + steps, putOff, rows, stepRows };
+  return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.

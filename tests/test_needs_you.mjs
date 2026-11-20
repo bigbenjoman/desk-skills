@@ -2036,6 +2036,20 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// DS-934: every item desk-q counts has a Queue row, even when every ticket is done.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  put('phi934', { port: 4410, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'P-1': merged(71, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+  } });
+  const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
+  t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +P-1 is on main since/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+  N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
+  t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
+    `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
+}
+
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
 {
   const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
