@@ -50,11 +50,13 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A second check-out the same day starts where the first ended.** The collectors start the window at
-the last check-out this computer handed over (step 5 records it), when that falls inside the day,
-and their headers say `from HH:MM`. When the previous check-out you find in step 2 was posted later
-than that (written elsewhere, say), run them again with `--since <its time>`; `--since none` covers
-the whole day, and is what a redraft of the same check-out uses. Say the window in your one line.
+**A second check-out of the same day starts where the first ended.** By default the collectors
+start the window at the last check-out this computer handed over for the same destination and day
+(step 5 records it), and their headers say `from HH:MM`. Where step 2 can read the destination back
+(the channel's or the file's previous check-out), what was posted decides instead, either way: if its
+time is not the window's start, run the collectors again with `--since <its time>`, or `--since none`
+when nothing was posted for the day (a draft never sent covered nothing). A redraft of the same
+check-out uses `--since none` too. Say the window in your one line.
 
 ## 2. Gather
 
@@ -179,8 +181,8 @@ short version:
 ## 5. Hand over
 
 Print the post inside a single ```text fence so it copies cleanly. Then put it where §4 Check-out
-destination says, say in one line where it went, and record it as the last check-out, so the next
-one starts after it: `python3 ~/.claude/skills/desk-checkout/scripts/window.py mark`.
+destination says, say in one line where it went, and record it as this destination's last check-out for the day, so the next
+one starts after it: `python3 ~/.claude/skills/desk-checkout/scripts/window.py mark --day $D`.
 
 - **A Slack channel, `§3 slack-draft` `yes`:** save it as a draft in that channel with the Slack
   connector's `slack_send_message_draft`. Find the channel's id first with `slack_search_channels`,

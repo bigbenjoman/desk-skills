@@ -243,8 +243,8 @@ def main():
     window.add_day_argument(ap)
     desk_repos.add_include_argument(ap)
     args = ap.parse_args()
-    start, end = window.resolve(args.day, since=args.since)
     repos, current = desk_repos.load_all(args.include)
+    start, end = window.resolve(args.day, since=args.since, scope=window.scope_of(current))
     if current is None:
         print("Not inside a git repo: run from the repo the check-out is for.")
         return 1
