@@ -92,30 +92,25 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+// The result event that closed the log's last session, or null where it stopped mid-turn. With
+// `launch`, a launch boundary (desk_spawn, written before each spawn or resume) ends the search too:
+// a launch that wrote nothing since has no result of its own, whatever an earlier run ended with.
+function lastResult(logText, { launch = false } = {}) {
+  const lines = logText.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let d;
+    try { d = JSON.parse(lines[i]); } catch { continue; }
+    if (d?.type === 'result') return d;
+    if (TURN_EVENTS.has(d?.type) || (launch && d?.type === 'desk_spawn')) return null;
+  }
+  return null;
+}
 // The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
-export const BUDGET_SUBTYPE = 'error_max_budget_usd';
-// Whether the log's last session ended at its per-worker budget: its last result event says so.
-export function budgetStop(logText) {
-  const lines = logText.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let d;
-    try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d?.type === 'result') return d.subtype === BUDGET_SUBTYPE;
-    if (TURN_EVENTS.has(d?.type)) return false;
-  }
-  return false;
-}
+const BUDGET_SUBTYPE = 'error_max_budget_usd';
+// Whether the log's last launch ended at its per-worker budget: its own result event says so.
+export const budgetStop = (logText) => lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
 
-export function endedNormally(logText) {
-  const lines = logText.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    let d;
-    try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d?.type === 'result') return true;
-    if (TURN_EVENTS.has(d?.type)) return false;
-  }
-  return false;
-}
+export const endedNormally = (logText) => lastResult(logText) != null;
 
 // How a worker that printed no marker ended, in a phrase: that its session wrote nothing after desk's
 // own lines (`desk_*` events, before and around the launch), else its session's error, else the last
