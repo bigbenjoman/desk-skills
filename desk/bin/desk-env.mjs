@@ -18,6 +18,9 @@
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
+//   node desk-env.mjs show [<section>...]     print the config's headings and table rows, none of its prose
+//                                             (configRows): the named sections (e.g. 3 5), else every one but
+//                                             §3c, the rule ledger only /desk-setup reads; exit 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
@@ -200,6 +203,32 @@ export const otherRepoEnv = (env = process.env) => Object.fromEntries(Object.ent
 
 export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
 export const credsDir = () => repoConfigDir();
+
+// A config file's headings and tables, without its prose: what a skill reads at its start. `sections`
+// names the ones wanted ('3', '3b', '5'); empty is every section but 3c, the rule ledger, which
+// grows with each rule setup grants, is kept in harness-rules.json too, and only /desk-setup reads.
+export function configRows(text, sections = []) {
+  const want = sections.map((x) => String(x).replace(/^§/, '').toLowerCase());
+  let keep = false, fence = false;
+  const out = [];
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trimEnd();
+    if (/^```/.test(line.trim())) { fence = !fence; continue; }
+    if (fence) continue;
+    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
+    if (h) {
+      const id = h[1].toLowerCase();
+      keep = want.length ? want.includes(id) : id !== '3c';
+      if (keep) { if (out.length) out.push(''); out.push(line); }
+      continue;
+    }
+    if (/^#\s/.test(line) && !want.length) { out.push(line); continue; }
+    if (!keep) continue;
+    if (/^###\s/.test(line)) out.push('', line);
+    else if (line.trim().startsWith('|')) out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
 
 export function configPathOrNull() {
   if (process.env.DESK_CONFIG) return expandHome(process.env.DESK_CONFIG);
@@ -2010,6 +2039,12 @@ if (isMain) {
         console.log(`CREDS=${q(repoConfigDir())}`);
         console.log(`EXISTS=${p && existsSync(p) ? 'yes' : 'no'}`);
         if (!r.slug) process.exit(3);
+        break;
+      }
+      case 'show': {
+        const p = configPathOrNull();
+        if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
+        console.log(configRows(readFileSync(p, 'utf8'), args));
         break;
       }
       case 'list':
