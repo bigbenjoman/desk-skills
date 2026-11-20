@@ -96,11 +96,8 @@ jobs:
           HOOK: ${{ matrix.hook }}
         run: |
           bash --version | head -1
-          echo "shard $SHARD/$OF: $SUITES"
-          flags="-j 2 --no-hook-test"
-          [ "$HOOK" = true ] && flags="-j 2"
-          # shellcheck disable=SC2086  # flags (2 suites at once on the 3 vCPU runner) and suite names, one per word
-          bash tests/run.sh $flags $SUITES
+          # 2 suites at once on the 3 vCPU runner
+          bash tests/ci_shard.sh 2
 
   # The same shards on Linux under Node 24 (tests.yml runs Node 22). A failure here fails this run,
   # so tests/ci_main_red.mjs reports the macOS lane red.
@@ -113,6 +110,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    # As in tests.yml's Linux shards: shellcheck is preinstalled here, so test_lint.sh requires it.
+    env:
+      DESK_REQUIRE_SHELLCHECK: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -137,8 +137,5 @@ jobs:
           node_version=$(node --version)
           echo "node $node_version"
           case "$node_version" in v24.*) ;; *) echo "expected Node 24, got $node_version"; exit 1 ;; esac
-          echo "shard $SHARD/$OF: $SUITES"
-          flags="-j 3 --no-hook-test"
-          [ "$HOOK" = true ] && flags="-j 3"
-          # shellcheck disable=SC2086  # flags (3 suites at once on the 4 vCPU runner) and suite names, one per word
-          bash tests/run.sh $flags $SUITES
+          # 3 suites at once on the 4 vCPU runner
+          bash tests/ci_shard.sh 3
