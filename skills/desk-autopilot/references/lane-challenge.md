@@ -50,7 +50,7 @@ unchecked opinion that must not be reported as settled, and a confirmed park has
 INCONCLUSIVE park is also a `question`: put it to the user to confirm or re-lane.
 
 **A lane is a proposal.** When the user rules that a park's lane is wrong (it is really A, B or E),
-re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`, one per unknown, or `--all` for one answer covering them all), then
+re-lane it with `queue.mjs set <TICKET> lane=A`, answer its triage unknowns (`answer.mjs`), then
 `queue.mjs requeue <TICKET>`, and, where the ticket is
 genuinely big, scope it in the briefing so what runs really is size M or smaller. That is a new lane, not
 a requeue of a C or D: a ticket that stays C, or D without its canvas saved on the base, is worked
