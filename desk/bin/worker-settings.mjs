@@ -205,7 +205,10 @@ for (let i = items.length - 1; i >= 0; i--) {
   const forms = twins(p.cmd);
   const rows = items.filter((x) => x.id !== 'pre-push-checks' && normDir(x.dir) === normDir(p.dir));
   if (rows.some((x) => twins(x.cmd).some((c) => forms.includes(c)))) { items.splice(i, 1); continue; }
-  const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
+  const near = rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `))));
+  const locks = new Set(near.map((x) => E.lockFor(x.id)));
+  // Near a lock-only row's item (§4 Lint, §4 Storybook), its bare prefix rule would run that row bare.
+  p.lockOnly = near.some((x) => E.LOCK_ONLY.has(x.id));
   if (locks.size > 1) items.splice(i, 1);
   else if (locks.size) p.lock = [...locks][0];
   else if (p.cmd.includes('typecheck')) p.lock = 'tsc';
@@ -457,10 +460,10 @@ if (mode === 'triage') {
   for (const it of items) {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id)) allow.push(...withPrefix(cmd).map(form(false)));
+      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id) && !it.lockOnly) allow.push(...withPrefix(cmd).map(form(false)));
       // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
-      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook), has no
-      // bare form (the worker cannot `cd`).
+      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook, §4 Lint),
+      // has no bare form (the worker cannot `cd`).
       allow.push(...lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
