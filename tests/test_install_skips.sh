@@ -221,4 +221,33 @@ check "#736 a declined prompt is answered no and not listed as skipped" \
   '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
 check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
 
+# #828: the repo-config count of unanswered fields (desk-env unanswered, which install.sh runs) reads
+# each row's value column as every desk read does, not a note or another column, and leaves out the
+# rows the template keeps `TODO` to follow the machine profile.
+cat > "$T/uc.md" <<'UEOF'
+## 2. Paths
+| Field | Value | Notes |
+|---|---|---|
+| Primary repo root | `TODO` | the main checkout |
+| Worktrees directory | `~/wt` | not `TODO` |
+
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
+| Memory ceiling for parallel work (GB) | WSL: `16` | `TODO` (a note) |
+| Test worker cap under the test lock | `4` | `TODO` |
+| Triage concurrency | `1` | `3` (how many at once; left `TODO` it is 1) |
+| Subscription | `default` | `TODO` (`<default\|email>`) |
+| Intake query | `none` | `TODO` (a Jira query) |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| `pr-open` | Open a PR | `yes` | `TODO` |
+Left `TODO` or absent, each falls back to the machine profile.
+UEOF
+check "#828 only a value of TODO counts: not a note's, not another column's, not the rows that follow the machine profile" '[ "$(node "$S/../desk/bin/desk-env.mjs" unanswered "$T/uc.md")" = 4 ]'
+check "#828 install.sh counts with it" 'grep -q "desk-env.mjs\" unanswered \"\$c\"" "$S/../install.sh"'
+
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

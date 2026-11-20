@@ -1303,9 +1303,9 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # Unset table values only, not the word TODO in the rules text.
-  # shellcheck disable=SC2016
-  todos="$(grep -c '^|.*`TODO`' "$c" 2>/dev/null || true)"
+  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
+  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
+  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
   # A user-level skill (a vendored one this install links, say) with the name of a skill the repo

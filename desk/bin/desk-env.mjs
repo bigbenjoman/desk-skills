@@ -529,6 +529,17 @@ function parseConfigFile(path) {
   return parsed;
 }
 
+// How many rows of a config file are unanswered: the value (first span of the value column, as every
+// read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
+// keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
+export const MACHINE_FALLBACK_ROWS = ['autopilot worker concurrency', 'memory ceiling for parallel work (gb)', 'test worker cap under the test lock'];
+export function unansweredRows(path) {
+  if (!path || !existsSync(path)) return 0;
+  return tableLines(readFileSync(path, 'utf8')).rows
+    .filter(({ cells, label, header }) => !MACHINE_FALLBACK_ROWS.includes(norm(label)) && cellItems(cells[settingCol(header)] ?? '')[0] === 'TODO')
+    .length;
+}
+
 // A value cell's items: every backtick span, except those in a trailing parenthesised note
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
@@ -2347,6 +2358,10 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
+      // unanswered <config.md>: how many of its rows are still `TODO` (install.sh's per-repo line).
+      case 'unanswered':
+        console.log(unansweredRows(args[0]));
+        break;
       case 'drift': {
         const ai = args.indexOf('--app');
         if (ai >= 0) {
@@ -2634,7 +2649,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|drift|add-row|machine|costs|logins|subscription');
+        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|unanswered|drift|add-row|machine|costs|logins|subscription');
         process.exit(2);
     }
   } catch (e) {
