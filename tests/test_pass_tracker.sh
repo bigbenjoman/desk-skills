@@ -236,7 +236,6 @@ cat >> "$T/config-j.md" <<EOF
 EOF
 export DESK_CONFIG="$T/config-j.md" DESK_QUEUE="$T/queue-j.json" DESK_AUTOPILOT_STATE="$T/state-j"
 mkdir -p "$T/state-j/logs" "$T/state-j/triage" "$T/jira"
-ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
 # A search answers `key in (...)` with each key's $T/jira/<KEY>.json that exists, as Jira leaves out an
 # issue it does not show.
 cat > "$T/jira-search.mjs" <<'EOF'
@@ -846,6 +845,7 @@ check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "
 { cat "$T/config-j.md"; printf '| Jira project | `J` |\n| Person-input labels | `ben-input` |\n'; } > "$T/config-a.md"
 CONFIG_WAS=$DESK_CONFIG; export DESK_CONFIG="$T/config-a.md" DESK_QUEUE="$T/queue-a.json" DESK_AUTOPILOT_STATE="$T/state-a"
 mkdir -p "$T/state-a/logs" "$T/state-a/triage"; : > "$T/admits-a"
+rm -f "$T/desk/bin/intake.mjs"
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
