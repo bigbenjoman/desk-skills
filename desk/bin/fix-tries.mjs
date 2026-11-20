@@ -706,7 +706,7 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   const f = reds[0];
   const r = ctx.external?.(f.login);
   // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
-  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
+  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   const body = r.body ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').slice(0, 500)}` }] : [];
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
