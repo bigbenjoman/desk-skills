@@ -44,10 +44,12 @@ EOF
 }
 config yes yes
 
-# The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
-# installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
+# The supervisor copied beside the fakes below and links to the real modules (link_bin, after them),
+# so it runs the fakes next to it. installed.mjs is copied too: it restarts the merge driver beside it,
+# which must be the fake.
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -74,6 +76,7 @@ console.log(JSON.stringify(d));
 EOF
 # The maintenance step an idle tick runs: no window.
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The merge driver, whose output the supervisor sends to merge-driver.log. By default it ends as the
 # real one does, with its exit line; driver.mode `fail` stops it at once as a signed-out gh does, and
 # `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
@@ -378,6 +381,24 @@ out=$(DESK_IDLE_RECHECK_MS=3000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
 
+# ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"wait for the run","clears_when":{"kind":"run-completed","run":44719886024}}}}' b9
+: > "$T/pass.calls"
+out=$(tick)
+check "DS-852 the idle line names the shorter interval while a park waits on a run" 'grep -q "(2 minutes while a park waits on an Actions run or a PR.s checks)" "$LOG"'
+sleep 4
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC2 once the run interval has passed, an idle batch waiting on a run runs a pass, well inside the idle interval" '[ "$(count "$T/pass.calls")" = 2 ]'
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC2 that pass starts the run interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","clears_when":{"kind":"none"}}}}' b10
+: > "$T/pass.calls"
+out=$(tick); sleep 4
+out=$(DESK_RUN_RECHECK_MS=3000 tick)
+check "DS-852 AC6 an idle batch with no park on a run or checks keeps the idle interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+queue true '{}' "$DONE" b11
+
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
 out=$(tick)
@@ -423,7 +444,7 @@ held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
 # tail): the node writing its version has finished by then.
 OLDREL="$DESK_HOME/releases/old0"; mkdir -p "$OLDREL/bin"; printf '{"commit":"old0","release":"old0"}\n' > "$OLDREL/release.json"
 cp "$T/bin/merge-driver.sh" "$T/bin/installed.mjs" "$OLDREL/bin/"
-for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$T/bin/$f" "$OLDREL/bin/$f"; done
+link_bin "$T/bin" "$OLDREL/bin"
 olddriver(){
   kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"

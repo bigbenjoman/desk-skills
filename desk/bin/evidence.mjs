@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission } from './desk-env.mjs';
+import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission, CODE_SPAN as SPAN } from './desk-env.mjs';
 import { failureLines } from './gate.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
@@ -42,7 +42,6 @@ export function parseEvidenceRow(items) {
 // describing the cell, not leaving one (DS-381). A span stays on its line and closes only on a run of
 // its own length; a backtick run with no partner is left as text, so it cannot hide the cells below it.
 const FENCED = /^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm;
-const SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
 const outsideCode = (body) => String(body ?? '').replace(FENCED, '').replace(SPAN, '');
 export const dragCells = (body) => (outsideCode(body).match(/_drag \S+_/g) ?? []).length;
 // The body with each cell whose file `fills` ({ [file]: text }) has a value replaced by that text, and

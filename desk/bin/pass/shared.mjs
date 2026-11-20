@@ -118,6 +118,21 @@ export function reviewerGated(s, { reviewer, gate, stateChecks }) {
   return verdict.size > 0 && g.failing.every((f) => verdict.has(f.name));
 }
 
+// ---- fix tries ---------------------------------------------------------------
+// The files a PR conflicts on, from `git merge-tree --write-tree --name-only` output `o` (its first line
+// is the tree), or null when git could not say (o null) or named none.
+export function conflictFilesIn(o) {
+  const files = o?.split('\n').slice(1).filter(Boolean) ?? [];
+  return files.length ? files : null;
+}
+// What a fix try's record on the ticket keeps beside its try, kind and head: a review try what it quoted,
+// so a later review can tell a finding it cleared from one that survived it; a protected-files try the
+// files it judged, so none is sent to a worker twice; a renames try its renames; a conflict try the base
+// it was read against.
+export const fixTryQuote = (f) => (f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
+  : f.kind === 'protected' ? { paths: f.paths } : f.kind === 'renames' ? { renames: f.renames }
+    : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {});
+
 // ---- handoffs and resumes --------------------------------------------------
 // The stages a session hands off to, in stage order: Object.keys lists an integer-like key (7) before '4b'.
 export const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));

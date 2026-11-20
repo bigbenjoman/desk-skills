@@ -51,7 +51,6 @@ for r in zendesk studia-web; do
 EOF
 done
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -69,6 +68,8 @@ if (existsSync('$T/refuse') && readFileSync('$T/refuse', 'utf8').split('\n').inc
   process.exitCode = 11;
 } else console.log(JSON.stringify({ ran: true, lines: [\`admitted \${key} by pass into batch the standing batch (lane A, size S)\`], admitted: [key], refused: [] }));
 EOF
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 printf '#!/bin/sh\nexit 0\n' > "$T/stub/lsof"
 printf '#!/bin/sh\n[ "$1 $2" = "pr list" ] && echo "[]"\nexit 0\n' > "$T/stub/gh"

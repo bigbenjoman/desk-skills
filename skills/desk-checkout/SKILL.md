@@ -69,8 +69,8 @@ drafting session never reports itself.
 | **Jira** | `jira_activity.py`: REST through `desk-jira api` once per in-scope repo whose §4 Tracker is `jira`, so it uses that repo's desk-jira credentials and never sees the token. Tracker `none`: skipped, and says so | `read-own-work` | Tickets raised (bulk batches grouped by label), status moves, reassignments, §4 Priority and other field changes, the user's comments, and what others did to their tickets the same day |
 | **GitHub** | `github_activity.py` via `gh` | `read-own-work` | PRs opened, merged, closed or pushed to, with review decision and failing checks for open ones; reviews given. Grouped by scope |
 | **Claude Code** | `claude_activity.py` over `~/.claude/projects/*/*.jsonl`, every project | `read-transcripts` | The *why* and the story: what they were chasing, what got found, work that never became a PR |
-| **Calendar** | Google Calendar connector: events that day on their primary calendar | `read-calendar` | The meeting lines |
-| **Meeting notes** | Gmail connector: `from:gemini-notes@google.com after:<day> before:<day+1>` (dates as `YYYY/MM/DD`) | `read-calendar` | Decisions and actions from each meeting. Gemini's email has a Summary and Next steps. Open the linked Doc through the Drive connector only if the email is too thin |
+| **Calendar** | Google Calendar connector: events that day on their primary calendar | `read-calendar` | The candidate meetings (step 3) |
+| **Meeting notes** | Gmail connector: `from:gemini-notes@google.com after:<day> before:<day+1>` (dates as `YYYY/MM/DD`) | `read-calendar` | Decisions and actions from each meeting, and whether the notes record the user saying anything. Gemini's email has a Summary and Next steps. Open the linked Doc through the Drive connector only if the email is too thin |
 | **Slack** | Slack connector: their own messages that day (`from:<@their id> on:<day>`), plus their previous check-out when §4 Check-out destination is a channel | `read-slack-public`; DMs and private channels need `read-slack-own` | What they already announced, asks they made, and yesterday's loose ends to close |
 
 **Permissions.** A source whose row is not `yes` is skipped (or asked about, for `ask`), and the
@@ -115,6 +115,11 @@ The same piece of work shows up in several sources: a Claude session, a PR, a Ji
 Slack thread can all be one item. Join them by ticket key (§4 Ticket key pattern of each in-scope
 repo) and PR number first, then by topic. One item per piece of work, not one per source.
 
+**Work a batch did is the person's work, reported the same way.** The Claude collector lists each
+headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
+and Jira item like any other session, and report what changed and where it stands. Never what ran
+it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR
   title, or what the user asked Claude.
@@ -129,9 +134,14 @@ For each item, settle:
 - **What anyone else needs to do**, with the person named (§4 People for roles).
 
 Then sort:
-1. **Meetings**: one line each. Skip declined events, focus blocks and "busy" holds. Name who
-   was in it by first name, and what it was about or decided. A meeting whose Gemini notes
-   carry a decision others need gets that decision in its line.
+1. **Meetings**: one line each, only for a meeting the user is shown to have attended. Skip
+   declined events, focus blocks and "busy" holds. Evidence of attendance is the meeting's notes
+   recording the user speaking, or the user's own notes, Slack messages or Claude session from it.
+   An accepted invite, or notes that list the user only as an invitee, is not evidence: a
+   recurring meeting can stay accepted at an hour nobody joins. Any other meeting gets no line;
+   it goes under **Check before posting** as a question (step 5). Name who was in it by first
+   name, and what it was about or decided. A meeting whose Gemini notes carry a decision others
+   need gets that decision in its line.
 2. **Substantive work**: the few things that mattered most, biggest first. Security, prod and
    launch-blocking items lead.
 3. **Asks**: approvals, decisions, budget caps. Each as `@Name`, what, and why now.
@@ -191,11 +201,14 @@ to that. When §4 Check-out destination is a file path, also write it there as t
 says, and give the path. Under it, briefly:
 
 - **Check before posting**: every inferred claim, each with its source ("#1534 shown in
-  review from Claude's narration; GitHub says open").
+  review from Claude's narration; GitHub says open"). Then each meeting left out for want of
+  attendance evidence (step 3), one question each: "Were you in <meeting> (<time>)? It has no
+  line until you say so".
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
 - **Missing sources**: any role with no connector or no permission, and the fix.
 
-Then stop. The user edits and posts it. If they ask for changes, redraft the whole post and put it
-where the first one went, so the copy they will post stays current. A saved Slack draft cannot be
-replaced while it waits: copy the redraft to the clipboard and say the saved draft is the earlier
+Then stop. The user edits and posts it. If they ask for changes, or say they were in a meeting you
+asked about (that meeting then gets its line), redraft the whole post and put it where the first
+one went, so the copy they will post stays current. A saved Slack draft cannot be replaced while it
+waits: copy the redraft to the clipboard and say the saved draft is the earlier
 version. Never send it, and never schedule it.

@@ -176,7 +176,16 @@ done
 out=$(bash "$SRC/desk/bin/with-lock.sh" test --cwd "$R" -- pwd -P 2>&1); rc=$?
 check "with-lock --cwd <worktree root>: runs at the root"           '[ $rc -eq 0 ] && [ "$out" = "$(cd "$R" && pwd -P)" ]'
 out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$T" -- pwd 2>&1); rc=$?
-check "with-lock --cwd <absolute path outside>: refused"            '[ $rc -eq 2 ] && [[ "$out" == *"resolves outside the worktree"* ]]'
+check "with-lock --cwd <absolute path outside>: refused"            '[ $rc -eq 2 ] && [[ "$out" == *"resolves outside this worktree"* ]]'
+check "#749 the refusal names the worktree it compared against"   '[[ "$out" == *"outside this worktree ($(cd "$R" && pwd -P))"* ]]'
+# #749: an absolute --cwd in another worktree of the same repository runs there; another repo's does not.
+git -C "$R" worktree add -q "$T/sibling" -b sibling-749 2>/dev/null; mkdir -p "$T/sibling/sub"
+out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$T/sibling/sub" -- pwd -P 2>&1); rc=$?
+check "#749 with-lock --cwd <a sibling worktree of this repo>: runs there" '[ $rc -eq 0 ] && [ "$out" = "$(cd "$T/sibling/sub" && pwd -P)" ]'
+git init -q "$T/other749"
+out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$T/other749" -- pwd 2>&1); rc=$?
+check "#749 with-lock --cwd <another repository>: refused"           '[ $rc -eq 2 ] && [[ "$out" == *"resolves outside this worktree"* ]]'
+git -C "$R" worktree remove --force "$T/sibling" 2>/dev/null; git -C "$R" branch -q -D sibling-749 2>/dev/null
 out=$(bash "$SRC/desk/bin/with-lock.sh" nolock --cwd "$R/sub/.." -- pwd 2>&1); rc=$?
 check "with-lock --cwd <path with ..>: refused"                     '[ $rc -eq 2 ] && [[ "$out" == *"without .."* ]]'
 rm -f "$DESK_MACHINE"; commit g; push origin main
