@@ -21,20 +21,22 @@ cat > "$T/config.md" <<'EOF'
 | Field | Value |
 |---|---|
 | Tracker | `none` |
+| Ticket key pattern | `ABC-[0-9]+` |
 EOF
 # gh pr view <n>: the PR's JSON from $T/pr-<n>.json, or exit 1 naming it.
 cat > "$T/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $2" = "pr view" ] || exit 2
 f="$GH_DIR/pr-$3.json"; [ -f "$f" ] || { echo "no pull requests found for #$3" >&2; exit 1; }
+[ -f "$GH_DIR/slow" ] && sleep 1   # a slow GitHub, so two adopts overlap
 cat "$f"
 EOF
 chmod +x "$T/bin/gh"
-export PATH="$T/bin:$PATH" GH_DIR="$T" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_REPO_DIR="$T/repo"
+export DESK_GITHUB_HANDLE=me PATH="$T/bin:$PATH" GH_DIR="$T" DESK_CONFIG="$T/config.md" DESK_QUEUE="$T/queue.json" DESK_REPO_DIR="$T/repo"
 git init -q "$T/repo"; mkdir -p "$T/repo/.claude"
 q(){ out=$(node "$B/queue.mjs" "$@" 2>&1); rc=$?; }
 f(){ node -e 'let v = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; for (const p of process.argv[3].split(".")) v = v?.[p]; console.log(JSON.stringify(v));' "$DESK_QUEUE" "$1" "$2"; }
-pr(){ printf '{"number":%s,"state":"%s","headRefName":"%s","baseRefName":"%s","title":"%s"}\n' "$1" "$2" "$3" "$4" "$5" > "$T/pr-$1.json"; }
+pr(){ printf '{"number":%s,"state":"%s","headRefName":"%s","baseRefName":"%s","title":"%s","author":{"login":"%s"}}\n' "$1" "$2" "$3" "$4" "$5" "${6:-me}" > "$T/pr-$1.json"; }
 
 q init t; q add fix-a
 q set fix-a branch=fix/a
@@ -60,6 +62,23 @@ check "#807 a PR on another base is refused, naming both" '[ $rc -eq 11 ] && [[ 
 pr 54 OPEN fix/a main "A ticket's own"
 q adopt dup-branch 54
 check "#807 a PR whose branch a ticket already has is refused" '[ $rc -eq 11 ] && [[ "$out" == *"branch fix/a is already fix-a'"'"'s"* ]]'
+pr 55 OPEN fix/d main "Someone else's" them
+q adopt their-pr 55
+check "#807 a PR by another author than §1 GitHub handle is refused, since the driver would not merge it" '[ $rc -eq 11 ] && [[ "$out" == *"PR #55 is by them, and the merge driver merges only PRs by me"* ]]'
+pr 56 OPEN fix/e main "Tracker"
+q adopt ABC-12 56
+check "#807 a tracker key is refused without --filed: the driver would move that ticket to Done" '[ $rc -eq 11 ] && [[ "$out" == *"ABC-12 is a tracker key, and the merge driver moves that ticket to Done when PR #56 merges"* ]] && [ "$(f ABC-12 state)" = undefined ]'
+q adopt ABC-12 56 --filed
+check "#807 with --filed, the ticket filed for the PR is adopted" '[ $rc -eq 0 ] && [ "$(f ABC-12 result.pr)" = "\"56\"" ]'
+q requeue flaky-spec
+check "#807 an adopted PR is never requeued for a worker, saying what settles it" '[ $rc -eq 11 ] && [[ "$out" == *"flaky-spec is PR #51, adopted with no ticket, so no worker takes it"* ]] && [ "$(f flaky-spec state)" = "\"done\"" ]'
+# Two adopts at once both land: each holds the queue lock from read to save.
+pr 57 OPEN fix/f main "One"; pr 58 OPEN fix/g main "Two"
+touch "$T/slow"
+node "$B/queue.mjs" adopt para-one 57 >/dev/null 2>&1 & node "$B/queue.mjs" adopt para-two 58 >/dev/null 2>&1 & wait
+rm -f "$T/slow"
+out=""
+check "#807 adopts made at once both land" '[ "$(f para-one result.pr)" = "\"57\"" ] && [ "$(f para-two result.pr)" = "\"58\"" ]'
 q adopt missing 99
 check "#807 a PR gh cannot read is refused, saying why" '[ $rc -eq 11 ] && [[ "$out" == *"gh could not read PR #99 on acme/widgets (no pull requests found for #99)"* ]]'
 
