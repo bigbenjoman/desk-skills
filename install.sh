@@ -543,6 +543,30 @@ case "$(resolved "$SKILLS_LINK")" in
   "$AGENTS_REAL") LINK_MODE=same; ok "your ~/.claude/skills resolves to ~/.agents/skills; no per-skill links needed" ;;
 esac
 
+# skill_kept <name> [<src>] [<own>] — whether to leave a skill folder of the user's own where desk
+# would put skill <name>: a real folder at ~/.agents/skills/<name> or ~/.claude/skills/<name>, other
+# than <own> (a checkout skill's clone, which is the skill), when desk never installed <name> here (no
+# pristine copy). Moving it to the backup is asked, saying whether it differs from <src>; declined, or
+# with no terminal, it stays (exit 0) and the skill is not installed or linked over it.
+skill_kept() {
+  local name="$1" src="${2:-}" own="${3:-}" p found="" how=""
+  [ -d "$PRISTINE/.agents/skills/$name" ] && return 1
+  for p in "$AGENTS/$name" "$SKILLS_LINK/$name"; do
+    { [ -d "$p" ] && [ ! -L "$p" ]; } || continue
+    [ -n "$own" ] && [ "$(resolved "$p")" = "$(resolved "$own")" ] && continue
+    case " $found " in *" ~/${p#"$HOME"/} "*) continue ;; esac
+    found="${found:+$found }~/${p#"$HOME"/}"
+    if [ -n "$src" ]; then
+      if ! diff -rq "${DIFF_X[@]}" "$src" "$p" >/dev/null 2>&1; then how="it differs from desk's"; elif [ -z "$how" ]; then how="the same as desk's"; fi
+    fi
+  done
+  [ -n "$found" ] || return 1
+  note "$found is a skill folder desk did not install (yours, or another tool's)${how:+; $how}"
+  confirm "Move your $found to the backup and install desk's $name in its place?" && return 1
+  warn "kept your $found; desk's $name is not installed there"
+  return 0
+}
+
 shipped=" "
 count=0
 vcount=0
@@ -553,6 +577,7 @@ for dir in "$SRC"/skills/desk-*/ "$SRC"/vendor/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
   case "$dir" in "$SRC"/vendor/*) vcount=$((vcount + 1)) ;; *) shipped="$shipped$name " ;; esac
+  skill_kept "$name" "$dir" && continue
   install_dir "$dir" "$AGENTS/$name"
   count=$((count + 1))
   if [ "$LINK_MODE" = each ]; then
@@ -635,6 +660,7 @@ checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(
 # link_skill <name> <real folder>: ~/.agents/skills/<name> and ~/.claude/skills/<name> end up pointing at it
 link_skill() {
   local name="$1" real="$2" a="$AGENTS/$1"
+  skill_kept "$name" "" "$real" && return 0
   if [ "$(resolved "$a")" != "$(resolved "$real")" ]; then
     if [ -e "$a" ] && [ ! -L "$a" ]; then
       mkdir -p "$BACKUP/.agents/skills"; mv "$a" "$BACKUP/.agents/skills/$name"
