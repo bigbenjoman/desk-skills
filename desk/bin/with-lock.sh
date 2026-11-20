@@ -56,7 +56,7 @@ if [ "${1:-}" = "--cwd" ]; then
   esac
   [ -n "$rel" ] || { echo "with-lock.sh: --cwd needs a directory" >&2; exit 2; }
   top="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "with-lock.sh: --cwd needs to run inside a git worktree" >&2; exit 2; }
-  # An absolute --cwd is accepted only inside this worktree, which the check below enforces.
+  # An absolute --cwd is accepted inside this worktree or another worktree of its repository (below).
   case "$rel" in /*) from="$rel" ;; *) from="$top/$rel" ;; esac
   target="$(cd "$from" 2>/dev/null && pwd -P)" || { echo "with-lock.sh: --cwd $rel does not exist under $top" >&2; exit 2; }
   real_top="$(cd "$top" && pwd -P)"
