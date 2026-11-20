@@ -276,6 +276,19 @@ t('a §3b TODO row still has nothing to fall back to', env(['get', 'test-cap'], 
 t('detect still offers the proposal', env(['machine', 'detect'], absent, fresh).includes('no sizes proposed'), true);
 const proposedOver = parseProfile(renderProfile(small, rewrittenSizing(started, propose(small)), '2026-11-08'));
 t('a later write keeps the bench rows and proposes the sizes', `${sizesProposed(proposedOver)} ${proposedOver.sizing['bench-cap-points']?.value} ${proposedOver.sizing['memory-ceiling-gb']?.value}`, 'true 12 8');
+
+// DS-908: lease-kinds, the lease broker's per-kind lever, is a Sizing row set by machine set.
+const kinds = join(T, 'lease-kinds.md');
+t('machine set stores a lease-kinds row', setErr(['lease-kinds=port=on slot=shadow,merge=off'], kinds), 'exit 0');
+t('it reads back whole', env(['machine', 'get', 'lease-kinds'], absent, kinds), 'port=on slot=shadow,merge=off');
+t('DS-908 AC17: machine set refuses an entry it does not know, naming it',
+  setErr(['lease-kinds=port=on sockets=on'], kinds).startsWith('exit 1: nothing written: `lease-kinds` names an entry it does not know: "sockets=on": want <kind>=<mode> entries'), true);
+t('and an empty row', setErr(['lease-kinds='], kinds).startsWith('exit 1: nothing written: `lease-kinds` is empty'), true);
+const handEdited = join(T, 'lease-kinds-bad.md');
+writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=maybe sockets=on slot=on` | by hand |\n');
+t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
+  env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
+t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');

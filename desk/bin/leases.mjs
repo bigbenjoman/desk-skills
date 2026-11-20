@@ -1,28 +1,39 @@
 // Machine-wide leases: every desk process on this computer takes ports, lock slots, preview builds,
 // merges and memory from one store, so none silently shares one. `desk-env lease …` runs this CLI.
 //
-//   <dir>/leases.json         { leases: [{ id, kind, key, pool, units, owner: { pid, start }, label,
-//                               ttl, acquired, expires }] }, rewritten whole under <dir>/leases.json.lock
-//   <dir>/leases.log.jsonl    one line per change: grant, refuse, gave-up, release, lapse
+//   <dir>/leases.json         { leases: [{ id, kind, key, pool, units, owner: { pid, start } | null,
+//                               label, ttl, acquired, renewed?, expires }] }, rewritten whole under
+//                               <dir>/leases.json.lock
+//   <dir>/leases.log.jsonl    one line per change: grant, would-refuse, refuse, gave-up, renew,
+//                               re-create, release, force-release, lapse, reset
 //
 // <dir> is DESK_LEASE_DIR, else ~/.desk-autopilot/machine. A lease's owner is a pid and that process's
 // start time, read inside the store lock, so a lease whose owner has exited, or whose pid now belongs
-// to a later process, lapses at the next command, in the same decision as any grant it frees. The
-// TTL and expiry are recorded; nothing lapses a lease for passing them yet.
+// to a later process, lapses at the next command, in the same decision as any grant it frees.
 //
-// Exit codes: 0 granted (or released, or already gone), 2 usage, 3 refused, 4 store unreadable,
-// 75 gave up waiting (with-lock.sh's code).
+// Expiry: a lease expires its TTL after it was taken or last renewed. A live owner that has not
+// renewed gets one more TTL of grace and lapses at twice its TTL (a "hard lapse"), so a Mac that wakes
+// renews before anyone takes its leases while a hung holder still frees its key. A slot lease is
+// exempt while its owner lives: the lock wrapper execs its command and nothing renews it. A lease
+// with no owner (a preview build, which runs on Vercel after its worker exits) lapses at its expiry.
+//
+// Each kind is off, shadow or on (the machine profile's lease-kinds row; unnamed kinds are shadow):
+// off takes nothing, shadow grants what on would refuse and logs a would-refuse, on refuses.
+//
+// Exit codes: 0 granted (or released, or already gone, or the kind is off), 2 usage, 3 refused,
+// 4 store unreadable, 75 gave up waiting (with-lock.sh's code).
 //
 // This module imports nothing from desk-env.mjs: desk-env's CLI imports it at run time, and a cycle
 // through desk-env's top-level await never settles (node exits 13). What it needs from desk-env
 // (machineValue, testLockSlots, psRows) is passed in as `env`: desk-env passes its own, and this
 // file's CLI imports desk-env itself.
-import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync, renameSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { lock, sleepSync, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { DEFAULT_LEASE_MODE, LEASE_KINDS, leaseKindsProblem, parseLeaseKinds } from './machine.mjs';
 
 const HOME = process.env.HOME || homedir();
 const expandHome = (p) => p.replace(/^~(?=\/|$)/, HOME);
@@ -32,7 +43,7 @@ export const EXIT_USAGE = 2;
 export const EXIT_REFUSED = 3;
 export const EXIT_UNREADABLE = 4;
 export const EXIT_GAVE_UP = 75;
-export const KINDS = Object.freeze(['port', 'slot', 'preview-build', 'merge', 'mem']);
+export const KINDS = LEASE_KINDS;
 // test, tsc and lint share the heavy pool; browser and light are one slot each.
 export const SLOTS = Object.freeze({ test: 'heavy', tsc: 'heavy', lint: 'heavy', browser: 'browser', light: 'light' });
 // No operation holds the store lock for more than a second, so one this old was left by a holder that
@@ -57,6 +68,14 @@ export const capacities = (env) => ({
   previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
   mem: whole(env.machineValue('memory-ceiling-gb')),
 });
+
+// A kind's mode from the machine profile's lease-kinds row: off, shadow or on. -> { mode, problem },
+// `problem` naming any entry the row holds that it does not know (null when none).
+export function kindMode(kind, env) {
+  const raw = env.machineValue('lease-kinds');
+  if (raw == null) return { mode: DEFAULT_LEASE_MODE, problem: null };
+  return { mode: parseLeaseKinds(raw).modes[kind] ?? DEFAULT_LEASE_MODE, problem: leaseKindsProblem(raw) };
+}
 
 // The pool a lease of `kind` on `key` draws from: { pool, key, capacity, one, many }, `one` naming it
 // when it holds one unit and `many` its units when it holds more. `caps` is capacities().
@@ -112,6 +131,27 @@ export function startTimes(pids, psRows) {
   return out;
 }
 
+// A process that is a Claude Code session: the claude binary, or node running the Claude Code CLI's
+// entry point (so an npm install of it, run under node, is found too). `args` is ps's args column.
+const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js(\s|$)/;
+export const isClaudeProcess = (args) => {
+  const words = String(args ?? '').trim().split(/\s+/);
+  return basename(words[0] ?? '') === 'claude' || words.slice(1, 3).some((w) => CLAUDE_ENTRY.test(w));
+};
+// The nearest ancestor of `pid` that is a Claude Code session, or null. `rows` is
+// psRows('pid=,ppid=,args=').
+export function claudeAncestor(rows, pid) {
+  const byPid = new Map(rows.map((r) => [r.pid, r]));
+  const seen = new Set();
+  for (let p = byPid.get(pid)?.ppid; p > 1 && !seen.has(p); p = byPid.get(p)?.ppid) {
+    seen.add(p);
+    const r = byPid.get(p);
+    if (!r) return null;
+    if (isClaudeProcess(r.args)) return p;
+  }
+  return null;
+}
+
 export function readStore(file = storeFile()) {
   let raw;
   try { raw = readFileSync(file, 'utf8'); } catch (e) {
@@ -120,18 +160,27 @@ export function readStore(file = storeFile()) {
   }
   let s;
   try { s = JSON.parse(raw); } catch (e) { throw new LeaseStoreError(`the lease store ${file} is unreadable: ${e.message}`); }
-  const ok = (l) => l && typeof l.id === 'string' && typeof l.pool === 'string' && Number.isInteger(l.owner?.pid) && Number.isInteger(l.units);
-  if (!s || !Array.isArray(s.leases) || !s.leases.every(ok)) throw new LeaseStoreError(`the lease store ${file} is unreadable: it is not { leases: [...] } with an id, pool, units and owner pid on each`);
+  const ok = (l) => l && typeof l.id === 'string' && typeof l.pool === 'string' && Number.isInteger(l.units)
+    && (l.owner === null || Number.isInteger(l.owner?.pid));
+  if (!s || !Array.isArray(s.leases) || !s.leases.every(ok)) throw new LeaseStoreError(`the lease store ${file} is unreadable: it is not { leases: [...] } with an id, pool, units and owner on each`);
   return s;
 }
+
+const lockStore = (dir) => {
+  const lockDir = `${storeFile(dir)}.lock`;
+  lock(lockDir, { waitMs: STORE_LOCK_WAIT_MS, maxAgeMs: STORE_LOCK_MAX_AGE_MS,
+    timeout: (pid) => new LeaseStoreError(`the lease store lock ${lockDir} is held by pid ${pid ?? '?'} past the ${STORE_LOCK_WAIT_MS / 1000}s wait`) });
+  return lockDir;
+};
+const appendLog = (dir, entries, hold) => {
+  if (entries.length) appendFileSync(logFile(dir), entries.map((e) => `${JSON.stringify({ at: new Date().toISOString(), ...e, hold_ms: hold })}\n`).join(''));
+};
 
 // fn(store, log) reads and changes the store under its lock; the store is written after if it changed,
 // and each entry fn logged is appended with how long the lock was held. -> fn's result.
 export function withStore(dir, fn) {
   const file = storeFile(dir);
-  const lockDir = `${file}.lock`;
-  lock(lockDir, { waitMs: STORE_LOCK_WAIT_MS, maxAgeMs: STORE_LOCK_MAX_AGE_MS,
-    timeout: (pid) => new LeaseStoreError(`the lease store lock ${lockDir} is held by pid ${pid ?? '?'} past the ${STORE_LOCK_WAIT_MS / 1000}s wait`) });
+  const lockDir = lockStore(dir);
   const t0 = performance.now();
   try {
     const store = readStore(file);
@@ -139,27 +188,34 @@ export function withStore(dir, fn) {
     const entries = [];
     const out = fn(store, (e) => entries.push(e));
     if (JSON.stringify(store) !== was) writeJsonAtomic(file, store);
-    const hold = Math.round(performance.now() - t0);
-    if (entries.length) appendFileSync(logFile(dir), entries.map((e) => `${JSON.stringify({ at: new Date().toISOString(), ...e, hold_ms: hold })}\n`).join(''));
+    appendLog(dir, entries, Math.round(performance.now() - t0));
     return out;
   } finally { unlock(lockDir); }
 }
 
 const brief = (l) => ({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label });
 
-// Drops every lease whose owner is not the process that took it, logging each as a lapse. `starts`
-// holds the start times read for the owners (startTimes).
-function sweep(store, log, starts) {
+// Why lease `l` has lapsed at `t`, or null while it holds. `starts` holds the start times read for
+// the owners (startTimes).
+function lapseOf(l, starts, t) {
+  const expires = Date.parse(l.expires);
+  if (l.owner === null) return t > expires ? { why: 'TTL passed', detail: `no owner, and its ${l.ttl}s TTL passed at ${l.expires}` } : null;
+  const now = starts.get(l.owner.pid);
+  if (now == null || now !== l.owner.start) return { why: 'owner exited', ...(now != null ? { detail: `pid ${l.owner.pid} now belongs to a process started ${now}` } : {}) };
+  if (l.kind !== 'slot' && t > expires + l.ttl * 1000) return { why: 'hard lapse', detail: `pid ${l.owner.pid} is alive but has not renewed it in twice its ${l.ttl}s TTL` };
+  return null;
+}
+// Drops every lease that has lapsed, logging each.
+function sweep(store, log, starts, t) {
   store.leases = store.leases.filter((l) => {
-    const now = starts.get(l.owner.pid);
-    if (now != null && now === l.owner.start) return true;
-    log({ event: 'lapse', ...brief(l), why: 'owner exited', ...(now != null ? { detail: `pid ${l.owner.pid} now belongs to a process started ${now}` } : {}) });
-    return false;
+    const gone = lapseOf(l, starts, t);
+    if (gone) log({ event: 'lapse', ...brief(l), ...gone });
+    return !gone;
   });
 }
-const ownerStarts = (store, env, more = []) => startTimes([...store.leases.map((l) => l.owner.pid), ...more], env.psRows);
+const ownerStarts = (store, env, more = []) => startTimes([...store.leases.flatMap((l) => (l.owner ? [l.owner.pid] : [])), ...more], env.psRows);
 
-const holderText = (l) => `${l.label} (pid ${l.owner.pid}, lease ${l.id}${l.units > 1 ? `, ${l.units} units` : ''})`;
+const holderText = (l) => `${l.label} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'}, lease ${l.id}${l.units > 1 ? `, ${l.units} units` : ''})`;
 // Why an acquire of `units` from pool `p` is refused, with `holders` holding `held` units of it.
 export function refusal(p, units, holders, held) {
   const who = holders.map(holderText).join('; ');
@@ -168,75 +224,169 @@ export function refusal(p, units, holders, held) {
   return `${held} of ${p.capacity} ${p.many} are held, and this asks for ${units}: ${who}`;
 }
 
-// One try at a lease. req: { kind, key, units, ttl, label, pid, final, waited }; a refused try is
-// logged only when `final` (a refuse with no wait, else gave-up). `env` is desk-env's exports.
-// -> { lease } or { refused: why }.
-export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
+const newLease = (req, p, owner, t, id = `L-${randomBytes(5).toString('hex')}`) => ({ id, kind: req.kind, key: p.key, pool: p.pool, units: req.units,
+  owner, label: req.label, ttl: req.ttl, acquired: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
+
+// Places a lease in pool `p` under the store lock, as a grant (`event` 'grant') or a renew's
+// re-create. Over capacity it is refused, or in shadow granted with a would-refuse logged naming
+// every holder. -> { lease, shadow? } or { refused }.
+function place(store, log, req, p, owner, t, { mode, final, waited, id, event = 'grant' }) {
+  const holders = store.leases.filter((l) => l.pool === p.pool);
+  const held = holders.reduce((n, l) => n + l.units, 0);
+  const fits = held + req.units <= p.capacity;
+  const why = fits ? null : refusal(p, req.units, holders, held);
+  if (!fits && mode !== 'shadow') {
+    if (final) log({ event: waited ? 'gave-up' : 'refuse', kind: req.kind, key: p.key, units: req.units, owner, label: req.label, why, ...(waited ? { wait_s: waited } : {}) });
+    return { refused: why };
+  }
+  const lease = newLease(req, p, owner, t, id);
+  if (!fits) log({ event: 'would-refuse', kind: req.kind, key: p.key, units: req.units, owner, label: req.label, holders: holders.map(brief), why });
+  store.leases.push(lease);
+  log({ event, ...brief(lease), ttl: lease.ttl, expires: lease.expires });
+  return fits ? { lease } : { lease, shadow: why };
+}
+
+// The owner a request names: { pid } for a process, or null for none (`pid` null).
+function ownerOf(req, starts) {
+  if (req.pid == null) return null;
+  const start = starts.get(req.pid);
+  if (start == null) throw usage(`the owner pid ${req.pid} is not running`);
+  return { pid: req.pid, start };
+}
+
+// One try at a lease. req: { kind, key, units, ttl, label, pid (null: no owner), final, waited };
+// a refused try is logged only when `final` (a refuse with no wait, else gave-up). `env` is
+// desk-env's exports. -> { lease, shadow? } or { refused: why }.
+export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode }) {
   const p = poolOf(req.kind, req.key, caps);
   if (req.units > p.capacity) throw usage(`this asks for ${req.units} of ${p.many}, more than the ${p.capacity} there are`);
   return withStore(dir, (store, log) => {
-    const starts = ownerStarts(store, env, [req.pid]);
-    sweep(store, log, starts);
-    const start = starts.get(req.pid);
-    if (start == null) throw usage(`the owner pid ${req.pid} is not running`);
-    const holders = store.leases.filter((l) => l.pool === p.pool);
-    const held = holders.reduce((n, l) => n + l.units, 0);
-    if (held + req.units <= p.capacity) {
-      const t = now();
-      const lease = { id: `L-${randomBytes(5).toString('hex')}`, kind: req.kind, key: p.key, pool: p.pool, units: req.units,
-        owner: { pid: req.pid, start }, label: req.label, ttl: req.ttl, acquired: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() };
-      store.leases.push(lease);
-      log({ event: 'grant', ...brief(lease), ttl: lease.ttl, expires: lease.expires });
-      return { lease };
-    }
-    const why = refusal(p, req.units, holders, held);
-    if (req.final) log({ event: req.waited ? 'gave-up' : 'refuse', kind: req.kind, key: p.key, units: req.units, owner: { pid: req.pid, start }, label: req.label, why, ...(req.waited ? { wait_s: req.waited } : {}) });
-    return { refused: why };
+    const t = now();
+    const starts = ownerStarts(store, env, req.pid == null ? [] : [req.pid]);
+    sweep(store, log, starts, t);
+    return place(store, log, req, p, ownerOf(req, starts), t, { mode, final: req.final, waited: req.waited });
   });
 }
 
-// Takes a lease, waiting up to `wait` seconds for it. -> { code, lease?, why? }.
+// Takes a lease, waiting up to `wait` seconds for it. With the kind off, takes nothing.
+// -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
 export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
+  const { mode } = kindMode(req.kind, env);
+  if (mode === 'off') {
+    poolOf(req.kind, req.key, caps);
+    return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing taken` };
+  }
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
   for (;;) {
     const final = now() >= until;
-    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now });
-    if (r.lease) return { code: EXIT_OK, lease: r.lease };
+    const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode });
+    if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : {}) };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
     sleepSync(Math.max(1, Math.min(POLL_MS, until - now())));
   }
 }
 
-// Gives back lease `id`, which only its owner (`pid`) may. -> { code, why }.
-export function release(id, pid, { env, dir = leaseDir() }) {
+// Renews lease `id` for its new or same owner (`req.pid`): a fresh TTL from now, the owner changed to
+// `req.pid`. A lease the store does not hold is re-created under the same id where its key is free,
+// and refused (or in shadow granted) where another owner holds it. -> { code, lease?, why }.
+export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
+  const { mode } = kindMode(req.kind, env);
+  const p = poolOf(req.kind, req.key, caps);
+  if (mode === 'off') return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing renewed` };
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store, env));
+    const t = now();
+    const starts = ownerStarts(store, env, req.pid == null ? [] : [req.pid]);
+    sweep(store, log, starts, t);
+    const owner = ownerOf(req, starts);
+    const l = store.leases.find((x) => x.id === id);
+    if (l) {
+      if (l.pool !== p.pool || l.key !== p.key) throw usage(`lease ${id} is ${l.kind} ${l.key}, not ${req.kind} ${p.key}`);
+      const was = l.owner;
+      Object.assign(l, { owner, ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
+      log({ event: 'renew', ...brief(l), ...(JSON.stringify(was) !== JSON.stringify(owner) ? { was } : {}), ttl: l.ttl, expires: l.expires });
+      return { code: EXIT_OK, lease: l, why: `renewed ${l.kind} ${l.key} (lease ${id}) until ${l.expires}` };
+    }
+    const r = place(store, log, req, p, owner, t, { mode, final: true, id, event: 're-create' });
+    if (r.refused) return { code: EXIT_REFUSED, why: `refused: lease ${id} was gone, and ${r.refused}` };
+    return { code: EXIT_OK, lease: r.lease, why: `re-created ${r.lease.kind} ${r.lease.key} (lease ${id}), which the store no longer held${r.shadow ? `; shadow: on would refuse: ${r.shadow}` : ''}` };
+  });
+}
+
+// Gives back lease `id`, which only its owner (`pid`) may; one with no owner anyone may.
+// -> { code, why }.
+export function release(id, pid, { env, dir = leaseDir(), now = Date.now }) {
+  return withStore(dir, (store, log) => {
+    sweep(store, log, ownerStarts(store, env), now());
     const l = store.leases.find((x) => x.id === id);
     if (!l) return { code: EXIT_OK, why: `lease ${id} was already gone` };
-    if (l.owner.pid !== pid) return { code: EXIT_REFUSED, why: `refused: lease ${id} is held by pid ${l.owner.pid}, and only its owner releases it` };
+    if (l.owner && l.owner.pid !== pid) return { code: EXIT_REFUSED, why: `refused: lease ${id} is held by pid ${l.owner.pid}, and only its owner releases it` };
     store.leases = store.leases.filter((x) => x !== l);
     log({ event: 'release', ...brief(l) });
     return { code: EXIT_OK, why: `released ${l.kind} ${l.key} (lease ${id})` };
   });
 }
 
-// The live leases, after lapsing those whose owner has gone.
-export function list({ env, dir = leaseDir() }) {
+// Frees lease `id` whoever holds it, for a person clearing a stuck lease; `reason` is required and
+// logged with the holder. -> { code, why }.
+export function forceRelease(id, reason, { env, dir = leaseDir(), now = Date.now }) {
+  const why = String(reason ?? '').trim();
+  if (!why) throw usage('force-release needs --reason <why>: the log keeps it beside the holder');
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store, env));
+    sweep(store, log, ownerStarts(store, env), now());
+    const l = store.leases.find((x) => x.id === id);
+    if (!l) return { code: EXIT_OK, why: `lease ${id} was already gone` };
+    store.leases = store.leases.filter((x) => x !== l);
+    log({ event: 'force-release', ...brief(l), reason: why });
+    return { code: EXIT_OK, why: `force-released ${l.kind} ${l.key} (lease ${id}), held by ${holderText(l)}` };
+  });
+}
+
+// Replaces an unreadable store with an empty one, moving the bad file aside under a dated name for
+// inspection; `reason` is required and logged. A store that reads is refused: its leases are live,
+// and force-release frees one. -> { code, why }.
+export function resetStore(reason, { dir = leaseDir(), now = Date.now }) {
+  const why = String(reason ?? '').trim();
+  if (!why) throw usage('reset needs --reason <why>: the log keeps it');
+  const file = storeFile(dir);
+  const lockDir = lockStore(dir);
+  const t0 = performance.now();
+  try {
+    try { readStore(file); return { code: EXIT_REFUSED, why: `refused: the lease store ${file} reads, so its leases are live; desk-env lease force-release <id> --reason <why> frees one` }; }
+    catch (e) { if (!(e instanceof LeaseStoreError)) throw e; }
+    const aside = `${file}.unreadable-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
+    renameSync(file, aside);
+    writeJsonAtomic(file, { leases: [] });
+    appendLog(dir, [{ event: 'reset', reason: why, moved_to: aside }], Math.round(performance.now() - t0));
+    return { code: EXIT_OK, why: `moved the unreadable lease store to ${aside} and started an empty one` };
+  } finally { unlock(lockDir); }
+}
+
+// The live leases, after lapsing those whose owner has gone or whose time is up.
+export function list({ env, dir = leaseDir(), now = Date.now }) {
+  return withStore(dir, (store, log) => {
+    sweep(store, log, ownerStarts(store, env), now());
     return store.leases;
   });
 }
-export const listRow = (l) => [l.id, l.kind, l.key, l.units, `pid ${l.owner.pid}`, l.label, `${l.ttl}s`, l.acquired, l.expires].join('\t');
+export const listRow = (l) => [l.id, l.kind, l.key, l.units, l.owner ? `pid ${l.owner.pid}` : 'no owner', l.label, `${l.ttl}s`, l.acquired, l.expires].join('\t');
 const LIST_HEAD = ['ID', 'KIND', 'KEY', 'UNITS', 'OWNER', 'LABEL', 'TTL', 'ACQUIRED', 'EXPIRES'].join('\t');
-const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, expires: l.expires });
+const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, ...(l.renewed ? { renewed: l.renewed } : {}), expires: l.expires });
 
-export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [--pid <owner pid>]
+export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
+       desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
        desk-env lease release <lease id> [--pid <owner pid>]
+       desk-env lease force-release <lease id> --reason <why>
+       desk-env lease reset --reason <why>
        desk-env lease list [--json]
+       desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
-The owner is the calling process unless --pid names it; its lease lapses when it exits.`;
+<owner>: --pid <pid>, --owner claude (the nearest Claude Code session above the caller), or --no-owner
+(preview-build only: it lapses when its TTL passes). By default the owner is the calling process.
+A live owner that does not renew loses its lease at twice its TTL, except a slot's.
+Each kind is off, shadow or on from the machine profile's lease-kinds row (desk-env machine set lease-kinds=port=on); unnamed kinds are ${DEFAULT_LEASE_MODE}.
+force-release and reset are for a person clearing a stuck lease or an unreadable store.`;
+const FALL_BACK = 'fall back to running without the lease; a person moves the bad store aside with desk-env lease reset --reason <why>';
 
 // Parses `args` into positionals and the options `takes` names (value options; `flags` take none).
 function parseArgs(args, takes, flags = []) {
@@ -260,32 +410,71 @@ const ownerPid = (v) => {
   if (!n) throw usage(`--pid is a process id, not "${v}"`);
   return n;
 };
+// The owner pid an acquire or renew names: --pid, --owner claude, --no-owner (null), or the caller.
+function requestedOwner(opt, kind, env) {
+  const given = ['pid', 'owner', 'no-owner'].filter((k) => opt[k] != null);
+  if (given.length > 1) throw usage(`name one owner, not ${given.map((k) => `--${k}`).join(' and ')}`);
+  if (opt['no-owner']) {
+    if (kind !== 'preview-build') throw usage(`only a preview-build lease may have no owner, not a ${kind} lease`);
+    return null;
+  }
+  if (opt.owner != null) {
+    if (opt.owner !== 'claude') throw usage(`--owner takes claude, not "${opt.owner}"`);
+    const pid = claudeAncestor(env.psRows('pid=,ppid=,args='), process.pid);
+    if (pid == null) throw usage('--owner claude: no Claude session was found above the caller');
+    return pid;
+  }
+  return ownerPid(opt.pid);
+}
+// The --ttl, --units and --label an acquire or renew takes.
+function sizing(opt, sub) {
+  if (opt.ttl == null) throw usage(`${sub} needs --ttl <seconds>`);
+  const ttl = whole(opt.ttl);
+  if (!ttl) throw usage(`--ttl is a whole number of seconds, 1 or more, not "${opt.ttl}"`);
+  const units = opt.units == null ? 1 : whole(opt.units);
+  if (!units) throw usage(`--units is a whole number, 1 or more, not "${opt.units}"`);
+  return { ttl, units, label: String(opt.label ?? '').trim() || 'unlabelled' };
+}
 
 // The CLI: prints what happened and returns the exit code. `env` is desk-env's exports.
 export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log(s), err = (s) => console.error(s) }) {
   const [sub, ...rest] = args;
   try {
-    if (sub === 'acquire') {
-      const { pos, opt } = parseArgs(rest, ['ttl', 'units', 'wait', 'label', 'pid']);
-      const [kind, key, extra] = pos;
-      if (extra != null) throw usage(`acquire takes a kind and a key, not "${extra}"`);
+    if (sub === 'acquire' || sub === 'renew') {
+      const { pos, opt } = parseArgs(rest, ['ttl', 'units', 'wait', 'label', 'pid', 'owner'].filter((k) => sub === 'acquire' || k !== 'wait'), ['no-owner']);
+      const [id, kind, key, extra] = sub === 'acquire' ? [null, ...pos] : pos;
+      if (extra != null) throw usage(`${sub} takes ${sub === 'renew' ? 'a lease id, ' : ''}a kind and a key, not "${extra}"`);
+      if (sub === 'renew' && !id) throw usage('renew takes a lease id, a kind and a key');
       const caps = capacities(env);
       poolOf(kind, key, caps); // a bad kind or key is named before a missing --ttl
-      if (opt.ttl == null) throw usage('acquire needs --ttl <seconds>');
-      const ttl = whole(opt.ttl);
-      if (!ttl) throw usage(`--ttl is a whole number of seconds, 1 or more, not "${opt.ttl}"`);
-      const units = opt.units == null ? 1 : whole(opt.units);
-      if (!units) throw usage(`--units is a whole number, 1 or more, not "${opt.units}"`);
+      const s = sizing(opt, sub);
       if (opt.wait != null && !/^\d+(\.\d+)?$/.test(opt.wait)) throw usage(`--wait is a number of seconds, not "${opt.wait}"`);
-      const wait = opt.wait == null ? 0 : Number(opt.wait);
-      const r = acquire({ kind, key, units, ttl, wait, label: String(opt.label ?? '').trim() || 'unlabelled', pid: ownerPid(opt.pid) }, { env, dir, caps });
-      if (r.lease) out(r.lease.id); else err(r.why);
+      const { problem } = kindMode(kind, env);
+      if (problem) err(`desk-env lease: the machine profile's ${problem}`);
+      const req = { kind, key, ...s, wait: opt.wait == null ? 0 : Number(opt.wait), pid: requestedOwner(opt, kind, env) };
+      const r = sub === 'acquire' ? acquire(req, { env, dir, caps }) : renew(id, req, { env, dir, caps });
+      if (sub === 'acquire' && r.lease) out(r.lease.id);
+      if (r.why) (r.code === EXIT_OK && sub === 'renew' ? out : err)(r.why);
       return r.code;
     }
     if (sub === 'release') {
       const { pos, opt } = parseArgs(rest, ['pid']);
       if (pos.length !== 1) throw usage('release takes one lease id');
       const r = release(pos[0], ownerPid(opt.pid), { env, dir });
+      (r.code === EXIT_OK ? out : err)(r.why);
+      return r.code;
+    }
+    if (sub === 'force-release') {
+      const { pos, opt } = parseArgs(rest, ['reason']);
+      if (pos.length !== 1) throw usage('force-release takes one lease id');
+      const r = forceRelease(pos[0], opt.reason, { env, dir });
+      out(r.why);
+      return r.code;
+    }
+    if (sub === 'reset') {
+      const { pos, opt } = parseArgs(rest, ['reason']);
+      if (pos.length) throw usage(`reset takes no arguments, not "${pos[0]}"`);
+      const r = resetStore(opt.reason, { dir });
       (r.code === EXIT_OK ? out : err)(r.why);
       return r.code;
     }
@@ -298,10 +487,20 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       else { out(LIST_HEAD); for (const l of leases) out(listRow(l)); }
       return EXIT_OK;
     }
+    if (sub === 'mode') {
+      const { pos } = parseArgs(rest, []);
+      if (pos.length > 1) throw usage('mode takes at most one kind');
+      if (pos[0] != null && !KINDS.includes(pos[0])) throw usage(`unknown lease kind "${pos[0]}": want one of ${KINDS.join(', ')}`);
+      const kinds = pos.length ? pos : KINDS;
+      const { problem } = kindMode(kinds[0], env);
+      if (problem) err(`desk-env lease: the machine profile's ${problem}`);
+      for (const k of kinds) out(pos.length ? kindMode(k, env).mode : `${k}\t${kindMode(k, env).mode}`);
+      return EXIT_OK;
+    }
     throw usage(sub ? `unknown lease command "${sub}"` : 'which lease command?');
   } catch (e) {
     if (e instanceof LeaseUsageError) { err(`desk-env lease: ${e.message}`); err(LEASE_USAGE); return EXIT_USAGE; }
-    if (e instanceof LeaseStoreError) { err(`desk-env lease: ${e.message}`); return EXIT_UNREADABLE; }
+    if (e instanceof LeaseStoreError) { err(`desk-env lease: ${e.message}`); err(`desk-env lease: ${FALL_BACK}`); return EXIT_UNREADABLE; }
     throw e;
   }
 }
