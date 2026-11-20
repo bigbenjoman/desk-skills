@@ -39,6 +39,9 @@ const REWRITTEN = [
   ['DS-660', 'Any size they want different is a hand edit to that file afterwards', 1], // a size set by hand is an override now
   ['DS-660', 'says what changed since it was written. Nothing changed: say so and move on.', 1], // and lists the overrides apart
   ['#741', "the author this repo's commits use", 1], // the user's own commits across branches, GitHub's merges left out
+  ['#827', 'and **§3 / §3b as the first option of each question**', 1], // a start from another repo is one table to confirm
+  ['#827', 'Offer it as the starting point; ask the row.', 1],
+  ['#827', 'Four per round, as many rounds as it takes. |', 1],
 ];
 checkSplit({ t, label: 'AC2', before, files, read, headings: 33, minRows: 40, rewritten: REWRITTEN });
 

@@ -21,6 +21,24 @@ it unlocks and what it exposes, the alternatives, and the harness rules it maps 
   nothing on GitHub stops a red merge, so the agent's own check is the only one.
 - After each round, echo the four answers in one line before the next round.
 
+**Starting from another repo** (`/desk-setup from <repo>`, or chosen at step 0), the §3 and §3b rows
+are not asked one by one:
+
+1. Settle, unasked, the rows this repo forces, and say which and why: the Jira rounds when §4
+   Tracker is `none` (`no`), `pr-auto-merge` when §4 Repo merge settings have auto-merge off
+   (`no`), a row that needs a §4 Local database or Staging this repo lacks (`no`), and each
+   consistency check below that follows from another row.
+2. Show every other row in one table: the row, the start-point repo's answer, the Recommended
+   value where it differs (Branch protection `none` included, as above), and for each `yes` what
+   it unlocks and exposes **in this repo**. A row the start-point repo has no answer for shows the
+   Recommended value, marked new.
+3. One `AskUserQuestion`: use the table as shown (Recommended), edit some rows (ask only the rows
+   the user names, one question per row), or ask every row (the rounds above).
+4. Then the consistency checks below, as ever. A `yes` written this way is one the user chose in
+   this conversation: it was in the table they confirmed.
+
+The Subscription row and the dev-server port are still asked on their own, as the core says.
+
 **Before the autopilot round, say this plainly:** autopilot runs detached `claude -p` workers, one
 per ticket, in their own worktrees of this repo. They edit code, push, open PRs, post to Jira and,
 with `autopilot-merge`, merge once §4 Required checks are green, **with nobody watching**. Anything
