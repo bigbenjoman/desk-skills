@@ -632,8 +632,8 @@ const unsized = here.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
 if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
 if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
 
-// Seed the queue in spawn order: blockers first, then the order the tickets were named in (pass
-// gates first). A ticket that collides with another is marked so the spawn loop will not run them
+// Seed the queue in spawn order (`order`: blockers first, then what each gates, then planned files,
+// then as named). A ticket that collides with another is marked so the spawn loop will not run them
 // together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
 // keeps its blockers in held_by beside it, so nothing releases it while its own park stands.
 // In feature mode nothing is seeded until the spine is filed and planned and the owner table is
