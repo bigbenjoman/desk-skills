@@ -182,7 +182,8 @@ t('DS-324 AC3 a later run with nothing changed still leaves them out', N.collect
 
 // ---- A spine approval runs as its own repo, and what is left for the person is shown, not refused
 const s7 = N.record({ word: 'alpha', ticket: 'A-7', action: 'approve' });
-const gh = existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '';
+// The listings above read each repo's red-main issues (`issue list`); the approve's own call is the rest.
+const gh = (existsSync(GH_LOG) ? readFileSync(GH_LOG, 'utf8') : '').split('\n').filter((l) => !l.startsWith('issue list ')).join('\n');
 t('approve undrafts the PR in the spine\'s repo, under its config, not this checkout\'s', gh.trim(), 'pr ready 41 --repo acme/alpha');
 t('approve that leaves the merge to the person is recorded, and says so', `${s7.ok} ${queueOf('alpha').tickets['A-7'].state} ${/merge PR #41 yourself/.test(s7.line)}`, 'true done true');
 

@@ -108,7 +108,7 @@ exit 0
   put('jobs-3.json', { jobs: [{ name: PLAN_JOB, conclusion: 'success' }, { name: 'macOS shard 1/4', conclusion: 'success' }] });
   put('issues.json', []);
   const a = cli(['alarm']);
-  t('alarm: reads the skipped run\'s jobs, then stops at the cancelled run', a.gh.filter((l) => l.startsWith('run view')).join(' | '), 'run view 5 --json jobs');
+  t('alarm: reads jobs only of passed runs, newest first, until one ran the suite', a.gh.filter((l) => l.startsWith('run view')).join(' | '), 'run view 5 --json jobs | run view 3 --json jobs');
   t('alarm: a cancelled latest run opens the issue', a.gh.some((l) => l.startsWith('issue create --label ci-main-red')), true);
   t('alarm: and assigns it to the owner', a.gh.includes('issue edit 42 --add-assignee owner1'), true);
   t('alarm: and says what it did', /^macOS: latest schedule run cancelled at ccccccc u4; stale: the latest run that finished started 49 h ago/m.test(a.out), true);
