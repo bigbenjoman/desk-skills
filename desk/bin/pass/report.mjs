@@ -15,7 +15,7 @@
 //                                          back as the inputs now: decidePutOffRefresh)
 //   { type: 'park-inputs', key, question, inputs }  a put-off park's refreshed inputs, written only
 //                                          while the ticket is still parked on `question`
-import { isHeld, batchIdle, waitingOnRead } from '../batch-state.mjs';
+import { isHeld, batchIdle, waitingOnRead, settlesByScript } from '../batch-state.mjs';
 import { promotionHolds } from '../gate.mjs';
 import { lookup, inputsHash } from '../not-now.mjs';
 import { urgentParks } from '../digest.mjs';
@@ -195,7 +195,7 @@ export function decideGroups(s) {
 // ---- verdict -----------------------------------------------------------------
 // Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
 // clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
-// releases by itself, nor is a park whose live reads the pass is running).
+// releases by itself, nor is a park a pass settles: its live reads, or a clears-when a script reads).
 // The snapshot adds:
 //   queue                    the queue as the pass ends
 //   report, blocked          the report lists, and blockedOf the pass's rows
@@ -214,7 +214,7 @@ export function verdictOf(s) {
     ...r.personStalls,
     ...s.blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
   ];
-  const parked = Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t))
+  const parked = Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t) && !settlesByScript(t))
     .map((t) => ({ key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) }));
   const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';

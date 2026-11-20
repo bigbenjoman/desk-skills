@@ -196,6 +196,21 @@ const vsnap = (tickets, fields = {}) => {
   ]));
 }
 {
+  // DS-852: a park a pass settles waits on the pass, not the person; one only the person settles does not.
+  const waits = (key, clears_when) => ({ key, state: 'parked', lane: 'A', park: { question: `${key}?`, clears_when } });
+  const s = vsnap([
+    waits('S-1', { kind: 'run-completed', run: 44719886024 }),
+    waits('S-2', { kind: 'none' }),
+    waits('S-3', { kind: 'links-made', links: [{ key: 'S-3', type: 'Relates', other: 'S-9' }], pr: 12 }),
+    waits('S-4', { kind: 'file-exists', path: 'a.json', root: 'state', person: true }),
+    waits('S-5', { kind: 'live-read', reads: ['gateway-models'] }),
+    waits('S-6', { kind: 'checks-pass', pr: 7, checks: ['tests'] }),
+  ]);
+  const v = verdictOf(s);
+  t('DS-852 AC1 a park on a run or checks, or a live read, is not parked for the person', j(v.parked.map((p) => p.key)), j(['S-2', 'S-3', 'S-4']));
+  t('DS-852 AC1, AC3, AC4 NOTIFY names a park on none or one only the person settles, never one on a run', lines(decideVerdict(s))[0], 'NOTIFY: 3 item(s) need you — S-2, S-3, S-4');
+}
+{
   const done = vsnap([{ key: 'D-1', state: 'done', result: { pr: 5 } }], { prStates: { 5: 'MERGED' } });
   t('every done ticket merged is idle', j([verdictOf(done).idle, verdictOf(done).status]), '[true,"idle"]');
   t('...and says the batch is finished', j(lines(decideVerdict(done))), j(['NOTIFY: the batch is finished — nothing left to run']));
