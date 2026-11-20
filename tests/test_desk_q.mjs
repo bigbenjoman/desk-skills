@@ -2588,6 +2588,7 @@ try {
     'MG-5': { state: 'done', result: { pr: 25 }, pr_status: { pr: 25, state: 'OPEN', checks: [] } },
     'MG-6': { state: 'done', result: { pr: 26 }, merged_at: at(2), pr_status: { pr: 26, state: 'OPEN', checks: [] } },
     'MG-7': { state: 'done', result: { pr: 27 }, pr_status: { pr: 27, state: 'OPEN', checks: [] } },
+    'MG-8': { state: 'done', result: { pr: 28 }, merged_at: at(2), pr_status: { pr: 18, state: 'MERGED', checks: [] } },
   } } } });
   const sha = 'abcdef0123456789abcdef0123456789abcdef01';
   const ev = (pr, event, by, h, repo = 'Acme/Merges') => JSON.stringify({ at: at(h), repo, pr: String(pr), sha, by, event });
@@ -2609,6 +2610,7 @@ try {
     mergeLine('MG-4'), 'Merge     #24 merged before desk kept a merge log, so who merged it is not recorded');
   t('DS-937 an open PR with no entry has no Merge line', mergeLine('MG-5'), null);
   t('DS-937 a requeued ticket\'s earlier merge time does not read its open PR as merged', mergeLine('MG-6'), null);
+  t('DS-937 nor while its recorded status is still the earlier PR\'s', mergeLine('MG-8'), null);
   t('DS-937 auto-merge its armer records failed is no longer shown as armed', mergeLine('MG-7'), null);
   t('DS-937 a merge log that cannot be read says so, and the page still shows',
     mergeLine('MG-1', { ...W937.env, DESK_MERGE_LOG: W937.T }), 'Merge     the merge log could not be read (EISDIR)');

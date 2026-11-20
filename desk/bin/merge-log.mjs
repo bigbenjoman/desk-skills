@@ -113,8 +113,9 @@ export function latest(events, { repo, pr }) {
   const merged = mine.findLast((e) => e.event === 'merged');
   if (merged) return merged;
   const i = mine.findLastIndex((e) => e.event === 'armed');
+  if (i < 0) return null;
   const ended = mine.slice(i + 1).some((e) => e.event === 'disarmed' || (e.event === 'failed' && e.by === mine[i].by));
-  return i >= 0 && !ended ? mine[i] : null;
+  return ended ? null : mine[i];
 }
 
 const isMain = (() => {

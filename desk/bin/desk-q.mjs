@@ -3151,8 +3151,8 @@ function mergeOf(r, t, events) {
   if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${shortSha(e)}`, warn: false };
   if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
   // The PR's own status decides whether it merged: merged_at stays from an earlier PR once a ticket is
-  // requeued for more work, so it is read only where no status was recorded for this PR.
-  const mergedAt = ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? '' : null) : t.merged_at ?? null;
+  // requeued for more work, so it is read only where no status was recorded for any PR of the ticket.
+  const mergedAt = ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? '' : null) : t.pr_status == null ? t.merged_at ?? null : null;
   if (mergedAt == null) return null;
   const began = timeOf(events[0]?.at);
   if (began == null || (timeOf(mergedAt) ?? Infinity) < began) return { text: `#${pr} merged before desk kept a merge log, so who merged it is not recorded`, warn: false };
