@@ -1032,7 +1032,14 @@ export function fixBrief(t, review = null) {
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
-      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', '',
+      // A gap accepted changes no code, so only a verdict that records it settles it: without one the
+      // verdict at the head still counts it open, and the PR goes back to the person.
+      ownReview(review)
+        ? `A gap the person accepted is settled by the review's verdict, not by code: ${reviewStep(review, 'the head')}, so its verdict records the accepted gap, even when nothing else changes.`
+        : 'A gap the person accepted is settled by its verdict, not by code: post the accepted re-verdict as desk-review Phase 7 says (its one exception), even when nothing else changes. ' +
+          `Re-run verdict.mjs on that round's results, kept under $DESK_STATE/reviews/${t.key}/, with the accepted gaps moved from gaps into accepted, the same round and since, and post it at the same head. ` +
+          'With no results kept for that round, run a fresh review round.', ''].join('\n');
   }
   if (f.kind === 'instruction') {
     return [`## The person's instruction on PR #${f.pr}`, '',

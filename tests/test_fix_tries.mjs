@@ -353,6 +353,8 @@ const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 
 const leftDirty = fixBrief(tk({ fix: { ...readyCall.fix, left_dirty: ['src/a.ts', 'src/b.ts'] } }));
 t('a try spawned over its interrupted worker\'s changes names them first, to test and commit, never discard', ['## Your interrupted worker\'s changes', '- src/a.ts', 'test it and commit it as part of this try', 'never discard or stash them'].every((x) => leftDirty.includes(x)) && leftDirty.includes('## Your call on PR #702'), true);
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
+t('with the repo\'s own review, a gap-answer worker re-reviews the head with it so its verdict records the accepted gap', fixBrief(readyCall, '/pullbot').includes('review the head with /pullbot and post its review on the PR as its own instructions say, so its verdict records the accepted gap'), true);
+t('a gap-answer worker is told to post the accepted re-verdict from the round\'s kept results, or run a fresh round', ['post the accepted re-verdict as desk-review Phase 7 says', 'kept under $DESK_STATE/reviews/T-1/', 'run a fresh review round'].every((x) => fixBrief(readyCall).includes(x)), true);
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 // ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker
