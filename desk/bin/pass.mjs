@@ -10,7 +10,7 @@ import { dirname, join, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
-import { tryLockFile, filePid } from './dir-lock.mjs';
+import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
 import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
@@ -24,6 +24,7 @@ import { parseDecision, decisionEntry, appendDecisions, workerCalls, appendNotes
 import { readRegister, lookup, parseInputs, refreshInputs, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
+import { prReads } from './pr-reads.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
@@ -54,7 +55,7 @@ import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prep
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
 import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
-import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
+import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
@@ -77,7 +78,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudReviewHere, reviewOnlyTry } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
@@ -226,15 +227,30 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
+// A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs).
+const PR_READS = prReads();
+// `fresh: true` on a read that decides a write: it is always made, as the PR may have changed since
+// outside the pass (a background base gate, the merge driver, a person), and what it reads is kept.
+// Counts the git calls that may move a ref, so what was read from one (treeOf) is read again after.
+let refsMoved = 0;
+const REF_MOVES = new Set(['fetch', 'push', 'pull', 'merge', 'reset', 'update-ref', 'rebase']);
+const beforeRun = (cmd, args, fresh) => {
+  if (cmd === 'git' && REF_MOVES.has(args[args[0] === '-C' ? 2 : 0])) refsMoved++;
+  return fresh ? undefined : PR_READS.before(cmd, args);
+};
 // A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
-const sh = (cmd, args, opts = {}) => {
-  try { return execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
+const sh = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
+  if (kept !== undefined) return kept;
+  try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
-const shOut = (cmd, args, opts = {}) => {
-  try { return { ok: true, out: execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
+const shOut = (cmd, args, { fresh, ...opts } = {}) => {
+  const kept = beforeRun(cmd, args, fresh);
+  if (kept !== undefined) return { ok: true, out: kept };
+  try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
 function refusedLine(args, refused, why) {
@@ -1104,8 +1120,8 @@ const cached = (key, read) => {
   if (c.e) throw c.e;
   return c.v;
 };
-const readOrThrow = (what, cmd, args) => {
-  const r = shOut(cmd, args);
+const readOrThrow = (what, cmd, args, opts) => {
+  const r = shOut(cmd, args, opts);
   if (!r.ok) throw new Error(`${what}: ${r.out.split('\n').pop()}`);
   return r.out;
 };
@@ -1757,7 +1773,7 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
     held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
-    slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
+    slots: E.testLockSlots(),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
@@ -1792,14 +1808,53 @@ const budgetFiles = (key) => {
   }
   return scopeOf.get(key);
 };
-// A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
+// A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
+// tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
+// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
 const lineCounts = new Map();
+const GIT_BIG = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 };
+const trees = new Map();
+// ref -> Map(path -> blob id), or null when the ref cannot be listed.
+const treeOf = (ref) => {
+  if (!trees.has(ref)) {
+    let t = null;
+    try {
+      t = new Map();
+      for (const e of execFileSync('git', ['-C', MAIN, 'ls-tree', '-r', '-z', ref], GIT_BIG).split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.*)$/s.exec(e);
+        if (m) t.set(m[2], m[1]);
+      }
+    } catch { t = null; }
+    trees.set(ref, t);
+  }
+  return trees.get(ref);
+};
+const LINE_COUNTS_FILE = join(STATE, 'line-counts.json');
+let blobLines = null;
+const linesOfBlob = (sha) => {
+  if (!blobLines) { try { blobLines = JSON.parse(readFileSync(LINE_COUNTS_FILE, 'utf8')); } catch { /* none yet */ } if (!blobLines || typeof blobLines !== 'object') blobLines = {}; }
+  if (Number.isInteger(blobLines[sha])) return blobLines[sha];
+  const n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', sha], GIT_BIG).split('\n').length - 1;
+  blobLines[sha] = n;
+  if (!DRY) {
+    // Only blobs still on a listed ref are kept, so the file holds about one entry per counted file.
+    const live = new Set([...trees.values()].flatMap((t) => (t ? [...t.values()] : [])));
+    const keep = Object.fromEntries(Object.entries(blobLines).filter(([s]) => live.has(s)));
+    try { writeJsonAtomic(LINE_COUNTS_FILE, keep); } catch { /* counted again next pass */ }
+  }
+  return n;
+};
+// A fetch, push or sync since the trees were listed may have moved the base: they are listed again.
+let treesAt = 0;
 const linesOnBase = (f) => {
+  if (treesAt !== refsMoved) { treesAt = refsMoved; trees.clear(); lineCounts.clear(); }
   if (!lineCounts.has(f)) {
     const base = E.batchBase() ?? DEFAULT_BRANCH;
     let n = 0;
     for (const ref of [`origin/${base}`, base]) {
-      try { n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', `${ref}:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\n').length - 1; break; } catch { /* not on that ref */ }
+      const sha = treeOf(ref)?.get(f);
+      if (!sha) continue;
+      try { n = linesOfBlob(sha); break; } catch { /* unreadable on that ref */ }
     }
     lineCounts.set(f, n);
   }
@@ -2070,7 +2125,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'usage-hold': (a) => { USAGE_HOLD = a.hold; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
-      sync: (a) => syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() }),
+      // A base push moves its PRs' merge state and the base's refs, and syncBase runs git without sh or shOut.
+      sync: (a) => (PR_READS.clear(), refsMoved++, syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() })),
       'drop-ref': (a) => { sh('git', ['-C', MAIN, 'update-ref', '-d', a.ref], quiet); },
       'note-conflict': (a) => noteConflict(a.what, a.entry),
       fetch: () => { fetchBase({ tolerant: true }); },
@@ -2124,19 +2180,19 @@ function readEpicPr(qx) {
 
 // A feature batch's promotion PR as GitHub has it: { pr, state, isDraft, head, checks }, or
 // { pr, unreadable }, or null with none recorded or one merged.
-function readPromotionPr(qx) {
-  const r = readBasePr(qx, 'statusCheckRollup');
+function readPromotionPr(qx, opts) {
+  const r = readBasePr(qx, 'statusCheckRollup', opts);
   if (!r || r.unreadable) return r;
   const { p, v } = r;
   return { pr: p.pr, state: v.state, isDraft: v.isDraft === true, head: v.headRefOid ?? null, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)) };
 }
 // The batch's recorded promotion or epic PR read from GitHub with `extra` beside its state, draft and
 // head: { p (the record), v (gh's answer) }, or { pr, unreadable }, or null with none open.
-function readBasePr(qx, extra) {
+function readBasePr(qx, extra, { fresh = false } = {}) {
   const p = qx.promotion;
   if (p?.pr == null || p.merged_at) return null;
   let v = null;
-  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
+  try { v = JSON.parse(sh('gh', ['pr', 'view', String(p.pr), '--repo', GH_REPO, '--json', `state,isDraft,headRefOid,${extra}`], { tolerant: true, fresh, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { /* unreadable */ }
   return v?.state ? { p, v } : { pr: p.pr, unreadable: true };
 }
 // The checks an open promotion PR fails, by name, or null when it fails none. A draft with children
@@ -2620,19 +2676,6 @@ function spawnCloud(t) {
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
-  // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
-  // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
-  // its branch is the session's, and a fix pushed there from here would race the session. The person
-  // resumes the session, or fixes the branch. A review try, which pushes nothing, never reaches here: a
-  // local worker takes it (runsInCloud).
-  if (t.result?.pr != null) {
-    const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `${tryLabel(t.fix)} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
-      `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
-      `Resume the session with claude --teleport ${t.cloud?.session ?? '<its session>'} and give it the fix, or fix PR #${t.result.pr} on ${t.branch} by hand`;
-    q('park', t.key, line);
-    report.parked.push(`${t.key}: ${line}`);
-    return;
-  }
   // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
   let effort;
   try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
@@ -2827,7 +2870,12 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
 // Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
-// (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
+// (the spawn about to start it) they are pushed, no force. A push refused because that worker rebased
+// the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
+// that the head lacks is in the head by its patch (git cherry) and none is a merge (git cherry skips
+// merges, whose resolutions it cannot compare), so nothing on origin is lost; else it holds, naming the
+// exact lease push. Uncommitted changes at that head are its interrupted worker's:
+// the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
   if (runsInCloud(t)) return null;
@@ -2842,8 +2890,19 @@ function busyWorktree(t, { push = false } = {}) {
   if (branch && branch !== 'HEAD') git(['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   const why = gitHold(wt, git) ?? null;
+  const own = Boolean(t.worker_head?.sha) && git(['rev-parse', 'HEAD']) === t.worker_head.sha;
+  // Uncommitted changes at the head its own last worker left: that worker was interrupted mid-try.
+  if (why && own && gitHeld(why)?.wt) {
+    const files = (git(['diff', '--name-only', 'HEAD']) ?? '').split('\n').filter(Boolean);
+    if (push && !DRY) {
+      q('set', t.key, `fix.left_dirty=${JSON.stringify(files)}`);
+      t.fix.left_dirty = files;
+      report.recovered.push(`${t.key}: its worktree holds its interrupted worker's uncommitted changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}): its fix try spawns over them, to test and commit them`);
+    }
+    return null;
+  }
   // Only an ahead hold (gitHeld names no worktree) can be the last worker's own commits.
-  if (!why || gitHeld(why)?.wt !== null || !t.worker_head?.sha || git(['rev-parse', 'HEAD']) !== t.worker_head.sha) return why;
+  if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
@@ -2852,6 +2911,26 @@ function busyWorktree(t, { push = false } = {}) {
     return null;
   }
   const said = pushed.out.split('\n').map((l) => l.trim()).filter((l) => /^(remote:|!|error:|fatal:)/.test(l)).slice(-3);
+  // Refused as not a fast-forward: its last worker rebased the branch. The lease is origin's tip as just
+  // fetched, and every commit there that the head lacks must be in the head by its patch.
+  const tip = git(['rev-parse', `origin/${branch}`]);
+  if (/non-fast-forward|fetch first|\(rejected\)/.test(pushed.out) && tip) {
+    const lease = `--force-with-lease=${branch}:${tip}`;
+    const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
+    const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
+    const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
+    if (lost && !lost.length) {
+      const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
+      if (forced.ok) {
+        report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: every commit origin had is in it by its patch`);
+        return null;
+      }
+      return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
+    }
+    const has = merges ? `${merges.split('\n').filter(Boolean).length} merge commit(s) the head does not hold, whose resolutions git cherry cannot compare`
+      : lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare';
+    return `${why}: its last worker rebased it, but origin/${branch} has ${has}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
+  }
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.
@@ -2895,7 +2974,7 @@ function fixTryStale(t) {
   const headBound = Boolean(f.head) && !ran && redraftable(f);
   const what = `${tryLabel(f)} on PR #${f.pr}`;
   let v = null;
-  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'])); } catch (e) {
+  try { v = JSON.parse(readOrThrow(`gh pr view ${f.pr}`, 'gh', ['pr', 'view', String(f.pr), '--repo', GH_REPO, '--json', 'state,headRefOid,mergedAt'], { fresh: true })); } catch (e) {
     report.waiting.push(`${t.key}: its ${what} was not ${verb}: the PR could not be read to check it is still open${headBound ? ' at the try\'s head' : ''} (${e.message}). The next pass reads it again`);
     return true;
   }
@@ -2982,7 +3061,7 @@ function setUpWorktree(t) {
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
   // A cloud ticket's review try reviews the session's branch, which is on origin only: it is checked
   // out from there, never cut afresh from the base.
-  const fromOrigin = cloudReviewHere(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
+  const fromOrigin = cloudPrHere(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
   const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S, ...fromOrigin } });
   if (remoteHung()) return { wt, kept, renamed, hung: remoteHung() };
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
@@ -4252,11 +4331,12 @@ function settleWorked(t, n, head, worked) {
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
 // runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
-  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
-    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
-    t.base_red = c.base_red ?? null;
+  const rec = keptHold(t.base_red, c, PASS_AT);
+  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
+    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
+    t.base_red = rec;
   }
-  if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
+  if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
     if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
@@ -4492,7 +4572,7 @@ if (featureBase) {
         return sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${BASE}`], { tolerant: true }) || null;
       },
       'pr-draft': (a) => {
-        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
+        try { return JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'state,isDraft'], { tolerant: true, fresh: true, stdio: ['ignore', 'pipe', 'ignore'] })); } catch { return null; }
       },
       'undo-ready': (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO, '--undo']),
       flush: () => flushQueue(),
@@ -4520,8 +4600,8 @@ async function promotionChecksStep(qx) {
   const p = qx.promotion ?? {};
   const clear = () => { if (p.red && !DRY) q('set-batch', 'promotion.red=null'); };
   // Read again here: the base sync may have moved its head and the base gate put it back to draft since
-  // the pass began.
-  const now = promoPr ? readPromotionPr(qx) : null;
+  // the pass began, and its checks may have turned since. It decides a write, so it is made fresh.
+  const now = promoPr ? readPromotionPr(qx, { fresh: true }) : null;
   // Unread, what was recorded stands until a pass can read it, and a PR this pass found red keeps the
   // batch from idling until one does.
   if (now?.unreadable && p.pr === now.pr) { out.push(`promotion PR #${now.pr}: its checks could not be read; the next pass tries again`); return !!p.red || promoRed != null; }

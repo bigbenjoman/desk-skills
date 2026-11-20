@@ -1,12 +1,16 @@
 {
   "seconds": {
     "test_base_fix.mjs": 1,
-    "test_base_sync.sh": 83,
+    "test_base_sync.sh": 15,
+    "test_base_sync_epic.sh": 20,
+    "test_base_sync_fix.sh": 20,
+    "test_base_sync_push.sh": 28,
     "test_baseline.mjs": 1,
     "test_bash32_check.mjs": 1,
     "test_batch.mjs": 8,
     "test_batch_base.sh": 1,
-    "test_batch_e2e.sh": 199,
+    "test_batch_e2e.sh": 107,
+    "test_batch_e2e_spine.sh": 100,
     "test_batches.mjs": 4,
     "test_bench.mjs": 19,
     "test_bench_arm1.mjs": 6,

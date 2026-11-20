@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -350,7 +350,11 @@ t('DS-585 recommendedOf keeps the option as written, dropping only emphasis arou
 t('DS-585 askCategoryIn finds each category and none in a plain engineering call', JSON.stringify(['costs £5 a month', 'GDPR', 'the prod database', 'the SMS text', 'the catalog entry', 'split it to DS-12'].map(askCategoryIn)), JSON.stringify(['money', 'legal', 'production', 'customer-copy', 'user-fact', null]));
 t('DS-585 askCategoryIn covers every example in ask-or-take.md\'s table', JSON.stringify(['approve the spend', 'a paid plan', 'anything billed', 'the Stripe webhook', 'the cookie policy copy', 'privacy', 'compliance', 'a production database', 'a secret', 'the signing key', 'a live account', 'an SMS', 'a paid placement', 'copy billed by length', 'product data', 'a design URL', 'an asset', 'the brand name', 'who owns what'].map((x) => Boolean(askCategoryIn(x)))), JSON.stringify(Array(19).fill(true)));
 const readyCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: true, answer: 'accept it' }) });
+const leftDirty = fixBrief(tk({ fix: { ...readyCall.fix, left_dirty: ['src/a.ts', 'src/b.ts'] } }));
+t('a try spawned over its interrupted worker\'s changes names them first, to test and commit, never discard', ['## Your interrupted worker\'s changes', '- src/a.ts', 'test it and commit it as part of this try', 'never discard or stash them'].every((x) => leftDirty.includes(x)) && leftDirty.includes('## Your call on PR #702'), true);
 t('DS-513 the person\'s call on a ready PR keeps it out of draft', `${fixBrief(readyCall).includes('open and out of draft')} ${/leave the PR out of draft/.test(fixTask(readyCall))}`, 'true true');
+t('with the repo\'s own review, a gap-answer worker re-reviews the head with it so its verdict records the accepted gap', fixBrief(readyCall, '/pullbot').includes('review the head with /pullbot and post its review on the PR as its own instructions say, so its verdict records the accepted gap'), true);
+t('a gap-answer worker is told to post the accepted re-verdict from the round\'s kept results, or run a fresh round', ['post the accepted re-verdict as desk-review Phase 7 says', 'kept under $DESK_STATE/reviews/T-1/', 'run a fresh review round'].every((x) => fixBrief(readyCall).includes(x)), true);
 t('DS-319 the findings parser ends a P1 run at the same bold heading, and a bold finding with its file:line still counts', JSON.stringify(reviewFindings('P1 (2)\n**src/a.ts:4 — dup**\n**Requirement gaps**\n- AC1: src/b.ts:9 not done').map((x) => x.text)), JSON.stringify(['**src/a.ts:4 — dup**']));
 
 // ---- DS-316: a draft with no verdict readable at its head goes to a review worker, a red one to a fix worker
@@ -1082,4 +1086,25 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
 // its task asks for the stage markers it prints from there.
 t('a fix try starts at Stage 3, a review try at 4b, a capture try at 5', ['checks', 'review', 'protected', 'rereview', 'capture'].map((kind) => fixStartStage({ kind })).join(' '), '3/9 3/9 3/9 4b/9 5/9');
 t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as you reach each stage you run, starting with 4b\/9/.test(fixTask({ key: 'T-1', fix: { kind: 'rereview', try: 1, of: 2, pr: 7, head: 'a'.repeat(40), what: 'x' } })), true);
+// A check red on several ready PRs at once reads as its platform failing: held, with no fix try.
+{
+  const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
+  const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
+  const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
+  t('outage: a check red on 3 ready PRs is named with them, one red on fewer is not', JSON.stringify([...many]), '[["Vercel Preview",[701,702,703]]]');
+  t('outage: below the threshold there is none', outageChecks([preview(701), preview(702)], lists).size, 0);
+  t('outage: a workflow job red on as many PRs is not one: their code or the base may be its cause', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
+  t('outage: the threshold is 3 PRs', OUTAGE_PRS, 3);
+  const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
+  const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
+  t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
+  t('outage: its reason names the other PRs and the step that clears it', held?.why,
+    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
+  t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
+  t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
+  t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
+  t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
+}
+
 process.exit(fails ? 1 : 0);

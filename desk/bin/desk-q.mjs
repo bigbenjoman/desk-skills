@@ -61,6 +61,7 @@ import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, pr
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
+import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
@@ -1005,10 +1006,10 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
 // A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
 // needs-you's stalled item for a batch a session runs.
-export const passesPaused = (r) => !r.live && r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
@@ -3137,6 +3138,27 @@ function timingFields(r, F, x, h, now) {
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 
+// The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
+// PR the log has no entry for was merged outside desk, unless it merged before the log's first entry.
+// An open PR with no entry has nothing to say. { text, warn }, or null.
+function mergeOf(r, t, events) {
+  const pr = t.result?.pr;
+  if (pr == null) return null;
+  // The PR's own repo where its status names one (a ticket done on a PR in another repo), else this one.
+  const ps = prStatusOf(t);
+  const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
+  const e = latestMerge(events, { repo, pr });
+  if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${shortSha(e)}`, warn: false };
+  if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
+  // The PR's own status decides whether it merged: merged_at stays from an earlier PR once a ticket is
+  // requeued for more work, so it is read only where no status was recorded for any PR of the ticket.
+  const mergedAt = ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? '' : null) : t.pr_status == null ? t.merged_at ?? null : null;
+  if (mergedAt == null) return null;
+  const began = timeOf(events[0]?.at);
+  if (began == null || (timeOf(mergedAt) ?? Infinity) < began) return { text: `#${pr} merged before desk kept a merge log, so who merged it is not recorded`, warn: false };
+  return { text: `#${pr} merged outside desk: the merge log has no entry for it`, warn: true };
+}
+
 // `jiraUrl` adds the Jira line the interactive screen opens with o. `open` is the interactive screen's
 // set of what a, y and f unfold ('a' blockers, 'y' why lane, 'f' files); null, as in plain output,
 // shows all of it. `can` says which of them has more to show.
@@ -3237,6 +3259,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const files = (tr.files_in_scope ?? []).map((f) => `  ${f}`);
   if (files.length) out.push(segLine([['Files in scope', BOLD], [` · ${files.length}`, DIM]]), ...folded('f', files, files, (n) => `${n} more`), '');
   if (t.collides_with) out.push(segLine([['Never runs with ', BOLD], [String(t.collides_with).split('|').join(', '), DIM]]));
+  if (t.result?.pr != null) {
+    // A log that cannot be read says so on this line, never takes the ticket page down with it.
+    let merge;
+    try { merge = mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
+    if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
+  }
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]

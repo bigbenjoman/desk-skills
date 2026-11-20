@@ -329,6 +329,13 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
+    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
+    // not this PR's code: held with no fix try, whose worker could not fix it. Only where every red
+    // check is one, so a check a person clears, a state check or a check build keeps its own route. It
+    // comes before the rerun gate: the driver reruns no such check, so that gate would wait in silence.
+    if (ctx.outage && !notMine.length && !state.length && !built && mine.every((f) => ctx.outage.has(f.name))) {
+      return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, s.pr) };
+    }
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
       if (!noTryLeft) return null;
       waiting = true;
@@ -348,6 +355,25 @@ export function fixCall(t, s, ctx) {
   }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
+// A required check red on OUTAGE_PRS or more ready PRs at once, and reported by a platform rather than a
+// GitHub Actions run of the repo's own (no runId: a deploy or preview service's status), is taken for that
+// platform failing (down, its queue timing out), not for each PR's code: Map name -> the PRs it is red on.
+// A workflow's job red on many PRs is left alone: their code, or the base (againstBase), may be its cause.
+// undrafted: [{ s: { pr, checks } }], lists: { required, advisory }.
+export const OUTAGE_PRS = 3;
+export function outageChecks(undrafted, lists) {
+  const on = new Map();
+  for (const { s } of undrafted ?? []) {
+    const gate = evaluateGate(s?.checks ?? [], { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
+    for (const name of new Set(gate.failing.filter((f) => f.runId == null).map((f) => f.name))) on.set(name, [...(on.get(name) ?? []), s.pr]);
+  }
+  return new Map([...on].filter(([, prs]) => prs.length >= OUTAGE_PRS));
+}
+const outageWhy = (names, outage, pr) => {
+  const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
+  const one = names.length === 1;
+  return `${names.map((x) => `"${x}"`).join(', ')} ${one ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. Nothing desk reruns turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`;
+};
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
 
@@ -978,6 +1004,15 @@ const cap = (s) => s[0].toUpperCase() + s.slice(1);
 export function fixBrief(t, review = null) {
   const f = t.fix;
   if (!f || f.finished) return '';
+  // The ticket's own worker was interrupted mid-try, leaving these uncommitted (busyWorktree).
+  if (f.left_dirty?.length && !t.left_dirty_said) {
+    const rest = fixBrief({ ...t, left_dirty_said: true }, review);
+    return [`## Your interrupted worker's changes`, '',
+      'Your worktree holds uncommitted changes the worker before you left when it was interrupted:', '',
+      ...f.left_dirty.slice(0, 20).map((x) => `- ${x}`), ...(f.left_dirty.length > 20 ? [`- and ${f.left_dirty.length - 20} more (git status)`] : []), '',
+      'Read them first. Where they are this try\'s work, finish it, test it and commit it as part of this try. ' +
+      'Where they are not this ticket\'s work, change nothing and park naming the files: never discard or stash them.', '', rest].join('\n');
+  }
   if (f.kind === 'renames') {
     return [`## Migration rename try: PR #${f.pr}`, '',
       `Your PR #${f.pr} is ${f.draft ? 'a draft' : 'open and out of draft'} on this branch${f.head ? ` (head ${String(f.head).slice(0, 12)})` : ''}, and ${f.base} has renamed migrations your own files still name by the old filename, so their tests fail with ENOENT once ${f.base} is merged in:`, '',
@@ -997,7 +1032,14 @@ export function fixBrief(t, review = null) {
   if (f.kind === 'gaps') {
     return [`## Your call on PR #${f.pr}'s review gaps`, '',
       `Your PR #${f.pr} is ${f.ready ? 'open and out of draft' : 'a draft'} on this branch, and the ${reviewName(review)} posted on its head${f.head ? ` ${String(f.head).slice(0, 12)}` : ''} left requirement gaps. The person has ruled on them (also posted on the PR):`, '',
-      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', ''].join('\n');
+      ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', '',
+      // A gap accepted changes no code, so only a verdict that records it settles it: without one the
+      // verdict at the head still counts it open, and the PR goes back to the person.
+      ownReview(review)
+        ? `A gap the person accepted is settled by the review's verdict, not by code: ${reviewStep(review, 'the head')}, so its verdict records the accepted gap, even when nothing else changes.`
+        : 'A gap the person accepted is settled by its verdict, not by code: post the accepted re-verdict as desk-review Phase 7 says (its one exception), even when nothing else changes. ' +
+          `Re-run verdict.mjs on that round's results, kept under $DESK_STATE/reviews/${t.key}/, with the accepted gaps moved from gaps into accepted, the same round and since, and post it at the same head. ` +
+          'With no results kept for that round, run a fresh review round.', ''].join('\n');
   }
   if (f.kind === 'instruction') {
     return [`## The person's instruction on PR #${f.pr}`, '',

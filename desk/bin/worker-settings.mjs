@@ -368,8 +368,8 @@ if (mode === 'triage') {
   const NODE_BIN_LINT = ['eslint', 'biome', 'oxlint', 'stylelint'];
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
-  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
+  // screenshots and review results (reviews/<KEY>/, kept so a later accepted re-verdict can re-run them). The resume file lives in the state dir because the harness write-protects the
   // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
   // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
@@ -378,6 +378,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
     `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(STATE)}/reviews/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
