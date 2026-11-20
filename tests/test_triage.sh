@@ -68,6 +68,8 @@ fi
 # Call STUB_REFUSED answers with the file it names, a recorded run the API refused.
 [ "${STUB_REFUSED_AT:-}" = "$n" ] && { cat "$STUB_REFUSED"; exit 1; }
 if [ "$n" = 0 ]; then
+  # STUB_ANSWER is an answer the person saves while the pass runs.
+  [ -z "${STUB_ANSWER:-}" ] || { mkdir -p "$DESK_STATE/briefings"; printf '%s' "$STUB_ANSWER" >> "$DESK_STATE/briefings/${STUB_TICKET:-fix-thing}.md"; }
   printf '{"ticket":"%s","lane":"%s","branch":"%s","change_kind":"%s"%s}' "${STUB_TICKET:-fix-thing}" "$STUB_LANE" "${STUB_BRANCH:-fix/fix-thing}" "${STUB_KIND-surface}" "${STUB_EXTRA:-}" > "$DESK_STATE/triage/${STUB_TICKET:-fix-thing}.json"
 else
   [ -n "${STUB_CHAL:-}" ] || STUB_CHAL=$(printf '{"verdict":"CONFIRM","lane":"%s","reason":"stub"}' "$STUB_LANE")
@@ -498,6 +500,15 @@ TAKEN='"decided":[{"question":"Which legal wording ships on the consent page?","
 out=$(STUB_LANE=A STUB_EXTRA=",$TAKEN" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823 AC1: an earlier reserved unknown this pass takes as a call is asked again, never also taken" \
   '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -c .decided)" = "[]" ]'
+rm -f "$STUB_LOG".*; printf 'null\n' > "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823: an earlier record that is not an object is not carried and does not stop the triage" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_ANSWER=$'\n## Answer from the user (2099-01-01T00:00:00Z)\n\nShip the current consent text.\n' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer saved while the pass runs settles the earlier unknown, and the record is stamped before it" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]] && [[ "$(lc -r .triaged_at)" < "2099" ]]'
+rm -rf "$T/state/briefings"
 mkdir -p "$T/state/briefings"
 printf '# Briefing for fix-thing\n\n## Answer from the user (2026-11-01T06:28:00Z)\n\nShip the current consent text.\n' > "$T/state/briefings/fix-thing.md"
 rm -f "$STUB_LOG".*; earlier
