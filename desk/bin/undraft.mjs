@@ -698,6 +698,8 @@ export function humanReviewed(pr, handle) {
 // [{ at, by }] oldest first: nothing in a batch converts a ticket's PR back, so any one is a person's.
 // REDRAFT_JQ reads them from the PR's issue events, one `<at>\t<by>` line each.
 export const REDRAFT_JQ = '.[] | select(.event == "convert_to_draft") | [.created_at, (.actor.login // "")] | @tsv';
+// How long a draft's head may go with no mergeability answer from GitHub before it is the person's.
+export const UNKNOWN_LIMIT_MS = 60 * 60 * 1000;
 export function personHold(t, n, redrafts = []) {
   const was = t.undraft?.pr == null || t.undraft.pr === n ? t.undraft ?? {} : {};
   if (was.call === 'held') return { why: was.why, action: was.action };
@@ -752,7 +754,20 @@ export function undraftCall(t, pr, cfg) {
     const c = person('it has a merge conflict with its base', `resolve the conflict on #${n}; it then needs a fresh review`);
     return (humanReviewed(pr, cfg.handle) ? cfg.conflictReviewed : cfg.conflictUnreviewed) === 'yes' ? { ...c, call: 'conflict' } : c;
   }
-  if (pr.mergeable !== 'MERGEABLE') return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})` };
+  if (pr.mergeable !== 'MERGEABLE') {
+    // A merge ref can wedge: no answer for hours, and no run started for the head. Aged from when this
+    // head first had no answer (kept on the undraft record), it goes to the person after
+    // UNKNOWN_LIMIT_MS, naming what gives it a fresh merge ref.
+    const was = t.undraft;
+    const since = (was?.call === 'wait' || was?.call === 'person') && was.pr === n && was.sha === pr.head && was.unknown_since ? was.unknown_since : cfg.now ?? null;
+    const mins = since && cfg.now ? Math.floor((Date.parse(cfg.now) - Date.parse(since)) / 60000) : 0;
+    const said = `GitHub has not worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`;
+    if (mins * 60000 >= UNKNOWN_LIMIT_MS) {
+      return { ...person(`${said} at ${String(pr.head).slice(0, 12)} for ${mins} minutes: its merge ref looks wedged, and GitHub starts no run for that head`,
+        `push a new commit to #${n} (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`), unknown_since: since };
+    }
+    return { call: 'wait', why: `GitHub has not yet worked out whether it conflicts with its base (${pr.mergeable ?? 'no answer'})`, unknown_since: since };
+  }
   let gate = evaluateGate(pr.checks ?? [], { required: cfg.required ?? [], advisory: cfg.advisory ?? [] });
   // A required check that never reported may be one its workflow never runs on this PR's base.
   if (gate.state === 'absent' && pr.base && cfg.untriggered) {

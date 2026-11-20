@@ -137,6 +137,7 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
+#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer at a head before the queue asks the person (default 3600)
 #
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
 # gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
@@ -946,12 +947,33 @@ NODE
   esac
 }
 
+# A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
+# that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
+# run started for the head. Past UNKNOWN_LIMIT_SECS the queue asks the person for a new commit, which
+# gives it a fresh merge ref. Any answer, or another head, starts it again and clears the note.
+UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-3600}"
+unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
+  local f="$SD/unknown-$1" was="" at="" now age
+  if [ "$4" != UNKNOWN ]; then
+    if [ -f "$f" ]; then rm -f "$f"; blocked_clear "$3" "merge ref:"; fi
+    return 0
+  fi
+  read -r was at < "$f" 2>/dev/null || true
+  now=$(date +%s)
+  if [ "$was" != "$2" ] || [ -z "$at" ]; then printf '%s %s\n' "$2" "$now" > "$f"; blocked_clear "$3" "merge ref:"; return 0; fi
+  age=$(( now - at ))
+  [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
+  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( age / 60 )) minutes — its merge ref looks wedged; the person pushes a new commit"
+  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( age / 60 )) minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+}
+
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   local n="$1" key="$2" g sha ms state holds met carried="" bare nbare bare_more routines="" fb decision unresolved held settled tid text green_at out waived label grant steps="" review_required awaiting verdict carried_from carried_range want="$BASE_BRANCH"
   EPIC_KEY=""; [ "${3:-}" = epic ] && EPIC_KEY="$key"
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
+  unknown_age "$n" "$sha" "$key" "$ms"
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }

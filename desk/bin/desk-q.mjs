@@ -415,6 +415,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // approval, waits on a person's approval before the driver merges it.
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
+  // One GitHub has had no mergeability answer for at its head long past usual: its merge ref looks
+  // wedged, and only a new commit (or a new PR) gives it a fresh one (merge-driver.sh unknown_age).
+  const ref = /^merge ref: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (ref) return needs({ code: 'merge-ref', text: ref[1] }, [ref[1], WARN], [' · push a new commit', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
     // A conflict has its own tries (fix-tries.mjs conflictTriesMade), whatever other kinds have used.
     const made = conflictTriesMade(t.fix_tries);

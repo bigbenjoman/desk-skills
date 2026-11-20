@@ -642,6 +642,7 @@ function prPlain(r, t, gapLines = null, reads = null) {
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
+    case 'merge-ref': return `${n} looks stuck on GitHub: ${plainWords(w.text).replace(/: push a new commit .*$/, '')}. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.`;
     case 'conflict': return conflictPlain(r, t, n, w.base);
     case 'red': {
       const red = ask ? ask.left : w.names;

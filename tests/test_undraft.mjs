@@ -983,4 +983,22 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('#897 one pending with no run to time out does not hold a red draft', status?.call, 'checks');
 }
 
+
+// #752: a draft GitHub has no mergeability answer for is aged per head, and is the person's past the limit.
+{
+  const NOW = '2026-11-20T12:00:00.000Z';
+  const ago = (m) => new Date(Date.parse(NOW) - m * 60000).toISOString();
+  const wedged = (undraft, head = HEAD) => undraftCall({ key: 'T-752', undraft }, { number: 752, head, mergeable: 'UNKNOWN', mergeState: 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO), head)], checks: [] },
+    { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], now: NOW });
+  const first = wedged(undefined);
+  t('#752 a first pass with no answer waits, from now', `${first?.call} ${first?.unknown_since}`, `wait ${NOW}`);
+  const later = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(30) });
+  t('#752 within the hour it still waits, from when it was first seen at that head', `${later?.call} ${later?.unknown_since}`, `wait ${ago(30)}`);
+  const late = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(61) });
+  t('#752 past the hour it is the person\'s, naming the wedged merge ref and what gives a fresh one', `${late?.call} | ${late?.why} | ${late?.action}`,
+    `person | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 61 minutes: its merge ref looks wedged, and GitHub starts no run for that head | push a new commit to #752 (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`);
+  t('#752 once the person\'s, it stays theirs from the same time', wedged({ call: 'person', pr: 752, sha: HEAD, unknown_since: ago(90) })?.unknown_since, ago(90));
+  t('#752 a new head starts the clock again', wedged({ call: 'wait', pr: 752, sha: OLD, unknown_since: ago(90) })?.call, 'wait');
+}
+
 process.exit(fails ? 1 : 0);
