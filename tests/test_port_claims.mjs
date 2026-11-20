@@ -46,7 +46,7 @@ const c1 = cli('claim', '3101-3102', '--by', 'peer D');
 t('#823 the CLI claims, saying for how long', [c1.status, c1.stdout.trim()], [0, `claimed 3101-3102 for peer D, for ${P.CLAIM_HOURS} hour(s): no pass gives a worker these ports`]);
 t('#823 list prints the claims in force', cli('list').stdout.trim().replace(/until \S+/, 'until X'), '3101-3102  by peer D  until X');
 t('#823 release, then list says none', [cli('release', '--by', 'peer D').status, cli('list').stdout.trim()], [0, 'no ports claimed']);
-t('#823 a bad range or no --by is refused, exit 11', [cli('claim', 'abc', '--by', 'x').status, cli('claim', '3001').status, cli('claim', '3001', '--by', 'x', '--hours', '0').status], [11, 11, 11]);
+t('#823 a bad range or no --by is refused, exit 11', [cli('claim', 'abc', '--by', 'x').status, cli('claim', '3001').status, cli('claim', '3001', '--by', 'x', '--hours', '0').status, cli('claim', '3001', '--by', 'x', '--hours', 'Infinity').status, cli('claim', '3001', '--by', 'x', '--hours', '1e300').status], [11, 11, 11, 11, 11]);
 
 console.log(fails ? `${fails} FAILED` : 'all port claim checks passed');
 process.exit(fails ? 1 : 0);

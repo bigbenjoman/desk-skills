@@ -12,7 +12,7 @@
 //       ends <who>'s claim.
 //   port-claims.mjs list
 //       the claims in force, one line each.
-// `who` names the peer as its handshake did (its session name, or repo and batch).
+// `who` names the peer as its handshake did (its session name).
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -88,7 +88,8 @@ if (isMain) {
   const r = parseRange(range);
   if (r.error) die(`${r.error}. ${usage}`);
   const hours = hoursText == null ? CLAIM_HOURS : Number(hoursText);
-  if (!(hours > 0)) die(`--hours wants a number of hours above 0, not "${hoursText}"`);
+  // At most a year: past that the lapse is no lapse, and a huge number is no date at all.
+  if (!(Number.isFinite(hours) && hours > 0 && hours <= 24 * 366)) die(`--hours wants a number of hours above 0 and at most ${24 * 366}, not "${hoursText}"`);
   claim({ ...r, by, hours });
   console.log(`claimed ${r.from === r.to ? r.from : `${r.from}-${r.to}`} for ${by}, for ${hours} hour(s): no pass gives a worker these ports`);
 }
