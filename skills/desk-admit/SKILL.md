@@ -69,9 +69,7 @@ node ~/.claude/desk/bin/intake.mjs admit <TICKET>... --by <who> [--front] [--ses
   ticket already in a batch too, unless its worker has started, it is finished, or the user placed it
   (`queue.mjs move`): the line after `is already in batch` says which.
 - `--session`: only when this session runs the batch (it started it with `/desk-autopilot`, and
-  runs its passes). A batch a session runs refuses the call without it (`is run by a session, not
-  the supervisor`): if that session is this one, run the same call again with `--session`; never
-  message yourself, and never run `queue.mjs admit` instead.
+  runs its passes); step 2's `is run by a session` row says when.
 
 It triages each ticket afresh, which takes a minute or two each, as many at once as config §3b
 "Triage concurrency" allows, and admits each one as soon as it and its blockers in the call are
@@ -154,7 +152,7 @@ below as `(Recommended)`, with its reason as the description:
 | `is already queued in <repo>'s standing batch` or `in batch <B> of <repo>` | Leave it there: a ticket is queued in one repo at most. If it belongs in this repo instead, drop it there first (`queue.mjs drop <TICKET>` in that repo's checkout) | Run step 1 again for it once it is dropped there |
 | `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |
 | `runs on base <B> in the standing slot: move it to epic <E>'s own slot` (or `to its own slot <S>, named after its branch`, for a batch spanning several epics) | Move it: run the `node …/move-batch.mjs` the line names, which frees the standing slot on the default branch. With workers running it drains first (exit 12, new spawns paused): run it again once none is running | Run step 1 again |
-| `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`). Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
+| `is run by a session, not the supervisor` | If this session runs that batch, run the command the line names (`… --session`), never `queue.mjs admit` and never a message to yourself. Otherwise send the tickets to that session: `ListAgents`, then `SendMessage` with each ticket and why it is wanted. That session admits them | Admit nothing here unless this session runs it |
 | `no batch is live, and starting one … needs …` | Plan a batch: `/desk-autopilot <TICKET>...` | |
 | `triage failed` or anything else | Show the line; offer to run step 1 again | |
 

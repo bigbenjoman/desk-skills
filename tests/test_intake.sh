@@ -527,7 +527,7 @@ out=$(admit H-7); rc=$?
 check "admit: a session-run batch is refused before any triage, pointing at that session" '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = "$n" ] && grep -q "is run by a session, not the supervisor: send these tickets to that session" <<< "$out"'
 check "#877 the refusal names the command that session admits with" 'grep -q "let it admit them with node .*intake.mjs admit H-7 --session, or" <<< "$out"'
 check "#824 and tells the session that runs the batch to run it itself, not message itself" 'grep -q "intake.mjs admit H-7 --session, or, if this session is the one that runs it, run that yourself$" <<< "$out"'
-check "#824 desk-admit says the session that runs the batch admits with --session itself" 'grep -q "^- \`--session\`: only when this session runs the batch" "$SK" && grep -q "if that session is this one, run the same call again with \`--session\`; never$" "$SK" && grep -q "^  message yourself, and never run \`queue.mjs admit\` instead.$" "$SK"'
+check "#824 desk-admit says the session that runs the batch admits with --session itself, never by messaging itself" 'grep -q "^- \`--session\`: only when this session runs the batch" "$SK" && grep -q "run the command the line names (\`… --session\`), never \`queue.mjs admit\` and never a message to yourself" "$SK"'
 out=$(admit H-7 --session); rc=$?
 check "#877 with --session, the session that runs the batch admits into it" '[ $rc -ne 11 ] && [ "$(qget tickets.H-7.state)" = triaged ] && [ "$(qget supervised)" = false ] && grep -q "^admitted H-7 by hand into batch s1" <<< "$out"'
 check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks up H-7$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
