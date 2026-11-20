@@ -60,11 +60,25 @@ const BIN = join(env.DESK_HOME, 'bin');
 mkdirSync(BIN, { recursive: true });
 for (const f of readdirSync(REAL_BIN)) if (f !== 'answer.mjs') symlinkSync(join(REAL_BIN, f), join(BIN, f));
 const ANSWERS = join(T, 'answers.log');
+// The fake answer.mjs logs its call, then runs the real one in its own process (one node, not two). Its
+// launchctl prints are answered in that process by bin/launchctl's own rule, as the suite's are below:
+// every repo load asks once per supervised batch, so a fake launchctl process per ask cost about 23
+// node starts per answer once the fixture holds that many batches (DS-929 AC3).
 writeFileSync(join(BIN, 'answer.mjs'), `import { appendFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
 appendFileSync(${JSON.stringify(ANSWERS)}, JSON.stringify({ args: process.argv.slice(2), queue: process.env.DESK_QUEUE }) + '\\n');
-const r = spawnSync(process.execPath, [${JSON.stringify(join(REAL_BIN, 'answer.mjs'))}, ...process.argv.slice(2)], { stdio: 'inherit' });
-process.exit(r.status ?? 1);
+const launchctlPrint = ${launchctlPrint};
+const cp = require('node:child_process');
+const spawnSync = cp.spawnSync;
+cp.spawnSync = function (cmd, args, ...rest) {
+  if (String(cmd).split('/').pop() !== 'launchctl' || args?.[0] !== 'print') return spawnSync.call(this, cmd, args, ...rest);
+  const { code } = launchctlPrint(${JSON.stringify(LOADED)}, args[1]);
+  return { pid: 0, output: [null, '', ''], stdout: '', stderr: '', status: code, signal: null };
+};
+syncBuiltinESMExports();
+process.argv[1] = ${JSON.stringify(join(REAL_BIN, 'answer.mjs'))};
+await import(process.argv[1]);
 `);
 const answers = () => (existsSync(ANSWERS) ? readFileSync(ANSWERS, 'utf8').trim().split('\n').map((l) => JSON.parse(l)) : []);
 
