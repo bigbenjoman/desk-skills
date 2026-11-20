@@ -2039,6 +2039,14 @@ const printRead = (cmd, id) => {
 };
 
 // ---- CLI -----------------------------------------------------------------------------------
+// The subcommands the CLI handles: any other is refused with this usage. tests/test_desk_env_commands.mjs
+// holds the switch below equal to it.
+export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
+  'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
+  'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
+const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -2049,6 +2057,7 @@ if (isMain) {
     console.error(`desk-env ${cmd} ${args[0]}: refused in an autopilot worker; this change is the user's to confirm.`);
     process.exit(4);
   }
+  if (!DESK_ENV_COMMANDS.includes(cmd)) { console.error(deskEnvUsage()); process.exit(2); }
   try {
     switch (cmd) {
       case 'where': {
@@ -2649,7 +2658,7 @@ if (isMain) {
         break;
       }
       default:
-        console.error('usage: desk-env.mjs where|get|review-cmd|verdict-logins|levers|batch-base|list|cmds|perm|key|model|budget|ids|paths|identity|git-author|mem|heavy|uuid|port-in-use|ports|default-mode|unanswered|drift|add-row|machine|costs|logins|subscription');
+        console.error(deskEnvUsage());
         process.exit(2);
     }
   } catch (e) {
