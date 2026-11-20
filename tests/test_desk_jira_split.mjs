@@ -80,6 +80,7 @@ for (const r of rows) {
 // later ticket rewrote is named by text only it holds (`split_check.mjs`'s `rewritten`).
 const REWRITTEN = [
   ['DS-460', 'your copy predates 2.0: re-run `install.sh`', 1], // every installed copy is past 2.0
+  ['DS-824', 'park: no acceptance criteria; an open decision', 1], // preformatted criteria and a Figma URL anywhere count
 ];
 checkRewritten({ t, label: 'AC2', rewritten: REWRITTEN, items: paras });
 const after = norm(files.map(read).join('\n\n'));

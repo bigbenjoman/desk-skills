@@ -3,7 +3,9 @@
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
 # it; one whose pass crashes is not compared; one that moved a shell case into a unit suite still runs
-# the base's case. Then the real pass suite against itself lists nothing. Scratch dirs only.
+# the base's case. Then the real pass suite against itself lists nothing: all of it, or on a pull
+# request only test_pass_other_repo.sh. Scratch dirs only.
+# covers: tests/test_pass*.sh
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -143,8 +145,16 @@ PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pa
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
-out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>/dev/null); rc=$?
-check "DS-763 AC4 the whole pass shell suite against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [0-9]{3,} pass run\(s\) compared, 0 differ, 0 not compared$"'
+# The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
+# push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+  out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>/dev/null); rc=$?
+  check "DS-920 AC1 on a pull request, test_pass_other_repo.sh against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [1-9][0-9]* pass run\(s\) compared, 0 differ, 0 not compared$"'
+  echo "SKIP DS-763 AC4 the whole pass shell suite against the same tree: this run is a pull request, so only test_pass_other_repo.sh was replayed (main pushes and local runs replay them all)"
+else
+  out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>/dev/null); rc=$?
+  check "DS-763 AC4 the whole pass shell suite against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [0-9]{3,} pass run\(s\) compared, 0 differ, 0 not compared$"'
+fi
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" = 0 ]

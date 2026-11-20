@@ -40,3 +40,8 @@ target, fields, the exact body), then `AUTOPILOT_PARK`. **The safeguard is not c
 not the block**: a worker can print a flawless block and then post anyway, which is why the
 command is denied rather than discouraged. Everything else the config grants (pushing,
 the draft PR, the review post) still happens before you park, so only the Jira step is left.
+Keep the exact body in your park file too, beside the question:
+`{"question": "<one line>", "approve": {"kind": "jira-comment", "target": "ABC-123", "body": "<the exact body>"}}`.
+The pass keeps it with the park and needs-you shows it whole, so the orchestrator relays it from
+there rather than from your log. The file adds to the block and never replaces it. A park on any
+other write you may not make (a PR comment, a description edit) keeps its text the same way.
