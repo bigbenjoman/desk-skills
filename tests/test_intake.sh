@@ -46,6 +46,7 @@ ${JUDGEMENT:+| \`autopilot-judgement\` | Take calls outside the ask categories |
 |---|---|---|
 | Intake query | \`none\` | ${2-\`project = ACME AND labels = autopilot\`} |
 | Triage concurrency | \`1\` | \`${TRIAGE_K:-TODO}\` |
+${WORKER_LOC:+| Worker location | \`local\` | \`$WORKER_LOC\` |}
 EOF
 }
 config yes
@@ -534,6 +535,18 @@ check "#824 desk-admit says the session that runs the batch admits with --sessio
 out=$(admit H-7 --session); rc=$?
 check "#877 with --session, the session that runs the batch admits into it" '[ $rc -ne 11 ] && [ "$(qget tickets.H-7.state)" = triaged ] && [ "$(qget supervised)" = false ] && grep -q "^admitted H-7 by hand into batch s1" <<< "$out"'
 check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks up H-7$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
+# A mid-batch admit says where each ticket runs, as the batch plan does, where workers run in the cloud.
+WORKER_LOC=cloud; config yes '`none`'
+printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
+rec H-21 A '"needs_local":false,"needs_db":false,"renders":false'; rec H-22 A '"needs_local":false,"needs_db":true,"renders":false'
+out=$(admit H-21 H-22 --session); rc=$?
+check "#1000 a mid-batch admit into a cloud batch says each ticket runs in the cloud" '[ $rc -ne 11 ] && grep -q "^admitted H-21 by hand into batch s1 .*; runs: cloud$" <<< "$out"'
+check "#1000 or locally, with why" 'grep -q "^admitted H-22 by hand into batch s1 .*; runs: local — it needs a local database$" <<< "$out"'
+WORKER_LOC=; config yes '`none`'
+printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","state":"running"}}}\n' > "$DESK_QUEUE"
+rec H-23 A
+out=$(admit H-23 --session)
+check "#1000 with workers local, no runs: line, as before" 'grep -q "^admitted H-23 by hand into batch s1" <<< "$out" && ! grep -q "runs:" <<< "$out"'
 AO="$S/../skills/desk-autopilot/references/ask-or-take.md"
 check "#877 desk-autopilot admits tickets the person already chose without asking again" 'grep -q "^\*\*Tickets the person already chose are not asked again.\*\*" "$AO" && grep -q "intake.mjs admit <TICKET>... --session" "$AO"'
 check "#877 desk-admit runs the --session command when this session runs the batch" 'grep -q "If this session runs that batch, run the command the line names" "$S/../skills/desk-admit/SKILL.md"'
