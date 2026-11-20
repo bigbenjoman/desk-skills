@@ -878,6 +878,7 @@ hook then refuses Claude trailers in that repo only, and autopilot workers there
 
 ```bash
 desk-env where                   # which repo and config apply here; EXISTS=yes once set up
+desk-env show [3 5]              # the config's rules for the agent, headings and tables (no §3c unless named)
 desk-env get required-checks     # read any row by its id (desk-env ids lists them all)
 desk-env list required-checks    # every item of a list row, one per line
 desk-jira where                  # the Jira site, project and login this repo resolves to
@@ -921,7 +922,9 @@ or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cann
 `bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
 runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory each; head defaults to
 `HEAD`), saves the queue and the pass's output after every pass run, and lists each queue field,
-output line and suite check that differs, with times, ids and scratch paths left out. It exits 0
+output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
+left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
+`spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
 when nothing differs, 1 when something does, and 2 when a run was not compared.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
@@ -958,8 +961,11 @@ CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change 
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
 shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
 file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and every suite runs nightly on macOS under
-`/bin/bash` 3.2. While either is red an issue labelled `ci-main-red` stays open.
+suite. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shards (the `macOS` workflow, not a required check); its nightly run only runs the suite when no
+macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
+owner, and `/desk-needs-you` lists it for them.
 
 The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
 suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).

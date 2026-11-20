@@ -415,6 +415,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // approval, waits on a person's approval before the driver merges it.
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
+  // One GitHub has had no mergeability answer for at its head long past usual: its merge ref looks
+  // wedged, and only a new commit (or a new PR) gives it a fresh one (merge-driver.sh unknown_age).
+  const ref = /^merge ref: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (ref) return needs({ code: 'merge-ref', text: ref[1] }, [ref[1], WARN], [' · push a new commit', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
     // A conflict has its own tries (fix-tries.mjs conflictTriesMade), whatever other kinds have used.
     const made = conflictTriesMade(t.fix_tries);
@@ -853,6 +857,19 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
 export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+// A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
+// writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
+function driverUp(b, now = Date.now()) {
+  if (!b.stateDir || mergeDriverHolder(b.stateDir) == null) return null;
+  let at = null;
+  try { at = statSync(join(b.stateDir, 'merge-driver.lock.d')).mtimeMs; } catch { /* released since */ }
+  return { b, up: at == null ? null : Math.max(0, now - at), last: tailLines(join(b.stateDir, 'merge-driver.log')).at(-1) ?? null };
+}
+// The merge drivers running in every repo here, each batch's state folder once.
+const machineDrivers = (repos, now = Date.now()) => {
+  const dirs = new Set(withOthers(repos).flatMap((r) => r.batches ?? [r]).map((b) => b.stateDir).filter(Boolean));
+  return [...dirs].filter((d) => driverUp({ stateDir: d }, now)).length;
+};
 // The workers running on one Claude login, by the login spawn-worker.sh recorded for each
 // (claude-logins.mjs), a worker with no record on the default. A batch whose queue cannot be read
 // counts at its repo's cap.
@@ -1255,7 +1272,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
 // needs-you and machine lines.
 function tabHead(repos, r, now, solid, pinUsage) {
   if (!r) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
-  return r.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
+  return r.q ? [countsLine(r, now), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -1957,8 +1974,9 @@ function needsLine(list, now) {
 }
 
 // The overview's second line: workers running, the machine cap and the room it leaves, free memory.
-function machineLine(running, cap, room, avail) {
-  return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY], BAR,
+function machineLine(running, cap, room, avail, drivers = 0) {
+  return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY],
+    ...(drivers ? [[' · ', GREY], [`▸ ${drivers} merge driver${drivers === 1 ? '' : 's'} running`, STATE_SGR.merging]] : []), BAR,
     ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
@@ -2487,7 +2505,7 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail),
+  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -2666,11 +2684,15 @@ function barWrap(line, width) {
 }
 
 // A repo screen's first header line: what needs the user, each state's count in its colour, then
-// the merged tickets left off the list.
-function countsLine(r) {
+// the merged tickets left off the list, then each merge driver running: its age and the last line it logged.
+const DRIVER_LAST_W = 100;
+function countsLine(r, now = Date.now()) {
   const segs = [needsYou(needsCount(r).shown)];
   for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [`${LABEL[k][0]} ${count(r, k)} ${k}`, STATE_SGR[k]]);
-  return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
+  const drivers = (r.batches ?? [r]).map((b) => driverUp(b, now)).filter(Boolean).flatMap(({ b, up, last }) => [BAR,
+    [`▸ ${r.batches && b.batch ? `${b.batch} ` : ''}merge driver up`, STATE_SGR.merging], ...(up == null ? [] : [[` ${since(up)}`, BOLD]]),
+    [' · last: ', GREY], [last == null ? 'nothing logged yet' : cut(last, DRIVER_LAST_W), null]]);
+  return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
 // What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
@@ -2914,7 +2936,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const head = [
     ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
-    countsLine(r),
+    countsLine(r, now),
     ...passHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),

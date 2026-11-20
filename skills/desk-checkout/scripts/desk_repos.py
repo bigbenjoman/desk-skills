@@ -70,7 +70,7 @@ class Repo:
 
     def get(self, key):
         v = self.values.get(key)
-        return None if v in (None, "", "(unset)") else v
+        return None if v in (None, "", "(unset)") or v.startswith("(not readable") else v
 
     def perm(self, key):
         return self.perms.get(key, "no")

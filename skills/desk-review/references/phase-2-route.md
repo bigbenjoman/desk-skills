@@ -68,3 +68,6 @@ reports survivors as `FINDING` blocks at the bar's severities. desk-kiss's `comm
 (restatement, commented-out code), near misses and held-the-line are not graded by the bar, so they
 stay in `/desk-kiss`. Scope findings that duplicate Bea's `OUT OF SCOPE` merge in Phase 4. If the
 file does not exist, the header says `simplicity: not run (desk-kiss not installed)`.
+
+Outside a configured repo `desk-env paths` stops on the repo's missing root; `desk-env paths
+--machine` prints `DESK_SKILLS_DIR` (and desk's other machine paths) in any directory.

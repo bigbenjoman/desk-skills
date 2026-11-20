@@ -1,5 +1,6 @@
 // The usage reading desk-q's headers show, and the small check that keeps it fresh while no worker
-// runs. Worker logs carry a rate_limit_event after most API calls (usage-pace.mjs); with none running,
+// runs. A worker log carries a rate_limit_event at its session's start and seldom another
+// (usage-pace.mjs); with none running,
 // an open desk-q runs one Haiku call every PROBE_EVERY_MS whose event carries both windows, about 2 s
 // and 3.6k tokens. Its stream-json output is kept as <usage dir>/probe.log and read like a worker log.
 // Never billed to an API key: the call runs without ANTHROPIC_API_KEY, on the signed-in account.
@@ -28,6 +29,10 @@ export { usageDir, probeLog };
 const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
 export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
 const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
+// When a probe last started on this login (ms), or null when none has.
+export const lastProbeAt = (dir = usageDir(), login = null) => {
+  try { const n = Number(readFileSync(probeStamp(dir, login), 'utf8')); return Number.isFinite(n) && n > 0 ? n : null; } catch { return null; }
+};
 
 // A login's newest reading of both windows, the default's with none named: its worker logs in every
 // repo and its last probe's output, the same sources a pass's pacing reads.

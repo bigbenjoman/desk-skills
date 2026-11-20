@@ -74,6 +74,8 @@ prompt carrying the ticket's text, and the session pushes a branch and opens a d
 records the ticket done once that PR shows (on its branch, or with the key in its title, opened since
 the session started), on that PR's branch; the session cannot reach the tracker, so its Jira steps are
 left for you. A start that fails parks with the CLI's error and is never run locally without asking.
+Once its PR is read the session is over: any later work on that PR (a review try, a fix try of any
+kind, a rework) goes to a local worker on the PR's branch at origin's tip, which pushes there.
 The report's cost table shows a cloud worker's session URL and its wall time from session start to
 PR, and its tokens and cost as "not reported for cloud".
 
@@ -93,7 +95,8 @@ or any other) is not stalled: the pass reports it as paused, holds the repo's sp
 until its subscription's reset (no work moves to another subscription; other subscriptions' work
 carries on), and resumes it in its own session on the login it started on once the limit lifts, at
 its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
-alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
+alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
+background at 600s), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.
 

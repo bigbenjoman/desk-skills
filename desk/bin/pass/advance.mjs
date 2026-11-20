@@ -60,7 +60,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -103,7 +103,7 @@ export function logMarkers(h, t) {
 // One running ticket's turn: its actions, in the order the pass carries them out.
 export function* decideAdvance(s) {
   const { t, log, registry } = s;
-  if (t.location === 'cloud' && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
+  if (runsInCloud(t) && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
   if (!log) return;
   const { h } = log;
   const live = registry.read && !!t.session_id && registry.liveSids.has(t.session_id);
@@ -138,8 +138,9 @@ export function* decideAdvance(s) {
   else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
-  // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
+  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
+  // overstates liveness. See references/orchestrator-recovery.md.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
@@ -272,6 +273,9 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
+    // The exact text a gated write waits on, which the worker keeps in its park file (approve), is kept
+    // with the park, so it is relayed from there rather than dug out of the log.
+    yield { type: 'park-approve', key: t.key, question };
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.

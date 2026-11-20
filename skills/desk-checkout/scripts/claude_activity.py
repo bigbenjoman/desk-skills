@@ -269,7 +269,7 @@ def main():
     ap.add_argument("--prompt-chars", type=int, default=280)
     ap.add_argument("--max-prompts", type=int, default=8)
     args = ap.parse_args()
-    since, until = window.resolve(args.day)
+    since, until = window.resolve(args.day, since=args.since, since_for=args.since_for)
     REPOS, CURRENT = desk_repos.load_all(args.include)
     SIDE_ROOTS = desk_repos.side_roots()
     TICKET_RES = [r.ticket_regex for r in REPOS if r.scope == "this" and r.ticket_regex]
@@ -303,7 +303,7 @@ def main():
     sessions.sort(key=lambda s: (desk_repos.SCOPE_ORDER[scope_and_repo(s["cwd"])[0]], s["first"]))
 
     tz = since.astimezone().tzname() or "local time"
-    print(f"# Claude Code activity, {window.label(since)} ({tz}) — {len(sessions)} sessions\n")
+    print(f"# Claude Code activity, {window.label(since, until)} ({tz}) — {len(sessions)} sessions\n")
     if not sessions:
         print("No Claude Code activity in the window.")
     for s in sessions:

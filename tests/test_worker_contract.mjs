@@ -94,7 +94,7 @@ for (const f of formFiles) {
   t(`DS-338 AC3 the core routes to ${f} early`, to.length > 0, true);
   t(`DS-338 AC3 ${f} is read early at any stage, not only before it`, to.some((b) => b.includes('at any stage') && !/before Stage/.test(b)), true);
 }
-t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(lint, build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
+t('DS-338 AC1 the command forms hold the dev server\'s allowed form', formFiles.some((f) => /`nolock` for everything else \(build, codegen, dev server\)/.test(read(f).replace(/\s+/g, ' ')) && read(f).includes('pass the port as an argument')), true);
 t('DS-338 AC1 the core\'s table says the Stage 3 file holds the dev server\'s form', core.includes('§6 the command forms you may run, a dev server\'s too'), true);
 // Where a worker reads how to park, the core states the allowed park inputs form.
 t('DS-337 AC3 the core states park inputs are flat, lists allowed', core.includes('`AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok)'), true);
@@ -145,6 +145,13 @@ t('DS-587 the Stage 4 file no longer only says to report a long wait', /Blocked 
 const notes = read('batch-notes-header.md').replace(/\s+/g, ' ');
 t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading agrees',
   notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
+t('DS-855 AC1 the command forms run every lint item under the tsc lock, at the root too',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('`tsc` for §4 Typecheck and §4 Lint (never bare, even at the root)')), true);
+t('DS-855 a lint binary in node_modules runs under the tsc lock, not bare',
+  formFiles.some((f) => read(f).replace(/\s+/g, ' ').includes('eslint, biome, oxlint, stylelint so under `with-lock.sh tsc`'))
+  && !formFiles.some((f) => /A lint or format tool \(eslint/.test(read(f).replace(/\s+/g, ' '))), true);
+t('DS-855 AC2 batch-notes-header names lint with suites and typechecks on the one lock',
+  notes.includes('serialises suites, typechecks *and* lints on one lock') && notes.includes('run every §4 Lint item through `with-lock.sh tsc`**, at the root as well as in a directory, and a targeted run'), true);
 t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
@@ -193,6 +200,9 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
+  ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
+  ['#775', 'read-only to you apart from your park and image files', 1],
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

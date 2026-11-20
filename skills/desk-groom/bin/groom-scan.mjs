@@ -975,7 +975,9 @@ export function repoAt(root, branch) {
 // ---- Jira, read with desk-jira ----------------------------------------------------------------
 
 const jira = (...a) => JSON.parse(execFileSync('desk-jira', [...a, '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 }))
-const die = (m) => { console.error(`groom-scan: ${m}`); process.exit(2) }
+// A stop the command line reports as `groom-scan: <message>` and exit 2; an in-process caller catches it.
+class Stop extends Error {}
+const die = (m) => { throw new Stop(m) }
 
 function args(a) {
   const o = { _: [] }
@@ -986,18 +988,22 @@ function args(a) {
 }
 
 // Jira Cloud gives at most 100 issues a page with fields; more than one page is refused rather than
-// groomed in part, since a truncated backlog reads as a clean one.
-function scan(o) {
+// groomed in part, since a truncated backlog reads as a clean one. `jira(cmd, ...args)` answers as
+// `desk-jira <cmd> <args> --json` does, and the labels default to §4's rows for the current repo.
+export function scanFindings(o, { jira: jiraRead = jira, stepLabels = deskEnv.personStepLabels?.() ?? [], inputLabels = deskEnv.personInputLabels?.() ?? [] } = {}) {
   for (const k of ['repo', 'default', 'project']) if (!o[k] || o[k] === true) die(`scan needs --${k}`)
+  // Read once before Jira, so an unreadable queue stops the scan before its first request, and
+  // again at the end, so a ticket a batch took on during the reads is still left alone.
+  readBatches(o.queue)
   const fields = String(o.fields && o.fields !== true ? o.fields : '').split(',').map((s) => s.trim()).filter((s) => s && s !== 'none')
   const ids = [...new Set([o.priority, ...fields].filter((s) => s && s !== true && s !== 'none'))]
   const jql = o.jql && o.jql !== true ? o.jql : `project = ${o.project} AND statusCategory != Done ORDER BY key ASC`
-  const page = jira('search', jql, '100')
+  const page = jiraRead('search', jql, '100')
   if (page.isLast === false || page.nextPageToken) die(`more than 100 open tickets match "${jql}": narrow it with --jql (one epic, or a key range) and groom each part`)
-  const tickets = (page.issues ?? []).map((i) => ticketOf(jira('get', i.key), ids))
+  const tickets = (page.issues ?? []).map((i) => ticketOf(jiraRead('get', i.key), ids))
   const siblings = {}
   for (const p of new Set(tickets.map((t) => t.parent).filter(Boolean))) {
-    siblings[p] = jira('children', p).map((c) => ({ key: c.key, summary: c.fields?.summary ?? '' }))
+    siblings[p] = jiraRead('children', p).map((c) => ({ key: c.key, summary: c.fields?.summary ?? '' }))
   }
   const priority = o.priority && o.priority !== true && o.priority !== 'none' ? o.priority : null
   const done = o.done && o.done !== true ? o.done : 'Done'
@@ -1009,14 +1015,14 @@ function scan(o) {
   const byKey = new Map(tickets.map((t) => [t.key, t]))
   const children = {}, lookup = {}
   const read = (k) => {
-    try { return ticketOf(jira('get', k), ids) } catch (err) {
+    try { return ticketOf(jiraRead('get', k), ids) } catch (err) {
       if (/\bHTTP 404\b/.test(String(err.stderr ?? ''))) return null
       die(`could not read ${k}: ${String(err.stderr ?? err.message).trim()}`)
     }
   }
   for (const e of tickets.filter(isEpic)) {
     const dod = criteriaOf(e.text).some((c) => c.id.startsWith('DoD'))
-    children[e.key] = jira('children', e.key).map((c) => {
+    children[e.key] = jiraRead('children', e.key).map((c) => {
       const t = ticketOf(c, ids)
       return byKey.get(c.key) ?? (dod || (priority && !isDone(t.category)) ? read(c.key) : null) ?? t
     })
@@ -1024,27 +1030,35 @@ function scan(o) {
       if (!children[e.key].some((c) => c.key === r.key) && !(r.key in lookup)) lookup[r.key] = byKey.get(r.key) ?? read(r.key)
     }
   }
-  let findings = [
+  const findings = [
     ...groom({ tickets, siblings, repo: repoAt(o.repo, o.default), fields: ids, priority, done,
-      stepLabels: deskEnv.personStepLabels?.() ?? [], inputLabels: deskEnv.personInputLabels?.() ?? [] }),
+      stepLabels, inputLabels }),
     ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
       inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
   ].map((f) => ({ kind: 'fix', ...f }))
-  const batch = readBatches(o.queue)
-  findings = leaveBatch(findings, batch)
-  if (o.json) { console.log(JSON.stringify(findings, null, 2)); return }
-  console.log(`groom-scan: ${tickets.length} open tickets, ${findings.length} findings (origin/${o.default})`)
+  return { count: tickets.length, findings: leaveBatch(findings, readBatches(o.queue)) }
+}
+
+// The scan's text form: a count line, then one block per finding.
+export function scanText({ count, findings }, branch) {
+  const out = [`groom-scan: ${count} open tickets, ${findings.length} findings (origin/${branch})`]
   for (const f of findings) {
-    console.log(`\n${f.check.padEnd(9)} ${f.ticket}${f.other ? ` · ${f.other}` : ''}${f.kind === 'fix' ? '' : `   [${f.kind}]`}${f.verify ? '   [verify first]' : ''}`)
-    for (const e of f.evidence) console.log(`  evidence: ${e}`)
-    if (f.edit) console.log(`  edit    : ${f.edit.from} -> ${f.edit.to}`)
-    for (const c of f.criteria ?? []) console.log(`  criterion ${c.id}: ${quote(c.text)}`)
-    if (f.question) console.log(`  question: ${f.question}`)
-    for (const x of f.options ?? []) console.log(`  option  : ${x}${x === f.recommend ? '   (recommended)' : ''}`)
-    for (const p of f.propose) console.log(`  propose : ${p}`)
-    for (const l of f.section ?? []) console.log(`  section : ${l}`)
-    if (f.left) console.log(`  left    : ${f.left}`)
+    out.push('', `${f.check.padEnd(9)} ${f.ticket}${f.other ? ` · ${f.other}` : ''}${f.kind === 'fix' ? '' : `   [${f.kind}]`}${f.verify ? '   [verify first]' : ''}`)
+    for (const e of f.evidence) out.push(`  evidence: ${e}`)
+    if (f.edit) out.push(`  edit    : ${f.edit.from} -> ${f.edit.to}`)
+    for (const c of f.criteria ?? []) out.push(`  criterion ${c.id}: ${quote(c.text)}`)
+    if (f.question) out.push(`  question: ${f.question}`)
+    for (const x of f.options ?? []) out.push(`  option  : ${x}${x === f.recommend ? '   (recommended)' : ''}`)
+    for (const p of f.propose) out.push(`  propose : ${p}`)
+    for (const l of f.section ?? []) out.push(`  section : ${l}`)
+    if (f.left) out.push(`  left    : ${f.left}`)
   }
+  return out.join('\n')
+}
+
+function scan(o) {
+  const s = scanFindings(o)
+  console.log(o.json ? JSON.stringify(s.findings, null, 2) : scanText(s, o.default))
 }
 
 // The batch's queue (queue.mjs, `desk-env paths` DESK_QUEUE). None there is no batch; one that will
@@ -1151,6 +1165,12 @@ const real = (p) => { try { return realpathSync(p) } catch { return p } }
 if (process.argv[1] && real(process.argv[1]) === real(fileURLToPath(import.meta.url))) {
   const [cmd, ...rest] = process.argv.slice(2)
   const run = { scan, verdict, preclose, approval, held, readback, priority }[cmd]
-  if (!run) die('usage: groom-scan.mjs scan|verdict|preclose|approval|held|readback|priority … (see the header)')
-  run(args(rest))
+  try {
+    if (!run) die('usage: groom-scan.mjs scan|verdict|preclose|approval|held|readback|priority … (see the header)')
+    run(args(rest))
+  } catch (err) {
+    if (!(err instanceof Stop)) throw err
+    console.error(`groom-scan: ${err.message}`)
+    process.exit(2)
+  }
 }

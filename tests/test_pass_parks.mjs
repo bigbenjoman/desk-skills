@@ -63,11 +63,26 @@ const BASE_CONTAINS = 'base-contains';
   const refused = clears(s, { check: { holds: true }, requeue: { ok: false, out: 'locked\nqueue busy' } });
   t('a refused requeue leaves it parked', j([sets(refused), lines(refused)]), j([[], ['A: "PR #41 merged" holds, but the requeue was refused (queue busy): left parked']]));
 }
+// A fix try parked before its worker started is dropped when the park clears, and the PR is read again.
+{
+  const tryOf = (kind, more = {}) => ({ try: 1, of: 2, kind, pr: 46, head: 'a'.repeat(40), what: 'x', at: 'T0', ...more });
+  const withTry = (f) => parked('A', PR_MERGED, { fix: f, fix_tries: [{ try: 1, head: f.head, kind: f.kind, what: 'x', at: 'T0' }, { try: 1, head: 'b', kind: 'checks', what: 'y', at: 'T-1' }] });
+  const s = clearsSnap(byKey(withTry(tryOf('protected'))), { passAt: '2026-11-18T12:00:00.000Z' });
+  const as = clears(s, { check: { holds: true } });
+  t('an unstarted fix try is dropped, not requeued', j(types(as)), j(['merge-park', 'check', 'own-merged', 'write', 'report']));
+  t('it is finished with no worker, taken out of the tries, and the ticket is done on its PR', j(as.find((a) => a.type === 'write').fields),
+    j(['fix.finished=2026-11-18T12:00:00.000Z', 'fix.ended=parked before its worker started, and "PR #41 merged" holds', 'fix.no_worker=true',
+      `fix_tries=${j([{ try: 1, head: 'b', kind: 'checks', what: 'y', at: 'T-1' }])}`, 'state=done', 'park=null', 'handoff_stage=null', 'result.pr=46']));
+  t('and the line names the try by its kind', j(lines(as)), j(['A: "PR #41 merged" holds: its protected files try 1 of 2 on PR #46, parked before its worker started, is dropped, and the PR is read again for what it needs now']));
+  for (const [name, f] of [['a started try', tryOf('feedback', { started: 'T1' })], ['a person\'s call', tryOf('gaps')], ['a review sent back', tryOf('review', { person: true })], ['a renames try', tryOf('renames')]]) {
+    t(`${name} is requeued as before`, types(clears(clearsSnap(byKey(withTry(f)), { passAt: 'P' }), { check: { holds: true } })).includes('requeue'), true);
+  }
+}
 {
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { result: { pr: 7 } })));
   const as = clears(s, { check: { holds: true }, 'own-merged': { pr: 7 } });
   t('its own PR merged: closed out, recorded done', j(as.find((a) => a.type === 'write').fields),
-    j(['state=done', 'park=null', 'handoff_stage=null', 'result.summary=closed out: PR #41 merged, and its PR #7 merged', 'result.pr=7']));
+    j(['state=done', 'park=null', 'handoff_stage=null', 'result.pr=7', 'result.summary=closed out: PR #41 merged, and its PR #7 merged']));
   t('and its line is said once the write is recorded', j(lines(as)), j(['A: "PR #41 merged" holds and its PR #7 merged: recorded done']));
   t('a refused write says nothing', j(lines(clears(s, { check: { holds: true }, 'own-merged': { pr: 7 }, write: false }))), '[]');
   const unread = clears(s, { check: { holds: true }, 'own-merged': { error: 'gh down' } });
