@@ -136,6 +136,15 @@ fieldtree cutport5 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING
 fieldtree cutport6 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING  A-2  on localhost:47705\n  RUNNING  A-3  on localhost:47706'
 cmp "$T/cutport5" "$T/cutport6"
 check "DS-819 AC1 after a cut port, two tickets on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head:   RUNNING  A-3  on localhost:<PORT2>"'
+# A port and a SHA in a line cut on one tree only, then whole ones after it: they stand one for one,
+# and one port on the base where the head has two is still listed.
+fieldtree cutline1 '' 'failed: set A-1 port=47704 ref 4a1f0c2e9 idle_pas… — fetching failed\n  RUNNING  A-2  on localhost:47801 at 5f6a7b8c9\n  RUNNING  A-3  on localhost:47802'
+fieldtree cutline2 '' 'failed: set A-1 port=47705 ref 8b2e1d3f7 idle_passes=0 port=47999 ref 0c1d2e3f4 log_bytes=97 — fetching failed\n  RUNNING  A-2  on localhost:47901 at 1b2c3d4e5\n  RUNNING  A-3  on localhost:47902'
+cmp "$T/cutline1" "$T/cutline2"
+check "DS-819 AC3 a port and SHA in a line cut on one tree only do not shift the ports and SHAs after it" "$same0"
+fieldtree cutline3 '' 'failed: set A-1 port=47705 ref 8b2e1d3f7 idle_passes=0 port=47999 ref 0c1d2e3f4 log_bytes=97 — fetching failed\n  RUNNING  A-2  on localhost:47901 at 1b2c3d4e5\n  RUNNING  A-3  on localhost:47901'
+cmp "$T/cutline1" "$T/cutline3"
+check "DS-819 AC1 after a line cut on one tree only, one port where the base had two is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head:   RUNNING  A-3  on localhost:<PORT"'
 # A SHA cut short, all digits on one tree and not on the other: the next SHA has one name on both.
 fieldtree cutsha1 '' 'failed: set A-1 ref 332065893… — fetching failed\nhead at 1b2c3d4e5'
 fieldtree cutsha2 '' 'failed: set A-1 ref 4a1f0c2e9… — fetching failed\nhead at 5f6a7b8c9'
