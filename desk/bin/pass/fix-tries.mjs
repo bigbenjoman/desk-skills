@@ -132,7 +132,7 @@ function* heldTry(t, p, s) {
   let c = worked;
   if (!review && s.reviewer?.kind === 'mismatch') {
     const { carry, scope, baseMerge } = reads.moves();
-    const r = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), base: s.base, baseMerge });
+    const r = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), stateChecks: s.stateChecks, base: s.base, baseMerge });
     c = r?.call === 'requeue' ? r : null;
   }
   if (c) yield { type: 'apply', key: t.key, pr: p.pr, head: p.head, call: c };
