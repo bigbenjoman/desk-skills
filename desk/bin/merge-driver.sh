@@ -54,7 +54,7 @@
 #   - no clean review at its head            where §4 Local review command is set, green is not enough:
 #                                            the latest desk-review verdict must be clean at the head
 #                                            (§4 Clean review verdict; review-threads.mjs verdict), or
-#                                            carried to it by clean merges of the base alone (undraft.mjs
+#                                            carried to it by clean base merges and empty commits alone (undraft.mjs
 #                                            verdictCarries), or with the review-reuse lever on by a
 #                                            rebase or base merge that moved none of the files its review
 #                                            rests on (restsOnCarries). A carried P2 does not hold it. Held, it is
@@ -297,8 +297,9 @@ while ! mkdir "$LOCKD" 2>/dev/null; do
 done
 echo "$$" > "$LOCKD/pid"; LOCK_HELD=1
 reopen_log
-# The desk version this driver runs, so the supervisor can tell it started before the last install.
-node "$DESK_RUN_BIN/installed.mjs" version > "$LOCKD/version" 2>/dev/null || true
+# The desk version this driver runs (its release's, not the installed one), so the supervisor can tell
+# it started before the last install.
+node "$DESK_RUN_BIN/installed.mjs" running > "$LOCKD/version" 2>/dev/null || true
 trap 'exit 130' INT
 # TERM is a request to stop: a driver between loops stops at once (pause), and one mid-loop finishes
 # the PR it is on first (stop_if_asked), so a stop never leaves a merge half-recorded.
@@ -1098,7 +1099,7 @@ EOF_RESOLVE
         fi
       fi
     elif [ -n "$carried_from" ]; then
-      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want came since"
+      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want and empty commits came since"
     fi
   fi
 

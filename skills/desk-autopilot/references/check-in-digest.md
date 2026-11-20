@@ -39,7 +39,13 @@ login in its own folder (`desk-env logins`), get their own `claude auth status` 
 out, one is named under `STALLED` with its sign-in command and pushed as
 `health:<slug>:claude:<login>`, but it holds no spawn, and the default login's result is its own. A
 subscription this repo's work does not run on is not checked here (a repo pinned to it checks it on its
-own pass), so an unused one signed out raises nothing.
+own pass), so an unused one signed out raises nothing. Each of those logins whose sign-in passes
+also makes one real call (`usage-probe.mjs` `probeNow`), because a login the API refuses (401, 403,
+a Cloudflare page) still passes `claude auth status`. A refused call fails that login with the
+API's error, told at once: the default's holds every spawn, and the pinned login's starts no new
+worker, resume or decider on it. A passing call is not made again for 15 minutes; a usage limit or
+no answer passes without being kept. A triage run that writes no record and whose log holds a 401
+or 403 names that status, not the session limit.
 
 **The reviewer check.** Where §4 Gate reviewers (`desk-env list gate-reviewers`) names logins, each
 pass reads `gh api user` as the account desk posts verdicts from (§4 Review account's gh config
@@ -48,6 +54,15 @@ mismatch is pushed once as `health:<slug>:reviewer`, naming both logins; a sign-
 `health:<slug>:reviewer-signin`. Either holds no spawn: it holds review and fix tries on every PR red
 only on a §4 State check (`desk-env list state-checks`) of kind verdict, which the pass records as
 `gate_hold`, and needs-you lists it as one `reviewer` item naming those PRs.
+
+A mismatch still lets one try through: a head with no clean desk-review verdict, or a stale one, gets
+its review worker while the gate is red, since the merge driver counts desk's verdict though the gate
+does not. A sign-in it cannot read holds that review too, as its verdict could not post.
+
+The hold is for a review that is missing or stale, so it never holds findings. A desk-review at the
+head that is not clean, a §4 Gate reviewer's or else desk's own, goes to a review fix as on any PR, or
+to the person for gaps only they settle, whatever the reviewer check failed on. A PR one goes to is not
+recorded as `gate_hold`; one whose review yields neither stays held.
 
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the

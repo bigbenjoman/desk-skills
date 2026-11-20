@@ -15,7 +15,8 @@
 //   queue        the queue as the pass's spawn section read it
 //   base, source the batch base, and the default branch it is synced from
 //   willSpawn    this pass has slots and tickets to spawn
-//   epicOn       an epic batch not in feature mode;  epicOpen  its epic PR is open
+//   frozen       how many tickets are ready to spawn, which a sync that holds spawns keeps waiting
+//   epicOpen     an epic batch's epic PR is open
 //   sliceBad     config §3b "Promotion slice size (children)" said as unreadable, or null
 //   behindMax    how many commits behind the default branch a base outside feature mode may be and
 //                still spawn while its sync is blocked
@@ -38,7 +39,8 @@
 //   set-batch {fields}          a batch-level queue write (queue.mjs set-batch)
 //   behind                      -> how many commits origin's base is behind the default branch, fetched
 //                               first, or null unread
-//   worktree                    -> the base worktree, made where missing: { ok, path, made, why }
+//   worktree                    -> the base worktree, made where missing, with the env files it lacked
+//                               copied in: { ok, path, made, env: { copied, missing }, why }
 //   fix-log                     -> the running fix try's log: { raw, text, recent, bytes }
 //   kill {pid}                  stop the fix try's worker
 //   end-try {outcome, path, extra}  -> base_fix once its last try ends with `outcome`
@@ -55,14 +57,11 @@
 //                               baseLag, baseNotSynced, baseWt, baseFix, baseFixLive, baseFixResume,
 //                               gateConflict }
 //   baseline {path}             record the baseline checks in the base worktree (decideBaseline)
-//   open-promotion {path, carry}    open the promotion or epic PR
-//   next-promotion {path, promotion}  follow a merged promotion PR with the next one
 import { workerMarkers, endedNormally } from '../harvest.mjs';
 import { usageLimit, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { baseFixCall, baseFixOutcome, lockWaitPark, mergeTry, FIX_TRIES_MAX } from '../base-fix.mjs';
 import { tries } from '../fix-tries.mjs';
-import { epicDue, epicCarry } from '../batch-state.mjs';
 import { behindPrs } from '../desk-q.mjs';
 import { summary } from '../baseline.mjs';
 import { QUIET_PASSES, WEDGE_PASSES, sameLogin, liftedHow, untilText, pausedOn, usageHeldText, tryWhat, tryNo } from './shared.mjs';
@@ -122,7 +121,10 @@ export function* decideBaseSync(s) {
     holdSpawns();
   }
   const wt = yield { type: 'worktree' };
-  if (wt.ok && wt.made) yield baseLine(`base worktree for ${BASE} made at ${wt.path}`);
+  const copied = wt.env?.copied?.length ? `§4 Env files copied in (${wt.env.copied.join(', ')}), with every §4 Database URL variable blanked` : null;
+  const missing = wt.env?.missing?.length ? `§4 Env files not copied (${wt.env.missing.join(', ')}): not in the primary checkout, or not ignored by git` : null;
+  if (wt.ok && wt.made) yield baseLine(`base worktree for ${BASE} made at ${wt.path}${[copied, missing].filter(Boolean).map((l) => `; ${l}`).join('')}`);
+  else if (wt.ok && copied) yield baseLine(`base worktree for ${BASE} at ${wt.path}: ${copied}`);
   // A try's worker that has finished leaves its outcome on the try. One whose last word is a park or a
   // done has finished whether or not its session exits, and one quiet for six passes is wedged: either
   // is stopped, as a ticket's worker is, so the try ends and the next conflict at this head goes to the
@@ -217,6 +219,7 @@ export function* decideBaseSync(s) {
   // the gate is done, and spawns carry on from origin's base as it stands.
   const { gateBusy } = s;
   let metConflict = false;
+  let stuck = null;
   if (!wt.ok) {
     if (wantSync) yield* blocked(wt.why);
     else yield say('waiting', `base worktree: ${wt.why}`);
@@ -271,10 +274,24 @@ export function* decideBaseSync(s) {
       } else {
         yield* blocked(`${why}${s.push.perm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`);
       }
-    } else yield* blocked(sync.why);
+    } else {
+      yield* blocked(sync.why);
+      // A refused push that holds every spawn is the person's, as one needs-you item for the batch. Its
+      // command rolls the merge back when the push is refused again, as the sync does: a merge left
+      // unpushed in the base worktree would fail every later sync as an error and clear this item.
+      if (sync.reason === 'push' && baseHold) {
+        stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why: sync.why, path: wt.path,
+          cmd: `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}` };
+      }
+    }
     // The ask is settled once the base is current, its push is granted, or the row no longer asks.
     if (q.base_push_ask && (sync.ok || s.push.ok || s.push.perm !== 'ask') && !s.dry) yield setBatch('base_push_ask=null');
   }
+  // Kept from the pass that first met it, so its age is the freeze's; cleared on any pass that does not.
+  const was = q.base_sync_stuck ?? null;
+  const same = (a, b) => ['base', 'source', 'behind', 'frozen', 'why', 'cmd'].every((k) => a[k] === b[k]);
+  if (!s.dry && stuck && !(was && same(was, stuck))) yield setBatch(`base_sync_stuck=${JSON.stringify({ since: was?.since ?? s.passAt, ...stuck })}`);
+  else if (!s.dry && !stuck && was) yield setBatch('base_sync_stuck=null');
   // The base gate met a conflict at the head origin's base is still at: the same fix worker takes it,
   // and the gate runs again once the base moves.
   const g = q.gate;
@@ -291,15 +308,7 @@ export function* decideBaseSync(s) {
   const fixOwns = baseFixLive || baseFix != null;
   yield { type: 'synced', state: { bf, baseHold, baseLag, baseNotSynced, baseWt: wt.ok ? wt.path : null, baseFix, baseFixLive, baseFixResume, gateConflict } };
   if (wt.ok && s.willSpawn && !gateBusy && !baseHold && !fixOwns && s.baselineOn) yield { type: 'baseline', path: wt.path };
-  if (wt.ok && featureMode && !fixOwns && q.promotion == null) yield { type: 'open-promotion', path: wt.path };
-  else if (wt.ok && featureMode && !fixOwns && q.promotion?.pr != null && !gateBusy) yield { type: 'next-promotion', path: wt.path, promotion: q.promotion };
-  // An epic batch not in feature mode opens its epic PR once every child has merged into the base, and
-  // tries again each pass until one is open.
-  // Each one opened after an earlier merged keeps that merge as `since`, and every earlier merge in
-  // `merged`, through a retry too: needs-you ages a child's follow-on steps from the epic PR that
-  // promoted it (needs-you.mjs outAt), so a reopen must not drop one.
-  const ep = q.promotion;
-  if (wt.ok && s.epicOn && !fixOwns && epicDue(q) && (ep?.pr == null || ep.merged_at)) yield { type: 'open-promotion', path: wt.path, carry: epicCarry(ep) };
+  // The promotion or epic PR it opens next is pass/promotion-pr.mjs decidePromotion's.
 }
 
 // ---- baseline checks -------------------------------------------------------

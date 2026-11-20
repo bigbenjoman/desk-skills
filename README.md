@@ -172,7 +172,8 @@ default branch, and finds leaked dev servers eating memory. It acts only on tick
 their Gemini notes, Jira changes, GitHub PRs, your Claude Code sessions and your own Slack messages.
 It covers every desk repo that posts to the same §4 Check-out destination, and each source needs its
 own §3 row (`read-calendar`, `read-transcripts`, `read-slack-public`…); a skipped source is listed in
-the draft. It saves a Slack draft at most (§3 `slack-draft`), never sends.
+the draft. To a Slack channel at §3 `slack-draft` `yes` it saves the post as a draft there and says
+so, copying it to the clipboard only when the draft cannot be saved; it never sends.
 
 ```
 /desk-checkout                   today (before 10:00, yesterday)
@@ -248,7 +249,11 @@ PR is merged, or whose promotion PR is closed, with no ticket running and no tic
 `batches/.done/` instead; a ticket PR still open then goes to the check-in digest for you to merge or
 close. A merge driver still running for such a batch has nothing left to merge, so the tick stops it
 (one mid-merge finishes that merge first) and a later tick archives the batch. `batch.mjs start <EPIC> <branch>` starts an epic's feature batch (one per repo at a time), and
-`batch.mjs discard <EPIC>` removes one no ticket has started in.
+`batch.mjs discard <EPIC>` removes one no ticket has started in. An epic's start that fails discards
+its batch with `--keep-triage`, which keeps the children's triage records, so admitting the epic again
+on the same branch within six hours triages only the children with none; a child whose triage fails is
+tried once more after 60 seconds first. `batch.mjs discard <EPIC>` on a slot holding only those records
+removes them, and `move-batch.mjs` clears them from the slot it moves into.
 `./install.sh` puts desk's scripts and templates in a release folder of their own,
 `~/.claude/desk/releases/<commit>/` (`<commit>-<time>` from a dirty checkout), and makes it live in one
 step by pointing `~/.claude/desk/current` at it; `~/.claude/desk/bin` and `templates` link through
@@ -546,6 +551,19 @@ node ~/.claude/desk/bin/bench-pr-text.mjs --tasks <tasks.json> --max-budget-usd 
 node ~/.claude/desk/bin/bench-pr-text.mjs report --tasks <tasks.json> [--out <dir>] [--blind <dir>]
 ```
 
+### A second Claude login
+
+desk runs every repo's work on this computer's default Claude login, unless a repo is pinned to
+another. To add a login from the command line:
+
+1. `CLAUDE_CONFIG_DIR=~/.claude-logins/<name> claude`, then `/login` with the other account, and quit.
+2. `desk-env logins check` lists it with its account and plan once it is signed in.
+3. `desk-env logins default claude <name>` makes it the default for every repo here, or
+   `desk-env subscription set <repo slug> <email>` pins one repo to it (that repo's config §3b
+   Subscription).
+
+desk-q does the same in view 6: press `a` to add a login, then choose the default there.
+
 ## Subagents
 
 Eleven named subagents, installed to `~/.claude/agents/` so they are available in every repo.
@@ -687,6 +705,7 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh            # install or update
 ./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
+./install.sh --accept=hook-attribution,plugins --decline=statusline   # answer the prompts named, with no terminal
 ./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
 ./install.sh --rollback     # go back to the release installed before the current one
 ```
@@ -710,10 +729,20 @@ What it does:
 The four hooks: **`deny-ai-attribution.py`** (before each Bash command) refuses Claude trailers in a
 repo whose §5 AI attribution is `forbidden`, **`desk-update-check.sh`** (at session start, at
 most once a day) says when this checkout has new commits for `/desk-update` to install, and
-**`desk-handoff.py`** (on prompt submit, after each tool, at turn end and at session start) has a
+**`desk-handoff.py`** (on prompt submit, after each tool, at turn end, at session start and before a compaction) has a
 session in a configured repo write `.handoffs/<date>.md` once its context passes §2 Handoff at
 context % (default 45; on a 1M window §2 Handoff at context % on a 1M window, which setup proposes at 20 and unset takes the row above's value), and points the session after `/clear` or a compaction at it. A hook cannot start a turn, so it asks
 you to type `/clear`, then `/desk-resume`, which carries on from the handoff's next step.
+
+With `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` set in Claude Code's environment (a percentage from 1 to 100
+under `env` in `~/.claude/settings.json`; `install.sh` offers to set it at 55 and keeps a value
+already there), nobody types anything: past §2 the session writes its
+handoff and keeps working, Claude Code compacts it on its own, the hook's `PreCompact` step names the
+handoff for the summary, and after the compaction the session is told to read it and carry on. Each
+later crossing refreshes that same handoff, and the turn cannot end until it has. A compaction does
+not mark it consumed, so the session's own later `/clear` still finds it, and from the moment it
+is named no other session's `/clear` takes it. Set §2 below the override, so the handoff is written before the compaction.
+
 **`desk-worker-stop.py`** is never registered in `settings.json`: each autopilot worker's own
 settings run it at turn end. It blocks the worker's first attempt to end its turn while a background
 task it started is still running, which `claude -p` would kill, and logs a second attempt.
@@ -910,7 +939,8 @@ one ready PR at a time, whose `reads` action hands fix-tries.mjs's calls the rea
 where they need them. Every park and
 hold a pass settles (`desk/bin/pass/parks.mjs`: parks whose clears-when holds, parks waiting on the
 base, person-step, date, outside and merge holds) has one decision for each point in the pass where it
-runs, each called there. Each phase has its
+runs, each called there. So is the base gate (`desk/bin/pass/base-gate.mjs`), whose last action
+says whether it keeps the batch from idle. Each phase has its
 own unit suite, `tests/test_pass_<phase>.mjs`; the first was crashed uploads. Each suite runs its decision under `withNoIo` (`tests/pass_phase_trap.mjs`), which
 fails it on any process start or file write. Every phase's snapshot starts from `phaseSnapshot` in `desk/bin/pass/shared.mjs`:
 the tickets, the time, and the pass's one session-registry read, which reads as unread (`read`

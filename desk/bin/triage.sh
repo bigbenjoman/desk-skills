@@ -273,6 +273,8 @@ cd "$MAIN"
 rm -f "$OUT"
 # No --allowedTools: it would grant every Bash command and Write outright, overriding the
 # read-only triage settings. The settings file alone decides what triage may run.
+# Its status is kept so a pass cut off at the timeout (desk_timeout's 124, or 137) is said as one.
+FIRST_RC=0
 desk_timeout 600 claude -p "$PROMPT" \
   --setting-sources "" --strict-mcp-config \
   ${DESK_TOOL_ARGS[@]+"${DESK_TOOL_ARGS[@]}"} \
@@ -280,7 +282,7 @@ desk_timeout 600 claude -p "$PROMPT" \
   --permission-mode dontAsk \
   --add-dir "$STATE" --add-dir "$DESK_SKILLS_DIR" \
   --max-budget-usd "${AUTOPILOT_TRIAGE_BUDGET_USD:-3}" \
-  --output-format stream-json --verbose > "$LOG" 2>&1 < /dev/null || true
+  --output-format stream-json --verbose > "$LOG" 2>&1 < /dev/null || FIRST_RC=$?
 
 # A pass Claude refused at a usage limit is not a failed triage: usage-limit.mjs reads the log, and a
 # limit the run never resumed from is said with its reset time, for exit 3.
@@ -298,9 +300,30 @@ if (l?.kind !== 'limit' || l.resumed) process.exit(1);
 console.error(`USAGE LIMIT: ${ticket} triage stopped at ${limitName(l.type)}${l.resetsAt != null ? `, which resets at ${resetText(l.resetsAt)}` : ''} (log: ${log})`);
 LIMIT_END
 }
+# A pass the API refused outright (HTTP 401 or 403, a Cloudflare page) is the login, not a limit:
+# usage-limit.mjs apiRefusal reads the log and says which status.
+refused() {
+  node --input-type=module - "$LOG" "$DESK_RUN_BIN" <<'REFUSED_END'
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [log, bin] = process.argv.slice(2);
+const { apiRefusal } = await import(pathToFileURL(join(bin, 'usage-limit.mjs')).href);
+let text = '';
+try { text = readFileSync(log, 'utf8'); } catch { /* no log: not a refusal */ }
+const r = apiRefusal(text);
+if (!r) process.exit(1);
+console.log(r.why);
+REFUSED_END
+}
 
 if [ ! -f "$OUT" ]; then
   at_limit && exit 3
+  if REFUSED_WHY="$(refused)"; then
+    echo "FAIL: $TICKET produced no triage record: $REFUSED_WHY. That is the login, not the session limit: sign it in again, and if the call is still refused the API is turning away this machine's connection (log: $LOG)" >&2
+    exit 1
+  fi
+  case "$FIRST_RC" in 124|137) echo "FAIL: $TICKET produced no triage record: claude timed out after 600s (log: $LOG)" >&2; exit 1 ;; esac
   echo "FAIL: $TICKET produced no triage record at $OUT (an empty run can also be the account session limit)" >&2
   exit 1
 fi

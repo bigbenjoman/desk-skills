@@ -18,7 +18,7 @@ import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePa
 import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
-import { placement } from './cloud-worker.mjs';
+import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
@@ -459,11 +459,9 @@ const handOver = (r) => admitInRepo(elsewhere(r), r.ticket, { by: 'plan-batch' }
 let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
-const featureRole = (k) => (!feature?.on ? null
-  : k === feature.spine ? 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval'
-    : Object.values(feature.plan?.owners ?? {}).includes(k) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null);
+const featureBatch = feature?.on ? { spine: feature.spine, owners: feature.plan?.owners } : null;
 const effort = location === 'cloud' && leverOn('effort');
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(r.ticket), effort })]));
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {
@@ -490,7 +488,7 @@ for (const r of order) {
   say(`  ${r.summary}`);
   say(`  branch: ${r.branch}`);
   if (elsewhere(r) && !elsewhere(r).unknown) say(`  ~ ${awayWhy(r)}: admitted there, not here, when the queue is seeded`);
-  if (location === 'cloud' && admitted.includes(r)) say(`  runs: ${placed[r.ticket].where}${placed[r.ticket].why ? ` — ${placed[r.ticket].why}` : ''}`);
+  if (location === 'cloud' && admitted.includes(r)) say(`  ${runsText(placed[r.ticket])}`);
   if (r.needs_db) say(`  ! needs a database — ${DB_NOTE}`);
   if (co.length) say(`  ! collides with ${co.join(', ')} — must run sequentially`);
   for (const pa of r.prior_art ?? []) say(`  ! prior art: ${pa}`);

@@ -59,7 +59,13 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   <branch>` for origin's branch holding it, or `none`), or
   `queue.mjs clears-when <TICKET> "<condition>"` from you or the decider, is stored as the park's
   `clears_when` (`clears-when.mjs`). It names the one fact the park waits on, never a guess, and is
-  left out (or `none`) when only a person can settle it. **A worker runs
+  left out (or `none`) when only a person can settle it. A `file <path> exists` is read against the
+  park's question as it is recorded: where the condition is a relative path and the question gives
+  the file as one absolute or `$DESK_STATE` path, the condition looks where the question says (a
+  question giving it another relative path, or more than one place, is refused, saying so), and
+  where the question asks the person to make or save it, the park is still put to them while each
+  pass checks for the file.
+  **A worker runs
   `node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on its line before it ends**:
   it prints what the line reads as, or exits 1 listing the forms, so rewrite it in one of them. A line
   no form reads is kept for the decider to restate once, and goes to the person only if the decider
@@ -71,7 +77,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
   (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen. A park with a recorded
-  condition is settled by those checks, so neither the decider nor the digest takes it up.
+  condition is settled by those checks, so neither the decider nor the digest takes it up, unless
+  only the person makes it hold (a file they are asked to save, or issue links).
 - **A park on a push GitHub refused with a 5xx clears by being pushed**: `git push origin <branch>
   succeeds` (`git push --force-with-lease=<branch>:<sha> origin <branch> succeeds` for a lease push,
   naming the SHA it may overwrite) is one more condition, and its check is the push itself, from the
@@ -130,6 +137,12 @@ with a recommendation. Build or do the recommended option, carry on, and log the
 check-in digest can list it. Taking it is not widening §3: a row that is not `yes` still parks or
 asks, so a take never makes a write the config did not grant. And `autopilot-judgement` decides it
 for workers: where that row is not `yes`, a worker parks on it.
+
+**Tickets the person already chose are not asked again.** Adding them to a running batch (a
+planned next phase, a ticket they named) needs no confirmation when every §3 row the batch hits for
+them is `yes`: admit them and say so in one line. In the session that runs the batch, that is
+`intake.mjs admit <TICKET>... --session`; under the supervisor, `/desk-admit`. Ask only for a §3 row
+they hit that is not `yes`, or a question this section keeps.
 
 Two scope calls are always taken where it is `yes`:
 

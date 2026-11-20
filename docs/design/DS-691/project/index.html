@@ -1026,7 +1026,7 @@ function wtile(o){
   <div class="muted num" style="font-size:12px;margin-top:-4px">${o.el}</div>
   <div class="tlog">${o.log.map(l=>`<div class="${l[0]}">${l[1]}</div>`).join('')}</div>
   ${o.stuck?`<div class="row" style="font-size:12.5px;color:var(--needs)">${ic('hourglass','sm')}No activity for 14 min. It may be stuck.<span style="flex:1"></span>${btn('Look closer','outline',{size:'xs'})}</div>`:
-  `<div class="row" style="font-size:12px"><span class="dot"></span><span class="s-done">last activity ${o.hb}</span><span class="muted">\u00b7 ${o.model}</span><span style="flex:1"></span>${btn('Open','ghost',{size:'xs'})}</div>`}</div>`;
+  `<div class="row" style="font-size:12px"><span class="dot"></span><span class="s-done">last activity ${o.hb}</span><span class="muted">\u00b7 ${o.model}</span><span style="flex:1"></span>${btn('Stop\u2026','ghost',{size:'xs',icon:'square'})}${btn('Open','ghost',{size:'xs'})}</div>`}</div>`;
 }
 function workersScreen(){
   const T=[
@@ -1047,7 +1047,7 @@ function stages(cur=5){return `<div class="stages">${STG.map((s,i)=>`<div class=
 function workerLive(){
   const body=`<div class="qhead" style="gap:10px;padding-bottom:14px">
     <div class="crumb">Workers ${ic('chevron-right','xs')}<b>DS-676</b></div>
-    <div class="row" style="gap:10px"><span class="mono" style="font-size:20px;font-weight:600">DS-676</span>${st('running')}<span class="muted" style="font-size:13px">desk-skills \u00b7 desk-pr: a saved-canvas PR shows one stitched image per board and theme</span><span style="flex:1"></span>${btn('Open conversation about this worker','outline',{size:'sm',icon:'git-fork'})}${btn('Open log file','ghost',{size:'sm',icon:'file-text'})}</div>
+    <div class="row" style="gap:10px"><span class="mono" style="font-size:20px;font-weight:600">DS-676</span>${st('running')}<span class="muted" style="font-size:13px">desk-skills \u00b7 desk-pr: a saved-canvas PR shows one stitched image per board and theme</span><span style="flex:1"></span>${btn('Open conversation about this worker','outline',{size:'sm',icon:'git-fork'})}${btn('Open log file','ghost',{size:'sm',icon:'file-text'})}${btn('Stop worker\u2026','outline',{size:'sm',icon:'square'})}</div>
     ${stages(5)}
     <div class="muted" style="font-size:12px;margin-top:-4px">desk-ticket's stages. The PR opens at 7/9. Merging comes after, from the merge driver, not the worker.</div>
     <div class="q run" style="max-width:none;font-size:15px;padding:9px 14px"><b>Verifying:</b> running node --test (1m 12s)</div></div>
@@ -1068,7 +1068,6 @@ function workerLive(){
     <div class="card"><div class="card-h">Is it stuck?</div><div class="card-b col" style="gap:8px"><div class="row" style="font-size:15px;font-weight:600;color:var(--done)">${ic('circle-check')}Working.</div>
       <dl class="facts" style="margin:0"><dt>Last tool progress</dt><dd>4 s ago</dd><dt>Log grew</dt><dd>18 KB in the last pass</dd><dt>Idle passes</dt><dd>0</dd></dl></div></div>
     <div class="card"><div class="card-b"><dl class="facts" style="margin:0"><dt>Model</dt><dd>opus \u00b7 effort high</dd><dt>Subscription</dt><dd>default</dd><dt>Port</dt><dd class="mono">4831</dd><dt>Database</dt><dd class="mono">desk_ds676</dd><dt>Worktree</dt><dd class="mono" style="font-size:12px">.worktrees/DS-676</dd><dt>Session</dt><dd class="mono" style="font-size:12px">9f2c1e7a\u2026</dd><dt>Tokens so far</dt><dd>1.9M \u00b7 $5.10 notional</dd></dl></div></div>
-    <div class="muted" style="font-size:12.5px;line-height:18px">To stop a worker, use /desk-reboot or the terminal. Desk has no safe stop button yet.</div>
    </div></div>`;
   return shell({page:'DS-676 \u00b7 Live',active:'workers',body});
 }
@@ -1204,7 +1203,7 @@ function serverDown(){
     <div class="row" style="gap:10px">${ic('server-off','lg s-failed')}<h2 style="margin:0;font-size:18px;font-weight:600;letter-spacing:-.015em">Desk can't reach its local server</h2></div>
     <p style="margin:0;font-size:14px;line-height:22px">The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it. You're looking at the copy from 10:06.</p>
     ${code('launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui')}
-    <p class="muted" style="margin:0;font-size:13px">If it keeps stopping, run <span class="mono">desk-ui doctor</span> in Terminal.</p>
+    <p class="muted" style="margin:0;font-size:13px">If it keeps stopping, run <span class="mono">desk-ui doctor</span> in Terminal <span class="kind">planned</span>.</p>
     <div class="row" style="border-top:1px solid var(--border);padding-top:14px"><i class="spin" style="color:var(--muted-fg)"></i><span class="muted num" style="font-size:13px">Trying again in 5 s\u2026 (attempt 3)</span><span style="flex:1"></span>${btn('Try now','default',{size:'sm'})}</div>
    </div></div>
    <div class="tt" style="left:40px;bottom:40px">${ic('lock','xs')} Can't change anything until the server is back.</div>`;
@@ -1339,6 +1338,20 @@ S.cost=()=>panel(640,`<div style="padding:18px;display:flex;flex-direction:colum
   <div class="col" style="gap:4px"><div class="row" style="font-size:12.5px"><span class="grow">Per-worker cap $25</span><span class="num">used 46%</span></div><span class="bar"><i style="width:46%"></i></span></div></div>`);
 
 /* workers */
+/* Stop a worker (DS-743): inline two-step confirm, then the command's own result */
+const stopCnf=`<div class="cnf" style="border-color:var(--border);background:var(--subtle)"><div class="at">Stop DS-676 and hold it?</div><div>Ends its worker, commits any uncommitted work on its branch and holds DS-676. Nothing is lost: answer its held item with <b>start</b> and a new worker picks up on the same branch.</div>
+    <div class="row" style="gap:6px">${btn('Keep running','outline',{size:'sm'})}${btn('Stop and hold','destructive',{size:'sm',icon:'square'})}<span class="muted" style="font-size:12px;margin-left:4px">Esc keeps it running.</span></div></div>`;
+S.wstop=()=>panel(900,`<div style="padding:18px;display:flex;flex-direction:column;gap:12px;font-size:13.5px">
+  ${stepLbl(1,'Stop worker\u2026 on the focused view (or Stop\u2026 on its tile) opens the confirm in place. Focus starts on Keep running.')}
+  ${stopCnf}
+  <div class="runs">Runs: queue.mjs stop DS-676</div>
+  ${stepLbl(2,'After Stop and hold: the button waits for the command')}
+  <div class="row" style="gap:8px">${btn('Stopping DS-676\u2026','outline',{size:'sm',busy:1,dis:1})}<span class="muted" style="font-size:12.5px">Committing its work. The stream stays open until the worker ends.</span></div>
+  ${stepLbl(3,'Exit 0: the output as written, and the tile and state line read held')}
+  <div class="alert ok">${ic('circle-check','sm')}<div class="grow"><div class="at">Stopped at 10:14. DS-676 is held.</div><span class="mono" style="font-size:12px">DS-676: committed 3f9a2c1 on ds-676-saved-canvas-stitch \u00b7 held</span><div class="muted" style="font-size:12.5px;margin-top:4px">It's in Needs you. Answer it with start to resume.</div></div></div>
+  <div class="row" style="gap:8px">${st('needs','held')}<span class="mono" style="font-weight:600">DS-676</span><span class="muted" style="font-size:12.5px">desk-skills \u00b7 held by you at 10:14 \u00b7 4/9 Verify</span></div>
+  ${stepLbl(4,'Exit 11: the refusal as written, beside the button; nothing reads as stopped')}
+  <div class="alert warn">${ic('ban','sm')}<div class="grow"><div class="at">queue.mjs stop refused (exit 11)</div><span class="mono" style="font-size:12px">DS-676 has no running worker</span><div class="muted" style="font-size:12.5px;margin-top:4px">It may have finished or been stopped already. The Workers list is current.</div></div></div></div>`);
 S.wstates=()=>panel(900,`<div style="padding:18px;display:flex;flex-direction:column;gap:12px;font-size:13.5px">
   <div class="card" style="padding:16px;text-align:center;color:var(--muted-fg)">No worker is running. 17 tickets are ready in desk-skills, and the next pass is at 10:11.</div>
   <div class="card" style="padding:14px 16px;display:flex;flex-direction:column;gap:8px"><span>Preflight: getting the worktree and login ready. The log starts when the worker does.</span>${sk('70%')}${sk('45%')}</div>
@@ -1422,7 +1435,7 @@ S.toasts=()=>`<div class="col" style="gap:10px;padding:4px">
   <div class="toast">${ic('check','sm s-done')}<div class="grow">DS-615 moved to position 1 in desk-skills.</div></div>
   <div class="toast">${ic('messages-square','sm muted')}<div class="grow">Conversation for SV-3844 ended. It recorded: answer SV-3844 "run the checks\u2026".</div>${btn('View','ghost',{size:'xs'})}</div>
   <div class="toast">${ic('plug-zap','sm s-done')}<div class="grow">Reconnected. Showing live data.</div></div></div>`;
-S.notInstalled=()=>panel(560,`<div style="padding:24px;display:flex;flex-direction:column;gap:12px"><div style="font-size:17px;font-weight:600">Desk isn't installed on this Mac yet.</div><div class="muted">Install it, then reopen this window.</div>${code('git clone https://github.com/bigbenjoman/desk-skills && ./install.sh')}</div>`);
+S.notInstalled=()=>panel(560,`<div style="padding:24px;display:flex;flex-direction:column;gap:12px"><div style="font-size:17px;font-weight:600">Desk isn't installed on this Mac yet.</div><div class="muted">Install it, then reopen this window.</div>${code('git clone https://github.com/bigbenjoman/desk-skills && cd desk-skills && ./install.sh')}</div>`);
 S.links=()=>panel(620,`<div style="padding:20px;display:flex;flex-direction:column;gap:16px;font-size:13.5px;position:relative">
   <div class="eyebrow">Link rule</div>
   <div class="row" style="gap:16px;flex-wrap:wrap">${lk('DS-563',{hov:1})}<span>${lk('#651',{show:1})}</span><span>${lk('unit (node 24)',{mono:false,show:1})}</span><span>${lk('73ee8aca',{show:1})}</span></div>
@@ -1909,7 +1922,7 @@ const SECTIONS=[
     boards:[['Ticket \u00b7 Overview (DS-676)','1440 \u00d7 900','Changed \u00b7 screen',ticketOverview],['Ticket \u00b7 PR & CI (DS-563, #651)','1440 \u00d7 900','screen',ticketPR]],
     cols:2,states:[['State line, every state','hero',S.lines],['Gate verdicts and PR states','Changed \u00b7 hero',S.gates],['Jira tab \u00b7 pending write','tab',S.jira],['Cost tab','tab',S.cost]]},
   {n:'05',t:'Workers',p:'Live tiles for every worker on the machine, and a focused stream that answers "is it stuck?".',
-    boards:[['Workers','1440 \u00d7 900','Changed \u00b7 screen',workersScreen],['Worker \u00b7 live (DS-676)','1440 \u00d7 900','Changed \u00b7 screen',workerLive]],cols:1,states:[['Worker states','stream',S.wstates]]},
+    boards:[['Workers','1440 \u00d7 900','Changed \u00b7 screen',workersScreen],['Worker \u00b7 live (DS-676)','1440 \u00d7 900','Changed \u00b7 screen',workerLive]],cols:1,states:[['Worker states','stream',S.wstates],['Stop \u00b7 confirm and result (DS-743)','New \u00b7 state',S.wstop]]},
   {n:'06',t:'Conversations',p:'Claude sessions spawned from a hold, scoped to its ticket, PR and folder. Fresh is the cheap default.',
     boards:[['Conversation \u00b7 SV-3844','1440 \u00d7 900','Changed \u00b7 screen',convScreen]],cols:2,states:[['Start sheet','Changed \u00b7 sheet',S.start],['Start sheet \u00b7 repo subscription at limit','New \u00b7 sheet',S.startLimit],['Session states','Changed \u00b7 states',S.cstates],['Conversation \u00b7 read-only after recording','New \u00b7 state',S.convRO],['Command not allowed \u00b7 MVP','New \u00b7 card',S.cmdBlocked]]},
   {n:'07',t:'Usage & costs',p:'The 7-day window with its pace projection, tokens by day, bills marked stale when a provider stops answering, and this computer\u2019s subscriptions (DS-616). Usage owns every subscription write.',

@@ -13,7 +13,7 @@ const SRC = 'c'.repeat(40);
 const WT = '/wt/feat-x';
 const PUSH = { perm: 'yes', key: 'batch-base-push', ok: true };
 const snap = (queue = {}, fields = {}) => ({
-  queue: { tickets: {}, ...queue }, base: 'feat/x', source: 'main', willSpawn: true, epicOn: false, epicOpen: false, sliceBad: null,
+  queue: { tickets: {}, ...queue }, base: 'feat/x', source: 'main', willSpawn: true, epicOpen: false, sliceBad: null,
   behindMax: 20, gateBusy: false, resumeHeld: null, registry: registryView({ live: [] }), fixKey: 'BASE-feat-x', fixRoom: true,
   noFixRoom: 'memory: 2.0G available, under the 6G spawn gate', conflictPerm: 'yes', push: PUSH, passBy: 'session',
   passAt: '2026-11-18T12:00:00.000Z', usageHold: null, repoLogin: { dir: '/login' }, baselineOn: false, dry: false, now: NOW, ...fields,
@@ -25,7 +25,7 @@ const READS = {
   behind: 3, worktree: { ok: true, path: WT, made: false }, sync: { ok: true, merged: 3 }, 'origin-sha': (a) => (a.branch === 'main' ? SRC : HEAD),
   'note-conflict': null, 'fix-log': { raw: Buffer.alloc(0), text: '', recent: false, bytes: 0 }, 'end-try': null, 'fix-login': { dir: '/login' }, lifted: false,
 };
-const WRITES = ['report', 'base-line', 'set-batch', 'kill', 'usage-hold', 'usage-stop', 'drop-ref', 'fetch', 'synced', 'baseline', 'open-promotion', 'next-promotion'];
+const WRITES = ['report', 'base-line', 'set-batch', 'kill', 'usage-hold', 'usage-stop', 'drop-ref', 'fetch', 'synced', 'baseline'];
 function drive(decide, s, answers = {}, reads = READS, writes = WRITES) {
   const handlers = Object.fromEntries([...Object.keys(reads), ...writes].map((type) => [type, (a) => {
     const v = Object.hasOwn(answers, type) ? answers[type] : reads[type];
@@ -69,6 +69,27 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   const unread = sync(snap(), { behind: null, sync: { ok: false, why: 'refused' } });
   t('a lag that could not be read holds nothing, and says it was not read', j([waiting(unread), state(unread).baseHold]),
     j([['base sync: refused — spawning carries on from the base as it stands (how far feat/x is behind main could not be read)'], false]));
+}
+
+// DS-808 AC4: a refused push that holds every spawn is recorded for needs-you, and cleared once it does not.
+{
+  const refused = { ok: false, reason: 'push', why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)' };
+  const CMD = `git -C ${WT} fetch -q origin && git -C ${WT} merge --no-edit origin/main && git -C ${WT} push origin HEAD:refs/heads/feat/x || git -C ${WT} reset -q --hard origin/feat/x`;
+  const stuck = { base: 'feat/x', source: 'main', behind: 61, frozen: 4, why: refused.why, path: WT, cmd: CMD };
+  const far = sync(snap({}, { frozen: 4 }), { behind: 61, sync: refused });
+  t('DS-808 AC4 past the lag, a refused push records the frozen base for needs-you', j(batchWrites(far)), j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...stuck })}`]));
+  t('DS-808 a later pass with the same refusal writes nothing', batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 4 }), { behind: 61, sync: refused })).length, 0);
+  t('DS-808 one that changed keeps when it began', JSON.parse(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 5 }), { behind: 61, sync: refused }))[0].slice('base_sync_stuck='.length)).since, 'x');
+  t('DS-808 within the lag it records nothing', batchWrites(sync(snap({}, { frozen: 4 }), { sync: refused })).length, 0);
+  t('DS-808 nor does a refusal that is not a push', batchWrites(sync(snap({}, { frozen: 4 }), { behind: 61, sync: { ok: false, reason: 'error', why: 'x' } })).length, 0);
+  t('DS-808 the record is cleared once the base syncs', j(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } })))), j(['base_sync_stuck=null']));
+  t('DS-808 a dry run writes nothing', batchWrites(sync(snap({}, { frozen: 4, dry: true }), { behind: 61, sync: refused })).length, 0);
+  const made = sync(snap(), { worktree: { ok: true, path: WT, made: true, env: { copied: ['.env'], missing: ['apps/web/.env'] } } });
+  t('DS-808 AC1 a made base worktree says which env files it was given', lines(made)[0],
+    `base worktree for feat/x made at ${WT}; §4 Env files copied in (.env), with every §4 Database URL variable blanked; §4 Env files not copied (apps/web/.env): not in the primary checkout, or not ignored by git`);
+  t('DS-808 one made earlier says only what it was given now', lines(sync(snap(), { worktree: { ok: true, path: WT, made: false, env: { copied: ['.env'], missing: ['x'] } } }))[0],
+    `base worktree for feat/x at ${WT}: §4 Env files copied in (.env), with every §4 Database URL variable blanked`);
+  t('DS-808 and nothing when it lacked none', lines(sync(snap(), { worktree: { ok: true, path: WT, made: false, env: { copied: [], missing: ['x'] } } }))[0], 'base sync: merged 3 commit(s) from main into feat/x and pushed');
 }
 
 // When the base syncs, and what a sync that lands says.
@@ -164,10 +185,7 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('the baseline is recorded before a pass that spawns, with the record settled first', j(types(sync(snap({}, { baselineOn: true }))).slice(-2)), j(['synced', 'baseline']));
   t('not with Baseline checks off', types(sync(snap())).includes('baseline'), false);
   t('nor when the sync holds spawns', types(sync(snap({ feature: true }, { baselineOn: true }), { sync: { ok: false, why: 'x' } })).includes('baseline'), false);
-  t('a feature batch with no promotion PR opens one', j(sync(snap({ feature: true })).filter((a) => a.type === 'open-promotion')), j([{ type: 'open-promotion', path: WT }]));
-  t('one with an open promotion PR follows it', j(sync(snap({ feature: true, promotion: { pr: 9 } })).filter((a) => a.type === 'next-promotion')), j([{ type: 'next-promotion', path: WT, promotion: { pr: 9 } }]));
-  const epic = { 'T-1': { key: 'T-1', state: 'done', merged_at: '2026-11-18T10:00:00.000Z', result: { pr: 1 } } };
-  t('an epic batch with every child merged opens its epic PR', j(sync(snap({ tickets: epic, epic: 'E-1', base: 'feat/x' }, { epicOn: true })).filter((a) => a.type === 'open-promotion')), j([{ type: 'open-promotion', path: WT, carry: {} }]));
+  // The promotion or epic PR it opens next is tests/test_pass_promotion_pr.mjs's.
 }
 
 // The baseline checks.

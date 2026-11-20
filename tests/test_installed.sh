@@ -90,6 +90,35 @@ check "AC4: version prints it back" '[ "$out" = "$head_sha" ]'
 out=$(node "$T/bin/installed.mjs" record "$T/repo" 2>&1); rc=$?
 check "AC4: a directory that is not a checkout replaces the commit with a version of its own, and says so" '[ $rc -eq 0 ] && grep -q "^unversioned-.* (not a git checkout)$" <<< "$out" && ! grep -q "$head_sha" "$T/desk/installed.json" && grep -q "\"commit\": \"unversioned-" "$T/desk/installed.json"'
 check "AC4: so what started at the commit before it reads as old code" 'node --input-type=module -e "import { oldCode } from \"$T/bin/installed.mjs\"; process.exit(oldCode(\"$head_sha\") ? 0 : 1)"'
+# ---- DS-810: a driver records the version of the release it runs from ----------------------------
+# Two release folders under a desk home of their own: relA (commit aaa1), relB (bbb2, installed), and
+# relC with no release.json. `current` links to relB, as install.sh leaves it.
+RH="$T/relhome"
+for r in relA relB relC; do
+  mkdir -p "$RH/releases/$r/bin"; cp "$B/installed.mjs" "$RH/releases/$r/bin/"
+  for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$B/$f" "$RH/releases/$r/bin/$f"; done
+done
+printf '{"commit":"aaa1","release":"relA"}\n' > "$RH/releases/relA/release.json"
+printf '{"commit":"bbb2","release":"relB"}\n' > "$RH/releases/relB/release.json"
+printf '{"commit":"bbb2","release":"relB"}\n' > "$RH/installed.json"
+ln -s releases/relB "$RH/current"
+running(){ DESK_HOME="$RH" node "$1/installed.mjs" running; }
+# old_lock <version>: whether a driver lock holding <version> reads as old code, as desk-q and the
+# supervisor read it (oldCode of lockVersion).
+old_lock(){ mkdir -p "$T/lk/merge-driver.lock.d"; printf '%s\n' "$1" > "$T/lk/merge-driver.lock.d/version"
+  DESK_HOME="$RH" node --input-type=module -e "import { oldCode, lockVersion } from \"$RH/releases/relB/bin/installed.mjs\"; console.log(oldCode(lockVersion(\"$T/lk\")))"; }
+out=$(running "$RH/releases/relA/bin")
+check "DS-810 AC1: a script run from an older release prints that release's commit, not the installed one" '[ "$out" = aaa1 ]'
+check "DS-810 AC2/AC3: so the lock it writes reads as old code" '[ "$(old_lock "$out")" = true ]'
+out=$(running "$RH/releases/relB/bin")
+check "DS-810 AC4: a script run from the installed release prints the installed commit" '[ "$out" = bbb2 ] && [ "$(old_lock "$out")" = false ]'
+out=$(running "$RH/current/bin")
+check "DS-810 AC4: and run through the current link it reads the release the link resolves to" '[ "$out" = bbb2 ]'
+out=$(running "$RH/releases/relC/bin")
+check "DS-810: a release with no release.json prints release-<name>, as rollback records it" '[ "$out" = release-relC ] && [ "$(old_lock "$out")" = true ]'
+out=$(running "$T/bin")
+check "DS-810: outside a release folder it prints the installed commit" '[ "$out" = bbb2 ]'
+
 node "$T/bin/installed.mjs" record "$G" >/dev/null
 check "DS-760: a clean checkout records dirty false" 'grep -q "\"dirty\": false" "$T/desk/installed.json"'
 mkdir -p "$G/.playwright-mcp"; echo x > "$G/.playwright-mcp/log"; echo x > "$G/scratch.txt"

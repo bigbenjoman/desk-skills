@@ -6,6 +6,7 @@
 //     pushed as it stands and the draft opened from that body;
 //   - a park whose branch adds nothing to the base while a merged PR names the ticket is recorded done
 //     on that PR, and its worktree and branch are dropped.
+import { execFileSync } from 'node:child_process';
 import { parseDecision } from './decisions.mjs';
 import { refusedStep, keyPattern } from './batch-state.mjs';
 
@@ -47,8 +48,25 @@ export function prTitleIn(text) {
   return title?.trim() || null;
 }
 
-// The merged PR whose title or head branch names `key` exactly (`DS-39` is not `DS-397`), or null.
-export function mergedNaming(key, prs) {
+// Whether a PR's title or head branch names `key` exactly (`DS-39` is not `DS-397`), as a predicate.
+export function prNames(key) {
   const re = new RegExp(keyPattern(String(key)));
-  return (Array.isArray(prs) ? prs : []).find((p) => re.test(String(p?.title ?? '')) || re.test(String(p?.headRefName ?? ''))) ?? null;
+  return (p) => re.test(String(p?.title ?? '')) || re.test(String(p?.headRefName ?? ''));
+}
+
+// The merged PR whose title or head branch names `key`, or null.
+export function mergedNaming(key, prs) {
+  return (Array.isArray(prs) ? prs : []).find(prNames(key)) ?? null;
+}
+
+// The PRs in `state` on `repo` (owner/name; gh's own repo for `cwd` when null) whose branch names `key`,
+// or with `inTitle` its title too. `search` narrows the list by GitHub's text search first, which reads
+// titles and bodies but never a branch; without it every PR in that state is read, and a list `limit`
+// long may be cut short, so it throws.
+export function prsNaming(repo, state, key, { fields, inTitle = false, search = true, limit = 30, cwd } = {}) {
+  const prs = JSON.parse(execFileSync('gh', ['pr', 'list', ...(repo ? ['--repo', repo] : []), '--state', state, ...(search ? ['--search', key] : []), '--limit', String(limit), '--json', `number,headRefName,${fields}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(cwd ? { cwd } : {}) }) || '[]');
+  const list = Array.isArray(prs) ? prs : [];
+  if (!search && list.length >= limit) throw new Error(`GitHub lists ${limit} or more ${state} PRs, so the list may be cut short`);
+  const names = prNames(key);
+  return list.filter((x) => Number.isFinite(Number(x?.number)) && names(inTitle ? x : { headRefName: x?.headRefName }));
 }

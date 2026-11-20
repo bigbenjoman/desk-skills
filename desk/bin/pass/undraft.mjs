@@ -52,9 +52,12 @@ const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync'
 
 // The queue write that keeps a draft's undraft record `rec` on ticket t, or null when the record already
 // says it (its `at` aside) or on a dry run.
-export function undraftWrite(t, rec, { dry, at }) {
+export function undraftWrite(t, rec, { dry, at: now }) {
   const was = t.undraft ?? {};
   if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) return null;
+  // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
+  // when it became theirs, not from each pass that rewords it.
+  const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? now : now;
   return set(t.key, `undraft=${JSON.stringify({ ...rec, at })}`);
 }
 
@@ -139,6 +142,7 @@ export function* decideRenames(snap) {
 //   clearsRows    what a person clears, as fix-tries.mjs splitFailing reads it
 //   failureClass  whether the failure-class lever is on
 //   gatedByReviewer(s)   whether a failing reviewer check holds the PR red only on its review gate
+//   reviewerMismatch     whether the reviewer check fails only because its gate counts another account
 //   reads         the readers undraftCall and the fix tries call as they need them (pass.mjs's):
 //                 untriggered, runOf, fault, stale (undraftCall's), baseMoves(t, head) -> { carry,
 //                 scope, baseMerge, behind }, driver(n, head) (the merge driver's rerun record),
@@ -159,7 +163,7 @@ export function* decideUndraft(snap) {
     if (!v || typeof v !== 'object') { yield out(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const head = v.headRefOid;
     const spine = t.key === snap.spine || t.spine_check != null || t.approved === true;
-    // A verdict for an older head holds at this one when only clean merges of the base came since.
+    // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = reads.baseMoves(t, head);
     const c = undraftCall(t, { number: n, head, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope },
       { ...passCfg, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t) });
@@ -179,10 +183,14 @@ export function* decideUndraft(snap) {
     }
     let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: head ?? null, carried_from: null, pr: n }
       : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n };
-    // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
-    // findings fixes included, as out of draft.
-    const gated = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === head && snap.gatedByReviewer(s);
-    yield { type: 'gate-hold', key: t.key, t, s, on: gated };
+    // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
+    // as out of draft. A review at the head with findings is not held: the hold is for a review that is
+    // missing or stale, and those findings are the fix worker's whatever the reviewer check says.
+    const held = !hold && ['review', 'checks'].includes(c.call) && s.head === head && snap.gatedByReviewer(s);
+    yield { type: 'gate-hold', key: t.key, t, s, on: held };
+    // Unless the check fails only because the gate counts another account: the merge driver still
+    // counts desk's verdict, so a head with none that holds still gets its review while the gate is red.
+    const gated = held && !(c.call === 'review' && snap.reviewerMismatch);
     // A P0 or P1 in the review at its head, or under §3 autopilot-judgement yes a gap, goes back to a
     // fix worker, which reviews its new head again.
     // An interactive desk-review posts its P0s and P1s inline: unread, they leave only the body's.
@@ -222,7 +230,7 @@ export function* decideUndraft(snap) {
     if (t.stuck && stale && !snap.dry) yield set(t.key, 'stuck=null');
     const carried = !c.carried ? ''
       : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${snap.base}'s range ${c.range} changed none of the files the review rests on`
-        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${snap.base} came since`;
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${snap.base} and empty commits came since`;
     const act = (type) => ({ type, key: t.key, t, pr: n, head, c, rec });
     if (hold) yield waiting(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${cap(hold.action)} (gh pr ready ${n} --repo ${snap.repo})`);
     else if (rf) {

@@ -116,7 +116,7 @@ git -C "$T/repo" checkout -q main; git -C "$T/repo" push -q origin main "$RB:ref
 vp 211 "$RA" "$CLEAN"; vp 212 "$RA" "$CLEAN"
 rv_prs carry "211|fix/T-211|$RB|fix: T-211 base merged|" "212|fix/T-212|$RC|fix: T-212 own commit|"
 rvloop; rvloop
-check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main came since"'
+check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main and empty commits came since"'
 rvloop
 check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
 

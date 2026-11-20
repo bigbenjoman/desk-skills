@@ -233,6 +233,11 @@ check "DS-115 AC1 a count the user set reports as theirs" 'echo "$out" | grep -q
 q set-batch concurrency=1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 a lowering on memory keeps the user's number" '[ "$(bfield concurrency_by)" = "\"user\"" ] && [ "$(bfield concurrency_user)" = 4 ] && echo "$out" | grep -q "workers: concurrency 1, lowered on memory from the user.s 4: raise back to 4"'
+# #926: under a spawn gate, the line says "on memory" only with available memory under the ladder's line.
+out=$(DESK_MEM_AVAIL_GB=15 AUTOPILOT_MIN_AVAIL_GB=8 node "$B/pass.mjs" 2>&1)
+check "#926 a count below the user's with memory above the line says memory did not lower it" 'echo "$out" | grep -q "workers: concurrency 1, below the user.s 4, though available memory is 15.0G, at or above the ladder.s 8G line, so memory did not lower it" && ! echo "$out" | grep -q "lowered on memory"'
+out=$(DESK_MEM_AVAIL_GB=3 AUTOPILOT_MIN_AVAIL_GB=8 node "$B/pass.mjs" 2>&1)
+check "#926 one under the line says memory lowered it, with the figure" 'echo "$out" | grep -q "workers: concurrency 1, lowered on memory from the user.s 4 (available memory 3.0G, under the ladder.s 8G line): raise back to 4"'
 q set-batch concurrency_by=null
 check "DS-115 handing the count back to the ladder drops the user's number" '[ "$(bfield concurrency_user)" = null ]'
 q set-batch concurrency=0 concurrency_by=user

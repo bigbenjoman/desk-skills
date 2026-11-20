@@ -541,6 +541,9 @@ export function parseFlaky(items) {
 // the head (only a person clears it); a bare check reads other state, such as the title or an
 // aggregate gate failing because of one of the others. A one-word tail that is no kind is an error,
 // never a guess. Unset is desk-gate.yml's two state jobs; `none` names none.
+// `<check>: external <login>` is a gate that reads the review of an outside reviewer, such as a review
+// bot posting from its own account: kind `external`, with `login` that account. desk posts no review
+// for it; the pass waits for that reviewer at the head and sends its findings to a fix worker.
 export const STATE_KINDS = ['verdict', 'approval'];
 export const DEFAULT_STATE_CHECKS = [{ name: 'desk-review verdict', kind: 'verdict' }, { name: 'protected-path approval', kind: 'approval' }];
 export function parseStateChecks(items) {
@@ -551,6 +554,9 @@ export function parseStateChecks(items) {
     if (!x || /^none$/i.test(x.trim())) continue;
     const i = x.lastIndexOf(': ');
     const tail = i < 0 ? '' : x.slice(i + 2).trim();
+    const ext = /^external\s+(\S+)$/.exec(tail);
+    if (ext) { const name = x.slice(0, i).trim(); if (name) checks.push({ name, kind: 'external', login: ext[1] }); else errors.push(`\`${x}\``); continue; }
+    if (/^external$/.test(tail)) { errors.push(`\`${x}\` (external names the reviewer's login: \`<check>: external <login>\`)`); continue; }
     const kind = STATE_KINDS.includes(tail) ? tail : null;
     const name = (kind ? x.slice(0, i) : x).trim();
     if (!name || (!kind && /^[a-z]+$/.test(tail))) errors.push(`\`${x}\``);
@@ -564,7 +570,7 @@ export function parseStateChecks(items) {
 export const stateFailing = (failing, stateChecks, lineOf = () => null) => (failing ?? []).flatMap((f) => {
   const s = (stateChecks ?? []).find((x) => x.name === f.name);
   if (!s) return [];
-  return [s.kind === 'approval' && staleVerdict(lineOf(f)) ? { ...f, kind: 'verdict', listed: s.kind } : { ...f, kind: s.kind }];
+  return [s.kind === 'approval' && staleVerdict(lineOf(f)) ? { ...f, kind: 'verdict', listed: s.kind } : { ...f, kind: s.kind, ...(s.login ? { login: s.login } : {}) }];
 });
 
 // Whether a red head may merge past its failures because each is a §4 Known flaky check. null when

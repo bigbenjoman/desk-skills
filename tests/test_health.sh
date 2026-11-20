@@ -96,6 +96,14 @@ for c in gh claude codex desk-jira; do
 case "\$1" in
   agents) echo '[{"sessionId": "live-1"}]'; exit 0 ;;
   auth|login|whoami) echo "\$@" >> "$T/calls.$c" ;;
+  # A real call: refused with the HTTP status in \$T/mode.api (the default login) or in the login
+  # folder's \`refused\` file, else answered.
+  -p) echo "\${CLAUDE_CONFIG_DIR:-default}" >> "$T/calls.$c-p"
+      st=""
+      if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then [ -f "\$CLAUDE_CONFIG_DIR/refused" ] && st=\$(cat "\$CLAUDE_CONFIG_DIR/refused")
+      else [ -f "$T/mode.api" ] && st=\$(cat "$T/mode.api"); fi
+      if [ -n "\$st" ]; then printf '{"is_error":true,"api_error_status":%s,"result":"Failed to authenticate. API Error: %s Attention Required! | Cloudflare","type":"result"}\n' "\$st" "\$st"; exit 1; fi
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; exit 0 ;;
   *) exit 0 ;;
 esac
 # Another Claude login's folder holding signed-out is signed out, whatever the default's mode.
@@ -374,6 +382,33 @@ printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `defaul
 pj
 check "a file saying default and unused: the pinned login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
 rm -f "$HOME/.claude-logins/b/signed-out" "$T/state/health.json"
+
+# ---- DS-812: a login the API refuses, though `claude auth status` passes -----------------------
+# Still pinned to login b. Each login whose sign-in passes makes one real call (the stub's -p).
+q add H-30; q set H-30 state=triaged branch=fix/H-30
+mode api 403
+pj
+check "DS-812 AC1 the default login refused with 403 is marked failing, holding spawns" 'grep -q "health: 1 check(s) failing — claude — holding new spawns" <<< "$out" && [ "$(field H-30 state)" = triaged ]'
+check "DS-812 AC1 with the error text"                        'grep -qF "health: Claude (claude auth status) failed: a real call was refused: the Claude API refused the call with HTTP 403 (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare)" <<< "$out"'
+check "DS-812 AC1 told at once, under the claude key"         '[[ "$(pushes)" =~ ^health:.+:claude$ ]]'
+rm -f "$T/mode.api" "$T/state/health.json"; echo 401 > "$HOME/.claude-logins/b/refused"
+pj
+check "DS-812 AC1 the pinned login refused with 401 is named with the error" 'grep -qF "health: Claude login b (~/.claude-logins/b) is refused by the Claude API (a real call was refused: the Claude API refused the call with HTTP 401" <<< "$out"'
+check "DS-812 AC3 no worker starts on it"                     '[ "$(field H-30 state)" = triaged ] && grep -qF "(login b, ~/.claude-logins/b) failed its health check, a real call was refused" <<< "$out"'
+check "DS-812 AC3 one notification names it"                  '[[ "$(pushes)" =~ ^health:[^\ ]+:claude:b$ ]] && [[ "$json" == *"Claude login b is refused by the Claude API"* ]]'
+dec=$(node --input-type=module -e 'const { startDecider } = await import(process.argv[1]); const r = startDecider({ state: process.argv[2], slug: "acme__widgets", bin: process.argv[3], report: "", items: [], rules: "", cwd: process.argv[2] }); console.log(JSON.stringify(r))' "$B/decider.mjs" "$T/state" "$B")
+check "DS-812 AC3 nor a decider: it waits, naming the login"  '[[ "$dec" == *"\"wait\":\"its login b failed its health check, a real call was refused: the Claude API refused the call with HTTP 401"* ]] && [ ! -d "$T/state/decider" ]'
+rm -f "$HOME/.claude-logins/b/refused" "$T/state/health.json"
+before=$(calls claude-p)
+pj
+check "DS-812 both logins answer: the ticket spawns"          '[ "$(field H-30 state)" = running ] && [ "$(calls claude-p)" = $((before + 2)) ] && grep -q "health: all checks pass" <<< "$out"'
+before=$(calls claude-p)
+pj
+check "DS-812 AC2 checks run again under 15 minutes after a passing call: no new call" '[ "$(calls claude-p)" = "$before" ] && [ "$(calls claude)" -gt 0 ] && grep -q "health: all checks pass (checked now" <<< "$out"'
+node -e 'const f = process.argv[1]; const h = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const c of Object.values(h.calls)) c.at = new Date(Date.now() - 16 * 60000).toISOString(); require("fs").writeFileSync(f, JSON.stringify(h))' "$T/state/health.json"
+pj
+check "DS-812 AC2 a call older than 15 minutes is made again" '[ "$(calls claude-p)" = $((before + 2)) ]'
+rm -f "$T/state/health.json"
 unset DESK_SUBSCRIPTIONS
 
 # ---- DS-589: the local Postgres container ------------------------------------------------------
@@ -497,6 +532,7 @@ check "DS-577 AC1 a mismatch is one repo item, health:<slug>:reviewer"  '[[ "$(p
 check "DS-577 AC1 it names both logins"                                  'grep -qF "the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman" <<< "$out"'
 check "DS-577 AC1 read from the default gh login with no Review account" '[ "$(lastdir)" = default ]'
 check "DS-577 AC3 it holds no spawn"                                     'grep -q "^health: all checks pass" <<< "$out" && grep -q "reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns" <<< "$out"'
+check "#881 a mismatch says the review the merge driver needs still goes" 'grep -qF "except the review a head with no clean verdict needs, which the merge driver counts though the gate does not" <<< "$out"'
 
 echo agent-pullbot > "$T/ghuser"
 hl

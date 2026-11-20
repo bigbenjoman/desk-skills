@@ -162,6 +162,10 @@ a review fix try instead: its worker carries out each recommendation
 and logs it as a decision. One gap with no recommendation, or in an ask category, sends them all to the
 person, and so does a recommended gap still open after its try.
 
+An empty commit carries a verdict as a clean merge of the base does: one with a single parent and that
+parent's tree adds nothing to the PR's own diff, so a head reached from the reviewed commit by those
+alone needs no fresh review.
+
 With the `review-reuse` lever on (config §3b Phase 0 levers), the carry rests on what the review read
 instead: after a rebase or any merge of the base, a verdict holds at the new head only while the PR's
 own diff is unchanged and the base changed none of the files its `rests-on` line names, no dependency

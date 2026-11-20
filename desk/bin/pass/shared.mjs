@@ -61,6 +61,9 @@ export const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind
 // The last try's number, which a try that waited only on the test lock leaves for the next one too.
 export const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 
+// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
+export const mergeOid = (v) => (/^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null);
+
 // The queue's subscription_off value to write, or null when it stands as `was`: the repo's row pinned
 // to a subscription set off (`repoSub`, desk-env thisRepoSubscription) is recorded from `at`, and
 // dropped once the pin resolves again. DESK_SUBSCRIPTION naming one is not recorded: the row is what

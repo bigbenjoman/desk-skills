@@ -279,7 +279,7 @@ printf '%s\n' '{"fields":{"issuelinks":[]}}' > "$T/jira/J-2.json"
 check "DS-221 AC1 a draft PR records isDraft, reviewDecision and mergeable as GitHub reports them" \
   '[ "$(field J-4 pr_status | jq -c "[.isDraft, .reviewDecision, .mergeable]")" = "[true,\"REVIEW_REQUIRED\",\"MERGEABLE\"]" ]'
 check "DS-221 AC2 (DS-599) an open blocker outside the batch is recorded with its status category and assignee, read again from Jira; one inside the batch is not" \
-  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "search key in (J-1, J-2) 2 --fields=issuelinks,parent --json\nsearch key in (X-9, J-2) 2 --fields=resolution --json")" ] || { echo "     calls: $(tr "\n" "," < "$T/jira-calls")"; false; }'
+  '[ "$(field J-1 outside_blockers | jq -c .)" = "[{\"key\":\"X-9\",\"category\":\"indeterminate\",\"assignee\":null}]" ] && [ "$(cat "$T/jira-calls")" = "$(printf "search key in (J-1, J-2) 2 --fields=issuelinks,parent --json\nsearch key in (X-9, J-2) 2 --fields=resolution,resolutiondate --json")" ] || { echo "     calls: $(tr "\n" "," < "$T/jira-calls")"; false; }'
 check "DS-221 a ticket with no outside blockers records none" '[ "$(field J-2 outside_blockers)" = "[]" ]'
 check "DS-221 AC4 a pass a session ran names session" '[ "$(pass_rec by)" = "\"session\"" ] && [ "$(pass_rec errors)" = 0 ]'
 STATUS_AT=$(field J-4 pr_status.at); SESSION_AT=$(pass_rec at)
@@ -332,7 +332,7 @@ esac
 EOF
 x7(){ printf '{"fields":{"issuelinks":[{"type":{"inward":"is blocked by"},"inwardIssue":{"key":"X-7","fields":{"status":{"statusCategory":{"key":"%s"}}}}}]}}\n' "$1" > "$T/jira/J-7.json"
   printf '[{"number":70,"state":"%s","title":"fix(x): X-7 a thing","headRefName":"fix/X-7-thing","baseRefName":"main","mergeCommit":null}]\n' "$2" > "$T/prs-x7.json"
-  q set J-7 outside_blockers_read=null; }
+  q set J-7 outside_blockers_read=null outside_read=null; }
 q add J-7; q set J-7 state=parked held_by=X-7 held_outside=X-7 'park={"question":"held by orchestrator: blocked by X-7 — starts once their PRs merge"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-7","category":"new"}]}' > "$T/state-j/triage/J-7.json"
 x7 new MERGED; out=$(node "$B/pass.mjs" 2>&1)
@@ -415,7 +415,7 @@ q drop J-10; q drop J-11
 # item (wont_do_link) rather than held in silence; removing the link lifts the hold and clears it.
 # links <KEY> <BLOCKER> <category> <status> [<BLOCKER2> ...] writes the ticket's links; none with no blocker.
 links(){ k=$1; shift; s=''; while [ $# -ge 3 ]; do s="$s${s:+,}{\"type\":{\"inward\":\"is blocked by\"},\"inwardIssue\":{\"key\":\"$1\",\"fields\":{\"status\":{\"name\":\"$3\",\"statusCategory\":{\"key\":\"$2\"}}}}}"; shift 3; done
-  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null; }
+  printf '{"fields":{"issuelinks":[%s]}}\n' "$s" > "$T/jira/$k.json"; q set "$k" outside_blockers_read=null outside_read=null; }
 resolved(){ printf '{"fields":{"assignee":null,"resolution":{"name":"%s"}}}\n' "$2" > "$T/jira/$1.json"; }
 q add J-13; q set J-13 state=parked held_by=X-13 held_outside=X-13 'park={"question":"held by orchestrator: blocked by X-13 — starts once X-13 is Done and on the base"}'
 printf '%s\n' '{"epic":null,"blockers":[{"key":"X-13","category":"indeterminate"}]}' > "$T/state-j/triage/J-13.json"

@@ -173,5 +173,12 @@ rule): it was not retried, so fix it or park on it as for any failed step.
   the merge commit). Leave it out
   for the merge itself; any other value keeps no steps at all. Put the same steps in your Stage 8
   ticket comment, one line each, under "Once this merges:". Once the PR merges and each step's gate
-  holds, needs-you lists the step for the person with its row's value. A step you can run before the
-  merge is not a follow-on: run it.
+  holds, needs-you lists the step for the person with its row's value. A step that only reads GitHub CI
+  results (a run, a check, a shard's time), desk's logs (`audit.jsonl` and the like) or desk's state
+  files, with no `row`, is run after the merge by a desk follow-step checker instead, which says what it
+  found on your PR; the person sees it only if it fails or no checker could finish it. So word such a
+  step by the run or file it reads, and nothing else. A step you can run before the merge is not a
+  follow-on: run it.
+- **A check your PR's own tests or CI already make is not a follow-on either.** Name that test in
+  your PR's Testing instead. A follow-on needs the merged code running where your checks cannot reach
+  it: staging, production, or a live third party.

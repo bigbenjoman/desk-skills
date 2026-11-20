@@ -156,8 +156,9 @@ EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 resume=\${AUTOPILOT_RESUME:+yes} stage=\${AUTOPILOT_START_STAGE:-}" >> "$T/rr-spawns"; echo "[spawn] ticket=\$1"
+[ -n "\${AUTOPILOT_TASK:-}" ] && echo "\$1" >> "$T/rr-tasks"; exit 0
 EOF
-: > "$T/rr-spawns"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
+: > "$T/rr-spawns"; : > "$T/rr-tasks"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
 spawns_of(){ grep -c "^$1 " "$T/rr-spawns"; }
 refused_pass(){ touch "$T/refuse-running-$1"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-running-$1"; }
 q init rr
@@ -229,6 +230,7 @@ cat > "$T/ps.out" <<'EOF'
  9301     1 bash /other/repo/desk/bin/with-lock.sh test -- pnpm test
 EOF
 mkdir -p "$T/locks-lq/desk-test.lock.d"; echo "9101 9102" > "$T/locks-lq/desk-test.lock.d/pid"
+printf ' 9101  10:05\n 9102  10:04\n 9201  00:30\n 9301  00:20\n' > "$T/ps-ages.out"
 lq_pass(){ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1); }
 for k in LQ-2 LQ-3 LQ-4 LQ-5; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; done
 q add LQ-1; q set LQ-1 state=triaged lane=A branch=fix/LQ-1
@@ -236,7 +238,7 @@ q add LQ-2; q set LQ-2 state=triaged lane=A branch=fix/LQ-2 "worktree=$T/wt/LQ-2
 q add LQ-3; q set LQ-3 state=triaged lane=A branch=fix/LQ-3 "worktree=$T/wt/LQ-3" handoff=pending handoff_stage=4b; hfile LQ-3 4b "typecheck: pass"
 lq_pass
 check "DS-662 AC1 with the queue at slots x factor, a ticket ready to start gets no worker, and the report names the depth" \
-  '[ "$(spawns_of LQ-1)" = 0 ] && [ "$(field LQ-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2: holding new workers and resumes into Stage 4 (.*LQ-1"'
+  '[ "$(spawns_of LQ-1)" = 0 ] && [ "$(field LQ-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by pid 9101: /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.…, held 0m: holding new workers and resumes into Stage 4 (" && echo "$out" | grep -q "Stage 4 (.*LQ-1"'
 check "DS-662 AC1 the pass record names the lock queue as what held its spawns" 'node -e "const p = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).pass; process.exit(/^test lock queue: 2 run.*\(LQ-2, LQ-3, LQ-1\)/.test(p?.held ?? \"\") ? 0 : 1)" "$DESK_QUEUE"'
 check "DS-662 AC2 a killed worker last at Stage 4 and a handoff to 4b are held, still queued, and named" \
   '[ "$(spawns_of LQ-2)" = 0 ] && [ "$(field LQ-2 resume)" = "\"pending\"" ] && [ "$(spawns_of LQ-3)" = 0 ] && [ "$(field LQ-3 handoff)" = "\"pending\"" ] && echo "$out" | grep -q "holding new workers and resumes into Stage 4 (LQ-2, LQ-3, LQ-1)"'
@@ -252,6 +254,13 @@ lq_pass
 check "DS-662 AC4 a requeue resuming its last round at Stage 7 starts as today, while the held ones stay held" \
   'grep -qx "LQ-7 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-7 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-7"'
 q set LQ-7 state=done session_id=null
+# A fix try whose last worker parked at Stage 7 starts again on its fix task, which runs suites, so the
+# deep queue holds it as it would a start at Stage 0.
+git -C "$T/repo" worktree add -q -b fix/LQ-8 "$T/wt/LQ-8"
+q add LQ-8; q set LQ-8 state=triaged lane=A branch=fix/LQ-8 "worktree=$T/wt/LQ-8" 'last_round={"stage":"7/9","question":"which?"}' 'fix={"kind":"review","try":1,"of":2,"pr":8,"head":"x","what":"review not clean"}'
+lq_pass
+check "a fix try last parked at Stage 7 is held by the deep queue, as its task runs suites" '[ "$(spawns_of LQ-8)" = 0 ] && echo "$out" | grep -q "Stage 4 (.*LQ-8"'
+q set LQ-8 state=done session_id=null
 # One waiter drains: below the hold, the held resume and handoff start in the pass's two places.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 lq_pass
@@ -260,6 +269,14 @@ check "DS-662 AC3 below the hold, the held resume and handoff start, and nothing
 q set LQ-2 state=done session_id=null; q set LQ-3 state=done session_id=null
 lq_pass
 check "DS-662 AC3 and the held new ticket starts once a place frees" '[ "$(spawns_of LQ-1)" = 1 ] && [ "$(field LQ-1 state)" = "\"running\"" ]'
+# A fix try whose last worker reached Stage 3 and parked starts again on its fix task, at its try's stage,
+# never as a desk-ticket round resumed from Stage 3.
+git -C "$T/repo" worktree add -q -b fix/LQ-9 "$T/wt/LQ-9"
+q add LQ-9; q set LQ-9 state=triaged lane=A branch=fix/LQ-9 "worktree=$T/wt/LQ-9" 'last_round={"stage":"3/9","question":"which?"}' 'fix={"kind":"review","try":1,"of":2,"pr":9,"head":"x","what":"review not clean"}'
+lq_pass
+check "an unfinished fix try is spawned on its fix task, not resumed from its last round's stage" \
+  'grep -qx "LQ-9 resume= stage=" "$T/rr-spawns" && grep -qx LQ-9 "$T/rr-tasks" && [ "$(field LQ-9 stage)" = "\"3/9\"" ]'
+q set LQ-9 state=done session_id=null
 q set LQ-1 state=done session_id=null
 q add LQ-6; q set LQ-6 state=triaged lane=A branch=fix/LQ-6
 touch "$T/ps.fail"; lq_pass; rm -f "$T/ps.fail"
@@ -1414,5 +1431,55 @@ check "KAN-629 its cells filled, the next pass takes it out of draft with no sec
   'grep -q "^pr ready 784" "$T/gh-calls" && ! grep -q "^784 " "$T/uploads"'
 rm -f "$T/upload-fills"
 for k in 1 2 3 4 5; do q set "K-$k" state=done session_id=null; dragbody "78$k" "no cell"; done
+
+# DS-798: a merged ticket's follow step that only reads CI goes to a follow-step checker the pass starts,
+# and the next pass records what it found, settles a step it passed and says so on the PR. The checker is
+# the claude stub answering a prompt that opens as a follow-step checker's: FS-2's step fails, any other passes.
+node -e 'const fs = require("fs"); const [src, dst] = process.argv.slice(1); fs.writeFileSync(dst, fs.readFileSync(src, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `pr-self-review-comment` | Post the review | `yes` | `yes` |"))' "$T/config.md" "$T/config-fs.md"
+cp "$T/stub/claude" "$T/claude-before-fs"
+cat > "$T/stub/claude" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+  "-p You are the autopilot follow-step checker for "*)
+    echo started >> "$T/follow-prompts"
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *) r=pass ;; esac
+    $NODE -e 'console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: process.argv[1], found: process.argv[1] === "pass" ? "run 9 is green" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9" }] }) }))' "\$r"
+    exit 0 ;;
+esac
+exec "$T/claude-before-fs" "\$@"
+EOF
+chmod +x "$T/stub/claude"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr list "*) echo '[]' ;;
+  "pr comment "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/gh"
+CI_STEP='{"step":"the CI run on main for the merge commit is green","row":null}'
+PAGE_STEP='{"step":"check the page loads","row":null}'
+fs_merged(){ q add "$1"; q set "$1" state=done result.pr="$2" merged_at=2026-11-20T09:00:00Z "pr_status={\"pr\":$2,\"state\":\"MERGED\",\"merged_at\":\"2026-11-20T09:00:00Z\",\"checks\":[]}" "$3"; }
+q init fs
+fs_merged FS-1 801 "follow_on=[$CI_STEP,$PAGE_STEP]"
+fs_merged FS-2 802 "follow_on=[$CI_STEP]"
+fs_merged FS-3 803 "follow_on=[$PAGE_STEP]"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+check "DS-798 AC1 once the merge is recorded, the pass starts a follow-step checker on each ticket's step that only reads CI" \
+  'echo "$out" | grep -qF "FS-1 follow steps: a follow-step checker started" && [ "$(field FS-1 follow_run.steps | jq -c "[.[].step]")" = "[\"the CI run on main for the merge commit is green\"]" ] && [ "$(field FS-2 follow_run.steps | jq length)" = 1 ]'
+check "DS-798 AC4 a ticket with no step a checker can run gets none" '[ "$(field FS-3 follow_run)" = null ] && ! echo "$out" | grep -qF "FS-3 follow steps"'
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 2 ] && break; sleep 0.2; done
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+check "DS-798 AC1 the next pass records the step it passed and settles it, leaving the person's step" \
+  '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
+check "DS-798 AC1 and says what it found on the ticket's PR" \
+  'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
+check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \
+  '[ "$(field FS-2 follow_checks | jq -c "[.[] | [.result, .found]]")" = "[[\"fail\",\"run 9 failed lint\"]]" ] && [ "$(field FS-2 follow_on | jq length)" = 1 ] && [ "$(field FS-2 follow_on_done)" = null ] && echo "$out" | grep -qF "FS-2 follow steps: its follow-step checker passed 0 and failed 1, each listed in needs-you"'
+check "DS-798 a step a checker ran is not run again" \
+  ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
+cp "$T/claude-before-fs" "$T/stub/claude"
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
