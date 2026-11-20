@@ -546,6 +546,21 @@ check "lint: no design link and no No UI line is blocking" '[ $rc -eq 1 ] && pri
 clean | awk '{ if ($0 == "No UI.") print "https://www.figma.com/design/Ab/x?node-id=1-2"; else print }' > "$LD/figma.md"
 lint "$LD/figma.md" customfield_10208=M
 check "lint: a design URL in the Design section passes" '[ $rc -eq 0 ]'
+# DS-824: criteria written as Given/When/Then in a preformatted block, and a design-tool URL outside
+# a Design section.
+gwtblock(){ clean | awk -v o="$1" -v c="$2" -v b="$3" '/^1\. AC1/ { print o; n = split(b, l, "|"); for (i = 1; i <= n; i++) print l[i]; print c; next } { print }' > "$LD/gwt.md"; lint "$LD/gwt.md" customfield_10208=M; }
+gwtblock '```' '```' 'Given a draft|When lint runs|Then it lists each finding'
+check "DS-824 AC1 lint: Given/When/Then lines only inside a fence are criteria" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no acceptance criteria"'
+gwtblock '{noformat}' '{noformat}' '# AC1: Given a draft, when lint runs, then it lists each finding.'
+check "DS-824 AC1 lint: Given/When/Then lines only inside a {noformat} block are criteria" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no acceptance criteria"'
+gwtblock '```' '```' 'npm test|echo done'
+check "DS-824 AC3 lint: a preformatted block with no Given/When/Then line is still no acceptance criteria" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no acceptance criteria"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://www.figma.com/design/Ab/x?node-id=1-2" }' > "$LD/figmaref.md"
+lint "$LD/figmaref.md" customfield_10208=M
+check "DS-824 AC2 lint: a Figma URL under a References heading is a design link" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q "no design link"'
+clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://example.com/spec" }' > "$LD/otherref.md"
+lint "$LD/otherref.md" customfield_10208=M
+check "DS-824 AC4 lint: no design-tool URL anywhere and no No UI line is still blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
