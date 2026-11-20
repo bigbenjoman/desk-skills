@@ -955,8 +955,11 @@ CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change 
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
 shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
 file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and every suite runs nightly on macOS under
-`/bin/bash` 3.2. While either is red an issue labelled `ci-main-red` stays open.
+suite. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shards (the `macOS` workflow, not a required check); its nightly run only runs the suite when no
+macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
+owner, and `/desk-needs-you` lists it for them.
 
 The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
 suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).
