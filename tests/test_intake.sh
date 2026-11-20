@@ -12,7 +12,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/state/triage" "$T/recs" "$T/no-skills"
 export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO \
-  AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR
+  AUTOPILOT_DRY_RUN AUTOPILOT_BASE_PUSH_APPROVED AUTOPILOT_USER_APPROVED DESK_DIGEST_DIR DESK_BATCH
 export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" \
   DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json" DESK_SKILLS_DIR="$T/no-skills" DESK_TRIAGE_RETRY_MS=0
 PASS=0; FAIL=0; out=""
@@ -75,15 +75,40 @@ EOF
 # $T/recs/<KEY>.fails exists. A run in a named batch is logged with that batch in $T/triage.batch.
 # It fails its first run while $T/recs/<KEY>.failonce exists, and every run on a login refusal while
 # $T/recs/<KEY>.authfails does, and leaves its record behind refused as malformed, as triage.sh can,
-# while $T/recs/<KEY>.badrec does. It takes the seconds in $T/recs/<KEY>.sleep, and logs `start <KEY> <tickets admitted so far>` and
+# while $T/recs/<KEY>.badrec does. It waits at its gate, $T/gates/<KEY> (in a named batch,
+# $T/gates/<KEY>@<batch>), and logs `start <KEY> <tickets admitted so far>` and
 # `end <KEY>` in $T/triage.events. It stops at the usage limit in $T/recs/<KEY>.limit, or in a named
 # batch only, in $T/recs/<KEY>.batchlimit.
+# A gate holds a run until what it waits for has happened, so the order a case needs is the order it
+# gets, on a loaded machine as on an idle one, with no real triage time: each line of a gate file is
+# `<file><TAB><extended regex>`, and the run goes on once every line's regex matches a line of its file.
+# What it waits for is a line in triage.events, in admit.out (an admit's output, as it is printed), in
+# claude.calls, or in release, which the test writes (release <KEY>). A gate still shut after 30 s lets
+# the run go on and is logged in $T/gate.timeouts, which fails the suite's last check rather than hanging.
+mkdir -p "$T/gates"
+cat > "$T/gate.sh" <<'EOF'
+#!/bin/sh
+[ -f "$1" ] || exit 0
+tab=$(printf '\t'); i=0
+while [ $i -lt 600 ]; do
+  shut=0
+  while IFS="$tab" read -r f p; do grep -Eq -- "$p" "$f" 2>/dev/null || shut=1; done < "$1"
+  [ $shut -eq 0 ] && exit 0
+  sleep 0.05; i=$((i + 1))
+done
+echo "$1" >> "${1%/gates/*}/gate.timeouts"
+EOF
+# gate <run> <file in $T> <extended regex>: one more thing run <run> (a key, <KEY>@<batch>, or claude)
+# waits for. ungate: opens every gate. release <KEY>: writes the line a gate on `release ^<KEY>$` waits for.
+gate(){ printf '%s\t%s\n' "$T/$2" "$3" >> "$T/gates/$1"; }
+ungate(){ rm -f "$T/gates/"* "$T/release"; }
+release(){ echo "$1" >> "$T/release"; }
 cat > "$T/bin/triage.sh" <<EOF
 #!/bin/sh
 echo "\$1" >> "$T/triage.calls"
 echo "start \$1 \$(grep -o admitted_by "\$DESK_QUEUE" 2>/dev/null | wc -l | tr -d ' ')" >> "$T/triage.events"
 trap 'echo "end \$1" >> "$T/triage.events"' EXIT
-[ -f "$T/recs/\$1.sleep" ] && sleep "\$(cat "$T/recs/\$1.sleep")"
+sh "$T/gate.sh" "$T/gates/\$1\${DESK_BATCH:+@\$DESK_BATCH}"
 [ -n "\${DESK_BATCH:-}" ] && echo "\$1 \$DESK_BATCH \${DESK_DEFAULT_BRANCH:-unpinned}" >> "$T/triage.batch"
 [ -f "$T/recs/\$1.fails" ] && { echo "triage: claude exited 1" >&2; exit 1; }
 [ -f "$T/recs/\$1.failonce" ] && { rm -f "$T/recs/\$1.failonce"; echo "FAIL: \$1 produced no triage record at \$DESK_AUTOPILOT_STATE/triage/\$1.json" >&2; exit 1; }
@@ -130,7 +155,12 @@ search(){ printf '{"issues":[%s]}\n' "$(printf '{"key":"%s"},' "$@" | sed 's/,$/
 # rec <KEY> <lane> [extra json fields]
 rec(){ printf '{"ticket":"%s","type":"Story","lane":"%s","lane_reason":"needs a plan","files_in_scope":["src/%s.js"],"unknowns":[],"size":"S","blockers":[],"lint":[]%s}\n' "$1" "$2" "$1" "${3:+,$3}" > "$T/recs/$1.json"; }
 count(){ if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
-qget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$DESK_QUEUE" "$1"; }
+# shellcheck source=jq_at.sh
+. "$S/jq_at.sh"
+# jget <file> <dot path>: the value there, read by jq (a node per read costs the suite seconds): a string
+# bare, anything else as JSON, and undefined where the path leads nowhere (a null is a value: null).
+jget(){ jq -r --arg p "$2" "$JQ_AT"' at_or($p; "undefined") | if type == "string" then . else tojson end' "$1"; }
+qget(){ jget "$DESK_QUEUE" "$1"; }
 handed(){ node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const e=r.tickets[process.argv[2]]; console.log(e?`${e.outcome}: ${e.text}`:"none")' "$T/state/intake.json" "$1"; }
 running_batch(){ printf '{"version":1,"batch":"b1","supervised":true,"concurrency":2,"tickets":{"R":{"key":"R","state":"running"}}}\n' > "$DESK_QUEUE"; }
 
@@ -445,7 +475,8 @@ out=$(requeue G-2)
 check "DS-358: with its blocker merged, a requeue sends it to a worker" '[ "$(qget tickets.G-2.state)" = triaged ] && [ "$(qget tickets.G-2.held_by)" = null ]'
 
 # ---- by hand: intake.mjs admit (/desk-admit) -----------------------------------------------------
-admit(){ (cd "$T/repo" && node "$T/bin/intake.mjs" admit "$@" 2>&1); }
+# Its output goes to admit.out as it is printed, where a gate can wait on it, and then to stdout.
+admit(){ local rc; (cd "$T/repo" && node "$T/bin/intake.mjs" admit "$@" > "$T/admit.out" 2>&1); rc=$?; cat "$T/admit.out"; return $rc; }
 config yes '`none`'; running_batch; rm -f "$T/state/intake.json"
 rec H-1 A; n=$(count "$T/triage.calls")
 out=$(admit H-1 --by ben); rc=$?
@@ -573,7 +604,7 @@ n=$(count "$T/triage.calls"); out=$(intake)
 check "DS-307 AC3: it is not triaged again while that batch is live" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 before=$(cat "$DESK_QUEUE")
 NQ="$NB/queue.json"; NS="$HOME/.desk-autopilot/acme__widgets/batches/X-1"
-nget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$NQ" "$1"; }
+nget(){ jget "$NQ" "$1"; }
 # Pinned, as a session that has loaded its paths is: the child's triage in X-1 must not inherit it.
 out=$(DESK_DEFAULT_BRANCH=main admit X-4 --by ben); rc=$?
 check "DS-300 AC4: /desk-admit adds a live epic's child to its feature batch" '[ $rc -eq 0 ] && [ "$(nget tickets.X-4.state)" = triaged ] && [ "$(nget tickets.X-4.admitted_by)" = ben ] && grep -q "^admitted X-4 by ben into feature batch X-1 (lane A, size S)$" <<< "$out"'
@@ -738,10 +769,10 @@ EOF
 cat > "$T/claude.out" <<'EOF'
 {"type":"result","total_cost_usd":0.12,"result":"Drafted.\nPLAN_RESULT: {\"draft\": \"Spine: one strict expected-fail spec for AC1\", \"owners\": {\"AC1\": \"E-6\"}}"}
 EOF
-printf '#!/bin/sh\nprintf "%%s\\n" "$1 $2" | head -1 >> "%s/claude.calls"\n[ -f "%s/claude.sleep" ] && sleep "$(cat "%s/claude.sleep")"\n[ -f "%s/claude.fails" ] && { echo "claude: session limit" >&2; exit 1; }\ncat "%s/claude.out"\n' "$T" "$T" "$T" "$T" "$T" > "$T/fakes/claude"
+printf '#!/bin/sh\nprintf "%%s\\n" "$1 $2" | head -1 >> "%s/claude.calls"\nsh "%s/gate.sh" "%s/gates/claude"\n[ -f "%s/claude.fails" ] && { echo "claude: session limit" >&2; exit 1; }\ncat "%s/claude.out"\n' "$T" "$T" "$T" "$T" "$T" > "$T/fakes/claude"
 chmod +x "$T/fakes/claude"
 EB="$DESK_HOME/repos/acme__widgets/batches"; ES="$HOME/.desk-autopilot/acme__widgets/batches"
-eget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$EB/$1/queue.json" "$2"; }
+eget(){ jget "$EB/$1/queue.json" "$2"; }
 rec E-6 A '"summary":"the first child"'; rec E-7 A '"summary":"the second child"'
 printf 'E-6\nE-7\n' > "$T/children/E-5"; printf 'E-6\n' > "$T/children/E-8"
 rec E-5 A '"type":"Epic","branch":"feat/E-5-a-feature"'; rec E-8 A '"type":"Epic","branch":"feat/E-8-another"'
@@ -785,10 +816,11 @@ out=$(admit E-10 --by ben); rc=$?
 check "DS-351 AC2: a child admitted later into the waiting batch is held behind the epic too" '[ $rc -eq 0 ] && [ "$(eget E-5 tickets.E-10.state)" = parked ] && [ "$(eget E-5 tickets.E-10.held_by)" = E-5 ]'
 # Triaged three at a time, the child's triage done long before its epic's: it still waits for the epic.
 rec EP-1 A '"type":"Epic","branch":"feat/EP-1-pool"'; rec EP-3 A '"summary":"a listed child"'; printf 'EP-3\n' > "$T/children/EP-1"
-rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 1 > "$T/recs/EP-1.sleep"
+rec EP-2 A '"epic":{"key":"EP-1","summary":"a feature"}'; gate EP-1 admit.out '^triage: done EP-2 '
 out=$(TRIAGE_K=3 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-2 EP-1 --by ben); rc=$?
 check "DS-506 AC7: an epic and its child in one call: the child joins the epic's feature batch, not the standing one" \
   '[ $rc -eq 0 ] && [ "$(eget EP-1 tickets.EP-2.admitted_by)" = ben ] && [ "$(qget tickets.EP-2)" = undefined ] && grep -q "^admitted EP-2 by ben into feature batch EP-1 " <<< "$out"'
+ungate
 # A child the epic's own start takes into its feature batch: listed by expand-parent, and named in the call too.
 listed(){ rec "$1" A "\"type\":\"Epic\",\"branch\":\"feat/$1-listed\""; rec "$2" A "\"epic\":{\"key\":\"$1\",\"summary\":\"a feature\"}"; printf '%s\n' "$2" > "$T/children/$1"; rm -f "$T/triage.calls"; }
 listed ER-1 ER-2; out=$(TRIAGE_K=1 config yes '`none`'; admit ER-1 ER-2 --by ben); rc=$?
@@ -805,8 +837,9 @@ rec EP-4 A '"epic":{"key":"EP-1","summary":"a feature"}'; rec EP-5 A; rec EP-6 A
 rm -f "$T/triage.calls"; out=$(TRIAGE_K=1 config yes '`none`'; admit EP-4 EP-5 EP-6 --by ben); rc=$?
 check "DS-506 AC4: a usage limit in a feature batch's triage starts no more triages" \
   '[ $rc -eq 11 ] && [ "$(tr "\n" " " < "$T/triage.calls")" = "EP-4 EP-4 " ] && grep -q "^not admitted EP-4: .*weekly usage limit.* in feature batch EP-1: run /desk-admit EP-4 again once the limit lifts$" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-5 EP-6: run /desk-admit EP-5 EP-6 again once the limit lifts" <<< "$out"'
-# After a usage limit, a child in flight is not triaged again to join its epic's feature batch.
-rec EP-7 A '"epic":{"key":"EP-1","summary":"a feature"}'; echo 0.5 > "$T/recs/EP-7.sleep"; rec EP-8 A; cp "$T/recs/U-1.limit" "$T/recs/EP-8.limit"
+# After a usage limit, a child in flight is not triaged again to join its epic's feature batch: EP-7's
+# triage ends only once EP-8's limit has been said.
+rec EP-7 A '"epic":{"key":"EP-1","summary":"a feature"}'; gate EP-7 admit.out '^not admitted EP-8'; rec EP-8 A; cp "$T/recs/U-1.limit" "$T/recs/EP-8.limit"
 rm -f "$T/triage.calls"; out=$(TRIAGE_K=2 config yes '`none`'; DESK_MEM_AVAIL_GB=64 admit EP-7 EP-8 --by ben); rc=$?
 check "DS-506 AC4: after a usage limit, a child is not triaged again to join its epic's feature batch, and is named to admit again" \
   '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = 2 ] && [ "$(eget EP-1 tickets.EP-7)" = undefined ] && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EP-7: run /desk-admit EP-7 again once the limit lifts" <<< "$out"'
@@ -821,7 +854,7 @@ rec EQ-5 A; rec EQ-6 A; cp "$T/recs/U-1.limit" "$T/recs/EQ-5.limit"
 out=$(TRIAGE_K=1 config yes '`none`'; admit EQ-5 EP-3 EQ-6 --by ben); rc=$?
 check "DS-506 AC4: after a usage limit, a ticket in another batch is told as ever, and only the rest are named" \
   '[ $rc -eq 11 ] && grep -q "^not admitted EP-3: EP-3 is in batch EP-1" <<< "$out" && grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): EQ-6: run /desk-admit EQ-6 again once the limit lifts" <<< "$out"'
-config yes '`none`'; rm -f "$T/recs/EP-1.sleep" "$T/recs/EP-7.sleep"
+config yes '`none`'; ungate
 config yes; rec E-9 A '"type":"Epic","branch":"feat/E-9-third"'; rec E-19 A '"summary":"the third epic child"'; printf 'E-19\n' > "$T/children/E-9"
 echo '{"issues":[{"key":"E-9","fields":{"issuetype":{"name":"Epic","hierarchyLevel":1}}}]}' > "$T/search.json"; out=$(intake)
 check "DS-352: standing intake starts another epic's feature batch beside a live one" '[ "$(eget E-9 base)" = feat/E-9-third ] && [ "$(eget E-5 base)" = feat/E-5-a-feature ] && grep -q "^intake: started feature batch E-9 on feat/E-9-third, beside the standing batch$" <<< "$out" && ! grep -q "E-9 not admitted" <<< "$out"'
@@ -1182,15 +1215,18 @@ check "DS-394 AC4: a ticket whose every criterion is already met is admitted as 
 # queue held as admitted when that ticket's triage started.
 most(){ local n=0 m=0 ev; while read -r ev _; do if [ "$ev" = start ]; then n=$((n + 1)); [ $n -gt $m ] && m=$n; else n=$((n - 1)); fi; done < "$T/triage.events"; echo $m; }
 started(){ grep "^start $1 " "$T/triage.events" | tail -1 | cut -d' ' -f3; }
-pool(){ TRIAGE_K="$1" tracker; running_batch; rm -f "$T/triage.events" "$T/triage.calls"; }
+pool(){ TRIAGE_K="$1" tracker; running_batch; rm -f "$T/triage.events" "$T/triage.calls"; ungate; }
+# PL-1 to PL-3 each end only once all three have started.
 P10=(PL-1 PL-2 PL-3 PL-4 PL-5 PL-6 PL-7 PL-8 PL-9 PL-10)
-for k in "${P10[@]}"; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
-pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit "${P10[@]}" --by ben); rc=$?
+for k in "${P10[@]}"; do rec "$k" A; done
+pool 3; for k in PL-1 PL-2 PL-3; do for s in PL-1 PL-2 PL-3; do gate "$k" triage.events "^start $s "; done; done
+out=$(DESK_MEM_AVAIL_GB=64 admit "${P10[@]}" --by ben); rc=$?
 check "DS-506 AC1: with Triage concurrency 3, three triages run at once and never more" '[ $rc -eq 0 ] && [ "$(most)" = 3 ] && [ "$(count "$T/triage.calls")" = 10 ]'
 check "DS-506 AC1: the first ticket is admitted before the last triage starts" '[ "$(started PL-10)" -ge 1 ] && [ "$(qget tickets.PL-10.state)" = triaged ] && [ "$(grep -c "^admitted PL-" <<< "$out")" = 10 ]'
-# AC2: SB is blocked by SA, whose triage is the slowest.
-rec SA A; rec SB A '"blockers":[{"key":"SA","category":"new"}]'; rec SC A; echo 1 > "$T/recs/SA.sleep"
-pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit SB SC SA --by ben); rc=$?
+# AC2: SB is blocked by SA, whose triage is the slowest: it ends once SB's has, and SC is admitted.
+rec SA A; rec SB A '"blockers":[{"key":"SA","category":"new"}]'; rec SC A
+pool 3; gate SA admit.out '^triage: done SB '; gate SA admit.out '^admitted SC '
+out=$(DESK_MEM_AVAIL_GB=64 admit SB SC SA --by ben); rc=$?
 check "DS-506 AC2: a blocker whose triage is the slowest is admitted before what it blocks, held behind it in the batch" \
   '[ $rc -eq 0 ] && [ "$(grep "^admitted S" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "SC SA SB " ] && [ "$(qget tickets.SB.held_by)" = SA ] && [ "$(qget tickets.SB.held_outside)" = undefined ]'
 # AC3: one triage fails among three.
@@ -1198,20 +1234,20 @@ rec FA A; rec FB A; rec FC A; touch "$T/recs/FB.fails"
 pool 3; out=$(DESK_MEM_AVAIL_GB=64 admit FA FB FC --by ben); rc=$?
 check "DS-506 AC3: a failed triage refuses that ticket with its reason and admits every other" \
   '[ $rc -eq 11 ] && grep -qx "not admitted FB: triage failed: triage: claude exited 1: fix it and run /desk-admit FB again" <<< "$out" && [ "$(qget tickets.FA.state)" = triaged ] && [ "$(qget tickets.FC.state)" = triaged ] && [ "$(qget tickets.FB)" = undefined ]'
-# AC4: LA stops at the usage limit while LB is still in flight; LC to LE never start.
-for k in LA LB LC LD LE; do rec "$k" A; done; cp "$T/recs/U-1.limit" "$T/recs/LA.limit"; echo 1 > "$T/recs/LB.sleep"
-pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit LA LB LC LD LE --by ben); rc=$?
+# AC4: LA stops at the usage limit while LB is still in flight, ending once LA's limit is said; LC to LE never start.
+for k in LA LB LC LD LE; do rec "$k" A; done; cp "$T/recs/U-1.limit" "$T/recs/LA.limit"
+pool 2; gate LB admit.out '^not admitted LA'; out=$(DESK_MEM_AVAIL_GB=64 admit LA LB LC LD LE --by ben); rc=$?
 check "DS-506 AC4: after a usage limit no triage starts, and the one in flight finishes and is admitted" \
   '[ $rc -eq 11 ] && [ "$(sort "$T/triage.calls" | tr "\n" " ")" = "LA LB " ] && [ "$(qget tickets.LB.state)" = triaged ]'
 check "DS-506 AC4: the tickets not triaged are named with the reset time and the command to run again" \
   'grep -qx "not triaged (usage limit, resets 2027-01-15 08:00 UTC): LC LD LE: run /desk-admit LC LD LE again once the limit lifts" <<< "$out" && grep -q "^not admitted LA: triage stopped at the weekly usage limit" <<< "$out"'
-# AC5: killed once KA is admitted, while KB's triage runs.
-rec KA A; rec KB A; echo 3 > "$T/recs/KB.sleep"
-pool 1; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit KA KB --by ben >/dev/null 2>&1) & pid=$!
-i=0; while [ "$(qget tickets.KA.state)" != triaged ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+# AC5: killed once KA is admitted, while KB's triage runs: it runs until the test releases it.
+rec KA A; rec KB A
+pool 1; gate KB release '^KB$'; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit KA KB --by ben >/dev/null 2>&1) & pid=$!
+i=0; while ! grep -q "^start KB " "$T/triage.events" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 # KB's triage outlives the kill; let it end before a later test's events are read.
-i=0; while ! grep -q "^end KB" "$T/triage.events" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; rm -f "$T/recs/KB.sleep"; : > "$T/triage.calls"
+release KB; i=0; while ! grep -q "^end KB" "$T/triage.events" && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; ungate; : > "$T/triage.calls"
 out=$(admit KA KB --by ben); rc=$?
 check "DS-506 AC5: run again after a kill, an admitted ticket is already in the batch and only the rest are triaged" \
   '[ $rc -eq 0 ] && grep -qx "KA is already in batch b1 (triaged)" <<< "$out" && [ "$(tr "\n" " " < "$T/triage.calls")" = "KB " ] && [ "$(qget tickets.KB.state)" = triaged ]'
@@ -1239,8 +1275,9 @@ check "DS-506 AC6: a free ticket keeps its turn behind one whose blocker is then
 rec RP A; rec RX A '"blockers":[{"key":"RP","category":"new"}]'; rec RA A '"blockers":[{"key":"RB","category":"new"}]'; rec RC A; rec RB A
 pool ''; out=$(admit RP RX RA RC RB --by ben)
 check "DS-506 AC6: the tickets left to the end keep today's rounds, past what was placed early" '[ "$(grep "^admitted" <<< "$out" | cut -d" " -f2 | tr "\n" " ")" = "RP RC RB RX RA " ]'
-echo 0.3 > "$T/recs/JX-2.sleep"; echo 0.3 > "$T/recs/JX-3.sleep"
-pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
+# JX-2 and JX-3 each end only once both have started, so JX-1 starts after both.
+pool 2; gate JX-2 triage.events '^start JX-3 '; gate JX-3 triage.events '^start JX-2 '
+out=$(DESK_MEM_AVAIL_GB=64 admit JX-1 JX-3 JX-2 --by ben)
 check "DS-506: with more than one at once, a blocker Jira links is triaged before what it blocks" '[ "$(tail -1 "$T/triage.calls")" = JX-1 ] && [ "$(qget tickets.JX-1.held_by)" = JX-2 ]'
 # AC7: a subtask the epic lists has no epic on its record, and is named before it: nothing is placed
 # until the epic has started. SP-3 is named between them, and SP-4 is blocked by a child the call leaves out.
@@ -1257,32 +1294,37 @@ check "DS-506 AC6: a ticket between them is placed once the epic has started, as
 check "DS-506 AC7: a ticket blocked by a child the call leaves out joins the feature batch it routes to" \
   '[ "$(qget tickets.SP-4)" = undefined ] && [ "$(eget SP-1 tickets.SP-4.admitted_by)" = ben ] && grep -q "^admitted SP-4 by ben into feature batch SP-1 " <<< "$out"'
 check "DS-507 AC2: its triage again in that batch is said too" 'grep -qx "triage: started SP-4 in batch SP-1" <<< "$out" && [ "$(grep -c "^triage: done SP-4 lane A" <<< "$out")" = 2 ]'
-# AC8: the spawn gate holding brings the pool down to one.
-for k in MA MB MC; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
+# AC8: the spawn gate holding brings the pool down to one. Each start line says how many triages the
+# pool is running at that moment, so one at a time is read there, however quickly each triage ends.
+for k in MA MB MC; do rec "$k" A; done
 pool 3; out=$(DESK_MEM_AVAIL_GB=2 admit MA MB MC --by ben); rc=$?
 check "DS-506 AC8: while the memory spawn gate holds, triages run one at a time, saying why" \
-  '[ $rc -eq 0 ] && [ "$(most)" = 1 ] && grep -qx "triaging one at a time: available memory 2.0G is under the 8G spawn gate" <<< "$out"'
+  '[ $rc -eq 0 ] && [ "$(most)" = 1 ] && [ "$(grep -c "^triage: started M[ABC] (1/3 running)$" <<< "$out")" = 3 ] && grep -qx "triaging one at a time: available memory 2.0G is under the 8G spawn gate" <<< "$out"'
 
 # ---- an admit says each thing as it happens, and triages one at a time by default --------------------
 # SL-2's triage is the slowest, SL-3 is blocked by it, and SL-4 is refused: everything but SL-2 and what
-# waits for it is read while the run is still going. Times are blanked: they depend on the machine.
-rec SL-1 A; rec SL-2 A; rec SL-3 A '"blockers":[{"key":"SL-2","category":"new"}]'; rec SL-4 C; echo 3 > "$T/recs/SL-2.sleep"
-pool 2; (cd "$T/repo" && DESK_MEM_AVAIL_GB=64 exec node "$T/bin/intake.mjs" admit SL-1 SL-2 SL-3 SL-4 --by ben > "$T/admit.out" 2>&1) & pid=$!
+# waits for it is read while the run is still going, and SL-2's triage ends only once the test has
+# read it. Times are blanked: they depend on the machine.
+rec SL-1 A; rec SL-2 A; rec SL-3 A '"blockers":[{"key":"SL-2","category":"new"}]'; rec SL-4 C
+pool 2; gate SL-2 release '^SL-2$'; : > "$T/admit.out"
+(cd "$T/repo" && DESK_MEM_AVAIL_GB=64 exec node "$T/bin/intake.mjs" admit SL-1 SL-2 SL-3 SL-4 --by ben > "$T/admit.out" 2>&1) & pid=$!
 i=0; while ! grep -q "^not admitted SL-4" "$T/admit.out" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 kill -0 "$pid" 2>/dev/null; running=$?
 sofar=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
-wait "$pid"; rc=$?
+release SL-2; wait "$pid"; rc=$?
 out=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
 check "DS-507 AC2: each line is printed in order while the run is still going" '[ "$running" -eq 0 ] && [ "$sofar" = "$(printf "%s\n" "triage: started SL-1 (1/4 running)" "triage: started SL-2 (2/4 running)" "triage: done SL-1 lane A (t)" "admitted SL-1 by ben into batch b1 (lane A, size S)" "triage: started SL-3 (2/4 running)" "triage: done SL-3 lane A (t)" "waiting: SL-3 for blocker SL-2" "triage: started SL-4 (2/4 running)" "triage: done SL-4 lane C (t)" "not admitted SL-4: lane C: needs a plan")" ]'
 check "DS-507 AC2: the rest follows when the blocker ends, a final summary last, and nothing is printed twice" '[ $rc -eq 11 ] && [ "$out" = "$(printf "%s\n" "$sofar" "triage: done SL-2 lane A (t)" "admitted SL-2 by ben into batch b1 (lane A, size S)" "admitted SL-3 by ben into batch b1 (lane A, size S), held behind SL-2" "the supervisor'\''s next tick picks them up" "summary: 3 of 4 admitted, 1 not admitted (t)")" ]'
 # An epic's children are triaged in its feature batch, and each says so while the epic is still starting.
-rec SC-1 A '"type":"Epic","branch":"feat/SC-1-lines"'; epicget SC-1; rec SC-2 A; rec SC-3 A; echo 2 > "$T/recs/SC-3.sleep"
+# SC-3's triage in the feature batch ends only once the test has read what was said so far.
+rec SC-1 A '"type":"Epic","branch":"feat/SC-1-lines"'; epicget SC-1; rec SC-2 A; rec SC-3 A
 printf 'SC-2\nSC-3\n' > "$T/children/SC-1"
-pool 1; (cd "$T/repo" && exec node "$T/bin/intake.mjs" admit SC-1 --by ben > "$T/admit.out" 2>&1) & pid=$!
+pool 1; gate SC-3@SC-1 release '^SC-3$'; : > "$T/admit.out"
+(cd "$T/repo" && exec node "$T/bin/intake.mjs" admit SC-1 --by ben > "$T/admit.out" 2>&1) & pid=$!
 i=0; while ! grep -q "^triage: started SC-3" "$T/admit.out" 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 kill -0 "$pid" 2>/dev/null; running=$?
 sofar=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
-wait "$pid"; rc=$?
+release SC-3; wait "$pid"; rc=$?
 out=$(sed -E 's/\([0-9]+s\)$/(t)/' "$T/admit.out")
 check "DS-507 AC2: an epic's start and each child's triage are printed while the epic is still starting" '[ "$running" -eq 0 ] && [ "$sofar" = "$(printf "%s\n" "triage: started SC-1 (1/1 running)" "triage: done SC-1 lane A (t)" "started feature batch SC-1 on feat/SC-1-lines, beside the standing batch" "triage: started SC-2 in batch SC-1" "triage: done SC-2 lane A (t)" "triage: started SC-3 in batch SC-1")" ]'
 check "DS-507 AC2: the child's end follows, and no epic line is printed twice" '[ $rc -eq 0 ] && grep -q "^triage: done SC-3 lane A (t)$" <<< "$out" && [ "$(grep -c "^started feature batch SC-1" <<< "$out")" = 1 ] && [ "$(grep -c "held behind it, and its plan waits" <<< "$out")" = 1 ]'
@@ -1323,26 +1365,33 @@ check "DS-814 AC2: a failed triage's class is read from how it ended and its las
 # Those triages leave the rest free to say they finished: SG-2 ends during SG-3's triage as SG-1's child,
 # and SJ-2 during SJ-1's triage again in the feature batch it joins.
 after(){ sed -n "/^triage: done $1 /,\$p" <<< "$out" | grep -q "^triage: done $2 "; }
-rec SG-1 A '"type":"Epic","branch":"feat/SG-1-lines"'; epicget SG-1; rec SG-2 A; rec SG-3 A; echo 1 > "$T/recs/SG-2.sleep"; echo 3 > "$T/recs/SG-3.sleep"
+# Each gate holds the one triage until the other's start, and that one until the first's end is said.
+rec SG-1 A '"type":"Epic","branch":"feat/SG-1-lines"'; epicget SG-1; rec SG-2 A; rec SG-3 A
 printf 'SG-3\n' > "$T/children/SG-1"
-pool 2; out=$(DESK_MEM_AVAIL_GB=64 admit SG-1 SG-2 --by ben); rc=$?
+pool 2; gate SG-2 triage.events '^start SG-3 '; gate SG-3@SG-1 admit.out '^triage: done SG-2 '
+out=$(DESK_MEM_AVAIL_GB=64 admit SG-1 SG-2 --by ben); rc=$?
 check "DS-507 AC2: a ticket's triage that ends while an epic's child is in triage says so at once" '[ $rc -eq 0 ] && after SG-2 SG-3'
-rec SD-1 A '"type":"Epic","branch":"feat/SD-1-lines"'; epicget SD-1; rec SD-2 A; rec SD-3 A; echo 1 > "$T/recs/SD-2.sleep"; echo 3 > "$T/claude.sleep"
+rec SD-1 A '"type":"Epic","branch":"feat/SD-1-lines"'; epicget SD-1; rec SD-2 A; rec SD-3 A
 printf 'SD-3\n' > "$T/children/SD-1"
-out=$(DESK_MEM_AVAIL_GB=64 admit SD-1 SD-2 --by ben); rc=$?; rm -f "$T/claude.sleep"
+ungate; gate SD-2 claude.calls 'feature plan for epic SD-1'; gate claude admit.out '^triage: done SD-2 '
+out=$(DESK_MEM_AVAIL_GB=64 admit SD-1 SD-2 --by ben); rc=$?; ungate
 check "DS-507 AC2: a ticket's triage that ends while an epic's plan is drafted says so at once" '[ $rc -eq 0 ] && sed -n "/^triage: done SD-2 /,\$p" <<< "$out" | grep -q "^drafted SD-1"'
-rec SJ-1 A '"epic":{"key":"SC-1","summary":"a feature"}'; rec SJ-2 A; echo 2 > "$T/recs/SJ-1.sleep"; echo 3 > "$T/recs/SJ-2.sleep"
-out=$(DESK_MEM_AVAIL_GB=64 admit SJ-1 SJ-2 --by ben); rc=$?
+rec SJ-1 A '"epic":{"key":"SC-1","summary":"a feature"}'; rec SJ-2 A
+gate SJ-2 admit.out '^triage: started SJ-1 in batch SC-1$'; gate SJ-1@SC-1 admit.out '^triage: done SJ-2 '
+out=$(DESK_MEM_AVAIL_GB=64 admit SJ-1 SJ-2 --by ben); rc=$?; ungate
 check "DS-507 AC2: a ticket's triage that ends while another joins a batch says so at once" \
   '[ $rc -eq 0 ] && grep -qx "triage: started SJ-1 in batch SC-1" <<< "$out" && [ "$(sed -n "/^triage: done SJ-2 /,\$p" <<< "$out" | grep -c "^triage: done SJ-1 ")" = 1 ] && grep -q "^admitted SJ-2 " <<< "$out"'
 rec JS-1 A; pool 1; out=$(admit JS-1 --by ben --json)
 check "DS-507 AC2: --json stays one object, holding the same lines" '[ "$(wc -l <<< "$out" | tr -d " ")" = 1 ] && [ "$(node -e "console.log(JSON.parse(process.argv[1]).lines.at(-1).replace(/ \(\d+s\)$/, \"\"))" "$out")" = "summary: 1 of 1 admitted" ]'
-for k in DA DB DC DD; do rec "$k" A; echo 0.3 > "$T/recs/$k.sleep"; done
+for k in DA DB DC DD; do rec "$k" A; done
 pool TODO; out=$(DESK_MEM_AVAIL_GB=64 admit DA DB DC DD --by ben); rc=$?
-check "DS-507 AC3: with Triage concurrency left TODO, one triage runs at a time" '[ $rc -eq 0 ] && [ "$(most)" = 1 ]'
+check "DS-507 AC3: with Triage concurrency left TODO, one triage runs at a time" '[ $rc -eq 0 ] && [ "$(most)" = 1 ] && [ "$(grep -c "^triage: started D[ABCD] (1/4 running)$" <<< "$out")" = 4 ]'
 check "DS-507 AC3: the template recommends 1" 'grep -q "^| Triage concurrency | \`1\` |" "$S/../desk-config.md"'
 check "DS-507 AC1: the desk-admit skill starts more than 3 tickets in the background and waits for the notification" \
   'grep -q "^\*\*With more than 3 tickets, start the call in the background\*\* (\`run_in_background\`" "$SK" && grep -q "and wait for its notification" "$SK"'
+
+out=$(cat "$T/gate.timeouts" 2>/dev/null)
+check "no triage gate timed out: each case ran in the order its gates set" '[ -z "$out" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

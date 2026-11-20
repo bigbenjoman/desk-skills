@@ -11,8 +11,13 @@
 //   merge-log.mjs record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--repo <owner/name>] [--why <text>]
 //       after: what happened. `armed` is auto-merge armed, which GitHub merges later; whoever turns it
 //       off records `disarmed`, which releases the PR.
+//   merge-log.mjs record ... [--ticket <key>]
+//       names the ticket the PR is for, as the merge driver does.
 //   merge-log.mjs show [--repo <owner/name>] [--pr <n>]
 //       the events, oldest first, one line each.
+//   merge-log.mjs show --pr <n> --latest [--repo <owner/name>]
+//       the PR's latest merged (else armed, not since disarmed) event as one JSON line: its event, who,
+//       head SHA, time and ticket. Nothing, exit 0, when the log has none or there is no log yet.
 // The repo defaults to §0 GitHub repo. `who` names the merger and stays the same across its own retries:
 // `merge-driver <slug>` for the driver, `session <id or name>` for a session.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
@@ -94,8 +99,18 @@ export function claim({ repo, pr, sha, by, now = Date.now(), armedNow = ghArmed,
     return { ok: true };
   });
 }
-export function record({ repo, pr, sha, by, event, why = null, now = Date.now(), path = logPath() }) {
-  locked(path, () => append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event, ...(why ? { why } : {}) }, path));
+export function record({ repo, pr, sha, by, event, ticket = null, why = null, now = Date.now(), path = logPath() }) {
+  locked(path, () => append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event, ...(ticket ? { ticket } : {}), ...(why ? { why } : {}) }, path));
+}
+
+// The PR's latest `merged` event, else its latest `armed` one not disarmed since (GitHub keeps one
+// auto-merge, so a disarm ends it whoever armed it), else null. Claims and failures are not outcomes.
+export function latest(events, { repo, pr }) {
+  const mine = events.filter((e) => e.repo === repo && String(e.pr) === String(pr));
+  const merged = mine.findLast((e) => e.event === 'merged');
+  if (merged) return merged;
+  const last = mine.findLast((e) => e.event === 'armed' || e.event === 'disarmed');
+  return last?.event === 'armed' ? last : null;
 }
 
 const isMain = (() => {
@@ -104,12 +119,19 @@ const isMain = (() => {
 if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v ?? ''; };
-  const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr');
+  const latestFlag = args.includes('--latest'); if (latestFlag) args.splice(args.indexOf('--latest'), 1);
+  const repoFlag = flag('--repo'); const by = flag('--by'); const event = flag('--event'); const why = flag('--why'); const prFlag = flag('--pr'); const ticket = flag('--ticket');
   const [cmd, pr, sha] = args;
-  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--why <text>] | show [--pr <n>]   [--repo <owner/name>]';
+  const usage = 'usage: merge-log.mjs claim <PR> <sha> --by <who> | record <PR> <sha> --by <who> --event merged|armed|disarmed|failed [--ticket <key>] [--why <text>] | show [--pr <n>] | show --pr <n> --latest   [--repo <owner/name>]';
   const die = (m) => { console.error(`merge-log: ${m}`); process.exit(EXIT.SHOW_PERSON); };
   let repo = repoFlag;
   if (!repo) { try { repo = E.ghRepo(); } catch (e) { die(`no --repo, and §0 GitHub repo could not be read (${e.message})`); } }
+  if (cmd === 'show' && latestFlag) {
+    if (!/^[1-9][0-9]*$/.test(prFlag ?? '')) die(usage);
+    const e = latest(readLog(), { repo, pr: prFlag });
+    if (e) console.log(JSON.stringify(e));
+    process.exit(EXIT.GO_ON);
+  }
   if (cmd === 'show') {
     for (const e of readLog()) if (e.repo === repo && (prFlag == null || String(e.pr) === String(prFlag))) console.log(eventLine(e));
     process.exit(EXIT.GO_ON);
@@ -121,7 +143,7 @@ if (isMain) {
     console.log(`claimed ${repo}#${pr} at ${sha.slice(0, 12)} for ${by}`);
   } else {
     if (!EVENTS.includes(event) || event === 'claim') die(usage);
-    record({ repo, pr, sha, by, event, why });
+    record({ repo, pr, sha, by, event, ticket, why });
     console.log(`recorded ${repo}#${pr} ${event} at ${sha.slice(0, 12)} by ${by}`);
   }
 }

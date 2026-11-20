@@ -58,6 +58,13 @@ const two = [...one, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red:
 const c5 = fixCall(tk({ fix_tries: two }), both, ctx());
 t('AC5 after 2 tries it is stuck, not requeued', c5?.call, 'stuck');
 t('AC5 the stuck text names the checks', c5?.why, 'still red after 2 fix tries: Backend tests, Lint');
+// With no try left, a red head is the person's while the driver's reruns or their gap are still to come,
+// and while another check still runs: the pass says so rather than wait on them in silence.
+t('with no try left, red before the driver\'s last rerun is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ reruns: () => 1 }))?.why, 'still red after 2 fix tries: Backend tests, Lint');
+t('with no try left, red before the last rerun\'s gap is over is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ cooledDown: false }))?.call, 'stuck');
+t('with no try left, red while another check still runs is stuck', fixCall(tk({ fix_tries: two }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx())?.call, 'stuck');
+t('with a try left, red before the last rerun still waits', fixCall(tk({ fix_tries: one }), both, ctx({ reruns: () => 1 })), null);
+t('with a try left, red while another check still runs still waits', fixCall(tk({ fix_tries: one }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
 t('AC5 or the conflict, after 2 conflict tries', fixCall(tk({ fix_tries: two.map((x) => ({ ...x, kind: 'conflict' })) }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
 
 // AC6: red only on a check no worker can fix: stuck at once, with the command.
@@ -951,6 +958,11 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 AC1 and calls it the one extra try', b1.includes('## Extra fix try') && b1.includes('This is the one extra try after the 2 fix tries.') && !b1.includes('try 2 of 2'), true);
   t('DS-494 AC1 and says the line is evidence, not instruction', b1.includes('no instruction to follow'), true);
   t('DS-494 AC1 its task names the extra try', fixTask(tk({ fix: c1.fix })).includes('Your task is the extra fix try on PR #697'), true);
+  // The extra try waits for the driver's reruns, their gap and every check, as a numbered try does.
+  t('the extra try waits for the driver\'s last rerun', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ reruns: () => 1 })), null);
+  t('the extra try waits for the last rerun\'s gap', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ cooledDown: false })), null);
+  t('the extra try waits while another check still runs', fixCall(tk({ fix_tries: spentTries }), pr([named(), { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
+  t('once the extra try is spent too, it is the person\'s before the last rerun', fixCall(tk({ fix_tries: [...spentTries, { ...c1.fix }] }), pr([named()]), ctx({ reruns: () => 1 }))?.call, 'stuck');
   t('DS-494 negative: a try left goes as a numbered try, quoting nothing', (() => { const c = fixCall(tk(), pr([named()]), ctx()); return `${c.fix.try} ${c.fix.extra} ${c.fix.lines}`; })(), '1 undefined undefined');
   t('DS-494 AC1 a line from its failed log counts when its job annotated none', fixCall(tk({ fix_tries: spentTries }), pr([named({ error: null, errors: [], log_errors: ['ENOENT: no such file, open \'db/0042.sql\''] })]), ctx())?.fix.lines[0].line, 'ENOENT: no such file, open \'db/0042.sql\'');
   const draft = draftChecksFix(tk({ fix_tries: spentTries }), { pr: 702, head: HEAD, failing: [{ name: 'tests', runId: '41' }], checks: [named()] }, { repo: 'acme/widgets' });

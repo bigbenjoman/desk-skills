@@ -724,6 +724,13 @@ t('DS-419 AC1 a held thread with a fix try left is not the person\'s: a worker t
 t('DS-433 AC3 a green PR GitHub requires an approving review on asks the person for one', xi.find((i) => i.t.key === 'X-4')?.need, 'PR #94 waits on a person\'s approval: an approving review is required. Review and approve it on GitHub; desk then merges it.');
 t('DS-433 AC1 a green PR with no merge note, the driver\'s to merge, lists nothing', xi.some((i) => i.t.key === 'X-1'), false);
 
+// #752: a PR the merge driver found with no mergeability answer for past its limit is the person's.
+put('wr', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'W-1': greenPr(97, { merge_blocked: 'merge ref: GitHub has not worked out whether #97 conflicts with its base at d97777777 for 75 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch' }),
+} });
+t('#752 a wedged merge ref is the person\'s, saying how to give it a fresh one', N.collect({ word: 'wr' }).items.find((i) => i.t.key === 'W-1')?.need,
+  'PR #97 looks stuck on GitHub: GitHub has not worked out whether #97 conflicts with its base for 75 minutes, and starts no run for that head. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.');
+
 // ---- DS-420: a red PR the merge driver declined is the person's as its reason says, never called green.
 const redPr = (pr, more = {}) => { const g = greenPr(pr, more); return { ...g, pr_status: { ...g.pr_status, checks: [{ name: 'build', status: 'completed', conclusion: 'failure' }] } }; };
 put('xi420', { port: 4301, beat: 1, supervised: true, merge: 'yes', tickets: {

@@ -77,7 +77,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudReviewHere, reviewOnlyTry } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
@@ -927,7 +927,7 @@ const ADVANCE_HANDLERS = {
 };
 // A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
 function advanceLog(t) {
-  if (t.location === 'cloud' && t.cloud) return null;
+  if (runsInCloud(t) && t.cloud) return null;
   const path = join(STATE, 'logs', `${t.key}.log`);
   if (!existsSync(path)) return null;
   const h = sh('node', [join(BIN, 'harvest.mjs'), path], { tolerant: true });
@@ -1424,7 +1424,7 @@ for (const t of DRY ? [] : Object.values(queue().tickets)) {
 // listing what needs the person runs no git. Counted against every origin ref, so a branch never
 // pushed counts too.
 for (const t of DRY ? [] : Object.values(queue().tickets)) {
-  if (t.state !== 'parked' || isHeld(t) || t.location === 'cloud') continue;
+  if (t.state !== 'parked' || isHeld(t) || runsInCloud(t)) continue;
   const n = t.worktree && existsSync(t.worktree) ? shOut('git', ['-C', t.worktree, 'rev-list', '--count', 'HEAD', '--not', '--remotes=origin']) : null;
   const unpushed = n?.ok && Number(n.out) > 0 ? `its worktree ${t.worktree} has ${n.out} commit(s) not on origin` : null;
   if (unpushed !== (t.park?.unpushed ?? null)) q('set', t.key, `park.unpushed=${unpushed ?? 'null'}`);
@@ -1769,7 +1769,7 @@ const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
 const lockQueueHolds = (r) => {
-  if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
+  if (!LOCK_QUEUE?.deep || runsInCloud(r)) return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
@@ -1826,9 +1826,7 @@ const placesFor = (f) => {
   const k = configuredPlaces(f);
   return conflictsBy.has(f) ? k - loweredBy(conflictsBy.get(f), k, PASS_MS) : k;
 };
-// A review try (kind rereview) reviews its PR's head and changes no file, so it neither waits on a
-// file's places nor fills one.
-const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
+// A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
 // Each file of r's at its budget: the file, its places and the running tickets that fill them.
 const budgetHolds = (r) => {
@@ -2619,8 +2617,9 @@ function spawnCloud(t) {
   };
   // Back with its PR open (a fix try, a rework): a new session would start over from the base with no
   // fix brief, and the PR it has would no longer count as its result. Nor can a local worker take it:
-  // its branch is the session's, on origin only, and setup-worktree.sh would cut it afresh from the
-  // base. The person resumes the session, or fixes the branch.
+  // its branch is the session's, and a fix pushed there from here would race the session. The person
+  // resumes the session, or fixes the branch. A review try, which pushes nothing, never reaches here: a
+  // local worker takes it (runsInCloud).
   if (t.result?.pr != null) {
     const line = `cloud ticket back for ${t.fix && !t.fix.finished ? `${tryLabel(t.fix)} (${t.fix.what})` : 'more work'} on its PR #${t.result.pr}, ` +
       `which neither a new cloud session nor a local worker can be given: its branch ${t.branch} is the session's own. ` +
@@ -2826,7 +2825,7 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
-  if (t.location === 'cloud') return null;
+  if (runsInCloud(t)) return null;
   const resumed = toResume(t) || toHandoff(t);
   const wt = resumed ? t.worktree : join(WORKTREES, t.key);
   if (!wt || !existsSync(wt)) return null;
@@ -2852,7 +2851,7 @@ function busyWorktree(t, { push = false } = {}) {
 }
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.
 function recordWorkerHead(t) {
-  if (DRY || t.location === 'cloud') return;
+  if (DRY || runsInCloud(t)) return;
   const wt = t.worktree || join(WORKTREES, t.key);
   if (!existsSync(wt)) return;
   const head = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
@@ -2976,7 +2975,10 @@ function setUpWorktree(t) {
     t.branch = fixed;
   }
   // --for-worker: the human's own .claude/settings.local.json never reaches a worker's worktree.
-  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S } });
+  // A cloud ticket's review try reviews the session's branch, which is on origin only: it is checked
+  // out from there, never cut afresh from the base.
+  const fromOrigin = cloudReviewHere(t) ? { DESK_BRANCH_FROM_ORIGIN: '1' } : {};
+  const runSetup = () => shOut('bash', [join(BIN, 'setup-worktree.sh'), '--for-worker', t.key, t.branch], { cwd: MAIN, env: { ...process.env, DESK_GIT_FETCH_TIMEOUT_S: SETUP_FETCH_S, ...fromOrigin } });
   if (remoteHung()) return { wt, kept, renamed, hung: remoteHung() };
   const setUp = (r) => r.ok && [...r.out.matchAll(/\[setup-worktree\] worktree=(.+)/g)].pop()?.[1]?.trim() === wt && existsSync(wt);
   let setupRun = runSetup();

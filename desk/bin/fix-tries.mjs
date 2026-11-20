@@ -290,7 +290,7 @@ export function fixCall(t, s, ctx) {
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
   const conflict = dirty || !!tree;
-  let fix, split, base, now, built = null;
+  let fix, split, base, now, built = null, waiting = false;
   if (conflict) {
     const at = ctx.baseAt?.() ?? null;
     now = at ? { head: s.head, ...at } : undefined;
@@ -306,9 +306,15 @@ export function fixCall(t, s, ctx) {
     built = buildRead(rest, ctx, gate);
     // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
     // none of them, and buildCall holds its re-run while a check in its own run is still running.
+    // With no try left at this head, a red check a worker would fix is the person's now: the driver's
+    // reruns still run, and a green head still merges, but the pass says so rather than wait in silence.
+    // Only that stuck answer skips the wait (`waiting`); the extra try, or a hold, still waits for it.
+    const noTryLeft = spent(done, fixedAt(done, s.head));
     if (gate.pending.length) {
       const only = built && rest.every((f) => built.names.includes(f.name));
-      return only && (built.call.call === 'build' || built.call.call === 'rebuilt') ? built.call : null;
+      if (only && (built.call.call === 'build' || built.call.call === 'rebuilt')) return built.call;
+      if (!noTryLeft) return null;
+      waiting = true;
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     const { mine, notMine } = split;
@@ -323,9 +329,12 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
-    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
+    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
+      if (!noTryLeft) return null;
+      waiting = true;
+    }
     base = againstBase(t, s.head, mine, notMine, ctx);
-    if (base?.held) return base.held;
+    if (base?.held) return waiting ? null : base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
@@ -333,7 +342,10 @@ export function fixCall(t, s, ctx) {
   // A try beside a check the pass builds tells its worker to leave that check red. With no try left the
   // head is final, so its build runs beside the stuck answer (besideStuck).
   const withBuilds = (c) => (built && c.call === 'requeue' ? { ...c, fix: { ...c.fix, builds: built.names } } : besideStuck(c, built));
-  if (spent(done, fixedAt(done, s.head))) return withBuilds(spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base));
+  if (spent(done, fixedAt(done, s.head))) {
+    const c = spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base);
+    return waiting && c.call !== 'stuck' ? null : withBuilds(c);
+  }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
 // A requeue that read the base carries the base red record to keep, null once none is held.

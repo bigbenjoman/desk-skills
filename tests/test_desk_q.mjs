@@ -2554,8 +2554,6 @@ try {
     const lock = join(state935(name), 'merge-driver.lock.d');
     mkdirSync(lock, { recursive: true });
     writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
-    const at = new Date(NOW - 56 * 60000);
-    utimesSync(lock, at, at);
     if (log != null) writeFileSync(join(state935(name), 'merge-driver.log'), log);
   };
   live935('up1', '16:53:03Z merge driver up: repo=acme/up1\n16:53:25Z no ready batch PRs\n');
@@ -2564,7 +2562,10 @@ try {
   writeFileSync(join(state935('stop'), 'supervisor.json'), JSON.stringify({ driver: { pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: gh is signed out' } }));
   writeFileSync(join(state935('stop'), 'merge-driver.log'), 'FAIL: gh is signed out\nmerge driver exited 1\n');
   W935.loaded('up1', 'up2', 'up3', 'stop');
-  const counts935 = (name) => lines(W935.run('--plain', name).out)[1];
+  // desk-q ages the driver from its own clock, not the suite's NOW: each lock is dated 56m 30s before
+  // the run that reads it, so the suite's time on a slow runner never moves the age to 57m.
+  const aged935 = () => { const at = new Date(Date.now() - (56 * 60 + 30) * 1000); for (const n of ['up1', 'up2', 'up3']) utimesSync(join(state935(n), 'merge-driver.lock.d'), at, at); };
+  const counts935 = (name) => { aged935(); return lines(W935.run('--plain', name).out)[1]; };
   t('DS-935 AC1 a live merge driver with no worker: the Queue counts line names it, its age and the last line it logged',
     counts935('up1').endsWith('│ ✓ 0 done, not shown │ ▸ merge driver up 56m · last: 16:53:25Z no ready batch PRs'), true);
   t('DS-935 AC1 a driver that has logged nothing yet says so, and a long last line is cut to 100 characters',

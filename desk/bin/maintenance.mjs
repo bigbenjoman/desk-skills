@@ -31,7 +31,7 @@ import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
-import { bootTime } from './pass/shared.mjs';
+import { bootTime, runsInCloud } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -102,8 +102,8 @@ export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).f
 const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
 
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so the
-// window neither waits for one nor stops it, in any repo.
-export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
+// window neither waits for one nor stops it, in any repo; a review try on a cloud ticket's PR runs here.
+export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 
 // A queue's workers running on this computer, as rows stopForWindow can stop: its running tickets, and
 // its base conflict fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket,
@@ -274,7 +274,7 @@ function newestPassed(git, src, base, head) {
 const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
 // A ticket handed off to Stage 7 whose session has not started yet: it is triaged with its handoff
 // pending (pass.mjs), not running, and its next spawn would start on whatever bin is installed then.
-const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && t.location !== 'cloud';
+const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && !runsInCloud(t);
 const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? {}).filter((t) => !runningHere(t) && awaitingStage7(t))];
 
 // The notification for main's failed check, which release.json gives to the repo whose pass first saw
