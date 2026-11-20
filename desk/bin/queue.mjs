@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -57,7 +57,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop', 'finish'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -211,6 +211,29 @@ let exitedPark = null;
 // pr, fetchError }, its own open PR (handoff.mjs openPrOf), whether its head could be fetched, and the
 // queue fields that chose it, checked again under the lock.
 let prePr = null;
+// Read before the queue lock as well, for `finish`: the PR it names, as GitHub shows it, or { error }.
+let finishPr = null;
+
+// finish <TICKET> --pr <n>: the orchestrator finished a parked ticket's last step itself (recovery's
+// "a single remaining step" row), so the ticket is recorded done on its PR as the pass records one whose
+// draft PR it opened: state done, the park cleared, result.pr and a summary, draft_pr while it is a draft.
+// Refused unless the ticket is parked and the PR is open or merged, from this repo, on the ticket's
+// branch, into the batch's base: the merge driver merges by that branch.
+function finish(q, key, n, pr) {
+  const t = ticket(q, key);
+  if (t.state !== 'parked') throw new Error(`${key} is ${t.state ?? 'in no state'}, not parked: finish records done only a parked ticket whose last step you finished`);
+  if (pr.error) throw new Error(`gh could not read PR #${n} on ${hereRepo() ?? 'this repo'} (${pr.error})`);
+  if (pr.isCrossRepository) throw new Error(`PR #${n} is from a fork, not this repo: nothing recorded`);
+  if (!['OPEN', 'MERGED'].includes(pr.state)) throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open or merged: nothing recorded`);
+  if (t.branch && pr.headRefName !== t.branch) throw new Error(`PR #${n} is from ${pr.headRefName}, not ${key}'s branch ${t.branch}: nothing recorded`);
+  const base = baseOf(q);
+  if (pr.baseRefName !== base) throw new Error(`PR #${n} is into ${pr.baseRefName}, not this batch's base ${base}: nothing recorded`);
+  const was = String(t.park?.question ?? '').split('\n')[0].slice(0, 120);
+  applySet(t, [...doneOnPr(n, { draft: pr.isDraft, summary: `PR #${n}: its last step finished by the orchestrator, after the worker parked${was ? ` (${was})` : ''}` }),
+    ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
+  save(q);
+  return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
+}
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
@@ -694,7 +717,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer', 'finish'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -709,6 +732,17 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
     const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
     prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
   }
+}
+// finish's gh read, like handback's, runs before the lock.
+const finishAt = cmd === 'finish' ? args.indexOf('--pr') : -1;
+if (cmd === 'finish') {
+  const at = finishAt;
+  const n = at < 0 ? '' : String(args[at + 1] ?? '');
+  if (!args[0] || args[0].startsWith('--') || !/^[1-9][0-9]*$/.test(n)) throw new Error('usage: queue.mjs finish <TICKET> --pr <PR number>');
+  try {
+    finishPr = JSON.parse(execFileSync('gh', ['pr', 'view', n, ...(hereRepo() ? ['--repo', hereRepo()] : []), '--json', 'number,state,isDraft,headRefName,baseRefName,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (e) { finishPr = { error: String(e.stderr ?? e.message ?? e).trim().split('\n').pop() }; }
+  finishPr.n = n;
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
@@ -1037,6 +1071,11 @@ switch (cmd) {
     const note = rest.join(' ').trim();
     if (!key || !note) throw new Error('usage: queue.mjs handback <TICKET> "<what the person did>"');
     console.log(handback(q, key, note));
+    break;
+  }
+
+  case 'finish': {
+    console.log(finish(q, args[0], finishPr.n, finishPr));
     break;
   }
 

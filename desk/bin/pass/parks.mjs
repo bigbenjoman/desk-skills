@@ -29,7 +29,7 @@
 //   unpromoted {key, into}        -> intake.mjs unpromotedBase(key, into): the branch key merged into instead, and its promotion PR into `into`
 //   landed-here {key}             -> whether key is in another configured repo, or landed on the default branch
 import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS, promotionWords,
-  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS } from '../batch-state.mjs';
+  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS, doneOnPr } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
@@ -83,8 +83,7 @@ function* settleClear(t, s) {
   // the harvest records one: the undraft step and the merge driver take it from there.
   const merges = yield { type: 'merge-park', key: t.key, cond: c };
   if (merges?.call === 'done') {
-    yield set(t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
-      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
+    yield set(t.key, ...doneOnPr(merges.pr, { summary: `parked only on who merges PR #${merges.pr}, which desk now merges: recorded done` }),
       // Link steps alone (keepLinks) do not hold the park's words: those are added after them.
       ...(t.follow_on?.length > linkSteps(t.follow_on).length ? [] : [parkFollowOn(ownWords(t.park.question), t.follow_on)]), 'follow_on_comment=due');
     yield say(t.key, 'done', `${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${merges.grant})`);
@@ -114,7 +113,7 @@ function* settleClear(t, s) {
   // Jira could not be read is left parked, not recorded done.
   if (own.pr != null && own.pr === mergedTailPr(t) && (yield { type: 'tail-after-merge', key: t.key }) !== false) return;
   if (own.pr != null) {
-    if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own.pr} merged`, `result.pr=${own.pr}`] }) {
+    if (yield { type: 'write', key: t.key, fields: doneOnPr(own.pr, { summary: `closed out: ${what}, and its PR #${own.pr} merged` }) }) {
       yield say(t.key, 'clears', `${t.key}: "${what}" holds and its PR #${own.pr} merged: recorded done`);
     }
     return;
