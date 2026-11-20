@@ -216,6 +216,13 @@ t('DS-395 AC4 a compound command item is named with its row', d.out.split('\n')[
 t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLISTED §4 Related tests item "${compound}" is a compound or env-prefixed shell command`), true);
 t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
 t('DS-395 AC4 and exits 1', d.code, 1);
+
+// A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
+t('a Local services item with no service name is named, where workers start services', d.out,
+  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('and `name: port` reads as its name', d.code, 1);
+t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.

@@ -309,7 +309,7 @@ check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ]
 # rows3 <key>=<value> ... -> a §3 table holding just those rows
 rows3(){ local kv; printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
   for kv in "$@"; do printf '| `%s` | x | `ask` | `%s` |\n' "${kv%%=*}" "${kv#*=}"; done; }
-SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) |'
+SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) `search: 8108` |'
 : > "$T/repo/compose.yaml"; UP="docker compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps"
 denied_line(){ [[ "$out" == *"CONFIG_DENIED: $1 ($2)"* ]]; }
 
@@ -327,6 +327,7 @@ check "AC3 Storybook and Python capture under the browser lock" \
 check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
       "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
 check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
+check "an item written name: port is that service" '[[ "$out" != *"does not start with a compose service name"* ]] && ok "$UP search"'
 check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
       "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
 check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'
