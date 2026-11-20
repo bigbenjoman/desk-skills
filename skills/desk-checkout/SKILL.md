@@ -194,7 +194,8 @@ says, and give the path. Under it, briefly:
 - **Check before posting**: only what no read settles. Before handing over, run every check a
   read §3 grants can answer (a PR's state on GitHub, a ticket's in Jira, whether a message reached
   a channel) and put the answer in the post. What is left, each with its source and the read that
-  was missing ("#1534 shown in review from Claude's narration; GitHub says open").
+  was missing ("was the #release update sent? No Slack connector"; "#1534 in review per Claude's
+  narration; GitHub not readable: §3 read-own-work is no").
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
 - **Missing sources**: any role with no connector or no permission, and the fix.
 
