@@ -253,6 +253,11 @@ const snapped = checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, 
 t('check: a snapshotted link is advisory, naming the snapshot', `${snapped.map((f) => f.severity).join(' ')} ${snapped[0]?.message.includes(`snapshotted at ${join(st, 'designs/DS-70')}`)}`, 'advisory true');
 t('check: a feature batch reads the repo state\'s snapshot', checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: join(st, 'batches/DS-50') })[0].severity, 'advisory');
 t('check: another artifact is still blocking', checkTicket(issue('h2. Design\nhttps://claude.ai/design/p/other'), { root: r5, dir: DIR, state: st })[0].severity, 'blocking');
+// DS-860: a Design section that links its epic's canvas but says no board for the ticket exists.
+const noBoard = checkTicket(issue(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' });
+t('DS-860 AC1: a link the ticket uses no board from is advisory, saving nothing', `${noBoard.map((f) => f.severity).join(' ')} ${noBoard[0]?.message.includes('uses no board from it, so nothing needs saving')}`, 'advisory true');
+const named = checkTicket(issue(`h2. Design\nBoard "Order summary" on ${URL1}. No board for the empty state.\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' });
+t('DS-860 AC2: a link naming a board for the ticket still blocks', named.map((f) => f.severity).join(' '), 'blocking');
 
 // ---- check reads the base on origin, not a checkout's working tree ----
 // A main checkout behind origin/main: the canvas is merged on origin only, and another sits in the

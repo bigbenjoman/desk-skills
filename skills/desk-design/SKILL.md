@@ -58,6 +58,8 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
   not block a build.
 - `advisory … but not its saved copy <path>`: saved, but the Design section lacks the repo path:
   add it beside the link (end of step 2).
+- `advisory … uses no board from it`: the Design section links a canvas but says no board applies to
+  the ticket, so nothing needs saving.
 - `blocking` (exit 1): no copy is saved on the base. It names the URL and the folder: step 2.
 
 ## 2. Save a canvas or deck

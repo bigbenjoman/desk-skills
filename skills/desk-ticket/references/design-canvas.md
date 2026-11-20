@@ -35,8 +35,14 @@ than publishes: read `artifact-type/dc-runtime.js` instead. The save finds an as
 file name, saves it as `assets/<id>.<ext>` and points the boards at it, and saves `dc-runtime.js` as the
 `support.js` they load. `missing: asset <id>` is an asset still to read.
 
-A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
-(`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
+**An `advisory` that says `uses no board from it`** means the Design section links a canvas (often
+its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
+without it.
+
+A `blocking` line means no copy is saved yet. **First, before listing or reading any file, check who
+owns the artifact**: list it with the Artifact tool, and if the listing shows it was created outside
+the user's organisation, stop there and ask for access or an export (below), saving nothing.
+Otherwise list the artifact's files (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
 the `support.js`, stylesheets and fonts they load, with `paths` and `out_dir: $DESK_STATE/designs/<TICKET>/`.
 Then, on the branch after Stage 1:
 

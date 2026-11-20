@@ -1037,7 +1037,10 @@ export function designFact(text, { root, dir, ref, state }) {
 // when it has one, else under the ticket itself. One with a snapshot under <state> is advisory: the
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
-// the link's kind is unknown, so it blocks.
+// the link's kind is unknown, so it blocks, unless the section says the ticket uses no board from it
+// ("no board for this ticket exists yet", "uses no board", "no board yet"): then nothing needs
+// saving, and it is advisory. "No board for the empty state" beside a named board still blocks.
+const NO_BOARD = /\bno\s+boards?\b[^.\n]*\b(?:(?:this|the)\s+ticket|yet)\b|\b(?:uses|has|needs)\s+no\s+boards?\b/i;
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
@@ -1057,7 +1060,8 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
       const page = snap && kindAt(snap) === 'page';
-      findings.push(!snap ? { severity: 'blocking', message }
+      findings.push(!snap && NO_BOARD.test(section) ? { severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says the ticket uses no board from it, so nothing needs saving` }
+        : !snap ? { severity: 'blocking', message }
         : page ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, a single page rather than a canvas or deck, so it does not block: the worker may save it from there` }
           : { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` });
     } else if (!section.includes(saved.path.replace(/\/$/, ''))) {
