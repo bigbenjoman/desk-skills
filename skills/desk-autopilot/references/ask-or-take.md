@@ -204,15 +204,18 @@ recommendation like any other.
 Once the pass loop runs (Stage 4 on), a question you would ask (a mid-run park, a §3 `ask` the pass
 reports, such as a conflict under `pr-conflict-reviewed`, or one of your own about the batch) never
 goes to an `AskUserQuestion` carousel or any other prompt that waits: the session would block on it,
-and the loop with it, so nothing is harvested, spawned or merged until the user is back. Put it to
-needs-you instead, and keep running passes for every other ticket:
+and the loop with it, so nothing is harvested, spawned or merged until the user is back. Keep
+running passes for every other ticket, and put the question where an answer comes back:
 
-- **A ticket's question:** park the ticket on it (`queue.mjs park <TICKET> "<question, with each
-  option and your recommendation>"`). The pass's `push` carries it, `desk-needs-you` lists it, and the
-  answer (`answer.mjs`) requeues it.
-- **Anything else** (a config row, a batch-wide call): `node ~/.claude/desk/bin/needs-you.mjs ask
-  <repo> "<question, with each option and your recommendation>"`, and send it in this pass's
-  `PushNotification` (*Notify*).
+- **A ticket's question**, or a batch-wide one a ticket waits on: park that ticket on it
+  (`queue.mjs park <TICKET> "<question, with each option and your recommendation>"`). desk-needs-you
+  lists it, and the next check-in digest carries it; a park is never pushed on its own (*Notify*).
+  The answer (`answer.mjs`, or desk-needs-you, which messages you in a session-run batch) is only
+  recorded: requeue the ticket yourself once it is in (Stage 5).
+- **A batch-wide call no ticket waits on**: put it in your report and the status table, with each
+  option and your recommendation, and run the loop without it. It is the user's to answer when they
+  are back in the conversation. Never `needs-you.mjs ask`: that records a step for the person to
+  take, with no answer for the loop to read.
 
 A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question
 the user asks you, or answers, while they are in the conversation with you.
