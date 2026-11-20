@@ -42,7 +42,7 @@ How to resume, by what was parked:
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
 | triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
-| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload |
+| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload, then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base) |
 | a worker's `AUTOPILOT_PARK` whose only blocker is a red check §4 Check builds names (`desk-env list check-builds`): someone to run its build | not the person's. The pass records one done at harvest when its draft PR is red on such checks alone, and its undraft step runs the build. One still parked on lane A, B, D or E: requeue it, as its worker finishes DONE on that check (worker contract Stage 5 file) |
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
@@ -64,6 +64,11 @@ with no running worker and 2 for a key the queue does not hold. Stopping every w
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
 you go idle, which is the one wait that works.
+
+Sessions see and message only those on their own login. A worker on another login than yours (the
+repo's §3b Subscription, or a borrowed login) cannot reach you, nor you it: its briefing says so,
+and its park reaches you at your next pass. A park on a write it may not make keeps the exact text
+as the park's `approve` (`{kind, target, body}`), which needs-you shows whole: relay that, verbatim.
 
 ## Answering a live worker
 
@@ -193,9 +198,13 @@ re-running a ticket from scratch.
 
 ## Stalls that do not look like stalls
 
-- **A hung `codex exec` keeps the log growing.** It emits a `tool_progress` heartbeat every 30s, so
-  log-growth stall detection never fires: one call sat 8h29m and only 4 workers spawned all night.
-  Check the newest `tool_progress` `elapsed_time_seconds` in the log tail; a single
+- **A hung `codex exec` keeps the log growing, for ten minutes.** It emits a `tool_progress`
+  heartbeat every 30s, so the log grows while it hangs. The harness caps a foreground Bash call at
+  600s: past that it moves the call to the background ("did not complete within its 600s timeout and
+  was moved to the background") and the heartbeats stop, and a backgrounded call still running ten
+  minutes later is stopped. So the log then goes quiet and the pass's quiet and wedged counts take
+  over (an older harness heartbeated one call for 8h29m). Inside those ten minutes, check the newest
+  `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
 - **A worker at a usage limit is paused, not dead.** Any limit counts: the 5-hour one, the weekly

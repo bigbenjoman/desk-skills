@@ -67,7 +67,7 @@ const BASE_CONTAINS = 'base-contains';
   const s = clearsSnap(byKey(parked('A', PR_MERGED, { result: { pr: 7 } })));
   const as = clears(s, { check: { holds: true }, 'own-merged': { pr: 7 } });
   t('its own PR merged: closed out, recorded done', j(as.find((a) => a.type === 'write').fields),
-    j(['state=done', 'park=null', 'handoff_stage=null', 'result.summary=closed out: PR #41 merged, and its PR #7 merged', 'result.pr=7']));
+    j(['state=done', 'park=null', 'handoff_stage=null', 'result.pr=7', 'result.summary=closed out: PR #41 merged, and its PR #7 merged']));
   t('and its line is said once the write is recorded', j(lines(as)), j(['A: "PR #41 merged" holds and its PR #7 merged: recorded done']));
   t('a refused write says nothing', j(lines(clears(s, { check: { holds: true }, 'own-merged': { pr: 7 }, write: false }))), '[]');
   const unread = clears(s, { check: { holds: true }, 'own-merged': { error: 'gh down' } });

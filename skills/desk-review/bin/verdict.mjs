@@ -219,7 +219,7 @@ export function tally(r) {
       if (f.refuted_by != null) no(`${name}: an UNREFUTED finding has no refuted_by`)
       cross = false
     } else {
-      if (!VENDORS.includes(f.refuted_by)) no(`${name}: refuted_by must be claude or codex`)
+      if (!VENDORS.includes(f.refuted_by)) no(`${name}: refuted_by must be the refuter's vendor, claude or codex, not its agent (${JSON.stringify(f.refuted_by ?? null)})`)
       if (f.refuted_by === seat.vendor) cross = false
     }
     if (f.result === 'DUPLICATE' && (f.duplicate_of == null || f.duplicate_of === f.id)) no(`${name}: a DUPLICATE names the finding it duplicates in duplicate_of`)

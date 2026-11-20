@@ -6,7 +6,8 @@
 // The figures come from the `rate_limit_event` lines Claude Code writes to every worker's stream-json
 // log (tests/fixtures/usage-limit-allowed.json): `rate_limit_info.unifiedWindows.seven_day` holds
 // `utilization` (0–1) and `resetsAt` (epoch seconds). The window resets at `resetsAt`, read rather
-// than assumed.
+// than assumed. A session writes one at its start and seldom another, so a reading is about as old
+// as the newest worker start; the probe call (usage-probe.mjs) fills the gaps.
 import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
@@ -131,8 +132,8 @@ function eventsOf(path, st) {
 }
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a
-// worker writes one after most API calls, so the tail almost always has the newest, and a pass reads
-// every repo's recent logs. A round moved aside is gzipped, so it is read whole. '' when it cannot be
+// session writes one at its start and seldom after, so the tail holds the newest only when a session
+// started late in the log; otherwise the whole log is read. A pass reads every repo's recent logs. A round moved aside is gzipped, so it is read whole. '' when it cannot be
 // read.
 const TAIL_BYTES = 1024 * 1024;
 function tail(path, size) {

@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, writeFileSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SCREENSHOT_FILE, CODE_SPAN, expandHome, configValue, configValues, ghRepo, permission } from './desk-env.mjs';
+import { SCREENSHOT_FILE, expandHome, configValue, configValues, ghRepo, permission, CODE_SPAN as SPAN } from './desk-env.mjs';
 import { failureLines } from './gate.mjs';
 
 export const DISPATCH_GRACE_MS = 30 * 60 * 1000;
@@ -40,17 +40,16 @@ export function parseEvidenceRow(items) {
 // saying what to shoot.
 // A cell is never inside a code span or a fenced block: a body that writes `_drag <file>_` there is
 // describing the cell, not leaving one (DS-381). A span stays on its line and closes only on a run of
-// its own length; a backtick run with no partner is left as text, so it cannot hide the cells below it
-// (desk-env CODE_SPAN).
+// its own length; a backtick run with no partner is left as text, so it cannot hide the cells below it.
 const FENCED = /^[ \t]*(```|~~~)[^]*?^[ \t]*\1[^\n]*$/gm;
-const outsideCode = (body) => String(body ?? '').replace(FENCED, '').replace(CODE_SPAN, '');
+const outsideCode = (body) => String(body ?? '').replace(FENCED, '').replace(SPAN, '');
 export const dragCells = (body) => (outsideCode(body).match(/_drag \S+_/g) ?? []).length;
 // The body with each cell whose file `fills` ({ [file]: text }) has a value replaced by that text, and
 // every other cell, and anything in code, left as it is.
 export function swapCells(body, fills) {
   const kept = [];
   const hide = (m) => { kept.push(m); return `\u0000${kept.length - 1}\u0000`; };
-  const swapped = String(body ?? '').replace(FENCED, hide).replace(CODE_SPAN, hide)
+  const swapped = String(body ?? '').replace(FENCED, hide).replace(SPAN, hide)
     .replace(/_drag (\S+)_/g, (cell, f) => (Object.hasOwn(fills, f) ? fills[f] : cell));
   return swapped.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[Number(i)]);
 }

@@ -109,7 +109,8 @@ confident false verdict. If the ref is missing the search could not run: no find
 **After the round, `git status --porcelain`.** The tree was clean at Phase 0, so anything listed now,
 other than this skill's own scratch files (`desk-review-codex-brief-<run>.txt`, any
 `desk-review-<seat>-brief-<run>.txt`, `desk-review-results-<run>.json` and `desk-review.md`, written
-by name), is a finder's edit: save the
+by name, and `/desk-ticket`'s untracked `.claude/desk-ticket-<TICKET>.json`, read with
+`--untracked-files=all` as Phase 0 does), is a finder's edit: save the
 stray diff to the scratchpad, restore with `git checkout -- <paths>`, re-run that finder, and say in
 the report that a round was discarded. Otherwise the refutation confirms findings about code nobody
 pushed.

@@ -49,7 +49,8 @@ EOF
 }
 config
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 printf 'echo "[spawn] ticket=$1"\n' > "$T/desk/bin/spawn-worker.sh"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 # Every PR reads as open and out of draft, so a park that clears when one is ready holds.

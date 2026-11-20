@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -36,7 +36,8 @@ import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
-import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
+import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { claimedPorts } from './port-claims.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -121,7 +122,23 @@ function verdict(status, message, fields = {}) {
   return code;
 }
 const refuse = (message) => process.exit(verdict('error', message));
-crashShowsPerson((e) => verdict('error', e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`));
+// A crash after the pass has changed something (started a worker, moved, parked or failed a ticket)
+// says what it had done, in the message and as `before_crash` in the JSON, so nobody reads the error
+// as "nothing happened this pass" and starts a ticket that already has a session.
+const doneSoFar = () => {
+  let r;
+  try { r = report; } catch { return null; } // a crash before the report exists changed nothing it records
+  const got = Object.fromEntries(['spawned', 'advanced', 'parked', 'failed'].map((k) => [k, [...(r?.[k] ?? [])]]).filter(([, v]) => v.length));
+  return Object.keys(got).length ? got : null;
+};
+const crashed = (e) => {
+  const what = e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`;
+  const did = doneSoFar();
+  if (!did) return verdict('error', what);
+  const lines = Object.entries(did).flatMap(([k, v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
+  return verdict('error', `${what}\n${lines.join('\n')}`, { before_crash: did });
+};
+crashShowsPerson(crashed);
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
@@ -178,6 +195,14 @@ function orchestratorName() {
     }
   } catch { /* fall through to the honest answer below */ }
   return '(unresolved — try ListAgents once before assuming nobody is listening)';
+}
+// The briefing's orchestrator line for a worker starting on `login`. Sessions see and message only
+// the sessions in their own login's folder, so a worker on another login than the orchestrator's cannot
+// reach it: it is told so, and skips SendMessage (the worker contract's park step 2). Only a pass the
+// orchestrator's session runs knows that login, as its own: one the supervisor runs does not.
+function orchestratorLine(login) {
+  if (PASS_BY === 'session' && login && !sameLogin(OWN_LOGIN, login)) return `none reachable: you run on login ${login.name ?? login.dir}, the orchestrator on ${OWN_LOGIN.configDir ? OWN_LOGIN.name : 'the default login'}, and a session cannot message one on another login. Skip SendMessage: your AUTOPILOT_PARK line and park file reach it at its next pass`;
+  return orchestratorName();
 }
 
 // Two orchestrators would both spawn against the same tickets. "Claim the queue" was documented
@@ -335,7 +360,8 @@ const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
   if (!DRY && off != null) q('set-batch', `subscription_off=${off}`);
 }
 const PROBES = new Map();
-// At most one probe a login a pass, made only when something on that login is held on the limit.
+// At most one probe a login a pass, made when something on that login is held on the limit, or when
+// pacing has no reading for it (at most once per PROBE_EVERY_MS).
 const probeOnce = (login = OWN_LOGIN) => {
   const k = loginKey(login);
   if (!PROBES.has(k)) PROBES.set(k, probeNow({ login }));
@@ -868,6 +894,12 @@ const ADVANCE_HANDLERS = {
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { light: true }) }),
   kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
   park: (a) => { q('park', a.key, a.question); },
+  'park-approve': (a) => {
+    const approve = parkApprove(STATE, a.key, a.question);
+    if (!approve) return;
+    q('set', a.key, `park.approve=${JSON.stringify(approve)}`);
+    report.parked.push(`${a.key}: awaiting approval, ${approvalText(approve)}`);
+  },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {
     const m = mergeParkOf(s.t, parseClearsWhen(afterLastPark(s.log.path, 'AUTOPILOT_PARK_CLEARS_WHEN'), { here: GH_REPO }).cond);
@@ -1283,7 +1315,7 @@ function dropDuplicate(t) {
       remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`;
     }
   }
-  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr.number}`, `result.summary=its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}`);
+  q('set', t.key, ...doneOnPr(pr.number, { summary: `its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}` }));
   report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
   return true;
 }
@@ -1322,7 +1354,7 @@ function finishPush(t) {
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
-  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`, `result.summary=draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused`);
+  q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
   report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
@@ -1444,6 +1476,8 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 // included, is stopped with its session kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
+  // This pass's view, so a handoff harvested above and not yet written still holds the release.
+  selfView: queue(),
   running: runningWorkers(queue()),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,
@@ -1659,18 +1693,30 @@ if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { 
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
 const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
-const paceReading = () => loginReading(OWN_LOGIN);
+// It reads the login this repo's new sessions start on (REPO_LOGIN), which is what the spawns it holds
+// would spend: the pass's own login is often another, whose workers never feed this one's reading.
+// With no reading for that login at all, it probes it once too, rather than letting the guard go
+// blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
+// is not repeated every pass. A probe that succeeds leaves a reading that lasts the recent window.
+const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
-if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() })) {
-  const p = probeOnce();
+const lastProbe = lastProbeAt(usageDir(), PACE_LOGIN);
+// A plan whose newest event names no 7-day window (READING.none) has nothing a probe could read.
+const noReading = !READING.seven_day && !READING.none?.includes('seven_day') && !PACE.bad && !/pacing off/.test(PACE.line)
+  && (lastProbe == null || Date.now() - lastProbe > PROBE_EVERY_MS);
+if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() }))) {
+  const p = probeOnce(PACE_LOGIN);
   if (p.ok) {
     READING = paceReading();
     PACE = usagePace({ usage: READING.seven_day });
     paceProbe = '; read by a probe call just now';
   } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
 }
+// "No recent data" names the login it read, so a reading kept under another login is not mistaken for none.
+if (/^usage: no recent data/.test(PACE.line)) PACE = { ...PACE, line: PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default'}`) };
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -2266,14 +2312,15 @@ function otherQueuePorts() {
   }
   return ports;
 }
-// Assign a port nothing else holds. Three things make one unavailable: another ticket in this batch
+// Assign a port nothing else holds. Four things make one unavailable: another ticket in this batch
 // already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
-// a running worker in another batch's queue holds it (two batches' worker blocks can meet), or something
+// a running worker in another batch's queue holds it (two batches' worker blocks can meet), a peer
+// session claimed it at handshake (port-claims.mjs: its server may be down just now), or something
 // is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
 // spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
 async function freePort(own = null) {
   const now = queue();
-  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts()]);
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
   if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
   let port = E.workerPortFloor();
   while (taken.has(port) || await E.portInUse(port)) port += 1;
@@ -2462,7 +2509,7 @@ const tailBrief = (t) => `## Your PR has merged: run only the steps after the me
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
-function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
+function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null, login = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
@@ -2480,7 +2527,7 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
       ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
       : '';
   const parts = (h) => [
-    `Orchestrator session name: ${orchestratorName()}`,
+    `Orchestrator session name: ${orchestratorLine(login)}`,
     `Answer file to wait on: ${answerFile}`,
     `Screenshot directory (print it as AUTOPILOT_IMAGES once it holds your screenshots; captured none, print nothing): ${join(STATE, 'images', t.key)}/`,
     '',
@@ -2612,7 +2659,7 @@ async function spawnHandoff(t, pick) {
   if (refused) return parkIt(refused);
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
+  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }), { login: pick.login });
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -2692,7 +2739,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   attempts += 1;
   const model = models.off ? '' : models[tierFor({ key })];
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...pick.vars };
-  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true });
+  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true, login: pick.login });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
   if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
@@ -3024,7 +3071,7 @@ for (const t of spawnable) {
 
   const resumed = resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
-  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
+  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed, login: pick.login });
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.limit) {
@@ -3951,14 +3998,24 @@ function fileEvidenceFix(g) {
     const grant = E.permission('jira-create');
     if (grant !== 'yes') return { why: `filing it needs config §3 ${E.permissionKey('jira-create')} to be "yes" (it is "${grant}")` };
     mkdirSync(EVIDENCE_DIR, { recursive: true });
-    const file = join(EVIDENCE_DIR, `fix-${id}.md`);
+    // One body file per failure, rewritten on each try and removed once filed, so refused tries
+    // leave one file, not one a pass.
+    const file = join(EVIDENCE_DIR, `fix-${createHash('sha1').update(g.key).digest('hex').slice(0, 8)}.md`);
     // A workflow fix is small: S, in the §4 Size field, or the body's first line where there is none.
     const sizeField = String(E.configValue('jira-size-field') ?? '').trim();
     const sized = sizeField && !E.isNone(sizeField);
     writeFileSync(file, sized ? body : `Size: S\n\n${body}`);
-    const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])]);
+    // desk-jira sends a body only from inside $DESK_STATE (or the repo or a temp dir).
+    const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])], { env: { ...process.env, DESK_STATE: STATE } });
     fix = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.out)?.[1];
-    if (!r.ok || !fix) return { why: `desk-jira create was refused (${r.out.split('\n').pop()})` };
+    if (!r.ok || !fix) {
+      // Every line it printed (a lint refusal's findings sit above its last line), and the body
+      // file it was given wherever those lines do not name it (a Jira field error does not).
+      const said = r.out.split('\n').map((l) => l.trim()).filter(Boolean).join(' / ');
+      const quoted = said.length > 600 ? `${said.slice(0, 600)}…` : said;
+      return { why: `desk-jira create was refused (${quoted})${quoted.includes(file) ? '' : `; its body is ${file}`}` };
+    }
+    try { unlinkSync(file); } catch { /* already gone */ }
   } else {
     fix = `evidence-fix-${id}`;
     mkdirSync(join(STATE, 'tickets'), { recursive: true });
@@ -4357,13 +4414,15 @@ for (const t of stuck) report.waiting.push(stoppedHold(t)
 // holds, waits on itself: one line names the cycle. The PR is read for its merge state, which the done
 // tickets' reads above never cover for a held ticket's PR, so a conflict is said there, or on the park's
 // own item when there is no cycle (`parkNotes`, read into the verdict). No fix try goes to it: the hold
-// may still be the person's to settle.
+// may still be the person's to settle. A PR closed unmerged is noted the same way: the park can never
+// clear, and a note keeps it with the person rather than the pass (pass/report.mjs verdictOf).
 const parkNotes = new Map();
 {
   const states = new Map();
   const conflictOf = (n) => {
     if (!states.has(n)) states.set(n, readPrStatus(n));
     const s = states.get(n);
+    if (s?.state === 'CLOSED') return `PR #${n} was closed without merging`;
     return s?.state === 'OPEN' && s.mergeState === 'DIRTY' ? `PR #${n} conflicts with ${s.base ?? REPO_DEFAULT}` : null;
   };
   for (const w of prParkWaits(qNow, (t) => !putOff(t) && !waitingOnRead(t))) {
@@ -4373,6 +4432,14 @@ const parkNotes = new Map();
     const holds = w.path.slice(0, -1).map((k, i) => `${k} is held behind ${rest[i]}`);
     report.waiting.push(`${w.park}: CYCLE — ${andList([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${andList(holds)}` +
       `${conflict ? `. ${conflict}` : ''}. Neither moves until you answer ${w.park}'s park or release ${owner} (${E.releaseCommand(owner)})`);
+  }
+  // A park on another repo's PR merging (prParkWaits reads only this repo's) is noted once that PR
+  // is closed unmerged, through the read the park check already made. A read that fails leaves it
+  // unnoted: the park check says it could not check.
+  for (const t of Object.values(qNow.tickets ?? {})) {
+    const c = t.park?.clears_when;
+    if (t.state !== 'parked' || isHeld(t) || c?.kind !== 'pr-merged' || !c.repo || putOff(t) || waitingOnRead(t)) continue;
+    try { if (clearsRead.pr(c.pr, c.repo)?.state === 'CLOSED') parkNotes.set(t.key, `PR ${c.repo}#${c.pr} was closed without merging`); } catch { /* unread */ }
   }
 }
 if (parkNotes.size) out.push(`PARK NOTES: ${[...parkNotes].map(([k, n]) => `${k} (${n})`).join(', ')}`);

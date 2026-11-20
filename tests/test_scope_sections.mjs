@@ -86,6 +86,13 @@ t('a deletion runs everything', scope([{ status: 'D', path: 'desk/bin/queue.mjs'
 t('a rename runs everything', scope([{ status: 'R', path: 'desk/bin/q2.mjs', from: 'desk/bin/queue.mjs' }]), 'full: desk/bin/queue.mjs was renamed to desk/bin/q2.mjs');
 t('a file many suites reach runs those suites, not everything', scope(M('desk/bin/lock.mjs')), 'some: test_data.mjs test_drive.sh test_lint.sh test_pass.mjs');
 t('full runs every suite and checks every shell script', [decide(M('install.sh'), map).suites.length, decide(M('install.sh'), map).shells.length], [6, 7]);
+// A suite that replays other suites claims them with a covers: glob, and nothing they name.
+const replay = { ...tree, 'tests/test_replay.sh': '# suite: replay\n# covers: tests/test_d*.sh\nbash compare.sh' };
+const rmap = buildMap(Object.keys(replay), (p) => replay[p]);
+const rscope = (ch) => decide(ch, rmap).suites.join(' ');
+t('DS-920 a covers: glob claims the suites it matches', [[...(rmap.claims.get('tests/test_drive.sh') ?? [])], [...(rmap.claims.get('tests/test_data.mjs') ?? [])], [...(rmap.claims.get('tests/test_pass.mjs') ?? [])]], [['test_replay.sh'], [], []]);
+t('DS-920 a changed suite runs the suite that covers it', [rscope(M('tests/test_drive.sh')), rscope(M('tests/test_pass.mjs'))], ['test_drive.sh test_lint.sh test_replay.sh', 'test_lint.sh test_pass.mjs']);
+t('DS-920 a covered suite does not pass on what it names', rscope(M('desk/bin/drive.sh')), 'test_drive.sh test_lint.sh');
 
 // ---- this repo -----------------------------------------------------------------------------------
 const real = repoMap(R);
@@ -110,6 +117,7 @@ for (const [f, suite] of [['desk/bin/github-signin.mjs', 'test_playwright.mjs'],
   const d = decide(M(f), real);
   t(`${f} runs ${suite}, not everything`, [d.scope, d.suites.includes(suite)], ['some', true]);
 }
+t('DS-920 AC4 a changed pass suite runs test_compare_pass.sh', ['test_pass_other_repo.sh', 'test_pass_spawns.sh'].map((s) => decide(M(`tests/${s}`), real).suites.includes('test_compare_pass.sh')), [true, true]);
 const MERGE_DRIVER_SUITES = ['loop', 'reruns', 'approval', 'holds', 'review', 'tree'].map((s) => `test_merge_driver_${s}.sh`);
 t('merge-driver.sh reaches every merge driver suite', MERGE_DRIVER_SUITES.filter((s) => !decide(M('desk/bin/merge-driver.sh'), real).suites.includes(s)), []);
 t('a desk-pr reference reaches the desk-pr split suite', decide(M('skills/desk-pr/references/opening.md'), real).suites.includes('test_desk_pr_split.mjs'), true);

@@ -50,6 +50,12 @@ export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key,
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
 
+// A parked ticket recorded done on PR #pr, its park cleared: the `queue.mjs set` fields the pass writes
+// when it opens a refused worker's draft itself, and queue.mjs finish when the orchestrator finished the
+// last step. draft_pr only while the PR is a draft.
+export const doneOnPr = (pr, { draft = false, summary }) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr}`,
+  ...(draft ? [`draft_pr=${pr}`] : []), `result.summary=${summary}`];
+
 // The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
 // ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
 export const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
@@ -112,6 +118,21 @@ export function openQuestion(stateDir, t) {
   if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
+
+// The text a worker's park waits on approval of, from its park file's `approve` ({kind, target, body}),
+// or null: kept only when the file's question is the one the worker parked on, so an earlier round's
+// file is never read as this one's, and only with a body to relay.
+export function parkApprove(stateDir, t, question) {
+  let f;
+  try { f = JSON.parse(readFileSync(join(stateDir, 'parks', `${t}.json`), 'utf8')); } catch { return null; }
+  const a = f?.approve;
+  if (!a || typeof a.body !== 'string' || !a.body.trim() || String(f.question ?? '').trim() !== String(question ?? '').trim()) return null;
+  return { kind: String(a.kind ?? 'write'), target: a.target == null ? null : String(a.target), body: a.body };
+}
+
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
 
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.
@@ -430,6 +451,12 @@ export const settlesByScript = (t) => {
   const c = t?.park?.clears_when;
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
+
+// A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so
+// an idle batch holding one is rechecked every RUN_RECHECK_MS (supervisor.mjs), not IDLE_RECHECK_MS.
+const RUN_KINDS = new Set(['run-completed', 'checks-pass']);
+export const waitingOnRun = (t) => settlesByScript(t) && RUN_KINDS.has(t.park.clears_when.kind);
+export const RUN_RECHECK_MS = Number(process.env.DESK_RUN_RECHECK_MS) || 2 * 60 * 1000;
 
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
