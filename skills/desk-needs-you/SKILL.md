@@ -35,9 +35,6 @@ Otherwise it prints:
 <repo> <TICKET> <kind> <waited> | <what is needed> | 1. <action> (recommended: <why>) | 2. <action> | …
 ```
 
-An item awaiting approval of a write is followed by its exact text, between a
-`--- <TICKET> awaiting approval: … ---` line and an end line: show that text verbatim before you ask.
-
 `<repo>` is `<repo>:<batch>` for an item in a named batch (an epic's feature batch): pass it to
 `record` as printed.
 

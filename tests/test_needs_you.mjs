@@ -998,6 +998,8 @@ t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
 t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
   yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
+t('#775 and its one line, which the session asks from, points to that text',
+  yLine('Y-5').includes('post the comment below on ABC-9? Its exact text awaiting approval follows this line: show it verbatim before you ask.'), true);
 t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
   `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
 t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');

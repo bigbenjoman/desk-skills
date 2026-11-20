@@ -1462,8 +1462,10 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
     // What its worktree holds that origin does not, as the last pass read it.
-    // A gated write's exact text (park.approve) is printed whole under the question by listText.
-    const note = t.park?.unpushed ? `${capital(t.park.unpushed)}.` : undefined;
+    // A gated write's exact text (park.approve) is printed whole under the question by listText; the
+    // note points the session there, since it asks from this one line.
+    const approval = t.park?.approve?.body ? 'Its exact text awaiting approval follows this line: show it verbatim before you ask.' : '';
+    const note = [t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
     if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
