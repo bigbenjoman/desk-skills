@@ -2048,6 +2048,14 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
+  // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
+  put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
+    tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
+  const bpScr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__chi934')));
+  t('DS-934 a base-push item is a Needs you row, matching the count',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).shown} ${/Needs you · 1\b/.test(bpScr())} ${/base-push +◆ needs you +feat\/x is behind main/.test(bpScr())}`, '1 true true');
+  N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
+  t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
 }
 
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.

@@ -1576,7 +1576,12 @@ export function needsCount(r) {
   const rows = [], held = [];
   let putOff = 0;
   const items = [], offItems = [];
-  for (const x of [...countedBatchRows(r), ...needsRows(r)]) {
+  // A batch's base-sync, base-push and subscription-off items are no ticket's row, so they are items.
+  for (const x of countedBatchRows(r)) {
+    const { item, l } = judged(x.b, x, register(x.b));
+    if (l.status === 'put_off') { putOff++; offItems.push({ r: x.b, t: x.t, item }); } else items.push({ r: x.b, t: x.t, item });
+  }
+  for (const x of needsRows(r)) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
