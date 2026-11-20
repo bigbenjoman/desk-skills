@@ -170,6 +170,17 @@ check "the repo's settings are backed up before the retire" 'grep -q -- "--squas
 check "an unpinned merge allow the user added is reported and kept" \
   '[[ "$out" == *"retired  allow Bash(gh pr merge * --rebase)  (yours"* ]] && grep -q -- "--rebase)" "$R/.claude/settings.local.json"'
 check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.json" ] || ! grep -q desk-update-check "$HOME/.claude/settings.json"'
+# #734: a skill folder of the user's own where a vendored skill goes, which desk never installed (no
+# pristine copy), on an install with no terminal: moving it is asked and skipped, and it stays.
+rm -rf "$HOME/.agents/skills/ui-designer" "$HOME/.agents/.desk-pristine/.agents/skills/ui-designer" "$HOME/.claude/skills/ui-designer"
+mkdir -p "$HOME/.claude/skills/ui-designer"; echo mine > "$HOME/.claude/skills/ui-designer/SKILL.md"
+# shellcheck disable=SC2034  # own_out is read inside check's eval strings
+own_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "#734 moving a skill folder desk did not install is asked, saying it differs, and skipped with no terminal" \
+  '[[ "$own_out" == *"~/.claude/skills/ui-designer is a skill folder desk did not install (yours, or another tool'"'"'s); it differs from desk'"'"'s"* ]] && [[ "$own_out" == *"  SKIP  Move your ~/.claude/skills/ui-designer to the backup and install desk'"'"'s ui-designer in its place?"* ]]'
+check "#734 the folder stays where it was, and desk's copy is not installed beside it" \
+  '[ ! -L "$HOME/.claude/skills/ui-designer" ] && [ "$(cat "$HOME/.claude/skills/ui-designer/SKILL.md")" = mine ] && [ ! -e "$HOME/.agents/skills/ui-designer" ] && [[ "$own_out" != *"moved    ~/.claude/skills/ui-designer"* ]]'
+
 # A new shell runs desk-q from any directory, and it finds the repo set up above.
 # shellcheck disable=SC2034  # q_out is read inside check's eval string
 q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" desk-q --plain --all 2>&1)"
