@@ -40,6 +40,13 @@ merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-he
 push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
 accept a merge with red checks, so the rule is enforced only by you and the driver.
 
+**Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+another session never race one PR and who merged it is on record. Before merging or arming:
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
+it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
+`merge-log.mjs show --pr <n>` says who did.
+
 **Merge holds.** A PR into §0 Default branch whose diff touches any glob in §4 Merge holds (for a
 `<glob>#<key>` hold, changes that key of the file) is merged by a person, never by
 the driver or by you, whatever §3 grants: the repo needs a manual step first (the hold says which).
