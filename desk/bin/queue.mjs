@@ -456,6 +456,7 @@ function finish(q, key, n, pr) {
   if (t.state === 'running') throw new Error(`${key} has a live worker (it is running), so its park is not finished yet: let it end, or stop it (queue.mjs stop ${key}). ${none}`);
   if (t.state !== 'parked' || isHeld(t)) throw new Error(`${key} is not parked on a step of its own (it is ${t.state}${isHeld(t) ? ', held' : ''}), so there is no park to finish. ${none}`);
   if (spinePark(t) || planPark(t)) throw new Error(`${key} waits on the person's answer (${t.park.question}), not on a step to finish, so only that answer moves it on. ${none}`);
+  if (t.park?.claim?.session) throw new Error(`${key} is claimed by interactive session ${t.park.claim.session}, which is working it: leave it to that session. ${none}`);
   // The pass checks a feature spine's specs, or a child's owned ones, as it records the ticket done
   // (pass.mjs recordDone); recorded done here, that check would never run.
   if (isSpineOf(q, t) || ownsSpecsOf(q, t)) throw new Error(`${key} is ${isSpineOf(q, t) ? "its feature batch's spine" : 'a feature child that owns criteria'}, whose specs the pass checks when it records it done: requeue it to finish (queue.mjs requeue ${key}). ${none}`);
@@ -735,9 +736,9 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
 }
 // finish's gh read likewise runs before the lock; finish() acts on its result, error included.
 let finishPr = null;
+if (cmd === 'finish' && (args.length !== 3 || args[1] !== '--pr' || !/^\d+$/.test(args[2]))) throw new Error('usage: queue.mjs finish <TICKET> --pr <n>');
 if (cmd === 'finish') {
-  const [key, flag, n] = args;
-  if (!key || flag !== '--pr' || !/^\d+$/.test(n ?? '') || args.length !== 3) throw new Error('usage: queue.mjs finish <TICKET> --pr <n>');
+  const n = args[2];
   const repo = hereRepo();
   if (!repo) finishPr = { error: 'config §0 names no GitHub repo' };
   else {

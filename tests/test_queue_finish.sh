@@ -98,6 +98,12 @@ for k in F-6 F-7; do
   check "a park awaiting the person's answer is refused (${c%%:*})" '[ $rc -ne 0 ] && [[ "$out" == *"$k waits on the person"*"answer"* ]] && [ "$(sum)" = "$before" ]'
 done
 
+# A park an interactive session claimed is that session's to finish.
+parked F-9; q set F-9 'park.claim={"session":"0b7c2a9e-1111-4222-8333-444455556666","at":"2026-11-20T09:05:00.000Z"}'
+pr feat/F-9-thing OPEN
+before=$(sum); q finish F-9 --pr 47
+check "a park an interactive session claimed is refused"              '[ $rc -ne 0 ] && [[ "$out" == *"F-9 is claimed by interactive session 0b7c2a9e"* ]] && [ "$(sum)" = "$before" ]'
+
 # A feature spine parked on a step of its own: the pass checks its specs as it records it done, so
 # finish leaves it to a requeue. (Last, as it makes this a feature batch.)
 parked F-8; q set-batch feature=true spine=F-8
