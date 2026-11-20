@@ -2488,20 +2488,24 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
 // was not killed: it is not counted against config §3b "Resume a killed worker (times)". Nor is one the
 // maintenance window stopped at its drain limit (resume=maintenance), or one asked to stop for a
-// planned reboot (resume=reboot), which names the restart, or that none came, as its reason.
+// planned reboot (resume=reboot), which names the restart, or that none came, as its reason. One that
+// stopped at its per-worker budget (resume=budget) resumes once on BUDGET_EXTRA_USD to commit, push
+// and finish its stage, not counted either.
+const BUDGET_EXTRA_USD = 5;
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
   const maint = t.resume === 'maintenance';
+  const budget = t.resume === 'budget';
   const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
   if (boot) t = { ...t, resume_why: boot };
-  const n = (t.resumes ?? 0) + (usage || maint || boot ? 0 : 1);
-  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : 'killed before it finished';
+  const n = (t.resumes ?? 0) + (usage || maint || boot || budget ? 0 : 1);
+  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : budget ? 'stopped at its per-worker budget' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     markFailed(t.key, `${ended}, and could not be resumed: ${why}`, { sets: ['resume=null', 'port=null', 'spawn_failed=true'] });
   };
   // The row may have changed while it waited for a slot.
-  const stop = usage || maint || boot ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  const stop = usage || maint || boot || budget ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
   if (stop?.fail) return fail(stop.fail);
   if (stop?.park) {
     q('set', t.key, 'resume=null');
@@ -2528,7 +2532,8 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
-  const prompt = `Your previous run of this session ${usage ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+  const prompt = `Your previous run of this session ${usage || budget ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+    (budget ? `This run has a small allowance of $${BUDGET_EXTRA_USD}: commit and push what is done first, then finish your current stage and print your marker. ` : '') +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.` +
@@ -2540,11 +2545,11 @@ async function resumeKilled(t) {
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(budget ? { AUTOPILOT_BUDGET_USD: String(BUDGET_EXTRA_USD) } : {}), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : budget ? `after its per-worker budget, with $${BUDGET_EXTRA_USD} to commit, push and finish` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }

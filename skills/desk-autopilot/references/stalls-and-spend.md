@@ -12,7 +12,10 @@ Spend follows config §3b. Where "Autopilot batch budget (USD)" is `none`, leave
 `pass.mjs` stops spawning at it and says so. The per-worker budget is a runaway guard, not a cap on
 asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BUDGET_USD`, config,
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
-under `STALLED`) or fails the preflight (per worker); fix the value, never strip it.
+under `STALLED`) or fails the preflight (per worker); fix the value, never strip it. A worker whose
+session ends at its per-worker budget, often with its work done but not committed, is resumed once in
+its own session on $5 (`AUTOPILOT_BUDGET_USD`), told to commit and push first, then finish its stage.
+A second stop in that session parks, naming the budget and the worktree that may hold uncommitted work.
 
 **Which model each worker runs on is config §3b "Worker models".** At `default` (also when the row
 is absent) no `--model` is passed and every worker runs on the session default. At

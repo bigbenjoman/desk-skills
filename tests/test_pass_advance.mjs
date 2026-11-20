@@ -120,6 +120,21 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
 }
 
+// A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.
+{
+  const BUDGET = { type: 'result', subtype: 'error_max_budget_usd', is_error: true };
+  const stopped = (key, extra = {}) => snap(ticket(key, { worktree: `/wt/${key}`, ...extra }), logOf(key, '', [said('all suites green'), BUDGET]));
+  t('a budget stop is queued to resume once, naming its session',
+    j(sets(advance(stopped('B-1'))).filter((f) => !LIVENESS.test(f))), j(['state=triaged', 'resume=budget', 'resume_why=stopped at its per-worker budget', 'budget_resumed=sid-B-1']));
+  const again = advance(stopped('B-2', { budget_resumed: 'sid-B-2' }));
+  t('a second budget stop in that session parks, naming the budget and the worktree',
+    again.find((a) => a.type === 'park')?.question, 'stopped at its per-worker budget again after one resume to finish. Its worktree /wt/B-2 may hold work it did not commit: commit and push it there, or raise config §3b "Autopilot per-worker budget (USD)" and requeue it with queue.mjs requeue B-2');
+  t('a budget stop in a new session resumes once again', sets(advance(stopped('B-3', { budget_resumed: 'sid-old' }))).includes('resume=budget'), true);
+  t('a resume that wrote nothing since its launch is not read as a second budget stop', sets(advance(snap(ticket('B-5', { budget_resumed: 'sid-B-5' }), logOf('B-5', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }])))).includes('resume=budget') || advance(snap(ticket('B-5', { budget_resumed: 'sid-B-5' }), logOf('B-5', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }]))).some((a) => a.type === 'park' && /budget/.test(a.question)), false);
+  t('a resume that stopped at its allowance is a second budget stop', advance(snap(ticket('B-6', { budget_resumed: 'sid-B-6', worktree: '/wt/B-6' }), logOf('B-6', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }, said('commit'), BUDGET]))).some((a) => a.type === 'park' && /budget again/.test(a.question)), true);
+  t('a session that ended any other way is not a budget stop', sets(advance(snap(ticket('B-4'), logOf('B-4', '', [said('x'), { ...BUDGET, subtype: 'error_max_turns' }])))).includes('resume=budget'), false);
+}
+
 // A worker that parked or stopped when the computer could not run commands (no space or inodes left)
 // is the host's fault: an environment park, never its own words read as a lane.
 {

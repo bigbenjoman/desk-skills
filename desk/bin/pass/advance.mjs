@@ -53,7 +53,7 @@
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd, hostFault } from '../harvest.mjs';
+import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
@@ -342,6 +342,20 @@ export function* decideAdvance(s) {
         'advanced', `${t.key} ${why}: queued to resume in its own session`);
     }
   } else {
+    // Stopped at the per-worker budget, often with its work done and not yet committed: resumed once
+    // in its own session (budget_resumed names it) with a small allowance to commit, push and finish
+    // its stage. A second stop in that session parks, naming the budget and the worktree.
+    if (!wedged && t.session_id && budgetStop(log.text)) {
+      if (t.budget_resumed !== t.session_id) {
+        yield* setAndSay(t.key, ['state=triaged', 'resume=budget', 'resume_why=stopped at its per-worker budget', `budget_resumed=${t.session_id}`],
+          'advanced', `${t.key} stopped at its per-worker budget: queued to resume once, to commit, push and finish its stage`);
+        return;
+      }
+      const why = `stopped at its per-worker budget again after one resume to finish. Its worktree ${t.worktree ?? '(none recorded)'} may hold work it did not commit: commit and push it there, or raise config §3b "Autopilot per-worker budget (USD)" and requeue it with queue.mjs requeue ${t.key}`;
+      yield { type: 'park', key: t.key, question: why };
+      yield say(t.key, 'parked', `${t.key}: ${why}`);
+      return;
+    }
     // Killed mid-run, PR open or not: resumed in its own session by the spawn, ahead of new
     // tickets, unless config §3b refuses another resume.
     const killed = !wedged && !endedNormally(log.text) && t.session_id ? (log.mtimeMs < s.bootMs ? REBOOT : DIED) : null;
