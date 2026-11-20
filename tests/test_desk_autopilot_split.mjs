@@ -34,6 +34,7 @@ t('AC1 desk-autopilot is still on UNSPLIT while its core is over 20 KB', unsplit
 
 // AC4: each heading, table row and paragraph of the old file is in exactly one file, word for word.
 const REWRITTEN = [
+  ['#985', 'never as a numbered list in the report. One question per', 1], // a question in the pass loop goes to needs-you, never a carousel that blocks the loop
   ['#758', 'Run a third `Monitor` on the host figure', 1], // the watch reads the guest's harm signals, not Windows free memory
   ['#758', '(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory/1MB', 1], // the host-free command went with it
   ['#746', 'Read the `CONFIG` file it prints. **`EXISTS=no` means stop**', 1], // read through desk-env show: the rows, not the prose or the §3c ledger
