@@ -477,6 +477,7 @@ if [ -d "$WT" ]; then
   say "found $MARKER — a previous setup did not finish; completing it"
   grep -q '^created_branch=1' "$MARKER" 2>/dev/null && CREATED_BRANCH=1
   CREATED_WT=1
+  [ "$(git -C "$WT" branch --show-current 2>/dev/null)" = "$BRANCH" ] && to_origin_tip "$WT"
 elif [ -n "$FROZEN" ]; then
   say "fetching $FROZEN from $MAIN, and only the history it reaches"
   CREATED_WT=1

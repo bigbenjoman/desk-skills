@@ -273,7 +273,9 @@ export function costTable(rows) {
     : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
   const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
   const NR = 'not reported for cloud';
-  const table = rows.map((r) => (r.cloud && !r.usage ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
+  // A cloud row with no local review run: nothing in it was reported. One with a local run is that run's.
+  const cloudOnly = (r) => Boolean(r.cloud) && !(r.sessions ?? []).some((x) => !x.cloud);
+  const table = rows.map((r) => (cloudOnly(r) ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
     : r.usage ? cells(r, r.usage)
       : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
   const firstKnown = rows.filter((r) => r.first != null);
@@ -287,7 +289,7 @@ export function costTable(rows) {
     `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${s.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
   const stageLines = (r) => {
     const url = r.cloud ? [`      cloud session: ${r.cloud.url ?? 'unknown'}`] : [];
-    if (r.cloud && !r.usage) return url;
+    if (cloudOnly(r)) return url;
     if (!r.stages) return [...url, '      stages: unknown (no usage in the log)'];
     const w = Math.max(...r.stages.map((s) => s.name.length));
     const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
@@ -296,11 +298,11 @@ export function costTable(rows) {
   const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns (a cloud worker's runs from session start to its PR), first-turn input is the prompt each run started on, each session line gives a run's start stage, model, effort (default where none was passed) and cost before its preflight, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
-    out.push(`${line(row)}${r && !r.usage && !r.cloud ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
+    out.push(`${line(row)}${r && !r.usage && !cloudOnly(r) ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
     if (r) out.push(...sessionLines(r), ...stageLines(r));
   }
   const notes = [];
-  const cloud = rows.filter((r) => r.cloud && !r.usage).length;
+  const cloud = rows.filter(cloudOnly).length;
   const partly = rows.filter((r) => r.cloud && r.usage).length;
   const leftFirst = rows.length - cloud - firstKnown.length;
   if (leftFirst) notes.push(`first-turn input leaves out ${leftFirst} worker(s) with no usage`);

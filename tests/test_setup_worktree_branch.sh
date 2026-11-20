@@ -131,6 +131,11 @@ printf 'mine\n' > "$T/wt/T-31/m.txt"; git -C "$T/wt/T-31" add m.txt; git -C "$T/
 advance claude/t-31 >/dev/null
 out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
 check "#1003 one with commits origin does not have fails setup, left as it was" '[ $rc -ne 0 ] && [[ "$out" == *"cannot fast-forward"* ]] && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$mine" ]'
+# A setup killed before it finished is completed at origin's tip too.
+: > "$T/wt/T-31/.desk-setup-incomplete"; git -C "$T/wt/T-31" reset -q --hard "$tip"
+tip=$(advance claude/t-31)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 a setup left unfinished is completed at origin's tip" '[ $rc -eq 0 ] && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$tip" ]'
 remote_only claude/t-33; git -C "$T/repo" fetch -q origin; git -C "$T/repo" branch -q claude/t-33 origin/claude/t-33
 tip=$(advance claude/t-33)
 out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-33 claude/t-33 2>&1); rc=$?
