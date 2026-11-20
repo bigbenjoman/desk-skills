@@ -328,7 +328,15 @@ t('DS-647 built, with no run id on the failing check, every running check holds 
 t('DS-647 a failed build beside a running check waits for it, as before', buildPr([FLOWS, LINT_OTHER], { ...ok, code: 3, tail: 'x' })?.call, 'wait');
 t('DS-647 a build still running beside one waits on itself', buildPr([FLOWS, LINT_OTHER], { state: 'running', command: b0.command })?.why, `its check build \`./scripts/ensure-flows-image.sh\` is running at ${HEAD.slice(0, 9)}, then "Flows image" is re-run`);
 t('DS-647 negative control: a red check the row does not name beside a running one is not built', buildPr([FLOWS, LINT_OTHER, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }])?.call === 'build', false);
-for (const rerun of ['ask', 'no']) t(`DS-327 ci-rerun ${rerun}: nothing is built`, buildPr([FLOWS], null, { rerun })?.call, 'checks');
+for (const rerun of ['ask', 'no']) {
+  const u = buildPr([FLOWS], null, { rerun });
+  t(`DS-863 AC3 ci-rerun ${rerun}: nothing is built, and the person is told why, with the command`, `${u?.call} | ${u?.why} | ${u?.action}`,
+    `person | "Flows image" red at ${HEAD.slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${rerun}", so the pass neither runs \`./scripts/ensure-flows-image.sh\` nor re-runs the check | run \`./scripts/ensure-flows-image.sh\` at the head of #701, then re-run "Flows image"`);
+}
+t('DS-863 AC3 negative control: ci-rerun not yes beside a red check the row does not name, a fix worker gets it as before',
+  buildPr([FLOWS, { name: 'lint', status: 'completed', conclusion: 'failure', runId: 22 }], null, { rerun: 'no' })?.call, 'checks');
+t('DS-863 AC3 negative control: ci-rerun not yes while a check still runs, the draft waits for it first',
+  buildPr([FLOWS, { ...LINT_OTHER, runId: 31 }], null, { rerun: 'no' })?.call, 'wait');
 
 // DS-440: a check build that failed at a head behind its base goes to a worker that merges the base.
 const behindTail = { ...ok, code: 1, tail: "main's backend/ has changed since this branch was cut" };

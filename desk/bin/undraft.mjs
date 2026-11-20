@@ -511,6 +511,23 @@ export function buildCall(gate, cfg, n, head, t) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
 
+// A red gate whose every failing check §4 Check builds names, while §3 ci-rerun is not yes: the pass
+// builds none and re-runs none, and no change on the branch builds it, so it is the person's, with the
+// command and why it was not built. Null otherwise.
+export function unbuiltCall(gate, cfg, n, head) {
+  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
+  const failing = gate.failing;
+  if (cfg.rerun === 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  const names = [...new Set(failing.map((f) => f.name))];
+  const checks = names.map((x) => `"${x}"`).join(', ');
+  const command = [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  return {
+    call: 'person',
+    why: `${checks} red at ${String(head ?? '?').slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so the pass neither runs \`${command}\` nor re-runs the check`,
+    action: `run \`${command}\` at the head of #${n}, then re-run ${checks}`,
+  };
+}
+
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
 // name (PR, review comment, Jira comment, transition, tracker state) and their glue.
 const TAIL_WORDS = new Set(['the', 'a', 'its', 'and', 'or', 'then', 'to', 'on', 'of', 'in', 'is', 'are', 'yet', 'stage', 'stages',
@@ -808,6 +825,8 @@ export function undraftCall(t, pr, cfg) {
   // stuckCall can time out, holds it: a status or app check with no run could pend forever unseen.
   const watched = latestPerCheck(pr.checks ?? []).some((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
   if (red && watched) return running();
+  const unbuilt = red ? unbuiltCall(gate, cfg, n, pr.head) : null;
+  if (unbuilt) return unbuilt;
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
