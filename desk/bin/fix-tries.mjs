@@ -306,9 +306,13 @@ export function fixCall(t, s, ctx) {
     built = buildRead(rest, ctx, gate);
     // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
     // none of them, and buildCall holds its re-run while a check in its own run is still running.
+    // With no try left at this head, a red check a worker would fix is the person's now: the driver's
+    // reruns still run, and a green head still merges, but the pass says so rather than wait in silence.
+    const noTryLeft = spent(done, fixedAt(done, s.head));
     if (gate.pending.length) {
       const only = built && rest.every((f) => built.names.includes(f.name));
-      return only && (built.call.call === 'build' || built.call.call === 'rebuilt') ? built.call : null;
+      if (only && (built.call.call === 'build' || built.call.call === 'rebuilt')) return built.call;
+      if (!noTryLeft) return null;
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     const { mine, notMine } = split;
@@ -323,7 +327,7 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
-    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
+    if (!noTryLeft && (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX))) return null;
     base = againstBase(t, s.head, mine, notMine, ctx);
     if (base?.held) return base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);

@@ -58,6 +58,13 @@ const two = [...one, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red:
 const c5 = fixCall(tk({ fix_tries: two }), both, ctx());
 t('AC5 after 2 tries it is stuck, not requeued', c5?.call, 'stuck');
 t('AC5 the stuck text names the checks', c5?.why, 'still red after 2 fix tries: Backend tests, Lint');
+// With no try left, a red head is the person's while the driver's reruns or their gap are still to come,
+// and while another check still runs: the pass says so rather than wait on them in silence.
+t('with no try left, red before the driver\'s last rerun is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ reruns: () => 1 }))?.why, 'still red after 2 fix tries: Backend tests, Lint');
+t('with no try left, red before the last rerun\'s gap is over is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ cooledDown: false }))?.call, 'stuck');
+t('with no try left, red while another check still runs is stuck', fixCall(tk({ fix_tries: two }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx())?.call, 'stuck');
+t('with a try left, red before the last rerun still waits', fixCall(tk({ fix_tries: one }), both, ctx({ reruns: () => 1 })), null);
+t('with a try left, red while another check still runs still waits', fixCall(tk({ fix_tries: one }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
 t('AC5 or the conflict, after 2 conflict tries', fixCall(tk({ fix_tries: two.map((x) => ({ ...x, kind: 'conflict' })) }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
 
 // AC6: red only on a check no worker can fix: stuck at once, with the command.
