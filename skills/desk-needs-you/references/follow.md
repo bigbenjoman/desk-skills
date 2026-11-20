@@ -19,7 +19,8 @@ checker, and reaches this list only when it failed: its `Check:` then says what 
 its evidence (a run URL or a file). Read that evidence before running it again; a failure the evidence
 confirms is the user's. One no checker passed or failed within two hours of its code going out (the run
 it reads was still going, or no pass started a checker) is listed too, its note saying so: run it as any
-other step.
+other step. A ticket's checker steps are an item of their own (`follow:<KEY>:checked`, after any gate),
+so `done` on one item never settles a step the other holds.
 
 When every step ran clean, `record` the item `done` without asking, and say what each run showed.
 Otherwise ask, and say in the question which steps you settled and how. Where the PR's evidence
