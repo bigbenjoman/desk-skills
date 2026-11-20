@@ -273,6 +273,9 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
+    // The exact text a gated write waits on, which the worker keeps in its park file (approve), is kept
+    // with the park, so it is relayed from there rather than dug out of the log.
+    yield { type: 'park-approve', key: t.key, question };
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
