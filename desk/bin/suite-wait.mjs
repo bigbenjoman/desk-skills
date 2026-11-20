@@ -53,11 +53,11 @@ export function dirUsers(dir, skip = [], cwds = processCwds()) {
 // Each as `pid <n> (<command>)`, comma-separated.
 export const usersText = (users) => users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ');
 
-// Every process as [{pid, ppid, args}], read once. Null when ps cannot be read.
+// Every process as [{pid, ppid, etime, args}], read once. Null when ps cannot be read.
 let PROCS;
 export function processList() {
   if (PROCS !== undefined) return PROCS;
-  try { PROCS = psRows('pid=,ppid=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
+  try { PROCS = psRows('pid=,ppid=,etime=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
   return PROCS;
 }
 
@@ -114,13 +114,41 @@ export function lockWaiters({ procs, holders }) {
   return procs.filter((p) => lockRole(p, { procs, holders }) === 'wait').length;
 }
 
+// ps's elapsed time, [[dd-]hh:]mm:ss, in whole seconds; null when it does not read as one.
+export function etimeSeconds(etime) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(etime ?? '').trim());
+  return m ? ((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4]) : null;
+}
+const ageText = (sec) => (sec == null ? 'for an unknown time' : sec < 3600 ? `${Math.floor(sec / 60)} min` : `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} min`);
+// Who holds the test lock, any repo or session, as [{pid, cwd, args, seconds}]: each holding process
+// whose parent does not hold it too (a mkdir slot's file names the wrapper and its command). cwd is
+// null where its working directory cannot be read. [] when ps cannot be read.
+export function lockHolderRuns({ procs, holders, cwds }) {
+  if (!procs) return [];
+  const holding = procs.filter((p) => lockRole(p, { procs, holders }) === 'hold');
+  const pids = new Set(holding.map((p) => p.pid));
+  return holding.filter((p) => !pids.has(p.ppid)).map((p) => ({
+    pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: etimeSeconds(p.etime) }));
+}
+// Each holder as `<where>: <command>, <age>`, the command cut to 80 characters and the home directory
+// shown as ~, `; `-separated.
+export function holdersText(runs, home = process.env.HOME) {
+  const short = (path) => (home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+  return runs.map((r) => {
+    const cmd = r.args.length > 80 ? `${r.args.slice(0, 79)}…` : r.args;
+    return `${r.cwd ? short(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${ageText(r.seconds)}`;
+  }).join('; ');
+}
+
 // Whether the test lock's queue is deep enough to hold new work: `waiting` runs at or over `slots` x
-// `factor`. `waiting` null is a queue not read, which holds nothing.
-export function lockQueue({ waiting, slots, factor }) {
+// `factor`. `waiting` null is a queue not read, which holds nothing. `held` (lockHolderRuns) names who
+// holds the lock, so a batch held behind it shows what it waits on.
+export function lockQueue({ waiting, slots, factor, held = [] }) {
   const at = slots * factor;
   if (waiting == null) return { deep: false, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
   const deep = waiting >= at;
-  return { deep, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}` };
+  const by = held.length ? `; held by ${holdersText(held)}` : '';
+  return { deep, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${by}` };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.
