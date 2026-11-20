@@ -174,6 +174,7 @@ check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.jso
 # pristine copy), on an install with no terminal: moving it is asked and skipped, and it stays.
 rm -rf "$HOME/.agents/skills/ui-designer" "$HOME/.agents/.desk-pristine/.agents/skills/ui-designer" "$HOME/.claude/skills/ui-designer"
 mkdir -p "$HOME/.claude/skills/ui-designer"; echo mine > "$HOME/.claude/skills/ui-designer/SKILL.md"
+# shellcheck disable=SC2034  # own_out is read inside check's eval strings
 own_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 check "#734 moving a skill folder desk did not install is asked, saying it differs, and skipped with no terminal" \
   '[[ "$own_out" == *"~/.claude/skills/ui-designer is a skill folder desk did not install (yours, or another tool'"'"'s); it differs from desk'"'"'s"* ]] && [[ "$own_out" == *"  SKIP  Move your ~/.claude/skills/ui-designer to the backup and install desk'"'"'s ui-designer in its place?"* ]]'
