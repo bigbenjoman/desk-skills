@@ -11,10 +11,13 @@
 // base would strand them. It is all or nothing: a conflict is aborted and a refused push is rolled
 // back, so the worktree is never left holding a merge origin does not have. A feature-mode batch's
 // promotion PR needs the base to hold a commit the default branch lacks, which openingCommit pushes.
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { rewriteEnvFiles } from './env-rewrite.mjs';
 import { runItem } from './baseline.mjs';
 import { execGit } from './remote-git.mjs';
 import { hookEnvFailure, refusalLine } from './push-retry.mjs';
@@ -32,27 +35,26 @@ const rowItems = (id) => {
   try { v = configValues(id); } catch { /* no config: the row reads as unset */ }
   return v && !isNone(v[0]) ? v : [];
 };
-// §4 Env files copied from the primary checkout into the base worktree, as copy-env.sh copies them into
-// a worker's, so a pre-push hook that reads one finds it. The base has no database of its own, so every
-// §4 Database URL variable in them is blanked, as setup-worktree.sh blanks a worker's that has none. A
-// file already there is left as it is, and one git does not ignore is never copied: the sync refuses a
-// worktree with changes. -> { copied: [rel], missing: [rel] }
+// §4 Env files the base worktree lacks, copied from the primary checkout by copy-env.sh --base, so a
+// pre-push hook that reads one finds it. The base has no database of its own, so every §4 Database URL
+// variable in them is blanked by the worker database rule (env-rewrite.mjs); a copy whose blanking
+// does not read back is removed. -> { copied: [rel], missing: [rel] }
 export function seedEnvFiles({ main, path }) {
-  const vars = rowItems('db-url-var').filter((v) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(v));
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const line = vars.length ? new RegExp(`^(\\s*(?:export\\s+)?)(${vars.map(esc).join('|')})\\s*=.*?\\r?$`) : null;
-  const copied = [], missing = [];
-  for (const rel of rowItems('env-files')) {
-    if (isAbsolute(rel) || rel.split(/[/\\]/).includes('..')) { missing.push(rel); continue; }
-    const to = join(path, rel);
-    if (existsSync(to)) continue;
-    let text;
-    try { text = readFileSync(join(main, rel), 'utf8'); } catch { missing.push(rel); continue; }
-    if (!git(path, ['check-ignore', '-q', '--no-index', rel]).ok) { missing.push(rel); continue; }
-    const out = line ? text.split('\n').map((l) => l.replace(line, '$1$2=')).join('\n') : text;
-    mkdirSync(dirname(to), { recursive: true });
-    writeFileSync(to, out);
-    copied.push(rel);
+  // A path outside the worktree is never read, removed or rewritten here; copy-env.sh refuses it too.
+  const files = rowItems('env-files');
+  const outside = files.filter((rel) => isAbsolute(rel) || rel.split(/[/\\]/).includes('..'));
+  const lacking = files.filter((rel) => !outside.includes(rel) && !existsSync(join(path, rel)));
+  if (!lacking.length) return { copied: [], missing: outside };
+  try {
+    execFileSync('bash', [join(dirname(fileURLToPath(import.meta.url)), 'copy-env.sh'), '--base'],
+      { cwd: path, env: { ...process.env, DESK_ENV_FROM: main }, stdio: 'ignore' });
+  } catch { /* a file it could not copy is missing below */ }
+  const vars = rowItems('db-url-var');
+  const copied = [], missing = [...outside];
+  for (const rel of lacking) {
+    const there = existsSync(join(path, rel)) && rewriteEnvFiles({ mode: 'blank', wt: path, vars, files: [rel], log: () => {}, error: () => {} }).bad === 0;
+    if (!there) rmSync(join(path, rel), { force: true });
+    (there ? copied : missing).push(rel);
   }
   return { copied, missing };
 }

@@ -144,7 +144,8 @@ for (const [name, out, want] of [
   ['nor is a refusal with no hook in it', 'sh: turbo: command not found\n ! [remote rejected] b -> b (pre-receive hook declined)', null],
   ['DS-808 AC3 Prisma\'s missing env var names the variable', 'pre-push: FAIL  bun run db:generate (1s, exit 1)\nFailed to load config file "/x/prisma.config.ts" as a TypeScript/JavaScript module. Error: PrismaConfigEnvError: Cannot resolve environment variable: DATABASE_URL.', '`DATABASE_URL` (environment variable not set)'],
   ['and its older wording', 'pre-push: FAIL  pnpm prisma validate (1s, exit 1)\nerror: Environment variable not found: DATABASE_URL.', '`DATABASE_URL` (environment variable not set)'],
-  ['and a shell\'s set -u', 'pre-push: FAIL  sh check.sh (0s, exit 1)\ncheck.sh: line 3: API_KEY: unbound variable', '`API_KEY` (environment variable not set)'],
+  ['and its wording for a blanked one, as a base worktree\'s database variable is', 'pre-push: FAIL  pnpm prisma validate (1s, exit 1)\nError validating datasource `db`: You must provide a nonempty URL. The environment variable `DATABASE_URL` resolved to an empty string.', '`DATABASE_URL` (environment variable not set)'],
+  ['and a shell\'s set -u','pre-push: FAIL  sh check.sh (0s, exit 1)\ncheck.sh: line 3: API_KEY: unbound variable', '`API_KEY` (environment variable not set)'],
   ['and dash\'s wording of it', 'pre-push: FAIL  sh check.sh (0s, exit 2)\ncheck.sh: 3: API_KEY: parameter not set', '`API_KEY` (environment variable not set)'],
 ]) t(name, hookEnvFailure(out), want);
 t('DS-808 AC3 a missing env var is quoted as an environment failure naming it',

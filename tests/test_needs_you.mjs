@@ -1885,7 +1885,7 @@ put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
 // ---- DS-808: a base sync that merged but could not push, while the base lags too far for anything to
 // spawn, is one item for the batch, listed first, naming the base, how many tickets it freezes and the command.
-const CMD808 = 'git -C /wt/base-feat-x fetch -q origin && git -C /wt/base-feat-x merge --no-edit origin/main && git -C /wt/base-feat-x push origin HEAD:refs/heads/feat/x';
+const CMD808 = 'git -C /wt/base-feat-x fetch -q origin && git -C /wt/base-feat-x merge --no-edit origin/main && git -C /wt/base-feat-x push origin HEAD:refs/heads/feat/x || git -C /wt/base-feat-x reset -q --hard origin/feat/x';
 const stuck808 = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: 61, frozen: 3, why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)', path: '/wt/base-feat-x', cmd: CMD808 };
 put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck808 },
   tickets: { 'R-1': { state: 'triaged', lane: 'A' }, 'R-2': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(90) } } } });

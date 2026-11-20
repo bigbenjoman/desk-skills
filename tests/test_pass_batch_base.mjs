@@ -74,7 +74,7 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
 // DS-808 AC4: a refused push that holds every spawn is recorded for needs-you, and cleared once it does not.
 {
   const refused = { ok: false, reason: 'push', why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)' };
-  const CMD = `git -C ${WT} fetch -q origin && git -C ${WT} merge --no-edit origin/main && git -C ${WT} push origin HEAD:refs/heads/feat/x`;
+  const CMD = `git -C ${WT} fetch -q origin && git -C ${WT} merge --no-edit origin/main && git -C ${WT} push origin HEAD:refs/heads/feat/x || git -C ${WT} reset -q --hard origin/feat/x`;
   const stuck = { base: 'feat/x', source: 'main', behind: 61, frozen: 4, why: refused.why, path: WT, cmd: CMD };
   const far = sync(snap({}, { frozen: 4 }), { behind: 61, sync: refused });
   t('DS-808 AC4 past the lag, a refused push records the frozen base for needs-you', j(batchWrites(far)), j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...stuck })}`]));

@@ -49,11 +49,13 @@ const NO_PACKAGES = /\bnode_modules missing\b/;
 const NOT_LOADED = /\bCannot find (?:module|package) '([^']+)'/g;
 const isPackage = (spec) => !/^(?:\.{1,2}(?:[/\\]|$)|[/\\]|[A-Za-z]:[/\\]|file:)/.test(spec);
 const packageNotLoaded = (s) => [...s.matchAll(NOT_LOADED)].some((m) => isPackage(m[1]));
-// An environment variable the hook's check needs and the worktree's env files do not set: Prisma's two
-// forms, and a shell's `set -u`.
+// An environment variable the hook's check needs and the worktree's env files do not set: Prisma's
+// forms for one unset and one blank (a base worktree's §4 Database URL variables are blanked), and a
+// shell's `set -u`.
 const NO_ENV_VAR = [
   /\bCannot resolve environment variable: ([A-Za-z_][A-Za-z0-9_]*)/,
   /\bEnvironment variable not found: ([A-Za-z_][A-Za-z0-9_]*)/,
+  /\benvironment variable `([A-Za-z_][A-Za-z0-9_]*)` resolved to an empty string/i,
   /^\s*(?:\S+: )*(?:line \d+: )?([A-Za-z_][A-Za-z0-9_]*): (?:unbound variable|parameter not set)\s*$/m,
 ];
 export function hookEnvFailure(out) {

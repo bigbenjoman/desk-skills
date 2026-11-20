@@ -276,10 +276,12 @@ export function* decideBaseSync(s) {
       }
     } else {
       yield* blocked(sync.why);
-      // A refused push that holds every spawn is the person's, as one needs-you item for the batch.
+      // A refused push that holds every spawn is the person's, as one needs-you item for the batch. Its
+      // command rolls the merge back when the push is refused again, as the sync does: a merge left
+      // unpushed in the base worktree would fail every later sync as an error and clear this item.
       if (sync.reason === 'push' && baseHold) {
         stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why: sync.why, path: wt.path,
-          cmd: `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE}` };
+          cmd: `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}` };
       }
     }
     // The ask is settled once the base is current, its push is granted, or the row no longer asks.
