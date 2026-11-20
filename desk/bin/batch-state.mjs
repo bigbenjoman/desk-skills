@@ -105,12 +105,16 @@ export const moveTargetsOf = (out) => JSON.parse(out).map(moveTarget);
 export const targetsText = (ts) => (ts.length ? ts.map((b) => `${b.word} (on ${b.base})`).join(', ') : 'none');
 export const moveOffer = (ts) => `move <batch> takes it out of this batch and queues it in another, its next worker on that base: ${targetsText(ts)}`;
 
+// Ticket `key`'s park record, parsed, or null where it has none or it is half-written.
+function readPark(stateDir, key) {
+  try { return JSON.parse(readFileSync(join(stateDir, 'parks', `${key}.json`), 'utf8')); } catch { return null; }
+}
+
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {
-  const park = join(stateDir, 'parks', `${t}.json`);
-  if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
-  try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
+  if (existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
+  return readPark(stateDir, t)?.question || null;
 }
 
 // A park whose question says it holds a write awaiting approval (the worker contract's wording for a
@@ -122,8 +126,7 @@ const APPROVE_FIELDS = ['kind', 'target', 'body'];
 // none and its question asks for an approval (or the object lacks a field), `approve` is null and
 // `missing` names what the park file lacks, so the pass reports the park incomplete. Neither: both null.
 export function parkApproval(stateDir, key, question) {
-  let rec = null;
-  try { rec = JSON.parse(readFileSync(join(stateDir, 'parks', `${key}.json`), 'utf8')); } catch { /* none, or half-written */ }
+  const rec = readPark(stateDir, key);
   const a = rec?.approve && typeof rec.approve === 'object' ? rec.approve : null;
   const lacks = a ? APPROVE_FIELDS.filter((f) => typeof a[f] !== 'string' || !a[f].trim()) : APPROVE_FIELDS;
   if (a && !lacks.length) return { approve: { kind: a.kind.trim(), target: a.target.trim(), body: a.body }, missing: null };

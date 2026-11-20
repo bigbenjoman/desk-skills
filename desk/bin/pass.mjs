@@ -165,22 +165,6 @@ const maySpawn = headlessPerm === 'yes' || (headlessPerm === 'ask' && !!process.
 const { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } = E.basePushGrant();
 const BASE_PUSH = { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase };
 
-// The orchestrator's own name, for the worker's briefing. Resolve it from this process's own
-// session id, which Claude Code exports, and fall back to the env var. Nothing set the env var
-// once, so every briefing said "nobody is listening" and told parked workers to give up.
-function orchestratorName() {
-  if (process.env.AUTOPILOT_ORCHESTRATOR) return process.env.AUTOPILOT_ORCHESTRATOR;
-  try {
-    const sid = process.env.CLAUDE_CODE_SESSION_ID;
-    if (sid) {
-      const me = readRegistry().live?.find((a) => a.sessionId === sid);
-      if (me?.name) return me.name;
-    }
-  } catch { /* fall through to the honest answer below */ }
-  // A parked worker never messages it (DS-839): its park file and AUTOPILOT_PARK line are the channel.
-  return '(unresolved)';
-}
-
 // Two orchestrators would both spawn against the same tickets. "Claim the queue" was documented
 // and unenforced; this enforces it.
 // Taken exclusively (tryLockFile), as queue.mjs stop takes it, so a pass and a stop never both hold it;
@@ -2482,7 +2466,6 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
       ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
       : '';
   const parts = (h) => [
-    `Orchestrator session name: ${orchestratorName()}`,
     `Answer file to wait on: ${answerFile}`,
     `Screenshot directory (print it as AUTOPILOT_IMAGES once it holds your screenshots; captured none, print nothing): ${join(STATE, 'images', t.key)}/`,
     '',

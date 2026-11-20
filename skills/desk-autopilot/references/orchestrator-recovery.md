@@ -236,7 +236,7 @@ re-running a ticket from scratch.
 - **A worker never reaches the orchestrator.** It runs with no setting sources, often on another
   login, whose agent registry the orchestrator is not in. So a park is only its park file and its
   `AUTOPILOT_PARK` line, read at the next pass; a gated write's exact text is the park file's
-  `approve` (DS-839).
+  `approve`.
 - **A permission denial may be the filesystem, not the rule list.** Workers can only reach their
   worktree plus `additionalDirectories`. The lock directory (`DESK_LOCK_DIR`, default `/tmp`) and
   `/proc` (Linux meminfo) needed adding there; a `Bash(flock:*)` rule never could have fixed it.
