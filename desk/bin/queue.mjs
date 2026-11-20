@@ -30,6 +30,7 @@ import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
+import { QUEUE_COMMANDS, unknownQueueCommand } from './queue-commands.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -694,6 +695,7 @@ const [, , cmd, ...args] = process.argv;
 const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
+if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
@@ -1231,7 +1233,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(unknownQueueCommand(cmd));
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);

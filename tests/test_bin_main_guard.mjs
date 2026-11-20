@@ -54,6 +54,11 @@ t('an empty list for worker is refused, and says why', [r.status !== 0, /empty/.
 r = sh(`. "${F}/desk-env.sh" && desk_tool_args none && printf '%s|' "\${DESK_TOOL_ARGS[@]}"`);
 t('none still passes an empty list', [r.status, r.stdout], [0, '--tools||']);
 
+// The prose facts registry imports desk-env.mjs and the queue's command list: importing it prints
+// nothing and runs no script's command.
+r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(join(root, 'desk/bin/prose-facts.mjs'))})`], { encoding: 'utf8', cwd: S });
+t('importing prose-facts.mjs prints nothing and runs no main', [r.status, r.stdout, r.stderr], [0, '', '']);
+
 rmSync(S, { recursive: true, force: true });
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }
 console.log('all passed');
