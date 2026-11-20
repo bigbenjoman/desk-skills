@@ -783,6 +783,10 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
+  // Past the reruns and builds, which start at once, checks still running are a wait, whatever is red so
+  // far: a gate that reads the others (a review or CI gate) is red until they finish, so a fix worker or
+  // the person gets the draft only once every check has finished.
+  if (red && gate.pending?.length) return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
