@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, unbound, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -109,6 +109,7 @@ t('DS-382 AC1 save: the board loads it by relative path', read(join(sfd, 'Kit.dc
 
 // DS-382 AC2: the design tool's host is claude.ai, or the artifact URL's host; nothing else is.
 t('DS-382 AC2 callsHome: claude.ai and its subdomains', [callsHome('https://claude.ai/_blob/x', null), callsHome('https://cdn.claude.ai/x.js', null)].join(' '), 'true true');
+t('render: an unfilled binding names no file', [unbound('http://127.0.0.1:5/project/%7B%7Blogo%7D%7D'), unbound('http://127.0.0.1:5/project/{{r.logo}}'), unbound('http://127.0.0.1:5/project/img/a.png'), unbound('%E0%A4%A')].join(' '), 'true true false false');
 t('DS-382 AC2 callsHome: the artifact host', callsHome('https://design.example.com/x', 'https://design.example.com/p/1'), true);
 t('DS-382 AC2 callsHome: the local server and other hosts are not', [callsHome('http://127.0.0.1:5000/a.css', URL1), callsHome('https://fonts.googleapis.com/css2', URL1), callsHome('https://notclaude.ai/x', URL1)].join(' '), 'false false false');
 
@@ -689,6 +690,11 @@ if (!pw.entry) {
   t('cli render: a missing asset exits 4', run('render', broken).status, 4);
   const blank = canvasAt('rx');
   put(join(blank, 'project/test-390.dc.html'), '<!doctype html><body></body>');
+  // A binding outside a <template> is fetched as its literal before the runtime fills it in: that
+  // 404 is not a missing file, so the board still renders.
+  const bound = canvasAt('rt');
+  put(join(bound, 'project/test-390.dc.html'), '<!doctype html><main style="height:600px;background:#234">Board <img src="{{logo}}" alt=""></main>');
+  t('render: an unfilled binding does not fail the board', await render(bound, { chromium, bps: [390] }).then(() => 'rendered', (e) => e.message), 'rendered');
   t('render: a blank board fails', await render(blank, { chromium, bps: [390] }).then(() => 'no error', (e) => e.message.includes('painted nothing')), true);
 
   // A v3 canvas: keyed boards sized w/h, the runtime saved as support.js, an image the board's script

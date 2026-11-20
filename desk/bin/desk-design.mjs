@@ -729,6 +729,15 @@ function serve(dir) {
 // The design tool's own host (claude.ai, or the host the artifact URL names), which serves a board's
 // runtime, fonts and assets only to a signed-in browser. A saved board that still asks it for a file
 // does not render offline.
+// A request for a template binding the runtime has not filled in yet (`<img src="{{logo}}">` outside
+// a <template>): the browser fetches the literal before the runtime sets the real file, so its 404
+// names no file, as `references` already treats it when saving.
+export function unbound(url) {
+  let u = String(url ?? '');
+  try { u = decodeURIComponent(u); } catch { /* keep it as written */ }
+  return u.includes('{{');
+}
+
 export function callsHome(url, artifactUrl) {
   const host = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } };
   const h = host(url);
@@ -748,8 +757,8 @@ async function openAt(browser, url, width, { height, origin, artifact }) {
     bad.push(`${r.request().url()} (a request to the design tool's host, which a saved canvas must not make)`);
     return r.abort();
   });
-  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact)) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
-  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
+  page.on('requestfailed', (r) => { if (!callsHome(r.url(), artifact) && !unbound(r.url())) bad.push(`${name(r.url())} (${r.failure()?.errorText ?? 'failed'})`); });
+  page.on('response', (r) => { if (r.status() >= 400 && !/\/favicon\.ico$/.test(r.url()) && !unbound(r.url())) bad.push(`${name(r.url())} (HTTP ${r.status()})`); });
   await page.goto(url, { waitUntil: 'networkidle' });
   await page.evaluate(() => document.fonts.ready.then(() => true));
   return { page, bad };
