@@ -510,13 +510,30 @@ export function cellItems(raw) {
 // cell that is only a note, or whose last paren never opens, is returned whole.
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
+  // Which characters sit inside a code span, read as CommonMark does: a run of N backticks opens a
+  // span that only the next run of exactly N closes, so a note quoting ``` or ```` stays in step.
+  const inSpan = new Array(cell.length).fill(false);
+  for (let i = 0; i < cell.length;) {
+    if (cell[i] !== '`') { i++; continue; }
+    let n = 0;
+    while (cell[i + n] === '`') n++;
+    let close = -1;
+    for (let j = i + n; j < cell.length;) {
+      if (cell[j] !== '`') { j++; continue; }
+      let m = 0;
+      while (cell[j + m] === '`') m++;
+      if (m === n) { close = j; break; }
+      j += m;
+    }
+    if (close < 0) { i += n; continue; }
+    for (let k = i; k < close + n; k++) inSpan[k] = true;
+    i = close + n;
+  }
   let depth = 0;
-  let inSpan = false;
   for (let i = cell.length - 1; i >= 0; i--) {
+    if (inSpan[i]) continue;
     const c = cell[i];
-    if (c === '`') inSpan = !inSpan;
-    else if (inSpan) continue;
-    else if (c === ')') depth++;
+    if (c === ')') depth++;
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;

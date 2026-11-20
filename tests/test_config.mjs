@@ -20,6 +20,24 @@ t('a mid-cell parenthesis is not trailing', items('`A` (x) `B`'), 'A | B');
 t('a note-only cell is left whole', items('(`a`)'), 'a');
 t('doubled display backticks', items('`` `A` `B` `` (see `C`)'), 'A | B');
 t('no spans: the cell is the item', items('none (no tracker)'), 'none (no tracker)');
+// #770: a note quoting a run of three or four backticks keeps the spans in step, as CommonMark reads them.
+t('#770 a note quoting a fenced block adds no item', items('`none` (it carries a fenced ```` ```evidence ```` block, as `` `<file>.yml` ``)'), 'none');
+t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
+
+// #770: every template row whose value starts `TODO`, answered `none` with the template's note kept,
+// reads as `none` alone, as the pass's configValues does.
+{
+  const tpl = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'desk-config.md'), 'utf8');
+  const bad = [];
+  for (const line of tpl.split('\n')) {
+    const cells = line.split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim());
+    const at = cells.findIndex((c, i) => i > 0 && c.startsWith('`TODO`'));
+    if (at < 0) continue;
+    const got = cellItems(cells[at].replace('`TODO`', '`none`'));
+    if (got.length !== 1 || got[0] !== 'none') bad.push(`${cells[0]}: ${JSON.stringify(got)}`);
+  }
+  t('#770 every TODO row answered none, its note kept, reads none alone', bad.join(' / '), '');
+}
 
 // End to end: `desk-env list` on a §4 row that carries a note.
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
