@@ -37,6 +37,7 @@ import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
+import { claimedPorts } from './port-claims.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -2264,14 +2265,15 @@ function otherQueuePorts() {
   }
   return ports;
 }
-// Assign a port nothing else holds. Three things make one unavailable: another ticket in this batch
+// Assign a port nothing else holds. Four things make one unavailable: another ticket in this batch
 // already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
-// a running worker in another batch's queue holds it (two batches' worker blocks can meet), or something
+// a running worker in another batch's queue holds it (two batches' worker blocks can meet), a peer
+// session claimed it at handshake (port-claims.mjs: its server may be down just now), or something
 // is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
 // spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
 async function freePort(own = null) {
   const now = queue();
-  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts()]);
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
   if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
   let port = E.workerPortFloor();
   while (taken.has(port) || await E.portInUse(port)) port += 1;
