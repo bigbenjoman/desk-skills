@@ -1281,7 +1281,7 @@ function dropDuplicate(t) {
       remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`;
     }
   }
-  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr.number}`, `result.summary=its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}`);
+  q('set', t.key, ...doneOnPr(pr.number, { summary: `its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}` }));
   report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
   return true;
 }
