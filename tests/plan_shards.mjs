@@ -13,6 +13,9 @@
 //     shard's suites and predicted minutes; --github-output appends matrix= to $GITHUB_OUTPUT, one
 //     entry per shard: { shard, of, suites, hook }, where hook is the shard that also runs run.sh's
 //     attribution hook self-test.
+//   node tests/plan_shards.mjs --order <suite>...
+//     prints the named suites one per line in the order shards are planned in (longestFirst), which
+//     tests/run.sh starts them in.
 //   gh run view <run id> --log | node tests/plan_shards.mjs --record
 //     refreshes tests/suite_durations.json from a tests run's log: a suite's seconds are its
 //     `took: <s> s` line, or, in a log without one, run from its `== <label>` line to the next line
@@ -33,15 +36,22 @@ export function median(xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-// -> { shards: [{ shard, suites, seconds }], total, longest, guess, unknown }
-export function plan(suites, seconds, n) {
+// The suites longest recorded first, name order between equals, a suite with no recorded duration
+// at the median. Shards are planned in this order, and tests/run.sh starts its suites in it.
+// -> { order, cost, guess, known }
+export function longestFirst(suites, seconds) {
   const names = [...new Set(suites)];
   const known = (s) => Number.isFinite(seconds[s]) && seconds[s] >= 0;
   const guess = median(names.filter(known).map((s) => seconds[s])) || median(Object.values(seconds).filter(Number.isFinite)) || 60;
   const cost = (s) => (known(s) ? seconds[s] : guess);
-  const count = Math.max(0, Math.min(Math.floor(n) || 1, names.length));
+  return { order: names.sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0)), cost, guess, known };
+}
+
+// -> { shards: [{ shard, suites, seconds }], total, longest, guess, unknown }
+export function plan(suites, seconds, n) {
+  const { order, cost, guess, known } = longestFirst(suites, seconds);
+  const count = Math.max(0, Math.min(Math.floor(n) || 1, order.length));
   const shards = Array.from({ length: count }, (_, i) => ({ shard: i + 1, suites: [], seconds: 0 }));
-  const order = names.sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0));
   for (const s of order) {
     const least = shards.reduce((m, x) => (x.seconds < m.seconds ? x : m));
     least.suites.push(s);
@@ -94,6 +104,7 @@ export const readDurations = (path = DURATIONS) => (existsSync(path) ? JSON.pars
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const args = process.argv.slice(2);
+  if (args[0] === '--order') { console.log(longestFirst(args.slice(1), readDurations()).order.join('\n')); process.exit(0); }
   const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : undefined; };
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const all = repoMap(root).suites;

@@ -55,8 +55,9 @@ case "$load" in ''|*[!0-9.]*) load=null ;; esac
 # The run's suites, by index: label, how it runs (hook, sh or mjs), its file and the name a failure gives.
 n=0
 add() { lab[n]=$1; kind[n]=$2; file[n]=$3; name[n]=$4; n=$((n + 1)); }
-# Milliseconds in a `times` figure such as 1m2.345s, into $ms.
-to_ms() { local m=${1%%m*} w=${1#*m} f; w=${w%s}; f=${w#*.}; [ "$f" = "$w" ] && f=0; f="${f}000"
+# Milliseconds in a `times` figure such as 1m2.345s (1m2,345s where the locale's decimal point is a
+# comma), into $ms.
+to_ms() { local m=${1%%m*} w=${1#*m} f; w=${w%s}; w=${w/,/.}; f=${w#*.}; [ "$f" = "$w" ] && f=0; f="${f}000"
   ms=$(( (10#$m * 60 + 10#${w%%.*}) * 1000 + 10#${f:0:3} )); }
 # Runs suite $1 into its own output file, then writes "<exit> <seconds> <CPU ms>" to its done file,
 # last, so a done file means the output is complete. The suite replaces its subshell (exec), so with -j
@@ -118,23 +119,21 @@ while IFS= read -r f; do
 done <<EOF
 $suites
 EOF
-# The order suites start in, ord[]: name order with -j 1, otherwise the longest recorded in
-# suite_durations.json first (name order between equals), and a suite it has no time for before those.
-i=0; order=""
-durs=$(cat "$T/suite_durations.json" 2>/dev/null)
-while [ $i -lt $n ]; do
-  d=0
-  if [ "$jobs" -gt 1 ]; then
-    pat="\"${name[$i]}\": "; d=${durs#*"$pat"}
-    if [ "$d" = "$durs" ]; then d=999999; else d=${d%%[!0-9]*}; d=${d:-999999}; fi
-  fi
-  order="$order$d $i
-"; i=$((i + 1))
-done
-k=0
-while read -r _ i; do [ -n "$i" ] || continue; ord[k]=$i; k=$((k + 1)); done <<EOF
-$(printf '%s' "$order" | LC_ALL=C sort -k1,1nr -k2,2n)
+# The order suites start in, ord[]: name order with -j 1, otherwise the order plan_shards.mjs plans
+# CI's shards in (the longest recorded in suite_durations.json first), or name order if it cannot say.
+# It is named by its physical path: it runs its CLI only when argv[1] is its own resolved path.
+name_order() { i=0; while [ $i -lt $n ]; do ord[i]=$i; i=$((i + 1)); done; }
+name_order
+if [ "$jobs" -gt 1 ] && [ $n -gt 1 ]; then
+  k=0; TP=$(cd "$T" && pwd -P)
+  while IFS= read -r s; do
+    i=0; while [ $i -lt $n ] && [ "${name[$i]}" != "$s" ]; do i=$((i + 1)); done
+    [ $i -lt $n ] && { ord[k]=$i; k=$((k + 1)); }
+  done <<EOF
+$(node "$TP/plan_shards.mjs" --order "${name[@]}" 2>/dev/null)
 EOF
+  [ $k -eq $n ] || name_order
+fi
 # Up to $jobs suites run at once, each in its own temporary HOME and directories (the suites' own
 # mktemp), and each is reported once it and every suite before it in name order have finished. With
 # -j 1 each runs in the foreground, one after another. $live holds the started suites not yet done.

@@ -14,7 +14,7 @@ PASS=0; FAIL=0
 check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 R="$T/repo/tests"; mkdir -p "$R"
-cat "$S/run.sh" > "$R/run.sh"; cat "$S/suite_env.sh" > "$R/suite_env.sh"
+for f in run.sh suite_env.sh plan_shards.mjs scope_sections.mjs; do cat "$S/$f" > "$R/$f"; done
 printf '{\n  "seconds": {\n    "test_a.sh": 1,\n    "test_b.sh": 50,\n    "test_c.sh": 10,\n    "test_d.sh": 30\n  }\n}\n' > "$R/suite_durations.json"
 # test_p1..p5: each waits until four run at once (or one has finished), then writes how many it saw.
 for p in 1 2 3 4 5; do cat > "$R/test_p$p.sh" <<'EOF'
