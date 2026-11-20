@@ -705,7 +705,7 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    const name = E.localServiceName(raw);
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }

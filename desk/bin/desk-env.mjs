@@ -80,7 +80,8 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
-//                                             may run (UNLISTED), an app directory other command rows
+//                                             may run or, with worker-local-services yes, a Local services
+//                                             item with no service name (UNLISTED), an app directory other command rows
 //                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
@@ -1870,6 +1871,13 @@ export const STALLING_ROWS = Object.freeze({
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
+// The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
+// :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
+// name, and drift names an item it cannot read.
+export function localServiceName(item) {
+  return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
+}
+
 // -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
@@ -1895,6 +1903,13 @@ export function configDrift({ config, template = templatePath(), root = null, ho
     for (const item of values) {
       const why = commandItemProblem(parseCommandItem(item).cmd);
       if (why) unlisted.push({ row: CONFIG_ROWS[id].row, item, why });
+    }
+  }
+  // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
+  const services = configValuesIn(parsed, 'local-services');
+  if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
+    for (const item of services) {
+      if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
     }
   }
   return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], dontAsk: mode === 'dontAsk' ? file : null };
