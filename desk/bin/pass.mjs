@@ -1712,6 +1712,10 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
+// The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
+// or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
+// resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
+const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
 // Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
@@ -1719,7 +1723,7 @@ const lockQueueHolds = (r) => {
   if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
-  const round = existsSync(join(WORKTREES, r.key)) ? roundStage(r.last_round?.stage) : null;
+  const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
   return !round || SUITE_STAGES.includes(round);
 };
 const lockQueueHeld = [];
@@ -2521,10 +2525,10 @@ function fixturesBrief(key, wt, { heading = true } = {}) {
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
-  const stage = roundStage(round?.stage);
-  // An unfinished fix try is never resumed as a desk-ticket round: its next worker gets the try's own
-  // task again (fixTask), whatever stage the last one reached.
-  if (!stage || !kept || (t.fix && !t.fix.finished)) return { stage: null, brief: '', line: '' };
+  // An unfinished fix try is never resumed as a desk-ticket round (resumedStage): its next worker gets
+  // the try's own task again (fixTask), whatever stage the last one reached.
+  const stage = resumedStage(t);
+  if (!stage || !kept) return { stage: null, brief: '', line: '' };
   const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
     return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why, path: r.path }), line:` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };
