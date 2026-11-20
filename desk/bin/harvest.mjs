@@ -104,7 +104,7 @@ export function endedNormally(logText) {
 }
 
 // The result subtype the CLI ends a session with once it passes --max-budget-usd.
-const BUDGET_STOP ='error_max_budget_usd';
+const BUDGET_STOP = 'error_max_budget_usd';
 // Whether the session ended on the per-worker budget: its last turn closed with a result of that
 // subtype. A session with no ceiling (`budget` off) passed none, so its error is any other error.
 export function budgetStopped(logText, budget) {
