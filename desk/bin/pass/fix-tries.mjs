@@ -41,6 +41,7 @@
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
 import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, driverReviewTry, treeHeld, builtStuck } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
+import { externalReview } from '../review-threads.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -169,5 +170,6 @@ function* feedbackCall(t, p, s, waived, reads) {
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = reads.moves();
   const atHead = () => reads.atHead(fb.payload, carry, scope);
-  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, waived, base: s.base, baseMerge });
+  const external = (login) => externalReview(fb.payload, login);
+  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, waived, base: s.base, baseMerge });
 }

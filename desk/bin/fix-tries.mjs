@@ -160,6 +160,7 @@ const errorLines = (c) => checkLines(c).filter((l) => !approvalFiles(l));
 // A red §4 State check, as what clears it: it reads the PR's state, not its code, so no fix try turns it green.
 const stateClears = (kind) => (kind === 'verdict'
   ? 'a §4 State check, which reads the review verdict at the head and not the code, so only a review of a new head turns it green'
+  : kind === 'external' ? 'a §4 State check, which reads an outside reviewer\'s review at the head and not the code, so only that reviewer\'s review of a new head turns it green'
   : 'a §4 State check, which reads the PR\'s reviews or approvals and not its code, so no fix try turns it green; a person clears what it reads');
 const withLines = (mine, checks) => {
   const latest = latestPerCheck(checks ?? []);
@@ -676,6 +677,16 @@ export function verdictTry(t, s, ctx) {
   if (gate.pending.length) return null;
   const red = stateFailing(gate.failing, ctx.stateChecks).filter((f) => f.kind === 'verdict');
   const asReady = (c) => (c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true } } : c);
+  // A red check reading an outside reviewer's review (kind external) is that reviewer's to clear: no
+  // desk review is posted for it. With no review of theirs at the head it waits for one (null); with
+  // one, its findings (its open threads and its review's text) go to a fix worker as review feedback.
+  for (const f of stateFailing(gate.failing, ctx.stateChecks).filter((x) => x.kind === 'external')) {
+    const r = ctx.external?.(f.login);
+    if (!r?.reviewed || r.head !== s.head) return null;
+    const body = r.body ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').slice(0, 500)}` }] : [];
+    const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body] });
+    return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red after ${f.login} reviewed the head with nothing desk can work` };
+  }
   if (red.length) {
     if (ctx.settled) return null;
     const names = [...new Set(red.map((f) => `"${f.name}"`))].join(', ');
@@ -717,7 +728,8 @@ export function gateTry(t, s, ctx) {
   const lines = errorLinesOf(s, gate);
   const prot = protectedTry(t, s, lines, false);
   if (prot) return prot;
-  const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict').map((x) => x.name));
+  // An external reviewer's check is never one a desk review clears, whatever its error line says.
+  const verdictChecks = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'verdict' || x.kind === 'external').map((x) => x.name));
   const stale = lines.filter((x) => !verdictChecks.has(x.name) && staleVerdict(x.line));
   if (!stale.length) return null;
   // Another red check a worker can fix is fixCall's: its fix worker reviews the head it pushes, so a

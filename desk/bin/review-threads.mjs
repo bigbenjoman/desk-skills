@@ -73,6 +73,24 @@ export function readThreads(payload, { handle, clean }) {
   return { decision: pr.reviewDecision || 'NONE', head: pr.headRefOid ?? '', verdict: settles ? latest.verdict.sha : null, review, resolve, left };
 }
 
+// An outside reviewer's read of the PR, for a §4 State check of kind external: whether `login` has
+// reviewed the head, that review's state and body, and the threads still open that its reviews began
+// (each { id, text }). payload: THREADS_QUERY's response. -> { head, reviewed, state, body, threads } | null.
+export function externalReview(payload, login) {
+  const pr = payload?.data?.repository?.pullRequest;
+  if (!pr) return null;
+  const head = pr.headRefOid ?? '';
+  const mine = (pr.reviews?.nodes ?? []).filter((r) => loginIn(r.author?.login, login));
+  const at = [...mine].reverse().find((r) => r.commit?.oid === head) ?? null;
+  const ids = new Set(mine.map((r) => r.id));
+  const threads = (pr.reviewThreads?.nodes ?? []).filter((t) => !t.isResolved && ids.has(t.comments?.nodes?.[0]?.pullRequestReview?.id)).map((t) => {
+    const c = t.comments.nodes[0];
+    const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
+    return { id: th.id, text: threadLine(th) };
+  });
+  return { head, reviewed: !!at, state: at?.state ?? null, body: String(at?.body ?? '').trim(), threads };
+}
+
 // Whether §4 Local review command names a review, so that a merge waits on its clean verdict.
 export const localReviewSet = rowSet;
 

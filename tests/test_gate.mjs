@@ -274,6 +274,9 @@ t('DS-422 kinds and a bare check', sc(['🌿 Local Adversarial Code Review: verd
 t('DS-422 a check name may hold ": "', sc(['Gate: title: approval']), JSON.stringify({ checks: [{ name: 'Gate: title', kind: 'approval' }], errors: [] }));
 t('DS-422 none names none', sc(['none']), JSON.stringify({ checks: [], errors: [] }));
 t('DS-422 an unknown kind is an error, never a guess', parseStateChecks(['Review gate: approve']).errors.join(), '`Review gate: approve`');
+t('#737 external names the reviewer login', sc(['🔐 Review gate: external agent-pullbot']), JSON.stringify({ checks: [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }], errors: [] }));
+t('#737 external with no login is an error', parseStateChecks(['🔐 Review gate: external']).errors.length, 1);
+t('#737 a failing external check carries its login', JSON.stringify(stateFailing([{ name: '🔐 Review gate' }], parseStateChecks(['🔐 Review gate: external agent-pullbot']).checks)), JSON.stringify([{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }]));
 t('DS-422 stateFailing keeps only the state checks, with their kinds', JSON.stringify(stateFailing([{ name: 'tests', runId: '1' }, { name: '🔐 Review gate', runId: '2' }], parseStateChecks(['🔐 Review gate: approval']).checks)),
   JSON.stringify([{ name: '🔐 Review gate', runId: '2', kind: 'approval' }]));
 {
