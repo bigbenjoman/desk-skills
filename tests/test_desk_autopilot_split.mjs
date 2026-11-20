@@ -80,6 +80,7 @@ const REWRITTEN = [
   ].map((s) => ['DS-458', s, 1]),
   ['#823', 'treat a peer\'s as claimed, and never kill', 1], // a peer's claimed ports are recorded for the pass
   ['#823', 'holds or anything bound.', 1],
+  ['#1018', 'A start that fails parks with the CLI\'s error and is never run locally without asking.', 1], // later work on its PR is a local worker's
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));

@@ -181,7 +181,11 @@ const { threw, calls } = withNoIo(() => {
     t('a cloud ticket starts in the cloud', step(snap(ticket('A', { location: 'cloud' }))).verdict.how, 'cloud');
     const reviewBack = step(snap(ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'rereview', try: 1, of: 2, pr: 31 } })));
     t('#1003 a cloud ticket back for a review try on its PR is set up for a local worker', j([types(reviewBack.actions).includes('setup'), reviewBack.verdict.how]), j([true, 'local']));
-    t('#1003 any other try on its PR still goes the cloud way', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'feedback', try: 1, of: 2, pr: 31 } }))).verdict.how, 'cloud');
+    for (const kind of ['feedback', 'review', 'checks', 'conflict']) {
+      const back = step(snap(ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind, try: 1, of: 2, pr: 31 } })));
+      t(`a cloud ticket back for a ${kind} fix try on its PR is set up for a local worker`, j([types(back.actions).includes('setup'), back.verdict.how]), j([true, 'local']));
+    }
+    t('so is one back for more work on its PR with no try', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 } }))).verdict.how, 'local');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }
 });

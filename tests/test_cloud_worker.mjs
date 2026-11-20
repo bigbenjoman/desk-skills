@@ -39,6 +39,8 @@ t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
 t('a local worker is', runningHere({ state: 'running', location: null }), true);
 t('a review try on a cloud ticket\'s PR is', runningHere({ state: 'running', location: 'cloud', result: { pr: 9 }, fix: { kind: 'rereview' } }), true);
+t('a fix try on a cloud ticket\'s PR is', runningHere({ state: 'running', location: 'cloud', result: { pr: 9 }, fix: { kind: 'review', try: 1, of: 2 } }), true);
+t('and so is that worker as its spawn leaves it, its result cleared', runningHere({ state: 'running', location: 'cloud', cloud: { started: 'a', pr_at: 'b' }, result: null, fix: { kind: 'rereview', finished: 'x' } }), true);
 
 // ---- the prompt carries the ticket (AC2) ------------------------------------
 const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] });
