@@ -6,10 +6,10 @@
 import cp from 'node:child_process';
 import fs, { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -19,7 +19,7 @@ const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const T = mkdtempSync(join(tmpdir(), 'desk-q-scroll-'));
+const T = scratch('desk-q-scroll-');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),

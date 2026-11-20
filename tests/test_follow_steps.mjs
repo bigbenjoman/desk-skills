@@ -1,16 +1,16 @@
 // suite: follow steps (which follow steps a checker runs, the pass phase that starts and reads it, and what it found)
 // covers: desk/bin/follow-steps.mjs desk/bin/pass/follow-steps.mjs
 // Pure functions, plus scratch output files under a throwaway directory.
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { followKind, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS } from '../desk/bin/follow-steps.mjs';
 import { decideFollowSteps, followAwaits } from '../desk/bin/pass/follow-steps.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
-const T = mkdtempSync(join(tmpdir(), 'desk-follow-steps-'));
+const T = scratch('desk-follow-steps-');
 
 // ---- the classifier --------------------------------------------------------
 const kind = (step, more = {}, labels = []) => followKind({ step, row: null, ...more }, labels);

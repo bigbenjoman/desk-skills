@@ -2,11 +2,11 @@
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride } from '../desk/bin/machine.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -167,7 +167,7 @@ t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.
 // desk-env refuses its config writes inside an autopilot worker; these tests are not one.
 delete process.env.DESK_AUTOPILOT_WORKER;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
+const T = scratch('desk-machine-');
 const profile = join(T, 'machine.md');
 // A stray park-after row, so the repo-only check below fails if the fallback ever reaches every id.
 writeFileSync(profile, `${renderProfile(small, propose(small), '2026-10-17')}| \`park-after\` | \`99\` | stray |\n`);

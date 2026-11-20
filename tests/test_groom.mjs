@@ -7,6 +7,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { scratch } from './scratch.mjs';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The scan's desk/bin modules come from this checkout, not an older install under ~/.claude.
@@ -42,7 +43,7 @@ t('AC1 a key the scan named no candidate for is never a close', closeVerdict({ t
 t('AC1 an open PR on the key vetoes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')], open_prs: [7] }, ['AC1']).reasons, ['PR #7 on the key is still open'])
 
 // ---- fixture repo: origin/main holds the files the tickets cite, and the work landed under KAN-50
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-groom-')))
+const T = realpathSync(scratch('desk-groom-'))
 let stub = null
 process.on('exit', () => { if (stub) stub.kill(); rmSync(T, { recursive: true, force: true }) })
 writeFileSync(join(T, 'gitconfig'), '[user]\n\temail = t@example.com\n\tname = t\n[init]\n\tdefaultBranch = main\n')

@@ -3,10 +3,9 @@
 // A stub claude records the environment it was started with and, behind the Go proxy, sends Messages
 // requests to its base URL; a stub upstream records what reached it and answers with the hand-written
 // Go responses in fixtures/opencode-go-responses.json. No test calls a live endpoint.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { baseUrlProblem, endpointArms, endpointEnv, loginReach, readKey } from '../desk/bin/bench-endpoint.mjs';
 import { bodyAllowance, withKey } from '../desk/bin/endpoint-proxy.mjs';
@@ -20,7 +19,7 @@ const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench.mjs');
 const fx = JSON.parse(readFileSync(new URL('./fixtures/opencode-go-responses.json', import.meta.url), 'utf8'));
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-endpoint-test-')));
+const dir = realpathSync(scratch('bench-endpoint-test-'));
 let upstream = null;
 process.on('exit', () => { try { upstream?.kill('SIGKILL'); } catch { /* gone */ } rmSync(dir, { recursive: true, force: true }); });
 const home = join(dir, 'home');
@@ -113,6 +112,7 @@ chmodSync(join(bin, 'claude'), 0o755);
 const upstreamScript = join(dir, 'upstream.mjs');
 writeFileSync(upstreamScript, `import http from 'node:http';
 import fs from 'node:fs';
+import { scratch } from './scratch.mjs';
 const [portFile, log, good] = process.argv.slice(2);
 const body = fs.readFileSync(good, 'utf8');
 http.createServer((req, res) => {

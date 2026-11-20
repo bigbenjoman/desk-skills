@@ -1,12 +1,12 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -22,7 +22,7 @@ const quick = (ms, baseline) => ms < Math.max(QUICK_FLOOR_MS, QUICK_TIMES * base
 
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
-  const T = mkdtempSync(join(tmpdir(), 'desk-q-'));
+  const T = scratch('desk-q-');
   // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded,
   // printing bin/print-<label> where there is one.
   mkdirSync(join(T, 'bin'));
@@ -178,7 +178,7 @@ t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no 
   '[false,false,false,true,true,true,true]');
 
 // ---- AC13: nothing set up
-const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
+const E = scratch('desk-q-empty-');
 const none = spawnSync('node', [BIN, '--plain'], { encoding: 'utf8', env: { HOME: E, DESK_HOME: join(E, 'd'), DESK_CONFIG_ROOT: join(E, 'c'), DESK_MACHINE: join(E, 'm.md'), PATH: process.env.PATH } });
 t('AC13 no repo set up: says so, names /desk-setup, exits non-zero', none.status !== 0 && /no repo is set up/i.test(none.stderr) && /\/desk-setup/.test(none.stderr), true);
 
@@ -2268,7 +2268,7 @@ M357.ui.finish(0);
 const FIX357 = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'costs-october');
 const cost357 = { DESK_COSTS: process.env.DESK_COSTS, DESK_COST_DIR: process.env.DESK_COST_DIR };
 const home357 = async (reading) => {
-  const d = mkdtempSync(join(tmpdir(), 'desk-q-357-'));
+  const d = scratch('desk-q-357-');
   writeFileSync(join(d, 'costs.md'), readFileSync(join(FIX357, 'costs.md'), 'utf8'));
   if (reading) writeFileSync(join(d, 'cache.json'), readFileSync(join(FIX357, 'cache.json'), 'utf8'));
   Object.assign(process.env, { DESK_COSTS: join(d, 'costs.md'), DESK_COST_DIR: d });

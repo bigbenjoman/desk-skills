@@ -4,18 +4,18 @@
 // shape Codex writes, and a fake codex on PATH that records the CODEX_HOME each call ran under. A folder
 // holding a `signed-out` file fails `codex login status`, and one holding `at-limit` fails each call as
 // Codex does at a usage limit. Nothing reads this computer's Codex folders.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, chmodSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(root, 'desk', 'bin', 'desk-codex.mjs');
 
-const T = mkdtempSync(join(tmpdir(), 'desk-codex-login-'));
+const T = scratch('desk-codex-login-');
 const H = join(T, 'home');
 for (const d of ['bin', 'state', H]) mkdirSync(join(T, d), { recursive: true });
 writeFileSync(join(T, 'bin', 'codex'), `#!/usr/bin/env bash

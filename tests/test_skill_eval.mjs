@@ -1,16 +1,16 @@
 // suite: skill eval harness (task set with and without a skill, keep/trim/drop)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, loadTasks, readRun, verdict, checkPasses } from '../desk/bin/skill-eval.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'skill-eval.mjs');
-const dir = mkdtempSync(join(tmpdir(), 'skill-eval-'));
+const dir = scratch('skill-eval-');
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 
 // A stub claude: logs each call, replies with the prompt plus the skill's marker when its SKILL.md was

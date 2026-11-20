@@ -3,6 +3,7 @@ import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
 import { registryView } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -145,7 +146,7 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const { tmpdir } = await import('node:os');
   const { join } = await import('node:path');
   const { parkApprove } = await import('../desk/bin/batch-state.mjs');
-  const dir = mkdtempSync(join(tmpdir(), 'park-approve-'));
+  const dir = scratch('park-approve-');
   mkdirSync(join(dir, 'parks'));
   const write = (o) => writeFileSync(join(dir, 'parks', 'P-1.json'), JSON.stringify(o));
   write({ question: 'post the comment?', approve: { kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' } });

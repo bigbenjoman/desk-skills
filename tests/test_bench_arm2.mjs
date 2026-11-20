@@ -3,12 +3,12 @@
 // A scratch repo whose PR has two acted-on findings, one revertible and one overwritten by a later
 // commit. Stub claude and codex binaries on PATH log what each seat could see, then answer from the
 // brief's ticket text.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { findingPlace, hunkAt, namedPath, parseArgs, parseCsv, parseFindings, renderReport, rowsFor, scoreFindings, splitHunks } from '../desk/bin/bench-arm2.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -16,7 +16,7 @@ const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; 
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, '..', 'desk', 'bin', 'bench-arm2.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-arm2-test-')));
+const dir = realpathSync(scratch('bench-arm2-test-'));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);

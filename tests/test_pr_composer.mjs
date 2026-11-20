@@ -7,8 +7,7 @@
 // profile: it finds the composer and its file input or add-files button, and uploads nothing.
 // DESK_COMPOSER_CAPTURE=<file> with it saves that page, focused and stripped of its tokens, to build
 // a fixture from.
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { findComposer, NO_COMPOSER } from '../desk/bin/pr-composer.mjs';
@@ -24,7 +23,7 @@ const t = (name, got, want) => {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = join(HERE, 'fixtures', 'github-pr');
 const fixture = (name) => join(FIX, `${name}.html`);
-const T = mkdtempSync(join(tmpdir(), 'desk-pr-composer-'));
+const T = scratch('desk-pr-composer-');
 
 // ---- upload-images.mjs on a stub gh, a scratch config and a saved login ------------------------
 const { images, fakes, upload } = uploadSandbox(T, { user: 'octocat' });
@@ -134,6 +133,7 @@ if (!pw.entry) {
   // upload-images.mjs end to end in a real browser, its PR page served from a fixture.
   writeFileSync(join(T, 'served-pw.mjs'), `
 import { readFileSync } from 'node:fs';
+import { scratch } from './scratch.mjs';
 const real = await import(${JSON.stringify(pw.entry)});
 export const chromium = { launchPersistentContext: async (_profile, opts) => {
   const browser = await real.chromium.launch({ headless: true });

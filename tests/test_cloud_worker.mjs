@@ -3,19 +3,19 @@
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the
 // PR a session opened, and the batch report's cloud row.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
 import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'cloud');
 const fixture = (f) => readFileSync(join(FIX, f), 'utf8');
-const S = mkdtempSync(join(tmpdir(), 'desk-cloud-'));
+const S = scratch('desk-cloud-');
 
 // ---- placement (AC3) --------------------------------------------------------
 const rec = (o) => ({ ticket: 'K-1', lane: 'A', renders: false, needs_db: false, needs_local: null, ...o });

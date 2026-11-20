@@ -1,13 +1,13 @@
 // suite: merge log (who merged what, at which head)
 // merge-log.mjs claim refuses a merge another merger has claimed recently, merged or armed, and lets the
 // same merger through; record and show keep and print every event; the CLI exits 11 on a refusal.
-import { mkdtempSync, readFileSync, appendFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, appendFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
-const T = mkdtempSync(join(tmpdir(), 'merge-log-'));
+const T = scratch('merge-log-');
 process.env.DESK_MERGE_LOG = join(T, 'merges.jsonl');
 const M = await import('../desk/bin/merge-log.mjs');
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'merge-log.mjs');
@@ -75,7 +75,7 @@ t('#809 two claims at once: exactly one gets the PR, every time', races.filter((
 t('#809 a bad event is refused with the usage', cli('record', '20', 'cafe123', '--by', S, '--event', 'closed').status, 11);
 t('#809 a claim with no --by is refused', cli('claim', '20', 'cafe123').status, 11);
 // The CLI reads GitHub with gh: a stub answers for PR 40, armed then not.
-const GH = mkdtempSync(join(tmpdir(), 'merge-log-gh-'));
+const GH = scratch('merge-log-gh-');
 writeFileSync(join(GH, 'gh'), '#!/bin/sh\ncat "$GH_ANSWER"\n', { mode: 0o755 });
 const answer = join(GH, 'answer.json');
 const cliGh = (...a) => spawnSync('node', [BIN, ...a, '--repo', R], { encoding: 'utf8', env: { ...process.env, PATH: `${GH}:${process.env.PATH}`, GH_ANSWER: answer } });

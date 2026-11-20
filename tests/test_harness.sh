@@ -4,6 +4,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"; mkdir -p "$T/home" "$T/xdg"
+trap 'rm -rf "$T"' EXIT
 H="$S/../"skills/desk-setup/bin/harness-rules.py
 export HOME="$T/home" XDG_CONFIG_HOME="$T/xdg" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t

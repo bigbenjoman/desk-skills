@@ -3,8 +3,7 @@
 // Fixture repos, queues, heartbeats, triage records and decision logs under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. DESK_HOME/bin links the real scripts, except answer.mjs: a fake
 // that logs each call and then runs the real one. Nothing touches your real ~/.claude or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, symlinkSync, existsSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +17,7 @@ const REAL_BIN = join(ROOT, 'desk', 'bin');
 const NOW = Date.now();
 const minsAgo = (m) => new Date(NOW - m * 60000).toISOString();
 
-const T = mkdtempSync(join(tmpdir(), 'desk-needs-you-'));
+const T = scratch('desk-needs-you-');
 mkdirSync(join(T, 'bin'));
 // A fake's rule, as a script's body: the fake in bin/ runs it as its own process, and the suite's in-process
 // reads (launchctl's and STUB's, below) call the same function. Self-contained: it takes its paths as arguments.
@@ -66,6 +65,7 @@ const ANSWERS = join(T, 'answers.log');
 // node starts per answer once the fixture holds that many batches (DS-929 AC3).
 writeFileSync(join(BIN, 'answer.mjs'), `import { appendFileSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { scratch } from './scratch.mjs';
 const require = createRequire(import.meta.url);
 appendFileSync(${JSON.stringify(ANSWERS)}, JSON.stringify({ args: process.argv.slice(2), queue: process.env.DESK_QUEUE }) + '\\n');
 const launchctlPrint = ${launchctlPrint};

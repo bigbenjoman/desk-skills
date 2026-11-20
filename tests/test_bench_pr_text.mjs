@@ -2,19 +2,19 @@
 // covers: desk/bin/bench-pr-text.mjs desk/bin/bench-pr-text-rubric.md
 // A stub claude on PATH, and two scratch repos: one with a PR template and a PR-description check that
 // fails on a missing section, one with neither.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, readdirSync, realpathSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DESK_TEMPLATE, MAX_PROMPT, NO_CHECKS, SIDES, checkCell, fillTemplate, parseArgs, promptFrom } from '../desk/bin/bench-pr-text.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-pr-text-test-')));
+const dir = realpathSync(scratch('bench-pr-text-test-'));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);

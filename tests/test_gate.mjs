@@ -1,11 +1,11 @@
 // suite: gate (one definition of green)
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 import { gateReviewersIn } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const cr = (name, status, conclusion, runId) => ({ name, status, conclusion, detailsUrl: runId ? `https://github.com/o/r/actions/runs/${runId}/job/1` : '' });
@@ -316,7 +316,7 @@ t('DS-503 AC3 every hold on the checks desk-setup proposes stays a person\'s', `
 t('DS-503 negative control: a check with no ask-class word is an agent\'s', kinds(['claude.md: house rules', 'e2e/**: read the dry-run comment the docs bot posts']), 'agent,agent');
 t('DS-503 AC1 desk-setup sorts each proposed hold with hold-kind and gives an agent\'s a routine', /gate\.mjs hold-kind/.test(setup) && /\*\*`agent`\*\*: .*Write it a routine/.test(setup), true);
 // The CLI desk-setup and desk-update run: items given, else the config's §4 Merge holds.
-const gtmp = mkdtempSync(join(tmpdir(), 'gate-503-'));
+const gtmp = scratch('gate-503-');
 const gconf = join(gtmp, 'config.md');
 writeFileSync(gconf, `## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Merge holds | \`${dryRun}\`, \`content/legal/**: legal copy sign-off\`, \`db/**: check the plan; desk runs: ./plan.sh\` |\n`);
 const gcli = (args) => spawnSync(process.execPath, [new URL('../desk/bin/gate.mjs', import.meta.url).pathname, 'hold-kind', ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: gconf } });

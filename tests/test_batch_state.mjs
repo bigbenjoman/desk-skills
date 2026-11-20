@@ -1,10 +1,10 @@
 // suite: batch state (every path batch-state.mjs builds under the state folder is a declared state path)
 // covers: desk/bin/batch-state.mjs
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STATE_PATHS, statePath, openQuestion, parkApprove, readTriage } from '../desk/bin/batch-state.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -45,7 +45,7 @@ t('#881 statePath refuses an undeclared path', refused, 'not a declared state pa
 t('#881 statePath fills in the ticket', statePath('/s', 'parks', 'A-1'), '/s/parks/A-1.json');
 
 // The readers still find their files.
-const dir = mkdtempSync(join(tmpdir(), 'batch-state-'));
+const dir = scratch('batch-state-');
 try {
   for (const d of ['parks', 'answers', 'triage']) mkdirSync(join(dir, d));
   writeFileSync(join(dir, 'parks', 'A-1.json'), JSON.stringify({ question: 'q?', approve: { kind: 'jira-comment', target: 'A-1', body: 'b' } }));

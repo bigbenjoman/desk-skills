@@ -1,19 +1,19 @@
 // suite: bench-build (a task set frozen from merged PRs, kept only where the hidden tests fail at base and pass at merge)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, parsePr, testFiles, fieldsAt, counts, sizeOf, taskId } from '../desk/bin/bench-build.mjs';
 import { keyRegex } from '../desk/bin/ticket-lint.mjs';
 import { loadBenchTasks } from '../desk/bin/bench.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-build.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-build-test-')));
+const dir = realpathSync(scratch('bench-build-test-'));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const home = join(dir, 'home');
 mkdirSync(home);

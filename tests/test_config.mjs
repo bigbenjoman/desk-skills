@@ -1,11 +1,11 @@
 // suite: config values (list items, trailing notes)
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cellItems, configRows } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const items = (cell) => cellItems(cell).join(' | ');
@@ -48,7 +48,7 @@ t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
 // End to end: `desk-env list` on a §4 row that carries a note.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-config-'));
+const T = scratch('desk-config-');
 const cfg = join(T, 'config.md');
 writeFileSync(cfg, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n'
   + '| Other work id patterns | `BUG-[0-9]+` `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` (not `roadmap-fw-3xx`) |\n');
@@ -142,7 +142,7 @@ t('AC2 jira-comment yes reads as yes', perm('jira-comment'), 'yes');
 t('AC3 jira-comment missing reads as no', execFileSync('node', [BIN, 'perm', 'jira-comment'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: tool, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim(), 'no');
 
 // Outside any repo there is no config: a permission is refused unread, never read as `no`.
-const away = mkdtempSync(join(tmpdir(), 'desk-norepo-'));
+const away = scratch('desk-norepo-');
 const awayEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
 Object.assign(awayEnv, { HOME: away, DESK_CONFIG_ROOT: join(away, 'cfg'), DESK_MACHINE: join(away, 'none.md') });
 const outside = (args) => {

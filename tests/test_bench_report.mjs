@@ -1,17 +1,17 @@
 // suite: bench report (each arm beside the Phase 0 baseline)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, NO_BASELINE, NOT_SCORED, NOT_PRICED, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
 import { report as phase0, figureLines, totalOf } from '../desk/bin/phase0-report.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-report.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-report-test-')));
+const dir = realpathSync(scratch('bench-report-test-'));
 process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
 const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8' });
 

@@ -3,10 +3,10 @@
 // hosted one stops at 6 h, red rate, round trips and time to green read a PR's pushes and re-runs,
 // sampled jobs scale back up within their month, and the API collector stays inside its call budget
 // and the rate limit's reserve.
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { quantile, jobMinutes, pickSample, measure, collect, report, collectBatch, batchRed, compareRed, batchReport, newestBaseline, queuePrs, reviewMethod } from '../desk/bin/desk-ci.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -348,7 +348,7 @@ t('report: none of a kind is 0, and nothing listed', JSON.stringify(clean4), JSO
 t('report: a batch with none says 0 and lists nothing', batchReport({ ...br, prs: 1, review: clean4 }, compareRed(br, null), null, null).split('\n').find((l) => l.includes('with a fallback seat')), 'review: 0 of 1 PRs reviewed with a fallback seat');
 t('report: no baseline says how to get one', batchReport(br, compareRed(br, null), null, null).split('\n')[1], 'baseline: none — run `desk-ci.mjs measure` to record one');
 t('queuePrs: finished tickets\' PRs, once each, in order', queuePrs({ tickets: { A: { result: { pr: 12 } }, B: { result: { pr: '9' } }, C: { state: 'running' }, D: { result: { pr: 12 } } } }).join(','), '9,12');
-const hand = mkdtempSync(join(tmpdir(), 'desk-batch-red-'));
+const hand = scratch('desk-batch-red-');
 for (const f of ['2026-09-01-ci-measure-o__r.json', '2026-10-17-ci-measure-o__r.json', '2026-10-18-ci-measure-x__y.json', '2026-10-17-ci-measure-o__r.md']) writeFileSync(join(hand, f), '{}');
 t('newestBaseline: the latest measure JSON for this repo', newestBaseline(hand, 'o/r'), join(hand, '2026-10-17-ci-measure-o__r.json'));
 t('newestBaseline: none for another repo', newestBaseline(hand, 'q/z'), null);

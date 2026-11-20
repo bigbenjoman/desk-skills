@@ -2,17 +2,17 @@
 // desk-env's queue, state and default-branch resolution under DESK_BATCH, and batches.mjs listing and
 // lookup, against fixture queues in a throwaway HOME and DESK_HOME. Each resolution runs in a child,
 // because desk-env reads HOME once at load.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-batches-'));
+const T = scratch('desk-batches-');
 const HOME = join(T, 'home');
 const DESK_HOME = join(T, 'deskhome');
 const SLUG = 'acme__widgets';

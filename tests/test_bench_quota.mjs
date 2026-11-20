@@ -1,13 +1,13 @@
 // suite: bench quota (the per-computer cap, the interactive reserve and unreadable readings)
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const throws = (fn) => { try { fn(); return ''; } catch (e) { return e.message; } };
 
-const T = mkdtempSync(join(tmpdir(), 'desk-bench-quota-'));
+const T = scratch('desk-bench-quota-');
 process.on('exit', () => rmSync(T, { recursive: true, force: true }));
 for (const k of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'DESK_MACHINE']) delete process.env[k];
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_USAGE_DIR: join(T, 'usage'), DESK_SUBSCRIPTIONS: join(T, 'subscriptions.md') });

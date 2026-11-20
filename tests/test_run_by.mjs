@@ -3,8 +3,7 @@
 // keeps the agent's state in a file and fails a command on request, and a fake platform
 // (DESK_PLATFORM), and a fake systemctl on PATH that answers only while $T/systemd exists. Nothing
 // touches launchd, systemd or your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +12,7 @@ let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'run-by.mjs');
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'run-by-')));
+const T = realpathSync(scratch('run-by-'));
 const ROOT = join(T, 'repo');
 mkdirSync(ROOT, { recursive: true });
 
@@ -23,6 +22,7 @@ mkdirSync(ROOT, { recursive: true });
 const FAKE = join(T, 'supervisor.mjs');
 writeFileSync(FAKE, `import { readFileSync, writeFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { scratch } from './scratch.mjs';
 const dir = ${JSON.stringify(T)};
 const [sub, ...args] = process.argv.slice(2);
 const file = join(dir, 'state');

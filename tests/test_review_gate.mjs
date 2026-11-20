@@ -3,8 +3,7 @@
 // missing, stale SHA, each non-zero count, heading mismatch), CLAUDE.md size, and the protected-path
 // approval with its small fix/docs/chore exemption.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, parseVerdict, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
@@ -12,6 +11,7 @@ import { parseVerdict as undraftVerdict, verdictAt } from '../desk/bin/undraft.m
 import * as oldGate from './fixtures/review-gate-v1.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -176,7 +176,7 @@ has('it points at splitting', big.message, 'Split it');
 t('multibyte text is counted in characters', checkClaudeMd([{ path: 'CLAUDE.md', text: 'é'.repeat(15000) }]).ok, true);
 
 // The CLI, against a throwaway repo: only tracked CLAUDE.md files are read.
-const repo = mkdtempSync(join(tmpdir(), 'desk-gate-'));
+const repo = scratch('desk-gate-');
 const script = join(dirname(fileURLToPath(import.meta.url)), '../desk/templates/scripts/desk/review-gate.mjs');
 const git = (...a) => execFileSync('git', a, { cwd: repo });
 git('init', '-q');
