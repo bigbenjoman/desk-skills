@@ -16,8 +16,9 @@ check makes one real request and the Jira checks make read-only API calls.
 gh repo view --json nameWithOwner,defaultBranchRef,description
 # §1 you
 gh api user --jq .login
-git log --all --since=1.year --author="$(gh api user --jq .login)" --author="$(git config user.email)" \
-  --format='%an <%ae>%x09%ce' | grep -v $'\tnoreply@github.com$' | cut -f1 | sort | uniq -c | sort -rn | head -3   # your own commits' author, not GitHub's merges
+mine=(); for a in "$(gh api user --jq .login 2>/dev/null)" "$(git config user.email)"; do [ -n "$a" ] && mine+=(--author="$a"); done
+[ ${#mine[@]} -gt 0 ] && git log --all --since=1.year "${mine[@]}" --format='%an <%ae>%x09%ce' \
+  | grep -v $'\tnoreply@github.com$' | cut -f1 | sort | uniq -c | sort -rn | head -3   # your own commits' author, not GitHub's merges
 git config user.name; git config user.email
 # §2 paths
 git rev-parse --path-format=absolute --git-common-dir     # parent = primary repo root
@@ -443,6 +444,7 @@ How to turn what you find into rows:
   branch, from the detect block: it leaves out commits GitHub committed (squash and web merges, whose
   author is the `id+login@users.noreply.github.com` address GitHub stamps), which fill a squash-merge
   repo's default branch. When `git config user.email` differs from the proposal, show it beside it.
+  With neither a GitHub login nor a `git config user.email`, it prints nothing: ask for the identity.
 - **AI attribution.** Propose `allowed` if recent commits already carry a Claude trailer (the repo's
   own instructions then decide the wording), otherwise ask. If the user picks `forbidden`, offer to
   also write `{"attribution": {"commit": "", "pr": "", "sessionUrl": false}}` into the repo's
