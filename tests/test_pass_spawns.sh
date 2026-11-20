@@ -127,6 +127,8 @@ q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red
 out=$(node "$B/pass.mjs" 2>&1)
 check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
 check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: PR #40 from cloud session"'
 q set CW-3 state=done
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
