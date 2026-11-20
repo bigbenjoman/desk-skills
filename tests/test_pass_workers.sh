@@ -563,7 +563,7 @@ budget_event(){ node -e 'console.log(JSON.stringify({ type: "result", subtype: p
 killed B-1 sess-b1; budget_event >> "$T/state-k/logs/B-1.log"; echo change > "$T/wt/B-1/new.txt"; git -C "$T/wt/B-1" init -q
 out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
 check "DS-849 AC1 a worker stopped at the per-worker budget is resumed once in its own session, not failed" \
-  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = true ] && [ "$(field B-1 resumes)" = null ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more (\$30)"'
+  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = true ] && [ "$(field B-1 resumes)" = 0 ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more (\$30)"'
 check "DS-849 AC1 with \$5 more, told to commit, push and finish its stage" \
   '[ "$(cat "$T/resume-budget-B-1")" = 30 ] && grep -q "spend it on committing your work, pushing it and finishing the stage you were in" "$T/resume-prompt-B-1"'
 # Its resumed session ends on the budget too.
@@ -580,7 +580,7 @@ check "DS-849 AC4 with the per-worker budget none, a budget-stop subtype is any 
 h=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
 h3=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-3.log" 2>&1)
 hn=$(AUTOPILOT_BUDGET_USD=none node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
-check "DS-849 harvest names a budget stop, and any other error, or one with no budget, FAILED" \
+check "DS-849 harvest names a budget stop, and any other error, or one with no budget, as failed" \
   'echo "$h" | grep -qx "state:  BUDGET STOP" && echo "$h3" | grep -qx "state:  FAILED" && echo "$hn" | grep -qx "state:  FAILED"'
 # K-9's log was written seconds ago: before a boot a minute from now it was a reboot, so resumed at
 # once; with the computer up it may be a worker the registry has not listed yet, so it is left.
