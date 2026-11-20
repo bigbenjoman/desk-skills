@@ -76,6 +76,9 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
+// ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
+// the next pass clears it once the base is current).
 // `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped
 // with work left (done records nothing; the next pass clears it).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
@@ -728,10 +731,14 @@ const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== tr
 // by this: no new work of the repo starts until the person moves the pin or sets the subscription unused.
 const SUB_OFF_ITEM = 'subscription-off';
 const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
-const batchRows = (r) => [usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
-// The base-push and subscription-off items desk-q counts, one per batch of a repo row (each keyed in its
-// batch, `b`): unlike a usage hold neither lifts by itself, so each needs the person.
-const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
+// A batch whose base sync merged but could not push while the base lags too far to spawn (pass.mjs
+// base_sync_stuck) is one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
+const BASE_SYNC_ITEM = 'base-sync';
+const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
+const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-sync, base-push and subscription-off items desk-q counts, one per batch of a repo row (each
+// keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -1329,6 +1336,13 @@ function itemOf(r, x, reads = null, finds = reads) {
     return { kind: 'subscription-off', need: `${r.slug} is pinned to ${s.email}, which is off${s.login ? ` (claude ${s.login})` : ''}, so no new work starts for it: move it to another subscription (desk-env subscription set ${r.slug} <default|email>)${s.login ? `, or set ${s.login} unused (desk-env logins set claude ${s.login} unused)` : ''}`,
       actions: [['done', 'once it is moved, or the subscription is unused, the next pass starts its work and drops this item'], ['not-now']] };
   }
+  if (x.baseSync) {
+    const b = r.q.base_sync_stuck;
+    const n = b.frozen ?? 0;
+    return { kind: 'base-sync', holdsAll: true,
+      need: `the base sync of ${b.base} could not push, so ${n === 1 ? '1 ticket ready to spawn is' : `${n} tickets ready to spawn are`} frozen until ${b.base} takes ${b.source ?? 'the default branch'}: ${b.why}. Run it by hand to see the hook's full output and push it: ${b.cmd}`,
+      actions: [['done', 'once the base is pushed, the next pass finds it current, spawns again and drops this item'], ['not-now']] };
+  }
   if (x.basePush) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
@@ -1615,7 +1629,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
+      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -1655,7 +1669,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // Heads of one batch with tickets waiting behind them go in build order (its queue's), as a fork's do.
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
-  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -2014,6 +2028,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+      if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
       if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
       if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
       return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
