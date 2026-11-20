@@ -76,8 +76,8 @@ const MEM = /\b((?:vmmem|avail|rss)=)[0-9.]+[KMGT]?i?B?|\b[0-9.]+[KMGT]i?B?(?= a
 const PID = /\b(pid:? |"pid":\s*)\d+/g;
 const SLUG = /\b(local__[\w.-]*?)-[0-9a-f]{8}\b/g;
 // A port the pass took from what was free on the machine when it ran ("port=47704", "port 47704"),
-// named per run as a SHA is (renamer), and like a SHA not named when the pass cut it short.
-const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)(\d{2,5})\b(?!…)/g;
+// named per run as a SHA is (renamer), cut short by the pass or not.
+const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)(\d{2,5}\b(?!…)|\d{1,5}(?=…))/g;
 // git words one refused fetch differently, depending on which side of the connection reports it first.
 const UPLOAD_PACK = /\bfatal: (?:remote error: |git )?upload-pack: /g;
 
@@ -107,14 +107,34 @@ function normalizer(roots) {
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is named the same way, digits or not: each tree's pass started at a different time.
-// One the pass cut short ("4a1f0c2…") is not named, so it cannot shift the names after it.
+// One the pass cut short ("4a1f0c2…", once it shows a letter and a digit) takes the name of the whole one it starts, seen before it or after, so a SHA whole on one tree and cut
+// on the other takes one name on both and the names after it stay in step.
 // Ports are named the same way: two runs take different free ports, but two tickets given one port on
 // one tree and two on the other still differ.
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)/g;
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)|\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{2,40}(?=…)/g;
+function namer(tag) {
+  const whole = new Map(), cut = new Map();
+  let n = 0;
+  return (x, isCut) => {
+    if (isCut) {
+      for (const [k, v] of whole) if (k.startsWith(x)) return v;
+      for (const [k, v] of cut) if (k.startsWith(x) || x.startsWith(k)) return v;
+      cut.set(x, `<${tag}${++n}>`);
+      return cut.get(x);
+    }
+    if (!whole.has(x)) {
+      let v;
+      for (const [k, c] of cut) if (x.startsWith(k)) { v = c; break; }
+      whole.set(x, v ?? `<${tag}${++n}>`);
+    }
+    return whole.get(x);
+  };
+}
 function renamer() {
-  const seen = new Map(), ports = new Map();
-  return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); })
-    .replace(PORT, (_, pre, n) => { if (!ports.has(n)) ports.set(n, `<PORT${ports.size + 1}>`); return pre + ports.get(n); });
+  const sha = namer('SHA'), port = namer('PORT');
+  const isCut = (s, at, x) => s[at + x.length] === '…';
+  return (s) => s.replace(SHA, (x, at, all) => sha(x, isCut(all, at, x)))
+    .replace(PORT, (m, pre, p, at, all) => pre + port(p, isCut(all, at, m)));
 }
 
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
@@ -165,10 +185,17 @@ function sameTime(a, b, run, cb, ch) {
 const count = (s) => s.split('<TIME>').length - 1;
 // Text the pass cuts at a length ends there with "…", perhaps with more after it. As a path, port or
 // SHA before the cut is longer on one tree than the other, the two cut at different places: they match
-// when the shorter head (less the word the cut fell in, which goes unchecked) starts the other side
-// and both end alike.
+// when the shorter head starts the other side and both end alike. The word the cut fell in is checked
+// up to the first digit, path or placeholder in it, or a run of hex letters it ends in, which may be a
+// SHA, port or path the cut left part of: that part must start the other side's word there.
+const cutWord = (w) => w.replace(/[\d/<].*$/, '').replace(/[a-f]*$/i, '');
 function sameCut(x, y, eqTime) {
-  const parts = (v) => { const i = v.shape.indexOf('…'); return i < 0 ? null : { head: v.shape.slice(0, i).replace(/\S*$/, ''), tail: v.shape.slice(i + 1) }; };
+  const parts = (v) => {
+    const i = v.shape.indexOf('…');
+    if (i < 0) return null;
+    const before = v.shape.slice(0, i), word = /\S*$/.exec(before)[0];
+    return { head: before.slice(0, before.length - word.length), word, tail: v.shape.slice(i + 1) };
+  };
   let px = parts(x), py = parts(y);
   if (!px && !py) return false;
   if (!px || (py && py.head.length < px.head.length)) { [x, y] = [y, x]; [px, py] = [py, px]; }
@@ -178,6 +205,11 @@ function sameCut(x, y, eqTime) {
   const ok = py ? py.head.startsWith(head) && py.tail === tail
     : y.shape.length >= head.length + tail.length && y.shape.startsWith(head) && y.shape.endsWith(tail);
   if (!ok) return false;
+  const fx = cutWord(px.word);
+  if (py && py.head.length === head.length) {
+    const fy = cutWord(py.word);
+    if (!fx.startsWith(fy) && !fy.startsWith(fx)) return false;
+  } else if (!/^\S*/.exec(y.shape.slice(head.length))[0].startsWith(fx)) return false;
   const nh = count(head), nt = count(tail);
   return x.times.slice(0, nh).every((t, i) => eqTime(t, y.times[i]))
     && x.times.slice(x.times.length - nt).every((t, i) => eqTime(t, y.times[y.times.length - nt + i]));

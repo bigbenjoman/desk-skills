@@ -119,6 +119,15 @@ fieldtree cut2 "why: \`set state=parked worktree=\${import.meta.url} port=47705 
 cp "$T/cut1/tests/test_pass.sh" "$T/cut2/tests/test_pass.sh"
 cmp "$T/cut1" "$T/cut2"
 check "DS-819 AC4 error text that differs before the cut is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "queue A-1 why: base" && echo "$out" | grep -qF "output head: failed: set state=parked"'
+fieldtree word1 'why: "set A-1 state=runn… — fetching failed"' 'failed: set A-1 state=runn… — fetching failed'
+fieldtree word2 'why: "set A-1 state=park… — fetching failed"' 'failed: set A-1 state=park… — fetching failed'
+cmp "$T/word1" "$T/word2"
+check "DS-819 AC4 a difference inside the word the cut falls in, before the cut, is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "queue A-1 why: base" && echo "$out" | grep -qF "output head: failed: set A-1 state=park…"'
+# A port the cut falls just after on one tree and whole on the other: the next port has one name on both.
+fieldtree cutport1 '' 'failed: set A-1 port=47704… — fetching failed\n  RUNNING  A-2  on localhost:47801'
+fieldtree cutport2 '' 'failed: set A-1 port=47705 idl… — fetching failed\n  RUNNING  A-2  on localhost:47802'
+cmp "$T/cutport1" "$T/cutport2"
+check "DS-819 AC1 a port cut short on one tree does not shift the names of the ports after it" "$same0"
 
 fieldtree git1 'why: "fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9'
 fieldtree git2 'why: "fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9'
