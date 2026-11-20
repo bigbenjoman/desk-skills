@@ -69,20 +69,64 @@ function topLevel(text) {
   }
   return out.map((c) => { while (c.length && !c.at(-1).trim()) c.pop(); return c.join('\n'); }).filter(Boolean);
 }
-// `text` with each outermost bracket group emptied to `()`, `[]` or `{}`, each string to `""` and each
-// comment dropped, or null when its brackets or quotes do not close. Not a parser: anything it
-// misreads comes out unbalanced or in a shape the callers do not accept, and is refused.
+// The end of a regex literal whose opening `/` is at `i` (past its flags), or -1 when it does not close
+// on its line. `body` gets its text between the slashes.
+function regexEnd(text, i, body = {}) {
+  let cls = false, j = i + 1;
+  for (; j < text.length && text[j] !== '\n'; j++) {
+    if (text[j] === '\\') j++;
+    else if (text[j] === '[') cls = true;
+    else if (text[j] === ']') cls = false;
+    else if (text[j] === '/' && !cls) break;
+  }
+  if (j >= text.length || text[j] !== '/' || j === i + 1) return -1;
+  body.text = text.slice(i + 1, j);
+  for (j++; /[a-z]/i.test(text[j] ?? ''); j++);
+  return j;
+}
+// After these a `/` starts a regex; after anything else (a name, a number, a closing bracket or quote) it divides.
+const REGEX_AFTER = /(?:^|[([{,;:=!&|?+\-*%<>~^]|(?<![\w$])(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await))$/;
+// `text` with each outermost bracket group emptied to `()`, `[]` or `{}`, each string to `""`, each regex
+// to `/r/` and each comment dropped (a block comment holding a line break leaves the break, which can
+// end a statement), or null when its brackets, quotes or regexes do not close, a quote or regex runs
+// past its line, or a `/` read as division could also be read as a regex that holds a quote, a
+// bracket or an escape. Not a parser: anything it misreads comes out unbalanced or in a shape the
+// callers do not accept, and is refused.
 function outside(text) {
-  let d = 0, q = null, out = '';
+  let d = 0, q = null, out = '', prev = '';
+  const emit = (s) => { if (d === 0) out += s; };
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (q) { if (ch === '\\') i++; else if (ch === q) { q = null; if (d === 0) out += '""'; } continue; }
+    if (q) {
+      if (ch === '\\') i++;
+      else if (ch === '\n' && q !== '`') return null;
+      else if (ch === q) { q = null; prev = '"'; emit('""'); }
+      continue;
+    }
     if (ch === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; i--; continue; }
-    if (ch === '/' && text[i + 1] === '*') { const e = text.indexOf('*/', i + 2); if (e < 0) return null; i = e + 1; continue; }
+    if (ch === '/' && text[i + 1] === '*') {
+      const e = text.indexOf('*/', i + 2);
+      if (e < 0) return null;
+      if (text.slice(i, e).includes('\n')) emit('\n');
+      i = e + 1;
+      continue;
+    }
+    if (ch === '/') {
+      const body = {};
+      const end = regexEnd(text, i, body);
+      if (REGEX_AFTER.test(prev)) {
+        if (end < 0) return null;
+        i = end - 1; prev = 'r'; emit('/r/');
+        continue;
+      }
+      if (end >= 0 && /['"`()[\]{}\\]/.test(body.text)) return null;
+    }
+    if (/\s/.test(ch)) { emit(ch); continue; }
+    prev = /[\w$]/.test(ch) && /[\w$]$/.test(prev) ? prev + ch : ch;
     if (ch === '"' || ch === "'" || ch === '`') q = ch;
     else if ('([{'.includes(ch)) { if (d++ === 0) out += ch; }
     else if (')]}'.includes(ch)) { if (--d < 0) return null; if (d === 0) out += ch; }
-    else if (d === 0) out += ch;
+    else emit(ch);
   }
   return d === 0 && !q ? out : null;
 }
@@ -98,14 +142,15 @@ function literal(value) {
   return /^[\s"0[\]{},:+-]*(?:(?:true|false|null)(?![\w$])[\s"0[\]{},:+-]*)*$/.test(bare);
 }
 // A function expression or an arrow, and nothing after it: no call, second declarator or statement.
-// An arrow's body may start on the next line; after that, a line break could end the statement.
+// An arrow's body may start on the next line, and go on over lines that start with `.` or `?.` (a line
+// starting so cannot begin a statement); any other line break could end the statement.
 function fnValue(value) {
   const o = outside(value);
   if (o === null) return false;
   const v = o.trim().replace(/;$/, '').trim();
   if (/^(?:async\s+)?function\s*\*?\s*(?:[A-Za-z_$][\w$]*\s*)?\(\)\s*\{\}$/.test(v)) return true;
   const a = v.match(/^(?:async\s+)?(?:\(\)|[A-Za-z_$][\w$]*)\s*=>[ \t]*\n?([\s\S]*)$/);
-  return !!a && a[1].trim() !== '' && !/[\n,;]/.test(a[1]);
+  return !!a && a[1].trim() !== '' && !/[\n,;]/.test(a[1].replace(/\n[ \t]*(?=\?\.(?!\d)|\.[A-Za-z_$])/g, ''));
 }
 // A new top-level statement that declares an export and runs nothing when the module loads: a function
 // declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its

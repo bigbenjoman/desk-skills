@@ -158,6 +158,20 @@ t('DS-818 addedExports: a class, a value that runs code without a call, or a sec
   addedExports(env, `${env}export const d = 1..constructor.constructor('main()')();\n`),
   addedExports(env, `${env}export const spread = { ...other };\n`),
 ], Array(19).fill(null));
+t('DS-818 fix try: a quote or slash in a regex, or a line break in a block comment, does not hide a statement', [
+  addedExports(env, `${env}export function qzB() { return /'/; } main(); function qzB2() { return /'/; }\n`),
+  addedExports(env, `${env}export const zzq = () => /\\//; main();\n`),
+  addedExports(env, `${env}export const f = () => {} /*\n*/ throw new Error()\n`),
+  addedExports(env, `${env}export const f2 = () => 1 /*\n  */ main()\n`),
+  addedExports(env, `${env}export function g(a) { if (a) /'/.test(a) } main(); function h() { '/' }\n`),
+  addedExports(env, `${env}export function g(a) { return a) /(/; main(); g(/)/ }\n`),
+  addedExports(env, `${env}export const u = () => 'open\n';\n`),
+], Array(7).fill(null));
+t('DS-818 fix try: an arrow body going on over lines that start with . or ?. counts, and a regex or division in a body is read', addedExports(env, `${env}export const kills = (dmesg) => String(dmesg).split('\\n').filter((l) => /out of memory: Killed process/i.test(l))\n  .map((l) => { const m = /^\\[\\s*(\\d+(?:\\.\\d+)?)\\]/.exec(l); return m ? Number(m[1]) : l.trim(); });\nexport const opt = (a) => a\n  ?.b\n  .c;\nexport function half(a, b) {\n  return (a + b) / 2 / a;\n}\nexport const slash = () => /[/'"]/g;\n`), ['kills', 'opt', 'half', 'slash']);
+t('DS-818 fix try: a line that does not start with . or ?. still ends the arrow', [
+  addedExports(env, `${env}export const w = (a) => a\n  .b\nmain();\n`),
+  addedExports(env, `${env}export const w2 = (a) => a\n  ...b;\n`),
+], [null, null]);
 t('DS-818 addedExports: a new name that shadows a global or a name the module already uses is not export-only', [
   addedExports(env, `${env}export function fetch() {}\n`),
   addedExports(env, `${env}export const URL = 'x';\n`),
