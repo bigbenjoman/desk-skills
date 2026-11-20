@@ -46,6 +46,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, appendFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Script } from 'node:vm';
 
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
@@ -69,67 +70,19 @@ function topLevel(text) {
   }
   return out.map((c) => { while (c.length && !c.at(-1).trim()) c.pop(); return c.join('\n'); }).filter(Boolean);
 }
-// The end of a regex literal whose opening `/` is at `i` (past its flags), or -1 when it does not close
-// on its line. `body` gets its text between the slashes.
-function regexEnd(text, i, body = {}) {
-  let cls = false, j = i + 1;
-  for (; j < text.length && text[j] !== '\n'; j++) {
-    if (text[j] === '\\') j++;
-    else if (text[j] === '[') cls = true;
-    else if (text[j] === ']') cls = false;
-    else if (text[j] === '/' && !cls) break;
-  }
-  if (j >= text.length || text[j] !== '/' || j === i + 1) return -1;
-  body.text = text.slice(i + 1, j);
-  for (j++; /[a-z]/i.test(text[j] ?? ''); j++);
-  return j;
+// Whether `src` compiles as strict script. It is compiled, never run. JavaScript's own parser reads the
+// quotes, regexes, templates, comments and line breaks, which no hand-written scan reads reliably.
+function compiles(src) {
+  try { new Script(`'use strict';\n${src}`); return true; } catch { return false; }
 }
-// After these a `/` starts a regex; after anything else (a name, a number, a closing bracket or quote) it divides.
-const REGEX_AFTER = /(?:^|[([{,;:=!&|?+\-*%<>~^]|(?<![\w$])(?:return|typeof|instanceof|in|of|new|delete|void|throw|case|do|else|yield|await))$/;
-// `text` with each outermost bracket group emptied to `()`, `[]` or `{}`, each string to `""`, each regex
-// to `/r/` and each comment dropped (a block comment holding a line break leaves the break, which can
-// end a statement), or null when its brackets, quotes or regexes do not close, a quote or regex runs
-// past its line, or a `/` read as division could also be read as a regex that holds a quote, a
-// bracket or an escape. Not a parser: anything it misreads comes out unbalanced or in a shape the
-// callers do not accept, and is refused.
-function outside(text) {
-  let d = 0, q = null, out = '', prev = '';
-  const emit = (s) => { if (d === 0) out += s; };
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (q) {
-      if (ch === '\\') i++;
-      else if (ch === '\n' && q !== '`') return null;
-      else if (ch === q) { q = null; prev = '"'; emit('""'); }
-      continue;
-    }
-    if (ch === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; i--; continue; }
-    if (ch === '/' && text[i + 1] === '*') {
-      const e = text.indexOf('*/', i + 2);
-      if (e < 0) return null;
-      if (text.slice(i, e).includes('\n')) emit('\n');
-      i = e + 1;
-      continue;
-    }
-    if (ch === '/') {
-      const body = {};
-      const end = regexEnd(text, i, body);
-      if (REGEX_AFTER.test(prev)) {
-        if (end < 0) return null;
-        i = end - 1; prev = 'r'; emit('/r/');
-        continue;
-      }
-      if (end >= 0 && /['"`()[\]{}\\]/.test(body.text)) return null;
-    }
-    if (/\s/.test(ch)) { emit(ch); continue; }
-    prev = /[\w$]/.test(ch) && /[\w$]$/.test(prev) ? prev + ch : ch;
-    if (ch === '"' || ch === "'" || ch === '`') q = ch;
-    else if ('([{'.includes(ch)) { if (d++ === 0) out += ch; }
-    else if (')]}'.includes(ch)) { if (--d < 0) return null; if (d === 0) out += ch; }
-    else emit(ch);
-  }
-  return d === 0 && !q ? out : null;
+// Where the group `text` opens with ends: just past the first `close` at which `wrap(text up to it)`
+// compiles, or -1. JavaScript reads a prefix exactly as it reads that part of the whole text, so every
+// earlier `close` leaves the group open (or a quote, regex or comment unclosed) and does not compile.
+function groupEnd(text, close, wrap) {
+  for (let i = text.indexOf(close); i >= 0; i = text.indexOf(close, i + 1)) if (compiles(wrap(text.slice(0, i + 1)))) return i + 1;
+  return -1;
 }
+const asExpression = (p) => `(${p}\n)`;
 const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)n?(?![\w$.])/gi;
 // A value built only of literals: a regex, or strings, numbers, true, false and null and arrays and
 // objects of them. No call, member access, template, reference or spread.
@@ -139,32 +92,39 @@ function literal(value) {
   const bare = v.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(NUMBER, '0')
     .replace(/([{,]\s*)(?:[A-Za-z_$][\w$]*|""|0)\s*:/g, '$1');
   if (/["0\]}a-z]\s*\[/.test(bare)) return false;
-  return /^[\s"0[\]{},:+-]*(?:(?:true|false|null)(?![\w$])[\s"0[\]{},:+-]*)*$/.test(bare);
+  // A sign only in front of a number, never between two values (`1n + 1` throws on load).
+  const signless = bare.replace(/(^|[[{,:])(\s*)[+-](?=\s*0)/g, '$1$2');
+  return /^[\s"0[\]{},:]*(?:(?:true|false|null)(?![\w$])[\s"0[\]{},:]*)*$/.test(signless);
 }
 // A function expression or an arrow, and nothing after it: no call, second declarator or statement.
-// An arrow's body may start on the next line, and go on over lines that start with `.` or `?.` (a line
-// starting so cannot begin a statement); any other line break could end the statement.
-function fnValue(value) {
-  const o = outside(value);
-  if (o === null) return false;
-  const v = o.trim().replace(/;$/, '').trim();
-  if (/^(?:async\s+)?function\s*\*?\s*(?:[A-Za-z_$][\w$]*\s*)?\(\)\s*\{\}$/.test(v)) return true;
-  const a = v.match(/^(?:async\s+)?(?:\(\)|[A-Za-z_$][\w$]*)\s*=>[ \t]*\n?([\s\S]*)$/);
-  return !!a && a[1].trim() !== '' && !/[\n,;]/.test(a[1].replace(/\n[ \t]*(?=\?\.(?!\d)|\.[A-Za-z_$])/g, ''));
+// `v` must compile as one object property's value, where a `,` would start another property (which a
+// second declarator cannot be) and no line break ends anything; then the function must end where `v`
+// does, or the arrow's head be a parameter list straight before `=>`.
+function fnValue(v) {
+  if (!compiles(`({ k: ${v}\n})`)) return false;
+  if (/^(?:async\s+)?function\b/.test(v)) return groupEnd(v, '}', asExpression) === v.length;
+  if (/^(?:async\s+)?[A-Za-z_$][\w$]*[ \t]*=>/.test(v)) return true;
+  const p = v.match(/^(?:async[ \t]*)?\(/);
+  if (!p) return false;
+  const head = v.slice(p[0].length - 1);
+  const end = groupEnd(head, ')', (q) => `(${q} => 0\n)`);
+  return end > 0 && /^[ \t]*=>/.test(head.slice(end));
 }
 // A new top-level statement that declares an export and runs nothing when the module loads: a function
 // declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
 // static members and extends run on load) or any other value is refused, and so is a name the old module
-// already uses or a global's: declaring it there would change what the unchanged code refers to.
+// already uses or a global's: declaring it there would change what the unchanged code refers to. HTML-like
+// comments (`<!--`, `-->`) are refused: a script reads them as comments and a module does not.
 function newExport(chunk, before) {
+  if (/<!--|-->/.test(chunk)) return null;
   let name = null;
-  const fn = chunk.match(/^export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/);
+  const fn = chunk.match(/^export\s+((?:async\s+)?function\b\s*\*?\s*([A-Za-z_$][\w$]*)[\s\S]*)$/);
   if (fn) {
-    const rest = outside(chunk);
-    if (rest !== null && new RegExp(`^export\\s+(?:async\\s+)?function\\s*\\*?\\s*${fn[1].replace(/\$/g, '\\$')}\\s*\\(\\)\\s*\\{\\}\\s*;?\\s*$`).test(rest)) name = fn[1];
+    const end = groupEnd(fn[1], '}', asExpression);
+    if (end > 0 && /^\s*;?\s*$/.test(fn[1].slice(end))) name = fn[2];
   } else {
-    const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*)$/);
-    if (c && (fnValue(c[2]) || literal(c[2]))) name = c[1];
+    const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*?)\s*;?\s*$/);
+    if (c && (literal(c[2]) || fnValue(c[2]))) name = c[1];
   }
   if (!name || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
   return name;
@@ -178,7 +138,9 @@ export function addedExports(before, after) {
   let i = 0;
   for (const c of topLevel(after)) {
     if (i < old.length && c === old[i]) { i++; continue; }
-    if (/^(\/\/[^\n]*)(\n\/\/[^\n]*)*$/.test(c) || /^\/\*[\s\S]*\*\/$/.test(c)) continue;
+    // Only comments: every line a line comment (which any line terminator ends), or one block comment
+    // whose first `*/` is its end.
+    if (/^\/\/[^\n\r  ]*(?:\n\/\/[^\n\r  ]*)*$/.test(c) || /^\/\*(?:(?!\*\/)[\s\S])*\*\/$/.test(c)) continue;
     const name = newExport(c, before);
     if (!name) return null;
     names.push(name);

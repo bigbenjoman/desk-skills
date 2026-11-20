@@ -166,7 +166,23 @@ t('DS-818 fix try: a quote or slash in a regex, or a line break in a block comme
   addedExports(env, `${env}export function g(a) { if (a) /'/.test(a) } main(); function h() { '/' }\n`),
   addedExports(env, `${env}export function g(a) { return a) /(/; main(); g(/)/ }\n`),
   addedExports(env, `${env}export const u = () => 'open\n';\n`),
-], Array(7).fill(null));
+  addedExports(env, `${env}export function qzA() { return \`\${"\`"}\`; } main(); export function qzB() { return \`\${"\`"}\`; }\n`),
+  addedExports(env, `${env}export const qzC = () => \`\${"\`"}\`; main(); const qzD = () => \`\${"\`"}\`;\n`),
+  addedExports(env, `${env}export const qzE = () => \`\${ {a: 1}.a }\`; main();\n`),
+  addedExports(env, `${env}export const qzF = () => \`\${'\`'}\`; main(); // '\n`),
+  addedExports(env, `${env}export const p1 = () => g++ / 1; main(); 1 / 2;\n`),
+  addedExports(env, `${env}export const p2 = () => x.of / 1, y = main() / 2;\n`),
+  addedExports(env, `${env}export const p3 = () => x.in / 1; main(); 1 / 2;\n`),
+  addedExports(env, `${env}export const p5 = () => ({ return: 1 }).return / 2; throw Error('load'); //\n`),
+  addedExports(env, `${env}export const p6 = () => {} /*   */ throw new Error('load');\n`),
+  addedExports(env, `${env}/* doc */ throw new Error('load'); /* end */\nexport const p7 = 1;\n`),
+  addedExports(env, `${env}// doc   main();\nexport const p8 = 1;\n`),
+  addedExports(env, `${env}export const p9 = 1n + 1;\n`),
+  addedExports(env, `${env}export function p10() {} <!-- x\n`),
+], Array(19).fill(null));
+t('DS-818 fix try: a slash JavaScript reads as a regex counts as one', addedExports(env, `${env}export const p4 = () => a + /x; main(); 1/;\n`), ['p4']);
+t('DS-818 fix try: a regex with , or ; in a class or a {n,m}, and a / after a postfix ++ or a .property, still count', addedExports(env, `${env}export const SEP = /[,;]\\d{1,3}/;\nexport const sep = (s) => s.split(/[,;]+/);\nexport function step(i, o) {\n  i++ / 2;\n  return o.in / 2;\n}\n`), ['SEP', 'sep', 'step']);
+t('DS-818 fix try: a template with substitutions in a body still counts', addedExports(env, `${env}export const label = (a, b) => \`\${a}: \${ {x: b}.x } \${\`in \${b}\`}\`;\nexport function say(n) {\n  return \`\${n} \${n === 1 ? 'item' : 'items'}\`;\n}\n`), ['label', 'say']);
 t('DS-818 fix try: an arrow body going on over lines that start with . or ?. counts, and a regex or division in a body is read', addedExports(env, `${env}export const kills = (dmesg) => String(dmesg).split('\\n').filter((l) => /out of memory: Killed process/i.test(l))\n  .map((l) => { const m = /^\\[\\s*(\\d+(?:\\.\\d+)?)\\]/.exec(l); return m ? Number(m[1]) : l.trim(); });\nexport const opt = (a) => a\n  ?.b\n  .c;\nexport function half(a, b) {\n  return (a + b) / 2 / a;\n}\nexport const slash = () => /[/'"]/g;\n`), ['kills', 'opt', 'half', 'slash']);
 t('DS-818 fix try: a line that does not start with . or ?. still ends the arrow', [
   addedExports(env, `${env}export const w = (a) => a\n  .b\nmain();\n`),
@@ -190,7 +206,7 @@ for (const f of ['desk/bin/base-gate.mjs', 'desk/bin/with-lock.sh']) {
   const d = decide(M(f), real);
   t(`${f} selects test_batch_e2e.sh or runs everything`, d.scope === 'full' || d.suites.includes('test_batch_e2e.sh'), true);
 }
-t('a suite with claims: imports claims nothing it only names, only what it imports', [...real.claims].filter(([, s]) => s.has('test_scope_sections.mjs')).map(([p]) => p), ['tests/scope_sections.mjs']);
+t('a suite with claims: imports claims nothing it only names, only what it imports', [...real.claims].filter(([, s]) => s.has('test_scope_sections.mjs')).map(([p]) => p).sort(), ['tests/scope_sections.mjs', 'tests/scratch.mjs']);
 // A suite that walks the repo tree must say what it reads with a covers: line, or what it reads is unclaimed.
 const walks = /\b(readdirSync|readdir|walk|markdownFiles)\s*\(\s*(\[?\s*join\(\s*(root|R|ROOT|SRC)\b|refs\b|skill\b)|git ls-files/;
 const uncovered = real.suites.filter((s) => !ALWAYS.includes(s.file) && !s.importsOnly && !s.covers.length && walks.test(readFileSync(join(R, 'tests', s.file), 'utf8'))).map((s) => s.file);
