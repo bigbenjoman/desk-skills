@@ -983,6 +983,7 @@ put('ypsilon', { port: 4950, beat: 1, supervised: true, tickets: {
   'Y-2': { state: 'parked', lane: 'A', park: { question: refused, since: minsAgo(40), unpushed } },
   'Y-3': { state: 'triaged', lane: 'A', session_id: 'sess-y3', worktree_busy: { why: heldWhy, at: minsAgo(10) }, prev_park: { question: refused, since: minsAgo(40), round: 1 } },
   'Y-4': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(40) } },
+  'Y-5': { state: 'parked', lane: 'A', park: { question: 'post the comment below on ABC-9?', since: minsAgo(40), approve: { kind: 'jira-comment', target: 'ABC-9', body: 'Line one.\n"Quoted" line two.' } } },
 } });
 const yr = () => loadRepos().find((x) => x.slug === 'acme__ypsilon');
 const yItems = () => Object.fromEntries(N.collect({ word: 'ypsilon' }).items.map((i) => [i.t.key, i]));
@@ -994,6 +995,8 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
+t('#775 a park awaiting approval of a write carries its exact text, whole, on its one line',
+  yLine('Y-5').includes('post the comment below on ABC-9? Awaiting approval, its exact text (jira-comment on ABC-9, as JSON): "Line one.\\n\\"Quoted\\" line two."'), true);
 t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
   `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
 t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');

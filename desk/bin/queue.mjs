@@ -19,7 +19,7 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
@@ -244,6 +244,8 @@ function requeue(q, key, { handedBack = false } = {}) {
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
+  // An adopted PR (queue.mjs adopt) has no worktree or ticket for a worker: what holds it is the PR's own.
+  if (t.adopted) throw new Error(`${key} is PR #${t.result?.pr ?? '?'}, adopted with no ticket, so no worker takes it: undraft it, review it or fix its checks on the PR itself, and the merge driver merges it once it is green`);
   if (!['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
   // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
   // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
@@ -692,7 +694,7 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
 
 try {
 if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
@@ -802,6 +804,48 @@ switch (cmd) {
     };
     save(q);
     console.log(`added ${key}`);
+    break;
+  }
+
+  // A PR opened in the batch with no ticket (a fix for a flaky test it kept hitting, say) taken in as a
+  // done ticket on that PR, so the merge driver merges it with the batch's tickets (by its branch), and
+  // the pass and desk-q list it while it waits. The key is checked as a merge driver --tickets entry is.
+  case 'adopt': {
+    const filed = args.includes('--filed');
+    const [key, prArg] = args.filter((a) => a !== '--filed');
+    if (!key || !/^[1-9][0-9]*$/.test(String(prArg ?? ''))) throw new Error('usage: queue.mjs adopt <TICKET> <PR number> [--filed]');
+    const kind = ticketKind(key);
+    if (!kind.ok) throw new Error(kind.error);
+    // A key in the tracker's pattern is a real ticket, which the merge driver moves to Done when the PR
+    // merges: only the ticket filed for this PR, said so with --filed. A made-up one would close another.
+    if (kind.kind === 'tracker' && !filed) throw new Error(`${key} is a tracker key, and the merge driver moves that ticket to Done when PR #${prArg} merges: give the PR an id from §4 Other work id patterns, or, if ${key} is the ticket filed for this PR, say so with --filed`);
+    if (Object.hasOwn(q.tickets, key)) throw new Error(`${key} is already in the queue (${q.tickets[key].state}): adopt takes a key no ticket has`);
+    const elsewhere = belongsElsewhere(key);
+    if (elsewhere) throw new Error(elsewhere.why);
+    const repo = ghRepo();
+    let pr;
+    try {
+      pr = JSON.parse(execFileSync('gh', ['pr', 'view', prArg, '--repo', repo, '--json', 'number,state,headRefName,baseRefName,title,author'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    } catch (e) { throw new Error(`gh could not read PR #${prArg} on ${repo} (${String(e.stderr ?? e.message).trim().split('\n').pop()}): nothing adopted`); }
+    if (pr.state !== 'OPEN') throw new Error(`PR #${prArg} is ${String(pr.state).toLowerCase()}, not open: nothing adopted`);
+    const base = baseOf(q);
+    if (pr.baseRefName !== base) throw new Error(`PR #${prArg} is on ${pr.baseRefName}, not this batch's base ${base}: the merge driver would not merge it, so nothing adopted`);
+    // The merge driver lists only PRs by §1 GitHub handle.
+    let handle = null;
+    try { handle = githubHandle(); } catch { /* unset: the driver refuses to start, so it is not checked here */ }
+    if (handle && pr.author?.login && pr.author.login.toLowerCase() !== handle.toLowerCase()) throw new Error(`PR #${prArg} is by ${pr.author.login}, and the merge driver merges only PRs by ${handle}: nothing adopted`);
+    const owner = Object.values(q.tickets).find((t) => t.branch === pr.headRefName);
+    if (owner) throw new Error(`PR #${prArg}'s branch ${pr.headRefName} is already ${owner.key}'s: nothing adopted`);
+    const now = new Date().toISOString();
+    q.tickets[key] = {
+      key, type: 'Task', lane: '?', state: 'done',
+      worktree: null, branch: pr.headRefName, database: null, port: null,
+      session_id: null, pid: null, base_sha: null, stage: null,
+      park: null, log: null, result: { pr: String(pr.number), summary: `adopted: ${pr.title}` }, adopted: true,
+      added_at: now, updated_at: now,
+    };
+    save(q);
+    console.log(`${key} adopted PR #${pr.number} (${pr.headRefName} into ${base}): the merge driver merges it with the batch's tickets, and the pass and desk-q list it until it does`);
     break;
   }
 
@@ -1287,14 +1331,19 @@ function doneLabel(t) {
 function tableRows(q, { stages = true, asks = {} } = {}) {
   const rows = Object.values(q.tickets);
   const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
-  rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
+  // A ticket handed off between sessions (handoff pending, pass.mjs) is triaged until its next session
+  // starts, which a preflight can take minutes over: it reads as a handoff beside the running rows,
+  // not as a fresh ticket.
+  const handingOff = (t) => t.state === 'triaged' && t.handoff === 'pending' && !isHeld(t) && !(questionsOpen(t) > 0);
+  const rank = (t) => (handingOff(t) ? order.running : order[t.state] ?? 9);
+  rows.sort((a, b) => rank(a) - rank(b));
   const head = `batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}`;
   const out = [];
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
-    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
+    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
@@ -1308,6 +1357,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
+      : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';

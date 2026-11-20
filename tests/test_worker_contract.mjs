@@ -193,6 +193,9 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
+  ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
+  ['#775', 'read-only to you apart from your park and image files', 1],
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

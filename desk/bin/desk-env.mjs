@@ -18,6 +18,10 @@
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
+//   node desk-env.mjs show [<section>...]     print the config's rules for the agent, then its headings and
+//                                             table rows, no other prose
+//                                             (configRows): the named sections (e.g. 3 5), else every one but
+//                                             §3c, the rule ledger only /desk-setup reads; exit 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
@@ -200,6 +204,36 @@ export const otherRepoEnv = (env = process.env) => Object.fromEntries(Object.ent
 
 export const repoConfigDir = (slug = currentRepo().slug) => (slug ? join(deskConfigRoot(), 'repos', slug) : null);
 export const credsDir = () => repoConfigDir();
+
+// A config file's headings and tables, without its prose: what a skill reads at its start. `sections`
+// names the ones wanted ('3', '3b', '5'); empty is every section but 3c, the rule ledger, which
+// grows with each rule setup grants, is kept in harness-rules.json too, and only /desk-setup reads.
+// An unnumbered section (the rules for the agent reading the file) is printed whole, prose and all,
+// when no section is named: its prose is what it says.
+export function configRows(text, sections = []) {
+  const want = sections.map((x) => String(x).replace(/^§/, '').toLowerCase());
+  let keep = false, whole = false, fence = false;
+  const out = [];
+  for (const raw of String(text).split('\n')) {
+    const line = raw.trimEnd();
+    if (/^##\s/.test(line)) {
+      fence = false;
+      const id = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)?.[1]?.toLowerCase() ?? null;
+      whole = id == null && !want.length;
+      keep = id == null ? whole : want.length ? want.includes(id) : id !== '3c';
+      if (keep) { if (out.length) out.push(''); out.push(line); }
+      continue;
+    }
+    if (whole) { if (line.trim() !== '---') out.push(line); continue; }
+    if (/^```/.test(line.trim())) { fence = !fence; continue; }
+    if (fence) continue;
+    if (/^#\s/.test(line) && !want.length) { out.push(line); continue; }
+    if (!keep) continue;
+    if (/^###\s/.test(line)) out.push('', line);
+    else if (line.trim().startsWith('|')) out.push(line);
+  }
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
 
 export function configPathOrNull() {
   if (process.env.DESK_CONFIG) return expandHome(process.env.DESK_CONFIG);
@@ -495,6 +529,17 @@ function parseConfigFile(path) {
   return parsed;
 }
 
+// How many rows of a config file are unanswered: the value (first span of the value column, as every
+// read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
+// keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
+export const MACHINE_FALLBACK_ROWS = ['autopilot worker concurrency', 'memory ceiling for parallel work (gb)', 'test worker cap under the test lock'];
+export function unansweredRows(path) {
+  if (!path || !existsSync(path)) return 0;
+  return tableLines(readFileSync(path, 'utf8')).rows
+    .filter(({ cells, label, header }) => !MACHINE_FALLBACK_ROWS.includes(norm(label)) && cellItems(cells[settingCol(header)] ?? '')[0] === 'TODO')
+    .length;
+}
+
 // A value cell's items: every backtick span, except those in a trailing parenthesised note
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
@@ -508,15 +553,20 @@ export function cellItems(raw) {
 // The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
 // Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
 // cell that is only a note, or whose last paren never opens, is returned whole.
+// A code span, read as CommonMark does: a run of backticks closes only on a run of its own length, and
+// a run with no partner is left as text. evidence.mjs reads PR bodies with it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
+  // Which characters sit inside a code span, so a note quoting ``` or ```` stays in step.
+  const inSpan = new Array(cell.length).fill(false);
+  for (const m of cell.matchAll(CODE_SPAN)) for (let k = m.index; k < m.index + m[0].length; k++) inSpan[k] = true;
   let depth = 0;
-  let inSpan = false;
   for (let i = cell.length - 1; i >= 0; i--) {
+    if (inSpan[i]) continue;
     const c = cell[i];
-    if (c === '`') inSpan = !inSpan;
-    else if (inSpan) continue;
-    else if (c === ')') depth++;
+    if (c === ')') depth++;
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;
@@ -1994,7 +2044,7 @@ const printRead = (cmd, id) => {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2019,6 +2069,12 @@ if (isMain) {
         console.log(`CREDS=${q(repoConfigDir())}`);
         console.log(`EXISTS=${p && existsSync(p) ? 'yes' : 'no'}`);
         if (!r.slug) process.exit(3);
+        break;
+      }
+      case 'show': {
+        const p = configPathOrNull();
+        if (!p || !existsSync(p)) { console.error('desk-env show: no config for this repo (run /desk-setup)'); process.exit(3); }
+        console.log(configRows(readFileSync(p, 'utf8'), args));
         break;
       }
       case 'list':
@@ -2311,6 +2367,10 @@ if (isMain) {
         if (mode === 'dontAsk') { console.error(`WARNING: ${DONTASK_WARNING} (${file})`); process.exit(1); }
         break;
       }
+      // unanswered <config.md>: how many of its rows are still `TODO` (install.sh's per-repo line).
+      case 'unanswered':
+        console.log(unansweredRows(args[0]));
+        break;
       case 'drift': {
         const ai = args.indexOf('--app');
         if (ai >= 0) {

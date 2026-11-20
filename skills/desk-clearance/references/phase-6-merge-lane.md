@@ -28,6 +28,12 @@ Before each merge, from freshly derived state:
    **Stacked** (the render says `STACKED`): every ordinary path refuses, including `--auto`; use
    `gh api -X PUT repos/<§0 GitHub repo>/pulls/<n>/merge-async -f merge_method=<method>`, which only
    *enqueues* — poll `.merged`. Merge stacks bottom-up.
+   **Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+   another session never race one PR and who merged it is on record. Before merging or arming:
+   `node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
+   it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+   "session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
+   `merge-log.mjs show --pr <n>` says who did.
 6. **Confirm** `state == MERGED`, that the merged head (`headRefOid`) is the SHA you checked, and
    record the merge commit SHA. A different head means something merged unchecked: stop and report.
 
