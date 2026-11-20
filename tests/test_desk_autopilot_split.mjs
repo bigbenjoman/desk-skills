@@ -77,6 +77,8 @@ const REWRITTEN = [
     'the D6 baseline', 'a worker parks as before.', 'an alias such as `haiku`', 'start at Stage 0 as before.',
     'A worker quiet for 6+ passes: park it, do not wait',
   ].map((s) => ['DS-458', s, 1]),
+  ['#823', 'treat a peer\'s as claimed, and never kill', 1], // a peer's claimed ports are recorded for the pass
+  ['#823', 'holds or anything bound.', 1],
 ];
 checkSplit({ t, label: 'AC4', before, files, read, headings: 46, minRows: 100, rewritten: REWRITTEN });
 const deep = before.split('\n').filter((l) => /^#### /.test(l));
