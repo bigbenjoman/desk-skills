@@ -546,7 +546,8 @@ esac
 # skill_kept <name> [<src>] [<own>] — whether to leave a skill folder of the user's own where desk
 # would put skill <name>: a real folder at ~/.agents/skills/<name> or ~/.claude/skills/<name>, other
 # than <own> (a checkout skill's clone, which is the skill), when desk never installed <name> here (no
-# pristine copy). Moving it to the backup is asked, saying whether it differs from <src>; declined, or
+# pristine copy). Moving it to the backup is asked, saying whether it differs from <src> (its git
+# metadata aside, as a checkout skill's clone has one); declined, or
 # with no terminal, it stays (exit 0) and the skill is not installed or linked over it.
 skill_kept() {
   local name="$1" src="${2:-}" own="${3:-}" p found="" how=""
@@ -557,7 +558,7 @@ skill_kept() {
     case " $found " in *" ~/${p#"$HOME"/} "*) continue ;; esac
     found="${found:+$found }~/${p#"$HOME"/}"
     if [ -n "$src" ]; then
-      if ! diff -rq "${DIFF_X[@]}" "$src" "$p" >/dev/null 2>&1; then how="it differs from desk's"; elif [ -z "$how" ]; then how="the same as desk's"; fi
+      if ! diff -rq "${DIFF_X[@]}" -x .git "$src" "$p" >/dev/null 2>&1; then how="it differs from desk's"; elif [ -z "$how" ]; then how="the same as desk's"; fi
     fi
   done
   [ -n "$found" ] || return 1
@@ -660,7 +661,7 @@ checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(
 # link_skill <name> <real folder>: ~/.agents/skills/<name> and ~/.claude/skills/<name> end up pointing at it
 link_skill() {
   local name="$1" real="$2" a="$AGENTS/$1"
-  skill_kept "$name" "" "$real" && return 0
+  skill_kept "$name" "$real" "$real" && return 0
   if [ "$(resolved "$a")" != "$(resolved "$real")" ]; then
     if [ -e "$a" ] && [ ! -L "$a" ]; then
       mkdir -p "$BACKUP/.agents/skills"; mv "$a" "$BACKUP/.agents/skills/$name"
