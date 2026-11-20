@@ -2867,8 +2867,9 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
 // (the spawn about to start it) they are pushed, no force. A push refused because that worker rebased
 // the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
-// that the head lacks is in the head by its patch (git cherry), so nothing on origin is lost; else it
-// holds, naming the exact lease push. Uncommitted changes at that head are its interrupted worker's:
+// that the head lacks is in the head by its patch (git cherry) and none is a merge (git cherry skips
+// merges, whose resolutions it cannot compare), so nothing on origin is lost; else it holds, naming the
+// exact lease push. Uncommitted changes at that head are its interrupted worker's:
 // the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
@@ -2910,7 +2911,8 @@ function busyWorktree(t, { push = false } = {}) {
   const tip = git(['rev-parse', `origin/${branch}`]);
   if (/non-fast-forward|fetch first|\(rejected\)/.test(pushed.out) && tip) {
     const lease = `--force-with-lease=${branch}:${tip}`;
-    const missing = git(['cherry', 'HEAD', `origin/${branch}`]);
+    const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
+    const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
     const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
     if (lost && !lost.length) {
       const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
@@ -2920,7 +2922,9 @@ function busyWorktree(t, { push = false } = {}) {
       }
       return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
     }
-    return `${why}: its last worker rebased it, but origin/${branch} has ${lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare'}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
+    const has = merges ? `${merges.split('\n').filter(Boolean).length} merge commit(s) the head does not hold, whose resolutions git cherry cannot compare`
+      : lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare';
+    return `${why}: its last worker rebased it, but origin/${branch} has ${has}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
   }
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }

@@ -122,13 +122,16 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
 // A worker that parked or stopped when the computer could not run commands (no space or inodes left)
 // is the host's fault: an environment park, never its own words read as a lane.
 {
-  const FULL = { type: 'user', message: { content: [{ type: 'tool_result', content: 'mkdir: cannot create directory: No space left on device' }] } };
+  const FULL = { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'mkdir: cannot create directory: No space left on device' }] } };
   const lane = advance(snap(ticket('H-1'), logOf('H-1', 'AUTOPILOT_PARK: lane C: needs a person\'s judgement', [FULL, said('AUTOPILOT_PARK: lane C: needs a person\'s judgement'), RESULT])));
   const q = lane.find((a) => a.type === 'park')?.question ?? '';
   t('a park after a host fault is an environment park, naming the error', q.startsWith('environment: ') && q.includes('No space left on device') && q.includes('queue.mjs requeue H-1'), true);
   t('and never reads as the worker\'s lane', /lane C/.test(q), false);
   const stopped = advance(snap(ticket('H-2'), logOf('H-2', '', [FULL, said('cannot go on'), RESULT])), { 'open-pr': '' });
   t('a stop with no marker after a host fault parks as environment, not failed', `${types(stopped).includes('fail')} ${stopped.find((a) => a.type === 'park')?.question.startsWith('environment: ')}`, 'false true');
+  t('a fault park is never read as a build-only park', types(advance(snap(ticket('H-4'), logOf('H-4', 'AUTOPILOT_PARK: waits only on the build check', [FULL, said('AUTOPILOT_PARK: waits only on the build check'), RESULT])), { 'build-park': { pr: 9, head: 'abcdef1234567', checks: ['build'], command: 'make' } })).filter((x) => ['build-park', 'done', 'park'].includes(x)).join(' '), 'park');
+  const READ = { type: 'user', message: { content: [{ type: 'tool_result', content: [{ type: 'text', text: "const HOST_FAULT = /ENOSPC|No space left on device/;" }] }] } };
+  t('a call that only prints the words, not one that failed on them, is no host fault: the park keeps its question', advance(snap(ticket('H-5'), logOf('H-5', 'AUTOPILOT_PARK: which colour?', [READ, said('No space left on device is what ENOSPC means'), said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
   t('a park with no host fault in its log is the worker\'s own, as before', advance(snap(ticket('H-3'), logOf('H-3', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
 }
 
