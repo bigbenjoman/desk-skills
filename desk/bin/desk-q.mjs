@@ -35,11 +35,12 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
-import { RULES } from './machine.mjs';
+import { LEASE_KINDS, RULES } from './machine.mjs';
+import { LeaseStoreError, RESET_COMMAND, forceReleaseCommand, kindMode, overdue, peek, wouldRefuseByDay } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
@@ -2619,7 +2620,45 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
+  foot.push('', ...leaseLines({ now }));
   return { head, rows, foot };
+}
+
+// The Queue view's Leases section: each live lease with its holder, age and time to expiry, an overdue
+// one with the command that frees it, then each kind's shadow would-refuse counts by day. It only
+// reads: lapsing and freeing a lease stay with desk-env lease.
+const LEASE_DAYS = 7;
+export function leaseLines({ now = Date.now(), dir } = {}) {
+  const env = { psRows, machineValue };
+  const at = { env, now: () => now, ...(dir ? { dir } : {}) };
+  const out = [bold('Leases')];
+  const unreadable = (e) => { if (!(e instanceof LeaseStoreError)) throw e; return `  ▲ ${capital(e.message)}.`; };
+  let held = null;
+  try { held = peek(at); } catch (e) { out.push(segLine([[unreadable(e), WARN], [' To start an empty one: ', null], [RESET_COMMAND, BOLD]])); }
+  if (held && !held.length) out.push('  No leases are held.');
+  if (held?.length) {
+    const holder = (l) => `${l.label} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
+    const key = (l) => `${l.key}${l.units > 1 ? ` ×${l.units}` : ''}`;
+    const kw = Math.max(6, ...held.map((l) => l.kind.length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
+    out.push(segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]]));
+    for (const l of held) {
+      const late = overdue(l, now), expires = Date.parse(l.expires);
+      out.push(segLine([[`  ${pad(l.kind, kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
+        late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
+      if (late) out.push(segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]));
+    }
+  }
+  let refused = null;
+  try { refused = wouldRefuseByDay({ ...at, days: LEASE_DAYS }); } catch (e) { out.push(segLine([[unreadable(e), WARN]])); }
+  if (refused) {
+    const kinds = LEASE_KINDS.filter((k) => refused[k]);
+    if (!kinds.length) out.push(segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]]));
+    for (const k of kinds) {
+      out.push(segLine([[`  ${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
+        [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]]));
+    }
+  }
+  return out;
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
