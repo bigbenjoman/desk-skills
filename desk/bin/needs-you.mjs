@@ -1077,7 +1077,8 @@ function baseRedItems(r) {
   const liveOf = (t) => {
     const b = t.base_red, st = prStatusOf(t);
     if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
-    return latestPerCheck(st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name);
+    // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
   };
   const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
   if (!held.length) return [];
