@@ -4245,9 +4245,11 @@ function settleWorked(t, n, head, worked) {
 // wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
 // runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
 function applyFix(t, n, head, c) {
-  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(c.base_red ?? null)) {
-    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(c.base_red ?? null)}`);
-    t.base_red = c.base_red ?? null;
+  // A hold keeps the pass it began at (`since`), so the person's base red item is aged from there.
+  const rec = 'base_red' in c && c.base_red ? { ...c.base_red, since: t.base_red?.since ?? PASS_AT } : c.base_red ?? null;
+  if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
+    if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
+    t.base_red = rec;
   }
   if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }

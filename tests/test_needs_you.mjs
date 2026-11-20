@@ -108,6 +108,7 @@ put('delta', { port: 3400, beat: 3, tickets: { 'D-1': { state: 'running', lane: 
 put('epsilon', { port: 3600 });
 
 const N = await import('../desk/bin/needs-you.mjs');
+const { dayAndTime } = await import('../desk/bin/desk-q-eta.mjs');
 const { loadRepos, repoScreen } = await import('../desk/bin/desk-q.mjs');
 const queueOf = (name) => JSON.parse(readFileSync(join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), 'utf8'));
 const cli = (...args) => { const r = spawnSync(process.execPath, [join(REAL_BIN, 'needs-you.mjs'), ...args], { encoding: 'utf8', env: process.env, cwd: T }); return { code: r.status, out: r.stdout, err: r.stderr }; };
@@ -3307,6 +3308,30 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-925 done records nothing and says what clears it', `${done.ok} ${done.line} ${reds().length}`, 'true red925 ci-red:12: noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing. 1');
   const off = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'not-now', reads });
   t('DS-925 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+}
+
+// ---- #756: a base red under the batch's PRs is one item, naming the checks, the PRs held and the last merges
+{
+  const hold = (checks, since) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since });
+  put('red756', { port: 4756, beat: 1, tickets: {
+    'B-1': { state: 'done', result: { pr: 31 }, base_red: hold(['tests'], minsAgo(40)) },
+    'B-2': { state: 'done', result: { pr: 32 }, base_red: hold(['lint', 'tests'], minsAgo(20)) },
+    'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
+    'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
+  } });
+  const reds = () => N.collect({ word: 'red756' }).items.filter((i) => i.kind === 'base-red');
+  const s = reds();
+  t('#756 one item for the base, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'base-red:default standing');
+  t('#756 its need names the checks, the open PRs held and the last merges desk made, newest first', s[0]?.need,
+    `the default branch is red on "lint" and "tests", so #31 (B-1) and #32 (B-2) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
+  t('#756 it is aged from the earliest open hold', s[0]?.since, Date.parse(minsAgo(40)));
+  t('#756 desk-q\'s count lists it', N.needsCount(loadRepos(Date.now(), 'red756').find((r) => r.slug === 'acme__red756' && r.batch == null)).items.some((i) => i.item.kind === 'base-red'), true);
+  const done = N.record({ word: 'red756', ticket: 'base-red:default', action: 'done' });
+  t('#756 done records nothing and says what clears it', `${done.ok} ${reds().length}`, 'true 1');
+  const off = N.record({ word: 'red756', ticket: 'base-red:default', action: 'not-now' });
+  t('#756 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) } } });
+  t('#756 no open PR held, no item', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
