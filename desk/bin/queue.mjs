@@ -25,7 +25,7 @@ import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './di
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, sameStep } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
@@ -1010,8 +1010,7 @@ switch (cmd) {
     try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
     if (!key || !Array.isArray(ran) || !ran.length || ran.some((s) => typeof s?.step !== 'string') || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of {step, after}> <ISO time>');
     const t = ticket(q, key);
-    const same = (a, b) => a?.step === b.step && (a?.after ?? 'merge') === (b.after ?? 'merge');
-    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
+    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => sameStep(s, x)));
     applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
     save(q);
     console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded done${left.length ? `, ${left.length} kept` : ''}`);

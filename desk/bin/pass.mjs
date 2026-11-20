@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed, sameStep } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -60,7 +60,7 @@ import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, 
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { heldPutOff, outAt } from './needs-you.mjs';
+import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
@@ -80,8 +80,8 @@ import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
-import { decideFollowSteps } from './pass/follow-steps.mjs';
-import { startFollow, readFollow, failedRun, followComment, sameStep, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
+import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
+import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -3564,16 +3564,18 @@ if (Object.values(qNow.tickets).some(gatedFollow)) {
 // ---- follow steps ----------------------------------------------------------
 // The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
 // desk's logs or desk's state go to a follow-step checker (follow-steps.mjs), and what it found is
-// recorded on the ticket (follow_checks). A step it passed is settled as needs-you's done settles one,
-// and the PR is told under §3 pr-self-review-comment; one it failed stays, and needs-you lists it with
-// what it found. A run is still the same run only while its process carries the run's id. Its lines
-// go in this section's `out`, as the report's lists were printed before it.
+// recorded on the ticket (follow_checks), for its PR. A step it passed is settled as needs-you's done
+// settles one, in the same write, and the PR is told under §3 pr-self-review-comment; one it failed
+// stays, and needs-you lists it with what it found; one still pending is checked again later. A run is
+// still the same run only while its process carries the run's id. The checker reads this repo's state
+// and queue directories, never another repo's. Its lines go in this section's `out`, as the report's
+// lists were printed before it.
 const followAlive = (run) => {
   if (!run?.pid || !run.id) return false;
   const r = shOut('ps', ['-o', 'args=', '-p', String(run.pid)]);
   return r.ok && r.out.includes(run.id);
 };
-const followDirs = [...new Set([STATE, E.repoStateOf(STATE), E.deskHome()])];
+const followDirs = [...new Set([STATE, E.repoStateOf(STATE), dirname(QUEUE_FILE)])];
 const FOLLOW_HANDLERS = {
   ...PHASE_HANDLERS,
   start: (a) => {
@@ -3600,24 +3602,37 @@ const FOLLOW_HANDLERS = {
       return;
     }
     const at = new Date().toISOString();
-    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, ...(r.cost != null ? { cost: r.cost } : {}) }));
-    const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c)));
-    q('set', a.key, 'follow_run=null', `follow_checks=${JSON.stringify([...kept, ...found])}`);
-    const passed = found.filter((c) => c.result === 'pass' && (t.follow_on ?? []).some((s) => sameStep(s, c)));
-    if (passed.length) q('follow-ran', a.key, JSON.stringify(passed.map((c) => ({ step: c.step, ...(c.after ? { after: c.after } : {}) }))), at);
-    const fails = found.length - found.filter((c) => c.result === 'pass').length;
     const n = t.result?.pr;
+    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) }));
+    const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c) && String(c.pr ?? '') === String(n ?? '')));
+    // The record and the settling of what passed are one write, made only while the run and the steps are
+    // as read: refused or skipped, follow_run stays, and the next pass reads the run again.
+    const left = (t.follow_on ?? []).filter((s) => !found.some((c) => c.result === 'pass' && sameStep(s, c)));
+    const settle = left.length === (t.follow_on ?? []).length ? [] : left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`];
+    const stateOf = (x) => JSON.stringify([x.follow_run?.id ?? null, x.follow_on ?? null, x.follow_on_done ?? null]);
+    const args = ['set', a.key, 'follow_run=null', `follow_checks=${JSON.stringify([...kept, ...found])}`, ...settle];
+    const w = QW.apply(args, { when: (x) => stateOf(x) === stateOf(t) });
+    const f = w.ok && !w.skipped ? flushQueue() : null;
+    if (!f?.ok || f.skipped.includes(a.key)) {
+      if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+      out.push(`${a.key} follow steps: what its follow-step checker found was not recorded (${w.ok && !w.skipped ? 'the queue write was refused' : 'the ticket changed since it was read'}); the next pass reads it again`);
+      return;
+    }
+    const count = (k) => found.filter((c) => c.result === k).length;
+    const done = found.filter((c) => c.result !== 'pending');
     let told = '';
-    if (n == null) told = '; it has no PR to comment on';
+    if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
     else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
     else {
-      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, found)]);
+      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done)]);
       told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
     }
-    out.push(`${a.key} follow steps: its follow-step checker passed ${found.length - fails} and failed ${fails}${fails ? ', each listed in needs-you' : ''}${told}`);
+    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${told}`);
   },
 };
 const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
+// The keys of queue `qx`'s tickets whose code is out, to when it went out, in ms.
+const followOut = (qx) => new Map(Object.values(qx.tickets).map((t) => [t.key, Date.parse(outAt(qx, t) ?? '')]).filter(([, at]) => Number.isFinite(at)));
 const followActs = runPhase({
   name: 'follow steps',
   snapshot: () => {
@@ -3625,14 +3640,19 @@ const followActs = runPhase({
     const tickets = qx.tickets;
     return {
       tickets, now: Date.now(), labels: E.personStepLabels(),
-      out: new Set(Object.values(tickets).filter((t) => outAt(qx, t)).map((t) => t.key)),
+      out: followOut(qx),
+      // Each gate a ticket's runnable steps wait on (production's never runs), as needs-you judges it.
+      held: new Set(Object.values(tickets).filter((t) => followOnPending(t) && outAt(qx, t)).flatMap((t) => ['merge', 'main']
+        .filter((g) => t.follow_on.some((s) => (s.after ?? 'merge') === g && followGateHeld(E.repoSlug(), qx, t, s))).map((g) => `${t.key}:${g}`))),
       alive: new Set(Object.values(tickets).filter((t) => followAlive(t.follow_run)).map((t) => t.key)),
     };
   },
   decide: decideFollowSteps, handlers: FOLLOW_HANDLERS, report,
 });
-// A checker running, or owed and not yet started, keeps the batch from idling, so a pass reads it.
-const followPending = followActs.some((a) => a.type === 'start') || Object.values(queue().tickets).some((t) => t.follow_run);
+// A checker running, owed and not yet started, or due again for a step it found pending, keeps the
+// batch from idling, so a pass reads it.
+const followPending = followActs.some((a) => a.type === 'start')
+  || followAwaits({ tickets: queue().tickets, labels: E.personStepLabels(), out: followOut(queue()), now: Date.now() });
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));

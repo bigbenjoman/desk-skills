@@ -4,8 +4,8 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { followKind, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS } from '../desk/bin/follow-steps.mjs';
-import { decideFollowSteps } from '../desk/bin/pass/follow-steps.mjs';
+import { followKind, owedSteps, checkOf, readFollow, failedRun, followComment, followSettings, followPrompt, FOLLOW_RESULT_MARK, FOLLOW_TIMEOUT_MS, FOLLOW_RETRY_MS, FOLLOW_WAIT_MS } from '../desk/bin/follow-steps.mjs';
+import { decideFollowSteps, followAwaits } from '../desk/bin/pass/follow-steps.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -50,6 +50,13 @@ t('AC3 a label is carried whole only', kind('needs-bento read audit.jsonl for th
   const tk = { follow_on: [A, B, C], follow_checks: [{ ...A, result: 'fail', found: 'x', evidence: 'y' }] };
   t('owed steps are the runnable ones with no record, by text and gate', j(owedSteps(tk)), j([C]));
   t('a record is found by text and gate', j([checkOf(tk, A)?.result ?? null, checkOf(tk, C)]), j(['fail', null]));
+  const now = Date.parse('2026-11-20T12:00:00.000Z');
+  const pending = (at) => ({ follow_on: [A], follow_checks: [{ ...A, result: 'pending', found: 'run 9 in progress', evidence: 'u', at }] });
+  t('a step found pending is owed again once FOLLOW_RETRY_MS has passed', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS).toISOString()), [], { now })), j([A]));
+  t('but not before', j(owedSteps(pending(new Date(now - FOLLOW_RETRY_MS + 1000).toISOString()), [], { now })), '[]');
+  t('nor once retries are over', j(owedSteps(pending('2026-11-20T10:00:00.000Z'), [], { now, retry: false })), '[]');
+  const requeued = { result: { pr: 9 }, follow_on: [A], follow_checks: [{ ...A, pr: 8, result: 'pass', found: 'x', evidence: 'y' }] };
+  t('a record an earlier PR\'s checker made is not this PR\'s', j([checkOf(requeued, A), owedSteps(requeued)]), j([null, [A]]));
 }
 
 // ---- the pass phase --------------------------------------------------------
@@ -57,8 +64,9 @@ const NOW = Date.parse('2026-11-20T12:00:00.000Z');
 const CI = { step: 'the CI run on main is green', row: null };
 const PAGE = { step: 'check the page loads', row: null };
 const merged = (key, more = {}) => ({ key, state: 'done', result: { pr: 7 }, merged_at: '2026-11-20T11:00:00.000Z', follow_on: [CI, PAGE], ...more });
-const snap = (tickets, { out = tickets.map((x) => x.key), alive = [] } = {}) => ({
-  tickets: Object.fromEntries(tickets.map((x) => [x.key, x])), labels: [], out: new Set(out), alive: new Set(alive), now: NOW,
+const OUT_AT = Date.parse('2026-11-20T11:00:00.000Z');
+const snap = (tickets, { out = tickets.map((x) => x.key), outAt = OUT_AT, held = tickets.flatMap((x) => [`${x.key}:merge`, `${x.key}:main`]), alive = [] } = {}) => ({
+  tickets: Object.fromEntries(tickets.map((x) => [x.key, x])), labels: [], out: new Map(out.map((k) => [k, outAt])), held: new Set(held), alive: new Set(alive), now: NOW,
 });
 const run = (started = '2026-11-20T11:55:00.000Z') => ({ id: 'A-x', pid: 4242, started, out: '/s/follow/A-x.json', steps: [CI] });
 t('AC1 a merged ticket whose code is out gets a checker for its runnable steps only', j(decideFollowSteps(snap([merged('A')]))), j([{ type: 'start', key: 'A', steps: [CI] }]));
@@ -67,7 +75,18 @@ none('a ticket whose code is not out yet gets none', merged('A'), { out: [] });
 none('a ticket not merged gets none', merged('A', { merged_at: null }));
 none('a ticket whose steps the person settled gets none', merged('A', { follow_on_done: '2026-11-20T11:30:00.000Z' }));
 none('a ticket still owed its review\'s post-merge criteria gets none yet', merged('A', { pr_status: { post_merge: [{ step: 'x' }] } }));
-none('a step already checked is not run again', merged('A', { follow_checks: [{ ...CI, result: 'fail', found: 'x', evidence: 'y' }] }));
+none('a step already checked is not run again', merged('A', { follow_checks: [{ ...CI, pr: 7, result: 'fail', found: 'x', evidence: 'y' }] }));
+none('a step whose gate does not hold yet is not run', merged('A', { follow_on: [{ ...CI, after: 'main' }] }), { held: ['A:merge'] });
+t('one whose gate holds is', j(decideFollowSteps(snap([merged('A', { follow_on: [{ ...CI, after: 'main' }] })], { held: ['A:main'] })).map((a) => a.type)), '["start"]');
+{
+  const found = (at) => merged('A', { follow_checks: [{ ...CI, pr: 7, result: 'pending', found: 'run 9 in progress', evidence: 'u', at }] });
+  t('a step found pending is checked again later', j(decideFollowSteps(snap([found('2026-11-20T11:30:00.000Z')])).map((a) => a.type)), '["start"]');
+  none('but not once FOLLOW_WAIT_MS has passed since its code went out', found('2026-11-20T11:30:00.000Z'), { outAt: NOW - FOLLOW_WAIT_MS });
+  t('while it may still be, the batch waits on it', followAwaits(snap([found('2026-11-20T11:55:00.000Z')])), true);
+  t('and not after', followAwaits(snap([found('2026-11-20T11:55:00.000Z')], { outAt: NOW - FOLLOW_WAIT_MS })), false);
+  t('a running checker keeps the batch waiting too', followAwaits(snap([merged('A', { follow_run: run() })])), true);
+  t('a settled record does not', followAwaits(snap([merged('A', { follow_checks: [{ ...CI, pr: 7, result: 'fail', found: 'x', evidence: 'y', at: 'x' }] })])), false);
+}
 none('AC4 a ticket with no runnable step gets none', merged('A', { follow_on: [PAGE] }));
 none('a run still going is left to finish', merged('A', { follow_run: run() }), { alive: ['A'] });
 t('a run past its time is stopped', j(decideFollowSteps(snap([merged('A', { follow_run: run('2026-11-20T11:00:00.000Z') })], { alive: ['A'] }))),
@@ -96,8 +115,12 @@ const STEPS = [CI, { step: 'read audit.jsonl for the cost', row: null }];
   const p = output('one', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'pass', found: 'ok', evidence: 'u' }] })}`);
   t('a step the checker left out is failed, its evidence the output file', j(readFollow(p, STEPS).results[1]), j({ ...STEPS[1], result: 'fail', found: 'the checker gave no result for it', evidence: p }));
 }
+{
+  const p = output('pending', `${FOLLOW_RESULT_MARK} ${j({ steps: [{ n: 0, result: 'pending', found: 'run 9 in progress', evidence: 'u' }, { n: 1, result: 'maybe' }] })}`);
+  t('a step whose run has not finished is pending; a result it does not know is failed', j(readFollow(p, STEPS).results.map((x) => x.result)), '["pending","fail"]');
+}
 t('a checker that left no result line is an error', readFollow(output('none', 'I could not finish.'), STEPS).error, `gave no ${FOLLOW_RESULT_MARK} line`);
-t('a checker with no output is an error', readFollow(join(T, 'missing.json'), STEPS).error, 'left no output');
+t('a checker with no output is an error', readFollow(join(T, 'missing.json'), STEPS).error, 'gave no output');
 t('an error fails every step of the run, naming why and where', j(failedRun({ out: '/o', steps: [CI] }, 'left no output')),
   j([{ ...CI, result: 'fail', found: 'the follow-step checker left no output', evidence: '/o' }]));
 

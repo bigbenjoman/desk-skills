@@ -1473,7 +1473,7 @@ check "DS-798 AC4 a ticket with no step a checker can run gets none" '[ "$(field
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 2 ] && break; sleep 0.2; done
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
 check "DS-798 AC1 the next pass records the step it passed and settles it, leaving the person's step" \
-  '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\"]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
+  '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
 check "DS-798 AC1 and says what it found on the ticket's PR" \
   'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
 check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \

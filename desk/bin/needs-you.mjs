@@ -106,7 +106,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
-import { followKind, checkOf, FOLLOW_WAIT_MS } from './follow-steps.mjs';
+import { followKind, checkOf, settled, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
@@ -935,23 +935,27 @@ function gateHeld(r, t, s) {
   const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
   return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
+// Whether step `s` of ticket `t` in queue `q` of repo `slug` has its gate held, for the pass's follow-step
+// checker (pass/follow-steps.mjs), which runs a step only once needs-you would list it.
+export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).held;
 // A ticket's steps split by their gates: `ready` listed now (each with its note, and `failed`, the
 // checker's record, where one failed it), `waiting` not yet. A step a checker passed is neither, nor is
-// a runnable one while its checker runs or, for FOLLOW_WAIT_MS after the code went out, is still to.
+// a runnable one not yet passed or failed while its checker runs (up to FOLLOW_TIMEOUT_MS) or, for
+// FOLLOW_WAIT_MS after the code went out, is still to.
 function followSplit(r, t, now = Date.now()) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
-  const pending = !!t.follow_run || !waited;
+  const running = !!t.follow_run && now - Date.parse(t.follow_run.started) < FOLLOW_TIMEOUT_MS;
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
     const g = gateHeld(r, t, s);
     if (!g.held) { waiting.push(s); continue; }
-    const runnable = !c && followKind(s, labels) === 'runnable';
-    if (runnable && pending) continue;
-    const note = runnable ? [g.note, 'no follow-step checker has run it yet'].filter(Boolean).join('; ') : g.note;
-    ready.push({ s, note, on: g.on, at: g.at, ...(c ? { failed: c } : {}) });
+    const runnable = !settled(c) && followKind(s, labels) === 'runnable';
+    if (runnable && (running || !waited)) continue;
+    const note = runnable ? [g.note, 'no follow-step checker has passed or failed it yet'].filter(Boolean).join('; ') : g.note;
+    ready.push({ s, note, on: g.on, at: g.at, ...(settled(c) ? { failed: c } : {}) });
   }
   return { ready, waiting };
 }

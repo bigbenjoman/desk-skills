@@ -2016,26 +2016,33 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
 {
   const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
   const CI = { step: "on the merge commit's tests run on main, check the slowest shard takes about 300 s or less", row: null };
-  const failed = { ...CI, result: 'fail', found: 'the slowest shard took 412 s', evidence: 'https://github.com/acme/x/actions/runs/9', at: minsAgo(1) };
+  const failed = (pr, more = {}) => ({ ...CI, pr, result: 'fail', found: 'the slowest shard took 412 s', evidence: 'https://github.com/acme/x/actions/runs/9', at: minsAgo(1), ...more });
+  const run = (mins) => ({ id: 'K-x', pid: 1, started: minsAgo(mins), out: '/x', steps: [CI] });
   put('follow798', { port: 4798, beat: 1, supervised: true, merge: 'yes', stepLabels: 'needs-ben', tickets: {
     'K-1': merged(91, 5, { follow_on: [CI] }),
-    'K-2': merged(92, 5, { follow_on: [CI], follow_checks: [failed] }),
+    'K-2': merged(92, 5, { follow_on: [CI], follow_checks: [failed(92)] }),
     'K-3': merged(93, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }] }),
     'K-4': merged(94, 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
-    'K-5': merged(95, 5, { follow_on: [CI], follow_checks: [{ ...failed, result: 'pass' }] }),
+    'K-5': merged(95, 5, { follow_on: [CI], follow_checks: [failed(95, { result: 'pass' })] }),
     'K-6': merged(96, 300, { follow_on: [CI] }),
-    'K-7': merged(97, 300, { follow_on: [CI], follow_run: { id: 'K-7-x', pid: 1, started: minsAgo(1), out: '/x', steps: [CI] } }),
+    'K-7': merged(97, 300, { follow_on: [CI], follow_run: run(1) }),
+    'K-8': merged(98, 300, { follow_on: [CI], follow_run: run(60) }),
+    'K-9': merged(99, 5, { follow_on: [CI], follow_checks: [failed(90, { result: 'pass' })] }),
+    'K-10': merged(100, 5, { follow_on: [CI], follow_checks: [failed(100, { result: 'pending' })] }),
+    'K-11': merged(101, 300, { follow_on: [CI], follow_checks: [failed(101, { result: 'pending', found: 'run 9 in progress' })] }),
   } });
   const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
   const g = byKey();
-  t('DS-798 AC1 a step that only reads CI is not listed while a checker is still to run it, nor once one passed it, nor while one runs',
-    ['follow:K-1', 'follow:K-5', 'follow:K-7'].filter((k) => k in g).join(), '');
+  t('DS-798 AC1 a step that only reads CI is not listed while a checker is still to run it, nor once one passed it, nor while one runs, nor while one found it pending',
+    ['follow:K-1', 'follow:K-5', 'follow:K-7', 'follow:K-9', 'follow:K-10'].filter((k) => k in g).join(), '');
+  t('DS-798 once the wait is over, a run past its time or a step still pending is listed for the person',
+    ['follow:K-8', 'follow:K-11'].map((k) => /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(g[k]?.need ?? '')).join(), 'true,true');
   t('DS-798 AC2 a step a checker failed is one item naming the step, what it found and the run URL',
     /Check: on the merge commit's tests run on main, check the slowest shard takes about 300 s or less\. A follow-step checker ran it and it failed: the slowest shard took 412 s \(evidence: https:\/\/github\.com\/acme\/x\/actions\/runs\/9\)\./.test(g['follow:K-2']?.need ?? ''), true);
   t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
   t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
   t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',
-    /No follow-step checker has run it yet\. Check: on the merge commit/.test(g['follow:K-6']?.need ?? ''), true);
+    /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(g['follow:K-6']?.need ?? ''), true);
   const done = N.record({ word: 'follow798', ticket: 'follow:K-2', action: 'done' });
   t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${'follow:K-2' in byKey()}`, 'true string false');
 }

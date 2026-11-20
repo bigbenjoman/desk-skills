@@ -161,6 +161,8 @@ export function followOnIn(done) {
   return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
+// Two follow-on steps are the same step by their text and gate (`after`, none for the merge).
+export const sameStep = (a, b) => a?.step === b?.step && (a?.after ?? 'merge') === (b?.after ?? 'merge');
 export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
 // A kept PR status naming criteria its review left for after the merge that the pass has not made
 // follow-on steps of yet for PR `n` (pass.mjs post_merge_read).

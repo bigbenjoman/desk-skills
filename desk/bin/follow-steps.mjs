@@ -8,24 +8,21 @@
 // The classifier is conservative: a step is runnable only when it names one of those sources and
 // nothing else a checker could not read (a page, staging, a script, a write). Anything it cannot tell
 // is the person's, as is a step naming a §3 row, a production gate or a person-step label.
-import { readFileSync, writeFileSync, mkdirSync, openSync, closeSync } from 'node:fs';
-import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { markedResult } from './decider.mjs';
-import { usageLimit } from './usage-limit.mjs';
-import { callLogin } from './call-login.mjs';
-import { refusedLogin } from './health.mjs';
-import { loginOf } from './claude-logins.mjs';
+import { startHeadless, readMarked } from './decider.mjs';
+import { sameStep } from './harvest.mjs';
 
 export const FOLLOW_RESULT_MARK = 'FOLLOW_RESULT:';
-export const FOLLOW_EFFORT = 'low';
+const FOLLOW_EFFORT = 'low';
 // A checker still running this long after it started is stopped, and its steps read as failed.
 export const FOLLOW_TIMEOUT_MS = 15 * 60 * 1000;
-// A runnable step no checker has run this long after its code went out is listed for the person after
-// all, saying so: a pass that never ran must not hide it for good.
+// A runnable step no checker has passed or failed this long after its code went out is listed for the
+// person after all, saying so: a pass that never ran, or CI that never finished, must not hide it for good.
 export const FOLLOW_WAIT_MS = Number(process.env.DESK_FOLLOW_WAIT_MS) || 2 * 60 * 60 * 1000;
-// How every checker prompt starts, so its transcripts can be told apart.
-export const FOLLOW_OPENING = 'You are the autopilot follow-step checker for ';
+// A step a checker found still pending (a run not finished yet) is checked again this long after, until
+// FOLLOW_WAIT_MS after its code went out.
+export const FOLLOW_RETRY_MS = 10 * 60 * 1000;
+const FOLLOW_OPENING = 'You are the autopilot follow-step checker for ';
 
 // What a checker may read: GitHub CI runs and checks, and desk's own logs and state files.
 const CI = /\b(?:ci|github actions?|actions runs?|workflows?|workflow runs?|check runs?|status checks?|required checks?|pr checks|pr #?\d+'?s? checks|tests? (?:runs?|checks?|jobs?|shards?)|shards?|gh run|gh pr checks|run url)\b/i;
@@ -49,13 +46,20 @@ export function followKind(s, labels = []) {
   return CI.test(text) || DESK.test(text) ? 'runnable' : 'unknown';
 }
 
-// Two steps are the same step by their text and gate, as queue.mjs follow-ran matches them.
-export const sameStep = (a, b) => a?.step === b?.step && (a?.after ?? 'merge') === (b?.after ?? 'merge');
-// What a checker recorded for step `s` on ticket `t` (follow_checks), or null where none ran it.
-export const checkOf = (t, s) => (Array.isArray(t?.follow_checks) ? t.follow_checks.filter((c) => sameStep(c, s)).pop() ?? null : null);
-// The steps of `t` a checker owes a run: runnable, and none recorded yet.
-export const owedSteps = (t, labels = []) => (Array.isArray(t?.follow_on) ? t.follow_on : [])
-  .filter((s) => followKind(s, labels) === 'runnable' && !checkOf(t, s));
+// What a checker recorded for step `s` on ticket `t` (follow_checks) for its current PR, or null where
+// none ran it.
+export const checkOf = (t, s) => (Array.isArray(t?.follow_checks)
+  ? t.follow_checks.filter((c) => sameStep(c, s) && String(c.pr ?? '') === String(t.result?.pr ?? '')).pop() ?? null : null);
+// Whether a record settles its step: passed or failed, not still pending.
+export const settled = (c) => c?.result === 'pass' || c?.result === 'fail';
+// The steps of `t` a checker owes a run: runnable and none recorded yet, or, with `retry`, found pending
+// at least FOLLOW_RETRY_MS before `now`.
+export const owedSteps = (t, labels = [], { now = Date.now(), retry = true } = {}) => (Array.isArray(t?.follow_on) ? t.follow_on : [])
+  .filter((s) => {
+    if (followKind(s, labels) !== 'runnable') return false;
+    const c = checkOf(t, s);
+    return !c || (retry && !settled(c) && now - Date.parse(c.at) >= FOLLOW_RETRY_MS);
+  });
 
 // ---- the session ---------------------------------------------------------------------------------
 // Reads only: GitHub's runs, checks and PRs, desk-gh's GET reads, and the files under `dirs`.
@@ -92,56 +96,39 @@ export function followPrompt({ slug, repo, t, steps, bin, dirs }) {
     'Steps:',
     ...steps.map((s, i) => `${i}. ${String(s.step).replace(/\s+/g, ' ').trim()}`),
     '',
-    'A step passes when what it says to check holds. It fails when it does not, or when you could not read what it needs: say what stopped you. Give the evidence for each: the run URL, or the file path you read it from.',
+    'A step passes when what it says to check holds. It fails when it does not, or when you could not read what it needs: say what stopped you. It is pending when what it needs has not finished yet (a run or check still queued or in progress): it is checked again later. Give the evidence for each: the run URL, or the file path you read it from.',
     '',
-    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass" or "fail", "found": "<what you found, one line>", "evidence": "<run URL or file path>"}]}\`. A step you leave out counts as failed.`,
+    `End your reply with one line, at the start of a line: \`${FOLLOW_RESULT_MARK} {"steps": [{"n": <step number>, "result": "pass", "fail" or "pending", "found": "<what you found, one line>", "evidence": "<run URL or file path>"}]}\`. A step you leave out counts as failed.`,
   ].join('\n');
 }
 
-// Starts a checker for `steps` of ticket `t`, detached, on the repo's subscription (call-login.mjs), its
-// JSON result written under <state>/follow/. -> the run to keep on the ticket (follow_run): { id, pid,
-// started, out, steps, login }, or { wait }, starting nothing, when no login can take it now.
-export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env: callerEnv = process.env, claude = process.env.DESK_FOLLOW_CLAUDE || 'claude', now = new Date() }) {
-  const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
-  if (wait) return { wait };
-  const refused = refusedLogin(state, login, login ? loginOf(callerEnv.CLAUDE_CONFIG_DIR) : null);
-  if (refused) return { wait: `its login${login ? ` ${login.name}` : ''} failed its health check, ${refused}` };
-  const dir = join(state, 'follow');
-  mkdirSync(dir, { recursive: true });
-  const id = `${t.key}-${now.toISOString().replace(/[:.]/g, '-')}`;
-  const settings = join(dir, `${id}.settings.json`);
-  writeFileSync(settings, `${JSON.stringify(followSettings({ bin, dirs }), null, 2)}\n`);
-  const prompt = followPrompt({ slug, repo, t, steps, bin, dirs });
-  writeFileSync(join(dir, `${id}.prompt.md`), prompt);
-  const out = join(dir, `${id}.json`);
-  const fd = openSync(out, 'w');
-  const child = spawn(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-    '--permission-mode', 'dontAsk', '--settings', settings, ...dirs.flatMap((d) => ['--add-dir', d]), '--effort', FOLLOW_EFFORT], {
-    cwd, env: { ...env, FORCE_PROMPT_CACHING_5M: '1' }, detached: true, stdio: ['ignore', fd, fd],
-  });
-  closeSync(fd);
-  child.on('error', () => {});
-  child.unref();
-  const keep = steps.map((s) => ({ step: s.step, ...(s.after && s.after !== 'merge' ? { after: s.after } : {}) }));
-  return { id, pid: child.pid ?? null, started: now.toISOString(), out, steps: keep, login: login?.name ?? null };
+// Starts a checker for `steps` of ticket `t`, detached (decider.mjs startHeadless), its JSON result
+// written under <state>/follow/. -> the run to keep on the ticket (follow_run): { id, pid, started, out,
+// steps, login }, or { wait }, starting nothing, when no login can take it now.
+export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env = process.env, claude = process.env.DESK_FOLLOW_CLAUDE || 'claude', now = new Date() }) {
+  const run = startHeadless({ state, kind: 'follow', id: `${t.key}-${now.toISOString().replace(/[:.]/g, '-')}`, effort: FOLLOW_EFFORT, addDirs: dirs, cwd, env, claude, now,
+    settings: followSettings({ bin, dirs }), prompt: followPrompt({ slug, repo, t, steps, bin, dirs }) });
+  if (run.wait) return run;
+  return { ...run, steps: steps.map((s) => ({ step: s.step, ...(s.after && s.after !== 'merge' ? { after: s.after } : {}) })) };
 }
 
 const line = (s, n = 300) => { const x = String(s ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 1)}…` : x; };
+const RESULTS = ['pass', 'fail', 'pending'];
 
 // What a finished checker found, from its output file: { cost, results: [{ step, after?, result, found,
-// evidence }] } in the run's step order, a step it gave no result for read as failed; or { cost, error }
-// where it left no result line, with `limit: true` where the usage limit stopped it.
+// evidence }] } in the run's step order, `result` pass, fail or pending, a step it gave no result for
+// read as failed; or { cost, error } where it left no result line, with `limit: true` where the usage
+// limit stopped it.
 export function readFollow(out, steps) {
-  let text = '';
-  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'left no output' }; }
-  const { cost, error, payload } = markedResult(text, FOLLOW_RESULT_MARK);
-  if (error && usageLimit(text).last?.kind === 'limit') return { cost, error: 'stopped at the usage limit', limit: true };
+  const { cost, error, limit, payload } = readMarked(out, FOLLOW_RESULT_MARK);
+  if (limit) return { cost, error, limit };
   if (error) return { cost, error: `gave ${error}` };
   const got = new Map((Array.isArray(payload?.steps) ? payload.steps : []).filter((x) => Number.isInteger(x?.n)).map((x) => [x.n, x]));
+  const said = { pass: 'it holds', fail: 'it does not hold', pending: 'it has not finished yet' };
   const results = steps.map((s, i) => {
     const x = got.get(i);
-    const pass = x?.result === 'pass';
-    return { ...s, result: pass ? 'pass' : 'fail', found: line(x?.found) || (x ? (pass ? 'it holds' : 'it does not hold') : 'the checker gave no result for it'), evidence: line(x?.evidence) || out };
+    const result = RESULTS.includes(x?.result) ? x.result : 'fail';
+    return { ...s, result, found: line(x?.found) || (x ? said[result] : 'the checker gave no result for it'), evidence: line(x?.evidence) || out };
   });
   return { cost, results };
 }
@@ -149,7 +136,7 @@ export function readFollow(out, steps) {
 // Every step of a run as failed, saying why: the checker stopped, or left nothing to read.
 export const failedRun = (run, why) => run.steps.map((s) => ({ ...s, result: 'fail', found: `the follow-step checker ${why}`, evidence: run.out }));
 
-// The comment the pass posts on the merged PR: one line per step the checker ran.
+// The comment the pass posts on the merged PR: one line per step the checker passed or failed.
 export function followComment(key, results) {
   return [
     `A desk follow-step checker ran ${results.length === 1 ? 'the step' : `the ${results.length} steps`} ${key} left for after this merge:`,
