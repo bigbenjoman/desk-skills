@@ -45,7 +45,7 @@ check "AC4: the held ticket is released to triaged"                  '[ "$(qf T-
 check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-3 ]'
 check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-1 .merged_at)" != null ] && [ "$(jq -r .key "$T/state/eta-history.jsonl")" = T-1 ] && [ "$(jq -r .merged_at "$T/state/eta-history.jsonl")" = "$(qf T-1 .merged_at)" ]'
 
-check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" '[ "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " ")" = "claim ${SHA1:0:12} merged ${SHA1:0:12} " ] && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
+check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
 
 # ---- #809: a PR a session has claimed is not merged by the driver ------------------------------
 node "$B/merge-log.mjs" claim 102 "$SHA2" --by "session s-9" --repo acme/widgets >/dev/null
