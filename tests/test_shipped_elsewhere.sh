@@ -43,7 +43,8 @@ cat > "$T/config.md" <<EOF
 | Ticket key pattern | \`DS-[0-9]+\` |
 EOF
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
