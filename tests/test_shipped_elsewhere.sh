@@ -108,7 +108,7 @@ cat > "$T/merged.json" <<'EOF'
  {"number":348,"headRefName":"claude/DS-385-session","mergedAt":"2026-10-31T10:33:00Z"},
  {"number":349,"headRefName":"fix/DS-386-own","mergedAt":"2026-10-31T10:35:00Z"},
  {"number":351,"headRefName":"fix/DS-387-own","mergedAt":"2026-10-31T10:37:00Z"},
- {"number":352,"headRefName":"fix/DS-387-two","mergedAt":"2026-10-31T10:45:00Z"},
+ {"number":352,"headRefName":"fix/DS-387-two","mergedAt":"2026-10-31T10:37:30Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},

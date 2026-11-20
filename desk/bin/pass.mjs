@@ -1136,15 +1136,13 @@ function ownMergedPr(t) {
 // else the one a spawn kept (merged_pr) when it cleared the result. A spawn before merged_pr was kept
 // cleared the result but left pr_status, written only for the ticket's own PR, so a status naming a PR
 // in this repo stands in: its PR is the merge merged_at records once GitHub lists it merged by then
-// (whatever state the status last read), and a status read after merged_at is a later round of its
+// (whatever state the status last read; merged_at is GitHub's time or the driver's, never earlier), and a status read after merged_at is a later round of its
 // own, so merged_at is its own merge even when that round's PR never merged. A status read before
 // merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
 // behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
 // nothing. A read that fails is null, and the ticket spawns as it would have.
 // The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
 const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
-// The driver may record a merge a little after GitHub's time.
-const MERGE_GRACE_MS = 60_000;
 const statusPr = (t) => {
   const s = t.merged_at ? t.pr_status : null;
   if (s?.pr == null) return null;
@@ -1162,7 +1160,7 @@ function shippedElsewhere(t) {
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
     const list = Array.isArray(prs) ? prs : [];
     const at = Date.parse(t.merged_at);
-    if (mine == null && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at + MERGE_GRACE_MS)) mine = status.pr;
+    if (mine == null && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine = status.pr;
     const own = mine != null || status?.later ? at : NaN;
     const re = new RegExp(keyPattern(t.key));
     const hit = list
