@@ -105,6 +105,7 @@ cat > "$T/merged.json" <<'EOF'
  {"number":343,"headRefName":"claude/DS-382-session","mergedAt":"2026-10-31T10:27:00Z"},
  {"number":344,"headRefName":"fix/DS-383-own","mergedAt":"2026-10-31T10:29:00Z"},
  {"number":346,"headRefName":"fix/DS-384-own","mergedAt":"2026-10-31T10:31:00Z"},
+ {"number":348,"headRefName":"claude/DS-385-session","mergedAt":"2026-10-31T10:33:00Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
@@ -157,7 +158,13 @@ queued DS-383 fix/DS-383-own merged_at=2026-10-31T10:29:00.500Z upload_round=u-3
 # Its PR status names a PR of the same number in another repo: not this repo's PR, so #346 here is found.
 queued DS-384 fix/DS-384-own merged_at=2026-10-31T10:31:00.500Z \
   'pr_status={"pr":346,"state":"MERGED","url":"https://github.com/o/other/pull/346"}'
+# Its PR status names a PR it closed unmerged (#347), and a session's #348 is the merge merged_at
+# records: GitHub lists no merge of #347, so #348 is found.
+queued DS-385 fix/DS-385-own merged_at=2026-10-31T10:33:00.500Z \
+  'pr_status={"pr":347,"state":"CLOSED","url":"https://github.com/acme/widgets/pull/347"}'
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a PR status for a PR that never merged does not hide the merge merged_at records" \
+  '[ "$(got DS-385 .state)" = done ] && [ "$(got DS-385 .result.pr)" = 348 ] && ! spawned DS-385'
 check "DS-796 a requeued row a pre-upgrade pass spawned (no merged_pr) is resumed, its own merge read from its PR status" \
   'spawned DS-382 && [ "$(field DS-382 result.summary)" = null ] && [ "$(field DS-382 state)" != "\"done\"" ]'
 check "DS-796 a worker's earlier round is not a PR of its own: the PR merged from its branch is recorded" \
