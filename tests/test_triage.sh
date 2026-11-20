@@ -504,6 +504,12 @@ rm -f "$STUB_LOG".*; printf 'null\n' > "$T/state/triage/fix-thing.json"
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823: an earlier record that is not an object is not carried and does not stop the triage" \
   '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [ ! -f "$EARLY" ]'
+rm -f "$STUB_LOG".* "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A STUB_KIND=bogus STUB_EXTRA=",\"unknowns\":[\"$EQ\"],\"ben_steps\":[{\"step\":\"$ES\",\"blocker\":\"Ben applies it\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823: a first triage's refused record is never carried into its retry as the earlier one" \
+  '[ $rc -ne 0 ] && [ $rc2 -eq 0 ] && ! P0 | grep -qF "Still open from fix-thing" && [ "$(lc -c .unknowns)" = "[]" ] && [ "$(lc -c .ben_steps)" = "[]" ] && [ ! -f "$EARLY" ]'
 rm -f "$STUB_LOG".*; earlier
 out=$(STUB_LANE=A STUB_ANSWER=$'\n## Answer from the user (2099-01-01T00:00:00Z)\n\nShip the current consent text.\n' bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823 AC4: an answer saved while the pass runs settles the earlier unknown, and the record is stamped before it" \

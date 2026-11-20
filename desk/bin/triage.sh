@@ -321,7 +321,9 @@ export FORCE_PROMPT_CACHING_5M=1
 cd "$MAIN"
 # An earlier triage's record would read as this pass's, and hide a pass that wrote nothing. The last
 # finished one goes aside until this pass succeeds; one already aside means $OUT is a failed pass's.
-if [ -f "$EARLIER" ]; then rm -f "$OUT"; elif [ -f "$OUT" ]; then mv -f "$OUT" "$EARLIER"; fi
+# With none to set aside, a `null` goes there, so a record this pass leaves refused at $OUT is never
+# read as a finished one by the retry: `null` carries nothing.
+if [ -f "$EARLIER" ]; then rm -f "$OUT"; elif [ -f "$OUT" ]; then mv -f "$OUT" "$EARLIER"; else printf 'null\n' > "$EARLIER"; fi
 # No --allowedTools: it would grant every Bash command and Write outright, overriding the
 # read-only triage settings. The settings file alone decides what triage may run.
 # Its status is kept so a pass cut off at the timeout (desk_timeout's 124, or 137) is said as one.
