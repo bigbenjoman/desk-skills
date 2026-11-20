@@ -72,7 +72,8 @@ EOF
 }
 config yes yes
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 # Setup answers per $T/mode.setup: ok, pgdown (Postgres not answering), other (any other failure), lock
 # (git cannot lock a moved remote-tracking ref, every time) or lockonce (that once per ticket, then ok).
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF

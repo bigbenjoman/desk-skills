@@ -22,7 +22,8 @@ unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<'EOF'
 mkdir -p "$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] worktree=$DESK_WORKTREES_DIR/$2"; echo "[setup-worktree] branch=$3"
 EOF
@@ -568,6 +569,57 @@ check "DS-803 AC3 pnpm's missing-packages warning beside a failing check still r
 fresh hookenv; own_commit; hook "$NO_DEPS"; pass
 check "DS-803 AC2 a hook missing its tool is an environment failure naming it, and the sync still pushes" \
   '[ -e "$C/hook.ran" ] && origin_has_main && git -C "$C/origin.git" cat-file -e feat/x:b.txt && [[ "$out" == *"could not run its checks in the base worktree (\`turbo\` (command not found), an environment failure"* ]] && [[ "$out" != *"was refused"* ]]'
+
+# DS-808: a pre-push hook that reads a §4 Env files variable. envhook <case> [env rows]: a base with content
+# of its own, .env ignored by git and present in the primary checkout, and a hook that fails as a shell's
+# `set -u` does unless .env sets NEEDS_ME.
+envhook(){
+  fresh "$1"; own_commit
+  [ -z "${2:-}" ] || printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Env files | `.env` |\n| Database URL variable | `DATABASE_URL` |\n' >> "$C/config.md"
+  echo .env >> "$C/repo/.git/info/exclude"
+  printf 'NEEDS_ME=yes\nDATABASE_URL=postgres://u:p@localhost:5432/dev\n' > "$C/repo/.env"
+  mkdir -p "$C/hooks"
+  cat > "$C/hooks/pre-push" <<EOF
+#!/bin/sh
+touch '$C/hook.ran'
+[ -f .env ] && . ./.env
+if [ -z "\${NEEDS_ME:-}" ]; then echo 'pre-push: FAIL  sh check.sh (0s, exit 1)' >&2; echo 'check.sh: line 1: NEEDS_ME: unbound variable' >&2; exit 1; fi
+touch '$C/hook.passed'
+EOF
+  chmod +x "$C/hooks/pre-push"; git -C "$C/repo" config core.hooksPath "$C/hooks"
+}
+envhook envcopy rows; pass
+check "DS-808 AC1 the base worktree is made holding the env files a worker's gets" \
+  "[ \"\$(grep NEEDS_ME $BWT/.env)\" = NEEDS_ME=yes ] && [[ \"\$out\" == *\"§4 Env files copied in (.env)\"* ]]"
+check "DS-808 AC1 with its database variable blanked, as a worker with no database of its own has it" "[ \"\$(grep DATABASE_URL $BWT/.env)\" = DATABASE_URL= ]"
+check "DS-808 AC1 and the base worktree still reads as clean" "[ -z \"\$(git -C $BWT status --porcelain)\" ]"
+check "DS-808 AC2 the pre-push hook passes and the merge reaches origin" \
+  '[ -e "$C/hook.passed" ] && origin_has_main && git -C "$C/origin.git" cat-file -e feat/x:b.txt && [[ "$out" == *"merged 2 commit(s) from main into feat/x and pushed"* ]] && [[ "$out" != *"environment failure"* ]]'
+envhook envmissing; pass
+check "DS-808 AC3 without the env file, the missing variable is an environment failure naming it, and the sync still pushes" \
+  '[ -e "$C/hook.ran" ] && [ ! -e "$C/hook.passed" ] && origin_has_main && [[ "$out" == *"could not run its checks in the base worktree (\`NEEDS_ME\` (environment variable not set), an environment failure"* ]]'
+# A hook that needs the database variable the base worktree's copy blanks, failing in Prisma's words for it.
+envhook envdb rows
+cat > "$C/hooks/pre-push" <<EOF
+#!/bin/sh
+touch '$C/hook.ran'
+[ -f .env ] && . ./.env
+if [ -z "\${DATABASE_URL:-}" ]; then echo 'pre-push: FAIL  pnpm prisma validate (1s, exit 1)' >&2; echo 'Error validating datasource \`db\`: You must provide a nonempty URL. The environment variable \`DATABASE_URL\` resolved to an empty string.' >&2; exit 1; fi
+touch '$C/hook.passed'
+EOF
+pass
+check "DS-808 AC2 a hook that needs the blanked database variable is an environment failure naming it, and the merge still reaches origin" \
+  '[ -e "$C/hook.ran" ] && [ ! -e "$C/hook.passed" ] && origin_has_main && git -C "$C/origin.git" cat-file -e feat/x:b.txt && [[ "$out" == *"(\`DATABASE_URL\` (environment variable not set), an environment failure"* ]]'
+# DS-808 AC4: a refused push while the base lags too far to spawn is recorded for needs-you.
+fresh stuck; own_commit; hook $'pre-push: FAIL  make check (1s, exit 1)\nb.txt: bad\npre-push: push stopped.'
+tip=$(origin_tip); AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "DS-808 AC4 a refused push past the lag freezes spawns and is recorded with its base, frozen count and command" \
+  '[ "$(origin_tip)" = "$tip" ] && [[ "$out" != *"spawned: T-1"* ]] && [ "$(jq -r "[.base_sync_stuck.base, .base_sync_stuck.frozen] | join(\" \")" "$DESK_QUEUE")" = "feat/x 1" ] && [[ "$(jq -r .base_sync_stuck.cmd "$DESK_QUEUE")" == *"push origin HEAD:refs/heads/feat/x || "*" reset -q --hard origin/feat/x" ]]'
+bash -c "$(jq -r .base_sync_stuck.cmd "$DESK_QUEUE")" >/dev/null 2>&1; AUTOPILOT_BASE_BEHIND_MAX=0 pass
+check "DS-808 AC4 its command rolls the merge back when the push is refused again, so the next pass keeps the item" \
+  '[ "$(git -C "$C/wt/base-feat-x" rev-parse HEAD)" = "$(origin_tip)" ] && [ "$(jq -r .base_sync_stuck.base "$DESK_QUEUE")" = feat/x ]'
+rm -f "$C/hooks/pre-push"; pass
+check "DS-808 AC4 the next pass that pushes clears it" 'origin_has_main && [ "$(jq -r .base_sync_stuck "$DESK_QUEUE")" = null ]'
 
 # AC5: a push refused as non-fast-forward is fetched, merged again and retried once.
 fresh race; git clone -q "$C/origin.git" "$C/other"; git -C "$C/other" switch -q feat/x; echo "$C/other" > "$T/race.arm"; pass

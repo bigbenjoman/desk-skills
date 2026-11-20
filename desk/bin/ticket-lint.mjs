@@ -17,21 +17,22 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
+import { FIGMA_URL, baseRef, checkTicket, designDir, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
-// code reads as prose and line numbers still match the source.
-function blankCode(text) {
+// code reads as prose and line numbers still match the source. Each block's line numbers are pushed
+// onto `blocks`, one array per block.
+function blankCode(text, blocks = []) {
   let fence = null; let macro = false;
-  return String(text ?? '').split(/\r?\n/).map((l) => {
-    if (macro) { if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
-    if (fence) { if (l.trim().startsWith(fence)) fence = null; return ''; }
+  return String(text ?? '').split(/\r?\n/).map((l, i) => {
+    if (macro) { blocks.at(-1).push(i + 1); if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
+    if (fence) { blocks.at(-1).push(i + 1); if (l.trim().startsWith(fence)) fence = null; return ''; }
     const f = /^\s*(`{3,}|~{3,})/.exec(l);
-    if (f) { fence = f[1]; return ''; }
+    if (f) { fence = f[1]; blocks.push([i + 1]); return ''; }
     const m = /\{(?:code|noformat)(?::[^}]*)?\}/i.exec(l);
-    if (m) { if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
+    if (m) { blocks.push([i + 1]); if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
     return l;
   });
 }
@@ -45,6 +46,10 @@ const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
 const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
+// A Given/When/Then criterion: a line opening with Given (after a list mark, a list number or an AC1:
+// label), or a one-line "given …, when …, then …". When and Then alone are left out: both open code
+// lines too (a shell `then`, Kotlin's `when`).
+const GWT = /^\W*(?:\d+\W+)?(?:AC\d+\W*)?given\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
@@ -72,15 +77,26 @@ export function keyRegex(value = configValue) {
 export function lintTicket(t, { root, dir, ref } = {}) {
   const findings = [];
   const add = (severity, rule, message) => findings.push({ severity, rule, message });
-  const lines = blankCode(t.text);
+  const code = [];
+  const lines = blankCode(t.text, code);
   const secs = sections(lines.join('\n'));
   const keyPattern = keyRegex();
   const sec = (re) => secs.find((s) => re.test(s.name));
   const filled = (s) => !!s && s.lines.some((l) => l.text.trim());
-  const all = secs.flatMap((s) => s.lines);
 
   // ---- blocking ----
+  // Criteria written as Given/When/Then inside a {code}/{noformat} block or fence count, so blankCode
+  // emptied them: each block under the criteria heading holding a Given/When/Then line is read again
+  // from the source, and every check below reads it as it reads prose criteria. Other blocks there
+  // (a shell example, sample output) stay blank.
   const criteria = sec(CRITERIA);
+  if (criteria) {
+    const raw = String(t.text ?? '').split(/\r?\n/);
+    const own = new Set(criteria.lines.map((l) => l.n));
+    const back = new Set(code.filter((b) => own.has(b[0]) && b.some((n) => GWT.test(raw[n - 1] ?? ''))).flat());
+    if (back.size) criteria.lines = criteria.lines.map((l) => (back.has(l.n) ? { n: l.n, text: raw[l.n - 1] ?? '' } : l));
+  }
+  const all = secs.flatMap((s) => s.lines);
   if (!filled(criteria)) add('blocking', 'criteria', 'no acceptance criteria: add an "Acceptance criteria" section (an Epic\'s "Definition of done") of AC1: Given …, when …, then … items');
 
   for (const l of all) {
@@ -96,7 +112,9 @@ export function lintTicket(t, { root, dir, ref } = {}) {
 
   const design = sec(/^design\b/i);
   const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
-  if (!noUi && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
+  // A Figma URL counts wherever the description has it. A Claude Design link counts only in the
+  // Design section, where the saved-copy check and triage look for it.
+  if (!noUi && !FIGMA_URL.test(t.text ?? '') && !(design && design.lines.some((l) => /https?:\/\//i.test(l.text)))) {
     add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section, or write "No UI." there');
   }
 

@@ -40,8 +40,10 @@ EOF
 # installed.mjs beside the real supervisor and the modules it imports, and a fake merge driver that
 # behaves as the real one does at rest: it holds the lock, sleeps between loops, and on TERM drops the
 # lock once its sleep returns. With $T/busy it is mid-loop instead (its child is not `sleep`).
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/installed.mjs" "$T/bin/"
-for f in supervisor.mjs desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+link_bin "$B" "$T/bin"
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd) \$*" >> "$T/driver.calls"
@@ -96,7 +98,7 @@ check "AC4: so what started at the commit before it reads as old code" 'node --i
 RH="$T/relhome"
 for r in relA relB relC; do
   mkdir -p "$RH/releases/$r/bin"; cp "$B/installed.mjs" "$RH/releases/$r/bin/"
-  for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$B/$f" "$RH/releases/$r/bin/$f"; done
+  link_bin "$B" "$RH/releases/$r/bin"
 done
 printf '{"commit":"aaa1","release":"relA"}\n' > "$RH/releases/relA/release.json"
 printf '{"commit":"bbb2","release":"relB"}\n' > "$RH/releases/relB/release.json"
