@@ -46,10 +46,10 @@ const OPEN = [/\bTBD\b/, /\bTBC\b/, /\bTODO\b/, /\bto be (?:decided|confirmed)\b
   /\bproposals? for\b/i, /\(to confirm\)/i, /\bpending sign-?off\b/i];
 const SCOPE = /^(?:outcome|acceptance criteria|definition of done|out of scope)\b/i;
 const CRITERIA = /^(?:acceptance criteria|definition of done)\b/i;
-// A Given/When/Then criterion: a line opening with Given (after a list mark or an AC1: label), or a
-// one-line "given …, when …, then …". When and Then alone are left out: both open code lines too
-// (a shell `then`, Kotlin's `when`).
-const GWT = /^\W*(?:AC\d+\W*)?given\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
+// A Given/When/Then criterion: a line opening with Given (after a list mark, a list number or an AC1:
+// label), or a one-line "given …, when …, then …". When and Then alone are left out: both open code
+// lines too (a shell `then`, Kotlin's `when`).
+const GWT = /^\W*(?:\d+\W+)?(?:AC\d+\W*)?given\b|\bgiven\b.*\bwhen\b.*\bthen\b/i;
 const WRITE = String.raw`(?:link(?:s|ed)?|block(?:s|ed)?|transition(?:s|ed)?|move[sd]?|assign(?:s|ed)?|label(?:s|l?ed)?|comment(?:s|ed)?|close[sd]?|reopen(?:s|ed)?|re-?parent(?:s|ed)?)`;
 const JIRA_VERB = new RegExp(`\\b(?:create|set|update|edit|write|add)\\b|\\b${WRITE}\\b`, 'i');
 const PRODUCTION =/\b(?:in|on|against) (?:production|prod)\b|\bproduction (?:data|database|traffic|run|users|site)\b|\blive (?:site|traffic|users|customers|data|database|measurement|environment)\b/i;
