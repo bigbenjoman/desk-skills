@@ -254,7 +254,7 @@ q add T-835 Task A; q set T-835 branch=fix/T-835 state=done result.pr=835
 echo "{ \"835\": { \"head\": \"fix/T-835\", \"base\": \"main\", \"sha\": \"$SHA835\", \"state\": \"open\", \"draft\": false, \"refuse\": true, \"checks\": [[\"test\", \"SUCCESS\"]] } }" > "$T/prs.json"
 loop; loop
 check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket, and has no merged entry" \
-  'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 | awk "{print \$3}" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
+  'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
 q drop T-835
 
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
