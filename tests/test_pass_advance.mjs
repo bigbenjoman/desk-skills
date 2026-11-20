@@ -119,6 +119,19 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
 }
 
+// A worker that parked or stopped when the computer could not run commands (no space or inodes left)
+// is the host's fault: an environment park, never its own words read as a lane.
+{
+  const FULL = { type: 'user', message: { content: [{ type: 'tool_result', content: 'mkdir: cannot create directory: No space left on device' }] } };
+  const lane = advance(snap(ticket('H-1'), logOf('H-1', 'AUTOPILOT_PARK: lane C: needs a person\'s judgement', [FULL, said('AUTOPILOT_PARK: lane C: needs a person\'s judgement'), RESULT])));
+  const q = lane.find((a) => a.type === 'park')?.question ?? '';
+  t('a park after a host fault is an environment park, naming the error', q.startsWith('environment: ') && q.includes('No space left on device') && q.includes('queue.mjs requeue H-1'), true);
+  t('and never reads as the worker\'s lane', /lane C/.test(q), false);
+  const stopped = advance(snap(ticket('H-2'), logOf('H-2', '', [FULL, said('cannot go on'), RESULT])), { 'open-pr': '' });
+  t('a stop with no marker after a host fault parks as environment, not failed', `${types(stopped).includes('fail')} ${stopped.find((a) => a.type === 'park')?.question.startsWith('environment: ')}`, 'false true');
+  t('a park with no host fault in its log is the worker\'s own, as before', advance(snap(ticket('H-3'), logOf('H-3', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
+}
+
 // How an exited worker with no marker ended.
 {
   const dead = (key, extra = {}, mtimeMs = NOW - HOUR) => snap(ticket(key, extra), logOf(key, '', [said('working')], { mtimeMs }));

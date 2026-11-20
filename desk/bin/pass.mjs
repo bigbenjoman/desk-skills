@@ -2865,7 +2865,11 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
 // Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
-// (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
+// (the spawn about to start it) they are pushed, no force. A push refused because that worker rebased
+// the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
+// that the head lacks is in the head by its patch (git cherry), so nothing on origin is lost; else it
+// holds, naming the exact lease push. Uncommitted changes at that head are its interrupted worker's:
+// the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
   if (runsInCloud(t)) return null;
@@ -2880,8 +2884,19 @@ function busyWorktree(t, { push = false } = {}) {
   if (branch && branch !== 'HEAD') git(['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   const why = gitHold(wt, git) ?? null;
+  const own = Boolean(t.worker_head?.sha) && git(['rev-parse', 'HEAD']) === t.worker_head.sha;
+  // Uncommitted changes at the head its own last worker left: that worker was interrupted mid-try.
+  if (why && own && gitHeld(why)?.wt) {
+    const files = (git(['diff', '--name-only', 'HEAD']) ?? '').split('\n').filter(Boolean);
+    if (push && !DRY) {
+      q('set', t.key, `fix.left_dirty=${JSON.stringify(files)}`);
+      t.fix.left_dirty = files;
+      report.recovered.push(`${t.key}: its worktree holds its interrupted worker's uncommitted changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}): its fix try spawns over them, to test and commit them`);
+    }
+    return null;
+  }
   // Only an ahead hold (gitHeld names no worktree) can be the last worker's own commits.
-  if (!why || gitHeld(why)?.wt !== null || !t.worker_head?.sha || git(['rev-parse', 'HEAD']) !== t.worker_head.sha) return why;
+  if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
@@ -2890,6 +2905,23 @@ function busyWorktree(t, { push = false } = {}) {
     return null;
   }
   const said = pushed.out.split('\n').map((l) => l.trim()).filter((l) => /^(remote:|!|error:|fatal:)/.test(l)).slice(-3);
+  // Refused as not a fast-forward: its last worker rebased the branch. The lease is origin's tip as just
+  // fetched, and every commit there that the head lacks must be in the head by its patch.
+  const tip = git(['rev-parse', `origin/${branch}`]);
+  if (/non-fast-forward|fetch first|\(rejected\)/.test(pushed.out) && tip) {
+    const lease = `--force-with-lease=${branch}:${tip}`;
+    const missing = git(['cherry', 'HEAD', `origin/${branch}`]);
+    const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
+    if (lost && !lost.length) {
+      const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
+      if (forced.ok) {
+        report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: every commit origin had is in it by its patch`);
+        return null;
+      }
+      return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
+    }
+    return `${why}: its last worker rebased it, but origin/${branch} has ${lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare'}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
+  }
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.

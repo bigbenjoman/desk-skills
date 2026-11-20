@@ -92,6 +92,22 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+// A fault of the computer, not the ticket, in the log's last HOST_LINES lines: the line naming it
+// (ENOSPC, no space or no inodes left), cut to 200 characters, or null. A worker that hits one cannot
+// run commands, so whatever it said or parked on then is no judgement on its ticket.
+const HOST_LINES = 400;
+const HOST_FAULT = /\bENOSPC\b|No space left on device/;
+export function hostFault(logText) {
+  const lines = String(logText ?? '').split('\n').slice(-HOST_LINES);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = HOST_FAULT.exec(lines[i]);
+    if (!m) continue;
+    const at = Math.max(0, m.index - 80);
+    return lines[i].slice(at, at + 200).replace(/\\n/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
 export function endedNormally(logText) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {

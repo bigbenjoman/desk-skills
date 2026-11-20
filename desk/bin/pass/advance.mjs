@@ -53,7 +53,7 @@
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd } from '../harvest.mjs';
+import { endedNormally, followOnIn, workerEnd, hostFault } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
@@ -265,6 +265,14 @@ export function* decideAdvance(s) {
       sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     };
     yield* linksOnDone(t, n);
+  } else if (park && !wedged && hostFault(log.text)) {
+    // The computer could not run commands (no space or no inodes left), so the worker's park or stop
+    // says nothing about its ticket: an environment park, requeued once the host is healthy, never a
+    // lane. Its own words are not quoted, so a "lane C" said then is never read as its lane.
+    const fault = hostFault(log.text);
+    const question = `environment: ${fault} — this computer could not run commands when its worker parked, so nothing about the ticket changed. Free the space, then requeue it with queue.mjs requeue ${t.key}`;
+    yield { type: 'park', key: t.key, question };
+    yield say(t.key, 'parked', `${t.key}: ${question}`);
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
     // The links the worker asked for are made now; any not made join its question, and its follow-ons
@@ -366,6 +374,11 @@ export function* decideAdvance(s) {
       } else if (stop?.park) {
         yield { type: 'park', key: t.key, question: stop.park };
         yield say(t.key, 'parked', `${t.key}: ${stop.park}`);
+      } else if (hostFault(log.text)) {
+        // Stopped when the computer could not run commands: the host's fault, not the ticket's.
+        const question = `environment: ${hostFault(log.text)} — this computer could not run commands when its worker stopped, so nothing about the ticket changed. Free the space, then requeue it with queue.mjs requeue ${t.key}`;
+        yield { type: 'park', key: t.key, question };
+        yield say(t.key, 'parked', `${t.key}: ${question}`);
       } else {
         const code = yield { type: 'exit-code', key: t.key };
         yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}` };
