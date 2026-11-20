@@ -104,6 +104,7 @@ cat > "$T/merged.json" <<'EOF'
  {"number":342,"headRefName":"fix/DS-379-own","mergedAt":"2026-10-31T10:25:00Z"},
  {"number":343,"headRefName":"claude/DS-382-session","mergedAt":"2026-10-31T10:27:00Z"},
  {"number":344,"headRefName":"fix/DS-383-own","mergedAt":"2026-10-31T10:29:00Z"},
+ {"number":346,"headRefName":"fix/DS-384-own","mergedAt":"2026-10-31T10:31:00Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
@@ -143,20 +144,26 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a requeued ticket whose new worker cleared its result is resumed, its own merge (merged_pr) not counted" \
   'spawned DS-379 && [ "$(field DS-379 result.summary)" = null ]'
 # The same row as a pre-upgrade pass left it: its spawn cleared the result and kept no merged_pr, its PR
-# (#343, from a session's branch, not its own) is still named by its PR status, and it is done in Jira.
+# (#343, from a session's branch, not its own) is still named by its PR status, last read while it was
+# open, and it is done in Jira.
 # That merge is its own, so it is resumed.
 while read -r k; do q set "$k" state=done; done < "$T/spawned"
 queued DS-382 fix/DS-382-own merged_at=2026-10-31T10:27:00.500Z upload_round=u-382 resume=pending "worktree=$T/wt/DS-382" session_id=s-382 \
-  'pr_status={"pr":343,"state":"MERGED","merged_at":"2026-10-31T10:27:00Z"}'
+  'pr_status={"pr":343,"state":"OPEN","url":"https://github.com/acme/widgets/pull/343"}'
 jira DS-382 Done "done"
 # A worker ran (upload_round) with no PR, and a session shipped the ticket from the worker's own branch:
 # the merge time it left is not the ticket's own PR, so that PR is still found.
 queued DS-383 fix/DS-383-own merged_at=2026-10-31T10:29:00.500Z upload_round=u-383
+# Its PR status names a PR of the same number in another repo: not this repo's PR, so #346 here is found.
+queued DS-384 fix/DS-384-own merged_at=2026-10-31T10:31:00.500Z \
+  'pr_status={"pr":346,"state":"MERGED","url":"https://github.com/o/other/pull/346"}'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a requeued row a pre-upgrade pass spawned (no merged_pr) is resumed, its own merge read from its PR status" \
   'spawned DS-382 && [ "$(field DS-382 result.summary)" = null ] && [ "$(field DS-382 state)" != "\"done\"" ]'
 check "DS-796 a worker's earlier round is not a PR of its own: the PR merged from its branch is recorded" \
   '[ "$(got DS-383 .state)" = done ] && [ "$(got DS-383 .result.pr)" = 344 ] && ! spawned DS-383'
+check "DS-796 a PR status naming another repo's PR is not this ticket's own PR here" \
+  '[ "$(got DS-384 .state)" = done ] && [ "$(got DS-384 .result.pr)" = 346 ] && ! spawned DS-384'
 check "DS-404 AC3 a key that is only a prefix of a merged branch's spawns as today" 'unshipped DS-40'
 check "DS-404 AC3 a PR merged before the ticket was queued does not count" 'unshipped DS-372'
 check "DS-404 AC3 done in Jira with an open PR of its own spawns as today" 'unshipped DS-374'

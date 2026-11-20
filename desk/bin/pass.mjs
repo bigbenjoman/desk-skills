@@ -1133,14 +1133,19 @@ function ownMergedPr(t) {
 // enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
 // requeued for more work counts only PRs merged after that merge, and one requeued for its after-merge
 // steps (merged_tail) never counts that PR, whose merge is why it runs. Its own PR is the one it records,
-// else the one a spawn kept (merged_pr) when it cleared the result, else the merged PR its PR status
-// still names (a spawn before merged_pr was kept cleared the result but left pr_status, which a pass
-// writes only for the ticket's own PR). A merge time with no PR of the ticket's own behind it is the
+// else the one a spawn kept (merged_pr) when it cleared the result, else the PR its PR status still
+// names in this repo, whatever state that status last read (a spawn before merged_pr was kept cleared
+// the result but left pr_status, which is written only for the ticket's own PR). A merge time with no PR of the ticket's own behind it is the
 // merge of a PR built outside its worker, which is the one to find, so it excludes nothing. A read that
 // fails is null, and the ticket spawns as it would have.
 // The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
 const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
-const statusPr = (t) => (t.merged_at && t.pr_status?.state === 'MERGED' && t.pr_status.pr != null ? t.pr_status.pr : null);
+const statusPr = (t) => {
+  const s = t.merged_at ? t.pr_status : null;
+  if (s?.pr == null) return null;
+  const here = !s.url || String(s.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
+  return here ? s.pr : null;
+};
 function shippedElsewhere(t) {
   const mine = t.result?.pr ?? t.merged_pr ?? statusPr(t);
   try {
