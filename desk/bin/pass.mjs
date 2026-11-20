@@ -1133,22 +1133,26 @@ function ownMergedPr(t) {
 // enough: another ticket's PR often names this key in its title. A ticket whose own PR merged and was
 // requeued for more work counts only PRs merged after that merge, and one requeued for its after-merge
 // steps (merged_tail) never counts that PR, whose merge is why it runs. Its own PR is the one it records,
-// else the one a spawn kept (merged_pr) when it cleared the result, else the PR its PR status still
-// names in this repo once GitHub lists it merged, whatever state that status last read (a spawn before
-// merged_pr was kept cleared the result but left pr_status, which is written only for the ticket's own
-// PR, and an abandoned PR's status must not hide a later merge). A merge time with no PR of the
-// ticket's own behind it is the merge of a PR built outside its worker, which is the one to find, so
-// it excludes nothing. A read that fails is null, and the ticket spawns as it would have.
+// else the one a spawn kept (merged_pr) when it cleared the result. A spawn before merged_pr was kept
+// cleared the result but left pr_status, written only for the ticket's own PR, so a status naming a PR
+// in this repo stands in: its PR is the merge merged_at records once GitHub lists it merged by then
+// (whatever state the status last read), and a status read after merged_at is a later round of its
+// own, so merged_at is its own merge even when that round's PR never merged. A status read before
+// merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
+// behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
+// nothing. A read that fails is null, and the ticket spawns as it would have.
 // The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
 const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
+// The driver may record a merge a little after GitHub's time.
+const MERGE_GRACE_MS = 60_000;
 const statusPr = (t) => {
   const s = t.merged_at ? t.pr_status : null;
   if (s?.pr == null) return null;
   const here = !s.url || String(s.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
-  return here ? Number(s.pr) : null;
+  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at) } : null;
 };
 function shippedElsewhere(t) {
-  const listed = statusPr(t);
+  const status = statusPr(t);
   let mine = t.result?.pr ?? t.merged_pr ?? null;
   try {
     const since = Math.max(...[Date.parse(t.added_at), mine != null ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
@@ -1157,8 +1161,9 @@ function shippedElsewhere(t) {
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
     const list = Array.isArray(prs) ? prs : [];
-    if (mine == null && listed != null && list.some((p) => Number(p?.number) === listed)) mine = listed;
-    const own = mine != null ? Date.parse(t.merged_at) : NaN;
+    const at = Date.parse(t.merged_at);
+    if (mine == null && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at + MERGE_GRACE_MS)) mine = status.pr;
+    const own = mine != null || status?.later ? at : NaN;
     const re = new RegExp(keyPattern(t.key));
     const hit = list
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
@@ -1168,7 +1173,7 @@ function shippedElsewhere(t) {
     if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
   } catch { /* unread: spawn as before */ }
   // A PR status unconfirmed because the read failed still means a PR of its own: never "done with no PR".
-  if (mine != null || listed != null || t.draft_pr != null) return null;
+  if (mine != null || status != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {

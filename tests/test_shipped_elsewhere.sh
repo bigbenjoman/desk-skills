@@ -80,7 +80,7 @@ q init se
 # DS-371's timeline: queued 10:00, its worker handed off to Stage 7, and a session's PR #337 from
 # fix/DS-371-evidence-workflow merged at 11:49:54Z. DS-376: a killed worker waiting to resume, whose
 # key a merged PR's branch carries too.
-mkdir -p "$T/wt/DS-371" "$T/wt/DS-376" "$T/wt/DS-379" "$T/wt/DS-382"
+mkdir -p "$T/wt/DS-371" "$T/wt/DS-376" "$T/wt/DS-379" "$T/wt/DS-382" "$T/wt/DS-386"
 queued DS-371 fix/DS-371-own handoff=pending handoff_stage=7 "worktree=$T/wt/DS-371" draft_pr=336
 queued DS-376 fix/DS-376-own resume=pending "worktree=$T/wt/DS-376" session_id=s-376
 # A PR whose title names the key, from a branch that does not: another ticket's PR often names it.
@@ -106,6 +106,9 @@ cat > "$T/merged.json" <<'EOF'
  {"number":344,"headRefName":"fix/DS-383-own","mergedAt":"2026-10-31T10:29:00Z"},
  {"number":346,"headRefName":"fix/DS-384-own","mergedAt":"2026-10-31T10:31:00Z"},
  {"number":348,"headRefName":"claude/DS-385-session","mergedAt":"2026-10-31T10:33:00Z"},
+ {"number":349,"headRefName":"fix/DS-386-own","mergedAt":"2026-10-31T10:35:00Z"},
+ {"number":351,"headRefName":"fix/DS-387-own","mergedAt":"2026-10-31T10:37:00Z"},
+ {"number":352,"headRefName":"fix/DS-387-two","mergedAt":"2026-10-31T10:45:00Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
@@ -162,7 +165,19 @@ queued DS-384 fix/DS-384-own merged_at=2026-10-31T10:31:00.500Z \
 # records: GitHub lists no merge of #347, so #348 is found.
 queued DS-385 fix/DS-385-own merged_at=2026-10-31T10:33:00.500Z \
   'pr_status={"pr":347,"state":"CLOSED","url":"https://github.com/acme/widgets/pull/347"}'
+# A later round of its own: #349 merged (merged_at), its next round's #350 was read after that and never
+# merged, then a pre-upgrade spawn cleared the result. Its own #349 is not news, so it is resumed.
+queued DS-386 fix/DS-386-own merged_at=2026-10-31T10:35:00.500Z resume=pending "worktree=$T/wt/DS-386" session_id=s-386 \
+  'pr_status={"pr":350,"state":"OPEN","url":"https://github.com/acme/widgets/pull/350","at":"2026-10-31T10:50:00Z"}'
+jira DS-386 Done "done"
+# The same, but that later round's #352 merged after the spawn: it shipped, so it is recorded on #352.
+queued DS-387 fix/DS-387-own merged_at=2026-10-31T10:37:00.500Z \
+  'pr_status={"pr":352,"state":"OPEN","url":"https://github.com/acme/widgets/pull/352","at":"2026-10-31T10:40:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a status read after merged_at is a later round of its own: its earlier merge is not news" \
+  'spawned DS-386 && [ "$(field DS-386 result.summary)" = null ] && [ "$(field DS-386 state)" != "\"done\"" ]'
+check "DS-796 a later round's own PR that merged after merged_at is recorded as shipped" \
+  '[ "$(got DS-387 .state)" = done ] && [ "$(got DS-387 .result.pr)" = 352 ] && ! spawned DS-387'
 check "DS-796 a PR status for a PR that never merged does not hide the merge merged_at records" \
   '[ "$(got DS-385 .state)" = done ] && [ "$(got DS-385 .result.pr)" = 348 ] && ! spawned DS-385'
 check "DS-796 a requeued row a pre-upgrade pass spawned (no merged_pr) is resumed, its own merge read from its PR status" \
