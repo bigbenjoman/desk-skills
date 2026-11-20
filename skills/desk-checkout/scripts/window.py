@@ -42,7 +42,8 @@ def _since(value, target):
     try:
         return datetime.combine(target, datetime.strptime(raw, "%H:%M").time()).astimezone()
     except ValueError:
-        return datetime.fromisoformat(raw).astimezone()
+        # A trailing Z is UTC; fromisoformat reads it only from Python 3.11, so it is spelled out.
+        return datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw).astimezone()
 
 
 def resolve(day="auto", now=None, since="none"):
