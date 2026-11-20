@@ -63,6 +63,24 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('a PR a person has seen reads the reviewed row', applied(seen).length, 1);
 }
 
+// #737: with merge-feedback-first on, a red check reading an outside reviewer's review goes ahead of the
+// feedback route: a stale changes-requested decision from that reviewer's older review, after a feedback
+// try, waits for its review of the new head rather than going to the person.
+{
+  const EXT = [{ name: '🔐 Review gate', kind: 'external', login: 'agent-pullbot' }];
+  const OLD = 'b'.repeat(40);
+  const payload = { data: { repository: { pullRequest: { headRefOid: HEAD, reviewDecision: 'CHANGES_REQUESTED',
+    reviews: { nodes: [{ id: 'R1', author: { login: 'agent-pullbot' }, body: 'P0: drops the row', state: 'CHANGES_REQUESTED', commit: { oid: OLD } }] }, reviewThreads: { nodes: [] } } } } };
+  const fb = { decision: 'CHANGES_REQUESTED', head: HEAD, verdict: null, review: null, resolve: [], left: [], payload };
+  const tried = tk({ fix_tries: [{ try: 1, of: 2, head: OLD, kind: 'feedback', what: 'review feedback: changes requested' }] });
+  const as = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
+  t('#737 a stale changes-requested from the outside reviewer waits for its next review, not the person', applied(as).length, 0);
+  const at = { ...payload, data: { repository: { pullRequest: { ...payload.data.repository.pullRequest, reviews: { nodes: [{ id: 'R2', author: { login: 'agent-pullbot' }, body: 'P1: still drops it', state: 'CHANGES_REQUESTED', commit: { oid: HEAD } }] } } } } };
+  const as2 = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: { ...fb, payload: at }, reads: () => reads({ ctx: { stateChecks: EXT } }) });
+  const c = applied(as2)[0]?.call;
+  t('#737 its review of the new head goes to a feedback try marked for it, with its text', `${c?.call} ${c?.fix?.kind} ${c?.fix?.external?.login} ${c?.fix?.threads?.[0]?.text.startsWith("agent-pullbot's review at the head: P1")}`, 'requeue feedback agent-pullbot true');
+}
+
 // AC2: failed after two fix tries not spent on red checks naming a cause: stuck, and no third try.
 {
   const two = [{ try: 1, head: 'b'.repeat(40), kind: 'checks', what: 'red: Lint' }, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red: Lint' }];
