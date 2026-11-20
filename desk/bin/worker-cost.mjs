@@ -3,11 +3,15 @@
 // has no result event is unknown, never zero: a killed or still-running worker spent something
 // nobody recorded. The figures are what `claude -p` reports (total_cost_usd is notional on a
 // subscription), and input counts cache reads and writes as well as fresh input.
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
 import { cloudWall } from './cloud-worker.mjs';
+import { fileURLToPath } from 'node:url';
+import * as E from './desk-env.mjs';
 import { NO_EFFORT } from './desk-env.mjs';
+import { archivedOf } from './queue-store.mjs';
+import { readQueue } from './batch-state.mjs';
 
 export const START_UP = 'start-up';
 
@@ -298,3 +302,27 @@ export function costTable(rows) {
 
 // Every queue ticket a worker ran in this batch, local or cloud, in queue order.
 export const batchCost = (stateDir, tickets) => tickets.map((t) => ticketCost(stateDir, t)).filter(Boolean);
+
+// This batch's tickets, from queue `q`: its live ones, then those already archived (queue-store.mjs
+// archiveDone), whose logs stay in the state directory. A new batch sets the old archive aside, so the
+// archive holds only this batch's. A ticket admitted again after it was archived counts from its first
+// admission in this batch (`first_added_at`, which archiveDone keeps), so no round of it is lost.
+export const batchTickets = (q) => {
+  const live = q?.tickets ?? {}, archived = archivedOf(q);
+  const first = (t) => [t?.first_added_at, t?.added_at].filter(Boolean).sort()[0];
+  const since = (t, a) => { const at = [first(t), first(a)].filter(Boolean).sort()[0]; return at ? { ...t, added_at: at } : t; };
+  return [...Object.values(live).map((t) => since(t, Object.hasOwn(archived, t.key) ? archived[t.key] : null)),
+    ...Object.entries(archived).filter(([k]) => !Object.hasOwn(live, k)).map(([, t]) => since(t, null))];
+};
+
+// `node worker-cost.mjs`: this batch's WORKER COST table, at any time, idle or not.
+const isMain = () => { try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } };
+if (isMain()) {
+  try {
+    const rows = batchCost(E.stateDir(), batchTickets(readQueue(E.queueFile())));
+    console.log(rows.length ? costTable(rows) : 'WORKER COST: no worker has run in this batch');
+  } catch (e) {
+    console.error(`worker-cost: ${e.message}`);
+    process.exit(1);
+  }
+}
