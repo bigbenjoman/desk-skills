@@ -416,6 +416,12 @@ fields_from_args() {
       fi
       continue
     fi
+    # Jira takes labels only as an array: labels=a,b is ["a","b"], and labels= is none. A JSON array
+    # passes through as it is, below.
+    if [[ "$k" == labels ]] && ! printf '%s' "$v" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      obj=$(printf '%s' "$obj" | jq --arg v "$v" '.labels=($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))')
+      continue
+    fi
     if [[ -n "$v" ]] && printf '%s' "$v" | jq . >/dev/null 2>&1; then
       obj=$(printf '%s' "$obj" | jq --arg k "$k" --argjson v "$v" '.[$k]=$v')
       continue
@@ -1054,7 +1060,8 @@ Bodies:        a .md file (create's description, comment, edit description=@file
                Status, Priority, P0-P4 or Size line is refused: those are fields (only a first line
                "Size: <X>" passes, where config names no §4 Size field)
 Field values:  field=@file reads a file · JSON passes through · a bare value is wrapped
-               (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId)
+               (customfield_12345=P1 -> {"value":"P1"}, assignee=me -> your accountId,
+               labels=a,b -> ["a","b"], the array Jira takes)
                parent=ABC-12 files the new issue under that epic or story; on edit, an empty
                parent= takes the issue out of its epic or story (read back, so it fails if it stays)
 
