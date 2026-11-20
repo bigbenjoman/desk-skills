@@ -2687,7 +2687,7 @@ function countsLine(r, now = Date.now()) {
   for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [`${LABEL[k][0]} ${count(r, k)} ${k}`, STATE_SGR[k]]);
   const drivers = (r.batches ?? [r]).map((b) => driverUp(b, now)).filter(Boolean).flatMap(({ b, up, last }) => [BAR,
     [`▸ ${r.batches && b.batch ? `${b.batch} ` : ''}merge driver up`, STATE_SGR.merging], ...(up == null ? [] : [[` ${since(up)}`, BOLD]]),
-    [' · last: ', GREY], [last == null ? 'nothing logged yet' : last.length > DRIVER_LAST_W ? `${last.slice(0, DRIVER_LAST_W - 1)}…` : last, null]]);
+    [' · last: ', GREY], [last == null ? 'nothing logged yet' : cut(last, DRIVER_LAST_W), null]]);
   return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
