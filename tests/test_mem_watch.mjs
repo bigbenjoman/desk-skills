@@ -54,7 +54,8 @@ t('#758 an OOM kill already in the log at the start is not news', harm([hs(0, 1,
 t('#758 a new OOM kill fires, once per kill', JSON.stringify(harm([hs(0, 1, [10]), hs(1, 1, [10, 30]), hs(2, 1, [10, 30])])), JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory: drop to the ladder's lowest count"]));
 t('#758 a kill after the kernel log wrapped past old ones still fires', harm([hs(0, 1, [10, 20, 30]), hs(1, 1, [30]), hs(2, 1, [30, 40])]).length, 1);
 t('#758 a kill that pushes an old one out of the log, the count unchanged, still fires', harm([hs(0, 1, [10, 20, 30]), hs(1, 1, [20, 30, 40])]).length, 1);
-t('#758 a log with no timestamps falls back to the count', harm([hs(0, 1, [NaN]), hs(1, 1, [NaN, NaN])]).length, 1);
+t('#758 a log with no timestamps keys each kill by its line', harm([hs(0, 1, ['Killed process 1 (a)']), hs(1, 1, ['Killed process 1 (a)', 'Killed process 2 (b)'])]).length, 1);
+t('#758 and a kill there that pushes an old one out, the count unchanged, still fires', harm([hs(0, 1, ['Killed process 1 (a)', 'Killed process 2 (b)']), hs(1, 1, ['Killed process 2 (b)', 'Killed process 3 (c)'])]).length, 1);
 t('#758 an unreadable kernel log is said once', JSON.stringify(harm([hs(0, 1, null), hs(1, 1, null)])), JSON.stringify(['OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched']));
 t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, [], 5), hs(1, 1, [], 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
 t('#758 off Linux nothing is watched and nothing said', harm([{ now: 0, swapGiB: null, oom: undefined, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: undefined, tmpGiB: null }]).length, 0);
