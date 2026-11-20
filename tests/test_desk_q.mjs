@@ -2543,5 +2543,38 @@ try {
   t('#912 a batch with no triage folder has none', triagingKeys(join(tw.T, 'nowhere'), null).length, 0);
 }
 
+// ---- DS-935: a live merge driver is shown on the repo's Queue and counted on home; a stopped one is not.
+{
+  const done935 = { 'MD-1': { state: 'done', result: { pr: 7 }, pr_status: { pr: 7, state: 'OPEN', checks: [] } } };
+  const repo935 = (port) => ({ port, conc: '2 / 3', beat: 1, runBy: 'supervisor', queue: { batch: 'b', concurrency: 2, supervised: true, tickets: done935 } });
+  const W935 = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    up1: repo935(5700), up2: repo935(5710), up3: repo935(5720), stop: repo935(5730) });
+  const state935 = (name) => join(W935.env.HOME, '.desk-autopilot', `acme__${name}`);
+  const live935 = (name, log) => {
+    const lock = join(state935(name), 'merge-driver.lock.d');
+    mkdirSync(lock, { recursive: true });
+    writeFileSync(join(lock, 'pid'), `${process.pid}\n`);
+    const at = new Date(NOW - 56 * 60000);
+    utimesSync(lock, at, at);
+    if (log != null) writeFileSync(join(state935(name), 'merge-driver.log'), log);
+  };
+  live935('up1', '16:53:03Z merge driver up: repo=acme/up1\n16:53:25Z no ready batch PRs\n');
+  live935('up2', null);
+  live935('up3', `16:53:08Z ${'x'.repeat(150)}\n`);
+  writeFileSync(join(state935('stop'), 'supervisor.json'), JSON.stringify({ driver: { pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: gh is signed out' } }));
+  writeFileSync(join(state935('stop'), 'merge-driver.log'), 'FAIL: gh is signed out\nmerge driver exited 1\n');
+  W935.loaded('up1', 'up2', 'up3', 'stop');
+  const counts935 = (name) => lines(W935.run('--plain', name).out)[1];
+  t('DS-935 AC1 a live merge driver with no worker: the Queue counts line names it, its age and the last line it logged',
+    counts935('up1').endsWith('│ ✓ 0 done, not shown │ ▸ merge driver up 56m · last: 16:53:25Z no ready batch PRs'), true);
+  t('DS-935 AC1 a driver that has logged nothing yet says so, and a long last line is cut to 100 characters',
+    `${counts935('up2').endsWith('▸ merge driver up 56m · last: nothing logged yet')} ${counts935('up3').endsWith(`last: 16:53:08Z ${'x'.repeat(89)}…`)}`, 'true true');
+  t('DS-935 AC2 home\'s second line counts the live merge drivers beside the workers running',
+    /^● 0 workers running · ▸ 3 merge drivers running │ machine cap 10 /.test(lines(W935.run('--plain').out)[1]), true);
+  // The stopped-driver note is one of the overview's health notes; the Queue shows no running segment.
+  t('DS-935 AC3 a stopped merge driver: the stopped note shows and no running segment does',
+    `${/▲ stop +the merge driver stopped at \d\d:\d\d: gh is signed out/.test(W935.run('--plain').out)} ${W935.run('--plain', 'stop').out.includes('merge driver up')}`, 'true false');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);
