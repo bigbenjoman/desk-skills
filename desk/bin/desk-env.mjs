@@ -18,7 +18,8 @@
 //
 // CLI (used by desk-env.sh, so there is one markdown parser, not two):
 //   node desk-env.mjs where                   print SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS= for the cwd's repo
-//   node desk-env.mjs show [<section>...]     print the config's headings and table rows, none of its prose
+//   node desk-env.mjs show [<section>...]     print the config's rules for the agent, then its headings and
+//                                             table rows, no other prose
 //                                             (configRows): the named sections (e.g. 3 5), else every one but
 //                                             §3c, the rule ledger only /desk-setup reads; exit 3 with no config
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
