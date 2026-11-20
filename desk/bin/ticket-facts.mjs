@@ -14,9 +14,10 @@
 // stderr with exit 1; pass.mjs runs this for every unfinished ticket whose record has no `epic` key.
 //
 // Adds, for a tracker key:
-//   blockers     [{key, category, summary, type, resolution?, assignee?, labels?}] — "is blocked by" (Blocks)
+//   blockers     [{key, category, summary, type, resolution?, resolved?, assignee?, labels?}] — "is blocked by" (Blocks)
 //                links, with the blocker's status category, summary and issue type, a Done one's
-//                resolution (name, null when none is set, absent when it could not be read), an open one's assignee (display name,
+//                resolution (name, null when none is set, absent when it could not be read) and resolution
+//                date (`resolved`, ISO, null when none is set, absent when it could not be read), an open one's assignee (display name,
 //                null when unassigned, absent when it could not be read), and its labels where §4
 //                Person-step labels or Person-input labels names any, less any to its own epic (its parent epic or the
 //                batch's), which can never be Done before it
@@ -52,15 +53,16 @@ const jira = (args) => JSON.parse(execFileSync('desk-jira', [...args, '--json'],
 // unassigned, so needs-you can tell whose it is to queue; and, where §4 Person-step labels or
 // Person-input labels names any, its labels, so personStep can tell a blocker labelled as the person's
 // step. One that cannot be read gets neither: no `assignee` key, and it holds as an ordinary blocker.
-// A Done blocker is read once for its resolution (name, or null when none is set), which the link
-// does not carry, so a pass can tell one closed without landing (closedUnlanded); the record's last
-// read is kept while it stays Done, and one that cannot be read has no `resolution` key.
+// A Done blocker is read once for its resolution (name, or null when none is set) and when it was
+// resolved (`resolved`, Jira's resolution date, or null), which the link does not carry, so a pass can
+// tell one closed without landing (closedUnlanded) and how long one has been Done; the record's last
+// read is kept while it stays Done, and one that cannot be read has neither key.
 // `fieldsOf(key)` reads a blocker's fields, or undefined when it cannot be read.
 const getFields = (key) => { try { return jira(['get', key]).fields; } catch { return undefined; } };
 // The record's blockers as last read, by key.
 const lastRead = (rec) => new Map((Array.isArray(rec.blockers) ? rec.blockers : []).map((b) => [b?.key, b]));
-// A blocker last read Done with its resolution, which is kept rather than read again.
-const resolutionKept = (p) => p?.category === 'done' && 'resolution' in p;
+// A blocker last read Done with its resolution and its date, which are kept rather than read again.
+const resolutionKept = (p) => p?.category === 'done' && 'resolution' in p && 'resolved' in p;
 // The blockers in `issue`'s links that setBlockers reads fields for, given its record `rec`.
 const blockersToRead = (rec, issue) => {
   const was = lastRead(rec);
@@ -72,9 +74,9 @@ function setBlockers(rec, issue, fieldsOf = getFields) {
   const was = lastRead(rec);
   for (const b of blockers.filter((x) => x.category === 'done')) {
     const p = was.get(b.key);
-    if (resolutionKept(p)) { b.resolution = p.resolution; continue; }
+    if (resolutionKept(p)) { b.resolution = p.resolution; b.resolved = p.resolved; continue; }
     const f = fieldsOf(b.key); // unread: its resolution unknown, an ordinary Done blocker
-    if (f && typeof f === 'object') b.resolution = f.resolution?.name ?? null;
+    if (f && typeof f === 'object') { b.resolution = f.resolution?.name ?? null; b.resolved = f.resolutiondate ?? null; }
   }
   for (const b of blockers.filter((x) => x.category !== 'done')) {
     const f = fieldsOf(b.key);
@@ -126,7 +128,7 @@ if (process.argv[2] === '--blockers') {
   if (!links.ok) notRead(links.why);
   const issues = links.issues;
   const wanted = [...new Set([...recs].flatMap(([key, { rec }]) => (issues.has(key) ? blockersToRead(rec, issues.get(key)) : [])))];
-  const details = wanted.length ? searchIssues(wanted, ['resolution']) : { ok: true, issues: new Map() };
+  const details = wanted.length ? searchIssues(wanted, ['resolution', 'resolutiondate']) : { ok: true, issues: new Map() };
   if (!details.ok) notRead(`their blockers' search failed: ${details.why}`);
   for (const [key, { path, rec }] of recs) {
     const issue = issues.get(key);
