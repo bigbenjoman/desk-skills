@@ -8,8 +8,8 @@
 // `utilization` (0–1) and `resetsAt` (epoch seconds). The window resets at `resetsAt`, read rather
 // than assumed. A session writes one at its start and seldom another, so a reading is about as old
 // as the newest worker start; the probe call (usage-probe.mjs) fills the gaps.
-import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { readdirSync, readFileSync, statSync, existsSync, openSync, readSync, closeSync, writeFileSync, renameSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import * as E from './desk-env.mjs';
 import { resetText } from './usage-limit.mjs';
 import { readLogFile } from './harvest.mjs';
@@ -115,20 +115,50 @@ export function newestReading({ dirs = stateDirs(), files = [], login = null, no
       }
     }
   }
+  saveDiskCache(now);
   const none = newest ? WINDOWS.filter((k) => !newest.named.includes(k)) : [];
   for (const k of none) { best[k] = null; delete from[k]; }
   const at = Object.values(from);
   return { ...best, at: at.length ? Math.max(...at) : null, none };
 }
 
-// A log's events, kept while its size and modified time hold: an open desk-q rereads every two seconds.
+// A log's events, kept while its size, modified time and inode hold: an open desk-q rereads every two
+// seconds, and every pass is a new process that reads every repo's recent logs, gzipped rounds whole.
+// So they are kept on disk too (eventsCachePath), and a pass parses only a log that changed since one
+// did (DS-794: re-reading the gzipped rounds was most of a pass's own CPU).
 const parsed = new Map();
+export const eventsCachePath = (dir = usageDir()) => join(dir, 'log-events.json');
+let disk = null, diskPath = null, diskDirty = false;
+function diskCache() {
+  const p = eventsCachePath();
+  if (diskPath !== p) {
+    diskPath = p; diskDirty = false; disk = {};
+    try { const j = JSON.parse(readFileSync(p, 'utf8')); if (j && typeof j === 'object' && !Array.isArray(j)) disk = j; } catch { /* none yet, or unreadable: start empty */ }
+  }
+  return disk;
+}
+const sameFile = (had, st) => had && had.size === st.size && had.mtimeMs === st.mtimeMs && had.ino === st.ino && Array.isArray(had.events);
 function eventsOf(path, st) {
   const had = parsed.get(path);
-  if (had && had.size === st.size && had.mtimeMs === st.mtimeMs) return had.events;
-  const events = windowEvents(tail(path, st.size));
-  parsed.set(path, { size: st.size, mtimeMs: st.mtimeMs, events });
+  if (sameFile(had, st)) return had.events;
+  const kept = diskCache()[path];
+  const events = sameFile(kept, st) ? kept.events : windowEvents(tail(path, st.size));
+  const rec = { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, events };
+  parsed.set(path, rec);
+  if (!sameFile(kept, st)) { disk[path] = rec; diskDirty = true; }
   return events;
+}
+// Writes what this read parsed, dropping logs not written to in a week (no read looks that far back)
+// and logs gone. Atomic, so two readers at once each leave a whole file; one's entries may be lost,
+// which only costs a parse. A cache that cannot be written is left as it was, and none is written where
+// the usage directory does not exist: under ~/.desk-autopilot it would read as a repo's (stateDirs).
+function saveDiskCache(now) {
+  if (!diskDirty) return;
+  diskDirty = false;
+  const keep = Object.fromEntries(Object.entries(disk).filter(([p, r]) => now - r?.mtimeMs <= WEEK_MS && existsSync(p)));
+  const tmp = `${diskPath}.${process.pid}.tmp`;
+  if (!existsSync(dirname(diskPath))) return;
+  try { writeFileSync(tmp, JSON.stringify(keep)); renameSync(tmp, diskPath); } catch { /* read again next time */ }
 }
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a

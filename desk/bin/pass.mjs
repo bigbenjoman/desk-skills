@@ -24,6 +24,7 @@ import { parseDecision, decisionEntry, appendDecisions, workerCalls, appendNotes
 import { readRegister, lookup, parseInputs, refreshInputs, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
+import { prReads } from './pr-reads.mjs';
 import { checkinTimes, checkinRow, checkin, readDecisions, repos as digestRepos, digestDir } from './digest.mjs';
 import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
@@ -226,15 +227,21 @@ try {
   writeBeat(STATE, QUEUE_FILE, { batch: JSON.parse(readFileSync(QUEUE_FILE, 'utf8')).batch ?? null, next: NEXT });
 } catch { /* advisory */ }
 
+// A PR read made twice in one pass through sh or shOut is answered from the first (pr-reads.mjs, DS-794).
+const PR_READS = prReads();
 // A git call that reaches a remote is bounded (remote-git.mjs), so a hung remote costs a pass one limit.
 const sh = (cmd, args, opts = {}) => {
-  try { return execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); }
+  const kept = PR_READS.before(cmd, args);
+  if (kept !== undefined) return kept;
+  try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
 const shOut = (cmd, args, opts = {}) => {
-  try { return { ok: true, out: execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim() }; }
+  const kept = PR_READS.before(cmd, args);
+  if (kept !== undefined) return { ok: true, out: kept };
+  try { const out = execGit(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts }).trim(); PR_READS.after(cmd, args, out); return { ok: true, out }; }
   catch (e) { return { ok: false, code: e.status ?? null, out: `${e.stdout ?? ''}${e.stderr ?? ''}`.trim() || e.message, ...(e.unreached ? { unreached: true } : {}) }; }
 };
 function refusedLine(args, refused, why) {
@@ -1792,14 +1799,51 @@ const budgetFiles = (key) => {
   }
   return scopeOf.get(key);
 };
-// A file's length on the batch base, read once a pass; one the base does not have is 0 lines.
+// A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
+// tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
+// passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted (DS-794).
 const lineCounts = new Map();
+const GIT_BIG = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 };
+const trees = new Map();
+// ref -> Map(path -> blob id), or null when the ref cannot be listed.
+const treeOf = (ref) => {
+  if (!trees.has(ref)) {
+    let t = null;
+    try {
+      t = new Map();
+      for (const e of execFileSync('git', ['-C', MAIN, 'ls-tree', '-r', '-z', ref], GIT_BIG).split('\0')) {
+        const m = /^\d+ blob ([0-9a-f]+)\t(.*)$/s.exec(e);
+        if (m) t.set(m[2], m[1]);
+      }
+    } catch { t = null; }
+    trees.set(ref, t);
+  }
+  return trees.get(ref);
+};
+const LINE_COUNTS_FILE = join(STATE, 'line-counts.json');
+let blobLines = null;
+const linesOfBlob = (sha) => {
+  if (!blobLines) { try { blobLines = JSON.parse(readFileSync(LINE_COUNTS_FILE, 'utf8')); } catch { /* none yet */ } if (!blobLines || typeof blobLines !== 'object') blobLines = {}; }
+  if (Number.isInteger(blobLines[sha])) return blobLines[sha];
+  const n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', sha], GIT_BIG).split('\n').length - 1;
+  blobLines[sha] = n;
+  if (!DRY) {
+    // Only blobs still on a listed ref are kept, so the file holds about one entry per counted file.
+    const live = new Set([...trees.values()].flatMap((t) => (t ? [...t.values()] : [])));
+    const keep = Object.fromEntries(Object.entries(blobLines).filter(([s]) => live.has(s)));
+    const tmp = `${LINE_COUNTS_FILE}.${process.pid}.tmp`;
+    try { writeFileSync(tmp, JSON.stringify(keep)); renameSync(tmp, LINE_COUNTS_FILE); } catch { /* counted again next pass */ }
+  }
+  return n;
+};
 const linesOnBase = (f) => {
   if (!lineCounts.has(f)) {
     const base = E.batchBase() ?? DEFAULT_BRANCH;
     let n = 0;
     for (const ref of [`origin/${base}`, base]) {
-      try { n = execFileSync('git', ['-C', MAIN, 'cat-file', 'blob', `${ref}:${f}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 256 * 1024 * 1024 }).split('\n').length - 1; break; } catch { /* not on that ref */ }
+      const sha = treeOf(ref)?.get(f);
+      if (!sha) continue;
+      try { n = linesOfBlob(sha); break; } catch { /* unreadable on that ref */ }
     }
     lineCounts.set(f, n);
   }
@@ -2072,7 +2116,8 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       'usage-hold': (a) => { USAGE_HOLD = a.hold; },
       'usage-stop': () => { usageStop = true; },
       'origin-sha': (a) => sh('git', ['-C', MAIN, 'rev-parse', '--verify', '-q', `origin/${a.branch}`], { tolerant: true }) || null,
-      sync: (a) => syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() }),
+      // A base push moves its PRs' merge state, and syncBase pushes without sh or shOut.
+      sync: (a) => (PR_READS.clear(), syncBase({ path: a.path, base: BASE, branch: SOURCE, push: mayPushBase, dry: DRY, check: mergedTreeCheck() })),
       'drop-ref': (a) => { sh('git', ['-C', MAIN, 'update-ref', '-d', a.ref], quiet); },
       'note-conflict': (a) => noteConflict(a.what, a.entry),
       fetch: () => { fetchBase({ tolerant: true }); },
