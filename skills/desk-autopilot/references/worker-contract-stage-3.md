@@ -98,9 +98,9 @@ Your settings are an **allow-list**: anything not named here is refused.
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
   (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
   `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your
-  worktree. A lint or format tool (eslint, prettier, biome, oxlint, stylelint, tsx, `prisma generate`)
-  runs as `./node_modules/.bin/<tool>`, never with `..`; suites, typechecks and migrations run only
-  as their §4 rows.
+  worktree. prettier, tsx and `prisma generate` run as `./node_modules/.bin/<tool>`; eslint,
+  biome, oxlint, stylelint so under `with-lock.sh tsc`; never `..`. Suites, typechecks and
+  migrations run only as their §4 rows.
 - **A force-push the person approved once**: where your prompt names one, exactly
   `git push --force-with-lease=<branch>:<sha> origin <branch>` as written there, and no other form.
   It works only while origin's branch is still at that SHA. `git rebase origin/<default>` is allowed

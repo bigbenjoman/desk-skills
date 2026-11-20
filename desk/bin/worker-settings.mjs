@@ -361,8 +361,11 @@ if (mode === 'triage') {
   // An installed package binary, run from the worktree by relative or absolute path: named tools that
   // take no lock and write no database, never a wildcard, which would let a suite, a typecheck or a
   // migration skip with-lock.sh or the per-ticket database by any spelling of its path. A `..` is denied.
-  const NODE_BIN = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`].flatMap(withPrefix);
-  const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  const NODE_BIN_DIRS = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`];
+  const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
+  const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
+  const NODE_BIN_LINT = ['eslint', 'biome', 'oxlint', 'stylelint'];
 
   // ---- files ---------------------------------------------------------------------------------
   // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
@@ -472,6 +475,8 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
+  allow.push(...NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', '.', `${d}${t}`).map((c) => rule(c, '')))));
+  deny.push(...BIN_FORMS.map((b) => `Bash(${b}/with-lock.sh tsc *node_modules/.bin/*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments

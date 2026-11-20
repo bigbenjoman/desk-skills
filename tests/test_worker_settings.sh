@@ -263,7 +263,9 @@ check "AC10 the Jira token beside it is not"               '[ "$(readable "$CRED
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
 check "DS-340 AC2 the installed desk templates can be listed and read" \
   '[ "$(readable "$DESK_HOME/templates/.githooks/pre-push")" = allow ] && [ "$(readable "$DESK_HOME/templates/scripts/desk/pre-push.sh")" = allow ] && ok "ls $DESK_HOME/templates/scripts/desk"'
-check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "DS-855 a lint binary runs only under the tsc lock"   'ok "$L tsc ./node_modules/.bin/eslint src" "$L tsc --cwd . -- node_modules/.bin/biome check" "$L tsc -- $W/node_modules/.bin/stylelint a.css" \
+      && no "./node_modules/.bin/eslint src" "node_modules/.bin/oxlint" "$W/node_modules/.bin/stylelint a.css" "$L nolock ./node_modules/.bin/eslint src" "$L tsc ./node_modules/.bin/eslint ../x"'
 check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
       "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'
 check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" \
