@@ -856,6 +856,37 @@ check "DS-796 a ticket recorded on a PR whose criteria another ticket already to
   '[ "$(field PM-18 follow_on)" = null ] && [ "$(field PM-18 post_merge_read)" = 716 ] && [ "$(field PM-18 post_merge_by)" = "\"PM-19\"" ] && [ "$(unmade PM-18)" = false ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 nor on a later pass" '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
+# PR 717 is also recorded on PM-20, archived and never given its criteria (a requeued ticket re-shipped
+# on it): an archived ticket is never written, so the live PM-21 takes them, whatever the keys.
+# PR 718's lower key PM-22 keeps a merged status naming no criteria (needs-you's done), so the pass skips
+# it, and PM-23, which reads the PR, writes PM-22's share before stamping itself.
+node --input-type=module -e "
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+for (const n of [717, 718]) writeFileSync('$T/pm-' + n + '.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/' + n));
+const f = '${DESK_QUEUE%.json}.archive.json';
+const a = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : { tickets: {} };
+a.tickets['PM-20'] = { key: 'PM-20', type: 'Task', lane: 'A', state: 'done', park: null, result: { pr: 717 }, merged_at: '2026-11-10T09:00:00Z',
+  pr_status: { pr: 717, state: 'MERGED', merged_at: '2026-11-10T09:00:00Z', checks: [] }, archived_at: '2026-11-10T10:00:00Z' };
+writeFileSync(f, JSON.stringify(a));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 717 "*) cat "$T/pm-717.json" ;;
+  "pr view 718 "*) cat "$T/pm-718.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q add PM-21; q set PM-21 state=done result.pr=717 merged_at=2026-11-10T09:00:00Z
+q add PM-22; q set PM-22 state=done result.pr=718 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":718,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","merge_commit":"c","checks":[]}'
+q add PM-23; q set PM-23 state=done result.pr=718 shipped_pr=718 merged_at=2026-11-10T09:00:00Z
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 an archived ticket on the PR that never took its criteria is not their owner: the live ticket takes them" \
+  '[ "$(field PM-21 follow_on.length)" = 2 ] && [ "$(field PM-21 post_merge_by)" = null ] && [ "$(field PM-21 post_merge_read)" = 717 ] && [ "$(field PM-20 follow_on)" = null ]'
+check "DS-796 an owner the pass does not read for itself is given its criteria by the ticket that reads the PR, before that one names it" \
+  '[ "$(field PM-22 follow_on.length)" = 2 ] && [ "$(field PM-22 post_merge_read)" = 718 ] && [ "$(field PM-23 follow_on)" = null ] && [ "$(field PM-23 post_merge_by)" = "\"PM-22\"" ] && [ "$(grep -c "merge recorded: PM-22 (PR #718): 2 criteria" <<<"$out")" = 1 ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.

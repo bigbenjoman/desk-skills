@@ -116,6 +116,23 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('a state change alone takes back the conditional set', read(f).tickets.A.park.inputs['pr-head'], 'h2');
 }
 
+// DS-796: a condition sees the queue too, so a set that depends on another ticket's set is taken back
+// with it: an owner dropped before its write lands leaves the other ticket unstamped.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { O: tk('O', { state: 'done' }), S: tk('S', { state: 'done' }) } });
+  const w = queueWriter(f);
+  const live = (x) => x.state === 'done';
+  const ownerTook = (x, cur) => live(x) && cur?.tickets?.O?.post_merge_read === 7;
+  w.apply(['set', 'O', 'post_merge_read=7'], { when: live });
+  t('a condition on another ticket holds once that ticket\'s set is applied', w.apply(['set', 'S', 'post_merge_read=7', 'post_merge_by=O'], { when: ownerTook }).skipped, undefined);
+  other(f, (q) => { delete q.tickets.O; });
+  const r = w.flush();
+  const q = read(f);
+  t('the owner dropped before the write takes its set back, and the set that named it with it', `${'O' in q.tickets} ${q.tickets.S.post_merge_read ?? null} ${q.tickets.S.post_merge_by ?? null} ${r.skipped.join(',')}`, 'false null null S');
+  const w2 = queueWriter(f);
+  t('nor is it applied while the ticket it names is gone', w2.apply(['set', 'S', 'post_merge_read=7'], { when: ownerTook }).skipped, true);
+}
+
 // AC5: the lock not taken within its wait: nothing written, every change named.
 {
   const f = fixture({ version: 3, batch: 'b', tickets: { A: tk('A'), B: tk('B') } });

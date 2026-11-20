@@ -3487,6 +3487,30 @@ const drafts = [];
 const undrafted = [];
 const reopens = [];
 const prReads = {};
+// The tickets whose post-merge read was written this pass, as owner or not: the loop reaches an owner
+// another ticket on its PR already wrote for with its snapshot from before that write.
+const postMergeWritten = new Set();
+// Ticket o took PR n's post-merge criteria: read for it, and named no other ticket as their owner.
+const tookPostMerge = (o, n) => !!o && String(o.post_merge_read ?? '') === String(n) && !o.post_merge_by;
+// Ticket o, as read this pass, takes merged PR n's post-merge criteria (s.post_merge) as follow-on
+// steps, or with `by` ({ key, holds(queue) }) is stamped read naming by.key, only while by.holds.
+function readPostMerge(o, n, s, by = null) {
+  const have = o.follow_on_done ? [] : o.follow_on ?? [];
+  const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
+  const later = declared || by ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
+  const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(o.follow_on_done ? ['follow_on_done=null'] : [])] : [];
+  // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+  const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
+  const ok = [stateOf(o), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(o)];
+  const named = by ? [`post_merge_by=${by.key}`] : o.post_merge_by ? ['post_merge_by=null'] : [];
+  const args = ['set', o.key, ...steps, `post_merge_read=${n}`, ...named];
+  const w = QW.apply(args, { when: (x, cur) => ok.includes(stateOf(x)) && (!by || by.holds(cur)) });
+  if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+  if (w.ok && !w.skipped) postMergeWritten.add(o.key);
+  if (w.ok && !w.skipped && later.length) {
+    merges.push(`${o.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
+  }
+}
 for (const t of Object.values(qNow.tickets)) {
   // A fix try is over once its worker has finished: later spawns are no longer that try's.
   if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) {
@@ -3542,28 +3566,24 @@ for (const t of Object.values(qNow.tickets)) {
   // declared for after the merge win over the criteria: the two word one check differently, so both would
   // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
   // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's. A PR recorded
-  // on two done tickets gives its criteria to one, live or archived: the one that already took them,
-  // else the lowest key. Each other is stamped read with no steps and names that one (post_merge_by),
-  // so the person is not asked for the same check twice. Not by which wrote first this pass, so a
-  // skipped write leaves the criteria owed to that one ticket alone.
-  if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
-    const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
+  // on two done tickets gives its criteria to one: the one, live or archived, that already took them,
+  // else the lowest key among the live ones, as an archived ticket is never written. Whichever of them
+  // the pass reaches first writes the owner's share too, so an owner whose kept status names no criteria
+  // (needs-you's done) still gets them. Each other is stamped read with no steps and names the owner
+  // (post_merge_by), so the person is not asked for the same check twice, and only while, under the lock,
+  // the owner has taken them: an owner dropped or changed before its write lands leaves the criteria
+  // owed to every ticket on the PR, not stamped away.
+  if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n) && !postMergeWritten.has(t.key)) {
     const onPr = [...Object.values(qNow.tickets), ...Object.values(archivedOf(qNow))]
       .filter((o) => o?.key && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n));
-    const took = onPr.find((o) => o.key !== t.key && String(o.post_merge_read ?? '') === String(n) && !o.post_merge_by);
-    const owner = String(took?.key ?? onPr.map((o) => String(o.key)).sort()[0] ?? t.key);
-    const later = declared || owner !== t.key ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
-    const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
-    // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
-    const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
-    const ok = [stateOf(t), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(t)];
-    const by = owner !== t.key ? [`post_merge_by=${owner}`] : t.post_merge_by ? ['post_merge_by=null'] : [];
-    const args = ['set', t.key, ...steps, `post_merge_read=${n}`, ...by];
-    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
-    if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
-    if (w.ok && !w.skipped && later.length) {
-      merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
+    const took = onPr.find((o) => o.key !== t.key && tookPostMerge(o, n));
+    const owner = took ?? qNow.tickets[onPr.map((o) => String(o.key)).filter((k) => Object.hasOwn(qNow.tickets, k)).sort()[0]] ?? t;
+    if (owner.key === t.key) readPostMerge(t, n, s);
+    else {
+      if (!took && !postMergeWritten.has(owner.key)) readPostMerge(owner, n, s);
+      // An archived owner that took them stays so; a live one must still have them under the lock.
+      const archived = !!took && !Object.hasOwn(qNow.tickets, took.key);
+      readPostMerge(t, n, s, { key: owner.key, holds: (cur) => (Object.hasOwn(cur?.tickets ?? {}, owner.key) ? tookPostMerge(cur.tickets[owner.key], n) : archived) });
     }
   }
 }
