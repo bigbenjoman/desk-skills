@@ -1883,6 +1883,22 @@ t('DS-403 AC2 approve records approved.base_push on the batch queue', `${bpOk.ok
 t('DS-403 AC3 with the approval recorded there is no item, and desk-q counts none', `${rho2().length} ${rho2Count()}`, '0 0');
 put('rho2', { port: 3830, beat: 1, supervised: true, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-403 AC4 with no ask recorded there is no item', `${rho2().length} ${N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' }).ok}`, '0 false');
+// ---- DS-808: a base sync that merged but could not push, while the base lags too far for anything to
+// spawn, is one item for the batch, listed first, naming the base, how many tickets it freezes and the command.
+const CMD808 = 'git -C /wt/base-feat-x fetch -q origin && git -C /wt/base-feat-x merge --no-edit origin/main && git -C /wt/base-feat-x push origin HEAD:refs/heads/feat/x || git -C /wt/base-feat-x reset -q --hard origin/feat/x';
+const stuck808 = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: 61, frozen: 3, why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)', path: '/wt/base-feat-x', cmd: CMD808 };
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck808 },
+  tickets: { 'R-1': { state: 'triaged', lane: 'A' }, 'R-2': { state: 'parked', lane: 'A', park: { question: 'which plan?', since: minsAgo(90) } } } });
+const bs = N.collect({ word: 'rho808' }).items;
+t('DS-808 AC4 the base-sync item is first, ahead of an older park', bs.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-sync base-sync,R-2 parked');
+t('DS-808 AC4 it names the base, the tickets frozen and the one command that fixes it', bs[0]?.need,
+  `the base sync of feat/x could not push, so 3 tickets ready to spawn are frozen until feat/x takes main: the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined). Run it by hand to see the hook's full output and push it: ${CMD808}`);
+t('DS-808 AC4 its age is the freeze\'s', Math.round((NOW - bs[0]?.since) / 60000), 20);
+t('DS-808 AC4 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name === 'rho808')).shown, 2);
+t('DS-808 done records nothing, and says the next pass reads the base again', N.record({ word: 'rho808', ticket: 'base-sync', action: 'done' }).line.includes('the next pass reads the base again'), true);
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-808 with no stuck sync recorded there is no item', N.collect({ word: 'rho808' }).items.length, 0);
+
 // ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
 // no item of its own under ask: the base-push item says syncing the base starts its CI.
 const behind416 = { [LINT]: 'has not reported because feat/x is behind main, whose copy of its workflow runs it on PRs into feat/x: syncing feat/x with main and reopening the PR starts it' };
