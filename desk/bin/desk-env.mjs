@@ -2257,7 +2257,8 @@ if (isMain) {
             const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy }, cfg);
             state = r.state;
             if (r.line) console.log(r.line);
-            const h = harmStep(harm, { now: Date.now(), ...harmSample() }, { windowMs: Math.max(cfg.windowMs, 600_000) });
+            // --window is the avail watch's; the harm signals keep their own ten-minute window.
+            const h = harmStep(harm, { now: Date.now(), ...harmSample() });
             harm = h.state;
             for (const l of h.lines) console.log(l);
             await new Promise((res) => setTimeout(res, intervalMs));
