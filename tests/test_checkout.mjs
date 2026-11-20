@@ -261,6 +261,7 @@ has('#818 a private channel is found too', skill, '`channel_types` `public_chann
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
+has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });
