@@ -9,7 +9,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
 
 let fails = 0;
@@ -253,11 +253,19 @@ const snapped = checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, 
 t('check: a snapshotted link is advisory, naming the snapshot', `${snapped.map((f) => f.severity).join(' ')} ${snapped[0]?.message.includes(`snapshotted at ${join(st, 'designs/DS-70')}`)}`, 'advisory true');
 t('check: a feature batch reads the repo state\'s snapshot', checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: join(st, 'batches/DS-50') })[0].severity, 'advisory');
 t('check: another artifact is still blocking', checkTicket(issue('h2. Design\nhttps://claude.ai/design/p/other'), { root: r5, dir: DIR, state: st })[0].severity, 'blocking');
-// DS-860: a Design section that links its epic's canvas but says no board for the ticket exists.
+const sev = (design) => checkTicket(issue(`h2. Design\n${design}\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' }).map((f) => f.severity).join(' ');
 const noBoard = checkTicket(issue(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' });
 t('DS-860 AC1: a link the ticket uses no board from is advisory, saving nothing', `${noBoard.map((f) => f.severity).join(' ')} ${noBoard[0]?.message.includes('uses no board from it, so nothing needs saving')}`, 'advisory true');
-const named = checkTicket(issue(`h2. Design\nBoard "Order summary" on ${URL1}. No board for the empty state.\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' });
-t('DS-860 AC2: a link naming a board for the ticket still blocks', named.map((f) => f.severity).join(' '), 'blocking');
+t('DS-860 AC1: "this ticket uses no board" is advisory', sev(`${URL1}\nThis ticket uses no board from it.`), 'advisory');
+t('DS-860 AC1: the ticket key in place of "this ticket" is advisory', sev(`${URL1}\nThere is no board specific to DS-70.`), 'advisory');
+t('DS-860 AC1: another ticket\'s key is not this one', sev(`${URL1}\nThere is no board specific to DS-701.`), 'blocking');
+t('DS-860 AC2: a link naming a board for the ticket still blocks', sev(`Board "Order summary" on ${URL1}. No board for the empty state.`), 'blocking');
+t('DS-860 AC2: "no board for the empty state yet" beside a named board blocks', sev(`Board "Order summary" on ${URL1}. No board for the empty state yet.`), 'blocking');
+t('DS-860 AC2: "the empty state has no board" beside a named board blocks', sev(`Board "Order summary" on ${URL1}. The empty state has no board.`), 'blocking');
+t('DS-860 AC2: "no board for the error state in this ticket" blocks', sev(`Board "Order summary" on ${URL1}. No board for the error state in this ticket.`), 'blocking');
+t('DS-860 AC2: a no-board note on one link leaves another blocking', sev(`* Epic canvas: ${URL1}. No board for this ticket.\n* Board "Order summary": https://claude.ai/design/p/other`), 'advisory blocking');
+const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
+t('DS-860: triage\'s design fact leaves out a canvas the ticket uses no board from', fact.canvases.length, 0);
 
 // ---- check reads the base on origin, not a checkout's working tree ----
 // A main checkout behind origin/main: the canvas is merged on origin only, and another sits in the

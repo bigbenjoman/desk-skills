@@ -1014,15 +1014,27 @@ export function propose(src, { root, dir, ref, worktrees }) {
   return { state: 'committed', branch, worktree: wt, path: r.path, ref, pushed, sha: git(wt, 'rev-parse', 'HEAD'), remote: r.remote };
 }
 
+// Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
+// this ticket", "no board specific to <key>", "this ticket uses no board". The phrase names the ticket,
+// so "no board for the empty state" beside a named board is not one. With several links it must sit
+// on <url>'s own line, so a note about one artifact never clears another.
+export function usesNoBoard(section, url, key) {
+  const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
+  const re = new RegExp(`\\bno\\s+boards?\\s+(?:(?:exists?|yet)\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-])|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
+  const text = String(section ?? '');
+  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter((l) => l.includes(url)).join('\n') : text);
+}
+
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
 // readable when it is saved under <dir> on <ref> (the batch's base) or snapshotted under <state>;
-// with no <dir> (the repo saves none) only a snapshot is.
-export function designFact(text, { root, dir, ref, state }) {
+// with no <dir> (the repo saves none) only a snapshot is. An artifact ticket <key> uses no board from
+// (usesNoBoard) is left out: nothing in it needs reading.
+export function designFact(text, { root, dir, ref, state, key }) {
   const section = designSection(String(text ?? '').replace(/\\([-_*+^~?#{}[\]|!])/g, '$1'));
   const saved = dir ? savedAt(root, dir, ref) : [];
   return {
     ref,
-    canvases: claudeDesignLinks(section).map((url) => ({
+    canvases: claudeDesignLinks(section).filter((url) => !usesNoBoard(section, url, key)).map((url) => ({
       url,
       saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
       snapshot: snapshotOf(state, url),
@@ -1038,9 +1050,7 @@ export function designFact(text, { root, dir, ref, state }) {
 // worker saves it from there. A deck is saved and checked as a canvas is; a snapshot that is
 // neither (a single page) says so, and is advisory too. With neither a saved copy nor a snapshot
 // the link's kind is unknown, so it blocks, unless the section says the ticket uses no board from it
-// ("no board for this ticket exists yet", "uses no board", "no board yet"): then nothing needs
-// saving, and it is advisory. "No board for the empty state" beside a named board still blocks.
-const NO_BOARD = /\bno\s+boards?\b[^.\n]*\b(?:(?:this|the)\s+ticket|yet)\b|\b(?:uses|has|needs)\s+no\s+boards?\b/i;
+// (usesNoBoard): then nothing needs saving, and it is advisory.
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;
   // A Jira description is wiki markup, where desk-jira's markdown conversion escapes `-` and `_` in
@@ -1060,7 +1070,7 @@ export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
       const message = `design: ${key}'s Design section links the Claude Design artifact ${url}, but no copy is saved under ${dir}/ on ${ref}: save it to ${join(dir, epic ?? key)}/ (desk-design save)`;
       const snap = state ? snapshotOf(state, url) : null;
       const page = snap && kindAt(snap) === 'page';
-      findings.push(!snap && NO_BOARD.test(section) ? { severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says the ticket uses no board from it, so nothing needs saving` }
+      findings.push(!snap && usesNoBoard(section, url, key) ? { severity: 'advisory', message: `design: ${key}'s Design section links the Claude Design artifact ${url} but says the ticket uses no board from it, so nothing needs saving` }
         : !snap ? { severity: 'blocking', message }
         : page ? { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, a single page rather than a canvas or deck, so it does not block: the worker may save it from there` }
           : { severity: 'advisory', message: `${message}; it is snapshotted at ${snap}, so the worker saves it from there` });
@@ -1225,7 +1235,7 @@ if (isMain) {
     } else if (cmd === 'snapshots') {
       if (!target) fail('usage: desk-design snapshots <KEY | ticket file> [--key <K>]');
       const issue = loadIssue(target, opt(rest, '--key'));
-      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir() }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
+      for (const s of designFact(issue.text ?? issue.fields?.description, { state: E.stateDir(), key: issue.key }).canvases) console.log(`${s.url}\t${s.snapshot ?? '-'}`);
     } else if (cmd === 'render') {
       if (!target) fail('usage: desk-design render <saved dir>');
       const s = await render(resolve(target), { chromium: await playwrightChromium() });
