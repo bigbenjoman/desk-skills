@@ -74,11 +74,6 @@ listing every prompt it skipped, each as a `SKIP  <question>` line followed by a
 where there is none). Each one becomes a SETTING row in §2 and an option in §3, never applied
 silently.
 
-Each skipped prompt also names its id, as `SKIP  <question> (--accept=<id>)`. A prompt the user approves
-in §3 is applied without a terminal by `./install.sh --accept=<id>` (ids comma-separated, several at
-once), and one they decline is answered no by `--decline=<id>`; a prompt with no apply command of its
-own has that `--accept` run as its `apply:` line.
-
 ## 2. Check everything
 
 ```bash
