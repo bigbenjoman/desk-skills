@@ -101,5 +101,15 @@ fresh closed; printf '{"state":"CLOSED","isDraft":false,"mergeable":"UNKNOWN","m
 out=$(verdict)
 check "DS-852 a park on a PR closed unmerged is parked for the person, with a note" "has 'v.parked.find((p) => p.key === \"A\")?.note === \"PR #12 was closed without merging\"'"
 
+# DS-852: the same for another repo's PR, which no cycle can involve.
+export DESK_QUEUE="$T/closed-other.json"; q init t; q add A
+q set A state=parked 'park={"question":"Merge o/x#34 first?","clears_when":{"kind":"pr-merged","pr":34,"repo":"o/x"}}'
+printf '{"state":"CLOSED","isDraft":false,"mergedAt":null}\n' > "$T/fx/34.json"
+out=$(verdict)
+check "DS-852 a park on another repo's PR closed unmerged is parked for the person" "has 'v.parked.find((p) => p.key === \"A\")?.note === \"PR o/x#34 was closed without merging\"'"
+printf '{"state":"OPEN","isDraft":false,"mergedAt":null}\n' > "$T/fx/34.json"
+out=$(verdict)
+check "DS-852 while that PR is open, the park is the pass's" "has '!v.parked.some((p) => p.key === \"A\")'"
+
 echo "park cycle: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

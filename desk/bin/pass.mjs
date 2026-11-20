@@ -4386,6 +4386,14 @@ const parkNotes = new Map();
     report.waiting.push(`${w.park}: CYCLE — ${andList([w.park, ...w.path.slice(0, -1)])} wait on each other: ${w.park} is parked until PR #${w.pr} (${owner}) merges, and ${andList(holds)}` +
       `${conflict ? `. ${conflict}` : ''}. Neither moves until you answer ${w.park}'s park or release ${owner} (${E.releaseCommand(owner)})`);
   }
+  // A park on another repo's PR merging (prParkWaits reads only this repo's) is noted once that PR
+  // is closed unmerged, through the read the park check already made. A read that fails leaves it
+  // unnoted: the park check says it could not check.
+  for (const t of Object.values(qNow.tickets ?? {})) {
+    const c = t.park?.clears_when;
+    if (t.state !== 'parked' || isHeld(t) || c?.kind !== 'pr-merged' || !c.repo || putOff(t) || waitingOnRead(t)) continue;
+    try { if (clearsRead.pr(c.pr, c.repo)?.state === 'CLOSED') parkNotes.set(t.key, `PR ${c.repo}#${c.pr} was closed without merging`); } catch { /* unread */ }
+  }
 }
 if (parkNotes.size) out.push(`PARK NOTES: ${[...parkNotes].map(([k, n]) => `${k} (${n})`).join(', ')}`);
 // A failed ticket waits on the person until it is requeued or dropped. This pass's failures are
