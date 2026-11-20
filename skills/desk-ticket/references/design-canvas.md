@@ -41,8 +41,8 @@ one whose read returns a summary rather than its files, is not saved: ask for ac
 and say so in the triage. A ticket that links its epic's canvas but uses no board from it says so on
 a line of its own in the Design section, as `No UI.` is written: `No board yet.` (or `No board for
 this ticket yet.`). `check` then gives an `advisory` saying there is nothing to save. Prose saying
-the same is not read, and a section holding anything else beside that line and the link (with a
-short label, `Epic canvas: <url>`) still blocks.
+the same is not read, and a section holding anything else beside that line and the link, alone on
+its own line (no label), still blocks.
 
 A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
 (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and

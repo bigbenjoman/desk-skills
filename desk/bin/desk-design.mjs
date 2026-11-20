@@ -1040,20 +1040,14 @@ export function designFact(text, { root, dir, ref, state }) {
 // the link's kind is unknown, so it blocks.
 // A Design section whose own line says the ticket has no board yet ("No board yet.", "No board for
 // this ticket yet.", as `No UI.` is written): a canvas it links is the epic's, with nothing for this
-// ticket to save. Only such a line counts, never prose, and only in a section that holds nothing else
-// but the link: each other line is a link, with at most a short label before it ("Epic canvas: <url>").
-// Any other text may name a board by a word no list could hold, and reading it wrong drops the design.
+// ticket to save. Only such a line counts, never prose, and only in a section that holds nothing but
+// it and the link, each other line the bare URL alone (a list marker or a code span around it at
+// most). Any other text, a label included, may name a board, and reading it wrong drops the design.
 const NO_BOARD_LINE = /^[ \t]*(?:[-*#]+[ \t]*)?no\s+(?:board|screen|frame)s?(?:\s+(?:for|in)\s+this\s+(?:ticket|story|task))?(?:\s+(?:exists?|is\s+drawn))?(?:\s+yet)?[ \t]*\.?[ \t]*$/i;
-const LINK = /\[[^\]|]*\|[^\]]*\]|\[[^\]]*\]\([^)]*\)|https?:\/\/\S+/g;
-const linkOnly = (line) => {
-  if (!LINK.test(line)) return false;
-  LINK.lastIndex = 0;
-  const label = line.replace(LINK, ' ').replace(/^[ \t]*[-*#]+/, '').replace(/[{}·:|()[\]]/g, ' ').trim();
-  return label.split(/\s+/).filter(Boolean).length <= 3;
-};
+const BARE_LINK = /^(?:[-*#]+[ \t]*)?(?:\{\{|`)?https?:\/\/\S+?(?:\}\}|`)?[.,;]?$/i;
 const saysNoBoard = (section) => {
   const lines = String(section ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-  return lines.some((l) => NO_BOARD_LINE.test(l)) && lines.every((l) => NO_BOARD_LINE.test(l) || linkOnly(l));
+  return lines.some((l) => NO_BOARD_LINE.test(l)) && lines.every((l) => NO_BOARD_LINE.test(l) || BARE_LINK.test(l));
 };
 
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {

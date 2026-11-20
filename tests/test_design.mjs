@@ -241,7 +241,7 @@ t('check: saved but the path not named is advisory', checkTicket(issue(`h2. Desi
 t('check: No UI is clean', checkTicket(issue('h2. Design\nNo UI.'), { root: r5, dir: DIR }).length, 0);
 // #747: a canvas linked for the epic, with no board of this ticket's yet, is nothing to save.
 for (const said of ['No board for this ticket exists yet.', 'No board yet.', '* No screens for this ticket yet', 'no board']) {
-  const f = checkTicket(issue(`h2. Design\nEpic canvas: ${URL1}\n${said}`), { root: r5, dir: DIR });
+  const f = checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR });
   t(`#747 a section saying "${said}" is advisory, nothing to save`, `${f.map((x) => x.severity).join(' ')} ${/nothing to save/.test(f[0]?.message ?? '')}`, 'advisory true');
 }
 for (const said of ['Board: Checkout. No mobile screens.', 'Use the Order summary board; no other boards apply.', 'Board: Cart — no screen changes beyond this board.', 'Frames 3-5 of the canvas; no new frames.',
@@ -254,7 +254,9 @@ for (const said of ['Board: Checkout. No mobile screens.', 'Use the Order summar
   // Prose saying there is none is not read: only a line of its own, as `No UI.` is written.
   'The epic canvas; this ticket has no board yet.', "Its board doesn't exist yet.",
   // Beside the line, anything but a labelled link may name a board by any word.
-  'No board yet.\nUse the Checkout artboard.', 'No board yet.\nFollow the mockup for spacing.']) {
+  'No board yet.\nUse the Checkout artboard.', 'No board yet.\nFollow the mockup for spacing.',
+  // A label beside the link is text too: three words can name the board.
+  `No board yet.\nUse Checkout board ${URL1}`, `No board yet.\n${URL1} use the Checkout`, `No board yet.\nCheckout board: ${URL1}`]) {
   t(`#747 a section saying "${said}" still blocks`, checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
 }
 t('check: a markdown ticket file', checkTicket({ key: 'fix-x', text: `## Design\n${URL1}\n## Out of scope` }, { root: r5, dir: DIR })[0].severity, 'blocking');
