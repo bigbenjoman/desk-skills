@@ -373,13 +373,15 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
 // #746: a skill reads the config's rows through `desk-env show`: headings and tables, not the prose,
 // and not the §3c rule ledger unless asked for by name.
 {
-  const text = '# Desk config\n\nIntro prose.\n\n## 1. You\n\nProse about you.\n\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n\n'
+  const text = '# Desk config\n\nIntro prose.\n\n---\n\n## Rules for the agent reading this file\n\n5. **The Recommended column is not this user\'s answer.**\n\n---\n\n## 1. You\n\nProse about you.\n\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n\n'
     + '## 3. Permissions\n\n### Git\n\nWhy these matter.\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `git-push` | push | `ask` | `yes` |\n\n'
     + '```bash\n| not | a row |\n```\n\n## 3c. Harness rules written by setup\n\nLedger prose.\n\n| Rule | List | Owning rows | Added |\n|---|---|---|---|\n| `Bash(x)` | allow | `git-push` | 2026-10-21 |\n';
   const all = configRows(text);
   t('#746 show keeps the headings and table rows', ['# Desk config', '## 1. You', '| GitHub handle | `me` |', '### Git', '| `git-push` | push | `ask` | `yes` |'].every((l) => all.split('\n').includes(l)), true);
   t('#746 and leaves out the prose and a fenced block', /prose|Why these|not \| a row/i.test(all), false);
   t('#746 and the §3c ledger', /3c|Bash\(x\)/.test(all), false);
+  t('#746 the rules for the agent reading it are printed whole, prose and all', all.includes("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**"), true);
+  t('#746 but not when a section is named', configRows(text, ['1']).includes('Rules for the agent'), false);
   t('#746 a named section is printed alone, §3c included when named', `${configRows(text, ['1'])} / ${/Bash\(x\)/.test(configRows(text, ['§3c']))}`, '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` | / true');
   const showEnv = { ...process.env, DESK_CONFIG: join(T, 'show.md'), DESK_MACHINE: join(T, 'none.md'), HOME: T };
   writeFileSync(join(T, 'show.md'), text);

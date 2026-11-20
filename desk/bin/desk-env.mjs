@@ -207,21 +207,25 @@ export const credsDir = () => repoConfigDir();
 // A config file's headings and tables, without its prose: what a skill reads at its start. `sections`
 // names the ones wanted ('3', '3b', '5'); empty is every section but 3c, the rule ledger, which
 // grows with each rule setup grants, is kept in harness-rules.json too, and only /desk-setup reads.
+// An unnumbered section (the rules for the agent reading the file) is printed whole, prose and all,
+// when no section is named: its prose is what it says.
 export function configRows(text, sections = []) {
   const want = sections.map((x) => String(x).replace(/^§/, '').toLowerCase());
-  let keep = false, fence = false;
+  let keep = false, whole = false, fence = false;
   const out = [];
   for (const raw of String(text).split('\n')) {
     const line = raw.trimEnd();
-    if (/^```/.test(line.trim())) { fence = !fence; continue; }
-    if (fence) continue;
-    const h = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line);
-    if (h) {
-      const id = h[1].toLowerCase();
-      keep = want.length ? want.includes(id) : id !== '3c';
+    if (/^##\s/.test(line)) {
+      fence = false;
+      const id = /^##\s+(\d+[a-z]?)[.)]?\s/i.exec(line)?.[1]?.toLowerCase() ?? null;
+      whole = id == null && !want.length;
+      keep = id == null ? whole : want.length ? want.includes(id) : id !== '3c';
       if (keep) { if (out.length) out.push(''); out.push(line); }
       continue;
     }
+    if (whole) { if (line.trim() !== '---') out.push(line); continue; }
+    if (/^```/.test(line.trim())) { fence = !fence; continue; }
+    if (fence) continue;
     if (/^#\s/.test(line) && !want.length) { out.push(line); continue; }
     if (!keep) continue;
     if (/^###\s/.test(line)) out.push('', line);
