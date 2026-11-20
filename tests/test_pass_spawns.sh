@@ -229,6 +229,7 @@ cat > "$T/ps.out" <<'EOF'
  9301     1 bash /other/repo/desk/bin/with-lock.sh test -- pnpm test
 EOF
 mkdir -p "$T/locks-lq/desk-test.lock.d"; echo "9101 9102" > "$T/locks-lq/desk-test.lock.d/pid"
+printf ' 9101  10:05\n 9102  10:04\n 9201  00:30\n 9301  00:20\n' > "$T/ps-ages.out"
 lq_pass(){ out=$(AUTOPILOT_LOCK_QUEUE=on DESK_LOCK_DIR="$T/locks-lq" node "$B/pass.mjs" 2>&1); }
 for k in LQ-2 LQ-3 LQ-4 LQ-5; do git -C "$T/repo" worktree add -q -b "fix/$k" "$T/wt/$k"; done
 q add LQ-1; q set LQ-1 state=triaged lane=A branch=fix/LQ-1
@@ -236,7 +237,7 @@ q add LQ-2; q set LQ-2 state=triaged lane=A branch=fix/LQ-2 "worktree=$T/wt/LQ-2
 q add LQ-3; q set LQ-3 state=triaged lane=A branch=fix/LQ-3 "worktree=$T/wt/LQ-3" handoff=pending handoff_stage=4b; hfile LQ-3 4b "typecheck: pass"
 lq_pass
 check "DS-662 AC1 with the queue at slots x factor, a ticket ready to start gets no worker, and the report names the depth" \
-  '[ "$(spawns_of LQ-1)" = 0 ] && [ "$(field LQ-1 state)" = "\"triaged\"" ] && echo "$out" | grep -q "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2: holding new workers and resumes into Stage 4 (.*LQ-1"'
+  '[ "$(spawns_of LQ-1)" = 0 ] && [ "$(field LQ-1 state)" = "\"triaged\"" ] && echo "$out" | grep -qF "test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by pid 9101: /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.…, held 0m: holding new workers and resumes into Stage 4 (" && echo "$out" | grep -q "Stage 4 (.*LQ-1"'
 check "DS-662 AC1 the pass record names the lock queue as what held its spawns" 'node -e "const p = JSON.parse(require(\"fs\").readFileSync(process.argv[1], \"utf8\")).pass; process.exit(/^test lock queue: 2 run.*\(LQ-2, LQ-3, LQ-1\)/.test(p?.held ?? \"\") ? 0 : 1)" "$DESK_QUEUE"'
 check "DS-662 AC2 a killed worker last at Stage 4 and a handoff to 4b are held, still queued, and named" \
   '[ "$(spawns_of LQ-2)" = 0 ] && [ "$(field LQ-2 resume)" = "\"pending\"" ] && [ "$(spawns_of LQ-3)" = 0 ] && [ "$(field LQ-3 handoff)" = "\"pending\"" ] && echo "$out" | grep -q "holding new workers and resumes into Stage 4 (LQ-2, LQ-3, LQ-1)"'
