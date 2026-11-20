@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { placement, cloudPrompt, parseCloudStart, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from '../desk/bin/cloud-worker.mjs';
-import { costTable, ticketCost } from '../desk/bin/worker-cost.mjs';
+import { costTable, ticketCost, preflightLine } from '../desk/bin/worker-cost.mjs';
 import { runningHere } from '../desk/bin/maintenance.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -119,6 +119,9 @@ writeFileSync(join(S, 'logs', 'K-4.log'), `${JSON.stringify({ type: 'assistant',
 const cut = costTable([ticketCost(S, { key: 'K-4', location: 'cloud', cloud: { started: since, url: 'u4' } })]).split('\n');
 const k4 = cut.find((l) => l.startsWith('  K-4 ')) ?? '';
 t('a cloud row whose local review run has no result event reads unknown, counted as unknown', `${k4.includes('unknown')} ${k4.includes('not reported for cloud')} ${cut.at(-1).includes('1 unknown worker(s) not counted')}`, 'true false true');
+writeFileSync(join(S, 'logs', 'K-5.log'), preflightLine({ usd: 0.4, turns: 2 }));
+const pre = costTable([ticketCost(S, { key: 'K-5', location: 'cloud', cloud: { started: since, url: 'u5' } })]).split('\n');
+t('a cloud row with only a local preflight shows that cost, and the notes count it once', `${(pre.find((l) => l.startsWith('  K-5 ')) ?? '').includes('$0.40')} ${/-\d/.test(pre.at(-1))} ${pre.at(-1).includes('1 cloud worker(s) counted for their local review runs only')}`, 'true false true');
 
 rmSync(S, { recursive: true, force: true });
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');

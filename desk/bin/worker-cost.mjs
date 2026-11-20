@@ -273,8 +273,9 @@ export function costTable(rows) {
     : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
   const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
   const NR = 'not reported for cloud';
-  // A cloud row with no local review run: nothing in it was reported. One with a local run is that run's.
-  const cloudOnly = (r) => Boolean(r.cloud) && !(r.sessions ?? []).some((x) => !x.cloud);
+  // A cloud row with nothing local: nothing in it was reported. One with a local run, or a local
+  // preflight alone, shows what was.
+  const cloudOnly = (r) => Boolean(r.cloud) && !r.usage && !(r.sessions ?? []).some((x) => !x.cloud);
   const table = rows.map((r) => (cloudOnly(r) ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
     : r.usage ? cells(r, r.usage)
       : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
