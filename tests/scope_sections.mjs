@@ -69,16 +69,47 @@ function topLevel(text) {
   }
   return out.map((c) => { while (c.length && !c.at(-1).trim()) c.pop(); return c.join('\n'); }).filter(Boolean);
 }
-// A new top-level statement that declares an export and runs nothing when the module loads: a
-// function or class, or a const whose value is a function or holds no call. -> its name, or null.
-function newExport(chunk) {
-  const fn = chunk.match(/^export\s+(?:async\s+)?(?:function\s*\*?|class)\s*([A-Za-z_$][\w$]*)/);
-  if (fn) return fn[1];
-  const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*)$/);
-  if (!c) return null;
-  const value = c[2];
-  const fnValue = /^(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(value);
-  return fnValue || !value.includes('(') ? c[1] : null;
+// The characters of `text` outside every bracket and string, or null when its brackets or quotes do
+// not close. Not a parser: anything it misreads comes out unbalanced or with extra text, and is refused.
+function outside(text) {
+  let d = 0, q = null, out = '';
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue; }
+    if (ch === '"' || ch === "'" || ch === '`') q = ch;
+    else if ('([{'.includes(ch)) d++;
+    else if (')]}'.includes(ch)) { if (--d < 0) return null; }
+    else if (d === 0) out += ch;
+  }
+  return d === 0 && !q ? out : null;
+}
+// One expression and nothing after it: no second declarator or statement outside its brackets.
+const single = (rest) => rest !== null && !/[,;\n]/.test(rest.trim().replace(/;$/, ''));
+// A value built only of literals: strings, numbers, true, false, null, and arrays and objects of them.
+function literal(value) {
+  if (value.includes('`')) return false;
+  const bare = value.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(/[A-Za-z_$][\w$]*\s*:/g, '').replace(/\b\d[\w.]*/g, '0');
+  return (bare.match(/[A-Za-z_$][\w$]*/g) ?? []).every((w) => ['true', 'false', 'null'].includes(w));
+}
+// A new top-level statement that declares an export and runs nothing when the module loads: a function
+// declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
+// static members and extends run on load) or any other value is refused, and so is a name the old module
+// already uses or a global's: declaring it there would change what the unchanged code refers to.
+function newExport(chunk, before) {
+  let name = null;
+  const fn = chunk.match(/^export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/);
+  if (fn) {
+    const rest = outside(chunk);
+    if (rest !== null && new RegExp(`^export\\s+(?:async\\s+)?function\\s*\\*?\\s*${fn[1].replace(/\$/g, '\\$')}\\s*;?\\s*$`).test(rest)) name = fn[1];
+  } else {
+    const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*)$/);
+    if (!c || !single(outside(c[2]))) return null;
+    const value = c[2];
+    const fnValue = /^(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(value);
+    if (fnValue || literal(value)) name = c[1];
+  }
+  if (!name || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
+  return name;
 }
 // The names a change to a module only adds as exports, or null when it does anything else: every old
 // top-level statement is still there unchanged and in order, and each new one is a comment or a
@@ -90,7 +121,7 @@ export function addedExports(before, after) {
   for (const c of topLevel(after)) {
     if (i < old.length && c === old[i]) { i++; continue; }
     if (/^(\/\/[^\n]*)(\n\/\/[^\n]*)*$/.test(c) || /^\/\*[\s\S]*\*\/$/.test(c)) continue;
-    const name = newExport(c);
+    const name = newExport(c, before);
     if (!name) return null;
     names.push(name);
   }

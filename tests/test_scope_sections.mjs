@@ -137,6 +137,23 @@ t('DS-818 addedExports: a new statement that is not an export, or runs code on l
   addedExports(env, `${env}export default 1;\n`),
   addedExports(env, `${env}main();\n`),
 ], [null, null, null, null]);
+t('DS-818 addedExports: a class, a value that runs code without a call, or a second declarator is not export-only', [
+  addedExports(env, `${env}export class Probe {\n  static { throw new Error('load'); }\n}\n`),
+  addedExports(env, `${env}export class Probe extends make() {}\n`),
+  addedExports(env, `${env}export class Plain {}\n`),
+  addedExports(env, `${env}export const tag = String.raw\`x\`;\n`),
+  addedExports(env, `${env}export const made = new Date;\n`),
+  addedExports(env, `${env}export const early = later;\n`),
+  addedExports(env, `${env}export const f = (a) => a, g = main();\n`),
+  addedExports(env, `${env}export function f() {}; main();\n`),
+  addedExports(env, `${env}export const f = () => 1\n  main();\n`),
+], [null, null, null, null, null, null, null, null, null]);
+t('DS-818 addedExports: a new name that shadows a global or a name the module already uses is not export-only', [
+  addedExports(env, `${env}export function fetch() {}\n`),
+  addedExports(env, `${env}export const URL = 'x';\n`),
+  addedExports(`${env}export function usesY() {\n  return y;\n}\n`, `${env}export function usesY() {\n  return y;\n}\nexport const y = 2;\n`),
+], [null, null, null]);
+t('DS-818 addedExports: literal values, multi-line function bodies and arrows still count', addedExports(env, `${env}export const LIMITS = { max: 3, names: ['a', "b"], on: true, off: null, n: -1.5 };\nexport function g(a = 1) {\n  if (a) { return [a]; }\n  return null;\n}\nexport const h = async (x) => {\n  return x;\n};\n`), ['LIMITS', 'g', 'h']);
 
 // ---- this repo -----------------------------------------------------------------------------------
 const real = repoMap(R);
