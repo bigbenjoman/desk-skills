@@ -16,7 +16,7 @@
 //   merge-log.mjs show [--repo <owner/name>] [--pr <n>]
 //       the events, oldest first, one line each.
 //   merge-log.mjs show --pr <n> --latest [--repo <owner/name>]
-//       the PR's latest merged (else armed, not since disarmed) event as one JSON line: its event, who,
+//       the PR's latest merged (else armed, not since disarmed or failed) event as one JSON line: its event, who,
 //       head SHA, time and ticket. Nothing, exit 0, when the log has none or there is no log yet.
 // The repo defaults to §0 GitHub repo. `who` names the merger and stays the same across its own retries:
 // `merge-driver <slug>` for the driver, `session <id or name>` for a session.
@@ -69,7 +69,8 @@ export function otherMerger(events, { repo, pr, by, now = Date.now(), notArmed =
   }
   return null;
 }
-export const eventLine = (e) => `${e.at}  ${e.repo}#${e.pr}  ${e.event}  at ${String(e.sha ?? '?').slice(0, 12)}  by ${e.by}${e.why ? `  (${e.why})` : ''}`;
+export const shortSha = (e) => String(e.sha ?? '?').slice(0, 12);
+export const eventLine = (e) => `${e.at}  ${e.repo}#${e.pr}  ${e.event}  at ${shortSha(e)}  by ${e.by}${e.why ? `  (${e.why})` : ''}`;
 
 // Whether GitHub shows the PR's auto-merge armed now: true, false, or null when it could not be read.
 export function ghArmed(repo, pr) {
@@ -94,7 +95,7 @@ export function claim({ repo, pr, sha, by, now = Date.now(), armedNow = ghArmed,
       }
     }
     const other = otherMerger(events, { repo, pr, by, now, notArmed });
-    if (other) return { ok: false, why: `${repo}#${pr} is already ${other.event === 'claim' ? 'claimed' : other.event} by ${other.by} (${other.at}, at ${String(other.sha ?? '?').slice(0, 12)}): not merging` };
+    if (other) return { ok: false, why: `${repo}#${pr} is already ${other.event === 'claim' ? 'claimed' : other.event} by ${other.by} (${other.at}, at ${shortSha(other)}): not merging` };
     append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event: 'claim' }, path);
     return { ok: true };
   });
@@ -103,14 +104,17 @@ export function record({ repo, pr, sha, by, event, ticket = null, why = null, no
   locked(path, () => append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event, ...(ticket ? { ticket } : {}), ...(why ? { why } : {}) }, path));
 }
 
-// The PR's latest `merged` event, else its latest `armed` one not disarmed since (GitHub keeps one
-// auto-merge, so a disarm ends it whoever armed it), else null. Claims and failures are not outcomes.
+// The PR's latest `merged` event, else its latest `armed` one not ended since, else null. A disarm ends
+// it whoever armed it (GitHub keeps one auto-merge); a failure ends it when its armer records it, as
+// otherMerger reads it. Claims and failures are not outcomes. GitHub names repos in any case, so the
+// repo matches whatever its case.
 export function latest(events, { repo, pr }) {
-  const mine = events.filter((e) => e.repo === repo && String(e.pr) === String(pr));
+  const mine = events.filter((e) => String(e.repo).toLowerCase() === String(repo).toLowerCase() && String(e.pr) === String(pr));
   const merged = mine.findLast((e) => e.event === 'merged');
   if (merged) return merged;
-  const last = mine.findLast((e) => e.event === 'armed' || e.event === 'disarmed');
-  return last?.event === 'armed' ? last : null;
+  const i = mine.findLastIndex((e) => e.event === 'armed');
+  const ended = mine.slice(i + 1).some((e) => e.event === 'disarmed' || (e.event === 'failed' && e.by === mine[i].by));
+  return i >= 0 && !ended ? mine[i] : null;
 }
 
 const isMain = (() => {
