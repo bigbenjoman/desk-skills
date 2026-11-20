@@ -7,6 +7,8 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #   ./install.sh --rollback     makes the release before the current one current, installs nothing
+#   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
+#                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
 # Installs nothing from a checkout off the default branch or behind origin's (fetched first), or
 # when that cannot be checked, unless given --any-branch.
@@ -42,6 +44,11 @@ PLAYWRIGHT_MCP_VERSION="0.0.83"
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official codex@openai-codex"
 
 YES=0
+ACCEPT=""
+DECLINE=""
+# Each prompt's id, for --accept and --decline. skill-<name> is the question about a skill folder of
+# your own in the way of skill <name>.
+PROMPT_IDS="codex-call retire-skills desk-jira hook-script hook-attribution hook-update-notice hook-handoff compaction deny-rules plugins playwright-mcp playwright-plugin-off skill-listing statusline"
 CHECK_ONLY=0
 ANY_BRANCH=0
 ROLLBACK=0
@@ -51,7 +58,9 @@ for arg in "$@"; do
     --check) CHECK_ONLY=1 ;;
     --any-branch) ANY_BRANCH=1 ;;
     --rollback) ROLLBACK=1 ;;
-    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --accept=*) ACCEPT="$ACCEPT,${arg#--accept=}," ;;
+    --decline=*) DECLINE="$DECLINE,${arg#--decline=}," ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -174,14 +183,21 @@ SKIPPED=""
 SKIPPED_N=0
 IN_TERMINAL="run in a terminal: cd \"$SRC\" && ./install.sh"
 
-# confirm "question" [big] [apply]  — big=1 means --yes does not accept it on your behalf; apply is
-# the command that does the same thing later, if there is one (otherwise: re-run in a terminal)
+# PROMPT_ID=<id> confirm "question" [big] [apply]  — big=1 means --yes does not accept it on your
+# behalf; apply is the command that does the same thing later, if there is one (otherwise
+# `./install.sh --accept=<id>`). --decline=<id>, then --accept=<id>, answer it before --yes or a
+# terminal is asked, and a skip names the id.
 confirm() {
+  local id="${PROMPT_ID:-}"
+  if [ -n "$id" ] && [[ "$DECLINE" == *",$id,"* ]]; then printf '  ?     %s [y/N] n (--decline=%s)\n' "$1" "$id"; return 1; fi
+  if [ -n "$id" ] && [[ "$ACCEPT" == *",$id,"* ]]; then printf '  ?     %s [y/N] y (--accept=%s)\n' "$1" "$id"; return 0; fi
   if [ "$YES" = 1 ] && [ "${2:-0}" != 1 ]; then printf '  ?     %s [y/N] y (--yes)\n' "$1"; return 0; fi
   if ! have_tty; then
     printf '  skip  %s (no terminal to ask on)\n' "$1"
-    SKIPPED="$SKIPPED  SKIP  $1
-        apply: ${3:-$IN_TERMINAL}
+    local apply="${3:-}"
+    [ -n "$apply" ] || apply="${id:+cd \"$SRC\" && ./install.sh --accept=$id}"
+    SKIPPED="$SKIPPED  SKIP  $1${id:+ (--accept=$id)}
+        apply: ${apply:-$IN_TERMINAL}
 "
     SKIPPED_N=$((SKIPPED_N + 1))
     return 1
@@ -501,7 +517,7 @@ if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
   note "codex --version and codex login status pass even on a seat with no usage left; only a real call proves it."
   if [ "$CHECK_ONLY" = 1 ]; then
     note "no real codex call under --check; run ./install.sh without it, or /desk-setup, to make one"
-  elif confirm "Make one real codex call to prove it can answer?" 0 \
+  elif PROMPT_ID=codex-call confirm "Make one real codex call to prove it can answer?" 0 \
       "codex exec --sandbox read-only \"Reply with exactly: CODEX_OK\" </dev/null"; then
     if out="$(cd "$SRC" && codex exec --sandbox read-only "Reply with exactly: CODEX_OK" </dev/null 2>&1)" \
         && printf '%s' "$out" | grep -q CODEX_OK; then
@@ -563,7 +579,7 @@ skill_kept() {
   done
   [ -n "$found" ] || return 1
   note "$found is a skill folder desk did not install (yours, or another tool's)${how:+; $how}"
-  confirm "Move your $found to the backup and install desk's $name in its place?" && return 1
+  PROMPT_ID="skill-$name" confirm "Move your $found to the backup and install desk's $name in its place?" && return 1
   warn "kept your $found; desk's $name is not installed there"
   return 0
 }
@@ -620,7 +636,7 @@ for d in "$AGENTS"/desk-*; do
 done
 if [ -n "$stale" ]; then
   warn "no longer shipped:$stale"
-  if confirm "Move the retired skills out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
+  if PROMPT_ID=retire-skills confirm "Move the retired skills out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
     mkdir -p "$BACKUP/.agents/skills"
     for name in $stale; do
       [ "$LINK_MODE" = each ] && [ -L "$SKILLS_LINK/$name" ] && rm -f "$SKILLS_LINK/$name"
@@ -803,7 +819,7 @@ if [ -f "$SRC/bin/desk-jira" ]; then
   if [ -e "$JIRA_DEST" ] && ! cmp -s "$SRC/bin/desk-jira" "$JIRA_DEST" \
      && { [ ! -f "$PRISTINE/.local/bin/desk-jira" ] || ! cmp -s "$JIRA_DEST" "$PRISTINE/.local/bin/desk-jira"; }; then
     note "your ~/.local/bin/desk-jira exists and is not the copy this installer last wrote (edited, or another tool's)"
-    confirm "Replace it with this checkout's desk-jira (yours is backed up first)?" || write_jira=0
+    PROMPT_ID=desk-jira confirm "Replace it with this checkout's desk-jira (yours is backed up first)?" || write_jira=0
   fi
   if [ "$write_jira" = 1 ]; then
     install_file "$SRC/bin/desk-jira" "$JIRA_DEST"
@@ -870,7 +886,7 @@ write_hook=1
 if [ -f "$HOOK" ] && ! cmp -s "$SRC/hooks/deny-ai-attribution.py" "$HOOK" && [ ! -f "$PRISTINE/.claude/hooks/deny-ai-attribution.py" ]; then
   note "your ~/.claude/hooks/deny-ai-attribution.py was not installed by desk (another tool's, or your own)"
   note "desk's blocks AI attribution only in a repo whose desk config sets §5 AI attribution to forbidden, so a repo yours guards has none until /desk-setup writes its config"
-  confirm "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" || write_hook=0
+  PROMPT_ID=hook-script confirm "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" || write_hook=0
 fi
 if [ "$write_hook" = 1 ]; then
   install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
@@ -930,7 +946,7 @@ case "$rc" in
     note "or file, also inside bash -c or eval) carrying a Co-Authored-By trailer naming Claude or"
     note "Anthropic, Claude-Session, an Anthropic noreply address, a Claude session link, 'Generated with"
     note "Claude Code' or the robot emoji is denied. Other repos are untouched. Other hooks are kept."
-    if confirm "Register the attribution hook in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-attribution confirm "Register the attribution hook in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -958,7 +974,7 @@ case "$rc" in
   *)
     note "Registers a SessionStart hook: once a day it fetches this checkout (killed after 5 seconds)"
     note "and, if there are new commits, shows one line telling you to run /desk-update. Nothing is installed."
-    if confirm "Register the update notice in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-update-notice confirm "Register the update notice in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if update_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -987,7 +1003,7 @@ case "$rc" in
     note "context passes §2 'Handoff at context %' (default 45, 0 turns it off; a 1M window has its own row) it asks the session to"
     note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
     note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
-    if confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-handoff confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -1034,7 +1050,7 @@ case "$rc" in
     note "compacts a session at $AUTOCOMPACT_PCT% of its window and carries on, and the context handoff"
     note "carries over through the compaction instead of asking you to /clear, then /desk-resume."
     note "Keep §2 'Handoff at context %' below it. It applies to sessions started afterwards."
-    if confirm "Set compaction mode in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=compaction confirm "Set compaction mode in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE "$AUTOCOMPACT_PCT"; then ok "set"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -1077,7 +1093,7 @@ case "$rc" in
     note "possible), gh pr merge --admin, and git push with --force, -f, +refspec, --delete, -d or"
     note "--mirror. The push patterns are best-effort: git also takes -qf, --forc, --delet. Other rules are kept."
     note "It also drops allow rules an earlier setup granted that no row grants any more (unpinned gh pr merge)."
-    if confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
+    if PROMPT_ID=deny-rules confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
         "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
         ok "always-on deny rules applied, and any retired allow rules dropped (recorded in ~/.claude/desk/harness-rules.json)"
@@ -1132,7 +1148,7 @@ if [ -n "$missing_plugins" ]; then
   plugin_cmds="claude plugin marketplace add anthropics/claude-plugins-official"
   case "$missing_plugins" in *@openai-codex*) plugin_cmds="$plugin_cmds; claude plugin marketplace add openai/codex-plugin-cc" ;; esac
   for p in $missing_plugins; do plugin_cmds="$plugin_cmds; claude plugin install $p --scope user"; done
-  if confirm "Install the missing plugins now, user scope?" 0 "$plugin_cmds"; then
+  if PROMPT_ID=plugins confirm "Install the missing plugins now, user scope?" 0 "$plugin_cmds"; then
     if ! out="$(claude plugin marketplace add anthropics/claude-plugins-official 2>&1)"; then
       warn "could not add the claude-plugins-official marketplace (fine if it is already added)"; show_err "$out"
     fi
@@ -1186,7 +1202,7 @@ else
       note "replaces your user-level playwright server: $have_mcp"
       mcp_cmd="claude mcp remove --scope user playwright; $mcp_cmd"
     fi
-    if confirm "Register desk's Playwright MCP as your user-level playwright server?" 0 "$mcp_cmd"; then
+    if PROMPT_ID=playwright-mcp confirm "Register desk's Playwright MCP as your user-level playwright server?" 0 "$mcp_cmd"; then
       [ -z "$have_mcp" ] || claude mcp remove --scope user playwright >/dev/null 2>&1 || true
       if out="$(claude mcp add-json --scope user playwright "$want_mcp" 2>&1)"; then
         ok "registered the user-level playwright server; takes effect when Claude Code restarts"
@@ -1199,7 +1215,7 @@ else
 fi
 if printf '%s' "$plugin_json" | jq -e '.[] | select(.id == "playwright@claude-plugins-official" and .enabled)' >/dev/null 2>&1; then
   note "the playwright plugin starts its own browser server beside desk's, on a profile that is not signed in"
-  if confirm "Disable the playwright plugin (desk's user-level server replaces it)?" 0 \
+  if PROMPT_ID=playwright-plugin-off confirm "Disable the playwright plugin (desk's user-level server replaces it)?" 0 \
       "claude plugin disable playwright@claude-plugins-official"; then
     if out="$(claude plugin disable playwright@claude-plugins-official 2>&1)"; then ok "disabled playwright@claude-plugins-official"
     else warn "could not disable the playwright plugin"; show_err "$out"; fi
@@ -1225,7 +1241,7 @@ if out="$(python3 "$SRC/bin/skills-upstream" index 2>&1)"; then
       note "shrinks the listing budget to 0.3% of the context window (plugin skills cannot be set name-only),"
       note "and adds ~/.claude/rules/desk-skill-index.md pointing Claude at skill-index, whose area files hold"
       note "every full description. Entries you already set in skillOverrides are kept."
-      if confirm "List skills by name only in ~/.claude/settings.json (backed up first)?" 0 \
+      if PROMPT_ID=skill-listing confirm "List skills by name only in ~/.claude/settings.json (backed up first)?" 0 \
           "cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" index --quiet --name-only"; then
         backup_settings
         if out="$(python3 "$SRC/bin/skills-upstream" index --quiet --name-only 2>&1)"; then ok "${out#skill-index: }"
@@ -1265,7 +1281,7 @@ else
     note "merges a statusLine entry into ~/.claude/settings.json. Other settings are kept."
     sl_q="Install claude-statusline (settings.json backed up first)?"; sl_big=0
   fi
-  if confirm "$sl_q" "$sl_big" "$sl_apply"; then
+  if PROMPT_ID=statusline confirm "$sl_q" "$sl_big" "$sl_apply"; then
     backup_settings
     if out="$(python3 "$SRC/bin/skills-upstream" statusline install 2>&1)"; then
       ok "$out"; note "takes effect in the next Claude Code session"
@@ -1334,6 +1350,12 @@ else
   note "this checkout ships no desk/bin/installed.mjs; nothing restarted"
 fi
 
+# An --accept or --decline id no prompt has: said, as a warning, so a typo does not pass for an answer.
+for id in $(printf '%s' "$ACCEPT,$DECLINE" | tr ',' ' '); do
+  case " $PROMPT_IDS " in *" $id "*) continue ;; esac
+  case "$id" in skill-?*) continue ;; esac
+  warn "--accept/--decline: no prompt has the id \"$id\" (ids: $PROMPT_IDS skill-<name>)"
+done
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
 if [ "$SKIPPED_N" -gt 0 ]; then
   echo "Skipped (no terminal): $SKIPPED_N prompt(s), nothing was changed for them. Each one and how to apply it:"

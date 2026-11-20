@@ -705,6 +705,7 @@ the expected skill, and Claude opened the index on the 3 ambiguous ones. To undo
 ./install.sh            # install or update
 ./install.sh --check    # report missing tools and unreachable skills, change nothing
 ./install.sh --yes      # accept the prompts (not large downloads)
+./install.sh --accept=hook-attribution,plugins --decline=statusline   # answer the prompts named, with no terminal
 ./install.sh --any-branch   # install a checkout off main or behind origin/main, which it otherwise refuses
 ./install.sh --rollback     # go back to the release installed before the current one
 ```

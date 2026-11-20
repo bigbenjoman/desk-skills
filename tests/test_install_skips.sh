@@ -106,6 +106,10 @@ for q in "Make one real codex call to prove it can answer?" \
          "Install claude-statusline (settings.json backed up first)?"; do
   check "listed: $q" '[[ "$summary" == *"  SKIP  $q"* ]]'
 done
+# #736: each skip names its prompt's id, and a hook registration's apply line works with no terminal.
+check "#736 a skip names its id" '[[ "$summary" == *"  SKIP  Make one real codex call to prove it can answer? (--accept=codex-call)"* ]]'
+check "#736 a hook registration's apply line is the install with its id accepted" \
+  '[[ "$summary" == *"(--accept=hook-attribution)"*"apply: cd "*"./install.sh --accept=hook-attribution"* ]]'
 check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
 check "DS-224 AC6: with nothing running, the summary says so in one line" \
@@ -162,8 +166,8 @@ check "the MCP is isolated on the saved login" \
   '[ "$(printf "%s" "$mcp" | jq -c ".args[1:]")" = "[\"--browser\",\"chromium\",\"--isolated\",\"--storage-state\",\"$LOGIN\"]" ]'
 check "an empty owner-only login is in place before the first sign-in" \
   '[ "$(jq -c . "$LOGIN")" = "{\"cookies\":[],\"origins\":[]}" ] && [ "$(stat -c %a "$LOGIN" 2>/dev/null || stat -f %Lp "$LOGIN")" = 600 ]'
-check "a hook skip says to re-run in a terminal" \
-  '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: run in a terminal: cd "* ]]'
+check "a hook skip's apply line runs the install with its id accepted, no terminal needed" \
+  '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: cd "*"&& ./install.sh --accept=hook-attribution"* ]]'
 check "a repo's recorded unpinned merge allow is retired and reported" \
   '[[ "$out" == *"RETIRED  allow Bash(gh pr merge * --squash)"* ]] && ! grep -q -- "--squash)" "$R/.claude/settings.local.json" && ! grep -q "gh pr merge" "$C/harness-rules.json"'
 check "the repo's settings are backed up before the retire" 'grep -q -- "--squash)" "$R"/.claude/settings.local.json.bak-desk-*'
@@ -199,5 +203,16 @@ check "#733 the file is kept, and the install says so" \
   '[ "$(sed -n 2p "$HOME/.claude/hooks/deny-ai-attribution.py")" = "# theirs" ] && [[ "$out" == *"kept your ~/.claude/hooks/deny-ai-attribution.py"* ]]'
 check "#733 a kept hook script is not registered or described as desk's" \
   '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
+
+# --accept and --decline answer the prompts they name with no terminal; an unknown id is a warning.
+rm -f "$HOME/.claude/hooks/deny-ai-attribution.py"
+acc_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch --accept=hook-attribution --decline=plugins --accept=no-such-prompt </dev/null 2>&1)"
+# shellcheck disable=SC2034  # acc_summary is read inside check's eval strings
+acc_summary="$(printf '%s\n' "$acc_out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
+check "#736 an accepted prompt is applied with no terminal" \
+  '[[ "$acc_out" == *"Register the attribution hook in ~/.claude/settings.json (backed up first)? [y/N] y (--accept=hook-attribution)"* ]] && grep -q deny-ai-attribution.py "$HOME/.claude/settings.json"'
+check "#736 a declined prompt is answered no and not listed as skipped" \
+  '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
+check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
