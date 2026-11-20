@@ -1,11 +1,13 @@
 // What a worktree is doing with the box-wide test lock (with-lock.sh test|tsc, which suites and
 // typechecks share): running a command under it, waiting for it, or neither. Read from the process
-// table, each process's working directory, and the holder files with-lock.sh leaves in the lock dir.
+// table, each process's working directory, the slot leases with-lock.sh takes from the lease broker,
+// and the holder files it leaves in the lock dir.
 import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { psRows } from './desk-env.mjs';
 import { since } from './gate.mjs';
+import { leaseDir, readStore, storeFile } from './leases.mjs';
 import { tilde } from './logins.mjs';
 
 // Every process's working directory, as [{pid, cmd, cwd}], read once: lsof, else Linux's /proc.
@@ -63,35 +65,52 @@ export function processList() {
   return PROCS;
 }
 
-// The test lock's holder files, as [{pids, at}]: each mkdir slot's `pid` (the wrapper and its command)
-// and each flock slot's `.pid` (the command with-lock.sh exec'd into), with when each was written (ms).
-// With `light`, the light lock's too (§4 Suite weight light: with-lock.sh test runs as `light`).
+// The test lock's slot leases, as [{pids, at}]: each heavy slot lease's owner (the command with-lock.sh
+// exec'd into, or ran as a child), with when it was taken (ms), and with `light` the light slot's too.
+// Read from the store as it stands, without its lock: an owner that has exited names nobody here, as a
+// stale holder file does not. [] when the store is missing or unreadable.
+function slotLeases(light = false) {
+  let store;
+  try { store = readStore(storeFile(leaseDir())); } catch { return []; }
+  const pools = light ? ['slot:heavy', 'slot:light'] : ['slot:heavy'];
+  return store.leases.filter((l) => l.kind === 'slot' && pools.includes(l.pool) && l.owner)
+    .map((l) => ({ pids: [l.owner.pid], at: Date.parse(l.acquired) }));
+}
+// The test lock's holders, as [{pids, at}]: its slot leases (above), read first, then its holder files:
+// each mkdir slot's `pid` (the wrapper and its command) and each flock slot's `.pid` (the command
+// with-lock.sh exec'd into), with when each was written (ms). With the slot lease kind off, only the
+// files name anyone; in shadow both name the same run. With `light`, the light lock's too (§4 Suite
+// weight light: with-lock.sh test runs as `light`).
 function holderFiles(dir, light = false) {
+  const leases = slotLeases(light);
   let names = [];
-  try { names = readdirSync(dir); } catch { return []; }
+  try { names = readdirSync(dir); } catch { return leases; }
   const lock = light ? '(?:desk-test|desk-light)' : 'desk-test';
   const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.pid$`);
-  return names.flatMap((n) => {
+  return [...leases, ...names.flatMap((n) => {
     const file = slotDir.test(n) ? join(dir, n, 'pid') : slotPid.test(n) ? join(dir, n) : null;
     if (!file) return [];
     try {
       const pids = readFileSync(file, 'utf8').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
       return [{ pids, at: statSync(file).mtimeMs }];
     } catch { return []; }
-  });
+  })];
 }
 // The pids the test lock's holder files name, and with `light` the light lock's too.
 export function lockHolders(dir, { light = false } = {}) {
   return new Set(holderFiles(dir, light).flatMap((f) => f.pids));
 }
-// Each pid a holder file names, with when its file was written (ms).
+// Each pid a holder file or slot lease names, with when its file was written or its lease taken (ms).
+// A pid in both keeps the later time, which is when this run took the lock.
 export function lockHolderStamps(dir) {
-  return new Map(holderFiles(dir).flatMap((f) => f.pids.map((p) => [p, f.at])));
+  const out = new Map();
+  for (const f of holderFiles(dir)) for (const p of f.pids) out.set(p, Math.max(out.get(p) ?? -Infinity, f.at));
+  return out;
 }
 
 // The process itself, by its first words: a worker's own command line quotes these commands in its
 // prompt, and must not read as one.
-const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
+const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc|lint)(?:\s|$)/;
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 // The same for the light lock, which a worker's suite takes in a repo whose §4 Suite weight is light.
 const LIGHT_WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+light(?:\s|$)/;
