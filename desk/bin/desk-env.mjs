@@ -830,7 +830,7 @@ export function reviewPlan(rows, clean, root) {
 }
 
 // The lock a §4 command row's items take under with-lock.sh; every other row runs `nolock`.
-export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
+export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integration-cmd': 'test', 'typecheck-cmd': 'tsc', 'lint-cmd': 'tsc', 'e2e-cmd': 'browser', 'storybook-cmd': 'browser' };
 // Rows a worker runs only under their lock, never bare.
 export const LOCK_ONLY = new Set(['storybook-cmd']);
 export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';

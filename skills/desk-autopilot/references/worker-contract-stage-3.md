@@ -54,8 +54,8 @@ Your settings are an **allow-list**: anything not named here is refused.
 - **The §4 toolchain rows, exactly as configured.** An item at the root (`DIR` `.`) runs bare, with
   your own arguments after it, or through with-lock.sh with `--cwd .`. An item with a directory has no bare form (you cannot `cd`), so it
   runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
-  `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck, `browser` for §4 E2E
-  tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (lint, build, codegen, dev server), which only changes
+  `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck and §4 Lint (every run, even at the root), `browser` for §4 E2E
+  tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,

@@ -98,7 +98,11 @@ check "DS-398 AC3 each pre-push item allowed exactly as written" \
   '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
 check "a pre-push item naming typecheck takes the tsc lock, as pre-push.sh runs it" \
   '! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm format:check:*)"'
-check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
+check "DS-855 AC3 a root Lint item runs under the tsc lock, never nolock" \
+  'allows "Bash($B/with-lock.sh tsc --cwd . -- pnpm lint:*)" && allows "Bash($B/with-lock.sh tsc pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Lint | `web: pnpm lint` |'
+check "DS-855 AC3 a Lint item in a directory runs under the tsc lock, never nolock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm lint:*)"'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `web: pnpm typecheck:portal` |' '| Typecheck | `web: pnpm typecheck` |'
 check "a filtered typecheck no row lists takes the tsc lock, never nolock" \
   '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:portal:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:portal:*)"'
