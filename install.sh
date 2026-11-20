@@ -1296,18 +1296,6 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
-# How many table rows of config $1 are unanswered (see the loop below).
-unanswered_rows() {
-  # shellcheck disable=SC2016
-  awk -F'|' '
-    /^\|/ && NF >= 4 {
-      name = $2; gsub(/^[ \t]+|[ \t]+$/, "", name)
-      if (name ~ /^(Autopilot worker concurrency|Memory ceiling for parallel work \(GB\)|Test worker cap under the test lock)$/) next
-      cell = $(NF - 1); sub(/^[ \t]+/, "", cell)
-      if (index(cell, "`TODO`") == 1) n++
-    }
-    END { print n + 0 }' "$1" 2>/dev/null || echo 0
-}
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
 configured=0
 SHADOWED=""
@@ -1315,10 +1303,9 @@ for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # A row's value is the first backtick span of its last cell: `TODO` there is unanswered, a TODO in
-  # the note after it is not. The rows the template leaves `TODO` on purpose, to follow the machine
-  # profile (worker concurrency, the memory ceiling, the test worker cap), are not counted.
-  todos="$(unanswered_rows "$c")"
+  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
+  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
+  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
   # A user-level skill (a vendored one this install links, say) with the name of a skill the repo
