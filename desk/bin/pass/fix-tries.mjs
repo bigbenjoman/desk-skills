@@ -39,7 +39,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, treeHeld, builtStuck } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, driverReviewTry, treeHeld, builtStuck } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 
 const out = (line) => ({ type: 'out', line });
@@ -75,7 +75,7 @@ function* fixTry(t, p, s) {
   // only on the gate, so it still goes to its own fix below.
   const gated = !dirty && !tree && reviewerGated(p, s);
   yield { type: 'gate-hold', key: t.key, on: gated };
-  if (gated) return;
+  if (gated) { if (s.reviewer?.kind === 'mismatch') yield* heldReview(t, p, s); return; }
   if (dirty || tree) {
     const row = (yield { type: 'human-seen', key: t.key, pr: n }) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const { perm, key } = s.conflictRows[row];
@@ -105,6 +105,20 @@ function* fixTry(t, p, s) {
     }
   }
   yield { type: 'apply', key: t.key, pr: n, head: p.head, call: c };
+}
+
+// A PR the reviewer check holds only because the gate counts another account (kind `mismatch`): desk
+// still posts its verdicts, and the merge driver counts them though the gate does not. So a head the
+// driver would hold for want of a clean verdict gets its review try now, while the gate is red, and not
+// once the gate clears. Nothing else goes to it: a review at the head that is not clean waits, as do red
+// checks and threads.
+function* heldReview(t, p, s) {
+  const reads = yield { type: 'reads', key: t.key, dirty: false, dirtyFiles: null };
+  const fb = yield { type: 'feedback', key: t.key, pr: p.pr };
+  if (!fb || fb.head !== p.head || fb.review) return;
+  const { carry, scope, baseMerge } = reads.moves();
+  const c = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), base: s.base, baseMerge });
+  if (c?.call === 'requeue') yield { type: 'apply', key: t.key, pr: p.pr, head: p.head, call: c };
 }
 
 // A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
