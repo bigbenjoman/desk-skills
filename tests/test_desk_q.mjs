@@ -2685,9 +2685,10 @@ try {
   process.env.DESK_LEASE_DIR = dirs.live;
   const narrow = lines(Q.overview([], { now: Date.now(), avail: 30, width: 80 }).replace(ANSI, ''));
   delete process.env.DESK_LEASE_DIR;
-  const slotRows = narrow.slice(narrow.findIndex((l) => /^ {2}slot +shadow/.test(l))).slice(0, 2);
-  t('DS-911 AC7 at 80 columns no Leases line is wider, and the slot kind still shows all seven days',
-    `${narrow.slice(narrow.indexOf('Leases')).filter((l) => [...l].length > 80).length} ${/newest first: 1 2 3 4 5 6 7$/.test(slotRows.map((l) => l.trim()).join(' '))}`, '0 true');
+  const kindRows = narrow.slice(narrow.findIndex((l) => /^ {2}port +shadow/.test(l)));
+  const slotRows = kindRows.slice(kindRows.findIndex((l) => /^ {2}slot +shadow/.test(l))).slice(0, 2);
+  t('DS-911 AC7 at 80 columns no kind row is wider, and the slot kind still shows all seven days',
+    `${kindRows.length > 2} ${kindRows.filter((l) => [...l].length > 80).length} ${/newest first: 1 2 3 4 5 6 7$/.test(slotRows.map((l) => l.trim()).join(' '))}`, 'true 0 true');
   for (const c of sleepers) c.kill();
 }
 
