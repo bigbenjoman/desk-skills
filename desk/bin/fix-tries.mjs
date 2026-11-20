@@ -684,11 +684,19 @@ export function verdictTry(t, s, ctx) {
   // The driver reaches its hold only on a head it would otherwise merge: green, or red only on a waiver.
   const failing = [...new Set(gate.failing.map((f) => f.name))];
   if (gate.state !== 'pass' && !(failing.length && ctx.waived?.(failing))) return null;
+  return driverReviewTry(t, s, ctx);
+}
+
+// The try a ready PR's head needs where the merge driver would hold it for want of a clean verdict,
+// on what ctx.atHead() reads (verdictTry): a review worker, out of draft and `held`, for none or a stale
+// one, and the person for a review at the head that no fix worker took. null where the head's verdict is
+// clean or nothing waits on one. ctx: { atHead, base, baseMerge }.
+export function driverReviewTry(t, s, ctx) {
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };
-  const c = asReady(reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge, targeted: at.targeted }));
-  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, held: true } } : c;
+  const c = reviewTry(t, { pr: s.pr, head: s.head, why: at.why, base: ctx.base, baseMerge: ctx.baseMerge, targeted: at.targeted });
+  return c?.call === 'requeue' ? { ...c, fix: { ...c.fix, ready: true, held: true } } : c;
 }
 
 // A ready PR held by a red check whose error lines (pr_status checks[].errors, which the pass reads)

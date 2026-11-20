@@ -100,6 +100,26 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('a held PR marks its hold and gets nothing else', j(as), j([{ type: 'gate-hold', key: 'T-1', on: true }]));
 }
 
+// Held only because the gate counts another account, a head the merge driver would hold for want
+// of a clean verdict still gets its review try while the gate is red.
+{
+  const verdictPr = pr([ok('tests'), red('desk-review', '9')]);
+  const base = { gate: { required: ['tests', 'desk-review'], advisory: [] }, stateChecks: [{ name: 'desk-review', kind: 'verdict' }] };
+  const s = snap([[tk(), verdictPr]], { ...base, reviewer: { key: 'reviewer', kind: 'mismatch', why: 'the gate counts another account' } });
+  const fb = { head: HEAD, left: [], decision: null, review: null, payload: {} };
+  const stale = { clean: false, why: 'its review verdict is for bbbbbbbbb, not the head' };
+  const as = drive(s, { feedback: fb, reads: () => reads({ reads: { atHead: () => stale } }) });
+  const c = applied(as)[0]?.call;
+  t('#881 a mismatch-held PR with a stale verdict marks its hold and gets a review try', j([as[0], c?.call, c?.fix?.kind, c?.fix?.ready, c?.fix?.held]), j([{ type: 'gate-hold', key: 'T-1', on: true }, 'requeue', 'rereview', true, true]));
+  t('#881 its try says why', c?.fix?.what, 'review its head: its review verdict is for bbbbbbbbb, not the head');
+  const clean = drive(s, { feedback: fb, reads: () => reads({ reads: { atHead: () => ({ clean: true }) } }) });
+  t('#881 one whose head has a clean verdict gets nothing', applied(clean).length, 0);
+  const findings = drive(s, { feedback: { ...fb, review: { id: 'R1', verdict: { p0: '0', p1: '1' }, body: '### P1 (1)\n- a.ts:1 x' } }, reads: () => reads({ reads: { atHead: () => stale } }) });
+  t('#881 nor one with a review at its head that is not clean: its fix waits', applied(findings).length, 0);
+  const signin = drive(snap([[tk(), verdictPr]], { ...base, reviewer: { key: 'reviewer-signin', kind: 'auth', why: 'signed out' } }), { feedback: fb, reads: () => reads({ reads: { atHead: () => stale } }) });
+  t('#881 a reviewer that cannot be read still holds the review', j(signin), j([{ type: 'gate-hold', key: 'T-1', on: true }]));
+}
+
 // A green PR: its review threads are read, and a stale stuck record is cleared.
 {
   const green = pr([ok('tests')]);

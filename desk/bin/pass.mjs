@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -3600,7 +3600,7 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
 // such a head, since the last try's, gets its own review try, outside the fix tries. With the
 // review-reuse lever on, a verdict holds only while the files its review rests on are unchanged
-// (restsOnCarries), after a rebase or any base merge; off, across clean base merges alone. On, a clean
+// (restsOnCarries), after a rebase or any base merge; off, across clean base merges and empty commits alone. On, a clean
 // verdict that does not hold is narrowed to what the base moved under it where it can be (scope:
 // reviewScope), so the head's review try reads only that.
 const reviewReuse = E.leverOn('review-reuse');
@@ -3636,7 +3636,7 @@ function markGateHold(t, s, on) {
     q('set', t.key, `gate_hold=${JSON.stringify({ item: h.key, head: s.head ?? null, why: h.why, at: t.gate_hold?.at ?? new Date().toISOString() })}`);
   }
   if (t.stuck && !DRY) q('set', t.key, 'stuck=null');
-  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes`);
+  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes${h.kind === 'mismatch' ? MISMATCH_WORDS : ''}`);
 }
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
@@ -3774,7 +3774,7 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    // A verdict for an older head holds at this one when only clean merges of the base came since.
+    // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = baseMoves(t, v.headRefOid);
     const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)), shotDir: ticketShotDir(t, STATE) });
     if (!c) continue;
@@ -3803,8 +3803,11 @@ if (drafts.length) {
     };
     // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
     // findings fixes included, as out of draft.
-    const gated = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
-    markGateHold(t, s, gated);
+    const held = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
+    markGateHold(t, s, held);
+    // Unless the check fails only because the gate counts another account: the merge driver still
+    // counts desk's verdict, so a head with none that holds still gets its review while the gate is red.
+    const gated = held && !(c.call === 'review' && HEALTH.reviewer?.kind === 'mismatch');
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid), classes: FAILURE_CLASS, changed: prFiles(n, v.headRefOid) } })
@@ -3823,7 +3826,7 @@ if (drafts.length) {
     if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
     const carried = !c.carried ? ''
       : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
-        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} and empty commits came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
     else if (gated) { /* markGateHold reported it */ }
