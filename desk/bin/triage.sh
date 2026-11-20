@@ -120,7 +120,57 @@ const calls = [
 const out = [answers, calls.length ? `Calls already taken or checked for ${ticket}:\n${[...new Set(calls)].join('\n')}` : ''].filter(Boolean).join('\n\n');
 if (out) process.stdout.write(capBriefing(out, 12000));
 RECORDED_END
+# Taken before this triage reads any answer: the record's `triaged_at`, so an answer saved while the
+# pass runs counts as after it.
+TRIAGE_START="$(node -e 'process.stdout.write(new Date().toISOString())')"
 RECORDED="$(node --input-type=module -e "$RECORDED_JS" "$STATE" "$TICKET" "$DESK_RUN_BIN" 2>/dev/null || true)"
+
+# What the earlier triage left open (its unknowns and person steps), so a re-triage carries them unless
+# the ticket now settles them. The earlier record is kept aside (EARLIER) from the moment this pass
+# replaces it until this triage succeeds, so a failed run does not lose them; while it is aside it is the
+# last record a triage finished, never a failed pass's record left at $OUT. An answer saved since that
+# triage (its `triaged_at`; a record from before the stamp, its file time) settles its unknowns, as
+# answer.mjs does.
+EARLIER="$STATE/triage/$TICKET.earlier.json"
+EARLIER_SRC="$OUT"
+[ ! -f "$EARLIER" ] || EARLIER_SRC="$EARLIER"
+read -r -d '' EARLIER_JS <<'EARLIER_END' || true
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [earlier, brief, bin] = process.argv.slice(-3);
+const { triageCalls } = await import(pathToFileURL(join(bin, 'decisions.mjs')).href);
+const { answerEntriesSince } = await import(pathToFileURL(join(bin, 'handoff.mjs')).href);
+let d;
+try { d = JSON.parse(readFileSync(earlier, 'utf8')); } catch { process.exit(0); }
+if (!d || typeof d !== 'object' || Array.isArray(d)) process.exit(0);
+const since = Number.isNaN(Date.parse(d.triaged_at ?? '')) ? statSync(earlier).mtime.toISOString() : d.triaged_at;
+const answered = existsSync(brief) && answerEntriesSince(readFileSync(brief, 'utf8'), since).length > 0;
+const asked = triageCalls(d).ask.map((u) => u.trim()).filter(Boolean);
+const unknowns = answered ? [] : [...new Set(asked)];
+const steps = (Array.isArray(d.ben_steps) ? d.ben_steps : [])
+  .filter((s) => s && typeof s.step === 'string' && s.step.trim() && typeof s.blocker === 'string' && s.blocker.trim())
+  .map((s) => ({ step: s.step.trim(), blocker: s.blocker.trim() }));
+process.stdout.write(JSON.stringify({ unknowns, ben_steps: steps, answered: answered ? asked.length : 0 }));
+EARLIER_END
+OPEN='{"unknowns":[],"ben_steps":[],"answered":0}'
+if [ -f "$EARLIER_SRC" ]; then
+  OPEN="$(node --input-type=module -e "$EARLIER_JS" "$EARLIER_SRC" "$STATE/briefings/$TICKET.md" "$DESK_RUN_BIN")" \
+    || { echo "FAIL: could not read $TICKET's earlier triage record at $EARLIER_SRC" >&2; exit 1; }
+  [ -n "$OPEN" ] || OPEN='{"unknowns":[],"ben_steps":[],"answered":0}'
+fi
+OPEN_LIST="$(node -e 'const o=JSON.parse(process.argv[1]); console.log([...o.unknowns.map((u)=>`- unknown: ${u}`), ...o.ben_steps.map((s)=>`- person step: ${s.step}`)].join("\n"))' "$OPEN")"
+OPEN_SECTION=''
+if [ -n "$OPEN_LIST" ]; then
+  read -r -d '' OPEN_RULE <<'OPEN_RULE_END' || true
+Nothing recorded has settled these since. Keep each one in `unknowns` or `ben_steps`, worded as it is
+here, unless the ticket's text now answers the question or removes the step. For each one you leave
+out, add `{"item": "<it, worded as it is here>", "why": "<the ticket text that answers or removes it, quoted>"}`
+to a `dropped_earlier` list in the record. One left out with no entry there is carried into your
+record as it was.
+OPEN_RULE_END
+  OPEN_SECTION=$'\n'"**Still open from $TICKET's earlier triage.** $OPEN_RULE"$'\n\n'"$OPEN_LIST"$'\n'
+fi
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
@@ -223,7 +273,7 @@ ${RECORDED:+
 criterion or any other, and judge the lane and scope with them applied.
 
 $RECORDED
-}
+}$OPEN_SECTION
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
 {
@@ -269,8 +319,11 @@ esac
 export FORCE_PROMPT_CACHING_5M=1
 
 cd "$MAIN"
-# An earlier triage's record would read as this pass's, and hide a pass that wrote nothing.
-rm -f "$OUT"
+# An earlier triage's record would read as this pass's, and hide a pass that wrote nothing. The last
+# finished one goes aside until this pass succeeds; one already aside means $OUT is a failed pass's.
+# With none to set aside, a `null` goes there, so a record this pass leaves refused at $OUT is never
+# read as a finished one by the retry: `null` carries nothing.
+if [ -f "$EARLIER" ]; then rm -f "$OUT"; elif [ -f "$OUT" ]; then mv -f "$OUT" "$EARLIER"; else printf 'null\n' > "$EARLIER"; fi
 # No --allowedTools: it would grant every Bash command and Write outright, overriding the
 # read-only triage settings. The settings file alone decides what triage may run.
 # Its status is kept so a pass cut off at the timeout (desk_timeout's 124, or 137) is said as one.
@@ -359,6 +412,55 @@ d.verify_only = d.verify_only === true && d.already_met.length > 0;
 writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
 if (taken.length) console.log(`[triage] ${d.ticket}  took ${taken.length} call(s) on their recommendation`);
 CALLS_END
+# The earlier triage's open items this pass left out come back, unless it named each in
+# `dropped_earlier` with the ticket text that settles it; every one dropped is said.
+# An answer saved while this pass ran settles them too.
+node --input-type=module - "$OUT" "$OPEN" "$STATE/briefings/$TICKET.md" "$TRIAGE_START" "$DESK_RUN_BIN" <<'CARRY_END' || { echo "FAIL: $TICKET triage record's earlier questions could not be carried" >&2; exit 1; }
+import fs from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const [out, open, brief, start, bin] = process.argv.slice(2);
+const { answerEntriesSince } = await import(pathToFileURL(join(bin, 'handoff.mjs')).href);
+const d = JSON.parse(fs.readFileSync(out, 'utf8'));
+const o = JSON.parse(open);
+if (o.unknowns.length && fs.existsSync(brief) && answerEntriesSince(fs.readFileSync(brief, 'utf8'), start).length) {
+  o.answered = o.unknowns.length;
+  o.unknowns = [];
+}
+const t = (s) => String(s ?? '').trim();
+const why = new Map((Array.isArray(d.dropped_earlier) ? d.dropped_earlier : [])
+  .filter((x) => x && t(x.item) && t(x.why)).map((x) => [t(x.item), t(x.why)]));
+d.ben_steps = Array.isArray(d.ben_steps) ? d.ben_steps : [];
+const said = [];
+const dropped = [];
+let unknowns = 0;
+let steps = 0;
+for (const u of o.unknowns) {
+  if (d.unknowns.some((x) => t(x) === u)) continue;
+  if (why.has(u)) { dropped.push({ item: u, kind: 'unknown', why: why.get(u) }); continue; }
+  d.unknowns.push(u);
+  // A reserved unknown is asked as "<question> (recommended: <option>)" (decisions.mjs triageCalls),
+  // while this pass's taken call on it holds the bare question.
+  d.decided = d.decided.filter((c) => c.question !== u && !u.startsWith(`${c.question} (recommended: `));
+  unknowns += 1;
+}
+for (const s of o.ben_steps) {
+  if (d.ben_steps.some((x) => t(x.step) === s.step)) continue;
+  if (why.has(s.step)) { dropped.push({ item: s.step, kind: 'person step', why: why.get(s.step) }); continue; }
+  d.ben_steps.push(s);
+  steps += 1;
+}
+if (dropped.length) d.dropped_earlier = dropped;
+else delete d.dropped_earlier;
+// When this triage started reading answers: one after it settles its unknowns at the next re-triage,
+// whatever rewrites the file in between (ticket-facts.mjs refreshes its blockers and epic).
+d.triaged_at = start;
+if (unknowns || steps) said.push(`carried ${unknowns} earlier unknown(s) and ${steps} earlier person step(s) this pass left out`);
+for (const x of dropped) said.push(`dropped earlier ${x.kind} "${x.item}": ${x.why}`);
+if (o.answered) said.push(`${o.answered} earlier unknown(s) not carried: answered since`);
+fs.writeFileSync(out, `${JSON.stringify(d, null, 2)}\n`);
+for (const l of said) console.log(`[triage] ${d.ticket}  ${l}`);
+CARRY_END
 # A branch the worker could never push is refused, and the record goes with it, so the ticket is
 # triaged again rather than queued on that branch.
 BRANCH=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).branch)' "$OUT")
@@ -607,3 +709,4 @@ if (canvases.length && canvases.every((c) => c.snapshot || c.saved)) {
 SNAPPED_END
 
 node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(`[triage] ${d.ticket}  lane ${d.lane}  ${(d.files_in_scope??[]).length} files  ${(d.unknowns??[]).length} unknowns`)' "$OUT"
+rm -f "$EARLIER"
