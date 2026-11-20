@@ -44,23 +44,25 @@ t('a new episode after recovery fires again', run([at(0, 1.4), at(5, 1.4), at(6,
 
 // ---- #758: the harm signals. Swap growth over the window, a new OOM kill, a full tmpfs /tmp
 const harm = (samples, cfg2) => { let st = null; const out = []; for (const x of samples) { const r = harmStep(st, x, cfg2); st = r.state; out.push(...r.lines); } return out; };
-const hs = (min, swapGiB, oom = 0, tmpGiB = 0) => ({ now: min * 60_000, swapGiB, oom, tmpGiB });
+const hs = (min, swapGiB, oom = [], tmpGiB = 0) => ({ now: min * 60_000, swapGiB, oom, tmpGiB });
 t('#758 steady swap, no OOM, small /tmp: silent', harm([0, 2, 4, 6, 8].map((m) => hs(m, 3))).length, 0);
 const grew = harm([hs(0, 1), hs(3, 2), hs(6, 3.5), hs(8, 4)]);
 t('#758 swap up 2G or more within the window fires once, naming the figures', JSON.stringify(grew), JSON.stringify(['SWAP-GROWING: swap used 3.5G, up 2.5G in 10m: hold new spawns']));
 t('#758 the same growth spread past the window is silent', harm([hs(0, 1), hs(11, 2), hs(22, 3), hs(33, 4)]).length, 0);
 t('#758 it fires again only after it clears', harm([hs(0, 1), hs(2, 3.5), hs(14, 3.5), hs(26, 3.5), hs(27, 3.5), hs(30, 6)]).length, 2);
-t('#758 an OOM kill already in the log at the start is not news', harm([hs(0, 1, 4), hs(1, 1, 4)]).length, 0);
-t('#758 a new OOM kill fires, once per kill', JSON.stringify(harm([hs(0, 1, 4), hs(1, 1, 5), hs(2, 1, 5)])), JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory: drop to the ladder's lowest count"]));
-t('#758 a kill after the kernel log wrapped past old ones still fires', harm([hs(0, 1, 5), hs(1, 1, 2), hs(2, 1, 3)]).length, 1);
+t('#758 an OOM kill already in the log at the start is not news', harm([hs(0, 1, [10, 20]), hs(1, 1, [10, 20])]).length, 0);
+t('#758 a new OOM kill fires, once per kill', JSON.stringify(harm([hs(0, 1, [10]), hs(1, 1, [10, 30]), hs(2, 1, [10, 30])])), JSON.stringify(["OOM-KILL: the kernel killed 1 process(es) for memory: drop to the ladder's lowest count"]));
+t('#758 a kill after the kernel log wrapped past old ones still fires', harm([hs(0, 1, [10, 20, 30]), hs(1, 1, [30]), hs(2, 1, [30, 40])]).length, 1);
+t('#758 a kill that pushes an old one out of the log, the count unchanged, still fires', harm([hs(0, 1, [10, 20, 30]), hs(1, 1, [20, 30, 40])]).length, 1);
+t('#758 a log with no timestamps falls back to the count', harm([hs(0, 1, [NaN]), hs(1, 1, [NaN, NaN])]).length, 1);
 t('#758 an unreadable kernel log is said once', JSON.stringify(harm([hs(0, 1, null), hs(1, 1, null)])), JSON.stringify(['OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched']));
-t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, 0, 5), hs(1, 1, 0, 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
+t('#758 a full tmpfs /tmp fires once, not as a leak', JSON.stringify(harm([hs(0, 1, [], 5), hs(1, 1, [], 5.5)])), JSON.stringify(['TMPFS-HIGH: /tmp (tmpfs) holds 5.0G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)']));
 t('#758 off Linux nothing is watched and nothing said', harm([{ now: 0, swapGiB: null, oom: undefined, tmpGiB: null }, { now: 60_000, swapGiB: null, oom: undefined, tmpGiB: null }]).length, 0);
 const kernel = [
   '[ 812.1] oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task=node,pid=4100,uid=1000',
   '[ 812.1] Out of memory: Killed process 4100 (node) total-vm:9000000kB, anon-rss:7000000kB',
   '[ 901.4] Memory cgroup out of memory: Killed process 5200 (vitest) total-vm:4000000kB',
 ].join('\n');
-t('#758 one kill is one count, its oom-kill: summary aside; a cgroup kill counts too', oomKills(kernel), 2);
+t('#758 one kill is one line, its oom-kill: summary aside; a cgroup kill counts too, each by its timestamp', JSON.stringify(oomKills(kernel)), JSON.stringify([812.1, 901.4]));
 
 if (fails) { console.log(`FAIL: ${fails} checks failed`); process.exit(1); }

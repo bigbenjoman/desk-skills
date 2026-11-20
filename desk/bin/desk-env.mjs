@@ -1661,14 +1661,14 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
 }
 
 // The harm signals the watch also reads, which preceded real damage where the host's free memory did
-// not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM-killer line newer
-// than the watch's start (`oom` is the count of such lines, null when the kernel log cannot be read,
-// undefined off Linux, where none is watched),
+// not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM kill newer than the
+// watch's first reading (`oom` is each kill's kernel timestamp, in seconds since boot, as oomKills
+// reads them; null when the kernel log cannot be read, undefined off Linux, where none is watched),
 // and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
 // leak). Each line is said once, and again only after the signal has cleared.
 //   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
 export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4 } = {}) {
-  const st = { swap: [], oom0: null, oomSeen: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
+  const st = { swap: [], oomLast: null, oomSeen: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
   const lines = [];
   if (swapGiB != null) {
     const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
@@ -1683,10 +1683,20 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
     st.oomUnread = true;
   } else {
     st.oomUnread = false;
-    if (st.oom0 == null) st.oom0 = oom;
-    if (oom > (st.oomSeen ?? st.oom0)) lines.push(`OOM-KILL: the kernel killed ${oom - (st.oomSeen ?? st.oom0)} process(es) for memory: drop to the ladder's lowest count`);
-    // A count that falls is the kernel's ring buffer wrapping past old lines: count on from there.
-    st.oomSeen = oom < (st.oomSeen ?? st.oom0) ? oom : Math.max(oom, st.oomSeen ?? st.oom0);
+    // A kill is new when its timestamp is past the newest one seen, so the ring buffer dropping old
+    // kill lines, even while a new kill writes them out, hides nothing. A log with no timestamps
+    // (printk.time off) falls back to the count, reset when it falls.
+    const stamped = oom.every((x) => Number.isFinite(x));
+    if (stamped) {
+      const newest = oom.length ? Math.max(...oom) : -Infinity;
+      const fresh = st.oomLast == null ? 0 : oom.filter((x) => x > st.oomLast).length;
+      if (fresh) lines.push(`OOM-KILL: the kernel killed ${fresh} process(es) for memory: drop to the ladder's lowest count`);
+      st.oomLast = Math.max(newest, st.oomLast ?? -Infinity);
+    } else {
+      const seen = st.oomSeen ?? oom.length;
+      if (oom.length > seen) lines.push(`OOM-KILL: the kernel killed ${oom.length - seen} process(es) for memory: drop to the ladder's lowest count`);
+      st.oomSeen = oom.length;
+    }
   }
   if (tmpGiB != null) {
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
@@ -1695,9 +1705,11 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2
   return { state: st, lines };
 }
 
-// The OOM kills in a kernel log: one `Out of memory: Killed process` line per kill, global or a
-// cgroup's (`Memory cgroup out of memory: …`); the `oom-kill:` summary beside a global one is not counted.
-export const oomKills = (dmesg) => (String(dmesg).match(/out of memory: Killed process/gi) ?? []).length;
+// The OOM kills in a kernel log, as each one's timestamp in seconds since boot (NaN on a line with
+// none): one `Out of memory: Killed process` line per kill, global or a cgroup's (`Memory cgroup out of
+// memory: …`); the `oom-kill:` summary beside a global one is not counted.
+export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out of memory: Killed process/i.test(l))
+  .map((l) => { const m = /^\[\s*(\d+(?:\.\d+)?)\]/.exec(l); return m ? Number(m[1]) : NaN; });
 
 // What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
 // when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
