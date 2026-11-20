@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -228,8 +228,8 @@ function finish(q, key, n, pr) {
   const base = baseOf(q);
   if (pr.baseRefName !== base) throw new Error(`PR #${n} is into ${pr.baseRefName}, not this batch's base ${base}: nothing recorded`);
   const was = String(t.park?.question ?? '').split('\n')[0].slice(0, 120);
-  applySet(t, ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, ...(t.branch ? [] : [`branch=${pr.headRefName}`]),
-    ...(pr.isDraft ? [`draft_pr=${n}`] : []), `result.summary=PR #${n}: its last step finished by the orchestrator, after the worker parked${was ? ` (${was})` : ''}`]);
+  applySet(t, [...doneOnPr(n, { draft: pr.isDraft, summary: `PR #${n}: its last step finished by the orchestrator, after the worker parked${was ? ` (${was})` : ''}` }),
+    ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
   save(q);
   return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
 }

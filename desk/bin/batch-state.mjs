@@ -50,6 +50,12 @@ export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key,
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
 
+// A parked ticket recorded done on PR #pr, its park cleared: the `queue.mjs set` fields the pass writes
+// when it opens a refused worker's draft itself, and queue.mjs finish when the orchestrator finished the
+// last step. draft_pr only while the PR is a draft.
+export const doneOnPr = (pr, { draft = false, summary }) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr}`,
+  ...(draft ? [`draft_pr=${pr}`] : []), `result.summary=${summary}`];
+
 // The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
 // ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
 export const ownPr = (t) => { const earlier = t.merged_at ? Number(t.result?.pr) : NaN; return [t.result?.pr, t.draft_pr].find((n) => n != null && Number(n) !== earlier) ?? null; };
