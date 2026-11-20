@@ -2,7 +2,7 @@
 // usage-pace.mjs with a fixed clock against fake worker logs carrying rate_limit_event lines, then the
 // real pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, once per acceptance criterion.
 // A throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT: nothing touches your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -249,6 +249,19 @@ t('pass AC7: it reports no recent data', /^usage: no recent data for login defau
   log(w.state, 'R-1', [event(0.62, soon(3.5))]);
   out = await w.run();
   t('#772 a worker log on the repo\'s login, ahead of pace, holds its spawns', `${w.ticket('Y-1')} ${/^usage: 7-day 62%, pace 50% \+ 5: holding spawns$/m.test(out)}`, 'triaged true');
+}
+
+// #772: with no reading for the login it paces on, the pass probes it once; a plan whose newest event
+// names no 7-day window has none to read, so it is not probed.
+{
+  const stamp = () => existsSync(join(root, 'usage', 'probe.at'));
+  w = world({ pacing: '5' });
+  out = await w.run();
+  t('#772 no reading at all: the pass probes the login once', stamp(), true);
+  w = world({ pacing: '5' });
+  log(w.state, 'R-1', [both(win(0.1, 4 * HOUR), null)]);
+  out = await w.run();
+  t('#772 a plan with no 7-day window is not probed', `${stamp()} ${w.ticket('Y-1')}`, 'false running');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all usage pace checks passed');

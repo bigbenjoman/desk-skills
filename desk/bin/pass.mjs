@@ -333,7 +333,8 @@ const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
   if (!DRY && off != null) q('set-batch', `subscription_off=${off}`);
 }
 const PROBES = new Map();
-// At most one probe a login a pass, made only when something on that login is held on the limit.
+// At most one probe a login a pass, made when something on that login is held on the limit, or when
+// pacing has no reading for it (at most once per PROBE_EVERY_MS).
 const probeOnce = (login = OWN_LOGIN) => {
   const k = loginKey(login);
   if (!PROBES.has(k)) PROBES.set(k, probeNow({ login }));
@@ -1668,7 +1669,8 @@ let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
 const lastProbe = lastProbeAt(usageDir(), PACE_LOGIN);
-const noReading = !READING.seven_day && !PACE.bad && !/pacing off/.test(PACE.line)
+// A plan whose newest event names no 7-day window (READING.none) has nothing a probe could read.
+const noReading = !READING.seven_day && !READING.none?.includes('seven_day') && !PACE.bad && !/pacing off/.test(PACE.line)
   && (lastProbe == null || Date.now() - lastProbe > PROBE_EVERY_MS);
 if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() }))) {
   const p = probeOnce(PACE_LOGIN);
