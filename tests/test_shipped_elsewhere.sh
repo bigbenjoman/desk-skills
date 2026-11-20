@@ -80,7 +80,7 @@ q init se
 # DS-371's timeline: queued 10:00, its worker handed off to Stage 7, and a session's PR #337 from
 # fix/DS-371-evidence-workflow merged at 11:49:54Z. DS-376: a killed worker waiting to resume, whose
 # key a merged PR's branch carries too.
-mkdir -p "$T/wt/DS-371" "$T/wt/DS-376" "$T/wt/DS-379"
+mkdir -p "$T/wt/DS-371" "$T/wt/DS-376" "$T/wt/DS-379" "$T/wt/DS-382"
 queued DS-371 fix/DS-371-own handoff=pending handoff_stage=7 "worktree=$T/wt/DS-371" draft_pr=336
 queued DS-376 fix/DS-376-own resume=pending "worktree=$T/wt/DS-376" session_id=s-376
 # A PR whose title names the key, from a branch that does not: another ticket's PR often names it.
@@ -102,6 +102,7 @@ cat > "$T/merged.json" <<'EOF'
  {"number":337,"headRefName":"fix/DS-371-evidence-workflow","mergedAt":"2026-10-31T11:49:54Z"},
  {"number":341,"headRefName":"fix/DS-378-own","mergedAt":"2026-10-31T10:20:00Z"},
  {"number":342,"headRefName":"fix/DS-379-own","mergedAt":"2026-10-31T10:25:00Z"},
+ {"number":343,"headRefName":"fix/DS-382-own","mergedAt":"2026-10-31T10:27:00Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
@@ -140,6 +141,14 @@ queued DS-379 fix/DS-379-own merged_pr=342 merged_at=2026-10-31T10:25:00Z resume
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a requeued ticket whose new worker cleared its result is resumed, its own merge (merged_pr) not counted" \
   'spawned DS-379 && [ "$(field DS-379 result.summary)" = null ]'
+# The same row as a pre-upgrade pass left it: its spawn cleared the result and kept no merged_pr, and it
+# is done in Jira. Its own PR is the one from its branch merged by merged_at, so it is resumed.
+while read -r k; do q set "$k" state=done; done < "$T/spawned"
+queued DS-382 fix/DS-382-own merged_at=2026-10-31T10:27:00.500Z upload_round=u-382 resume=pending "worktree=$T/wt/DS-382" session_id=s-382
+jira DS-382 Done "done"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a requeued row a pre-upgrade pass spawned (no merged_pr) is resumed, its own merge found by its branch" \
+  'spawned DS-382 && [ "$(field DS-382 result.summary)" = null ] && [ "$(field DS-382 state)" != "\"done\"" ]'
 check "DS-404 AC3 a key that is only a prefix of a merged branch's spawns as today" 'unshipped DS-40'
 check "DS-404 AC3 a PR merged before the ticket was queued does not count" 'unshipped DS-372'
 check "DS-404 AC3 done in Jira with an open PR of its own spawns as today" 'unshipped DS-374'

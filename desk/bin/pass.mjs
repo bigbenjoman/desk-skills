@@ -1138,24 +1138,38 @@ function ownMergedPr(t) {
 // excludes nothing. A read that fails is null, and the ticket spawns as it would have.
 // The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
 const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
+// A row a pass spawned after its merge before spawns kept merged_pr: it has merged_at and a spawn's
+// round (upload_round, or a cloud start) but no PR. Its own PR is the one from its branch merged by
+// merged_at (a minute's grace for the driver's clock), so that merge is its own, not one to find.
+const MERGE_GRACE_MS = 60_000;
+const lostOwnPr = (t) => t.merged_at != null && t.result?.pr == null && t.merged_pr == null && (t.upload_round != null || t.cloud != null);
+const ownByBranch = (t, p) => lostOwnPr(t) && String(p?.headRefName ?? '') === String(t.branch ?? '')
+  && Date.parse(p.mergedAt) <= Date.parse(t.merged_at) + MERGE_GRACE_MS;
 function shippedElsewhere(t) {
-  const mine = t.result?.pr ?? t.merged_pr ?? null;
+  let mine = t.result?.pr ?? t.merged_pr ?? null;
   try {
-    const own = mine != null ? Date.parse(t.merged_at) : NaN;
-    const since = Math.max(...[Date.parse(t.added_at), own].filter((n) => !Number.isNaN(n)), -Infinity);
+    // A row that lost its own PR searches from when it joined the queue, which its own merge follows.
+    const since = Math.max(...[Date.parse(t.added_at), mine != null ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
     // 1000 is the most a GitHub search returns.
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
+    const list = Array.isArray(prs) ? prs : [];
+    if (mine == null) {
+      const found = list.find((p) => Number.isFinite(Number(p?.number)) && ownByBranch(t, p));
+      if (found) mine = Number(found.number);
+    }
+    const own = mine != null ? Date.parse(t.merged_at) : NaN;
     const re = new RegExp(keyPattern(t.key));
-    const hit = (Array.isArray(prs) ? prs : [])
+    const hit = list
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
         && (since === -Infinity || Date.parse(p.mergedAt) >= since)
         && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(mine))))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
     if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
   } catch { /* unread: spawn as before */ }
-  if (mine != null || t.draft_pr != null) return null;
+  // A row that lost its own PR has a merge behind it even when the read failed: never "done with no PR".
+  if (mine != null || t.draft_pr != null || lostOwnPr(t)) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {
