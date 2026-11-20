@@ -28,6 +28,10 @@ export { usageDir, probeLog };
 const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
 export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
 const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
+// When a probe last started on this login (ms), or null when none has.
+export const lastProbeAt = (dir = usageDir(), login = null) => {
+  try { const n = Number(readFileSync(probeStamp(dir, login), 'utf8')); return Number.isFinite(n) && n > 0 ? n : null; } catch { return null; }
+};
 
 // A login's newest reading of both windows, the default's with none named: its worker logs in every
 // repo and its last probe's output, the same sources a pass's pacing reads.

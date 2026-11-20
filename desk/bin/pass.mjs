@@ -36,7 +36,7 @@ import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
-import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
+import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -1657,18 +1657,29 @@ if (!HEALTH.reviewer && !DRY) for (const t of all.filter((x) => x.gate_hold)) { 
 // that would hold on a reading older than the probe interval, with nothing running, makes the one
 // probe call a pass may make (probeOnce) and judges on what it reads. A probe that fails keeps the hold.
 const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(usageDir(), login)], login, recent });
-const paceReading = () => loginReading(OWN_LOGIN);
+// It reads the login this repo's new sessions start on (REPO_LOGIN), which is what the spawns it holds
+// would spend: the pass's own login is often another, whose workers never feed this one's reading.
+// With no reading for that login at all, it probes it once too, rather than letting the guard go
+// blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
+// is not repeated every pass. A probe that succeeds leaves a reading that lasts the recent window.
+const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
-if (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() })) {
-  const p = probeOnce();
+const lastProbe = lastProbeAt(usageDir(), PACE_LOGIN);
+const noReading = !READING.seven_day && !PACE.bad && !/pacing off/.test(PACE.line)
+  && (lastProbe == null || Date.now() - lastProbe > PROBE_EVERY_MS);
+if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, reading: READING, now: Date.now() }))) {
+  const p = probeOnce(PACE_LOGIN);
   if (p.ok) {
     READING = paceReading();
     PACE = usagePace({ usage: READING.seven_day });
     paceProbe = '; read by a probe call just now';
   } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
 }
+// "No recent data" names the login it read, so a reading kept under another login is not mistaken for none.
+if (/^usage: no recent data/.test(PACE.line)) PACE = { ...PACE, line: PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default'}`) };
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
