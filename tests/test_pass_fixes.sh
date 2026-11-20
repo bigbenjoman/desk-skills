@@ -228,7 +228,7 @@ check "DS-446 AC3 red on the base at its merge base too: base red, and no fix wo
   '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && [ "$(field FB-1 base_red | jq -c "[.class, .head, .merge_base, .checks]")" = "[\"base red\",\"$H1\",\"$MB\",[\"Lint\"]]" ]'
 check "DS-446 AC3 and the item says so" 'echo "$out" | grep -qF "FB-1: BASE RED — PR #810: base red: Lint is red on main at the merge base 444444444444 too, so no fix try is spent on it"'
 since1=$(field FB-1 base_red.since)
-check "the hold records the pass it began at" '[[ "$since1" =~ ^\"20[0-9]{2}-[0-9]{2}-[0-9]{2}T ]]'
+check "the hold records the pass it began at, and that the call holds the PR" '[[ "$since1" =~ ^\"20[0-9]{2}-[0-9]{2}-[0-9]{2}T ]] && [ "$(field FB-1 base_red.held)" = true ]'
 check "DS-446 AC6 no run at the merge base: not base red, the fix try proceeds, and it says the base state is unknown" \
   '[ "$(field FB-2 state)" = "\"triaged\"" ] && [ "$(field FB-2 base_red)" = null ] && [ "$(field FB-2 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\"" ]'
 check "DS-446 AC2 the try records its class before its worker spawns" \
@@ -242,6 +242,7 @@ runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 once the job passes on the base, even ten commits back, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-1 state)" = "\"triaged\"" ] && [ "$(field FB-1 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-1 fix.class)" = "\"application defect\"" ] && [ "$(field FB-1 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
+check "and the record no longer reads as a hold" '[ "$(field FB-1 base_red.held)" = false ]'
 q add FB-5; q add FB-6; q add FB-7; q set FB-7 state=triaged
 q park FB-5 "which reviewer handle goes in the PR body?"; q park FB-6 "waiting on the weather"; q hold FB-7 FB-1
 check "DS-446 AC1 with the lever on, a park records its class and the rule that gave it" \

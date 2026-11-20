@@ -3312,12 +3312,20 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
 
 // ---- #756: a base red under the batch's PRs is one item, naming the checks, the PRs held and the last merges
 {
-  const hold = (checks, since) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since });
+  const hold = (checks, since, held = true) => ({ class: 'base red', head: 'h', merge_base: 'm', checks, cleared: [], since, held });
+  const st = (pr, red, o = {}) => ({ pr, state: 'OPEN', head: 'h', checks: red.map((name) => ({ name, status: 'completed', conclusion: 'failure' })), ...o });
+  const ticket = (pr, base_red, o = {}) => ({ state: 'done', result: { pr }, base_red, pr_status: st(pr, base_red?.checks ?? []), ...o });
   put('red756', { port: 4756, beat: 1, tickets: {
-    'B-1': { state: 'done', result: { pr: 31 }, base_red: hold(['tests'], minsAgo(40)) },
-    'B-2': { state: 'done', result: { pr: 32 }, base_red: hold(['lint', 'tests'], minsAgo(20)) },
+    'B-1': ticket(31, hold(['tests'], minsAgo(40))),
+    'B-2': ticket(32, hold(['lint', 'tests'], minsAgo(20))),
     'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
     'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
+    // Records that are not holds now: a PR closed unmerged, one green at the head the hold read, one at
+    // a new head, and one taking a fix try beside its base red check.
+    'X-1': ticket(33, hold(['tests'], minsAgo(120)), { pr_status: st(33, ['tests'], { state: 'CLOSED' }) }),
+    'X-2': ticket(34, hold(['tests'], minsAgo(120)), { pr_status: st(34, []) }),
+    'X-3': ticket(35, hold(['tests'], minsAgo(120)), { pr_status: st(35, ['tests'], { head: 'h2' }) }),
+    'X-4': ticket(36, hold(['tests'], minsAgo(120), false)),
   } });
   const reds = () => N.collect({ word: 'red756' }).items.filter((i) => i.kind === 'base-red');
   const s = reds();
@@ -3330,8 +3338,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#756 done records nothing and says what clears it', `${done.ok} ${reds().length}`, 'true 1');
   const off = N.record({ word: 'red756', ticket: 'base-red:default', action: 'not-now' });
   t('#756 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
-  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) } } });
-  t('#756 no open PR held, no item', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
+  put('green756', { port: 4757, beat: 1, tickets: { 'G-1': { state: 'done', result: { pr: 40 } }, 'G-2': { state: 'done', result: { pr: 41 }, merged_at: '2026-11-20T18:00:00.000Z', base_red: hold(['tests'], minsAgo(5)) },
+    'G-3': ticket(42, hold(['tests'], minsAgo(5)), { pr_status: st(42, []) }) } });
+  t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');

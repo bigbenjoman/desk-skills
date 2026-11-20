@@ -1071,7 +1071,13 @@ const BASE_RED = 'base-red:';
 const BASE_RED_MERGES = 3;
 function baseRedItems(r) {
   const tickets = Object.values(r.q?.tickets ?? {});
-  const held = tickets.filter((t) => t.base_red?.checks?.length && !t.merged_at);
+  // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
+  // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
+  const held = tickets.filter((t) => {
+    const b = t.base_red, st = prStatusOf(t);
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return false;
+    return latestPerCheck(st.checks ?? []).some((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion));
+  });
   if (!held.length) return [];
   const base = r.q.base ?? 'the default branch';
   const checks = [...new Set(held.flatMap((t) => t.base_red.checks))].sort();
