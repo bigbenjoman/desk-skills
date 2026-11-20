@@ -564,9 +564,11 @@ console.log([
   t("## Context\nreport https://claude.ai/code/artifact/1\n\n## References\nhttps://claude.ai/design/p/2"),
   t("## Context\n```\nhttps://www.figma.com/design/x\n```"),
   t("## Design\n\n## References\nhttps://www.figma.com/design/y"),
+  t("## References\n* Mockups https://www.figma.com/design/Ab/x, findings https://claude.ai/code/artifact/0b1c"),
+  t("## Design\nMockups are under References.\n\n## References\nhttps://www.figma.com/design/z"),
 ].join("|"));')
 check "#825 the design is the Design section as written; with none or a blank one, a design tool's links elsewhere, not in code and not another claude.ai page" \
-  '[ "$DS" = "\"No UI.\\n\"|\"https://claude.ai/design/p/2\"|null|\"https://www.figma.com/design/y\"" ]'
+  '[ "$DS" = "\"No UI.\\n\"|\"https://claude.ai/design/p/2\"|null|\"https://www.figma.com/design/y\"|\"* Mockups https://www.figma.com/design/Ab/x, findings \"|\"Mockups are under References.\\n\\nhttps://www.figma.com/design/z\"" ]'
 clean | awk '/^1\. AC1/ { print "```"; print "Given a filed ticket"; print "When it is picked up"; print "Then its criteria are read"; print "```"; next } { print }' > "$LD/gwt.md"
 lint "$LD/gwt.md" customfield_10208=M
 check "#825 lint: Given/When/Then in a preformatted block under Acceptance criteria are criteria" '[ $rc -eq 0 ] && grep -q "^Given a filed ticket" "$LD/gwt.md"'

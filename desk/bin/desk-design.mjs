@@ -944,18 +944,21 @@ export function blankCode(text) {
 // A design tool's link outside the Design section: a Figma file, or a Claude Design project
 // (claude.ai/design/...). Any other claude.ai link (a report, a dashboard) is no design.
 export const DESIGN_URL = /https?:\/\/(?:[a-z0-9-]+\.)*(?:figma\.com\/|claude\.ai\/design\/)/i;
-// The ticket's Design section, up to the next heading. With no Design section, or a blank one, every
-// line elsewhere holding a design tool's link stands in for it (one filed under References is the
-// ticket's design all the same). Lines in a code block are not read. Null when there is neither. A
-// Design section with anything in it, "No UI." included, is the answer as written.
+// The ticket's Design section, up to the next heading. One that links something, or says "No UI.",
+// is the answer as written. Otherwise (no Design section, a blank one, or one of prose alone, such as
+// "mockups are under References") every line elsewhere holding a design tool's link joins it, with any
+// other claude.ai link on that line taken out, so a report beside a mockup is never read as a canvas;
+// the rest of the line, a repo path beside the link, stays. Lines in a code block are not read. Null
+// when there is neither.
 export function designSection(text) {
-  const all = sections(text);
-  const s = all.find((x) => /^design\b/i.test(x.name));
+  const s = sections(text).find((x) => /^design\b/i.test(x.name));
   const own = s ? s.lines.map((l) => l.text).join('\n') : null;
-  if (own != null && own.trim()) return own;
-  const plain = sections(blankCode(text).join('\n'));
-  const elsewhere = plain.filter((x) => !/^design\b/i.test(x.name)).flatMap((x) => x.lines.map((l) => l.text)).filter((l) => DESIGN_URL.test(l));
-  return elsewhere.length ? elsewhere.join('\n') : own;
+  if (own != null && (/https?:\/\//i.test(own) || /^\W*no ui\b/im.test(own))) return own;
+  const elsewhere = sections(blankCode(text).join('\n')).filter((x) => !/^design\b/i.test(x.name)).flatMap((x) => x.lines.map((l) => l.text))
+    .filter((l) => DESIGN_URL.test(l))
+    .map((l) => l.replace(/https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\/[^\s|\])>"'}]+/gi, (u) => (DESIGN_URL.test(u) ? u : '')));
+  if (!elsewhere.length) return own;
+  return [own?.trim() ? own : null, ...elsewhere].filter((l) => l != null).join('\n');
 }
 
 export function claudeDesignLinks(section) {
