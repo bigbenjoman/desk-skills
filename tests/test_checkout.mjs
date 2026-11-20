@@ -288,11 +288,13 @@ const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
+has('#814 only a check-out that covered the same day moves the window', skill, 'If one that covered this same\nday (its header or date names it) was posted during it');
+has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
-has('#814 only a check-out that covered the same day moves the window', skill, 'If one that covered this same\nday (its header or date names it) was posted during it');
-has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
+has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
+has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

@@ -272,6 +272,7 @@ want('refuses a finding from an unknown seat', base({ findings: [f({ seat: 'nadi
 want('refuses a finding from a dead seat', base({ seats: [seat('correctness'), seat('nadia', 'claude', 'died')], findings: [f({ seat: 'nadia' })] }), 'died, so it raised nothing')
 want('refuses a finding with no result', base({ findings: [f({ result: undefined })] }), 'result must be one of')
 want('refuses a refuted finding with no refuter', base({ findings: [f({ refuted_by: undefined })] }), 'refuted_by must be')
+want('#763 refuses an agent as the refuter, naming the vendor it wants', base({ findings: [f({ refuted_by: 'ada-devils-advocate' })] }), 'refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("ada-devils-advocate")')
 want('refuses an UNREFUTED finding naming a refuter', base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
 want('refuses P3', base({ findings: [f({ severity: 'P3' })] }), 'severity must be')
 want('refuses a finding listed twice', base({ findings: [f(), f()] }), 'listed twice')

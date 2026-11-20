@@ -50,9 +50,11 @@ EOF
 }
 config yes
 
-# intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver.
+# intake.mjs and the supervisor copied beside fakes, so each runs the fake triage.sh, pass and driver,
+# and links to the real modules (link_bin, after the fakes).
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/intake.mjs" "$B/supervisor.mjs" "$B/epic-plan.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs queue.mjs desk-q-eta.mjs closeout.mjs installed.mjs run-by.mjs not-now.mjs answer.mjs usage-limit.mjs usage-pace.mjs usage-probe.mjs claude-logins.mjs harvest.mjs decisions.mjs borrow.mjs gate.mjs desk-ci.mjs call-login.mjs dir-lock.mjs queue-store.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The search: whatever $T/search.json holds, or a failure while $T/search.fails exists. A get of a key
 # with a file in $T/get prints that file.
 cat > "$T/fakes/desk-jira" <<EOF
@@ -98,6 +100,7 @@ process.exitCode = 10;
 EOF
 printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/digest.calls', 'checkin\\\\n');\nconsole.log(JSON.stringify({ status: 'not_due', push: null }));\n" "$T" > "$T/bin/digest.mjs"
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 printf '#!/bin/sh\necho "$@" >> "%s/driver.calls"\n' "$T" > "$T/bin/merge-driver.sh"
 # A PR list is whatever $T/prs.json holds (none by default); one by --head and --base is the PRs in
 # $T/promos.json with that head and base, or a failure while $T/promos.fails exists. The workflows at a
@@ -525,7 +528,9 @@ printf '{"version":1,"batch":"s1","supervised":false,"tickets":{"P":{"key":"P","
 rec H-7 A; n=$(count "$T/triage.calls")
 out=$(admit H-7); rc=$?
 check "admit: a session-run batch is refused before any triage, pointing at that session" '[ $rc -eq 11 ] && [ "$(count "$T/triage.calls")" = "$n" ] && grep -q "is run by a session, not the supervisor: send these tickets to that session" <<< "$out"'
-check "#877 the refusal names the command that session admits with" 'grep -q "let it admit them with node .*intake.mjs admit H-7 --session$" <<< "$out"'
+check "#877 the refusal names the command that session admits with" 'grep -q "let it admit them with node .*intake.mjs admit H-7 --session, or" <<< "$out"'
+check "#824 and tells the session that runs the batch to run it itself, not message itself" 'grep -q "intake.mjs admit H-7 --session, or, if this session is the one that runs it, run that yourself$" <<< "$out"'
+check "#824 desk-admit says the session that runs the batch admits with --session itself, never by messaging itself" 'grep -q "^- \`--session\`: only when this session runs the batch" "$SK" && grep -q "run the command the line names (\`… --session\`), never \`queue.mjs admit\` and never a message to yourself" "$SK"'
 out=$(admit H-7 --session); rc=$?
 check "#877 with --session, the session that runs the batch admits into it" '[ $rc -ne 11 ] && [ "$(qget tickets.H-7.state)" = triaged ] && [ "$(qget supervised)" = false ] && grep -q "^admitted H-7 by hand into batch s1" <<< "$out"'
 check "#877 and says its own next pass picks it up, not the supervisor" 'grep -q "^this session.s next pass picks up H-7$" <<< "$out" && ! grep -q "supervisor.s next tick" <<< "$out"'
@@ -681,6 +686,7 @@ printf '%s\n' '[{"number":5,"state":"MERGED","title":"fix: M-1 x","headRefName":
 check "DS-811 one merged only into main is not elsewhere" '[ "$(unpromoted M-1)" = null ]'
 rm -f "$T/prs.json" "$T/promos.json"
 mkdir -p "$T/children"
+rm -f "$T/bin/expand-parent.mjs" "$T/bin/plan-batch.mjs"
 cat > "$T/bin/expand-parent.mjs" <<EOF
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 const key = process.argv[2], s = process.env.DESK_AUTOPILOT_STATE;

@@ -138,6 +138,23 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
   t('a fix holding the merge on an instruction is parked, not done, with no marker', /^its worker ended with no marker, so your instruction on PR #40/.test(held.find((a) => a.type === 'park')?.question), true);
 }
 
+// The text a park's write waits on, from the worker's park file: only for the question it parked on.
+{
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { parkApprove } = await import('../desk/bin/batch-state.mjs');
+  const dir = mkdtempSync(join(tmpdir(), 'park-approve-'));
+  mkdirSync(join(dir, 'parks'));
+  const write = (o) => writeFileSync(join(dir, 'parks', 'P-1.json'), JSON.stringify(o));
+  write({ question: 'post the comment?', approve: { kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' } });
+  t('#775 a park file naming the question parked on gives its text', j(parkApprove(dir, 'P-1', 'post the comment?')), j({ kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' }));
+  t('#775 an earlier round\'s file, on another question, gives nothing', parkApprove(dir, 'P-1', 'which colour?'), null);
+  write({ question: 'post the comment?' });
+  t('#775 a file with no approve gives nothing', parkApprove(dir, 'P-1', 'post the comment?'), null);
+  t('#775 no file gives nothing', parkApprove(dir, 'P-2', 'x'), null);
+}
+
 // The markers: whichever was written last says how the worker ended.
 t('a DONE after a PARK has finished', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_DONE: pr=1', {})), j({ done: 'pr=1', reboots: 0 }));
 t('a PARK after a DONE is a park', j(logMarkers('AUTOPILOT_DONE: pr=1\nAUTOPILOT_PARK: q', {})), j({ park: 'q', reboots: 0 }));
@@ -152,7 +169,8 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","park-approve","set","live-read","clears-when","register","recommends","set","keep-links","decisions","report"]');
+  t('#775 the text a park awaits approval of is read for the question the worker parked on', j(as.find((a) => a.type === 'park-approve')), j({ type: 'park-approve', key: 'Q-1', question: 'which colour?' }));
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });
   t('a park the person put off is reported put off', j(lines(off, 'putOff')), j(['Q-1: which colour? (put off on 2026-11-01)']));
