@@ -121,7 +121,23 @@ function verdict(status, message, fields = {}) {
   return code;
 }
 const refuse = (message) => process.exit(verdict('error', message));
-crashShowsPerson((e) => verdict('error', e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`));
+// A crash after the pass has changed something (started a worker, moved, parked or failed a ticket)
+// says what it had done, in the message and as `before_crash` in the JSON, so nobody reads the error
+// as "nothing happened this pass" and starts a ticket that already has a session.
+const doneSoFar = () => {
+  let r;
+  try { r = report; } catch { return null; } // a crash before the report exists changed nothing it records
+  const got = Object.fromEntries(['spawned', 'advanced', 'parked', 'failed'].map((k) => [k, [...(r?.[k] ?? [])]]).filter(([, v]) => v.length));
+  return Object.keys(got).length ? got : null;
+};
+const crashed = (e) => {
+  const what = e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`;
+  const did = doneSoFar();
+  if (!did) return verdict('error', what);
+  const lines = Object.entries(did).flatMap(([k, v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
+  return verdict('error', `${what}\n${lines.join('\n')}`, { before_crash: did });
+};
+crashShowsPerson(crashed);
 
 let MAIN; let WORKTREES;
 // Before anything reads the default branch: a batch base (queue.mjs set-batch base=…) becomes
