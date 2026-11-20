@@ -1288,6 +1288,14 @@ const c560 = Object.fromEntries(N.collect({ word: 'comma560' }).items.map((i) =>
 t('DS-560 AC1 a comma-wrapped SHA is taken out with its commas', c560['C-1'], 'PR #181 is a draft: latest review does not open a line with "x" as its outcome. Settle it on #181; the next pass then picks it up.');
 t('DS-560 AC2 an unwrapped SHA is taken out as before', c560['C-2'], 'PR #182 is a draft: review states "x". Settle it on #182; the next pass then picks it up.');
 t('DS-560 AC3 a URL holding a hex run is left whole', c560['C-3']?.includes(shaUrl), true);
+// ---- DS-854: a refused fix ticket's body file is quoted with its id; a SHA beside it still goes.
+const bodyFile = '/home/me/.desk-autopilot/acme__p854/batches/VPL-861/evidence-runs/fix-338f2164.md';
+put('path854', { port: 5172, beat: 1, supervised: true, tickets: {
+  'P-1': draftPr(191, passed, { call: 'person', why: `its evidence workflow failed at 57e3a9253; no fix could be started for it for the repo (desk-jira create was refused (desk-jira: refusing to send ${bodyFile}: a body must be inside $DESK_STATE))`, action: 'settle it on #191' }),
+} });
+const p854 = N.collect({ word: 'path854' }).items.find((i) => i.t.key === 'P-1')?.need ?? '';
+t('DS-854 AC3 a path holding a hex id is quoted whole', `${p854.includes(bodyFile)} ${p854.includes('its latest commit.md')}`, 'true false');
+t('DS-854 AC3 a SHA on its own in the same reason is still taken out', /failed;/.test(p854) && !p854.includes('57e3a9253'), true);
 
 t('DS-417 AC3 a done note still follows the need whole', /\| PR #161 [^|]*\. \(You said done at [^|]*, and GitHub still showed it unmerged, still a draft\.\) \|/.test(longLine('L-3')), true);
 
