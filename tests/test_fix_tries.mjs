@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet } from '../desk/bin/review-threads.mjs';
@@ -1018,4 +1018,8 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-548 AC5 negative control: a pre-merge step alone is the person\'s, as today', fixCall(tk(), pr([ok('tests'), red('Check portal schema mirror', '905')]), bctx(null, steps))?.why, 'Check portal schema mirror · apply the PR\'s migrations to staging first');
 }
 
+// A requeued fix try's row reads where its worker is: it starts at the stage the try begins at, and
+// its task asks for the stage markers it prints from there.
+t('a fix try starts at Stage 3, a review try at 4b, a capture try at 5', ['checks', 'review', 'protected', 'rereview', 'capture'].map((kind) => fixStartStage({ kind })).join(' '), '3/9 3/9 3/9 4b/9 5/9');
+t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as you reach each stage you run, starting with 4b\/9/.test(fixTask({ key: 'T-1', fix: { kind: 'rereview', try: 1, of: 2, pr: 7, head: 'a'.repeat(40), what: 'x' } })), true);
 process.exit(fails ? 1 : 0);
