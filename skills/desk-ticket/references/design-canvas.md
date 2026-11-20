@@ -39,8 +39,8 @@ file name, saves it as `assets/<id>.<ext>` and points the boards at it, and save
 its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
 without it.
 
-**Before you list or read any file of a canvas a `blocking` line names, check who owns the
-artifact**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,
+**Before you list or read any file of the artifact a `blocking` line names (a canvas, a deck or a
+page), check who owns it**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,
 which lists no file). If the listing shows it was created outside the user's organisation, stop there
 and ask for access or an export (below), saving nothing. Otherwise carry on as below.
 
