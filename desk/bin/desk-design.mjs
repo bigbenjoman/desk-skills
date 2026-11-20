@@ -932,6 +932,9 @@ export function designSection(text) {
   return s ? s.lines.map((l) => l.text).join('\n') : null;
 }
 
+// A Figma URL: what designFact reports as `figma`, and what ticket lint takes as a design link.
+export const FIGMA_URL = /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i;
+
 export function claudeDesignLinks(section) {
   const out = [];
   for (const m of String(section ?? '').matchAll(/https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\/[^\s|\])>"'}]+/gi)) {
@@ -1027,7 +1030,7 @@ export function designFact(text, { root, dir, ref, state }) {
       saved: saved.find((c) => canonicalUrl(c.url) === canonicalUrl(url))?.path ?? null,
       snapshot: snapshotOf(state, url),
     })),
-    figma: /https?:\/\/(?:[a-z0-9-]+\.)*figma\.com\//i.test(section ?? ''),
+    figma: FIGMA_URL.test(section ?? ''),
   };
 }
 
