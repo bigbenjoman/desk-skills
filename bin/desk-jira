@@ -418,7 +418,7 @@ fields_from_args() {
     fi
     # Jira takes labels only as an array: labels=a,b is ["a","b"], and labels= is none. A JSON array
     # passes through as it is, below.
-    if [[ "$k" == labels && "$v" != \[* ]]; then
+    if [[ "$k" == labels ]] && ! printf '%s' "$v" | jq -e 'type == "array"' >/dev/null 2>&1; then
       obj=$(printf '%s' "$obj" | jq --arg v "$v" '.labels=($v | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")))')
       continue
     fi

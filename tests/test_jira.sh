@@ -267,6 +267,8 @@ out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_102
 check "and one label as an array of one" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"solo\"]" ]'
 out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels=["j"]' --no-lint 2>&1); rc=$?
 check "a JSON array of labels passes as it is" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"j\"]" ]'
+out=$(cd "$C" && "$J" create Story s body.md customfield_10208=M customfield_10207=P2 'labels= ["k"]' --no-lint 2>&1); rc=$?
+check "even with a space before it" '[ $rc -eq 0 ] && [ "$(sent_labels)" = "[\"k\"]" ]'
 out=$(cd "$C" && "$J" create Subtask s body.md --no-lint 2>&1); rc=$?
 check "a type with no rule needs no fields" '[ $rc -eq 0 ]'
 
