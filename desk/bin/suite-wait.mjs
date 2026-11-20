@@ -65,11 +65,14 @@ export function processList() {
 
 // The test lock's holder files, as [{pids, at}]: each mkdir slot's `pid` (the wrapper and its command)
 // and each flock slot's `.pid` (the command with-lock.sh exec'd into), with when each was written (ms).
-function holderFiles(dir) {
+// With `light`, the light lock's too (§4 Suite weight light: with-lock.sh test runs as `light`).
+function holderFiles(dir, light = false) {
   let names = [];
   try { names = readdirSync(dir); } catch { return []; }
+  const lock = light ? '(?:desk-test|desk-light)' : 'desk-test';
+  const slotDir = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.d$`), slotPid = new RegExp(`^${lock}\\.lock(\\.\\d+)?\\.pid$`);
   return names.flatMap((n) => {
-    const file = /^desk-test\.lock(\.\d+)?\.d$/.test(n) ? join(dir, n, 'pid') : /^desk-test\.lock(\.\d+)?\.pid$/.test(n) ? join(dir, n) : null;
+    const file = slotDir.test(n) ? join(dir, n, 'pid') : slotPid.test(n) ? join(dir, n) : null;
     if (!file) return [];
     try {
       const pids = readFileSync(file, 'utf8').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
@@ -77,9 +80,9 @@ function holderFiles(dir) {
     } catch { return []; }
   });
 }
-// The pids the test lock's holder files name.
-export function lockHolders(dir) {
-  return new Set(holderFiles(dir).flatMap((f) => f.pids));
+// The pids the test lock's holder files name, and with `light` the light lock's too.
+export function lockHolders(dir, { light = false } = {}) {
+  return new Set(holderFiles(dir, light).flatMap((f) => f.pids));
 }
 // Each pid a holder file names, with when its file was written (ms).
 export function lockHolderStamps(dir) {
@@ -90,18 +93,23 @@ export function lockHolderStamps(dir) {
 // prompt, and must not read as one.
 const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
+// The same for the light lock, which a worker's suite takes in a repo whose §4 Suite weight is light.
+const LIGHT_WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+light(?:\s|$)/;
+const LIGHT_FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-light\.lock(?:\s|$)/;
 
 // 'hold' when the process holds the test lock, 'wait' when it waits for it, else null: a pid a holder
 // file names holds; flock(1) runs its command as a child, so a single-slot flock with a child holds and
 // one with none waits; a with-lock.sh test|tsc wrapper no holder file names waits (a flock slot's
 // wrapper has exec'd into its command by the time it holds).
-function lockRole(p, { procs, holders }) {
+// With `light`, the light lock counts too: a worker's suite on it is running or waiting all the same.
+function lockRole(p, { procs, holders, light = false }) {
   if (holders.has(p.pid)) return 'hold';
-  if (FLOCK.test(p.args)) return procs.some((c) => c.ppid === p.pid) ? 'hold' : 'wait';
-  return WRAPPER.test(p.args) ? 'wait' : null;
+  if (FLOCK.test(p.args) || (light && LIGHT_FLOCK.test(p.args))) return procs.some((c) => c.ppid === p.pid) ? 'hold' : 'wait';
+  return WRAPPER.test(p.args) || (light && LIGHT_WRAPPER.test(p.args)) ? 'wait' : null;
 }
 
-// 'suite' when a process working in the worktree holds the test lock, 'lock' when one waits for it,
+// 'suite' when a process working in the worktree holds the test lock or the light lock (`holders` from
+// lockHolders with `light`), 'lock' when one waits for either,
 // else null. A holder file's pid counts only for a process still working in the worktree, so a stale
 // file whose pid has been reused elsewhere names nothing here. 'unknown' when ps cannot be read: no
 // list is not an empty one, so the pass holds the worker as it would a suite, up to the same ceiling.
@@ -112,7 +120,7 @@ export function suiteWait(worktree, { procs, cwds, holders }) {
   let waiting = false;
   for (const p of procs) {
     if (!here.has(p.pid)) continue;
-    const role = lockRole(p, { procs, holders });
+    const role = lockRole(p, { procs, holders, light: true });
     if (role === 'hold') return 'suite';
     if (role === 'wait') waiting = true;
   }
