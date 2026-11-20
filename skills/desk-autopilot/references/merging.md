@@ -34,7 +34,7 @@ accept a merge with red checks, so the rule is enforced only by you and the driv
 another session never race one PR and who merged it is on record. Before merging or arming:
 `node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
 it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
-"session <your session name>" --event merged` (`armed` for auto-merge, `failed` when gh refuses).
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
 `merge-log.mjs show --pr <n>` says who did.
 
 **Merge holds.** A PR into §0 Default branch whose diff touches any glob in §4 Merge holds (for a

@@ -535,6 +535,15 @@ EOF_PLAN
 
 backed_off(){ local f="$SD/backoff-$1"; [ -f "$f" ] && [ "$(date +%s)" -lt "$(cat "$f" 2>/dev/null || echo 0)" ]; }
 back_off(){ echo $(( $(date +%s) + ${2:-600} )) > "$SD/backoff-$1"; }
+# Turn off a PR's armed auto-merge (disarm <n> <its gate JSON>), and say so in the merge log, which
+# releases the hold an `armed` record keeps on it (merge-log.mjs): otherwise nothing would merge it.
+disarm(){
+  [ "$(printf '%s' "$2" | jq -r .autoMerge)" = true ] || return 0
+  gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1 || return 0
+  local s; s=$(printf '%s' "$2" | jq -r '.sha // empty')
+  [ -n "$s" ] && node "$DESK_RUN_BIN/merge-log.mjs" record "$1" "$s" --by "$MERGER" --event disarmed --repo "$REPO" >/dev/null 2>&1
+  return 0
+}
 
 behind(){ # behind <n> <sha> <key>
   if [ "$UPDATE_PERM" = yes ]; then
@@ -777,7 +786,7 @@ instruction_held(){ # instruction_held <n> <key> <gate json> -> 0 when the merge
   else
     return 1
   fi
-  [ "$(printf '%s' "$3" | jq -r .autoMerge)" = true ] && gh pr merge "$1" --repo "$REPO" --disable-auto >/dev/null 2>&1
+  disarm "$1" "$3"
   rm -f "$SD/green-$1"
 }
 
@@ -889,7 +898,7 @@ repair_held(){
     elif [ "$(printf '%s' "$rg" | jq -r .gate.state)" = fail ]; then why="it is red"
     fi
     if [ -n "$why" ]; then log "#$n hold behind repaired #$r ($rkey) ended: $why — merging in its usual order"; continue; fi
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     log "#$n HELD: it changes $ours, as repaired #$r ($rkey) does, and that repair merges first — until it merges, goes red or parks, or 60 minutes after the repair"
     return 0
   done <<EOF_REPAIRS
@@ -957,7 +966,7 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
     carried=$(printf '%s' "$holds" | paste -sd ';' -)
     log "#$n touches §4 Merge holds ($carried), but its base $BASE_BRANCH is not $(printf '%s' "$g" | jq -r .defaultBranch), so merging it deploys nothing; once it merges, the hold is the pass's to report on $BASE_BRANCH's own PR"
   elif [ -n "$holds" ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     # A hold that names no routine is the person's step; one that does is run below, before the merge,
     # where §3 merge-hold-routine is yes. Each routine once, in the row's order.
     bare=$(printf '%s' "$g" | jq -r '.holds[] | select((.routine // "") == "") | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
@@ -1010,7 +1019,7 @@ $settled
 EOF_RESOLVE
     unresolved=$(printf '%s' "$held" | grep -c .)
     if [ "$decision" = "CHANGES_REQUESTED" ] || [ "$unresolved" -gt 0 ]; then
-      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      disarm "$n" "$g"
       log "#$n has outstanding review feedback ($decision, $unresolved unresolved) — work it first; not merging (§3 merge-feedback-first: $FEEDBACK_RAW)"
       approval_clear "$key"
       if [ "$unresolved" -gt 0 ]; then feedback_stall "$n" "$key" "$state" "$unresolved" "$(printf '%s\n' "$held" | head -1)"
@@ -1030,7 +1039,7 @@ EOF_RESOLVE
   review_required=""
   if [ "$(printf '%s' "$g" | jq -r .reviewDecision)" = REVIEW_REQUIRED ]; then
     review_required=1
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     rm -f "$SD/green-$n"
     log "#$n at ${sha:0:9} needs an approving review (review decision REVIEW_REQUIRED) — not merging until a person approves it"
     queue_note "$key" "approval: an approving review is required at ${sha:0:9}: a person approves it before desk merges it"
@@ -1070,7 +1079,7 @@ EOF_RESOLVE
     log "#$n could not read the queue for its merge holds — not merging it this loop"; return 1
   fi
   if [ -n "${steps:-}" ]; then
-    [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+    disarm "$n" "$g"
     rm -f "$SD/green-$n"
     log "#$n $label at ${sha:0:9}, HELD until the person's step $steps is Done in Jira — the pass lifts the hold then"
     return 1
@@ -1084,7 +1093,7 @@ EOF_RESOLVE
     verdict=$(head_verdict "$n" "$want")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
-      [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && gh pr merge "$n" --repo "$REPO" --disable-auto >/dev/null 2>&1
+      disarm "$n" "$g"
       rm -f "$SD/green-$n"
       log "#$n $label at ${sha:0:9}, HELD with no clean review at its head: $(printf '%s' "$verdict" | jq -r '.why // "the head moved as it was read"') — the pass sends it to a review worker, or the person"
       return 1

@@ -80,7 +80,7 @@ gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-comm
 another session never race one PR and who merged it is on record. Before merging or arming:
 `node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
 it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
-"session <your session name>" --event merged` (`armed` for auto-merge, `failed` when gh refuses).
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
 `merge-log.mjs show --pr <n>` says who did.
 
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on

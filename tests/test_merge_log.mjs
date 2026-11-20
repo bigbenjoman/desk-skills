@@ -4,7 +4,7 @@
 import { mkdtempSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const T = mkdtempSync(join(tmpdir(), 'merge-log-'));
@@ -35,6 +35,14 @@ const m = M.claim({ repo: R, pr: 9, sha: 'def5678', by: S, now: NOW + 3 * M.CLAI
 t('#809 a PR another merger recorded merged is refused at any age', [m.ok, m.why], [false, `${R}#9 is already merged by ${D} (2026-11-20T10:00:00.000Z, at def5678): not merging`]);
 M.record({ repo: R, pr: 10, sha: 'aaa1111', by: S, event: 'armed', now: NOW, path });
 t('#809 auto-merge armed by another merger holds the PR too', M.claim({ repo: R, pr: 10, sha: 'aaa1111', by: D, now: NOW + 3 * M.CLAIM_MS, path }).ok, false);
+M.record({ repo: R, pr: 10, sha: 'aaa1111', by: D, event: 'disarmed', now: NOW + 1000, path });
+t('#809 once anyone disarms it, the armed hold is gone', M.claim({ repo: R, pr: 10, sha: 'aaa1111', by: D, now: NOW + 3 * M.CLAIM_MS, path }).ok, true);
+M.record({ repo: R, pr: 12, sha: 'ccc3333', by: S, event: 'armed', now: NOW, path });
+M.record({ repo: R, pr: 12, sha: 'ccc3333', by: S, event: 'failed', why: 'auto-merge cancelled', now: NOW + 1000, path });
+t('#809 an armer whose last event is a failure no longer holds it', M.claim({ repo: R, pr: 12, sha: 'ccc3333', by: D, now: NOW + 2000, path }).ok, true);
+M.record({ repo: R, pr: 13, sha: 'ddd4444', by: S, event: 'disarmed', now: NOW, path });
+M.record({ repo: R, pr: 13, sha: 'ddd4444', by: S, event: 'armed', now: NOW + 1000, path });
+t('#809 armed again after a disarm holds it again', M.claim({ repo: R, pr: 13, sha: 'ddd4444', by: D, now: NOW + 2000, path }).ok, false);
 M.claim({ repo: R, pr: 11, sha: 'bbb2222', by: S, now: NOW, path });
 M.record({ repo: R, pr: 11, sha: 'bbb2222', by: S, event: 'failed', why: 'not mergeable', now: NOW + 1000, path });
 t('#809 a merger whose last event is a failure no longer holds the PR', M.claim({ repo: R, pr: 11, sha: 'bbb2222', by: D, now: NOW + 2000, path }).ok, true);
@@ -50,6 +58,13 @@ const c3 = cli('record', '20', 'cafe123', '--by', S, '--event', 'merged');
 t('#809 record says what it wrote', [c3.status, c3.stdout.trim()], [0, `recorded ${R}#20 merged at cafe123 by ${S}`]);
 const c4 = cli('show', '--pr', '20');
 t('#809 show prints the PR\'s events, oldest first', c4.stdout.trim().split('\n').map((l) => l.split(/\s+/).slice(1, 3).join(' ')), [`${R}#20 claim`, `${R}#20 merged`]);
+// Two mergers claiming at once, ten times over: the lock lets exactly one through each time.
+const claimAt = (pr, by) => new Promise((res) => {
+  const c = spawn('node', [BIN, 'claim', String(pr), 'feed123', '--by', by, '--repo', R], { env: { ...process.env } });
+  c.on('close', (code) => res(code));
+});
+const races = await Promise.all(Array.from({ length: 10 }, (_, i) => Promise.all([claimAt(30 + i, S), claimAt(30 + i, D)])));
+t('#809 two claims at once: exactly one gets the PR, every time', races.filter((r) => r.sort().join() !== '0,11').length, 0);
 t('#809 a bad event is refused with the usage', cli('record', '20', 'cafe123', '--by', S, '--event', 'closed').status, 11);
 t('#809 a claim with no --by is refused', cli('claim', '20', 'cafe123').status, 11);
 
