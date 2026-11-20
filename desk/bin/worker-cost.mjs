@@ -305,10 +305,14 @@ export const batchCost = (stateDir, tickets) => tickets.map((t) => ticketCost(st
 
 // This batch's tickets, from queue `q`: its live ones, then those already archived (queue-store.mjs
 // archiveDone), whose logs stay in the state directory. A new batch sets the old archive aside, so the
-// archive holds only this batch's.
+// archive holds only this batch's. A ticket admitted again after it was archived counts from its first
+// admission in this batch (`first_added_at`, which archiveDone keeps), so no round of it is lost.
 export const batchTickets = (q) => {
-  const live = q?.tickets ?? {};
-  return [...Object.values(live), ...Object.entries(archivedOf(q)).filter(([k]) => !Object.hasOwn(live, k)).map(([, t]) => t)];
+  const live = q?.tickets ?? {}, archived = archivedOf(q);
+  const first = (t) => [t?.first_added_at, t?.added_at].filter(Boolean).sort()[0];
+  const since = (t, a) => { const at = [first(t), first(a)].filter(Boolean).sort()[0]; return at ? { ...t, added_at: at } : t; };
+  return [...Object.values(live).map((t) => since(t, Object.hasOwn(archived, t.key) ? archived[t.key] : null)),
+    ...Object.entries(archived).filter(([k]) => !Object.hasOwn(live, k)).map(([, t]) => since(t, null))];
 };
 
 // `node worker-cost.mjs`: this batch's WORKER COST table, at any time, idle or not.

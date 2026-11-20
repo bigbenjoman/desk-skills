@@ -4,12 +4,12 @@
 // left by an earlier batch, and a ticket no worker ran; and per-stage tokens from logs with
 // stage markers, tokens before the first marker, two rounds and no usage; and preflights beside the
 // runs, with a round moved aside compressed. The idle pass that prints the table runs in the test_pass_*.sh suites.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { logUsage, ticketCost, batchCost, batchTickets, costTable, wallTime, preflightLine, spawnEvent, wroteSince } from '../desk/bin/worker-cost.mjs';
-import { attachArchive, archivePath } from '../desk/bin/queue-store.mjs';
+import { attachArchive, archivePath, archiveDone } from '../desk/bin/queue-store.mjs';
 import { execFileSync } from 'node:child_process';
 import { parseWorkerLocation } from '../desk/bin/desk-env.mjs';
 let fails = 0;
@@ -203,6 +203,20 @@ t('anything else is refused', loc('remote'), 'refused: names the row');
   const none = join(S, 'none.json');
   writeFileSync(none, JSON.stringify({ version: 1, batch: 'n', tickets: { 'T-9': tk('T-9') } }));
   t('and says so when no worker ran', cli(none).trim(), 'WORKER COST: no worker has run in this batch');
+  // Admitted again after it was archived: it counts from its first admission, and a second archive keeps that.
+  const again = attachArchive({ version: 1, batch: 'b', tickets: { 'T-6': tk('T-6', joined) } }, (() => {
+    const f = join(S, 'again.json');
+    writeFileSync(archivePath(f), JSON.stringify({ tickets: { 'T-6': { ...tk('T-6', '2025-01-01T00:00:00Z'), archived_at: 'x' } } }));
+    return f;
+  })());
+  t('a ticket admitted again counts from its first admission', batchTickets(again).map((x) => `${x.key}@${x.added_at}`).join(' '), 'T-6@2025-01-01T00:00:00Z');
+  const af = join(S, 'twice.json');
+  writeFileSync(archivePath(af), JSON.stringify({ tickets: { 'T-6': { ...tk('T-6', '2025-01-01T00:00:00Z'), archived_at: 'x' } } }));
+  const twice = { version: 1, tickets: { 'T-6': { ...tk('T-6', joined), state: 'done', result: { pr: 6 }, merged_at: 'm' } } };
+  t('archiving it again moves it', archiveDone(af, twice).join(' '), 'T-6');
+  const kept = JSON.parse(readFileSync(archivePath(af), 'utf8')).tickets['T-6'];
+  t('and keeps when it was first admitted', `${kept.added_at} ${kept.first_added_at}`, `${joined} 2025-01-01T00:00:00Z`);
+  t('which the batch\'s tickets then count from', batchTickets(attachArchive({ version: 1, tickets: {} }, af))[0]?.added_at, '2025-01-01T00:00:00Z');
 }
 rmSync(S, { recursive: true, force: true });
 console.log(fails ? `${fails} failed` : 'worker cost: all checks passed');
