@@ -405,6 +405,10 @@ try {
     t('a Claude session behind several other processes is found', claudeAncestor(deep, 20), 23);
     const linked = [{ pid: 30, ppid: 31, args: 'sh -c x' }, { pid: 31, ppid: 1, args: 'node /opt/homebrew/bin/claude' }];
     t('an npm install run through its claude link on the PATH is found', claudeAncestor(linked, 30), 31);
+    const spaced = [{ pid: 50, ppid: 51, args: 'sh -c x' }, { pid: 51, ppid: 52, args: 'node /opt/Desk Tools/lib/node_modules/@anthropic-ai/claude-code/cli.js --resume' }, { pid: 52, ppid: 53, args: 'sh -c y' }, { pid: 53, ppid: 1, args: 'node --max-old-space-size=4096 /opt/Desk Tools/bin/claude' }];
+    t('an npm install under a prefix holding a space is found, by its entry point', claudeAncestor(spaced, 50), 51);
+    t('and by its claude link', claudeAncestor(spaced, 52), 53);
+    t('node running some other script is not a session', claudeAncestor([{ pid: 60, ppid: 61, args: 'x' }, { pid: 61, ppid: 1, args: 'node /usr/lib/node_modules/npm/bin/npm-cli.js run claude-docs' }], 60), null);
     const shell = [{ pid: 40, ppid: 41, args: 'node leases.mjs' }, { pid: 41, ppid: 1, args: 'sh -c /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --version' }];
     t('a shell that only names the Claude Code entry point is not a session', claudeAncestor(shell, 40), null);
     t('a process is not its own Claude session', claudeAncestor([{ pid: 5, ppid: 1, args: 'claude' }], 5), null);
@@ -476,6 +480,7 @@ try {
     const r = cli(d, ['mode'], { DESK_MACHINE: bad });
     t('DS-908 AC17: a kind with an unknown mode reads as shadow, the known entry as set', r.out.split('\n').slice(0, 2), ['port\ton', 'slot\tshadow']);
     t('a kind set on and also to an unknown mode reads as shadow', kindMode('port', { machineValue: () => 'port=on port=maybe' }).mode, 'shadow');
+    t('and so does one set to a mode that is not a word', kindMode('port', { machineValue: () => 'port=on port=on!' }).mode, 'shadow');
     t('DS-908 AC17: the entries it does not know are named', r.err, 'desk-env lease: the machine profile\'s `lease-kinds` names entries it does not know: "sockets=on", "slot=maybe": want <kind>=<mode> entries, kinds port, slot, preview-build, merge, mem and modes off, shadow, on');
   }
 } finally {

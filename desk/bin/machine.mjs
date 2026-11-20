@@ -62,7 +62,7 @@ export const DEFAULT_LEASE_MODE = 'shadow';
 export function parseLeaseKinds(raw) {
   const modes = {}; const unknown = []; const garbled = new Set();
   for (const entry of String(raw ?? '').split(/[\s,]+/).filter(Boolean)) {
-    const m = /^([\w-]+)=([\w-]+)$/.exec(entry);
+    const m = /^([\w-]+)=(.*)$/.exec(entry);
     const kind = m?.[1].toLowerCase(); const mode = m?.[2].toLowerCase();
     if (m && LEASE_KINDS.includes(kind) && LEASE_MODES.includes(mode)) modes[kind] = mode;
     else { unknown.push(entry); if (LEASE_KINDS.includes(kind)) garbled.add(kind); }

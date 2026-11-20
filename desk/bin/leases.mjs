@@ -136,14 +136,18 @@ export function startTimes(pids, psRows) {
 
 // A process that is a Claude Code session: the claude binary, or node running the Claude Code CLI as
 // its script, named by its entry point or by the `claude` link an npm install puts on the PATH (a
-// `#!/usr/bin/env node` script shows in ps as `node <the link's path>`). `args` is ps's args column.
-const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js$/;
+// `#!/usr/bin/env node` script shows in ps as `node <the link's path>`). `args` is ps's args column,
+// which joins argv with spaces, so the script's path is matched across them: an npm prefix may hold one.
+const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js(\s|$)/;
+const CLAUDE_LINK = /^(\S.*?\/)?claude(\s|$)/;
 const isClaudeProcess = (args) => {
   const words = String(args ?? '').trim().split(/\s+/);
   if (basename(words[0] ?? '') === 'claude') return true;
   if (!/^node(js)?$/.test(basename(words[0] ?? ''))) return false;
-  const script = words.slice(1).find((w) => !w.startsWith('-')) ?? '';
-  return CLAUDE_ENTRY.test(script) || basename(script) === 'claude';
+  const at = words.findIndex((w, i) => i > 0 && !w.startsWith('-'));
+  if (at < 0) return false;
+  const script = words.slice(at).join(' ');
+  return CLAUDE_ENTRY.test(script) || CLAUDE_LINK.test(script);
 };
 // The nearest ancestor of `pid` that is a Claude Code session, or null. `rows` is
 // psRows('pid=,ppid=,args=').
