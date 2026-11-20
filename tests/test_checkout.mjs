@@ -261,9 +261,11 @@ has('#818 a private channel is found too', skill, '`channel_types` `public_chann
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
-has('#815 a meeting line needs evidence of attendance', skill, '**A meeting line needs evidence they were there**');
-has('#815 an accepted event or invite-only notes are not that evidence', skill, 'An accepted event, or\n   generated notes that only list them as invited, prove nothing');
-has('#815 such a meeting is asked about, not posted', skill, 'Leave such a meeting out of the post and ask under\n   **Check before posting**: "Were you in <meeting>?"');
+has('#815 a meeting line needs evidence of attendance', skill, 'only for a meeting the user is shown to have attended');
+has('#815 an accepted invite or invite-only notes are not that evidence', skill, 'An accepted invite, or notes that list the user only as an invitee, is not evidence');
+has('#815 such a meeting is asked about, not posted', skill, '"Were you in <meeting> (<time>)? It has no\nline until you say so"');
+has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
+has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

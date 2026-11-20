@@ -9,7 +9,9 @@
 //   - a `# covers: <glob> ...` (`// covers: ...` in .mjs) line in its first 30 lines matches it, for
 //     suites that walk a directory rather than naming files (globs: `*` within a segment, `**` across).
 //     A glob claims documents and data only: a script must be named to be claimed, so a script no
-//     suite runs is unclaimed, and changing it runs everything;
+//     suite runs is unclaimed, and changing it runs everything. The one exception is another suite
+//     (`# covers: tests/test_pass*.sh`, for a suite that replays them): it is claimed, and changing it
+//     runs the claiming suite too, but nothing that suite names is followed;
 //   - a script the suite claims loads it (an ES import, a shell `source`) or launches it by a path
 //     built from a directory (`join(BIN, 'x.mjs')`, `"$DIR/x.sh"`; see loads()), followed
 //     transitively, except through a foundational file (desk-env.mjs; changing it runs all). A file
@@ -21,7 +23,7 @@
 //   full  - tests/run.sh, any other file under tests/ that is not a suite (helpers, stubs, fixtures,
 //           this script), .github/, install.sh, a root file other than README.md, desk-env.mjs or
 //           desk-env.sh, a deleted or renamed file, or a changed file no suite claims
-//   some  - the suites that claim a changed file, plus every changed suite
+//   some  - the suites that claim a changed file, plus every changed suite and the suites claiming it
 //   none  - nothing changed
 // The suites in ALWAYS (the syntax and shellcheck pass) run on every pull request whatever the scope,
 // and claim nothing: a file only they cover has no behavioural suite, so changing it runs everything.
@@ -131,6 +133,8 @@ export function buildMap(files, read) {
       seen.add(f);
       if (isCode(f) && !FOUNDATION.some((r) => r.test(f))) for (const q of namedBy(f)) if (!seen.has(q)) todo.push(q);
     }
+    // Another suite a glob matches is claimed as it stands, and nothing it names is followed.
+    for (const f of suites) if (f !== s && res.some((r) => r.test(f))) seen.add(f);
     for (const f of seen) { if (!claims.has(f)) claims.set(f, new Set()); claims.get(f).add(s.slice(6)); }
   }
   const shells = new Set(files.filter((f) => /\.(sh|bash)$/.test(f) || (!/\.[A-Za-z0-9]+$/.test(f.slice(f.lastIndexOf('/') + 1)) && /^#!.*[/ ](ba)?sh( |$)/.test(textOf(f).split('\n')[0]))));
@@ -163,7 +167,12 @@ export function decide(changes, map) {
   if (gone) return full(gone.status === 'D' ? `${gone.path} was deleted` : `${gone.from} was renamed to ${gone.path}`);
   const pick = new Set(ALWAYS);
   for (const { path } of changes) {
-    if (isSuite(path)) { if (!all.includes(path.slice(6))) return full(`${path} is not a suite tests/run.sh knows`); pick.add(path.slice(6)); continue; }
+    if (isSuite(path)) {
+      if (!all.includes(path.slice(6))) return full(`${path} is not a suite tests/run.sh knows`);
+      pick.add(path.slice(6));
+      for (const s of map.claims.get(path) ?? []) pick.add(s);
+      continue;
+    }
     if (FOUNDATION.some((r) => r.test(path))) return full(`${path} is shared by every suite`);
     if (!path.includes('/') && !ROOT_DOCS.has(path)) return full(`${path} is a root file`);
     const by = map.claims.get(path);

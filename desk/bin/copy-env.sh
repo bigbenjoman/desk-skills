@@ -12,7 +12,12 @@
 #
 # Which files: config §4 "Env files", one backtick span per repo-relative path (never split on
 # commas or spaces), or `none`. Unset is refused rather than guessed.
+#
+# --base, for a batch base's worktree (base-sync.mjs): a file already there is left as it is, and one
+# git does not ignore is never copied, since the base sync refuses a worktree with changes.
 set -euo pipefail
+BASE_MODE=
+[ "${1:-}" != --base ] || BASE_MODE=1
 
 # shellcheck source=desk-env.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/desk-env.sh"
@@ -36,6 +41,10 @@ while IFS= read -r rel; do
     //*|*/../*) echo "[copy-env] refusing '$rel': env files must be repo-relative, without .." >&2; missing=1; continue ;;
   esac
   src="$main_root/$rel"
+  if [ -n "$BASE_MODE" ] && [ -e "$rel" ]; then continue; fi
+  if [ -n "$BASE_MODE" ] && ! git check-ignore -q --no-index "$rel"; then
+    echo "[copy-env] not copying '$rel': git does not ignore it" >&2; missing=1; continue
+  fi
   if [ -f "$src" ]; then
     if [ "$src" -ef "$rel" ]; then
       echo "[copy-env] $rel already in place (running from the primary checkout)"

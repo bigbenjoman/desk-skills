@@ -226,7 +226,8 @@ worker: at its worktree root, removed at the end with `git clean -f`):
   `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not
   simplicity or domain: general-purpose by design).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
-  refutation `result` and who refuted it (`refuted_by`, absent when `UNREFUTED`). Scope findings
+  refutation `result` and the refuter's vendor (`refuted_by`: `claude` or `codex`, not an agent;
+  absent when `UNREFUTED`). Scope findings
   are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
   finding deliberately left unfixed; `carried: true` for a P2 carried from round 2 (above). A
   merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it

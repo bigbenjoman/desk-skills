@@ -52,9 +52,9 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
 
 | Excuse | Reality |
 |---|---|
-| "They said yes to this in voicepa, so here too" | Different repo, different blast radius. Offer it as the starting point; ask the row. |
+| "They said yes to this in voicepa, so here too" | Different repo, different blast radius. Show it in the start-point table with what it unlocks here; they confirm or edit it. |
 | "They took Recommended on the Jira rows, so the PR rows too" | Different capabilities, different answers. Ask each row. |
-| "Forty rows is tedious; I'll offer accept-all" | The user asked to be asked. Four per round, as many rounds as it takes. |
+| "Forty rows is tedious; I'll offer accept-all" | The user asked to be asked. Four per round, as many rounds as it takes; only a start from another repo shows them as one table. |
 | "They didn't answer that one; leave it as recommended" | Unanswered is `no`. Say which rows you left off. |
 | "I detected their GitHub handle, I can detect their permissions" | Facts can be detected. Consent cannot. |
 | "It's their own solo repo, the people rows don't matter" | Write `you`. The skills route questions by those rows. |
@@ -79,8 +79,8 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
    them, or from scratch. **Recommended: the configured repo that shares the most with this one**
    (same GitHub owner, then same Jira site); its description says which rows will be pre-filled.
    Starting from another repo pre-fills **§1** (identity, confirmed row by row, because the email
-   and Jira account can differ per client), and **§3 / §3b as the first option of each question**,
-   never as answers. §0, §2, §4 and §5 are always detected fresh for this repo.
+   and Jira account can differ per client), and **§3 / §3b as one table to confirm or edit** (step 2's
+   *Starting from another repo*), never written unshown. §0, §2, §4 and §5 are always detected fresh for this repo.
 4. If that repo uses the same Jira site, offer to copy its `jira-email` and `atlassian-token` into
    this repo's `CREDS` (`cp -p`, then `chmod 600` on both). Say that the token is then shared by both repos
    and that revoking it in Atlassian breaks both.
@@ -129,7 +129,8 @@ done. Both are here, read by every run that reaches them:
 rows to an `AskUserQuestion` call, as many calls as it takes. Read the rows from the template, never
 from a list here. The Recommended option is the template's Recommended value unless a rule here
 names another. A value this repo's config already holds for a row, `off` and `none` included, is the
-first option, as it stands; the memory ceiling above is the one exception. The Subscription row is
+first option, as it stands; the memory ceiling above is the one exception. Starting from another repo,
+these rows are in step 2's start-point table instead. The Subscription row is
 never in these calls: step 1 asks it once per repo (*This repo's subscription*). The preferred
 dev-server port is the one row asked out of order: it is left out of these calls and asked after
 them, once the autopilot worker concurrency answer is in (*The dev-server port is read, not
@@ -226,7 +227,9 @@ location: a path only, never the token.
 ## Red flags — stop
 
 - About to write a `yes` the user did not choose in this conversation, or copy one from another repo
-- Offering an accept-all instead of one question per row
+  without showing it in the table they confirmed
+- Offering an accept-all instead of one question per row, outside the start-point table, which
+  shows every row and its value
 - Filling a field from detection without showing it
 - Asking the user to paste a token into the conversation
 - Calling a connector tool to "check" it

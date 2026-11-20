@@ -463,7 +463,6 @@ for k in 10 11 12 13; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/
 # PR body in its log. R-1 parked on a scope call it recommends an option for; R-2's recommendation is a
 # money call, never taken.
 export DESK_QUEUE="$T/queue-rc.json" DESK_AUTOPILOT_STATE="$T/state-rc"; mkdir -p "$T/state-rc/logs"
-ln -s "$B/answer.mjs" "$T/desk/bin/answer.mjs"
 # Into the §3 table: later sections appended tables of their own after it.
 node -e 'const f = process.argv[1], fs = require("fs"); fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/^(\| `autopilot-workers` .*\n)/m, "$1| `git-push` | Push | `yes` | `yes` |\n| `pr-open` | Open a PR | `yes` | `yes` |\n"))' "$T/config.md"
 cat > "$T/stub/gh" <<EOF
@@ -1481,5 +1480,20 @@ check "DS-798 AC2 a step it failed is recorded with what it found and the run UR
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
+
+# ---- #771: a pass that crashes after starting a worker says which it started, in text and JSON.
+# A §4 Evidence workflow row naming `none` beside a workflow is a config error the pass reads late,
+# after its spawns.
+export DESK_QUEUE="$T/queue-771.json" DESK_AUTOPILOT_STATE="$T/state-771"; mkdir -p "$T/state-771/logs"
+{ cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `x.yml` |\n'; } > "$T/config-771.md"
+q init c771; q set-batch concurrency=1
+q add C-1; q set C-1 state=triaged branch=fix/C-1
+out=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" 2>&1); rc=$?
+check "#771 a crash after a spawn exits 11 and names the worker it started" \
+  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed: .*Evidence workflow" && echo "$out" | grep -q "^before it stopped, this pass spawned:" && echo "$out" | grep -q "^  C-1 port="'
+q set C-1 state=triaged; q set C-1 session_id=null
+jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
+check "#771 and the JSON carries before_crash.spawned" \
+  'echo "$jout" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);process.exit(j.status===\"error\"&&/^C-1 /.test(j.before_crash?.spawned?.[0]??\"\")?0:1)})"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

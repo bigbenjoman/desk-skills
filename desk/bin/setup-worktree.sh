@@ -248,76 +248,7 @@ is_none "$(printf '%s' "$ENV_FILES" | head -1)" && ENV_FILES=""
 # A non-local URL is blanked, never rewritten. Prints one line per change; exits 1 if the result is
 # not what the rule says.
 rewrite_env() { # rewrite_env ticket|blank
-  node - "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" "${PG_PORT:-}" <<'NODE'
-const fs = require('fs');
-const path = require('path');
-const [mode, wt, db, container, varsRaw, filesRaw, hostPort] = process.argv.slice(2);
-const vars = varsRaw.split('\n').filter(Boolean);
-const files = filesRaw.split('\n').filter(Boolean);
-// Every host but the container's own name reaches it through the port it publishes on this machine.
-const VIA_HOST = new Set(['localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0', 'host.docker.internal']);
-const LOCAL = new Set([...VIA_HOST, container].filter(Boolean).map((h) => h.toLowerCase()));
-const URL_RE = /^([a-z][a-z0-9+.-]*):\/\/(?:([^@/]*)@)?(\[[^\]]*\]|[^/:?#]*)(:\d+)?(\/[^?#]*)?(\?[^#]*)?$/i;
-const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// `(.*)` cannot match a trailing \r, so a CRLF file (common on WSL) would skip every line and keep
-// its production URL. Lines are matched with the \r removed; a rewritten or blanked line is written back with a plain \n.
-const lineRe = new RegExp(`^(\\s*(?:export\\s+)?)(${vars.map(esc).join('|')})(\\s*=\\s*)(.*?)\\r?$`);
-let bad = 0;
-let touched = 0;
-function target(value) {
-  let q = '';
-  let v = value.trim();
-  const m = /^(['"])(.*)\1\s*(#.*)?$/.exec(v);
-  if (m) { q = m[1]; v = m[2]; } else v = v.replace(/\s+#.*$/, '');
-  if (mode === 'blank' || v === '') return { out: '', what: 'blanked' };
-  const u = URL_RE.exec(v);
-  if (u) {
-    const host = u[3].toLowerCase();
-    if (!LOCAL.has(host)) return { out: '', what: `blanked (host ${u[3]} is not local, so it is never rewritten)` };
-    const port = hostPort && VIA_HOST.has(host) && (u[4] || hostPort !== '5432') ? `:${hostPort}` : (u[4] ?? '');
-    return { out: `${q}${u[1]}://${u[2] != null ? `${u[2]}@` : ''}${u[3]}${port}/${db}${u[6] ?? ''}${q}`, what: `repointed at ${db}${port ? ` on port ${port.slice(1)}` : ''}` };
-  }
-  if (/^[A-Za-z0-9_]+$/.test(v)) return { out: `${q}${db}${q}`, what: `set to ${db}` };
-  return { out: '', what: 'blanked (not a URL or a database name)' };
-}
-function ok(value) {
-  const v = value.trim().replace(/^(['"])(.*)\1$/, '$2');
-  if (v === '') return true;
-  if (mode === 'blank') return false;
-  const u = URL_RE.exec(v);
-  if (u) {
-    const host = u[3].toLowerCase();
-    const portOk = !hostPort || !VIA_HOST.has(host) || (u[4] ?? ':5432') === `:${hostPort}`;
-    return LOCAL.has(host) && portOk && (u[5] ?? '') === `/${db}`;
-  }
-  return v === db;
-}
-if (vars.length) {
-  for (const rel of files) {
-    const f = path.join(wt, rel);
-    if (!fs.existsSync(f)) continue;
-    const lines = fs.readFileSync(f, 'utf8').split('\n');
-    let changed = false;
-    for (let i = 0; i < lines.length; i++) {
-      const m = lineRe.exec(lines[i]);
-      if (!m) continue;
-      const t = target(m[4]);
-      const next = `${m[1]}${m[2]}=${t.out}`;
-      if (next !== lines[i]) { lines[i] = next; changed = true; }
-      console.log(`[setup-worktree]   ${rel}: ${m[2]} ${t.what}`);
-      touched++;
-    }
-    if (changed) fs.writeFileSync(f, lines.join('\n'));
-    // Verify from disk, not from what was meant to be written.
-    for (const l of fs.readFileSync(f, 'utf8').split('\n')) {
-      const m = lineRe.exec(l);
-      if (m && !ok(m[4])) { console.error(`FAIL: ${rel}: ${m[2]} still holds a value outside this ticket's database`); bad++; }
-    }
-  }
-}
-if (!touched && vars.length) console.log(`[setup-worktree]   no copied env file sets ${vars.join(', ')}`);
-process.exit(bad ? 1 : 0);
-NODE
+  node "$DESK_ENV_DIR/env-rewrite.mjs" "$1" "$WT" "$DB" "$PG_CONTAINER" "$DB_VARS" "$ENV_FILES" "${PG_PORT:-}"
 }
 
 pg_user() { # the user in the first local database URL the primary checkout's env files name, else postgres
