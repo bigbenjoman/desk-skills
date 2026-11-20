@@ -190,5 +190,18 @@ t('tryLabel: a protected files try', tryLabel({ kind: 'protected', try: 1, of: 2
 t('tryLabel: an extra try', tryLabel({ kind: 'checks', extra: true }), 'extra fix try');
 t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
 
+// A check red on several ready PRs at once is said once, and each PR red only on it is held.
+{
+  const G = { required: ['tests', 'Vercel Preview'], advisory: [] };
+  const three = [701, 702, 703].map((n) => [tk({ key: `O-${n}`, branch: `task/O-${n}` }), pr([ok('tests'), red('Vercel Preview')], { pr: n })]);
+  const as = drive(snap(three, { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
+  const lines = as.filter((a) => a.type === 'out').map((a) => a.line);
+  t('outage: the pass says it once, naming the PRs', lines.filter((l) => l.includes('red on 3 ready PRs at once')).join('|'),
+    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs');
+  t('outage: each PR is held as an outage, none requeued', applied(as).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
+  const two = drive(snap(three.slice(0, 2), { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
+  t('outage: on two PRs it is not one, and each gets its fix try', applied(two).map((a) => a.call.call).join(), 'requeue,requeue');
+}
+
 if (fails) { console.log(`${fails} failure(s)`); process.exit(1); }
 console.log('all passed');

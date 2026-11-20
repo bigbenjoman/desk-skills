@@ -50,12 +50,14 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
-**A second check-out of the same day starts where the first ended.** Step 2 reads the
-destination back (the channel's, or the file's, previous check-out). If one that covered this same
-day (its header or date names it) was posted during it, run the collectors again with `--since <the
-time it was posted>`: their window then starts there, and their headers say `from HH:MM`. A
-check-out for an earlier day, even one posted this morning, leaves the window whole, and a draft
-never sent posted nothing, so it moves nothing.
+**A check-out starts where the previous one ended.** Step 2 reads the destination back (the
+channel's, or the file's, previous check-out). Run the collectors again with `--since <the time it
+was posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or
+date names it>`: their window then starts where that check-out stopped, the evening before
+included, so nothing posted between it and midnight drops out, and their headers say from when. One
+written the next morning for its own day covered only that day, so the window starts at midnight.
+A draft never sent posted nothing, so it moves nothing. Every item it called in review or WIP is
+read again for its state now (step 3).
 Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
 day and say so. Say the window in your one line.
 
@@ -128,6 +130,17 @@ repo) and PR number first, then by topic. One item per piece of work, not one pe
 headless worker session (`headless worker`) on the ticket it worked: join it to that ticket's PR
 and Jira item like any other session, and report what changed and where it stands. Never what ran
 it: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.
+- **A batch's own sessions are never items.** A triage, preflight or worker session is evidence
+  for the ticket it worked, never work in its own right; one that names no ticket, branch or PR to
+  join it to is left out.
+- **A ticket a worker parked with no PR** gets an item only if Jira or GitHub shows a change to it
+  that day (a status move, a comment, a commit), and the item says what that change was. A session
+  alone is not a change.
+- **To have the batch named**, set `DESK_CHECKOUT_NAME_BATCH=1` in your shell or the `env` block of
+  `~/.claude/settings.json` (`printenv DESK_CHECKOUT_NAME_BATCH` reads it). Then one line after
+  the substantive work names the items a batch built by key, e.g. "Built by an autopilot batch:
+  ABC-12, ABC-14.", and the items themselves still read as above. Unset, or any other value, no
+  such line.
 
 For each item, settle:
 - **What was wrong or needed, in user or team terms.** Take it from the ticket summary, the PR

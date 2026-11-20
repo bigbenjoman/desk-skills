@@ -290,7 +290,7 @@ export function fixCall(t, s, ctx) {
   const dirty = s.mergeable === 'CONFLICTING' || s.mergeState === 'DIRTY';
   const tree = dirty ? null : treeHeld(t, s);
   const conflict = dirty || !!tree;
-  let fix, split, base, now, built = null;
+  let fix, split, base, now, built = null, waiting = false;
   if (conflict) {
     const at = ctx.baseAt?.() ?? null;
     now = at ? { head: s.head, ...at } : undefined;
@@ -306,9 +306,15 @@ export function fixCall(t, s, ctx) {
     built = buildRead(rest, ctx, gate);
     // With checks still running, only the build of a PR red on nothing else goes ahead: it needs
     // none of them, and buildCall holds its re-run while a check in its own run is still running.
+    // With no try left at this head, a red check a worker would fix is the person's now: the driver's
+    // reruns still run, and a green head still merges, but the pass says so rather than wait in silence.
+    // Only that stuck answer skips the wait (`waiting`); the extra try, or a hold, still waits for it.
+    const noTryLeft = spent(done, fixedAt(done, s.head));
     if (gate.pending.length) {
       const only = built && rest.every((f) => built.names.includes(f.name));
-      return only && (built.call.call === 'build' || built.call.call === 'rebuilt') ? built.call : null;
+      if (only && (built.call.call === 'build' || built.call.call === 'rebuilt')) return built.call;
+      if (!noTryLeft) return null;
+      waiting = true;
     }
     split = splitFailing(built ? rest.filter((f) => !built.names.includes(f.name)) : rest, ctx);
     const { mine, notMine } = split;
@@ -323,9 +329,19 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
-    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) return null;
+    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
+    // not this PR's code: held with no fix try, whose worker could not fix it. Only where every red
+    // check is one, so a check a person clears, a state check or a check build keeps its own route. It
+    // comes before the rerun gate: the driver reruns no such check, so that gate would wait in silence.
+    if (ctx.outage && !notMine.length && !state.length && !built && mine.every((f) => ctx.outage.has(f.name))) {
+      return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, s.pr) };
+    }
+    if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
+      if (!noTryLeft) return null;
+      waiting = true;
+    }
     base = againstBase(t, s.head, mine, notMine, ctx);
-    if (base?.held) return base.held;
+    if (base?.held) return waiting ? null : base.held;
     fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
@@ -333,9 +349,31 @@ export function fixCall(t, s, ctx) {
   // A try beside a check the pass builds tells its worker to leave that check red. With no try left the
   // head is final, so its build runs beside the stuck answer (besideStuck).
   const withBuilds = (c) => (built && c.call === 'requeue' ? { ...c, fix: { ...c.fix, builds: built.names } } : besideStuck(c, built));
-  if (spent(done, fixedAt(done, s.head))) return withBuilds(spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base));
+  if (spent(done, fixedAt(done, s.head))) {
+    const c = spentOnRed(done, { pr: s.pr, head: s.head }, split.mine, split.notMine, ctx, s.checks, base);
+    return waiting && c.call !== 'stuck' ? null : withBuilds(c);
+  }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
+// A required check red on OUTAGE_PRS or more ready PRs at once, and reported by a platform rather than a
+// GitHub Actions run of the repo's own (no runId: a deploy or preview service's status), is taken for that
+// platform failing (down, its queue timing out), not for each PR's code: Map name -> the PRs it is red on.
+// A workflow's job red on many PRs is left alone: their code, or the base (againstBase), may be its cause.
+// undrafted: [{ s: { pr, checks } }], lists: { required, advisory }.
+export const OUTAGE_PRS = 3;
+export function outageChecks(undrafted, lists) {
+  const on = new Map();
+  for (const { s } of undrafted ?? []) {
+    const gate = evaluateGate(s?.checks ?? [], { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
+    for (const name of new Set(gate.failing.filter((f) => f.runId == null).map((f) => f.name))) on.set(name, [...(on.get(name) ?? []), s.pr]);
+  }
+  return new Map([...on].filter(([, prs]) => prs.length >= OUTAGE_PRS));
+}
+const outageWhy = (names, outage, pr) => {
+  const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
+  const one = names.length === 1;
+  return `${names.map((x) => `"${x}"`).join(', ')} ${one ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. Nothing desk reruns turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`;
+};
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
 

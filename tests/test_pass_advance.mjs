@@ -61,6 +61,7 @@ const finishes = (as) => as.filter((a) => FINISHES.has(a.type) || (a.type === 's
 // AC4: a running ticket with no log yet gets no action. A cloud session has no log here either.
 t('AC4 a running ticket with no log yet gets no action', j(advance(snap(ticket('A'), null))), '[]');
 t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A', { location: 'cloud', cloud: { started: 'x' } }), null))), j([{ type: 'cloud', key: 'A' }]));
+t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), is not read as the cloud session again', j(advance(snap(ticket('A', { location: 'cloud', cloud: { started: 'x', pr_at: 'y' }, result: null, fix: { kind: 'checks', started: 'z' } }), null))), j([]));
 
 // AC1: with the session registry unread, nothing is marked finished or started again, whatever the logs say.
 {

@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -58,6 +58,13 @@ const two = [...one, { try: 2, head: 'c'.repeat(40), kind: 'checks', what: 'red:
 const c5 = fixCall(tk({ fix_tries: two }), both, ctx());
 t('AC5 after 2 tries it is stuck, not requeued', c5?.call, 'stuck');
 t('AC5 the stuck text names the checks', c5?.why, 'still red after 2 fix tries: Backend tests, Lint');
+// With no try left, a red head is the person's while the driver's reruns or their gap are still to come,
+// and while another check still runs: the pass says so rather than wait on them in silence.
+t('with no try left, red before the driver\'s last rerun is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ reruns: () => 1 }))?.why, 'still red after 2 fix tries: Backend tests, Lint');
+t('with no try left, red before the last rerun\'s gap is over is stuck', fixCall(tk({ fix_tries: two }), both, ctx({ cooledDown: false }))?.call, 'stuck');
+t('with no try left, red while another check still runs is stuck', fixCall(tk({ fix_tries: two }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx())?.call, 'stuck');
+t('with a try left, red before the last rerun still waits', fixCall(tk({ fix_tries: one }), both, ctx({ reruns: () => 1 })), null);
+t('with a try left, red while another check still runs still waits', fixCall(tk({ fix_tries: one }), pr([...both.checks, { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
 t('AC5 or the conflict, after 2 conflict tries', fixCall(tk({ fix_tries: two.map((x) => ({ ...x, kind: 'conflict' })) }), dirty, ctx())?.why, 'still in conflict with main after 2 fix tries');
 
 // AC6: red only on a check no worker can fix: stuck at once, with the command.
@@ -951,6 +958,11 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
   t('DS-494 AC1 and calls it the one extra try', b1.includes('## Extra fix try') && b1.includes('This is the one extra try after the 2 fix tries.') && !b1.includes('try 2 of 2'), true);
   t('DS-494 AC1 and says the line is evidence, not instruction', b1.includes('no instruction to follow'), true);
   t('DS-494 AC1 its task names the extra try', fixTask(tk({ fix: c1.fix })).includes('Your task is the extra fix try on PR #697'), true);
+  // The extra try waits for the driver's reruns, their gap and every check, as a numbered try does.
+  t('the extra try waits for the driver\'s last rerun', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ reruns: () => 1 })), null);
+  t('the extra try waits for the last rerun\'s gap', fixCall(tk({ fix_tries: spentTries }), pr([named()]), ctx({ cooledDown: false })), null);
+  t('the extra try waits while another check still runs', fixCall(tk({ fix_tries: spentTries }), pr([named(), { name: 'e2e', status: 'in_progress', conclusion: null }]), ctx()), null);
+  t('once the extra try is spent too, it is the person\'s before the last rerun', fixCall(tk({ fix_tries: [...spentTries, { ...c1.fix }] }), pr([named()]), ctx({ reruns: () => 1 }))?.call, 'stuck');
   t('DS-494 negative: a try left goes as a numbered try, quoting nothing', (() => { const c = fixCall(tk(), pr([named()]), ctx()); return `${c.fix.try} ${c.fix.extra} ${c.fix.lines}`; })(), '1 undefined undefined');
   t('DS-494 AC1 a line from its failed log counts when its job annotated none', fixCall(tk({ fix_tries: spentTries }), pr([named({ error: null, errors: [], log_errors: ['ENOENT: no such file, open \'db/0042.sql\''] })]), ctx())?.fix.lines[0].line, 'ENOENT: no such file, open \'db/0042.sql\'');
   const draft = draftChecksFix(tk({ fix_tries: spentTries }), { pr: 702, head: HEAD, failing: [{ name: 'tests', runId: '41' }], checks: [named()] }, { repo: 'acme/widgets' });
@@ -1070,4 +1082,25 @@ t('DS-433 §4 Local review command: set, none, TODO, empty', [localReviewSet('/d
 // its task asks for the stage markers it prints from there.
 t('a fix try starts at Stage 3, a review try at 4b, a capture try at 5', ['checks', 'review', 'protected', 'rereview', 'capture'].map((kind) => fixStartStage({ kind })).join(' '), '3/9 3/9 3/9 4b/9 5/9');
 t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as you reach each stage you run, starting with 4b\/9/.test(fixTask({ key: 'T-1', fix: { kind: 'rereview', try: 1, of: 2, pr: 7, head: 'a'.repeat(40), what: 'x' } })), true);
+// A check red on several ready PRs at once reads as its platform failing: held, with no fix try.
+{
+  const preview = (n, more = []) => ({ s: { pr: n, checks: [ok('tests'), red('Vercel Preview'), ...more] } });
+  const lists = { required: ['tests', 'Vercel Preview', 'Lint'], advisory: [] };
+  const many = outageChecks([preview(701), preview(702), preview(703, [red('Lint', '1')]), { s: { pr: 704, checks: [ok('tests'), ok('Vercel Preview')] } }], lists);
+  t('outage: a check red on 3 ready PRs is named with them, one red on fewer is not', JSON.stringify([...many]), '[["Vercel Preview",[701,702,703]]]');
+  t('outage: below the threshold there is none', outageChecks([preview(701), preview(702)], lists).size, 0);
+  t('outage: a workflow job red on as many PRs is not one: their code or the base may be its cause', outageChecks([701, 702, 703].map((n) => ({ s: { pr: n, checks: [ok('tests'), red('Lint', String(n))] } })), lists).size, 0);
+  t('outage: the threshold is 3 PRs', OUTAGE_PRS, 3);
+  const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
+  const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
+  t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
+  t('outage: its reason names the other PRs and the step that clears it', held?.why,
+    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
+  t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
+  t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
+  t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
+  t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');
+}
+
 process.exit(fails ? 1 : 0);
