@@ -989,11 +989,13 @@ check "DS-373 the fix ticket for a failed run reproduces it where the pass runs 
 
 # ---- DS-854: with Jira, the fix ticket's body is sent from the batch state dir, which desk-jira accepts
 # The fake desk-jira applies desk-jira's path check to the body, with $DESK_STATE as the only allowed
-# root ($T is itself a temp dir, which the real check would also allow). $T/jira-refuse refuses it anyway.
+# root ($T is itself a temp dir, which the real check would also allow). $T/jira-refuse refuses it anyway,
+# and $T/jira-lint refuses it as a lint block does, with findings above a last line naming no file.
 cat > "$T/stub/desk-jira" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/jira-calls"
 [ "\$1" = create ] || exit 0
+if [ -f "$T/jira-lint" ]; then printf 'desk-jira: not created: the ticket has blocking findings (ticket-template.md):\nERROR  Acceptance criteria: none found\nFix the body, or pass --no-lint to file it as it is\n' >&2; exit 1; fi
 real=\$(cd "\$(dirname "\$4")" && pwd -P)/\$(basename "\$4")
 st=\$(cd "\${DESK_STATE:-/nonexistent}" 2>/dev/null && pwd -P)
 if [ ! -f "$T/jira-refuse" ] && [ -n "\$st" ]; then case "\$real" in "\$st"/*) echo "created J-900"; exit 0 ;; esac; fi
@@ -1019,7 +1021,10 @@ check "DS-854 AC3 a refused create is quoted with the body file's real path, its
   '[ "$(bodies)" = 1 ] && echo "$out" | grep -qF "refusing to send $body" && field E-806 undraft.why | grep -qF "$(basename "$body")"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-854 AC4 the next refused try reuses the body file rather than leaving another" '[ "$(bodies)" = 1 ] && [ "$(grep -c "^create " "$T/jira-calls")" = 2 ]'
-rm -f "$T/jira-refuse"; out=$(node "$B/pass.mjs" 2>&1)
+rm -f "$T/jira-refuse"; touch "$T/jira-lint"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC3 a refusal whose last line names no file still quotes its findings and the body file's path" \
+  'field E-806 undraft.why | grep -qF "Acceptance criteria: none found" && field E-806 undraft.why | grep -qF "its body is $body"'
+rm -f "$T/jira-lint"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-854 AC1 desk-jira accepts the body from the batch state dir and the fix is admitted" \
   'grep -q "^admit J-900 --by evidence$" "$T/admits" && echo "$out" | grep -q "evidence: filed J-900 .*admitted to the batch" && [ "$(field E-806 undraft.call)" = "\"evidence-fix\"" ] && ! echo "$out" | grep -q "DRAFT — PR #806"'
 check "DS-854 AC4 and once filed, the body file is removed" '[ "$(bodies)" = 0 ]'

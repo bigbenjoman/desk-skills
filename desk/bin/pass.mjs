@@ -3961,7 +3961,13 @@ function fileEvidenceFix(g) {
     // desk-jira sends a body only from inside $DESK_STATE (or the repo or a temp dir).
     const r = shOut('desk-jira', ['create', 'Bug', summary, file, ...(sized ? [`${sizeField}=S`] : [])], { env: { ...process.env, DESK_STATE: STATE } });
     fix = /^created ([A-Z][A-Z0-9_]*-\d+)/m.exec(r.out)?.[1];
-    if (!r.ok || !fix) return { why: `desk-jira create was refused (${r.out.split('\n').pop()})` };
+    if (!r.ok || !fix) {
+      // Every line it printed (a lint refusal's findings sit above its last line), and the body
+      // file it was given wherever those lines do not name it (a Jira field error does not).
+      const said = r.out.split('\n').map((l) => l.trim()).filter(Boolean).join(' / ');
+      const quoted = said.length > 600 ? `${said.slice(0, 600)}…` : said;
+      return { why: `desk-jira create was refused (${quoted})${quoted.includes(file) ? '' : `; its body is ${file}`}` };
+    }
     try { unlinkSync(file); } catch { /* already gone */ }
   } else {
     fix = `evidence-fix-${id}`;
