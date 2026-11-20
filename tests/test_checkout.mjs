@@ -192,13 +192,13 @@ session('aaaa1111-app', join(R, 'acme__app-worktrees', 'APP-12'), [
 ]);
 session('bbbb2222-else', join(R, 'scratch'), [user(at(11), 'Reorganise my photo folders by year please'), said(at(11, 5), 'Done.', [{ name: 'Bash', input: { command: 'ls' } }])]);
 session('cccc3333-other', join(R, 'acme__other'), [user(at(12), 'Work on OTH-7 in the other repo please'), said(at(12, 5), 'On it.', [{ name: 'Bash', input: { command: 'ls' } }])]);
+const skillLoad = (ts) => ({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } });
 session('dddd4444-self', APP, [
   user(at(16), 'Wrap up the docs for APP-40 before the end of day'),
   said(at(16, 5), 'Done.', [{ name: 'Edit', input: {} }]),
-  { type: 'assistant', timestamp: at(17), message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } },
+  skillLoad(at(17)),
   user(at(17, 1), 'SECRET-AFTER the check-out started, APP-99'),
 ]);
-const skillLoad = (ts) => ({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', name: 'Skill', input: { skill: 'desk-checkout' } }] } });
 // The session that drafted a 15:00 check-out: real work first, then the skill load just before the post.
 session('eeee5555-midday', APP, [
   user(at(13), 'Investigate the APP-50 flaky login test please'),
@@ -213,17 +213,38 @@ session('ffff6666-resumed', APP, [
   user(at(14), 'Carry on with APP-60, the export bug, from where we left it'),
   said(at(14, 10), 'Done.', [{ name: 'Edit', input: {} }]),
 ]);
+// A session that drafted the 09:00 check-out (for the day before) and was worked in after the 15:00 one.
+session('gggg7777-morning', APP, [
+  skillLoad(at(9)),
+  user(at(15, 30), 'Now the APP-70 CSV import, please'),
+  said(at(15, 40), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+// The evening before: a morning check-out's session worked in after the 17:30 post, and the session that drafted that post.
+const sun = (h, m = 0) => new Date(2026, 9, 25, h, m).toISOString();
+session('hhhh8888-sunday', APP, [
+  skillLoad(sun(9)),
+  user(sun(18), 'Look at the APP-80 retry queue before bed'),
+  said(sun(18, 10), 'Done.', [{ name: 'Edit', input: {} }]),
+]);
+session('iiii9999-sunpost', APP, [
+  skillLoad(sun(17, 20)),
+  user(sun(17, 35), 'EVENING-POSTED thanks, all sent'),
+  said(sun(17, 36), 'Posted.', [{ name: 'Bash', input: { command: 'ls' } }]),
+]);
 const claude = script('claude_activity.py', '--day', DAY);
 t('claude: exits 0', claude.status, 0);
 const co = claude.stdout;
 has('claude: six sessions in the window, less the withheld one', co, '— 5 sessions');
-const second = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
-lacks('#832 the session that drafted the earlier check-out is not listed after it', second, 'eeee5555');
-lacks('#832 nor what it did once the skill loaded', second, 'MIDDAY-POSTED');
+const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
+lacks('#832 the session that drafted the earlier check-out is not listed after it', after, 'eeee5555');
+lacks('#832 nor what it did once the skill loaded', after, 'MIDDAY-POSTED');
+has('#832 a session that drafted an earlier check-out that day still lists its work after the previous one', after, 'APP-70');
 has('#832 its work before the skill load is kept when the window covers it', co, 'APP-50');
 lacks('#832 and still nothing after the load', co, 'MIDDAY-POSTED');
 has('#832 a check-out drafted on an earlier day does not cut a session resumed since', co, 'APP-60');
-const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
+const evening = script('claude_activity.py', '--day', DAY, '--since', new Date(2026, 9, 25, 17, 30).toISOString(), '--since-for', '2026-10-25').stdout;
+lacks('#832 from a check-out posted the evening before, the session that drafted it is not listed', evening, 'EVENING-POSTED');
+has('#832 but a session that drafted that morning\'s check-out lists its evening work', evening, 'APP-80');
 has('#814 from a check-out posted at 15:00, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the previous check-out)`);
 lacks('#814 work the earlier check-out covered is not listed again', after, 'photo folders');
 has('claude: the worktree session is labelled with its worktree', co, 'acme__app (worktree APP-12)');

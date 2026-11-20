@@ -8,10 +8,10 @@ and prints one compact block per session: repo, branches, what the human asked,
 and how the session ended. The output is evidence for a check-out, not the
 check-out itself, so it stays terse.
 
-A session that loads the desk-checkout skill is cut off at that point, even when the
-load came before the window (from the window's first day on), so neither the drafting
-session nor the one that drafted the previous check-out reports itself, and neither
-needs a session ID.
+A session that loads the desk-checkout skill is cut off at that point, so the drafting
+session never reports itself and needs no session ID. When the window starts at a
+previous check-out, the session that drafted that one (its skill load the last before the
+post, on the post's day) is cut off at its load too.
 
 Every session under those folders is considered, whatever repo it ran in. Its scope
 comes from the per-repo desk configs (see desk_repos.py): a session whose directory is under
@@ -36,7 +36,7 @@ import os
 import re
 import sys
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 sys.dont_write_bytecode = True  # a __pycache__ in the installed skill reads as a user edit to install.sh
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -170,15 +170,15 @@ def scope_suffix(cwd):
     return "" if sc == "this" else ", " + desk_repos.SCOPE_LABELS[sc]
 
 
-def read_session(path, since, until):
+def read_session(path, since, until, drafting_from=None):
+    """One session's activity in [since, until). With drafting_from, also its last skill load in
+    [drafting_from, since) as "drafted": main() works out from those which session drafted the
+    previous check-out."""
     s = {
         "id": os.path.basename(path)[:-6], "cwd": None, "branches": Counter(), "prompts": [],
         "texts": [], "tools": Counter(), "commits": [], "prs": set(), "tickets": Counter(),
-        "first": None, "last": None, "entrypoint": None,
+        "first": None, "last": None, "entrypoint": None, "drafted": None,
     }
-    # A skill load from the window's first day on is a check-out being drafted; an older one is
-    # a session resumed since, whose later work is real.
-    drafting_from = since.replace(hour=0, minute=0, second=0, microsecond=0)
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
             try:
@@ -186,10 +186,14 @@ def read_session(path, since, until):
             except json.JSONDecodeError:
                 continue
             when = entry_time(entry)
-            if when is not None and when >= drafting_from and loads_self(entry):
-                break  # everything after this is a check-out being drafted, an earlier one's too
-            if when is None or not (since <= when < until):
+            if when is None:
                 continue
+            if drafting_from is not None and drafting_from <= when < since and loads_self(entry):
+                s["drafted"] = when
+            if not (since <= when < until):
+                continue
+            if loads_self(entry):
+                break  # everything after this is the check-out being drafted
             s["cwd"] = entry.get("cwd") or s["cwd"]
             s["entrypoint"] = entry.get("entrypoint") or s["entrypoint"]
             if entry.get("gitBranch") and entry["gitBranch"] != "HEAD":
@@ -283,10 +287,19 @@ def main():
         tail_mode(args.session, since, until, args.tail)
         return
 
+    # A window that starts at a previous check-out: the session that drafted it is the one whose
+    # skill load came last before the post, from the post's own day on. It is cut at that load, as
+    # this session is at its own, so it is housekeeping from there; earlier loads are left alone,
+    # since a session that drafted a morning check-out may have done real work later.
+    previous = since != until - timedelta(days=1)
+    drafting_from = datetime.combine(since.date(), time.min).astimezone() if previous else None
+    read = [read_session(path, since, until, drafting_from) for path in find_files(since)]
+    drafted = [s for s in read if s["drafted"]]
+    drafter = max(drafted, key=lambda s: s["drafted"]) if drafted else None
+
     sessions, workers, withheld = [], [], {}
-    for path in find_files(since):
-        s = read_session(path, since, until)
-        if not s["first"]:
+    for s in read:
+        if s is drafter or not s["first"]:
             continue
         # Per-repo permission: a configured repo's own §3 read-transcripts decides; a session in
         # no configured repo follows the current repo's row.
