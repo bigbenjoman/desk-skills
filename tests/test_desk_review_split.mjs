@@ -77,6 +77,7 @@ const REWRITTEN = [
   ['DS-456', 'Use when reviewing a branch, a PR or the open PR queue in this repo before a human', 1], // the description says when, not how
   ['DS-456', 'Fix it with `! codex login`, or say', 1], // the preflight question leads with its recommended option
   ['DS-584', 'She reads the ticket and the diff, not their output.', 1], // and the calls already taken on it
+  ['DS-834', 'with two exceptions**, both for claims', 1], // a finder also traces a server-set value
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 
@@ -190,6 +191,21 @@ t('DS-596 AC3 a worker\'s logged call amends a criterion only by picking a readi
 t('DS-596 AC3 a gap a decision this ticket\'s worker logged caused is code, unless the decision keeps a later-merged ticket\'s behaviour', req.includes('- a gap whose cause is a decision this ticket\'s worker logged, which reversing that decision closes, unless the decision keeps a later-merged ticket\'s behaviour (next);'), true);
 t('DS-596 the later-merged-ticket decision still settles its gap on the next round', req.includes('so the next round reads it as a settled call'), true);
 t('DS-596 AC4 a gap only the person can close is still person', req.includes('`settled_by` is `person` only when no change the ticket allows can close the gap'), true);
+
+// DS-834: every finder's brief, codex's too, carries one paragraph sending it to where a
+// server-set value it branches on is set, and to say so rather than guess when that is not here.
+const find = read('phase-3-find.md');
+const trace = find.match(/^- \*\*Tracing a server-set value\.\*\*[\s\S]*?\n((?:  >.*\n)+)/m);
+const tracePara = trace ? norm(trace[1].replace(/^  > ?/gm, '')) : '';
+t('DS-834 AC1 a third exception traces a server-set value', norm(find).includes('with three exceptions**, all for claims'), true);
+t('DS-834 AC1 the paragraph sends the finder to where the value is set', tracePara.includes('read where that value is set, the endpoint, handler or service that assigns it, at the reviewed revision'), true);
+t('DS-834 AC1 and has it name that file in FILES READ', tracePara.includes('Name that file in FILES READ'), true);
+t('DS-834 AC1 every Claude finder\'s prompt carries it word for word', norm(find).includes('Every Claude finder\'s prompt, the simplicity finder\'s included, then carries the paragraph under *Tracing a server-set value* (below), word for word'), true);
+t('DS-834 AC2 a diff that branches on no such value reads as before', /^Where the diff branches on a value an API or server state sets/.test(tracePara) && norm(find).includes('a diff that branches on no such value reads exactly as before'), true);
+t('DS-834 AC3 an unread source is said, and no finding rests on it', tracePara.includes('`SOURCE NOT READ: <value>: <why>`, and raise no finding that rests on what the source sets'), true);
+t('DS-834 AC3 the report lists it under UNPROVEN PREMISES', norm(read('phase-6-report.md')).includes('`SOURCE NOT READ: <value>: <why>` line (Phase 3, *Tracing a server-set value*) is one'), true);
+t('DS-834 AC4 the codex brief carries the same paragraph', norm(find).includes('After it, the brief carries the *Tracing a server-set value* paragraph (below), word for word.'), true);
+t('DS-834 the do-not-survey rule stays in the codex brief', norm(find.replace(/^ *> ?/gm, '')).includes('Do not survey the repository.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
