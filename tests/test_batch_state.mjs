@@ -10,12 +10,13 @@ let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-// The state-folder paths a source builds that are not declared: a join on the state folder (a first
-// argument named for it: stateDir, STATE), which bypasses STATE_PATHS, or a statePath call naming a
-// path STATE_PATHS lacks.
+// The state-folder paths a source builds that are not declared: a join or template string on the
+// state folder (a name holding "state" in any case: stateDir, batchStateDir, STATE), which bypasses
+// STATE_PATHS, or a statePath call naming a path STATE_PATHS lacks.
 function undeclared(src) {
   const out = [];
-  for (const m of src.matchAll(/join\(\s*(\w*(?:state|STATE)\w*)\s*,([^;\n]*)/g)) if (!/^\s*STATE_PATHS\[/.test(m[2])) out.push(`join(${m[1]},${m[2].replace(/\)+[^)]*$/, '')})`);
+  for (const m of src.matchAll(/join\(\s*([\w.]*[sS][tT][aA][tT][eE]\w*)\s*,([^;\n]*)/g)) if (!/^\s*STATE_PATHS\[/.test(m[2])) out.push(`join(${m[1]},${m[2].replace(/\)+[^)]*$/, '')})`);
+  for (const m of src.matchAll(/`\$\{\s*[\w.]*[sS][tT][aA][tT][eE]\w*\s*\}\/[^`]*`/g)) out.push(m[0]);
   for (const m of src.matchAll(/statePath\(\s*\w+\s*,\s*['"]([^'"]+)['"]/g)) if (!Object.hasOwn(STATE_PATHS, m[1])) out.push(m[1]);
   return out;
 }
@@ -25,6 +26,9 @@ const src = readFileSync(join(root, 'desk', 'bin', 'batch-state.mjs'), 'utf8');
 t('#881 batch-state.mjs builds no state-folder path outside STATE_PATHS', undeclared(src), []);
 t('#881 it builds every declared one through statePath', Object.keys(STATE_PATHS).filter((n) => !src.includes(`statePath(stateDir, '${n}'`)), []);
 t('#881 a join on the state folder is named', undeclared("const f = join(stateDir, 'fixtures', `${t}.json`);"), ["join(stateDir, 'fixtures', `${t}.json`)"]);
+t('#881 a join on a differently cased state folder is named', undeclared("join(batchStateDir, 'x')"), ["join(batchStateDir, 'x')"]);
+t('#881 a template path under the state folder is named', undeclared('const p = `${stateDir}/fixtures/${t}`;'), ['`${stateDir}/fixtures/${t}`']);
+t('#881 statePath takes a key with $ literally', statePath('/s', 'parks', 'A$&1'), '/s/parks/A$&1.json');
 t('#881 a statePath call naming an undeclared path is named', undeclared("statePath(stateDir, 'fixtures', t)"), ['fixtures']);
 let refused = null;
 try { statePath('/s', 'fixtures', 'A-1'); } catch (e) { refused = e.message; }

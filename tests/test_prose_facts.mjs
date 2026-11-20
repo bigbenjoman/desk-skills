@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commands, locks, states, statePaths } from '../desk/bin/prose-facts.mjs';
 import { QUEUE_COMMANDS } from '../desk/bin/queue-commands.mjs';
-import { DESK_ENV_COMMANDS, LOCK_OF, lockFor } from '../desk/bin/desk-env.mjs';
+import { DESK_ENV_COMMANDS, LOCK_OF, WORKER_COMMAND_IDS, lockFor } from '../desk/bin/desk-env.mjs';
 import { STATES } from '../desk/bin/queue-writer.mjs';
 import { STATE_PATHS } from '../desk/bin/batch-state.mjs';
 
@@ -27,9 +27,11 @@ t('scripts: no directory, and nothing outside a bin folder', c.scripts.filter((f
 // #881 AC6: lock classes come from with-lock.sh's usage line; each § command id runs under desk-env's class.
 const l = locks();
 t('#881 lock classes are the usage line\'s', l.classes, /usage: with-lock\.sh <([a-z|]+)>/.exec(readFileSync(join(root, 'desk', 'bin', 'with-lock.sh'), 'utf8'))[1].split('|'));
-t('#881 each § command id maps to desk-env\'s class for it', Object.entries(l.commands).filter(([id, cls]) => lockFor(id) !== cls), []);
-t('#881 every § command id desk-env gives a lock is there', Object.keys(LOCK_OF).filter((id) => !(id in l.commands)), []);
-t('#881 every class a § command id runs under is a lock class', [...new Set([...Object.values(l.commands), lockFor('dev-cmd')])].filter((c) => !l.classes.includes(c)), []);
+t('#881 every § command id a worker runs is there', Object.keys(l.commands), [...WORKER_COMMAND_IDS]);
+t('#881 each § command id maps to desk-env\'s class for it', WORKER_COMMAND_IDS.filter((id) => l.commands[id] !== lockFor(id)), []);
+t('#881 every id desk-env gives a lock is a § command id here', Object.keys(LOCK_OF).filter((id) => !(id in l.commands)), []);
+t('#881 a heavy row takes its lock and a light one none', ['test-cmd', 'typecheck-cmd', 'e2e-cmd', 'dev-cmd'].map((id) => l.commands[id]), ['test', 'tsc', 'browser', 'nolock']);
+t('#881 every class a § command id runs under is a lock class', [...new Set(Object.values(l.commands))].filter((c) => !l.classes.includes(c)), []);
 
 // #881 AC7: states are read from the queue writer's list, so a state added there is here with no edit.
 t('#881 states are the queue writer\'s', states(), [...STATES]);

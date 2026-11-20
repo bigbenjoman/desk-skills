@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { QUEUE_COMMANDS } from './queue-commands.mjs';
-import { DESK_ENV_COMMANDS, LOCK_OF, PATH_VARS, MACHINE_PATHS } from './desk-env.mjs';
+import { DESK_ENV_COMMANDS, WORKER_COMMAND_IDS, lockFor, PATH_VARS, MACHINE_PATHS } from './desk-env.mjs';
 import { MARKERS, ENV } from './markers.mjs';
 import { STATES } from './queue-writer.mjs';
 import { STATE_PATHS } from './batch-state.mjs';
@@ -44,10 +44,11 @@ export function usageLocks(text) {
   const m = /usage: with-lock\.sh <([a-z|]+)>/.exec(text);
   return m ? m[1].split('|') : [];
 }
-// classes: the lock wrapper's; commands: each § command id with the class it runs under (desk-env lockFor).
+// classes: the lock wrapper's; commands: each § command id a worker runs, with the class desk-env runs
+// it under (lockFor: `nolock` where it takes none).
 export const locks = (root = ROOT) => ({
   classes: usageLocks(readFileSync(join(root, 'desk', 'bin', 'with-lock.sh'), 'utf8')),
-  commands: { ...LOCK_OF },
+  commands: Object.fromEntries(WORKER_COMMAND_IDS.map((id) => [id, lockFor(id)])),
 });
 
 // Each AUTOPILOT_ name a file under desk/bin (at any depth) or a skill's bin uses, with the files using

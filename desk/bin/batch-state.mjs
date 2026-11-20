@@ -38,7 +38,7 @@ export function readJsonOrRefuse(path, action) {
 export const STATE_PATHS = Object.freeze({ triage: 'triage/<KEY>.json', parks: 'parks/<KEY>.json', answers: 'answers/<KEY>.txt' });
 export function statePath(stateDir, name, key) {
   if (!Object.hasOwn(STATE_PATHS, name)) throw new Error(`not a declared state path: ${name}`);
-  return join(stateDir, STATE_PATHS[name].replace('<KEY>', key));
+  return join(stateDir, STATE_PATHS[name].split('<KEY>').join(key));
 }
 // The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
 // are found by key behind its live ones (queue-store.mjs attachArchive).
