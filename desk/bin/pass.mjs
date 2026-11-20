@@ -178,10 +178,11 @@ function orchestratorName() {
   return '(unresolved — try ListAgents once before assuming nobody is listening)';
 }
 // The briefing's orchestrator line for a worker starting on `login`. Sessions see and message only
-// the sessions in their own login's folder, so a worker on another login than this pass's cannot reach
-// the orchestrator: it is told so, and skips SendMessage (the worker contract's park step 2).
+// the sessions in their own login's folder, so a worker on another login than the orchestrator's cannot
+// reach it: it is told so, and skips SendMessage (the worker contract's park step 2). Only a pass the
+// orchestrator's session runs knows that login, as its own: one the supervisor runs does not.
 function orchestratorLine(login) {
-  if (login && !sameLogin(OWN_LOGIN, login)) return `none reachable: you run on login ${login.name ?? login.dir}, the orchestrator on ${OWN_LOGIN.configDir ? OWN_LOGIN.name : 'the default login'}, and a session cannot message one on another login. Skip SendMessage: your AUTOPILOT_PARK line and park file reach it at its next pass`;
+  if (PASS_BY === 'session' && login && !sameLogin(OWN_LOGIN, login)) return `none reachable: you run on login ${login.name ?? login.dir}, the orchestrator on ${OWN_LOGIN.configDir ? OWN_LOGIN.name : 'the default login'}, and a session cannot message one on another login. Skip SendMessage: your AUTOPILOT_PARK line and park file reach it at its next pass`;
   return orchestratorName();
 }
 
@@ -875,7 +876,9 @@ const ADVANCE_HANDLERS = {
   park: (a) => { q('park', a.key, a.question); },
   'park-approve': (a) => {
     const approve = parkApprove(STATE, a.key, a.question);
-    if (approve) q('set', a.key, `park.approve=${JSON.stringify(approve)}`);
+    if (!approve) return;
+    q('set', a.key, `park.approve=${JSON.stringify(approve)}`);
+    report.parked.push(`${a.key}: awaiting approval, its exact text (${approve.kind}${approve.target ? ` on ${approve.target}` : ''}, as JSON): ${JSON.stringify(approve.body)}`);
   },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {

@@ -101,8 +101,9 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    `AUTOPILOT_PARK: <one-line question>`. This is the channel that always works: writes outside
    your worktree are refused, apart from `$DESK_STATE/parks/<TICKET>.json` and your images
    directory. You may also write the question there as `{"question": "<one line>"}`, which the
-   orchestrator's pass reports while you wait. Put the full payload (the exact Jira text, the
-   PR body, the diff, whatever needs approving) in your normal output above that line.
+   orchestrator's pass reports while you wait. Put the full payload (the exact text of whatever
+   needs approving) in your normal output above that line, and in that file as `approve`
+   (`worker-contract-stage-8.md`).
    A park waits for the next check-in digest. Only when a live service is broken now, and the
    park is how you found it, start the question with `PRODUCTION BROKEN: `: that one is pushed to
    the person at once. Never use it for anything else.
@@ -113,8 +114,7 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
    is listening.
 3. If you are re-invoked, read the answer file named in your briefing. Answered → read it and
    continue, and say in your report what you asked and were told. **Do not delete it**: you cannot
-   (the state directory is read-only to you apart from your park and image files), and the
-   orchestrator clears it.
+   (the state directory is read-only to you), and the orchestrator clears it.
 4. Otherwise **end your turn**. You have printed the marker, so the question is not lost. Never sit
    blocked; you are holding a worktree and a concurrency slot.
 

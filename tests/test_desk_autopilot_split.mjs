@@ -64,6 +64,7 @@ const REWRITTEN = [
   ['#735', 'macOS the row reads as `session`, since the supervisor needs launchd.', 1],
   ['DS-793', 'never chained. Jira Blocks links win over the kinds', 1], // a chain holds each ticket behind every earlier one it shares a file with
   ['DS-815', 'or a ticket admitted or requeued into this one).', 1], // an idle batch is rechecked on an interval, held outside its batch included
+  ['#775', 'a summary defeats the gate while looking like it honoured it', 1], // the exact body is also kept as the park's `approve`
   // the rule as it stands, not against an earlier behaviour
   ...[
     'deltas: where one and a skill disagree, the skill wins.', 'unset or `off`: workers check as before |',
