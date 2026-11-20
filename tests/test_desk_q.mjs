@@ -2643,8 +2643,8 @@ try {
   ].join('\n')}\n`);
   writeFileSync(join(dirs.bad, 'leases.json'), '{ not json');
   const kept = readFileSync(join(dirs.live, 'leases.json'), 'utf8') + readFileSync(join(dirs.live, 'leases.log.jsonl'), 'utf8');
-  const section = (d) => {
-    const out = spawnSync('node', [BIN, '--plain'], { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d }, cwd: L.T }).stdout;
+  const section = (d, more = {}) => {
+    const out = spawnSync(process.execPath, [BIN, '--plain'], { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d, ...more }, cwd: L.T }).stdout;
     return { out, leases: lines(out).slice(lines(out).indexOf('Leases')).filter(Boolean) };
   };
   const live = section(dirs.live).leases;
@@ -2668,10 +2668,26 @@ try {
     section(dirs.none).leases.join('\n'), 'Leases\n  No leases are held.\n  No shadow would-refuse in the last 7 days.');
   const bad = section(dirs.bad);
   t('DS-911 AC6 an unreadable store: the section says so and shows the reset command',
-    bad.leases[1], `  ▲ The lease store ${join(dirs.bad, 'leases.json')} is unreadable: ${(() => { try { JSON.parse('{ not json'); } catch (e) { return e.message; } })()}. To start an empty one: desk-env lease reset --reason <why>`);
+    bad.leases.slice(1, 3).join('\n'), `  ▲ The lease store ${join(dirs.bad, 'leases.json')} is unreadable: ${(() => { try { JSON.parse('{ not json'); } catch (e) { return e.message; } })()}.\n    to start an empty one: desk-env lease reset --reason <why>`);
   // Free memory and the clock move between the two runs, so numbers are masked.
   const rest = (out) => unclocked(out.replace(/\nLeases\n[\s\S]*$/, '')).replace(/\d+(\.\d+)?/g, 'N');
   t('DS-911 AC6 and the rest of desk-q renders as before', rest(bad.out) === rest(section(dirs.none).out) && /^ {2}desk-skills /m.test(bad.out), true);
+  // Owners are checked with ps outside Linux; a ps that fails is shown in the section and the rest still draws.
+  if (process.platform !== 'linux') {
+    const fake = join(L.T, 'failing-ps');
+    mkdirSync(fake, { recursive: true });
+    writeFileSync(join(fake, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const noPs = section(dirs.live, { PATH: `${fake}:${process.env.PATH}` });
+    t('DS-911 AC6 a ps that fails while the owners are checked stays in the Leases section, and the rest of desk-q renders',
+      `${noPs.leases[1]} | ${/^ {2}desk-skills /m.test(noPs.out)} | ${noPs.leases.some((l) => /^ {2}slot +shadow +1 would-refuse/.test(l))}`, '  ▲ The leases could not be read: ps could not be read (exit 1). | true | true');
+  }
+  // At 80 columns a kind's row wraps rather than being cut, so every day's count shows.
+  process.env.DESK_LEASE_DIR = dirs.live;
+  const narrow = lines(Q.overview([], { now: Date.now(), avail: 30, width: 80 }).replace(ANSI, ''));
+  delete process.env.DESK_LEASE_DIR;
+  const slotRows = narrow.slice(narrow.findIndex((l) => /^ {2}slot +shadow/.test(l))).slice(0, 2);
+  t('DS-911 AC7 at 80 columns no Leases line is wider, and the slot kind still shows all seven days',
+    `${narrow.slice(narrow.indexOf('Leases')).filter((l) => [...l].length > 80).length} ${/newest first: 1 2 3 4 5 6 7$/.test(slotRows.map((l) => l.trim()).join(' '))}`, '0 true');
   for (const c of sleepers) c.kill();
 }
 

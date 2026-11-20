@@ -2620,7 +2620,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
-  foot.push('', ...leaseLines({ now }));
+  foot.push('', ...leaseLines({ now, width }));
   return { head, rows, foot };
 }
 
@@ -2628,37 +2628,47 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
 // one with the command that frees it, then each kind's shadow would-refuse counts by day. It only
 // reads: lapsing and freeing a lease stay with desk-env lease.
 const LEASE_DAYS = 7;
-export function leaseLines({ now = Date.now(), dir } = {}) {
+function leaseLines({ now, width }) {
   const env = { psRows, machineValue };
-  const at = { env, now: () => now, ...(dir ? { dir } : {}) };
-  const out = [bold('Leases')];
-  const unreadable = (e) => { if (!(e instanceof LeaseStoreError)) throw e; return `  ▲ ${capital(e.message)}.`; };
-  let held = null;
-  try { held = peek(at); } catch (e) { out.push(segLine([[unreadable(e), WARN], [' To start an empty one: ', null], [RESET_COMMAND, BOLD]])); }
-  if (held && !held.length) out.push('  No leases are held.');
-  if (held?.length) {
-    const holder = (l) => `${l.label} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
-    const key = (l) => `${l.key}${l.units > 1 ? ` ×${l.units}` : ''}`;
-    const kw = Math.max(6, ...held.map((l) => l.kind.length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
-    out.push(segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]]));
-    for (const l of held) {
-      const late = overdue(l, now), expires = Date.parse(l.expires);
-      out.push(segLine([[`  ${pad(l.kind, kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
-        late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
-      if (late) out.push(segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]));
-    }
-  }
-  let refused = null;
-  try { refused = wouldRefuseByDay({ ...at, days: LEASE_DAYS }); } catch (e) { out.push(segLine([[unreadable(e), WARN]])); }
-  if (refused) {
-    const kinds = LEASE_KINDS.filter((k) => refused[k]);
-    if (!kinds.length) out.push(segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]]));
-    for (const k of kinds) {
-      out.push(segLine([[`  ${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
-        [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]]));
-    }
+  const at = { env, now: () => now };
+  // A failure stays in this section, so the rest of the Queue still draws: an unreadable store or log
+  // names itself (the store with the command that starts an empty one); anything else, such as ps
+  // failing while the owners are checked, is shown as it is.
+  const trouble = (e, reset) => (e instanceof LeaseStoreError
+    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]])] : [])]
+    : wrapped([[`▲ The leases could not be read: ${describeCrash(e)}.`, WARN]], width));
+  const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
+  return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
+}
+
+// `segs` as lines indented two columns; with `width`, wrapped between words, each further line indented
+// two more.
+const wrapped = (segs, width) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - 4)))
+  .map((s, j) => segLine([[j ? '    ' : '  ', null], ...s]));
+
+// Each held lease's row, its stored text made printable, and an overdue one's command line.
+function heldLines(held, now) {
+  if (!held.length) return ['  No leases are held.'];
+  const text = (v) => printable(String(v ?? '?'));
+  const holder = (l) => `${text(l.label)} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
+  const key = (l) => `${text(l.key)}${l.units > 1 ? ` ×${l.units}` : ''}`;
+  const kw = Math.max(6, ...held.map((l) => text(l.kind).length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
+  const out = [segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]])];
+  for (const l of held) {
+    const late = overdue(l, now), expires = Date.parse(l.expires);
+    out.push(segLine([[`  ${pad(text(l.kind), kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
+      late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
+    if (late) out.push(segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]));
   }
   return out;
+}
+
+// Each kind's shadow would-refuse counts: the last 24 hours, then each day of the window.
+function refusedLines(refused, env, width) {
+  const kinds = LEASE_KINDS.filter((k) => refused[k]);
+  if (!kinds.length) return [segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]])];
+  return kinds.flatMap((k) => wrapped([[`${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
+    [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]], width));
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));

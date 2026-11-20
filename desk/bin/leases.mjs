@@ -369,7 +369,7 @@ export function resetStore(reason, { dir = leaseDir(), now = Date.now }) {
   const lockDir = lockStore(dir);
   const t0 = performance.now();
   try {
-    try { readStore(file); return { code: EXIT_REFUSED, why: `refused: the lease store ${file} reads, so its leases are live; desk-env lease force-release <id> --reason <why> frees one` }; }
+    try { readStore(file); return { code: EXIT_REFUSED, why: `refused: the lease store ${file} reads, so its leases are live; ${forceReleaseCommand('<id>')} frees one` }; }
     catch (e) { if (!(e instanceof LeaseStoreError)) throw e; }
     const aside = `${file}.unreadable-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
     renameSync(file, aside);
@@ -428,8 +428,8 @@ const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, uni
 export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
        desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
        desk-env lease release <lease id> [--pid <owner pid>]
-       desk-env lease force-release <lease id> --reason <why>
-       desk-env lease reset --reason <why>
+       ${forceReleaseCommand('<lease id>')}
+       ${RESET_COMMAND}
        desk-env lease list [--json]
        desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
