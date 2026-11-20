@@ -38,6 +38,11 @@ export const THREADS_QUERY = `query($owner:String!,$name:String!,$n:Int!){reposi
   reviewThreads(first:100){nodes{id isResolved isOutdated path line originalLine
     comments(first:1){nodes{author{login} body pullRequestReview{id}}}}}}}}`;
 
+// An open review thread as the pass names it: { id, path, line, first (its first comment's first line), text }.
+const threadOf = (t) => {
+  const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(t.comments?.nodes?.[0]?.body) };
+  return { ...th, text: threadLine(th) };
+};
 // Whether a §4 row is set to something: not empty, a TODO or none.
 const rowSet = (row) => { const s = String(row ?? '').trim(); return !!s && !/^(todo|none)\b/i.test(s); };
 const firstLine = (s) => String(s ?? '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? '';
@@ -67,8 +72,7 @@ export function readThreads(payload, { handle, clean }) {
     const opener = i == null ? null : reviews[i];
     const ours = settles && own(c?.author?.login) && own(opener?.author?.login)
       && LOCAL_MARKERS.includes(firstLine(opener?.body)) && i < at;
-    const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
-    (ours ? resolve : left).push({ ...th, text: threadLine(th) });
+    (ours ? resolve : left).push(threadOf(t));
   }
   return { decision: pr.reviewDecision || 'NONE', head: pr.headRefOid ?? '', verdict: settles ? latest.verdict.sha : null, review, resolve, left };
 }
@@ -83,11 +87,7 @@ export function externalReview(payload, login) {
   const mine = (pr.reviews?.nodes ?? []).filter((r) => loginIn(r.author?.login, login));
   const at = [...mine].reverse().find((r) => r.commit?.oid === head) ?? null;
   const ids = new Set(mine.map((r) => r.id));
-  const threads = (pr.reviewThreads?.nodes ?? []).filter((t) => !t.isResolved && ids.has(t.comments?.nodes?.[0]?.pullRequestReview?.id)).map((t) => {
-    const c = t.comments.nodes[0];
-    const th = { id: t.id, path: t.path ?? '', line: t.line ?? t.originalLine ?? null, first: firstLine(c?.body) };
-    return { id: th.id, text: threadLine(th) };
-  });
+  const threads = (pr.reviewThreads?.nodes ?? []).filter((t) => !t.isResolved && ids.has(t.comments?.nodes?.[0]?.pullRequestReview?.id)).map(threadOf);
   return { head, reviewed: !!at, state: at?.state ?? null, body: String(at?.body ?? '').trim(), threads };
 }
 

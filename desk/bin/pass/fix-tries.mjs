@@ -39,7 +39,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, driverReviewTry, treeHeld, builtStuck } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -156,6 +156,11 @@ function* feedbackCall(t, p, s, waived, reads) {
   const settled = worked.length ? yield { type: 'settle-worked', key: t.key, pr: n, head: p.head, worked } : [];
   if (settled.length < worked.length && !s.dry) return null;
   const { judgement } = s;
+  // A red check reading an outside reviewer's review goes ahead of desk's own review and feedback
+  // routes: it waits for that reviewer at the head, then sends their findings (externalTry).
+  const external = (login) => externalReview(fb.payload, login);
+  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external });
+  if (ext !== undefined) return ext;
   if (fb.review) {
     const rf = findingsFix(t, p, s, fb, reads);
     if (rf) return rf;
@@ -170,6 +175,5 @@ function* feedbackCall(t, p, s, waived, reads) {
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = reads.moves();
   const atHead = () => reads.atHead(fb.payload, carry, scope);
-  const external = (login) => externalReview(fb.payload, login);
   return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, waived, base: s.base, baseMerge });
 }
