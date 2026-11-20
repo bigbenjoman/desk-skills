@@ -932,10 +932,15 @@ export function designSection(text) {
   return s ? s.lines.map((l) => l.text).join('\n') : null;
 }
 
+// Every Claude Design link in <text>, in order, repeats included: [{url, index}].
+function claudeDesignMatches(text) {
+  return [...String(text ?? '').matchAll(/https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\/[^\s|\])>"'}]+/gi)]
+    .map((m) => ({ url: m[0].replace(/[.,;:!]+$/, ''), index: m.index }));
+}
+
 export function claudeDesignLinks(section) {
   const out = [];
-  for (const m of String(section ?? '').matchAll(/https?:\/\/(?:[a-z0-9-]+\.)*claude\.ai\/[^\s|\])>"'}]+/gi)) {
-    const u = m[0].replace(/[.,;:!]+$/, '');
+  for (const { url: u } of claudeDesignMatches(section)) {
     if (!out.some((x) => canonicalUrl(x) === canonicalUrl(u))) out.push(u);
   }
   return out;
@@ -1017,15 +1022,19 @@ export function propose(src, { root, dir, ref, worktrees }) {
 // Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
 // this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
 // whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
-// board is not one. With several links it must sit on a line linking <url> itself, so a note about one
-// artifact never clears another.
+// board is not one. With several links it must sit beside <url> itself: on a line linking it, and on a
+// line with several links, from that link to the next one (text before a line's first link belongs to
+// that link), so a note about one artifact never clears another.
 export function usesNoBoard(section, url, key) {
   const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
   const qualifier = `(?:exists?|yet|(?:on|in|from)\\s+(?:this|the|that|its\\s+epic['’]s)\\s+(?:canvas|artifact|design))`;
   const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
   const text = String(section ?? '');
-  const own = (l) => claudeDesignLinks(l).some((u) => canonicalUrl(u) === canonicalUrl(url));
-  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter(own).join('\n') : text);
+  const beside = (l) => {
+    const at = claudeDesignMatches(l);
+    return at.flatMap((m, n) => (canonicalUrl(m.url) === canonicalUrl(url) ? [l.slice(n ? m.index : 0, at[n + 1]?.index ?? l.length)] : []));
+  };
+  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').flatMap(beside).join('\n') : text);
 }
 
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
