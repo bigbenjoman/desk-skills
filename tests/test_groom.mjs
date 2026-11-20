@@ -184,7 +184,8 @@ writeFileSync(join(cfg, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|
 writeFileSync(join(cfg, 'jira-email'), 'me@example.com'); writeFileSync(join(cfg, 'atlassian-token'), 'good-token', { mode: 0o600 })
 
 const run = (...a) => spawnSync('node', [SCAN, ...a], { cwd: R, env, encoding: 'utf8' })
-// The one end-to-end scan: desk-jira against the stub. Every other scan reads the same fixture in-process.
+// The one end-to-end scan of the backlog: desk-jira against the stub. Every other backlog scan reads the
+// same fixture in-process; the command line's text form and queue keep a two-ticket run, with the queue checks.
 const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--json')
 t('scan exits 0', r.status, 0)
 if (r.status !== 0) console.log(r.stderr)
@@ -195,7 +196,10 @@ const stubIssue = (k) => {
   return i ? { key: k, fields: { summary: k, status: { name: 'To Do', statusCategory: { key: 'new' } }, issuetype: { name: 'Task', subtask: false, hierarchyLevel: 0 }, issuelinks: [], ...i }, names: i._names ?? {} } : null
 }
 const jiraFake = (cmd, k) => {
-  if (cmd === 'search') return { issues: fixture.search.map(stubIssue).filter(Boolean), isLast: true }
+  if (cmd === 'search') {
+    const keys = /^\s*key\s+in\s*\(([^)]*)\)/i.exec(k)?.[1].split(',').map((s) => s.trim()).filter(Boolean)
+    return { issues: (keys ?? fixture.search).map(stubIssue).filter(Boolean), isLast: true }
+  }
   if (cmd === 'children') return (fixture.children[k] ?? []).map(stubIssue).filter(Boolean)
   if (cmd === 'get') {
     const i = stubIssue(k)
@@ -205,12 +209,17 @@ const jiraFake = (cmd, k) => {
   throw new Error(`no in-process answer for desk-jira ${cmd}`)
 }
 const stubRequests = () => (existsSync(join(T, 'requests.log')) ? readFileSync(join(T, 'requests.log'), 'utf8').split('\n').filter(Boolean).length : 0)
-let inProcessRequests = 0
+// While an in-process scan runs, `desk-jira` on PATH is a stand-in that records the call and fails,
+// so a scan that spawned one instead of using the injected reader is counted, never sent to a real Jira.
+const NOJIRA = join(T, 'no-desk-jira'); mkdirSync(NOJIRA, { recursive: true })
+writeFileSync(join(NOJIRA, 'desk-jira'), `#!/bin/sh\necho "$*" >> '${join(T, 'desk-jira-spawns.log')}'\nexit 1\n`, { mode: 0o755 })
+const jiraSpawns = () => (existsSync(join(T, 'desk-jira-spawns.log')) ? readFileSync(join(T, 'desk-jira-spawns.log'), 'utf8').split('\n').filter(Boolean).length : 0)
 const scanIn = (o) => {
-  const before = stubRequests()
+  const path = process.env.PATH
+  process.env.PATH = `${NOJIRA}:${path}`
   try {
     return { status: 0, ...JSON.parse(JSON.stringify(scanFindings({ repo: R, default: 'main', project: 'KAN', ...o }, { jira: jiraFake, stepLabels: [], inputLabels: [] }))) }
-  } catch (err) { return { status: 2, error: err.message } } finally { inProcessRequests += stubRequests() - before }
+  } catch (err) { return { status: 2, error: err.message } } finally { process.env.PATH = path }
 }
 const full = { priority: P, fields: S, size: S, done: 'Done', 'in-progress': 'In Progress' }
 const found = scanIn(full).findings ?? []
@@ -473,6 +482,13 @@ t('DS-240 AC2 a ticket the batch finished is groomed as before', cmds('blocker',
 t('DS-240 AC2 every other finding is unchanged', inQ.filter((f) => f.kind !== 'left').length, found.filter((f) => !['KAN-21', 'KAN-11', 'KAN-30'].some((k) => names(f, k))).length)
 writeFileSync(join(T, 'bad-queue.json'), '{')
 t('DS-240 AC2 an unreadable queue stops the scan', (({ status, error }) => [status, /^could not read the batch queue /.test(error)])(scanIn({ queue: join(T, 'bad-queue.json') })), [2, true])
+// The command line's own paths, end to end and cheaply: an unreadable queue stops before any Jira
+// read, and a two-ticket scan in the text form with the queue prints what the in-process one does.
+const asked = stubRequests(), badQ = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json'))
+t('DS-240 AC2 from the command line, an unreadable queue exits 2 before reading Jira', [badQ.status, /^groom-scan: could not read the batch queue /.test(badQ.stderr), stubRequests() - asked], [2, true, 0])
+const pair = { priority: P, fields: S, jql: 'key in (KAN-20, KAN-21)', queue: Q }
+const textQ = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--jql', pair.jql, '--queue', Q)
+t('DS-240 AC2 from the command line, the text form leaves the running ticket, as the in-process scan does', [textQ.status, /\nduplicate +KAN-21 · KAN-20 +\[left\]\n/.test(textQ.stdout), textQ.stdout.trim() === scanText(scanIn(pair), 'main')], [0, true, true])
 t('DS-240 AC2 no queue file is no batch', batchOf(null).running, false)
 t('DS-240 AC2 held: a key the batch now holds exits 1', [run('held', '--queue', Q, 'KAN-12', 'KAN-14').status, run('held', '--queue', Q, 'KAN-12', 'KAN-21').stdout.trim()], [0, 'left alone: KAN-21 is running in batch groom-7'])
 
@@ -568,7 +584,7 @@ const pj = pr170.status === 0 ? JSON.parse(pr170.stdout) : {}
 t('DS-240 AC3 priority from Jira: the open child not in the queue', [pr170.status, (pj.list ?? []).map((x) => x.key), pj.inBatch, pj.batch], [0, ['KAN-172'], ['KAN-171'], { name: 'groom-7', supervised: false }])
 t('DS-240 AC3 the queue is not written', spawnSync('cat', [Q], { encoding: 'utf8' }).stdout, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-171': { state: 'running' } } }))
 
-t('every scan but the CLI one read Jira in-process, sending the stub nothing', inProcessRequests, 0)
+t('every scan but the CLI ones read Jira in-process, starting no desk-jira', jiraSpawns(), 0)
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)

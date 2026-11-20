@@ -992,6 +992,8 @@ function args(a) {
 // `desk-jira <cmd> <args> --json` does, and the labels default to §4's rows for the current repo.
 export function scanFindings(o, { jira: jiraRead = jira, stepLabels = deskEnv.personStepLabels?.() ?? [], inputLabels = deskEnv.personInputLabels?.() ?? [] } = {}) {
   for (const k of ['repo', 'default', 'project']) if (!o[k] || o[k] === true) die(`scan needs --${k}`)
+  // Read before Jira, so an unreadable queue stops the scan before its first request.
+  const batch = readBatches(o.queue)
   const fields = String(o.fields && o.fields !== true ? o.fields : '').split(',').map((s) => s.trim()).filter((s) => s && s !== 'none')
   const ids = [...new Set([o.priority, ...fields].filter((s) => s && s !== true && s !== 'none'))]
   const jql = o.jql && o.jql !== true ? o.jql : `project = ${o.project} AND statusCategory != Done ORDER BY key ASC`
@@ -1033,7 +1035,6 @@ export function scanFindings(o, { jira: jiraRead = jira, stepLabels = deskEnv.pe
     ...groomEpics({ tickets, children, lookup, priority, size: o.size && o.size !== true && o.size !== 'none' ? o.size : null, done,
       inProgress: o['in-progress'] && o['in-progress'] !== true ? o['in-progress'] : 'In Progress' }),
   ].map((f) => ({ kind: 'fix', ...f }))
-  const batch = readBatches(o.queue)
   return { count: tickets.length, findings: leaveBatch(findings, batch) }
 }
 
