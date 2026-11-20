@@ -1,8 +1,8 @@
 // suite: spine check (a feature child's owned specs, and the specs it must leave alone)
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { declarations, scanChild, specsCommand, runSpecs } from '../desk/bin/spine-check.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const S = (xs) => JSON.stringify(xs);
@@ -66,7 +66,7 @@ t('the command takes one id', specsCommand('pnpm vitest run tests/acceptance -t 
 
 // The base gate and a finished child's check both run an id's specs with runSpecs. A stub with-lock.sh
 // records the lock, the directory it ran in and the command, and exits 3.
-const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'spine-run-')));
+const tmp = realpathSync(scratch('spine-run-'));
 const bin = join(tmp, 'bin');
 const root = join(tmp, 'wt');
 mkdirSync(bin);

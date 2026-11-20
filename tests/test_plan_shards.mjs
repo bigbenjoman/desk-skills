@@ -2,11 +2,11 @@
 // tests/plan_shards.mjs on fixture durations, then on this repo's suites and tests/suite_durations.json.
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { plan, matrix, describe, durationsFromLog, median, readDurations, SHARDS } from './plan_shards.mjs';
 import { repoMap } from './scope_sections.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const g = JSON.stringify(got); const w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`); };
 const R = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -78,7 +78,7 @@ const real = plan(suites, rec, SHARDS);
 t('AC1 every suite, once, in 6 to 8 shards', [SHARDS >= 6 && SHARDS <= 8, real.shards.length, every(real).length, new Set(every(real)).size], [true, SHARDS, suites.length, suites.length]);
 t('AC2 the repo plan is within the bound', slowest(real) <= bound(real), true);
 const cli = (...a) => spawnSync(process.execPath, [join(R, 'tests/plan_shards.mjs'), ...a], { encoding: 'utf8' });
-const T = mkdtempSync(join(tmpdir(), 'desk-shards-'));
+const T = scratch('desk-shards-');
 try {
   const out = join(T, 'out');
   writeFileSync(out, '');

@@ -1,11 +1,11 @@
 // suite: markers (every AUTOPILOT_ name the code uses is exactly one of a marker or a variable)
 // covers: desk/bin/markers.mjs desk/bin/prose-facts.mjs desk/bin/harvest.mjs
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { autopilot, autopilotNames } from '../desk/bin/prose-facts.mjs';
 import { MARKERS, ENV } from '../desk/bin/markers.mjs';
 import { MARKER } from '../desk/bin/harvest.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -29,7 +29,7 @@ t('#881 every listed name is one the code uses outside markers.mjs', [...a.marke
 t('#881 harvest reads every marker', MARKERS.filter((n) => ![...`${n}: x`.matchAll(MARKER)].some((m) => m[1] === n)), []);
 
 // The checks above, on a tree that breaks them: they name the name and the file.
-const root = mkdtempSync(join(tmpdir(), 'markers-'));
+const root = scratch('markers-');
 try {
   mkdirSync(join(root, 'desk', 'bin', 'pass'), { recursive: true });
   mkdirSync(join(root, 'skills', 'desk-x', 'bin'), { recursive: true });

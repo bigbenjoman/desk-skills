@@ -3,13 +3,13 @@
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -294,8 +294,7 @@ for (const anchor of ['pullrequestreview-311', 'discussion_r12']) {
 }
 
 // ---- the CLI, and SKILL.md's documented forms
-const T = mkdtempSync(join(tmpdir(), 'desk-verdict-'))
-process.on('exit', () => rmSync(T, { recursive: true, force: true }))
+const T = scratch('desk-verdict-')
 writeFileSync(join(T, 'ok.json'), JSON.stringify(base()))
 writeFileSync(join(T, 'bad.json'), JSON.stringify(base({ gaps: undefined })))
 const ok = spawnSync('node', [SCRIPT, join(T, 'ok.json')], { encoding: 'utf8' })
@@ -434,7 +433,7 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-422 AC5 a heading contradicting a clean marker is rejected', /lists "1 P1"/.test(gateRejects(body(clean(), '## desk-review: 1 P1'), H, gate)), true)
   t('DS-422 AC5 counts handed on are no format fault', gateRejects(body(clean({ p1: 1 }), '## desk-review: 1 P1'), H, gate), null)
   t('DS-422 AC5 a repo gate exporting only parseVerdict still checks the marker and its head', `${gateRejects(body(clean()), H, { parseVerdict: gate.parseVerdict })} ${/attests/.test(gateRejects(body(clean({ sha: 'c'.repeat(40) })), H, { parseVerdict: gate.parseVerdict }))}`, 'null true')
-  const dir = mkdtempSync(join(tmpdir(), 'verdict-check-'))
+  const dir = scratch('verdict-check-')
   const f = join(dir, 'report.md')
   writeFileSync(f, body(clean({ sha: 'c'.repeat(40) })))
   const r = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })

@@ -92,16 +92,54 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
-export function endedNormally(logText) {
+// A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
+// inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
+// characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
+// prints the words, and the prompt or the worker's own prose, never do. A worker that hits one cannot
+// run commands, so whatever it said or parked on then is no judgement on its ticket.
+const HOST_RESULTS = 12;
+const HOST_FAULT = /\bENOSPC\b|No space left on device/;
+export function hostFault(logText) {
+  const results = [];
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!line.includes('tool_result')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.type === 'user' ? e.message?.content : null;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) if (c?.type === 'tool_result') results.push(c);
+  }
+  for (const c of results.slice(-HOST_RESULTS).reverse()) {
+    if (!c.is_error) continue;
+    const text = typeof c.content === 'string' ? c.content
+      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+    const m = HOST_FAULT.exec(text);
+    if (!m) continue;
+    const at = Math.max(0, m.index - 80);
+    return text.slice(at, at + 200).replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+// The result event that closed the log's last session, or null where it stopped mid-turn. With
+// `launch`, a launch boundary (desk_spawn, written before each spawn or resume) ends the search too:
+// a launch that wrote nothing since has no result of its own, whatever an earlier run ended with.
+function lastResult(logText, { launch = false } = {}) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     let d;
     try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d?.type === 'result') return true;
-    if (TURN_EVENTS.has(d?.type)) return false;
+    if (d?.type === 'result') return d;
+    if (TURN_EVENTS.has(d?.type) || (launch && d?.type === 'desk_spawn')) return null;
   }
-  return false;
+  return null;
 }
+// The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
+const BUDGET_SUBTYPE = 'error_max_budget_usd';
+// Whether the log's last launch ended at its per-worker budget: its own result event says so.
+export const budgetStop = (logText) => lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+
+export const endedNormally = (logText) => lastResult(logText) != null;
 
 // How a worker that printed no marker ended, in a phrase: that its session wrote nothing after desk's
 // own lines (`desk_*` events, before and around the launch), else its session's error, else the last

@@ -1,12 +1,12 @@
 // suite: playwright lookup and saved GitHub login
 // findPlaywright: desk's own pinned Playwright, never the repo's; DESK_PLAYWRIGHT overrides it.
 // The saved login: a storage state, and whether it is missing or expired before a browser opens.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from '../desk/bin/find-playwright.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const put = (r, ...p) => { mkdirSync(join(r, ...p), { recursive: true }); const f = join(r, ...p, 'index.mjs'); writeFileSync(f, 'export const browsers = process.env.PLAYWRIGHT_BROWSERS_PATH;\n'); return f; };
@@ -14,18 +14,18 @@ delete process.env.DESK_PLAYWRIGHT;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 
 // A repo with its own Playwright, run from inside it: desk's copy still wins.
-const repo = mkdtempSync(join(tmpdir(), 'desk-pw-repo-'));
+const repo = scratch('desk-pw-repo-');
 writeFileSync(join(repo, 'package.json'), '{}');
 const repoOwn = put(repo, 'node_modules', 'playwright');
 const cwd = process.cwd();
 process.chdir(repo);
-const desk = mkdtempSync(join(tmpdir(), 'desk-pw-home-'));
+const desk = scratch('desk-pw-home-');
 const own = put(desk, 'playwright', 'node_modules', 'playwright');
 const found = findPlaywright(desk);
 t("desk's copy first", found.entry, own);
 t("desk's copy runs on desk's browsers", found.browsers, join(desk, 'playwright', 'browsers'));
 
-const none = mkdtempSync(join(tmpdir(), 'desk-pw-none-'));
+const none = scratch('desk-pw-none-');
 const miss = findPlaywright(none);
 t("no desk copy: the repo's own is never used", miss.entry, null);
 t('nothing installed lists what it tried', miss.tried.join(','), join(none, 'playwright', 'node_modules', 'playwright', 'index.mjs'));
@@ -46,7 +46,7 @@ t('an override import leaves the browsers path', process.env.PLAYWRIGHT_BROWSERS
 delete process.env.PLAYWRIGHT_BROWSERS_PATH;
 
 // The saved GitHub login: github.com cookies only, owner-only on every write.
-const dir = mkdtempSync(join(tmpdir(), 'desk-session-'));
+const dir = scratch('desk-session-');
 const profile = join(dir, 'desk-profile');
 const ctx = { cookies: async () => [
   { name: 'user_session', domain: 'github.com' }, { name: '_gh_sess', domain: '.github.com' },

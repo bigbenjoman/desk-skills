@@ -8,6 +8,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; mkdir -p "$HOME" "$T/stub"
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \

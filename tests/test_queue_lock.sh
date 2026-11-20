@@ -8,6 +8,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH DESK_QUEUE_LOCK_WAIT_MS
 PASS=0; FAIL=0

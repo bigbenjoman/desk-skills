@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
@@ -73,6 +74,7 @@ check "desk-design render allowed under the browser lock only" 'allows "Bash($B/
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
 check "DS-676 stitch-boards allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/stitch-boards.mjs:*)" && ! allows "Bash(node $B/stitch-boards.mjs:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
+check "its review results folder in the state dir is writable, and no other ticket's" 'allows "Edit(/$T/state/reviews/fix-thing/**)" && ! allows "Edit(/$T/state/reviews/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `apps/web: pnpm build-storybook` |'

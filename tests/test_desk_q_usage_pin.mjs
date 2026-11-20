@@ -4,16 +4,16 @@
 // binaries the account check calls. A pick runs desk-env's subscription set for real, writing the fixture
 // repo's config. Drawn at 104 columns under NO_COLOR. One check or more per DS-625 acceptance criterion
 // that a key, a click or a save drives.
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-usage-pin-'));
+const T = scratch('desk-q-usage-pin-');
 const H = join(T, 'home');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });

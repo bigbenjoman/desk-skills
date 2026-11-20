@@ -1,11 +1,11 @@
 // suite: scope report (files a worker changed outside its triaged scope)
 // claims: imports (repo file names below are test data, not what this suite runs)
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from '../desk/bin/scope-report.mjs';
 import { LOCKFILES } from '../desk/bin/test-scope.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const S = (xs) => JSON.stringify(xs);
@@ -39,7 +39,7 @@ t('AC3 batch totals', S(totals), '{"checked":3,"tickets":2,"files":3}');
 t('AC3 empty batch', S(batchScopeTotals([])), '{"checked":0,"tickets":0,"files":0}');
 
 // The triage record and the diff, from fixtures.
-const dir = mkdtempSync(join(tmpdir(), 'scope-'));
+const dir = scratch('scope-');
 mkdirSync(join(dir, 'triage'));
 writeFileSync(join(dir, 'triage', 'T-1.json'), JSON.stringify({ ticket: 'T-1', files_in_scope: ['a.js'] }));
 writeFileSync(join(dir, 'triage', 'T-2.json'), '{not json');

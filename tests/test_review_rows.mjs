@@ -3,20 +3,20 @@
 // reviewPlan on each pair of rows, and `desk-env review-cmd` reading them from a config; what the
 // worker contract, Stage 4b, a fix try's task and /desk-setup say about them, each against the text
 // before this rule; and what the pass makes of the verdict a worker then posts.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { reviewPlan, postsVerdict } from '../desk/bin/desk-env.mjs';
 import { undraftCall, DESK_REVIEW_CLEAN } from '../desk/bin/undraft.mjs';
 import { fixTask } from '../desk/bin/fix-tries.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ENV_BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-review-rows-'));
+const T = scratch('desk-review-rows-');
 const read = (f) => readFileSync(join(ROOT, f), 'utf8').replace(/\s+/g, ' ');
 const COUNTS = 'p0=0 p1=0 gaps=0';
 

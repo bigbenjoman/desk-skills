@@ -8,6 +8,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME" "$T/state/logs" "$T/fakes"
 unset CLAUDE_CONFIG_DIR
 PASS=0; FAIL=0

@@ -144,10 +144,14 @@ function units(slug, job) {
   return { service, timer };
 }
 const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim()}`);
-// Without lingering, systemd stops a user's timers once their last session ends.
+// Without lingering, systemd stops a user's timers once their last session ends. On WSL that is not
+// enough: WSL stops the whole distro once the last process started from Windows exits, and no systemd
+// unit, lingering or not, keeps it up, so install says so there whatever lingering is.
 function lingerNote() {
   const r = spawnSync('loginctl', ['show-user', String(process.env.USER || process.getuid()), '-p', 'Linger'], { encoding: 'utf8' });
-  return /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+  const linger = /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+  const wsl = E.isWSL() ? ' On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if this is not your default distro), with "Stop the task if it runs longer than 3 days" turned off.' : '';
+  return linger + wsl;
 }
 
 function installSystemd(slug, job, reload) {

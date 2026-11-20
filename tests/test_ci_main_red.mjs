@@ -1,11 +1,11 @@
 // suite: ci main red (the red-main alarm's lane decisions and the macOS nightly gate)
 // The decisions as pure functions, then `alarm` and `nightly-due` end to end against a fake gh.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { testsLane, macosLane, withTrigger, ranSuite, decide, nightlyDue, PLAN_JOB } from './ci_main_red.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -78,7 +78,7 @@ t('a failed push run: due', nightlyDue([run('failure', 2)], NOW), true);
 t('a passed schedule run (perhaps a skip) does not count: due', nightlyDue([run('success', 2, { event: 'schedule' })], NOW), true);
 
 // End to end with a fake gh: `run list`/`run view`/`issue list` answer from files, everything is logged.
-const T = mkdtempSync(join(tmpdir(), 'desk-ci-red-'));
+const T = scratch('desk-ci-red-');
 try {
   const BIN = join(T, 'bin');
   mkdirSync(BIN);
