@@ -38,9 +38,9 @@ export function mayChangePr(cmd, args = []) {
   return !NO_PR_WRITES.includes(cmd);
 }
 
-// One pass's kept reads. `run(cmd, args)` -> what the read prints (a string) when it is a kept PR view
-// answered from them, else undefined; `ran(cmd, args, out)` records what a command printed, or that it
-// ran, after it succeeded; `clear()` drops everything.
+// One pass's kept reads. `before(cmd, args)` -> what the read prints (a string) when it is a kept PR
+// view answered from them, else undefined; `after(cmd, args, out)` keeps what a PR view printed once it
+// succeeded; `clear()` drops everything.
 export function prReads() {
   const kept = new Map();
   const answer = (p) => {

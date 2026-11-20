@@ -136,6 +136,10 @@ t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({
   t('DS-794 with no cache it would have read the round again (the garbage is no reading)', child({ DESK_USAGE_DIR: join(T, 'usage-794-none') }), '0.5');
   utimesSync(gz, s + 1, s + 1);
   t('DS-794 a round whose time changed is read again', child(), '0.5');
+  // That read failed (the bytes are not gzip), so nothing was kept for it: the round readable again at
+  // the same size, time and inode is read, not taken as no reading from the cache.
+  writeFileSync(gz, body); utimesSync(gz, s + 1, s + 1);
+  t('DS-794 a read that failed is kept nowhere, so the next process reads the round again', child(), '0.55');
   rmSync(gz);
   delete process.env.DESK_USAGE_DIR;
 }

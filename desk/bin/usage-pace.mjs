@@ -142,7 +142,10 @@ function eventsOf(path, st) {
   const had = parsed.get(path);
   if (sameFile(had, st)) return had.events;
   const kept = diskCache()[path];
-  const events = sameFile(kept, st) ? kept.events : windowEvents(tail(path, st.size));
+  const text = sameFile(kept, st) ? null : tail(path, st.size);
+  // A log that could not be read is no reading this time, and is kept nowhere, so the next read tries it again.
+  if (text === undefined) return [];
+  const events = sameFile(kept, st) ? kept.events : windowEvents(text);
   const rec = { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino, events };
   parsed.set(path, rec);
   if (!sameFile(kept, st)) { disk[path] = rec; diskDirty = true; }
@@ -163,8 +166,8 @@ function saveDiskCache(now) {
 
 // A log's last TAIL_BYTES, from its first whole line, or the whole log when that holds no event: a
 // session writes one at its start and seldom after, so the tail holds the newest only when a session
-// started late in the log; otherwise the whole log is read. A pass reads every repo's recent logs. A round moved aside is gzipped, so it is read whole. '' when it cannot be
-// read.
+// started late in the log; otherwise the whole log is read. A pass reads every repo's recent logs. A round moved aside is gzipped, so it is read whole. Undefined when it
+// cannot be read.
 const TAIL_BYTES = 1024 * 1024;
 function tail(path, size) {
   let fd;
@@ -180,7 +183,7 @@ function tail(path, size) {
     }
     const all = readFileSync(path, 'utf8');
     return all.includes(EVENT) ? all : '';
-  } catch { return ''; } finally { if (fd !== undefined) closeSync(fd); }
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
 // The share of the 7-day window gone at `now`, in percent (0–100).
