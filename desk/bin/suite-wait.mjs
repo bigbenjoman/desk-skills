@@ -1,10 +1,12 @@
 // What a worktree is doing with the box-wide test lock (with-lock.sh test|tsc, which suites and
 // typechecks share): running a command under it, waiting for it, or neither. Read from the process
 // table, each process's working directory, and the holder files with-lock.sh leaves in the lock dir.
-import { readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
+import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { psRows } from './desk-env.mjs';
+import { since } from './gate.mjs';
+import { tilde } from './logins.mjs';
 
 // Every process's working directory, as [{pid, cmd, cwd}], read once: lsof, else Linux's /proc.
 // Null when neither can be read.
@@ -53,26 +55,35 @@ export function dirUsers(dir, skip = [], cwds = processCwds()) {
 // Each as `pid <n> (<command>)`, comma-separated.
 export const usersText = (users) => users.map((p) => `pid ${p.pid}${p.cmd ? ` (${p.cmd})` : ''}`).join(', ');
 
-// Every process as [{pid, ppid, etime, args}], read once. Null when ps cannot be read.
+// Every process as [{pid, ppid, args}], read once. Null when ps cannot be read.
 let PROCS;
 export function processList() {
   if (PROCS !== undefined) return PROCS;
-  try { PROCS = psRows('pid=,ppid=,etime=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
+  try { PROCS = psRows('pid=,ppid=,args=').filter((p) => Number.isInteger(p.pid) && Number.isInteger(p.ppid)); } catch { PROCS = null; }
   return PROCS;
 }
 
-// The pids the test lock's holder files name: each mkdir slot's `pid` (the wrapper and its command)
-// and each flock slot's `.pid` (the command with-lock.sh exec'd into).
-export function lockHolders(dir) {
-  const pids = new Set();
+// The test lock's holder files, as [{pids, at}]: each mkdir slot's `pid` (the wrapper and its command)
+// and each flock slot's `.pid` (the command with-lock.sh exec'd into), with when each was written (ms).
+function holderFiles(dir) {
   let names = [];
-  try { names = readdirSync(dir); } catch { return pids; }
-  for (const n of names) {
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.flatMap((n) => {
     const file = /^desk-test\.lock(\.\d+)?\.d$/.test(n) ? join(dir, n, 'pid') : /^desk-test\.lock(\.\d+)?\.pid$/.test(n) ? join(dir, n) : null;
-    if (!file) continue;
-    try { for (const p of readFileSync(file, 'utf8').split(/\s+/)) if (/^\d+$/.test(p)) pids.add(Number(p)); } catch { /* released */ }
-  }
-  return pids;
+    if (!file) return [];
+    try {
+      const pids = readFileSync(file, 'utf8').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
+      return [{ pids, at: statSync(file).mtimeMs }];
+    } catch { return []; }
+  });
+}
+// The pids the test lock's holder files name.
+export function lockHolders(dir) {
+  return new Set(holderFiles(dir).flatMap((f) => f.pids));
+}
+// Each pid a holder file names, with when its file was written (ms).
+export function lockHolderStamps(dir) {
+  return new Map(holderFiles(dir).flatMap((f) => f.pids.map((p) => [p, f.at])));
 }
 
 // The process itself, by its first words: a worker's own command line quotes these commands in its
@@ -119,24 +130,39 @@ export function etimeSeconds(etime) {
   const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(etime ?? '').trim());
   return m ? ((Number(m[1] ?? 0) * 24 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 60 + Number(m[4]) : null;
 }
-const ageText = (sec) => (sec == null ? 'for an unknown time' : sec < 3600 ? `${Math.floor(sec / 60)} min` : `${Math.floor(sec / 3600)} h ${Math.floor((sec % 3600) / 60)} min`);
-// Who holds the test lock, any repo or session, as [{pid, cwd, args, seconds}]: each holding process
-// whose parent does not hold it too (a mkdir slot's file names the wrapper and its command). cwd is
-// null where its working directory cannot be read. [] when ps cannot be read.
-export function lockHolderRuns({ procs, holders, cwds }) {
-  if (!procs) return [];
-  const holding = procs.filter((p) => lockRole(p, { procs, holders }) === 'hold');
-  const pids = new Set(holding.map((p) => p.pid));
-  return holding.filter((p) => !pids.has(p.ppid)).map((p) => ({
-    pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: etimeSeconds(p.etime) }));
+// Every process's age in seconds, as a Map by pid, read once. Null when ps cannot be read.
+let AGES;
+export function processAges() {
+  if (AGES !== undefined) return AGES;
+  try { AGES = new Map(psRows('pid=,etime=').map((p) => [p.pid, etimeSeconds(p.etime)])); } catch { AGES = null; }
+  return AGES;
 }
-// Each holder as `<where>: <command>, <age>`, the command cut to 80 characters and the home directory
-// shown as ~, `; `-separated.
-export function holdersText(runs, home = process.env.HOME) {
-  const short = (path) => (home && path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path);
+// Who holds the test lock, any repo or session, as [{pid, cwd, args, seconds}]: each holding process
+// whose parent does not hold it too (a mkdir slot's file names the wrapper and its command). seconds is
+// how long its run has gone, from the youngest of it and its children (the command starts once the lock
+// is taken), null where unknown; cwd is null where it cannot be read. A pid only a holder file names
+// counts only where its process started before that file was written (`stamps`, lockHolderStamps), so a
+// stale file whose pid was reused names nobody. [] when ps cannot be read.
+export function lockHolderRuns({ procs, holders, cwds, ages, stamps, now = Date.now() }) {
+  if (!procs) return [];
+  const age = (pid) => ages?.get(pid) ?? null;
+  const current = (p) => {
+    if (!stamps?.has(p.pid) || FLOCK.test(p.args)) return true;
+    const a = age(p.pid);
+    return a != null && now - a * 1000 <= stamps.get(p.pid) + 2000;
+  };
+  const holding = procs.filter((p) => lockRole(p, { procs, holders }) === 'hold' && current(p));
+  const pids = new Set(holding.map((p) => p.pid));
+  return holding.filter((p) => !pids.has(p.ppid)).map((p) => {
+    const known = [p, ...procs.filter((c) => c.ppid === p.pid)].map((c) => age(c.pid)).filter((a) => a != null);
+    return { pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: known.length ? Math.min(...known) : null };
+  });
+}
+// Each holder as `<where>: <command>, running <age>`, the command cut to 80 characters, `; `-separated.
+export function holdersText(runs) {
   return runs.map((r) => {
     const cmd = r.args.length > 80 ? `${r.args.slice(0, 79)}…` : r.args;
-    return `${r.cwd ? short(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${ageText(r.seconds)}`;
+    return `${r.cwd ? tilde(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${r.seconds == null ? 'running for an unknown time' : `running ${since(r.seconds * 1000)}`}`;
   }).join('; ');
 }
 

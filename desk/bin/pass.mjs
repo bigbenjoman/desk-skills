@@ -56,7 +56,7 @@ import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflic
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
@@ -1703,7 +1703,7 @@ const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const holders = lockHolders(E.lockDir());
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
-    held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds() }),
+    held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
     slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });

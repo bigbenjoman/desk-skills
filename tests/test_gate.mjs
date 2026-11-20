@@ -363,19 +363,29 @@ rmSync(gtmp, { recursive: true, force: true });
 {
   const { lockHolderRuns, holdersText, lockQueue, etimeSeconds } = await import('../desk/bin/suite-wait.mjs');
   const procs = [
-    { pid: 11, ppid: 1, etime: '42:10', args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder and its command
-    { pid: 12, ppid: 11, etime: '42:09', args: 'bash tests/run.sh' },
-    { pid: 41, ppid: 1, etime: '01:05:00', args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock holder: it has a child
-    { pid: 42, ppid: 41, etime: '01:04:59', args: 'pnpm test' },
-    { pid: 51, ppid: 1, etime: '00:30', args: 'flock /tmp/desk-test.lock pnpm test' }, // a waiter
+    { pid: 11, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // a mkdir holder and its command
+    { pid: 12, ppid: 11, args: 'bash tests/run.sh' },
+    { pid: 41, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a flock holder, queued 20 min before its command started
+    { pid: 42, ppid: 41, args: 'pnpm test' },
+    { pid: 51, ppid: 1, args: 'flock /tmp/desk-test.lock pnpm test' }, // a waiter
+    { pid: 61, ppid: 1, args: 'vim notes.md' }, // a reused pid a stale flock holder file still names
   ];
-  const cwds = [{ pid: 11, cwd: '/home/u/code/repo-a' }, { pid: 41, cwd: '/home/u/code/wt/B-1' }];
-  const runs = lockHolderRuns({ procs, holders: new Set([11, 12]), cwds });
-  t('a holder is named once, not with its command beside it, and a waiter not at all', runs.map((r) => r.pid).join(','), '11,41');
-  t('each with where it runs and how long it has held', holdersText(runs, '/home/u'),
-    '~/code/repo-a: /bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, 42 min; ~/code/wt/B-1: flock /tmp/desk-test.lock pnpm test, 1 h 5 min');
-  t('one whose directory cannot be read is named by its pid', holdersText(lockHolderRuns({ procs, holders: new Set([11, 12]), cwds: null }).slice(0, 1)).startsWith('pid 11: '), true);
-  t('no holders when ps cannot be read', lockHolderRuns({ procs: null, holders: new Set(), cwds }).length, 0);
+  const now = Date.parse('2026-11-20T12:00:00Z');
+  const ages = new Map([[11, 2530], [12, 2529], [41, 3900], [42, 2700], [51, 30], [61, 60]]);
+  const stamps = new Map([[11, now - 2529000], [12, now - 2529000], [61, now - 600000]]);
+  const cwds = [{ pid: 11, cwd: '/home/u/code/repo-a' }, { pid: 41, cwd: '/home/u/code/wt/B-1' }, { pid: 61, cwd: '/home/u' }];
+  const runs = lockHolderRuns({ procs, holders: new Set([11, 12, 61]), cwds, ages, stamps, now });
+  t('a holder is named once, not with its command beside it; a waiter and a reused pid not at all', runs.map((r) => r.pid).join(','), '11,41');
+  t('its age is its command\'s, which starts once the lock is taken, not its wait', runs.map((r) => r.seconds).join(','), '2529,2700');
+  const home = process.env.HOME;
+  process.env.HOME = '/home/u';
+  try {
+    t('each with where it runs and how long its run has gone', holdersText(runs),
+      '~/code/repo-a: /bin/bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh, running 42m; ~/code/wt/B-1: flock /tmp/desk-test.lock pnpm test, running 45m');
+  } finally { process.env.HOME = home; }
+  t('one whose directory and age cannot be read is named by its pid', holdersText(lockHolderRuns({ procs, holders: new Set(), cwds: null, ages: null, now }).slice(0, 1)), 'pid 41: flock /tmp/desk-test.lock pnpm test, running for an unknown time');
+  t('a file-named pid whose age cannot be read names nobody', lockHolderRuns({ procs, holders: new Set([11, 12]), cwds, ages: null, stamps, now }).map((r) => r.pid).join(','), '41');
+  t('no holders when ps cannot be read', lockHolderRuns({ procs: null, holders: new Set(), cwds, ages, stamps, now }).length, 0);
   t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
   t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
   t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
