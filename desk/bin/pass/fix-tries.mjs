@@ -25,6 +25,7 @@
 //   conflictRows  { 'pr-conflict-reviewed', 'pr-conflict-unreviewed' }: each { perm, key }, its §3 value and key
 //   feedbackFirst config §3 merge-feedback-first is not `no`
 //   judgement     config §3 autopilot-judgement
+//   outage        set here: outageChecks's map of the checks red on many ready PRs at once
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   out {line}                          a line of the pass's report
@@ -39,7 +40,7 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outageChecks } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
@@ -49,7 +50,13 @@ const waiting = (key, line) => say(key, 'waiting', line);
 export function* decideFixTries(s) {
   if (s.rowErrors.length && s.undrafted.length) yield out(`fix tries: none this pass, since config ${s.rowErrors.join('; ')}. Run /desk-setup`);
   if (s.rowErrors.length) return;
-  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, s);
+  // A check red on many ready PRs at once is said once here, and each PR it holds is held (fixCall).
+  const outage = outageChecks(s.undrafted, s.gate);
+  for (const [name, prs] of outage) {
+    yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and the driver's reruns go on`);
+  }
+  const snap = outage.size ? { ...s, outage } : s;
+  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, snap);
 }
 
 // How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".
@@ -87,7 +94,8 @@ function* fixTry(t, p, s) {
       return;
     }
   }
-  const { ctx, baseMerge, ...reads } = yield { type: 'reads', key: t.key, dirty, dirtyFiles };
+  const { ctx: read, baseMerge, ...reads } = yield { type: 'reads', key: t.key, dirty, dirtyFiles };
+  const ctx = s.outage ? { ...read, outage: s.outage } : read;
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
   let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads));

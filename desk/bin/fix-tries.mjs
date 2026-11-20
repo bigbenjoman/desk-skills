@@ -335,7 +335,13 @@ export function fixCall(t, s, ctx) {
     }
     base = againstBase(t, s.head, mine, notMine, ctx);
     if (base?.held) return waiting ? null : base.held;
-    fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
+    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
+    // not this PR's code: held with no fix try, whose worker could not fix it, and not the person's.
+    const left = base?.mine ?? mine;
+    if (ctx.outage && left.length && left.every((f) => ctx.outage.has(f.name))) {
+      return withRecord({ call: 'held', label: 'OUTAGE', why: outageWhy(left.map((f) => f.name), ctx.outage, s.pr) }, base?.record);
+    }
+    fix = checksFix(left, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
   if (conflict) return conflictSpent(done, s.head, now) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base, undefined, now, fix.files, fix.check) } : nextConflictTry(done, s.pr, s.head, fix, now);
@@ -348,6 +354,24 @@ export function fixCall(t, s, ctx) {
   }
   return withBuilds(withRecord(nextTry(done, s.pr, s.head, fix), split.record));
 }
+// A required check red on OUTAGE_PRS or more ready PRs at once, and reported by a platform rather than a
+// GitHub Actions run of the repo's own (no runId: a deploy or preview service's status), is taken for that
+// platform failing (down, its queue timing out), not for each PR's code: Map name -> the PRs it is red on.
+// A workflow's job red on many PRs is left alone: their code, or the base (againstBase), may be its cause.
+// undrafted: [{ s: { pr, checks } }], lists: { required, advisory }.
+export const OUTAGE_PRS = 3;
+export function outageChecks(undrafted, lists) {
+  const on = new Map();
+  for (const { s } of undrafted ?? []) {
+    const gate = evaluateGate(s?.checks ?? [], { required: lists?.required ?? [], advisory: lists?.advisory ?? [] });
+    for (const name of new Set(gate.failing.filter((f) => f.runId == null).map((f) => f.name))) on.set(name, [...(on.get(name) ?? []), s.pr]);
+  }
+  return new Map([...on].filter(([, prs]) => prs.length >= OUTAGE_PRS));
+}
+const outageWhy = (names, outage, pr) => {
+  const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
+  return `${names.map((x) => `"${x}"`).join(', ')} ${names.length === 1 ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as its platform failing, not this PR's code, so no fix try is spent on it; the driver's reruns go on, and it goes on as before once ${names.length === 1 ? 'it passes' : 'they pass'} or fewer PRs are red on ${names.length === 1 ? 'it' : 'them'}`;
+};
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });
 
