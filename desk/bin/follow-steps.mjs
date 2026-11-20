@@ -106,7 +106,7 @@ export function followPrompt({ slug, repo, t, steps, bin, dirs }) {
 // written under <state>/follow/. -> the run to keep on the ticket (follow_run): { id, pid, started, out,
 // steps, login }, or { wait }, starting nothing, when no login can take it now.
 export function startFollow({ state, slug, repo, bin, t, steps, dirs, cwd, env = process.env, claude = process.env.DESK_FOLLOW_CLAUDE || 'claude', now = new Date() }) {
-  const run = startHeadless({ state, kind: 'follow', id: `${t.key}-${now.toISOString().replace(/[:.]/g, '-')}`, effort: FOLLOW_EFFORT, addDirs: dirs, cwd, env, claude, now,
+  const run = startHeadless({ state, kind: 'follow', id: `${t.key}-${now.getTime()}`, effort: FOLLOW_EFFORT, addDirs: dirs, cwd, env, claude, now,
     settings: followSettings({ bin, dirs }), prompt: followPrompt({ slug, repo, t, steps, bin, dirs }) });
   if (run.wait) return run;
   return { ...run, steps: steps.map((s) => ({ step: s.step, ...(s.after && s.after !== 'merge' ? { after: s.after } : {}) })) };
