@@ -111,6 +111,7 @@ cat > "$T/merged.json" <<'EOF'
  {"number":352,"headRefName":"fix/DS-387-two","mergedAt":"2026-10-31T10:37:30Z"},
  {"number":353,"headRefName":"fix/DS-388-own","mergedAt":"2026-10-31T10:39:00Z"},
  {"number":354,"headRefName":"fix/DS-388-two","mergedAt":"2026-10-31T10:41:00Z"},
+ {"number":355,"headRefName":"fix/DS-389-session","mergedAt":"2026-10-31T10:43:00Z"},
  {"number":345,"headRefName":"fix/DS-755-x","mergedAt":"2026-10-31T12:30:02Z"},
  {"number":338,"headRefName":"fix/DS-404-something","mergedAt":"2026-10-31T12:00:00Z"},
  {"number":301,"headRefName":"feat/DS-372-part-one","mergedAt":"2026-10-30T09:00:00Z"},
@@ -179,7 +180,14 @@ queued DS-387 fix/DS-387-own merged_at=2026-10-31T10:37:00.500Z \
 # merged and the pass read it MERGED, then a pre-upgrade spawn cleared the result: #354 is its own.
 queued DS-388 fix/DS-388-own merged_at=2026-10-31T10:39:00.500Z \
   'pr_status={"pr":354,"state":"MERGED","url":"https://github.com/acme/widgets/pull/354","at":"2026-10-31T10:45:00Z"}'
+# The same, but its own #357 is missing from a capped search: the status's own merge time (10:44) still
+# covers #355, merged at 10:43 between its two merges.
+queued DS-389 fix/DS-389-own merged_at=2026-10-31T10:42:00.500Z \
+  'pr_status={"pr":357,"state":"MERGED","merged_at":"2026-10-31T10:44:00Z","url":"https://github.com/acme/widgets/pull/357","at":"2026-10-31T10:46:00Z"}'
+q set-batch concurrency=4
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a MERGED status's own merge time counts when a capped search leaves its PR out" \
+  'spawned DS-389 && [ "$(field DS-389 result.pr)" = null ] && [ "$(field DS-389 state)" != "\"done\"" ]'
 check "DS-796 a later round's own PR read MERGED after merged_at is its own, not shipped outside its worker" \
   'spawned DS-388 && [ "$(field DS-388 result.summary)" = null ] && [ "$(field DS-388 state)" != "\"done\"" ]'
 check "DS-796 a status read after merged_at is a later round of its own: its earlier merge is not news" \
@@ -201,7 +209,7 @@ check "DS-404 AC3 done in Jira with an open PR of its own spawns as today" 'unsh
 # A failed GitHub read spawns as before.
 q add DS-380 Bug A; q set DS-380 state=triaged branch=fix/DS-380-x added_at=2026-10-31T10:00:00Z
 printf '#!/bin/sh\necho "gh: HTTP 502" >&2; exit 1\n' > "$T/stub/gh"
-for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388; do q set "$k" state=done; done
+for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388 DS-389; do q set "$k" state=done; done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-404 a merged-PR search that fails spawns as before" '[ "$(field DS-380 state)" = "\"running\"" ] && spawned DS-380'
 

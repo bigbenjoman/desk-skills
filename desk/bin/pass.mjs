@@ -1148,7 +1148,7 @@ const statusPr = (t) => {
   const s = t.merged_at ? t.pr_status : null;
   if (s?.pr == null) return null;
   const here = !s.url || String(s.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
-  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED' } : null;
+  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) } : null;
 };
 function shippedElsewhere(t) {
   const status = statusPr(t);
@@ -1165,10 +1165,11 @@ function shippedElsewhere(t) {
     let own = mine != null || status?.later ? at : NaN;
     // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
     // cleared it, even when it merged after merged_at (which keeps only the first merge): it is not news,
-    // and neither is anything merged by then.
+    // and neither is anything merged by then: its own recorded merge time, else the search's (a capped
+    // search may leave that PR out).
     if (mine == null && status?.merged) {
       mine = status.pr;
-      const m = Date.parse(list.find((p) => Number(p?.number) === status.pr)?.mergedAt);
+      const m = Number.isNaN(status.mergedAt) ? Date.parse(list.find((p) => Number(p?.number) === status.pr)?.mergedAt) : status.mergedAt;
       own = Number.isNaN(m) ? at : Math.max(at, m);
     }
     const re = new RegExp(keyPattern(t.key));
