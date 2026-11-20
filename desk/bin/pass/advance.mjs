@@ -140,8 +140,9 @@ export function* decideAdvance(s) {
   else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
-  // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
+  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
+  // overstates liveness. See references/orchestrator-recovery.md.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
@@ -274,6 +275,9 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
+    // The exact text a gated write waits on, which the worker keeps in its park file (approve), is kept
+    // with the park, so it is relayed from there rather than dug out of the log.
+    yield { type: 'park-approve', key: t.key, question };
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.

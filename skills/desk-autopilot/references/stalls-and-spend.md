@@ -97,7 +97,8 @@ or any other) is not stalled: the pass reports it as paused, holds the repo's sp
 until its subscription's reset (no work moves to another subscription; other subscriptions' work
 carries on), and resumes it in its own session on the login it started on once the limit lifts, at
 its reset or sooner when a probe call succeeds (orchestrator-recovery.md). Log growth
-alone can lie (a hung `codex exec` heartbeats into the log for hours), so on a batch that has gone
+alone can lie (a hung `codex exec` heartbeats into the log until the harness moves it to the
+background at 600s), so on a batch that has gone
 quiet, check the log tail's newest `tool_progress` `elapsed_time_seconds` too. Recovery for both is
 in `references/orchestrator-recovery.md`.
 
