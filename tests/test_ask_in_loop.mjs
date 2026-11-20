@@ -20,7 +20,7 @@ t('the park reaches the person through needs-you and the digest, never pushed on
 t('the answer is only recorded: the orchestrator requeues', take.includes('is only recorded: requeue the ticket yourself once it is in (Stage 5)'), true);
 t('a batch-wide call no ticket waits on stays in the report, and the loop runs without it', take.includes('put it in your report and the status table, with each option and your recommendation, and run the loop without it'), true);
 t('never a needs-you ask, which has no answer to read', take.includes('Never `needs-you.mjs ask`: that records a step for the person to take, with no answer for the loop to read'), true);
-t('the loop keeps running passes for every other ticket', take.includes('keep running passes for every other ticket'), true);
+t('the loop keeps running passes for every other ticket', take.includes('Keep running passes for every other ticket'), true);
 t('a carousel stays for Stage 3 and a user in the conversation', take.includes("A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question the user asks you, or answers, while they are in the conversation with you."), true);
 t('the paragraph on questions with no recommendation moved whole', take.includes('## Questions with no recommendation Two have no recommendation to give') && !core.includes('Two have no recommendation to give'), true);
 
