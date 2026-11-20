@@ -411,14 +411,15 @@ const who = () => {
   return userInfo().username;
 };
 
-// Records an answer through the named repo's answer.mjs, as an answer given there would be.
+// Records an answer through the named repo's answer.mjs, as an answer given there would be. The page
+// lists a ticket once, its triage unknowns joined into one item, so the answer settles all of them.
 export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.runBin(), now = new Date() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
   let out;
   try {
-    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, text], {
+    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
       encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }

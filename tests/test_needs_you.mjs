@@ -150,7 +150,7 @@ t('AC4 answer on a parked item is refused and records nothing', `${an1.ok} ${ans
 // ---- AC4, AC6, AC14: an answer goes through digest.mjs answer; a resume requeues; a supervised repo needs nothing more
 const res = N.record({ word: 'alpha', ticket: 'A-1', action: 'resume', text: 'the short one' });
 const a1 = queueOf('alpha').tickets['A-1'];
-t('AC4 the answer went through answer.mjs for that repo', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['A-1', 'the short one'], queue: join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json') }));
+t('AC4 the answer went through answer.mjs for that repo', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['A-1', '--all', 'the short one'], queue: join(env.DESK_HOME, 'repos', 'acme__alpha', 'queue.json') }));
 t('AC6 the resumed ticket is requeued, ready for the next pass', `${res.ok} ${a1.state} ${a1.open_questions} ${a1.park}`, 'true triaged 0 null');
 t('AC14 under the supervisor nothing more is asked of the session', `${res.message} ${/requeued; the next pass can spawn it/.test(res.line)}`, 'null true');
 t('AC4 desk-q no longer counts it', N.collect().items.some((i) => i.t.key === 'A-1'), false);
@@ -171,7 +171,7 @@ t('DS-297 AC3 answer on a lane C park is refused', `${ca2.ok} ${/answer is not a
 // ---- AC8: "not now" goes in the not-now register
 const n6 = N.record({ word: 'alpha', ticket: 'A-6', action: 'not-now' });
 const reg = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8');
-t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 not now');
+t('AC8 a parked item put off is in the register, through answer.mjs', `${n6.ok} ${reg.includes('PRODUCTION BROKEN: checkout returns 500')} ${answers().at(-1).args.join(' ')}`, 'true true A-6 --all not now');
 const n4 = N.record({ word: 'alpha', ticket: 'A-4', action: 'not-now' });
 t('AC8 a hold put off is in the register too, and stays held', `${n4.ok} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__alpha', 'not-now.jsonl'), 'utf8').includes('"ticket":"A-4"')} ${queueOf('alpha').tickets['A-4'].held_by}`, 'true true A-9');
 // DS-324 AC1, AC3: a put-off item is not listed again, on this run or a later one, and the count leaves it out.
@@ -196,7 +196,7 @@ t('AC10 nothing anywhere', N.listText(N.collect({ repos: quiet })), 'Nothing nee
 
 // ---- AC15: a live session's batch is not requeued; the session is named to message
 const b1 = cli('record', 'beta', 'B-1', 'resume', 'the v2 one');
-t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 the v2 one');
+t('AC15 answered, not requeued', `${b1.code} ${queueOf('beta').tickets['B-1'].state} ${answers().at(-1).args.join(' ')}`, '0 parked B-1 --all the v2 one');
 t('AC15 the session to message is named, with the requeue', /^MESSAGE beta-batch: B-1 was answered .*queue\.mjs requeue B-1/m.test(b1.out), true);
 // DS-297 AC1: marked answered, so desk-q shows it waiting on the session, and it is not asked again.
 const betaRow = () => loadRepos().find((r) => r.name === 'beta').rows.find((x) => x.t.key === 'B-1');
@@ -279,7 +279,7 @@ t('DS-310 AC3 the repo\'s name lists its standing batch\'s items and the named b
 t('DS-310 AC3 the named batch on its own lists only its items', cli('list', 'alpha:X-1').out.split('\n').filter((l) => / \| /.test(l)).map((l) => l.split(' ')[1]).join(), 'X-2,X-3');
 const x2 = cli('record', 'alpha:X-1', 'X-2', 'resume', 'the red one');
 const xQueue = () => JSON.parse(readFileSync(xq, 'utf8'));
-t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['X-2', 'the red one'], queue: xq }));
+t('DS-310 AC3 the answer went through answer.mjs for the named batch', JSON.stringify(answers().at(-1)), JSON.stringify({ args: ['X-2', '--all', 'the red one'], queue: xq }));
 t('DS-310 AC3 the ticket is requeued in the named batch', `${x2.code} ${xQueue().tickets['X-2'].state}`, '0 triaged');
 const x3 = N.record({ word: 'alpha', ticket: 'X-3', action: 'resume', text: 'the plain one' });
 t('DS-310 AC3 a repo\'s name finds the batch that holds the ticket', `${x3.ok} ${answers().at(-1).queue === xq} ${xQueue().tickets['X-3'].state} ${queueOf('alpha').tickets['X-3']}`, 'true true triaged undefined');
@@ -425,7 +425,7 @@ const gr = cli('record', 'iota', 'I-1', 'answer', call323);
 const i1q = queueOf('iota').tickets['I-1'];
 const ghLog = readFileSync(GH_LOG, 'utf8');
 t('DS-323 AC2 the answer is posted on the PR', `${gr.code} ${ghLog.includes('pr comment 71 --repo acme/iota --body') && ghLog.includes(`> ${call323}`)}`, '0 true');
-t('DS-323 AC2 it is kept in the briefing for the next worker', `${JSON.stringify(answers().at(-1).args)} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__iota', 'briefings', 'I-1.md'), 'utf8').includes(call323)}`, `${JSON.stringify(['I-1', call323])} true`);
+t('DS-323 AC2 it is kept in the briefing for the next worker', `${JSON.stringify(answers().at(-1).args)} ${readFileSync(join(env.HOME, '.desk-autopilot', 'acme__iota', 'briefings', 'I-1.md'), 'utf8').includes(call323)}`, `${JSON.stringify(['I-1', '--all', call323])} true`);
 t('DS-323 AC2 and requeued for a worker on the PR, carrying the call', `${i1q.state} ${i1q.fix?.kind} ${i1q.fix?.pr} ${i1q.fix?.head} ${i1q.fix?.answer === call323}`, 'triaged gaps 71 h71 true');
 const { fixBrief, fixTask } = await import('../desk/bin/fix-tries.mjs');
 t('DS-323 AC2 the fix worker\'s briefing quotes the call, and its task is to carry it out', `${fixBrief(i1q).includes(`> ${call323}`)} ${/carry out the person's call on the review gaps of PR #71/.test(fixTask(i1q))} ${/leave the PR in draft/.test(fixTask(i1q))}`, 'true true true');
@@ -568,7 +568,7 @@ onGitHub(92, { state: 'OPEN', isDraft: false, headRefOid: 'live92' });
 const resumed = cli('record', 'instr', 'SG-2', 'resume', told);
 const sg2 = sq()['SG-2'];
 const sgBrief = readFileSync(join(env.HOME, '.desk-autopilot', 'acme__instr', 'briefings', 'SG-2.md'), 'utf8');
-t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', told])} true`);
+t('DS-501 AC2 the instruction is kept in the briefing for the next worker', `${resumed.code} ${JSON.stringify(answers().at(-1).args)} ${sgBrief.includes(told)}`, `0 ${JSON.stringify(['SG-2', '--all', told])} true`);
 t('DS-501 AC2 and requeued on its branch, at the head GitHub shows', `${sg2.state} ${sg2.branch} ${sg2.fix?.kind} ${sg2.fix?.pr} ${sg2.fix?.head} ${sg2.fix?.ready} ${sg2.fix?.answer === told}`, 'triaged fix/SG-2-x instruction 92 live92 true true');
 t('DS-501 AC2 it is not one of the pass\'s fix tries', `${(sg2.fix_tries ?? []).length} ${sg2.fix?.try} of ${sg2.fix?.of}`, '0 1 of 1');
 t('DS-501 triage call: resume posts nothing on the PR (answer stays that path)', readFileSync(GH_LOG, 'utf8').slice(loggedBefore).includes('pr comment'), false);
@@ -743,7 +743,7 @@ put('omicron', { port: 4555, beat: 1, supervised: true, tickets: { 'P-1': { ...p
 const om = N.collect({ word: 'omicron' }).items;
 t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
 t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === `${planQ} (2 tickets wait behind this)`} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
-t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 start');
+t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 --all start');
 
 // ---- DS-375: a PR stuck after its fix tries is read against its checks now, names the step its run
 // failed at, and recommends done only when the step is on GitHub.
@@ -3004,7 +3004,7 @@ const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);
   const f1 = N.record({ word: 'ds609', ticket: 'F-1', action: 'resume', text: `Saved the capture in ${cap}/.` });
   t('DS-609 AC1 the named folder\'s files are in fixtures/<TICKET>/ and the ticket is requeued', `${f1.ok} ${ls(fx('F-1'))} ${queueOf('ds609').tickets['F-1'].state}`, 'true capture.json,notes.txt triaged');
   t('DS-609 AC1 the reply names what was copied', f1.line.includes(`Copied ${cap} into ${fx('F-1')}/ for its next worker: capture.json, notes.txt.`), true);
-  t('DS-609 the answer is recorded as written', answers().at(-1).args.join('|'), `F-1|Saved the capture in ${cap}/.`);
+  t('DS-609 the answer is recorded as written', answers().at(-1).args.join('|'), `F-1|--all|Saved the capture in ${cap}/.`);
 
   const gone = join(T, 'no-such-capture');
   const f2 = N.record({ word: 'ds609', ticket: 'F-2', action: 'resume', text: `It is in ${gone}` });
