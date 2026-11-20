@@ -531,7 +531,7 @@ if [ "\$3" = preflight ]; then
   if grep -qx "\$1" "$T/bad-preflight"; then echo "[preflight] \$1"; echo "  W_IN   ?        FAIL (wanted OK)"; exit 1; fi
   echo "[preflight] pass"; exit 0
 fi
-echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}\${AUTOPILOT_BUDGET_USD:+ budget=\$AUTOPILOT_BUDGET_USD}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -552,6 +552,15 @@ check "DS-553 AC1 a killed worker's fixtures are copied into its worktree on res
   '[ "$(cat "$T/wt/K-2/.desk-fixtures/K-2/post.json")" = "{\"k\":2}" ] && grep -qF "copied into your worktree at $T/wt/K-2/.desk-fixtures/K-2/ (untracked, and kept out of git status): post.json." "$T/resume-prompt-K-2"'
 check "DS-145 AC2 a worker whose process died with the computer up is resumed, and the report says so" 'echo "$out" | grep -q "K-2 resumed after it was killed (1 of 2) — its process died while the computer stayed up" && spawned_for K-2 | grep -q "resume=yes" && ! echo "$out" | grep -q "K-1 resumed"'
 q set K-2 state=done
+# A worker its per-worker budget stopped (its last result event says so) resumes once in its own session,
+# on a small allowance, told to commit and push first.
+killed KB-1 sess-kb1
+printf '%s\n' '{"type":"result","subtype":"error_max_budget_usd","is_error":true}' >> "$T/state-k/logs/KB-1.log"; touch -t 202601010000 "$T/state-k/logs/KB-1.log"
+out=$(DESK_BOOT_TIME=2020-01-01T00:00:00Z node "$B/pass.mjs" 2>&1)
+check "a worker stopped at its per-worker budget resumes in its own session, and the pass says so" 'echo "$out" | grep -q "KB-1 resumed after its per-worker budget, with \$5 to commit, push and finish" && spawned_for KB-1 | grep -q "^KB-1 sess-kb1 .*resume=yes budget=5$"'
+check "its resume prompt tells it to commit and push first" 'grep -q "commit and push what is done first, then finish your current stage" "$T/resume-prompt-KB-1"'
+check "the budget resume is not counted against the killed-worker resumes" '[ "$(field KB-1 resumes)" = 0 ] && [ "$(field KB-1 budget_resumed)" = "\"sess-kb1\"" ]'
+q set KB-1 state=done
 # K-1's resumed worker is killed again, once it has had both resumes the row allows. Its log was last
 # written by the resume's preflight line: set it back, or it reads as a worker the registry has not listed yet.
 q set K-1 session_id=sess-k1 resumes=2; touch -t 202601010000 "$T/state-k/logs/K-1.log"

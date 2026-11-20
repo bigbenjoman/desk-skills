@@ -92,6 +92,20 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+// The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
+export const BUDGET_SUBTYPE = 'error_max_budget_usd';
+// Whether the log's last session ended at its per-worker budget: its last result event says so.
+export function budgetStop(logText) {
+  const lines = logText.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    let d;
+    try { d = JSON.parse(lines[i]); } catch { continue; }
+    if (d?.type === 'result') return d.subtype === BUDGET_SUBTYPE;
+    if (TURN_EVENTS.has(d?.type)) return false;
+  }
+  return false;
+}
+
 export function endedNormally(logText) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {

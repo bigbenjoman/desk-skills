@@ -118,6 +118,19 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
 }
 
+// A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.
+{
+  const BUDGET = { type: 'result', subtype: 'error_max_budget_usd', is_error: true };
+  const stopped = (key, extra = {}) => snap(ticket(key, { worktree: `/wt/${key}`, ...extra }), logOf(key, '', [said('all suites green'), BUDGET]));
+  t('a budget stop is queued to resume once, naming its session',
+    j(sets(advance(stopped('B-1'))).filter((f) => !LIVENESS.test(f))), j(['state=triaged', 'resume=budget', 'resume_why=stopped at its per-worker budget', 'budget_resumed=sid-B-1']));
+  const again = advance(stopped('B-2', { budget_resumed: 'sid-B-2' }));
+  t('a second budget stop in that session parks, naming the budget and the worktree',
+    again.find((a) => a.type === 'park')?.question, 'stopped at its per-worker budget again after one resume to finish. Its worktree /wt/B-2 may hold work it did not commit: commit and push it there, or raise config §3b "Autopilot per-worker budget (USD)" and requeue it with queue.mjs requeue B-2');
+  t('a budget stop in a new session resumes once again', sets(advance(stopped('B-3', { budget_resumed: 'sid-old' }))).includes('resume=budget'), true);
+  t('a session that ended any other way is not a budget stop', sets(advance(snap(ticket('B-4'), logOf('B-4', '', [said('x'), { ...BUDGET, subtype: 'error_max_turns' }])))).includes('resume=budget'), false);
+}
+
 // How an exited worker with no marker ended.
 {
   const dead = (key, extra = {}, mtimeMs = NOW - HOUR) => snap(ticket(key, extra), logOf(key, '', [said('working')], { mtimeMs }));
