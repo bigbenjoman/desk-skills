@@ -65,16 +65,20 @@ function record(argv) {
 // --- diff ---
 
 // An ISO time, a time to the minute in UTC as the pass prints one, or epoch seconds or milliseconds;
-// or an elapsed wall time as worker-cost.mjs wallTime prints one ("0m 01s", "2h 05m"), which two runs
-// a second apart print differently.
-const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+h \d\dm\b|\b\d+m \d\ds\b/g;
-const SPAN = /^(\d+)([hm]) (\d\d)([ms])$/;
+// or an elapsed time as worker-cost.mjs wallTime ("0m 01s", "2h 05m") or gate.mjs prints one
+// ("2h 5m", "15d 12h"), which two runs a second apart print differently.
+const TIME = /\b\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:?\d\d)?|\b\d{4}-\d\d-\d\d \d\d:\d\d UTC\b|\b1\d{9}(?:\d{3})?\b|\b\d+d \d\d?h\b|\b\d+h \d\d?m\b|\b\d+m \d\ds\b/g;
+const SPAN = /^(\d+)([dhm]) (\d\d?)([hms])$/;
 const UUID = /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi;
 const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?:tmp\.)?[A-Za-z0-9._-]*[A-Za-z0-9]{6,}/g;
 // The machine's memory as the pass read it, a process id, and a repo slug hashed from its scratch path.
 const MEM = /\b((?:vmmem|avail|rss)=)[0-9.]+[KMGT]?i?B?|\b[0-9.]+[KMGT]i?B?(?= available\b)/g;
 const PID = /\b(pid:? |"pid":\s*)\d+/g;
 const SLUG = /\b(local__[\w.-]*?)-[0-9a-f]{8}\b/g;
+// A port the pass took from what was free on the machine when it ran ("port=47704", "port 47704").
+const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)\d{2,5}\b/g;
+// git words one refused fetch differently, depending on which side of the connection reports it first.
+const UPLOAD_PACK = /\bfatal: (?:remote error: |git )?upload-pack: /g;
 
 // Two runs of the same tree differ in their scratch paths and in the ids they make up, so each is
 // replaced by a placeholder. Times are matched across the trees instead (sameTime).
@@ -88,7 +92,9 @@ function normalizer(roots) {
       .replace(TMP, '<TMP>')
       .replace(MEM, (_, key) => `${key || ''}<MEM>`)
       .replace(PID, '$1<PID>')
-      .replace(SLUG, '$1-<HASH>');
+      .replace(SLUG, '$1-<HASH>')
+      .replace(PORT, '$1<PORT>')
+      .replace(UPLOAD_PACK, 'fatal: upload-pack: ');
   };
 }
 
@@ -110,11 +116,12 @@ function renamer() {
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
 const SLACK = 15_000;
 // An elapsed wall time reads as its length in ms, which is matched as a time is, within the slack.
-const spanMs = (m) => (m[2] === 'h' ? Number(m[1]) * 3_600_000 + Number(m[3]) * 60_000 : Number(m[1]) * 60_000 + Number(m[3]) * 1000);
+const UNIT = { d: 86_400_000, h: 3_600_000, m: 60_000, s: 1000 };
+const spanMs = (m) => Number(m[1]) * UNIT[m[2]] + Number(m[3]) * UNIT[m[4]];
 const ms = (t) => { const m = SPAN.exec(t); return m ? spanMs(m) : /^\d+$/.test(t) ? Number(t) * (t.length === 10 ? 1000 : 1) : Date.parse(t.replace(/ (\d\d:\d\d) UTC$/, 'T$1Z')); };
-// A time printed to the minute is up to a minute short of the time it stands for, as is a wall time
-// in hours and minutes.
-const slack = (t) => (/ UTC$|^\d+h \d\dm$/.test(t) ? SLACK + 60_000 : SLACK);
+// A time printed to the minute is up to a minute short of the time it stands for, as an elapsed time
+// is up to one of its smaller unit short: a minute for "2h 05m", an hour for "15d 12h".
+const slack = (t) => { const m = SPAN.exec(t); return SLACK + (/ UTC$/.test(t) ? 60_000 : m ? UNIT[m[4]] : 0); };
 function timed(text) {
   const times = [];
   return { text, times, shape: text.replace(TIME, (t) => { times.push(t); return '<TIME>'; }) };
@@ -151,7 +158,28 @@ function sameTime(a, b, run, cb, ch) {
   }
   return false;
 }
-const same = (x, y, run, cb, ch) => x.shape === y.shape && x.times.every((t, i) => sameTime(t, y.times[i], run, cb, ch));
+const count = (s) => s.split('<TIME>').length - 1;
+// Text the pass cuts at a length ends there with "…", perhaps with more after it. As a path, port or
+// SHA before the cut is longer on one tree than the other, the two cut at different places: they match
+// when the shorter head (less the word the cut fell in) starts the other side and both end alike.
+function sameCut(x, y, eqTime) {
+  const parts = (v) => { const i = v.shape.indexOf('…'); return i < 0 ? null : { head: v.shape.slice(0, i).replace(/\S*$/, ''), tail: v.shape.slice(i + 1) }; };
+  let px = parts(x), py = parts(y);
+  if (!px && !py) return false;
+  if (!px || (py && py.head.length < px.head.length)) { [x, y] = [y, x]; [px, py] = [py, px]; }
+  const { head, tail } = px;
+  const ok = py ? py.head.startsWith(head) && py.tail === tail
+    : y.shape.length >= head.length + tail.length && y.shape.startsWith(head) && y.shape.endsWith(tail);
+  if (!ok) return false;
+  const nh = count(head), nt = count(tail);
+  return x.times.slice(0, nh).every((t, i) => eqTime(t, y.times[i]))
+    && x.times.slice(x.times.length - nt).every((t, i) => eqTime(t, y.times[y.times.length - nt + i]));
+}
+const same = (x, y, run, cb, ch) => {
+  const eqTime = (a, b) => sameTime(a, b, run, cb, ch);
+  if (x.shape === y.shape) return x.times.every((t, i) => eqTime(t, y.times[i]));
+  return sameCut(x, y, eqTime);
+};
 // A value or line is shown by its shape, unless only its times differ from the other side's: then
 // with its times, so both values show.
 const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : x.shape);
@@ -159,14 +187,21 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // "T-1 state" for a ticket's field, "archive T-1 state" in the archive, "queue <path>" otherwise.
 // Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
 // by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
-// the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does.
+// the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does,
+// and so does a port (a `port` field). A queue stamp, which says when the pass last wrote a ticket or
+// started its worker, lands wherever the load of the machine put that write in its run, so it is
+// compared as set or not: <STAMP> when it holds a value.
+const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
 function flatten(rec, norm, rn) {
   const out = new Map();
   const key = (k) => rn(norm(k));
+  const leaf = (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
+    : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? '<PORT>'
+      : v != null && STAMP.test(path) ? '<STAMP>' : norm(JSON.stringify(v)));
   const walk = (v, path) => {
     if (v && typeof v === 'object' && Object.keys(v).length) {
       for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
-    } else out.set(path, Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>' : norm(JSON.stringify(v)));
+    } else out.set(path, leaf(v, path));
   };
   const top = (doc, prefix) => {
     if (!doc) return;

@@ -74,6 +74,63 @@ check "#917 an elapsed wall time a second apart on the two trees is not reported
 cmp "$T/wall0" "$T/wall5"
 check "#917 one minutes apart is listed, with both times" '[ $rc = 1 ] && echo "$out" | grep -qF "(0m 00s since it started)" && echo "$out" | grep -qF "(5m 00s since it started)"'
 
+# A tree whose pass sets A-1 running with the fields $2 (JavaScript, `now` being the time it runs) and
+# prints $3: what two runs of one tree write differently without behaving differently.
+fieldtree(){ mkdir -p "$T/$1/desk/bin" "$T/$1/tests"; cp "$T/base/tests/test_pass.sh" "$T/$1/tests/"
+  cat > "$T/$1/desk/bin/pass.mjs" <<EOF
+import { readFileSync, writeFileSync } from 'node:fs';
+const f = process.env.DESK_QUEUE, q = JSON.parse(readFileSync(f, 'utf8')), now = Date.now();
+q.tickets['A-1'] = { ...q.tickets['A-1'], state: 'running', $2 };
+writeFileSync(f, JSON.stringify(q));
+console.log(\`$3\`);
+EOF
+}
+same0='[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+
+fieldtree port1 'port: 47704, cloud: { port: 47704 }' 'spawned: A-1 port=47704 model=default\n  RUNNING  A-1  stage 4b  port 47704  on localhost:47704'
+fieldtree port2 'port: 47705, cloud: { port: 47705 }' 'spawned: A-1 port=47705 model=default\n  RUNNING  A-1  stage 4b  port 47705  on localhost:47705'
+cmp "$T/port1" "$T/port2"
+check "DS-819 AC1 a port that differs in a queue field and a report line is not reported" "$same0"
+
+for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s'; do
+  fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
+  cmp "$T/span1" "$T/span2"
+  check "DS-819 AC2 an elapsed time ${form%|*} against ${form#*|} is not reported" "$same0"
+done
+fieldtree span2 '' 'A-1 in_progress for 17d 12h'
+cmp "$T/span1" "$T/span2"
+check "DS-819 AC2 an elapsed time in days two days apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 15d 12h" && echo "$out" | grep -qF "for 17d 12h"'
+
+# An error the pass cuts at a length, at a different place on each tree as a port before the cut is
+# longer on one, carrying each tree's own path and SHA: cut on both trees in the queue, and on one only
+# in the report line.
+cut='set state=running worktree=${import.meta.url} port=4770 idle_pas… — fetching ${process.env.SHA} failed'
+fieldtree cut1 "why: \`$cut\`" "failed: $cut"
+fieldtree cut2 "why: \`set state=running worktree=\${import.meta.url} port=47705 idle_passes=0 lo… — fetching \${process.env.SHA} failed\`" 'failed: set state=running worktree=${import.meta.url} port=47705 idle_passes=0 log_bytes=97 — fetching ${process.env.SHA} failed'
+printf '#!/usr/bin/env bash\nD="$(mktemp -d)"; export DESK_QUEUE="$D/queue.json"\necho %s > "$DESK_QUEUE"\n' "'{\"tickets\":{}}'" > "$T/cut1/tests/test_pass.sh"
+printf 'case "$PWD" in */base) export SHA=4a1f0c2e9 ;; *) export SHA=8b2e1d3f7 ;; esac\nnode desk/bin/pass.mjs; echo "ok   the pass"\n' >> "$T/cut1/tests/test_pass.sh"
+cp "$T/cut1/tests/test_pass.sh" "$T/cut2/tests/test_pass.sh"
+cmp "$T/cut1" "$T/cut2"
+check "DS-819 AC3 error text alike up to where one side is cut, past masked paths and SHAs, is not reported" '[ $rc = 0 ] && [ "$out" = "compare_pass: 1 pass run(s) compared, 0 differ, 0 not compared" ]'
+fieldtree cut2 "why: \`set state=parked worktree=\${import.meta.url} port=47705 idle_passes=0 lo… — fetching \${process.env.SHA} failed\`" 'failed: set state=parked worktree=${import.meta.url} port=47705 idle_passes=0 log_bytes=97 — fetching ${process.env.SHA} failed'
+cp "$T/cut1/tests/test_pass.sh" "$T/cut2/tests/test_pass.sh"
+cmp "$T/cut1" "$T/cut2"
+check "DS-819 AC4 error text that differs before the cut is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "queue A-1 why: base" && echo "$out" | grep -qF "output head: failed: set state=parked"'
+
+fieldtree git1 'why: "fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9'
+fieldtree git2 'why: "fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9'
+cmp "$T/git1" "$T/git2"
+check "DS-819 AC3 git's two wordings of one refused fetch are not reported" "$same0"
+
+# A queue stamp an hour apart on the two trees, as one written late under load is; and one set on the head only.
+fieldtree stamp1 'updated_at: new Date(now).toISOString(), spawned_at: now, last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+fieldtree stamp2 'updated_at: new Date(now + 3600e3).toISOString(), spawned_at: now + 3600e3, last_start: new Date(now + 3600e3).toISOString(), cloud: { started: new Date(now + 3600e3).toISOString() }' 'A-1 running'
+cmp "$T/stamp1" "$T/stamp2"
+check "DS-819 AC5 queue stamps that differ only in value are not reported" "$same0"
+fieldtree stamp0 'updated_at: new Date(now).toISOString(), spawned_at: null, last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+cmp "$T/stamp0" "$T/stamp1"
+check "DS-819 AC6 a queue stamp the head sets and the base leaves unset is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base null, head <STAMP>" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'
