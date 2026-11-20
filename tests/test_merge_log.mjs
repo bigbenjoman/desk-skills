@@ -99,6 +99,10 @@ const ev = [
   { repo: R, pr: '62', event: 'disarmed', by: D, sha: 'c2', at: '3' },
   { repo: R, pr: '63', event: 'claim', by: D, sha: 'd1', at: '1' },
   { repo: R, pr: '63', event: 'failed', by: D, sha: 'd1', at: '2' },
+  { repo: R, pr: '65', event: 'armed', by: S, sha: 'e1', at: '1' },
+  { repo: R, pr: '65', event: 'failed', by: S, sha: 'e1', at: '2' },
+  { repo: R, pr: '66', event: 'armed', by: S, sha: 'f1', at: '1' },
+  { repo: R, pr: '66', event: 'failed', by: D, sha: 'f1', at: '2' },
 ];
 const pick = (pr, repo = R) => { const e = M.latest(ev, { repo, pr }); return e && [e.event, e.by, e.sha, e.at].join(' '); };
 t('DS-835 AC3 an armed PR reads as armed, with who, head and time', pick(60), `armed ${S} a1 2`);
@@ -107,6 +111,9 @@ t('DS-835 AC3 armed then disarmed reads as no outcome', pick(61), null);
 t('DS-835 AC3 a merge outranks a later disarm', pick(62), `merged ${D} c2 2`);
 t('DS-835 AC2 a claim then a failure is no merged entry', pick(63), null);
 t('DS-835 AC4 a PR with no lines has none', pick(64), null);
+t('DS-937 armed then a failure its armer records reads as no outcome', pick(65), null);
+t('DS-937 another merger\'s failure leaves the arm standing', pick(66), `armed ${S} f1 1`);
+t('DS-937 the repo matches whatever its case', pick(60, R.toUpperCase()), `armed ${S} a1 2`);
 const l1 = cli('show', '--pr', '50', '--latest');
 t('DS-835 AC3 CLI: show --latest prints the latest outcome as JSON', [l1.status, JSON.parse(l1.stdout).event, JSON.parse(l1.stdout).ticket], [0, 'merged', 'DS-1']);
 const empty = spawnSync('node', [BIN, 'show', '--pr', '7', '--latest', '--repo', R], { encoding: 'utf8', env: { ...process.env, DESK_MERGE_LOG: join(T, 'none', 'merges.jsonl') } });
