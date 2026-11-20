@@ -25,6 +25,7 @@ t('DS-844 AC3 an unclosed run in the note is text, not a span', items('`a` (one 
 t('DS-844 a note inside the doubled display form adds no item', items('`` `ABC` (not `parent`) ``'), 'ABC');
 t('DS-844 a none row copied in the doubled display form with its note is none alone', items('`` `none` (not `pr-evidence.yml`) ``'), 'none');
 t('DS-844 only the one trailing note is stripped: a parenthesis before it keeps its items', items('`Lint` (CI build: `Build`) (names from GitHub)'), 'Lint | Build');
+t('DS-844 a note after the doubled display form is the one note: a parenthesis inside keeps its items', items('`` `Lint` (CI build: `Build`) `` (names from GitHub)'), 'Lint | Build');
 
 // End to end: `desk-env list` on a §4 row that carries a note.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
