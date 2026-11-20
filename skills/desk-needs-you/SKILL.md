@@ -44,7 +44,7 @@ for start, discard or an edit, and its children wait behind it. The supervisor a
 at its next tick: start starts the feature batch, an edit is applied as it stands and the batch
 starts, and discard removes the batch and releases the children. An edit it cannot apply cleanly
 comes back as a new `plan` item naming why), `triage`
-(open triage questions), `held` (a hold only you can let start, or `admit` a blocker in no batch), `stopped` (a worker gave up), `pr`
+(open triage questions), `held` (a hold only you can let start, or `admit` a blocker in no batch, or `promote` its other branch), `stopped` (a worker gave up), `pr`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
@@ -78,7 +78,7 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for `start`, `requeue`, `fix`, `drop`, `approve`, `not-now`, `waiting`, `open`, `admit` and `done`. Each prints one
+Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override` and `move`. Each prints one
 line on what it recorded.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was

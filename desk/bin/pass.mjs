@@ -59,7 +59,7 @@ import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTic
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
-import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
+import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
@@ -3301,6 +3301,7 @@ runSteps({
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
     landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
 });
