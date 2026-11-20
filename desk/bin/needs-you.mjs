@@ -106,6 +106,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
+import { followKind, checkOf, FOLLOW_WAIT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
@@ -845,8 +846,10 @@ function stepItem(key, ws) {
 
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
-// that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
-// records them settled (follow_on_done) and the item leaves the list.
+// that row's value. A step that only reads CI, desk's logs or desk's state is a follow-step checker's
+// (follow-steps.mjs), which the pass starts: it is held off the list while one runs or is still to,
+// gone once one passed it, and listed with what it found once one failed it. Every other step is the
+// person's. Done records them settled (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
 // A child of a feature or epic batch merged into the base, not the default branch: its code is out once
 // a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
@@ -854,7 +857,7 @@ const FOLLOW = 'follow:';
 // then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
 // batch, are judged by the ticket's own merge.
 const viaBase = (q, t) => !t.promoted_at && (q?.feature === true || epicBatch(q)) && !!q.base && !('carried_from' in t);
-function outAt(q, t) {
+export function outAt(q, t) {
   if (t.promoted_at) return t.promoted_at;
   return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
@@ -932,12 +935,23 @@ function gateHeld(r, t, s) {
   const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
   return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
-// A ticket's steps split by their gates: `ready` listed now (each with its note), `waiting` not yet.
-function followSplit(r, t) {
+// A ticket's steps split by their gates: `ready` listed now (each with its note, and `failed`, the
+// checker's record, where one failed it), `waiting` not yet. A step a checker passed is neither, nor is
+// a runnable one while its checker runs or, for FOLLOW_WAIT_MS after the code went out, is still to.
+function followSplit(r, t, now = Date.now()) {
   const ready = [], waiting = [];
+  const labels = personStepLabels(r.slug);
+  const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
+  const pending = !!t.follow_run || !waited;
   for (const s of t.follow_on) {
+    const c = checkOf(t, s);
+    if (c?.result === 'pass') continue;
     const g = gateHeld(r, t, s);
-    if (g.held) ready.push({ s, note: g.note, on: g.on, at: g.at }); else waiting.push(s);
+    if (!g.held) { waiting.push(s); continue; }
+    const runnable = !c && followKind(s, labels) === 'runnable';
+    if (runnable && pending) continue;
+    const note = runnable ? [g.note, 'no follow-step checker has run it yet'].filter(Boolean).join('; ') : g.note;
+    ready.push({ s, note, on: g.on, at: g.at, ...(c ? { failed: c } : {}) });
   }
   return { ready, waiting };
 }
@@ -971,9 +985,11 @@ function followItem(r, t, { gate, ready, waiting }) {
     return ` (§3 ${row} is "${v}")`;
   };
   // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
-  const checks = ready.map(({ s }) => {
+  const stop = (x) => `${x}${x.endsWith('.') ? '' : '.'}`;
+  const checks = ready.map(({ s, failed }) => {
     const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
-    return ` Check: ${said}${said.endsWith('.') ? '' : '.'}`;
+    const ran = failed ? ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).` : '';
+    return ` Check: ${stop(said)}${ran}`;
   }).join('');
   const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
   const n = ready.length;

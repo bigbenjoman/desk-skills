@@ -74,6 +74,7 @@ function put(name, r) {
     (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
     (r.promotionRef ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Promotion ref | \`${r.promotionRef}\` |\n` : '') +
     (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
+    (r.stepLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-step labels | \`${r.stepLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -2009,6 +2010,34 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 desk-q counts it', N.needsCount(loadRepos().find((r) => r.slug === 'acme__upsilon509')).shown, 1);
   const done509 = N.record({ word: 'upsilon509', ticket: 'follow:F-1', action: 'done' });
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
+}
+
+// DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
+{
+  const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
+  const CI = { step: "on the merge commit's tests run on main, check the slowest shard takes about 300 s or less", row: null };
+  const failed = { ...CI, result: 'fail', found: 'the slowest shard took 412 s', evidence: 'https://github.com/acme/x/actions/runs/9', at: minsAgo(1) };
+  put('follow798', { port: 4798, beat: 1, supervised: true, merge: 'yes', stepLabels: 'needs-ben', tickets: {
+    'K-1': merged(91, 5, { follow_on: [CI] }),
+    'K-2': merged(92, 5, { follow_on: [CI], follow_checks: [failed] }),
+    'K-3': merged(93, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }] }),
+    'K-4': merged(94, 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+    'K-5': merged(95, 5, { follow_on: [CI], follow_checks: [{ ...failed, result: 'pass' }] }),
+    'K-6': merged(96, 300, { follow_on: [CI] }),
+    'K-7': merged(97, 300, { follow_on: [CI], follow_run: { id: 'K-7-x', pid: 1, started: minsAgo(1), out: '/x', steps: [CI] } }),
+  } });
+  const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
+  const g = byKey();
+  t('DS-798 AC1 a step that only reads CI is not listed while a checker is still to run it, nor once one passed it, nor while one runs',
+    ['follow:K-1', 'follow:K-5', 'follow:K-7'].filter((k) => k in g).join(), '');
+  t('DS-798 AC2 a step a checker failed is one item naming the step, what it found and the run URL',
+    /Check: on the merge commit's tests run on main, check the slowest shard takes about 300 s or less\. A follow-step checker ran it and it failed: the slowest shard took 412 s \(evidence: https:\/\/github\.com\/acme\/x\/actions\/runs\/9\)\./.test(g['follow:K-2']?.need ?? ''), true);
+  t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
+  t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
+  t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',
+    /No follow-step checker has run it yet\. Check: on the merge commit/.test(g['follow:K-6']?.need ?? ''), true);
+  const done = N.record({ word: 'follow798', ticket: 'follow:K-2', action: 'done' });
+  t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${'follow:K-2' in byKey()}`, 'true string false');
 }
 
 // A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it

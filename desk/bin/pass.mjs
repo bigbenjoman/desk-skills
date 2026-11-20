@@ -60,7 +60,7 @@ import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, 
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { heldPutOff } from './needs-you.mjs';
+import { heldPutOff, outAt } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
@@ -80,6 +80,8 @@ import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
+import { decideFollowSteps } from './pass/follow-steps.mjs';
+import { startFollow, readFollow, failedRun, followComment, sameStep, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -3558,6 +3560,79 @@ if (Object.values(qNow.tickets).some(gatedFollow)) {
   const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
   if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
 }
+
+// ---- follow steps ----------------------------------------------------------
+// The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
+// desk's logs or desk's state go to a follow-step checker (follow-steps.mjs), and what it found is
+// recorded on the ticket (follow_checks). A step it passed is settled as needs-you's done settles one,
+// and the PR is told under §3 pr-self-review-comment; one it failed stays, and needs-you lists it with
+// what it found. A run is still the same run only while its process carries the run's id. Its lines
+// go in this section's `out`, as the report's lists were printed before it.
+const followAlive = (run) => {
+  if (!run?.pid || !run.id) return false;
+  const r = shOut('ps', ['-o', 'args=', '-p', String(run.pid)]);
+  return r.ok && r.out.includes(run.id);
+};
+const followDirs = [...new Set([STATE, E.repoStateOf(STATE), E.deskHome()])];
+const FOLLOW_HANDLERS = {
+  ...PHASE_HANDLERS,
+  start: (a) => {
+    const t = queue().tickets[a.key];
+    const n = t.result?.pr;
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would start a follow-step checker on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge`); return; }
+    const run = startFollow({ state: STATE, slug: E.repoSlug(), repo: GH_REPO, bin: BIN, t, steps: a.steps, dirs: followDirs, cwd: MAIN });
+    if (run.wait) { out.push(`${a.key} follow steps: no checker started yet, ${run.wait}; the next pass tries again`); return; }
+    q('set', a.key, `follow_run=${JSON.stringify(run)}`);
+    out.push(`${a.key} follow steps: a follow-step checker started (pid ${run.pid}${run.login ? `, login ${run.login}` : ''}) on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge; its output is ${run.out}`);
+  },
+  stop: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would stop its follow-step checker, past ${FOLLOW_MINUTES} minutes`); return; }
+    try { process.kill(a.run.pid); } catch { /* it ended meanwhile: the next pass reads it */ }
+    out.push(`${a.key} follow steps: its follow-step checker ran past ${FOLLOW_MINUTES} minutes and was stopped; the next pass records its steps as failed`);
+  },
+  harvest: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would record what its follow-step checker found`); return; }
+    const t = queue().tickets[a.key];
+    const r = readFollow(a.run.out, a.run.steps);
+    if (r.limit) {
+      q('set', a.key, 'follow_run=null');
+      out.push(`${a.key} follow steps: its follow-step checker stopped at the usage limit, so nothing was recorded; a later pass starts another`);
+      return;
+    }
+    const at = new Date().toISOString();
+    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, ...(r.cost != null ? { cost: r.cost } : {}) }));
+    const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c)));
+    q('set', a.key, 'follow_run=null', `follow_checks=${JSON.stringify([...kept, ...found])}`);
+    const passed = found.filter((c) => c.result === 'pass' && (t.follow_on ?? []).some((s) => sameStep(s, c)));
+    if (passed.length) q('follow-ran', a.key, JSON.stringify(passed.map((c) => ({ step: c.step, ...(c.after ? { after: c.after } : {}) }))), at);
+    const fails = found.length - found.filter((c) => c.result === 'pass').length;
+    const n = t.result?.pr;
+    let told = '';
+    if (n == null) told = '; it has no PR to comment on';
+    else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
+    else {
+      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, found)]);
+      told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
+    }
+    out.push(`${a.key} follow steps: its follow-step checker passed ${found.length - fails} and failed ${fails}${fails ? ', each listed in needs-you' : ''}${told}`);
+  },
+};
+const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
+const followActs = runPhase({
+  name: 'follow steps',
+  snapshot: () => {
+    const qx = queue();
+    const tickets = qx.tickets;
+    return {
+      tickets, now: Date.now(), labels: E.personStepLabels(),
+      out: new Set(Object.values(tickets).filter((t) => outAt(qx, t)).map((t) => t.key)),
+      alive: new Set(Object.values(tickets).filter((t) => followAlive(t.follow_run)).map((t) => t.key)),
+    };
+  },
+  decide: decideFollowSteps, handlers: FOLLOW_HANDLERS, report,
+});
+// A checker running, or owed and not yet started, keeps the batch from idling, so a pass reads it.
+const followPending = followActs.some((a) => a.type === 'start') || Object.values(queue().tickets).some((t) => t.follow_run);
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));
@@ -4681,7 +4756,7 @@ if (!DRY) {
 const qEnd = queue();
 const verdictSnap = {
   ...baseSnapshot(), tickets: qEnd.tickets, queue: qEnd, report, blocked, putOff: new Set(Object.values(qEnd.tickets).filter(putOff).map((t) => t.key)),
-  parkNotes, prStates, gatePending, epicPending, promotionPending, spawned: report.spawned.length,
+  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, spawned: report.spawned.length,
 };
 const { waiting, parked, idle, status } = verdictOf(verdictSnap);
 const lines = [];
