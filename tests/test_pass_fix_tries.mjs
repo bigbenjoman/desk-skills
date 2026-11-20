@@ -75,6 +75,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   const tried = tk({ fix_tries: [{ try: 1, of: 2, head: OLD, kind: 'feedback', what: 'review feedback: changes requested' }] });
   const as = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: fb, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   t('#737 a stale changes-requested from the outside reviewer waits for its next review, not the person', applied(as).length, 0);
+  t('#925 and the pass says it waits for that reviewer', lines(as).some((l) => /PR #697 \(T-1\) is out of draft: .*waits for agent-pullbot to review the head/.test(l)), true);
   const at = { ...payload, data: { repository: { pullRequest: { ...payload.data.repository.pullRequest, reviews: { nodes: [{ id: 'R2', author: { login: 'agent-pullbot' }, body: 'P1: still drops it', state: 'CHANGES_REQUESTED', commit: { oid: HEAD } }] } } } } };
   const as2 = drive(snap([[tried, pr([ok('tests'), red('🔐 Review gate', '88')])]], { stateChecks: EXT }), { feedback: { ...fb, payload: at }, reads: () => reads({ ctx: { stateChecks: EXT } }) });
   const c = applied(as2)[0]?.call;
