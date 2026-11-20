@@ -477,12 +477,14 @@ if (mode === 'triage') {
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
   // A lint binary runs at the root and in each directory a §4 item names, so a worker lints one file
-  // from its workspace package. Its `..` deny gives way to a configured item that holds one.
+  // from its workspace package. A form a configured item holding `..` extends is left to that item's
+  // own rule: its `..` deny would refuse the item, and its prefix allow without the deny takes any `..`.
   const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
-  const lintBins = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
   const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
+  const lintBins = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))))
+    .filter((c) => !configured.some((k) => k.startsWith(c) && k.slice(c.length).includes('..')));
   allow.push(...lintBins.map((c) => rule(c, '')));
-  deny.push(...lintBins.filter((c) => !configured.some((k) => k.startsWith(c) && k.slice(c.length).includes('..'))).map((c) => `Bash(${c}*..*)`));
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments
