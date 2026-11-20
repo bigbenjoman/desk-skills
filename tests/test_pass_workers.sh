@@ -278,6 +278,13 @@ printf '%s\n' '{"tickets": not json' > "$X1/queue.json"
 spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
+# #823: ports a peer session claimed at handshake (port-claims.mjs) are skipped though nothing listens.
+node "$B/port-claims.mjs" claim 47501-47502 --by 'peer acme/shop' >/dev/null
+spawn_one P-176
+check "#823 a port range a peer claimed is skipped, though its server is down" '[ "$(field P-176 state)" = "\"running\"" ] && [ "$(field P-176 port)" = 47503 ]'
+node "$B/port-claims.mjs" release --by 'peer acme/shop' >/dev/null
+spawn_one P-177
+check "#823 once the peer releases it, the port is used again" '[ "$(field P-177 state)" = "\"running\"" ] && [ "$(field P-177 port)" = 47501 ]'
 
 # DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
 # with its reset moved to suit each case. Each case is a running ticket whose log stopped growing

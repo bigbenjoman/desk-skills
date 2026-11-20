@@ -98,7 +98,14 @@ check "DS-398 AC3 each pre-push item allowed exactly as written" \
   '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
 check "a pre-push item naming typecheck takes the tsc lock, as pre-push.sh runs it" \
   '! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm format:check:*)"'
-check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
+check "DS-855 AC3 a root Lint item runs under the tsc lock, never nolock or bare" \
+  'allows "Bash($B/with-lock.sh tsc --cwd . -- pnpm lint:*)" && allows "Bash($B/with-lock.sh tsc pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && ! allows "Bash(pnpm lint:*)" && ! allows "Bash(pnpm run lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `pnpm lint --max-warnings 0` |' '| Lint | `pnpm lint` |'
+check "DS-855 a root pre-push item extending a Lint item takes tsc and has no bare form" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc pnpm lint --max-warnings 0:*)" && ! allows "Bash(pnpm lint --max-warnings 0:*)" && ! allows "Bash(pnpm lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Lint | `web: pnpm lint` |'
+check "DS-855 AC3 a Lint item in a directory runs under the tsc lock, never nolock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm lint:*)"'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `web: pnpm typecheck:portal` |' '| Typecheck | `web: pnpm typecheck` |'
 check "a filtered typecheck no row lists takes the tsc lock, never nolock" \
   '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:portal:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:portal:*)"'
@@ -256,13 +263,19 @@ check "AC10 the Jira token beside it is not"               '[ "$(readable "$CRED
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
 check "DS-340 AC2 the installed desk templates can be listed and read" \
   '[ "$(readable "$DESK_HOME/templates/.githooks/pre-push")" = allow ] && [ "$(readable "$DESK_HOME/templates/scripts/desk/pre-push.sh")" = allow ] && ok "ls $DESK_HOME/templates/scripts/desk"'
-check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "DS-855 a lint binary runs only under the tsc lock"   'ok "$L tsc ./node_modules/.bin/eslint src" "$L tsc --cwd . -- node_modules/.bin/biome check" "$L tsc -- $W/node_modules/.bin/stylelint a.css" \
+      && no "./node_modules/.bin/eslint src" "node_modules/.bin/oxlint" "$W/node_modules/.bin/stylelint a.css" "$L nolock ./node_modules/.bin/eslint src" "$L tsc ./node_modules/.bin/eslint ../x"'
 check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
       "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'
 check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" \
       "./node_modules/.bin/./prisma migrate reset" "node $W/node_modules/prisma/build/index.js migrate reset --force"'
 check "tsx scripts still run from the worktree"            'ok "node $W/node_modules/tsx/dist/cli.mjs scratch.ts" && no "node $W/node_modules/tsx/../vitest/vitest.mjs"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
+settings '`bash tests/run.sh`' '| Typecheck | `web: ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json` |' '| Lint | `web: node_modules/.bin/eslint -c ../eslint.config.js .` |'
+check "DS-855 the lint binaries .. deny leaves a configured directory item holding .. allowed" \
+  'ok "$L tsc --cwd web -- ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js ." && no "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc --cwd . -- node_modules/.bin/biome check ../x"'
+settings '`bash tests/run.sh` `sub: bash tests/sub.sh`' '| Typecheck | `bash tests/tc.sh` |' "$(perm3 ask)"
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 # okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
 okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }  # bash32: ok the |& is inside a perl regex, not a pipe

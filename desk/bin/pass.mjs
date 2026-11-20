@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -37,6 +37,7 @@ import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { claimedPorts } from './port-claims.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -1321,7 +1322,7 @@ function dropDuplicate(t) {
       remote = d.ok ? `; ${t.branch} deleted on origin` : `; deleting ${t.branch} on origin failed (${lastLine(d.out)})`;
     }
   }
-  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr.number}`, `result.summary=its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}`);
+  q('set', t.key, ...doneOnPr(pr.number, { summary: `its change is already on ${DEFAULT_BRANCH} in merged PR #${pr.number}` }));
   report.recovered.push(`${t.key}: its branch ${t.branch} adds nothing to ${DEFAULT_BRANCH}, and merged PR #${pr.number} (${pr.title}) names it: recorded done on that PR, worktree and branch dropped${remote}`);
   return true;
 }
@@ -1360,7 +1361,7 @@ function finishPush(t) {
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
-  q('set', t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${n}`, `draft_pr=${n}`, `result.summary=draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused`);
+  q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
   report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
 }
@@ -2318,14 +2319,15 @@ function otherQueuePorts() {
   }
   return ports;
 }
-// Assign a port nothing else holds. Three things make one unavailable: another ticket in this batch
+// Assign a port nothing else holds. Four things make one unavailable: another ticket in this batch
 // already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
-// a running worker in another batch's queue holds it (two batches' worker blocks can meet), or something
+// a running worker in another batch's queue holds it (two batches' worker blocks can meet), a peer
+// session claimed it at handshake (port-claims.mjs: its server may be down just now), or something
 // is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
 // spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
 async function freePort(own = null) {
   const now = queue();
-  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts()]);
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
   if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
   let port = E.workerPortFloor();
   while (taken.has(port) || await E.portInUse(port)) port += 1;
