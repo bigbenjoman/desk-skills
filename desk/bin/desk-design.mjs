@@ -1040,16 +1040,22 @@ export function designFact(text, { root, dir, ref, state }) {
 // the link's kind is unknown, so it blocks.
 // A Design section saying this ticket has no board of its own yet ("no board for this ticket yet",
 // "this ticket has no board", "its board does not exist yet"): a canvas it links is the epic's, with
-// nothing for this ticket to save. Each phrase ties the missing board to this ticket, so a section
-// that only says what a board leaves out ("no mobile screens") is not read as one.
+// nothing for this ticket to save.
 const NO_BOARD = [
-  /\bno\s+(?:board|screen|frame)s?\b[^.\n]{0,40}\b(?:yet|for\s+this\s+(?:ticket|story|task))\b/i,
-  /\b(?:this\s+(?:ticket|story|task)|it)\s+has\s+no\s+(?:board|screen|frame)s?\b/i,
-  /\b(?:its|this\s+(?:ticket|story|task)['’]s)\s+(?:board|screen|frame)s?\b[^.\n]{0,30}\b(?:(?:does|do|is|are)\s*n['’o]?t|not)\s+(?:yet\s+)?(?:exist|drawn|designed|made)/i,
+  /\bno\s+(?:board|screen|frame)s?\s+(?:(?:for|in)\s+this\s+(?:ticket|story|task)\s+)?(?:(?:exists?|is\s+drawn)\s+)?yet\b/gi,
+  /\bno\s+(?:board|screen|frame)s?\s+(?:exists?\s+)?for\s+this\s+(?:ticket|story|task)\b/gi,
+  /\b(?:this\s+(?:ticket|story|task)|it)\s+has\s+no\s+(?:board|screen|frame)s?\b/gi,
+  /\b(?:its|this\s+(?:ticket|story|task)['’]s)\s+(?:board|screen|frame)s?\s+(?:(?:does|do|is|are)\s*n['’o]?t|not)\s+(?:yet\s+)?(?:exist|drawn|designed|made)/gi,
 ];
-// A section naming the board it uses ("Board: Checkout") has one, whatever else it says.
-const NAMES_BOARD = /\b(?:board|screen|frame)s?\s*:/i;
-const saysNoBoard = (section) => !NAMES_BOARD.test(section) && NO_BOARD.some((re) => re.test(section));
+// Said only when the no-board phrase is the section's one mention of a board, screen or frame: a
+// section that names or uses one anywhere else ("the Checkout board; it has no screens for mobile",
+// "Board: Cart", "Frames 3-5") has a board, whatever it says it leaves out.
+const saysNoBoard = (section) => {
+  const text = String(section ?? '');
+  if (!NO_BOARD.some((re) => text.search(re) >= 0)) return false;
+  const rest = NO_BOARD.reduce((t, re) => t.replace(re, ' '), text);
+  return !/\b(?:board|screen|frame)s?\b/i.test(rest);
+};
 
 export function checkTicket(issue, { root, dir, ref = baseRef(root), state }) {
   const key = issue.key;

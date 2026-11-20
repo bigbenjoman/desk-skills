@@ -246,7 +246,9 @@ for (const said of ['No board for this ticket exists yet.', 'The epic canvas; th
 }
 for (const said of ['Board: Checkout. No mobile screens.', 'Use the Order summary board; no other boards apply.', 'Board: Cart — no screen changes beyond this board.', 'Frames 3-5 of the canvas; no new frames.',
   'Use board Checkout. No board changes needed elsewhere.', 'The board is not yet drawn for mobile, use desktop board Cart.', 'Board: Checkout. No board for this ticket exists yet on mobile.',
-  'No new screen is required; use the existing Checkout screen.']) {
+  'No new screen is required; use the existing Checkout screen.', 'Use the Checkout board; it has no screens for mobile.', 'Use the Cart board. No screen changes yet.',
+  'Build from the Checkout board; no frames need changing for this ticket.', "Use the Checkout board. Its frames don't exist yet for tablet, follow desktop.",
+  'No board changes are required for this ticket; use the existing Checkout board.']) {
   t(`#747 a section using a board, saying "${said}", still blocks`, checkTicket(issue(`h2. Design\n${URL1}\n${said}`), { root: r5, dir: DIR }).map((f) => f.severity).join(' '), 'blocking');
 }
 t('check: a markdown ticket file', checkTicket({ key: 'fix-x', text: `## Design\n${URL1}\n## Out of scope` }, { root: r5, dir: DIR })[0].severity, 'blocking');
