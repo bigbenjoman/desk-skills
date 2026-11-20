@@ -455,7 +455,7 @@ rm -rf "$T/state/briefings" "$T/state/decisions.jsonl"
 EQ='Which legal wording ships on the consent page? (recommended: the current text)'
 ES='apply the migration to production'
 EARLY="$T/state/triage/fix-thing.earlier.json"
-earlier(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface","unknowns":["%s"],"decided":[],"ben_steps":[{"step":"%s","blocker":"Ben applies it, unblocking fix-thing"}]}' "$EQ" "$ES" > "$T/state/triage/fix-thing.json"; touch -t 202601010000 "$T/state/triage/fix-thing.json"; }
+earlier(){ printf '{"ticket":"fix-thing","lane":"A","branch":"fix/fix-thing","change_kind":"surface","unknowns":["%s"],"decided":[],"ben_steps":[{"step":"%s","blocker":"Ben applies it, unblocking fix-thing"}]%s}' "$EQ" "$ES" "${1:-}" >"$T/state/triage/fix-thing.json"; touch -t 202601010000 "$T/state/triage/fix-thing.json"; }
 rm -f "$STUB_LOG".*; earlier
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823 AC1: the prompt lists the earlier record's open unknown and person step" \
@@ -483,6 +483,21 @@ rm -f "$STUB_LOG".*; earlier
 out=$(STUB_LANE=A STUB_EXTRA=",\"dropped_earlier\":[{\"item\":\"$ES\",\"why\":\"\"}]" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823 AC3: a drop that gives no reason does not drop the step" \
   '[ $rc -eq 0 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ "$(lc .dropped_earlier)" = null ]'
+rm -f "$STUB_LOG".*; earlier
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A STUB_KIND=bogus bash "$B/triage.sh" fix-thing 2>&1); rc2=$?
+check "DS-823 AC1: a pass whose record is rejected never replaces the earlier record kept aside" \
+  '[ $rc -ne 0 ] && [ $rc2 -ne 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(jq -r ".ben_steps[0].step" "$EARLY")" = "$ES" ]'
+rm -f "$STUB_LOG".*
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: the retry after it carries the earlier unknown and person step, and stamps when it triaged" \
+  '[ $rc -eq 0 ] && [ "$(lc ".unknowns | length")" = 1 ] && [ "$(lc -r ".ben_steps[0].step")" = "$ES" ] && [ ! -f "$EARLY" ] && [ "$(lc -r ".triaged_at | type")" = string ]'
+rm -f "$STUB_LOG".*; earlier
+TAKEN='"decided":[{"question":"Which legal wording ships on the consent page?","options":["the current text","new text"],"chose":"the current text","category":"wording"}]'
+out=$(STUB_LANE=A STUB_EXTRA=",$TAKEN" bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC1: an earlier reserved unknown this pass takes as a call is asked again, never also taken" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "$(jq -cn --arg q "$EQ" "[\$q]")" ] && [ "$(lc -c .decided)" = "[]" ]'
 mkdir -p "$T/state/briefings"
 printf '# Briefing for fix-thing\n\n## Answer from the user (2026-11-01T06:28:00Z)\n\nShip the current consent text.\n' > "$T/state/briefings/fix-thing.md"
 rm -f "$STUB_LOG".*; earlier
@@ -493,6 +508,10 @@ rm -f "$STUB_LOG".*; earlier; touch -t 202611100000 "$T/state/triage/fix-thing.j
 out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
 check "DS-823 AC4: an answer older than the earlier record does not settle its unknowns" \
   '[ $rc -eq 0 ] && P0 | grep -qxF -- "- unknown: $EQ" && [ "$(lc ".unknowns | length")" = 1 ]'
+rm -f "$STUB_LOG".*; earlier ',"triaged_at":"2026-10-01T00:00:00Z"'; touch -t 202611100000 "$T/state/triage/fix-thing.json"
+out=$(STUB_LANE=A bash "$B/triage.sh" fix-thing 2>&1); rc=$?
+check "DS-823 AC4: an answer after the earlier triage settles its unknowns though the record was rewritten since" \
+  '[ $rc -eq 0 ] && [ "$(lc -c .unknowns)" = "[]" ] && [[ "$out" == *"1 earlier unknown(s) not carried: answered since"* ]]'
 rm -rf "$T/state/briefings" "$EARLY"; rm -f "$T/state/triage/fix-thing.json"
 
 # DS-621: both passes run on the repo's subscription, at its limit too; with no subscriptions file, as the
