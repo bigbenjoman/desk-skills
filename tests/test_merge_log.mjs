@@ -42,6 +42,10 @@ M.record({ repo: R, pr: 12, sha: 'ccc3333', by: S, event: 'failed', why: 'auto-m
 t('#809 an armer whose last event is a failure no longer holds it', M.claim({ repo: R, pr: 12, sha: 'ccc3333', by: D, now: NOW + 2000, path }).ok, true);
 M.record({ repo: R, pr: 13, sha: 'ddd4444', by: S, event: 'disarmed', now: NOW, path });
 M.record({ repo: R, pr: 13, sha: 'ddd4444', by: S, event: 'armed', now: NOW + 1000, path });
+M.record({ repo: R, pr: 14, sha: 'eee5555', by: S, event: 'armed', now: NOW, path });
+t('#809 with GitHub showing auto-merge on, the armed record holds', M.claim({ repo: R, pr: 14, sha: 'eee5555', by: D, now: NOW + 1000, path }).ok, false);
+t('#809 with GitHub showing it off (turned off outside desk), it does not', M.claim({ repo: R, pr: 14, sha: 'eee5555', by: D, now: NOW + 2000, notArmed: true, path }).ok, true);
+t('#809 and the stale armed record is closed in the log, saying why', M.readLog(path).filter((e) => e.pr === '14').map((e) => `${e.event}${e.why ? ` (${e.why})` : ''}`).join(', '), 'armed, disarmed (GitHub shows auto-merge off), claim');
 t('#809 armed again after a disarm holds it again', M.claim({ repo: R, pr: 13, sha: 'ddd4444', by: D, now: NOW + 2000, path }).ok, false);
 M.claim({ repo: R, pr: 11, sha: 'bbb2222', by: S, now: NOW, path });
 M.record({ repo: R, pr: 11, sha: 'bbb2222', by: S, event: 'failed', why: 'not mergeable', now: NOW + 1000, path });
@@ -67,6 +71,8 @@ const races = await Promise.all(Array.from({ length: 10 }, (_, i) => Promise.all
 t('#809 two claims at once: exactly one gets the PR, every time', races.filter((r) => r.sort().join() !== '0,11').length, 0);
 t('#809 a bad event is refused with the usage', cli('record', '20', 'cafe123', '--by', S, '--event', 'closed').status, 11);
 t('#809 a claim with no --by is refused', cli('claim', '20', 'cafe123').status, 11);
+cli('record', '40', 'beef123', '--by', S, '--event', 'armed');
+t('#809 the CLI takes --not-armed', [cli('claim', '40', 'beef123', '--by', D).status, cli('claim', '40', 'beef123', '--by', D, '--not-armed').status], [11, 0]);
 
 console.log(fails ? `${fails} FAILED` : 'all merge log checks passed');
 process.exit(fails ? 1 : 0);

@@ -1143,7 +1143,9 @@ EOF_RESOLVE
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
   # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
   # one that already did, stops this merge instead of racing it, and who merged it is recorded.
-  if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" --repo "$REPO" 2>&1); then
+  # GitHub's own word on auto-merge settles an armed record: off, and it holds the PR no longer.
+  local armed_flag=--not-armed; [ "$(printf '%s' "$g" | jq -r .autoMerge)" = true ] && armed_flag=
+  if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" $armed_flag --repo "$REPO" 2>&1); then
     log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
   fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
