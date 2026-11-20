@@ -8,7 +8,8 @@
 # under the same name and builder.
 # The builder is called with an empty directory to build in, and its exit status is the build's.
 # Its git identity and dates are pinned, so a template's SHAs are the same on every run. A remote
-# URL under that directory is stored relative to it, so no copy holds the template's path.
+# URL under that directory is stored relative to it, so no copy holds the template's path; a build
+# that leaves the path anywhere else fails.
 # Only one process builds a name: the others wait for its lock, and a template appears by rename
 # once it is whole. A lock whose builder has died is taken over.
 REPO_TPL_DATE="2020-01-01T00:00:00Z"
@@ -41,6 +42,11 @@ repo_template(){
               GIT_COMMITTER_EMAIL=t@example.com GIT_AUTHOR_DATE="$REPO_TPL_DATE" GIT_COMMITTER_DATE="$REPO_TPL_DATE"
             "$builder" "$build"); then
           repo_tpl_remotes "$build" "$build/" "$REPO_TPL_MARK/"
+          # Only remote URLs are rewritten, so a path anywhere else (a worktree's gitdir, a nested
+          # repo, an alternate) would reach every copy: such a build fails instead.
+          if grep -rqF "$build" "$build"; then
+            rm -rf "$build" "$lock"; echo "repo_template: building $name left its own path in the template" >&2; return 1
+          fi
           mv "$build" "$dir"
         else
           rm -rf "$build" "$lock"; echo "repo_template: building $name failed" >&2; return 1

@@ -10,6 +10,7 @@ S="$(cd "$(dirname "$0")" && pwd)"
 T="$(mktemp -d)"; mkdir -p "$T/home"
 trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
+git config --global user.email t@example.com; git config --global user.name t
 git config --global init.defaultBranch main
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
@@ -55,6 +56,11 @@ broken(){ git init -q "$1/repo" && false; }
 says(){ printf '%s\n' "$out" | grep -qF "$1"; }
 out=$(repo_template bad broken 2>&1); rc=$?
 check "a failed build leaves no template and no lock" '[ $rc = 1 ] && [ ! -e "$DESK_TPL_ROOT/bad" ] && [ ! -e "$DESK_TPL_ROOT/bad.lock" ] && says "building bad failed"'
+# AC3: a builder that leaves its directory's path outside a remote URL (here a worktree, whose .git
+# file holds it) fails rather than handing the path to every copy.
+leaky(){ two_repos "$1" && git -C "$1/repo" worktree add -q "$1/wt" -b side; }
+out=$(repo_template leak leaky 2>&1); rc=$?
+check "AC3 a build that leaves its path in the template fails" '[ $rc = 1 ] && [ ! -e "$DESK_TPL_ROOT/leak" ] && [ ! -e "$DESK_TPL_ROOT/leak.lock" ] && says "building leak left its own path"'
 out=$(DESK_TPL_ROOT='' repo_template two two_repos 2>&1); rc=$?
 check "with no DESK_TPL_ROOT it builds nothing, and says why" '[ $rc = 2 ] && says "DESK_TPL_ROOT is not set"'
 
