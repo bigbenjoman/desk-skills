@@ -19,7 +19,7 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
+  ghRepo, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
@@ -803,6 +803,40 @@ switch (cmd) {
     break;
   }
 
+  // A PR opened in the batch with no ticket (a fix for a flaky test it kept hitting, say) taken in as a
+  // done ticket on that PR, so the merge driver merges it with the batch's tickets (by its branch), and
+  // the pass and desk-q list it while it waits. The key is checked as a merge driver --tickets entry is.
+  case 'adopt': {
+    const [key, prArg] = args;
+    if (!key || !/^[1-9][0-9]*$/.test(String(prArg ?? ''))) throw new Error('usage: queue.mjs adopt <TICKET> <PR number>');
+    const kind = ticketKind(key);
+    if (!kind.ok) throw new Error(kind.error);
+    if (Object.hasOwn(q.tickets, key)) throw new Error(`${key} is already in the queue (${q.tickets[key].state}): adopt takes a key no ticket has`);
+    const elsewhere = belongsElsewhere(key);
+    if (elsewhere) throw new Error(elsewhere.why);
+    const repo = ghRepo();
+    let pr;
+    try {
+      pr = JSON.parse(execFileSync('gh', ['pr', 'view', prArg, '--repo', repo, '--json', 'number,state,headRefName,baseRefName,title'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    } catch (e) { throw new Error(`gh could not read PR #${prArg} on ${repo} (${String(e.stderr ?? e.message).trim().split('\n').pop()}): nothing adopted`); }
+    if (pr.state !== 'OPEN') throw new Error(`PR #${prArg} is ${String(pr.state).toLowerCase()}, not open: nothing adopted`);
+    const base = baseOf(q);
+    if (pr.baseRefName !== base) throw new Error(`PR #${prArg} is on ${pr.baseRefName}, not this batch's base ${base}: the merge driver would not merge it, so nothing adopted`);
+    const owner = Object.values(q.tickets).find((t) => t.branch === pr.headRefName);
+    if (owner) throw new Error(`PR #${prArg}'s branch ${pr.headRefName} is already ${owner.key}'s: nothing adopted`);
+    const now = new Date().toISOString();
+    q.tickets[key] = {
+      key, type: 'Task', lane: '?', state: 'done',
+      worktree: null, branch: pr.headRefName, database: null, port: null,
+      session_id: null, pid: null, base_sha: null, stage: null,
+      park: null, log: null, result: { pr: String(pr.number), summary: `adopted: ${pr.title}` }, adopted: true,
+      added_at: now, updated_at: now,
+    };
+    save(q);
+    console.log(`${key} adopted PR #${pr.number} (${pr.headRefName} into ${base}): the merge driver merges it with the batch's tickets, and the pass and desk-q list it until it does`);
+    break;
+  }
+
   // Hold a ticket behind blockers (a dependency added mid-batch, or a collision chain), recorded so
   // pass.mjs keeps the batch alive and the merge driver releases it once every blocker has merged.
   case 'hold': {
@@ -1231,7 +1265,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|adopt|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
