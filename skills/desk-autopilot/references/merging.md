@@ -14,6 +14,16 @@ head, a whole fresh review and CI run. The cost is quadratic in how many you hol
 batch carried to all-open-before-any-merged pays a conflict resolution and a re-review for each PR
 ahead of it, none of which exist had each merged when it first went green.
 
+**A PR you open in the batch has a ticket.** The merge driver merges only the queue's tickets, so
+a PR opened with none (a fix for a flaky test the batch keeps hitting, say) has no owner: nothing
+merges it, and nothing lists it while it waits. Adopt it as you open it,
+`queue.mjs adopt <KEY> <PR>`: it is taken in as done on that PR, by its branch, so the driver merges
+it with the rest and the pass and desk-q show it. Its key is an id from §4 Other work id patterns
+(with no tracker, `issue-<n>` or a slug). Never make one up in the tracker's pattern: the driver
+moves that ticket to Done when the PR merges, so a tracker key goes in only as the ticket filed for
+this PR, with `--filed`. The PR must be yours (§1 GitHub handle) and open into the batch's base. No
+worker takes it: a draft, a finding or a red check is settled on the PR itself.
+
 **This section applies as written where config §3 `autopilot-merge` and `pr-merge-green` are both
 `yes`, or where the user approved merging this batch at Stage 3 (the queue's `approved.merge` is
 `true`; the §3 table under *Read the config first*).** Where neither holds, do everything below except the merge itself:
@@ -29,6 +39,13 @@ completed with success. With Required checks `none`, the second and third clause
 merge is pinned to that commit, `gh pr merge <n> --<§4 Merge method> --match-head-commit <sha>`, so a
 push after the checks cannot be merged unchecked. With §4 Branch protection `none`, GitHub will
 accept a merge with red checks, so the rule is enforced only by you and the driver.
+
+**Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+another session never race one PR and who merged it is on record. Before merging or arming:
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
+it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+"session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
+`merge-log.mjs show --pr <n>` says who did.
 
 **Merge holds.** A PR into §0 Default branch whose diff touches any glob in §4 Merge holds (for a
 `<glob>#<key>` hold, changes that key of the file) is merged by a person, never by
@@ -303,7 +320,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
   builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
   own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
-  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
+  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Under a §4 State check of kind `external`, that check passing at the head is the review there: the outside reviewer's, so the driver wants no desk verdict at that head as well, and the pass sends no review worker for one. Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per

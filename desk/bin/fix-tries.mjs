@@ -32,7 +32,7 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
@@ -588,6 +588,14 @@ export function instructionFix(t, { pr, head, ready, answer }) {
 }
 // A fix that carries out what the person said, rather than repairing what the pass found.
 export const personCall = (f) => f?.kind === 'gaps' || f?.kind === 'instruction';
+// A try drafted from the PR as it read then, so dropped rather than spawned once the PR moved past it or
+// it was parked before its worker started: not a person's call, a review they sent back, or a renames
+// try, each of which its worker carries out at the PR as it is now.
+export const redraftable = (f) => !personCall(f) && !f?.person && f?.kind !== 'renames';
+// The queue fields that drop try f as one no worker ran: marked no_worker, and taken out of fix_tries,
+// so it counts against none of the PR's tries.
+export const unrunFields = (t, f) => ['fix.no_worker=true',
+  `fix_tries=${JSON.stringify((t.fix_tries ?? []).filter((x) => !(x.at === f.at && x.kind === f.kind && !x.finished)))}`];
 
 // The findings a review stuck reason quotes (reviewFix's `stuck` why, `P0: <text>; P2: <text>`), as
 // { sev, text }; [] for a reason that is not a review's, or quotes none.
@@ -616,7 +624,13 @@ export function feedbackFix(t, { pr, head, decision, threads, external = null })
   const left = threads ?? [];
   const changes = decision === 'CHANGES_REQUESTED';
   if (!head || (!left.length && !changes)) return null;
-  const what = [left.length ? threadCount(left.length) : '', changes ? 'changes requested' : ''].filter(Boolean).join(', ');
+  // A review's own text (an outside reviewer's, externalTry) is no thread: it is named as that review's
+  // findings, with the file:line each names, so no one looks for a thread the PR does not have.
+  const threadsN = left.filter((x) => x.id).length;
+  const bodies = left.filter((x) => !x.id);
+  const at = [...new Set(bodies.flatMap((x) => String(x.text).match(new RegExp(AT.source, 'g')) ?? []))];
+  const body = bodies.length ? `${external?.login ? `${external.login}'s` : 'the'} review body${at.length ? ` (findings at ${at.slice(0, 3).join(', ')}${at.length > 3 ? ` and ${at.length - 3} more` : ''})` : ''}` : '';
+  const what = [threadsN ? threadCount(threadsN) : '', body, changes ? 'changes requested' : ''].filter(Boolean).join(', ');
   const done = t.fix_tries ?? [];
   // Changes requested with every thread resolved is the reviewer's to clear: no worker can.
   if (!left.length && done.some((x) => x.kind === 'feedback')) {
@@ -717,6 +731,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
 // one, and the person for a review at the head that no fix worker took. null where the head's verdict is
 // clean or nothing waits on one. ctx: { atHead, base, baseMerge }.
 export function driverReviewTry(t, s, ctx) {
+  // A §4 State check of kind external passed at the head: that reviewer's review is the head's review,
+  // and the merge driver takes it as one (merge-driver.sh), so no desk review is owed there.
+  if (externalPassed(s.checks, ctx.stateChecks)) return null;
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };
@@ -1016,7 +1033,8 @@ export function fixBrief(t, review = null) {
       'Do not run the check build yourself: once you push, the pass runs it at your new head and re-runs the check.');
   } else if (f.kind === 'feedback') {
     lines.push(f.external
-      ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads.`
+      ? `Your PR #${f.pr} is open and out of draft on this branch, and its "${f.external.check}" check, which reads ${f.external.login}'s review, is red: ${f.external.login} reviewed its head ${String(f.head).slice(0, 12)}${f.decision === 'CHANGES_REQUESTED' ? ' and requested changes' : ''}. Post no desk review on this PR: ${f.external.login}'s next review of the head you push is what the check reads. ` +
+        `That check stays red while that review still lists a finding it blocks on, so carrying a finding, or leaving one for later, does not clear it: fix each finding quoted below, whatever its severity, or park (AUTOPILOT_PARK) naming the one you cannot fix and why. Ending with nothing pushed leaves the check red and spends this try.`
       : `Your PR #${f.pr} is open and out of draft on this branch, and the merge driver will not merge it while its review feedback is open (§3 merge-feedback-first)${f.decision === 'CHANGES_REQUESTED' ? ': a reviewer has requested changes' : ''}.`);
     if (f.threads?.length) {
       lines.push('Its unresolved review threads:', '');

@@ -110,6 +110,33 @@ t('window: a date', win?.date, '2026-10-01');
 t('window: the window is one whole day', win?.hours, 24);
 t('window: the label', win?.label, 'Thursday 1 October 2026');
 
+// #814: a second check-out of the same day starts where the previous one was posted.
+const since = probe(`import window
+from datetime import datetime
+tue = lambda h, m=0: datetime(2026, 10, 27, h, m)
+hm = lambda r: r[0].strftime('%Y-%m-%d %H:%M')
+print(json.dumps({
+  'whole': hm(window.resolve('today', tue(18))),
+  'none': hm(window.resolve('today', tue(18), since='none')),
+  'hhmm': hm(window.resolve('today', tue(18), since='15:45')),
+  'iso': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().isoformat())),
+  'other_day': hm(window.resolve('today', tue(18), since=datetime(2026, 10, 26, 17).astimezone().isoformat())),
+  'later_than_now': hm(window.resolve('today', tue(12), since='15:00')),
+  'yesterday_hhmm': hm(window.resolve('yesterday', tue(18), since='12:30')),
+  'utc_z': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))),
+  'none_upper': hm(window.resolve('today', tue(18), since='NONE')),
+  'label': window.label(window.resolve('today', tue(18), since='12:30')[0])}))`);
+t('#814 with no previous check-out, the window is the whole day', since?.whole, '2026-10-27 00:00');
+t('#814 --since none covers the whole day', since?.none, '2026-10-27 00:00');
+t('#814 --since takes HH:MM on the day', since?.hhmm, '2026-10-27 15:45');
+t('#814 --since takes an ISO timestamp', since?.iso, '2026-10-27 16:05');
+t('#814 a check-out posted on another day leaves the window whole', since?.other_day, '2026-10-27 00:00');
+t('#814 a time not yet past leaves it whole', since?.later_than_now, '2026-10-27 00:00');
+t('#814 HH:MM is on the day covered, not today', since?.yesterday_hhmm, '2026-10-26 12:30');
+t('#814 a UTC timestamp ending in Z (as an API gives it) is read, not refused', since?.utc_z, '2026-10-27 16:05');
+t('#814 none in any case covers the whole day', since?.none_upper, '2026-10-27 00:00');
+t('#814 the label names where the window starts', since?.label, 'Tuesday 27 October 2026, from 12:30 (the previous check-out)');
+
 // desk_repos.py: every configured repo, scoped against the current one, read through desk-env.
 const repos = probe(`import desk_repos as d
 repos, cur = d.load_all(['acme__lib'])
@@ -167,6 +194,9 @@ const claude = script('claude_activity.py', '--day', DAY);
 t('claude: exits 0', claude.status, 0);
 const co = claude.stdout;
 has('claude: four sessions in the window, less the withheld one', co, '— 3 sessions');
+const after = script('claude_activity.py', '--day', DAY, '--since', '15:00').stdout;
+has('#814 from a check-out posted at 15:00, only the work after it is listed, and the header says from when', after, `${'Monday 26 October 2026'}, from 15:00 (the previous check-out)`);
+lacks('#814 work the earlier check-out covered is not listed again', after, 'photo folders');
 has('claude: the worktree session is labelled with its worktree', co, 'acme__app (worktree APP-12)');
 has('claude: its branch', co, 'branches: fix/APP-12-redirect');
 has('claude: its ticket', co, 'tickets mentioned: APP-12');
@@ -255,12 +285,27 @@ t('jira: the search is limited to the project', calls.some((l) => decodeURICompo
 // At a Slack channel destination with §3 slack-draft yes, the hand-over saves the draft, says where it
 // went, and copies to the clipboard only when the draft cannot be saved, saying why.
 const skill = readFileSync(join(REPO, 'skills/desk-checkout/SKILL.md'), 'utf8');
+has('#819 each PR\'s state is read again when its line is written', skill, '**Read each PR\'s state again as you\n  write its line** (`gh pr view <n> --repo <owner/name> --json state,isDraft,mergedAt,reviewDecision`)');
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
+has('#814 only a check-out that covered the same day moves the window', skill, 'If one that covered this same\nday (its header or date names it) was posted during it');
+has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
+has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
+has('#816 it is asked only when no read can settle it', skill, 'Only when no read can (no Slack connector, or §3 bars that channel)');
+has('#816 every check a read can answer is run before handing over', skill, '**Check before posting**: only what no read settles. Before handing over, run every check a\n  read §3 grants can answer');
+lacks('#816 an unread channel is no longer handed over by default', skill, 'If Slack can\'t confirm they posted one');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
+has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
+has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
+has('#819 the read wins over the collector\'s', skill, 'That read wins over the collector\'s: `MERGED` is `(merged)`, an open PR no longer a draft is\n  `(in review)`');
+has('#819 only isDraft true is a draft', skill, 'only `isDraft` true is\n  a draft');
+has('#819 a failed read keeps the collector\'s state and says so', skill, 'If that read fails, use the collector\'s state and name the PR under **Check before\n  posting** as read earlier in the run.');
+has('#819 Check before posting lists it', skill, 'each PR whose state could not be\n  read again when its line was written');
+has('#819 only in a repo the GitHub collector was allowed to read', skill, 'Read only in a repo the GitHub collector read (its\n  `read-own-work` `yes`, or `ask` and the user agreed)');
+has('#819 and never in any other repo', skill, 'Never read a PR in any other repo: its\n  state stays as its source gave it.');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });

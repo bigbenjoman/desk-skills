@@ -340,9 +340,15 @@ record T-6 src/e.txt
 printf 'WAIT\nAUTOPILOT_STAGE: 2/9 understand\nAUTOPILOT_PARK: which fixture helper should the spec use?\n' > "$T/scripts/T-6.1"
 printf 'WAIT\nAUTOPILOT_DONE: pr=106 jira=none\n' > "$T/scripts/T-6.2"
 q admit T-6
-pass; finish T-6
+pass
+# The worker keeps the text its park waits on in its park file, beside the question.
+mkdir -p "$T/state/parks"
+printf '{"question": "which fixture helper should the spec use?", "approve": {"kind": "jira-comment", "target": "T-6", "body": "Line one.\\nLine two."}}\n' > "$T/state/parks/T-6.json"
+finish T-6
 pass
 check "a worker that parks leaves the ticket parked with its question, exit 11" '[ $rc -eq 11 ] && [ "$(state T-6)" = parked ] && field T-6 park | grep -q "which fixture helper"'
+check "#775 and the pass's report carries it, whole" 'grep -qF "T-6: which fixture helper should the spec use? — awaiting approval, its exact text (jira-comment on T-6, as JSON): \"Line one.\\nLine two.\"" <<< "$out"'
+check "#775 the text its park file says awaits approval is kept with the park" '[ "$(field T-6 park.approve)" = "{\"kind\":\"jira-comment\",\"target\":\"T-6\",\"body\":\"Line one.\\nLine two.\"}" ]'
 out=$(node "$B/answer.mjs" T-6 "use makeFixture from tests/helpers" 2>&1); arc=$?
 out=$(node "$B/queue.mjs" requeue T-6 2>&1); rc=$?
 check "the answered ticket requeues, answer and requeue exit 0" '[ $arc -eq 0 ] && [ $rc -eq 0 ] && [ "$(state T-6)" = triaged ]'
@@ -855,6 +861,7 @@ pass
 check "DS-620 AC1 AC3 the real preflight and the worker both run on the repo's subscription, not the roomier login" '[ "$(cat "$T/logins.log")" = "$(printf "preflight %s\nworker %s" "$LOGIN_B" "$LOGIN_B")" ]'
 check "DS-465 AC1 the row and the worker's login file name it" '[ "$(field T-91 login.name)" = "\"b\"" ] && grep -q "\"login\":\"b\"" "$T/state-l/workers/T-91.login.json"'
 check "DS-465 a worker on another login gets the memory index in its brief, its auto-memory being that login's" 'run_has "$T/runs/T-91.1" prompt "the one to remember"'
+check "DS-839 a park never messages the orchestrator, so no briefing names one, on any login" '[ -f "$T/state-l/briefings/T-91.md" ] && ! grep -q "^Orchestrator session name" "$T/state-l/briefings/T-91.md" "$T/state/briefings/T-34.md"'
 finish T-91
 
 echo "batch e2e: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

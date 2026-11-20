@@ -32,6 +32,7 @@ node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs backfill-holds --dry-run           # once, by hand: lane, size and design parks with no held_by gain their blockers' holds (drop --dry-run to write)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/queue.mjs adopt flaky-spec-fix 512           # a PR you opened in the batch with no ticket (a flaky-test fix), keyed by a §4 work id or slug: taken in as done on that PR, so the merge driver merges it and the pass and desk-q list it (--filed for the tracker ticket filed for it)
 node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
 node ~/.claude/desk/bin/intake.mjs admit ABC-128 --by ben --front     # /desk-admit: intake's checks on named tickets, into the supervisor's batch; exit 11 refused
 node ~/.claude/desk/bin/intake.mjs admit ABC-129 --session            # the same, into the batch this session runs (not handed to the supervisor)
@@ -66,6 +67,7 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
+                                  # on Linux also SWAP-GROWING, OOM-KILL, TMPFS-HIGH (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named

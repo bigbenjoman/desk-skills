@@ -1114,6 +1114,16 @@ fbt FB-41 triaged src/big.ts; fbt FB-42 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
   'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
+# A review try changes no file: running, it fills no place of a file; ready, it waits on none.
+fbq fbf '1'
+fbt FB-51 running src/big.ts; q set FB-51 session_id=live-51 'fix={"kind":"rereview","try":1,"of":2,"pr":51,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'
+fbt FB-52 triaged src/big.ts
+fbt FB-53 running src/edge.ts; q set FB-53 session_id=live-53
+fbt FB-54 triaged src/edge.ts; q set FB-54 'fix={"kind":"rereview","try":1,"of":2,"pr":54,"head":"bbb","what":"review its head","at":"T0"}' result.pr=54
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 a running review try fills no place: a ticket naming the same file starts" 'spawned FB-52'
+check "#1001 a ready review try is not held back behind a worker editing its files" '! echo "$out" | grep "^held back by a collision:" | grep -qF "FB-54"'
+check "#1001 negative control: a ticket naming a file a running worker edits is still held" 'q set FB-52 state=triaged >/dev/null; fbt FB-55 triaged src/edge.ts; out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep "^held back by a collision:" | grep -qF "FB-55 (src/edge.ts has 1 running of its 1: FB-53)"'
 # fbrow <row>: what desk-env reads the row as, "<big> <small> <serial globs joined by +> <bad>".
 fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \
@@ -1480,5 +1490,20 @@ check "DS-798 AC2 a step it failed is recorded with what it found and the run UR
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
+
+# ---- #771: a pass that crashes after starting a worker says which it started, in text and JSON.
+# A §4 Evidence workflow row naming `none` beside a workflow is a config error the pass reads late,
+# after its spawns.
+export DESK_QUEUE="$T/queue-771.json" DESK_AUTOPILOT_STATE="$T/state-771"; mkdir -p "$T/state-771/logs"
+{ cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `x.yml` |\n'; } > "$T/config-771.md"
+q init c771; q set-batch concurrency=1
+q add C-1; q set C-1 state=triaged branch=fix/C-1
+out=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" 2>&1); rc=$?
+check "#771 a crash after a spawn exits 11 and names the worker it started" \
+  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed: .*Evidence workflow" && echo "$out" | grep -q "^before it stopped, this pass spawned:" && echo "$out" | grep -q "^  C-1 port="'
+q set C-1 state=triaged; q set C-1 session_id=null
+jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
+check "#771 and the JSON carries before_crash.spawned" \
+  'echo "$jout" | node -e "let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const j=JSON.parse(s);process.exit(j.status===\"error\"&&/^C-1 /.test(j.before_crash?.spawned?.[0]??\"\")?0:1)})"'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -84,7 +84,7 @@ case "$name" in
   browser)  lock="$dir/desk-browser.lock" ;;
   light)    lock="$dir/desk-light.lock" ;;
   # nolock: no lock at all, only --cwd. A §4 command item with a directory that is not heavy (a dev
-  # server, a lint) runs this way, because the worker allow-list has no `cd`.
+  # server, a codegen) runs this way, because the worker allow-list has no `cd`.
   nolock)   lock="" ;;
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac

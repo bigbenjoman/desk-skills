@@ -45,6 +45,15 @@ check "AC4: the held ticket is released to triaged"                  '[ "$(qf T-
 check "AC4: the released ticket is at the front of the queue"        '[ "$(jq -r ".tickets | keys_unsorted | .[0]" "$DESK_QUEUE")" = T-3 ]'
 check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-1 .merged_at)" != null ] && [ "$(jq -r .key "$T/state/eta-history.jsonl")" = T-1 ] && [ "$(jq -r .merged_at "$T/state/eta-history.jsonl")" = "$(qf T-1 .merged_at)" ]'
 
+check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
+
+# ---- #809: a PR a session has claimed is not merged by the driver ------------------------------
+node "$B/merge-log.mjs" claim 102 "$SHA2" --by "session s-9" --repo acme/widgets >/dev/null
+loop
+check "#809 a PR another merger claimed is left, naming it, and not merged" '[ "$(merged)" = 101 ] && echo "$out" | grep -q "#102 NOT merged: acme/widgets#102 is already claimed by session s-9"'
+node "$B/merge-log.mjs" record 102 "$SHA2" --by "session s-9" --event failed --why "handed back" --repo acme/widgets >/dev/null
+rm -f "$T/state/merge-driver/backoff-102"
+
 # ---- loop 3: the second green PR merges ---------------------------------------------------------
 loop
 check "AC2: both green PRs merged within three loops, one per loop" '[ "$(merged)" = "101 102" ] && grep -qx "102 main $SHA2" "$T/merges.log"'
