@@ -47,7 +47,7 @@ check "the merge is recorded on the ticket and in the eta history"   '[ "$(qf T-
 ml101=$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 --latest)
 check "DS-835 AC1: the merged entry names the PR, its head, the ticket and the merge driver" \
   '[ "$(jq -r "[.event, .pr, .sha, .ticket, .repo] | join(\" \")" <<< "$ml101")" = "merged 101 $SHA1 T-1 acme/widgets" ] && jq -e ".by | startswith(\"merge-driver \")" <<< "$ml101" >/dev/null'
-check "DS-835 AC3: the reader gives the latest entry back with its time" '[ "$(jq -r .at <<< "$ml101")" != null ] && ! echo "$out" | grep -q "merge not written to the merge log"'
+check "DS-835 AC3: the reader gives the latest entry back with its time" 'jq -e ".at | test(\"^[0-9]{4}-[0-9]{2}-[0-9]{2}T\")" <<< "$ml101" >/dev/null && ! echo "$out" | grep -q "merge not written to the merge log"'
 
 check "#809 the merge is claimed and recorded in the merge log, by this driver, at its head" 'node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | awk "{print \$3, \$5}" | tr "\n" " " | grep -Fqx "claim ${SHA1:0:12} merged ${SHA1:0:12} " && node "$B/merge-log.mjs" show --repo acme/widgets --pr 101 | grep -q "by merge-driver "'
 
