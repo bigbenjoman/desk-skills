@@ -139,8 +139,9 @@ export function processAges() {
 }
 // Who holds the test lock, any repo or session, as [{pid, cwd, args, seconds}]: each holding process
 // whose parent does not hold it too (a mkdir slot's file names the wrapper and its command). seconds is
-// how long its run has gone, from the youngest of it and its children (the command starts once the lock
-// is taken), null where unknown; cwd is null where it cannot be read. A pid only a holder file names
+// how long it has held the lock: from its holder file, written as the lock is taken, else (a single-slot
+// flock(1), which forks its command once it holds) from that command's age; null where unknown. cwd is
+// null where it cannot be read. A pid only a holder file names
 // counts only where its process started before that file was written (`stamps`, lockHolderStamps), so a
 // stale file whose pid was reused names nobody. [] when ps cannot be read.
 export function lockHolderRuns({ procs, holders, cwds, ages, stamps, now = Date.now() }) {
@@ -153,16 +154,18 @@ export function lockHolderRuns({ procs, holders, cwds, ages, stamps, now = Date.
   };
   const holding = procs.filter((p) => lockRole(p, { procs, holders }) === 'hold' && current(p));
   const pids = new Set(holding.map((p) => p.pid));
-  return holding.filter((p) => !pids.has(p.ppid)).map((p) => {
-    const known = [p, ...procs.filter((c) => c.ppid === p.pid)].map((c) => age(c.pid)).filter((a) => a != null);
-    return { pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: known.length ? Math.min(...known) : null };
-  });
+  const held = (p) => {
+    if (stamps?.has(p.pid) && !FLOCK.test(p.args)) return Math.max(0, Math.floor((now - stamps.get(p.pid)) / 1000));
+    const child = FLOCK.test(p.args) ? procs.find((c) => c.ppid === p.pid) : null;
+    return age(child ? child.pid : p.pid);
+  };
+  return holding.filter((p) => !pids.has(p.ppid)).map((p) => ({ pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: held(p) }));
 }
-// Each holder as `<where>: <command>, running <age>`, the command cut to 80 characters, `; `-separated.
+// Each holder as `<where>: <command>, held <age>`, the command cut to 80 characters, `; `-separated.
 export function holdersText(runs) {
   return runs.map((r) => {
     const cmd = r.args.length > 80 ? `${r.args.slice(0, 79)}…` : r.args;
-    return `${r.cwd ? tilde(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${r.seconds == null ? 'running for an unknown time' : `running ${since(r.seconds * 1000)}`}`;
+    return `${r.cwd ? tilde(r.cwd) : `pid ${r.pid}`}: ${cmd}, ${r.seconds == null ? 'held for an unknown time' : `held ${since(r.seconds * 1000)}`}`;
   }).join('; ');
 }
 
