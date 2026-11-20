@@ -20,6 +20,7 @@
 //                  config key, command: the uploader to show the person }
 //   resume         config §3b "Resume a killed worker (times)" (pass/shared.mjs resumeSetting)
 //   bootMs         when this computer last started, in ms
+//   budget         the per-worker budget (desk-env.mjs workerBudget): {usd}, {off}, or null unread
 //   read           { branch, checkout }: the live reads' branch and their clean checkout
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
@@ -50,17 +51,18 @@
 //   handoff {key, said, imgs, stopped}   queue the handed-off stage for a fresh session
 //   lifted {key, limit}            -> whether the limit on the worker's login has lifted
 //   exit-code {key}                -> the exit code spawn-worker.sh recorded, or null
+//   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd } from '../harvest.mjs';
+import { budgetStopped, endedNormally, followOnIn, workerEnd } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -310,6 +312,24 @@ export function* decideAdvance(s) {
       ...(follow.steps.length ? [`follow_on=${JSON.stringify([...linkSteps(t.follow_on), ...follow.steps])}`] : []),
     ] };
     yield* linksOnDone(t, pr);
+  } else if (!wedged && t.session_id && budgetStopped(log.text, s.budget)) {
+    // Stopped at the per-worker budget, often with the work finished and not yet committed: resumed
+    // once in its own session with BUDGET_RESUME_USD more, not counted as a kill. A second stop parks.
+    const ceiling = `the per-worker budget ($${s.budget.usd}, ${WORKER_BUDGET_ROW})`;
+    if (!t.budget_resumed) {
+      yield* setAndSay(t.key, ['state=triaged', 'resume=budget', `resume_why=stopped at ${ceiling}`],
+        'advanced', `${t.key} stopped at ${ceiling}: queued to resume once in its own session with $${BUDGET_RESUME_USD} more, to commit, push and finish its stage`);
+    } else {
+      const dirty = yield { type: 'uncommitted', key: t.key };
+      const where = t.worktree ?? 'its worktree';
+      const left = dirty == null ? `its worktree ${where} may hold uncommitted work (git status could not be read)`
+        : dirty > 0 ? `its worktree ${where} holds uncommitted work (${dirty} changed file(s))`
+          : `its worktree ${where} holds no uncommitted work, but may hold unpushed commits on ${t.branch}`;
+      const why = `stopped at ${ceiling} again after its one resume with $${BUDGET_RESUME_USD} more, and ${left}. Commit and push it by hand, or raise the budget and requeue it with queue.mjs requeue ${t.key}`;
+      yield { type: 'decisions', key: t.key, pr: null };
+      yield { type: 'park', key: t.key, question: why };
+      yield say(t.key, 'parked', `${t.key}: ${why}`);
+    }
   } else if (limit && !wedged && t.session_id && t.resume_limits !== usage.limits.length) {
     // Exited at a usage limit, PR open or not: a headless worker ends its session there rather than
     // waiting for the reset, often mid-edit. It stays running, reported paused, until the limit lifts,

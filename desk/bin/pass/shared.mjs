@@ -134,6 +134,10 @@ export const fixTryQuote = (f) => (f.kind === 'review' ? { ...(f.findings?.lengt
     : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {});
 
 // ---- handoffs and resumes --------------------------------------------------
+// What a session stopped at the per-worker budget gets on top of that budget, once, to commit, push
+// and finish its stage (resume=budget).
+export const BUDGET_RESUME_USD = 5;
+export const WORKER_BUDGET_ROW = 'config §3b "Autopilot per-worker budget (USD)"';
 // The stages a session hands off to, in stage order: Object.keys lists an integer-like key (7) before '4b'.
 export const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
 export const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;

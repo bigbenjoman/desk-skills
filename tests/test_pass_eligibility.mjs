@@ -78,6 +78,14 @@ function slots(s) {
   t('under its budget nothing holds, and nothing is said', j([under.held, under.lines]), j([null, []]));
   t('no cap holds nothing whatever was spent', eligibility(snap(spentOut, { budget: { raw: 'off', label: 'the batch budget' } })).held, null);
 }
+{
+  const due = byKey({ key: 'A', state: 'done', cost: 11 }, triaged('B', { resume: 'budget', session_id: 's-b' }), triaged('C'));
+  const e = eligibility(snap(due, { budget: { raw: '10', label: 'the batch budget' } }));
+  t('DS-849 AC5 a budget-stop resume due while the batch budget is spent waits, and the report says on what',
+    j([e.held, slots(slotsSnap(e)).slots, e.lines.includes('waiting on the batch budget ($11.00 of $10) to resume after a per-worker budget stop: B')]),
+    j(['the batch budget holds every spawn', 0, true]));
+  t('DS-849 a budget-stop resume is a resume, ahead of new tickets', j([toResume(due.B), keys(eligibility(snap(due)).spawnable)]), j([true, ['B', 'C']]));
+}
 
 // ---- the candidates and their order ----
 // AC2: five new triaged tickets and two free slots: all five are candidates, in queue order, and two slots.

@@ -524,7 +524,7 @@ if [ "\$3" = preflight ]; then
   if grep -qx "\$1" "$T/bad-preflight"; then echo "[preflight] \$1"; echo "  W_IN   ?        FAIL (wanted OK)"; exit 1; fi
   echo "[preflight] pass"; exit 0
 fi
-echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; printf '%s\n' "\${AUTOPILOT_BUDGET_USD:-}" > "$T/resume-budget-\$1"; echo "[spawn] ticket=\$1"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -558,6 +558,30 @@ check "DS-145 AC4 a session that ended normally with no marker is marked failed,
 killed K-4b sess-k4b; { result_event; echo '{"type":"command_lifecycle","state":"completed","session_id":"sess-k4b"}'; } >> "$T/state-k/logs/K-4b.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-145 AC4 bookkeeping after the result still reads as a normal end" '[ "$(field K-4b state)" = "\"failed\"" ] && ! spawned_for K-4b'
+# B-1's session ended on the per-worker budget with its change uncommitted.
+budget_event(){ node -e 'console.log(JSON.stringify({ type: "result", subtype: process.argv[1], is_error: true, num_turns: 90, total_cost_usd: 25.02, result: "" }))' "${1:-error_max_budget_usd}"; }
+killed B-1 sess-b1; budget_event >> "$T/state-k/logs/B-1.log"; echo change > "$T/wt/B-1/new.txt"; git -C "$T/wt/B-1" init -q
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC1 a worker stopped at the per-worker budget is resumed once in its own session, not failed" \
+  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = true ] && [ "$(field B-1 resumes)" = null ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more (\$30)"'
+check "DS-849 AC1 with \$5 more, told to commit, push and finish its stage" \
+  '[ "$(cat "$T/resume-budget-B-1")" = 30 ] && grep -q "spend it on committing your work, pushing it and finishing the stage you were in" "$T/resume-prompt-B-1"'
+# Its resumed session ends on the budget too.
+budget_event >> "$T/state-k/logs/B-1.log"; touch -t 202601010000 "$T/state-k/logs/B-1.log"
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC2 a second budget stop parks, naming the budget and the uncommitted work" \
+  '[ "$(field B-1 state)" = "\"parked\"" ] && field B-1 park.question | grep -q "stopped at the per-worker budget (\$25, config §3b ..Autopilot per-worker budget (USD)..) again after its one resume with \$5 more, and its worktree $T/wt/B-1 holds uncommitted work (1 changed file(s))" && [ "$(spawned_for B-1 | wc -l | tr -d " ")" = 1 ]'
+# B-3's session ended in another error; B-4's on the budget subtype, with no per-worker budget set.
+killed B-3 sess-b3; budget_event error_during_execution >> "$T/state-k/logs/B-3.log"
+killed B-4 sess-b4; budget_event >> "$T/state-k/logs/B-4.log"
+out=$(AUTOPILOT_BUDGET_USD=none node "$B/pass.mjs" 2>&1)
+check "DS-849 AC3 another error is marked failed as before" '[ "$(field B-3 state)" = "\"failed\"" ] && ! spawned_for B-3'
+check "DS-849 AC4 with the per-worker budget none, a budget-stop subtype is any other error" '[ "$(field B-4 state)" = "\"failed\"" ] && ! spawned_for B-4 && [ "$(field B-4 resume)" = null ]'
+h=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+h3=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-3.log" 2>&1)
+hn=$(AUTOPILOT_BUDGET_USD=none node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+check "DS-849 harvest names a budget stop, and any other error, or one with no budget, FAILED" \
+  'echo "$h" | grep -qx "state:  BUDGET STOP" && echo "$h3" | grep -qx "state:  FAILED" && echo "$hn" | grep -qx "state:  FAILED"'
 # K-9's log was written seconds ago: before a boot a minute from now it was a reboot, so resumed at
 # once; with the computer up it may be a worker the registry has not listed yet, so it is left.
 killed K-9 sess-k9; touch "$T/state-k/logs/K-9.log"

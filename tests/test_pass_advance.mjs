@@ -1,7 +1,8 @@
 // suite: pass phase: advance running tickets and the usage limit (the decisions, and the generator runner)
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
-import { registryView } from '../desk/bin/pass/shared.mjs';
+import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
+import { budgetStopped } from '../desk/bin/harvest.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -31,7 +32,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null,
+  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -136,6 +137,36 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
   t('with no PR either it is failed, naming its exit', j([failed?.why.startsWith('exited with no marker and no open PR on fix/N-2'), failed?.why.includes('exit code 1'), failed?.tail]), j([true, true, ' — check /state/logs/N-2.log']));
   const held = advance(snap(ticket('N-3', { fix: { kind: 'instruction' } }), logOf('N-3', '', [said('x'), RESULT])), { 'open-pr': '40' });
   t('a fix holding the merge on an instruction is parked, not done, with no marker', /^its worker ended with no marker, so your instruction on PR #40/.test(held.find((a) => a.type === 'park')?.question), true);
+}
+
+// A session that ended on the per-worker budget is resumed once, then parked; any other error fails.
+{
+  const stopped = (subtype) => ({ type: 'result', subtype, is_error: true, total_cost_usd: 25.01 });
+  const ended = (key, subtype, fields = {}, budget = { usd: 25 }) => ({
+    ...snap(ticket(key, { worktree: `/wt/${key}`, ...fields }), logOf(key, '', [said('tests green'), stopped(subtype)])), budget,
+  });
+  t('budgetStopped reads the max-budget subtype as a budget stop', budgetStopped(ended('B', 'error_max_budget_usd').log.text, { usd: 25 }), true);
+  t('budgetStopped reads another error subtype as not one', budgetStopped(ended('B', 'error_during_execution').log.text, { usd: 25 }), false);
+  t('budgetStopped reads a session that went on after the stop as not one',
+    budgetStopped(`${ended('B', 'error_max_budget_usd').log.text}${JSON.stringify(said('resumed'))}\n`, { usd: 25 }), false);
+  const first = advance(ended('B-1', 'error_max_budget_usd'));
+  t('DS-849 AC1 a worker stopped at the per-worker budget is queued to resume once, not failed',
+    j([sets(first).filter((f) => !LIVENESS.test(f)), types(first).includes('fail')]),
+    j([['state=triaged', 'resume=budget', 'resume_why=stopped at the per-worker budget ($25, config §3b "Autopilot per-worker budget (USD)")'], false]));
+  t('DS-849 AC1 and the report says it resumes with more to commit and push',
+    lines(first, 'advanced').at(-1), `B-1 stopped at the per-worker budget ($25, config §3b "Autopilot per-worker budget (USD)"): queued to resume once in its own session with $${BUDGET_RESUME_USD} more, to commit, push and finish its stage`);
+  const again = advance(ended('B-2', 'error_max_budget_usd', { budget_resumed: true }), { uncommitted: 3 });
+  const parked = again.find((a) => a.type === 'park')?.question ?? '';
+  t('DS-849 AC2 a second budget stop parks naming the budget and the uncommitted work',
+    j([/^stopped at the per-worker budget \(\$25, config §3b "Autopilot per-worker budget \(USD\)"\) again after its one resume/.test(parked),
+      parked.includes('its worktree /wt/B-2 holds uncommitted work (3 changed file(s))'), sets(again).some((f) => f.startsWith('resume=')), types(again).includes('fail')]),
+    '[true,true,false,false]');
+  const other = advance(ended('B-3', 'error_during_execution'), { 'exit-code': 1 });
+  t('DS-849 AC3 another error is failed as before',
+    j([other.find((a) => a.type === 'fail')?.why.startsWith('exited with no marker and no open PR on fix/B-3'), sets(other).some((f) => f.startsWith('resume='))]), '[true,false]');
+  const off = advance(ended('B-4', 'error_max_budget_usd', {}, { off: true }), { 'exit-code': 1 });
+  t('DS-849 AC4 with the per-worker budget none, a budget-stop subtype is failed as any error',
+    j([types(off).includes('fail'), sets(off).some((f) => f.startsWith('resume='))]), '[true,false]');
 }
 
 // The markers: whichever was written last says how the worker ended.
