@@ -481,10 +481,12 @@ if (mode === 'triage') {
   // own rule: its `..` deny would refuse the item, and its prefix allow without the deny takes any `..`.
   const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
   const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
-  const lintBins = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))))
-    .filter((c) => !configured.some((k) => k.startsWith(c) && k.slice(c.length).includes('..')));
+  const allLint = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
+  const extends_ = (k, c) => k.startsWith(c) && k.slice(c.length).includes('..');
+  const lintBins = allLint.filter((c) => !configured.some((k) => extends_(k, c)));
   allow.push(...lintBins.map((c) => rule(c, '')));
-  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`));
+  // Such an item still takes no further `..` of the worker's.
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`), ...configured.filter((k) => allLint.some((c) => extends_(k, c))).map((k) => `Bash(${k}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments

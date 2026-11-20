@@ -278,10 +278,11 @@ settings '`bash tests/run.sh`' '| Typecheck | `web: ./node_modules/.bin/tsc --no
 check "DS-855 the lint binaries .. deny leaves a configured directory item holding .. allowed" \
   'ok "$L tsc --cwd web -- ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js ." && no "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc --cwd . -- node_modules/.bin/biome check ../x"'
 check "#1039 that item's .. does not open the lint binary's own form to any .. argument" \
-  'no "$L tsc --cwd web -- node_modules/.bin/eslint --fix ../../x" "$L tsc --cwd web node_modules/.bin/eslint ../x"'
+  'no "$L tsc --cwd web -- node_modules/.bin/eslint --fix ../../x" "$L tsc --cwd web node_modules/.bin/eslint ../x" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js . --fix ../x"'
 settings '`bash tests/run.sh`' '| Lint | `node_modules/.bin/eslint --ignore-path ../.gitignore .` |'
 check "#1039 a root Lint item holding .. runs, and the root lint binary still refuses any other .." \
-  'ok "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore ." "$L tsc ./node_modules/.bin/eslint src/a.ts" && no "$L tsc node_modules/.bin/eslint --fix ../other/x.ts" "$L tsc ./node_modules/.bin/eslint ../x"'
+  'ok "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore ." "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore . --fix src/a.ts" "$L tsc ./node_modules/.bin/eslint src/a.ts" \
+      && no "$L tsc node_modules/.bin/eslint --fix ../other/x.ts" "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore . --fix ../other/x.ts"'
 settings '`apps/web: bash tests/run.sh`' '| Dev server | `packages/app: bash dev.sh` |'
 check "#1039 a lint binary runs under the tsc lock in each directory a §4 item names" \
   'ok "$L tsc --cwd packages/app -- ./node_modules/.bin/eslint src/a.ts" "$L tsc --cwd $W/packages/app node_modules/.bin/eslint src/a.ts" "$L tsc --cwd apps/web -- ./node_modules/.bin/biome check x.ts" \
