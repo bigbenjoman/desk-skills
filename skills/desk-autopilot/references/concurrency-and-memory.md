@@ -56,6 +56,12 @@ evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out
 guest figure can take the whole VM down and kill every agent mid-flight.
 An OOM leaves a worker's worktree, database and port behind.
 
+**Only `avail` lowers the count.** The pass report's `memory ceiling` line is the footprint budget,
+and on WSL its figure counts page cache; neither it nor `vmmem` is a reason to set a lower
+`concurrency`. The `workers:` line says "lowered on memory" only while `avail` is under the ladder's
+line; a count below the user's with `avail` above it reads "memory did not lower it", and goes back
+to the user's number.
+
 **The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
 machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
 the machine profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile), the pass
