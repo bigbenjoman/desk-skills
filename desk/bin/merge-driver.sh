@@ -1089,7 +1089,12 @@ EOF_RESOLVE
 
   # A clean review at the head stands in for a person's approval, for every PR whatever its title. Green
   # alone does not show one: only a repo whose CI runs a §4 State check reading the verdict has it in green.
-  if [ -n "$REVIEW_HOLD" ]; then
+  # A §4 State check of kind external that passed at the head read that outside reviewer's review
+  # there: that review is the head's, so desk's own verdict is not wanted as well.
+  external_ok=$(printf '%s' "$g" | jq -r '.externalReview // empty | "\(.name) (\(.login))"')
+  if [ -n "$REVIEW_HOLD" ] && [ -n "$external_ok" ]; then
+    log "#$n its review at ${sha:0:9} is the outside reviewer's: $external_ok passed there, so no desk verdict is needed at that head"
+  elif [ -n "$REVIEW_HOLD" ]; then
     verdict=$(head_verdict "$n" "$want")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then

@@ -320,7 +320,7 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   `convert_to_draft`, is recorded as `undraft` `held`. The pass then never undrafts it, re-runs or
   builds its checks, or sends it to a review or fix worker, and it is under WAITING ON YOU as `HELD` (desk-q and `/desk-needs-you` show it as needing the person). Their
   own `gh pr ready` releases it, and the driver merges it once green. The driver merges a ready PR,
-  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Do not arm auto-merge.
+  pinned, the moment it is green with a clean review at its head (never a PR under a §4 Merge holds glob). Under a §4 State check of kind `external`, that check passing at the head is the review there: the outside reviewer's, so the driver wants no desk verdict at that head as well, and the pass sends no review worker for one. Do not arm auto-merge.
   Undrafting earlier pings the reviewer before the evidence is in.
 - **A draft whose every red check was cancelled or timed out is re-run by the pass**, where §3
   `ci-rerun` is `yes`: those runs never tested the code. It keeps the driver's cap of two reruns per

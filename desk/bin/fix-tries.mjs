@@ -32,7 +32,7 @@
 // check a worker can fix it is named in the brief as not theirs. Out of draft, where the pass builds a
 // §4 Check builds check (ctx.build), it goes the draft's way instead (buildStep): built once nothing a
 // worker fixes is red or no try is left, synced by a fix worker when its build failed behind the base.
-import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, PENDING_LIMIT_MS } from './gate.mjs';
+import { evaluateGate, stateFailing, approvalFiles, staleVerdict, stepFailed, latestPerCheck, externalPassed, PENDING_LIMIT_MS } from './gate.mjs';
 import { baseSplit, runnerOrResource } from './failure-class.mjs';
 import { stepFits } from './workflow-yaml.mjs';
 import { askCategoryIn } from './decisions.mjs';
@@ -731,6 +731,9 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
 // one, and the person for a review at the head that no fix worker took. null where the head's verdict is
 // clean or nothing waits on one. ctx: { atHead, base, baseMerge }.
 export function driverReviewTry(t, s, ctx) {
+  // A §4 State check of kind external passed at the head: that reviewer's review is the head's review,
+  // and the merge driver takes it as one (merge-driver.sh), so no desk review is owed there.
+  if (externalPassed(s.checks, ctx.stateChecks)) return null;
   const at = ctx.atHead?.();
   if (!at || at.clean) return null;
   if (at.settle || at.person) return { call: 'stuck', why: at.why };

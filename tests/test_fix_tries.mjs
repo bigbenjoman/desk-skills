@@ -1,6 +1,7 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
 import { readVerdict, readThreads, localReviewSet, externalReview } from '../desk/bin/review-threads.mjs';
@@ -768,6 +769,12 @@ t('DS-433 AC2 its task reviews the head and leaves it out of draft', /desk-revie
 t('DS-558 AC3 two review tries per head: tried twice here, it is the person\'s, naming the review failure', verdictTry(tk({ fix_tries: [{ ...vs.fix }, { ...vs.fix }] }), green433, ctx433(stale))?.why, `no review verdict readable at its head after 2 review tries at it: ${stale.why}`);
 const movedTry = [{ try: 1, head: 'c'.repeat(40), kind: 'checks' }, { try: 2, head: 'd'.repeat(40), kind: 'checks' }];
 t('DS-558 AC1 fix tries spent, a held PR still gets a review try at its head', verdictTry(tk({ fix_tries: movedTry }), green433, ctx433(stale, { base: 'main', baseMerge: () => true }))?.fix.what, `review its head, moved by a merge from main: ${stale.why}`);
+// An outside reviewer's gate that passed at the head is the head's review: no desk review try is owed.
+const extGreen = pr([ok('tests'), ok('🔐 Review gate')]);
+t('#991 an external gate passed at the head owes no desk review, though desk\'s verdict is stale', verdictTry(tk(), extGreen, { ...ctx433(stale), stateChecks: EXT }), null);
+t('#991 nor does the held-PR route', driverReviewTry(tk(), extGreen, { atHead: () => stale, stateChecks: EXT }), null);
+t('#991 with that check not at the head, the stale verdict still goes to a review worker', verdictTry(tk(), green433, { ...ctx433(stale), stateChecks: EXT })?.fix.kind, 'rereview');
+t('#991 externalPassed names the check and its reviewer, and only for a pass', `${JSON.stringify(externalPassed(extGreen.checks, EXT))} ${externalPassed(pr([ok('tests'), { name: '🔐 Review gate', status: 'in_progress', conclusion: null }]).checks, EXT)}`, '{"name":"🔐 Review gate","login":"agent-pullbot"} null');
 t('DS-433 a clean review at the head sends no worker', verdictTry(tk(), green433, ctx433({ ...stale, clean: true, why: null })), null);
 t('DS-433 nothing waiting on a verdict (no §4 Local review command, or no driver) sends no worker', verdictTry(tk(), green433, ctx433(null)), null);
 t('DS-433 no atHead at all is as it was', verdictTry(tk(), green433, { required: ['tests'], stateChecks: STATE }), null);
