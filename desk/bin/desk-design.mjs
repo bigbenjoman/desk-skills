@@ -1018,7 +1018,8 @@ export function propose(src, { root, dir, ref, worktrees }) {
 // this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
 // whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
 // board is not one. With several links it must sit beside <url> itself: on a line linking it, and on a
-// line linking several, in a clause (split at ";" and sentence ends) whose only link is <url>. A note
+// line linking several, in a clause (split at ";" and sentence ends outside a bracketed link) whose
+// only link is <url>. A note
 // sharing a clause with two links could be about either, so it clears neither: a note about one
 // artifact never clears another.
 export function usesNoBoard(section, url, key) {
@@ -1027,7 +1028,14 @@ export function usesNoBoard(section, url, key) {
   const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
   const text = String(section ?? '');
   const only = (s) => { const k = claudeDesignLinks(s); return k.length === 1 && canonicalUrl(k[0]) === canonicalUrl(url); };
-  const beside = (l) => (claudeDesignLinks(l).length > 1 ? l.split(/;|[.!?](?=\s)/) : [l]).filter(only);
+  const beside = (l) => {
+    if (claudeDesignLinks(l).length < 2) return [l].filter(only);
+    // A bracketed link ([label|url], [label](url)) is held whole while splitting, so punctuation in its
+    // label never parts the label from its URL.
+    const held = [];
+    const masked = l.replace(/\[[^\]\n]*\](?:\([^)\n]*\))?/g, (m) => `\u0000${held.push(m) - 1}\u0000`);
+    return masked.split(/;|[.!?](?=\s)/).map((c) => c.replace(/\u0000(\d+)\u0000/g, (_, i) => held[i])).filter(only);
+  };
   return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').flatMap(beside).join('\n') : text);
 }
 
