@@ -759,7 +759,8 @@ export function undraftCall(t, pr, cfg) {
   }
   // A wait on a check that will never finish is no wait: it is re-run, or put to the person.
   const stuck = () => stuckCall(gate, pr.checks, cfg, n);
-  if (gate.state === 'pending') return stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  const running = () => stuck() ?? { call: 'wait', why: `checks still running (${gate.pending.join(', ')})` };
+  if (gate.state === 'pending') return running();
   // One the base's or the default branch's copy of the workflow runs waits for the pass, which syncs the
   // base and reopens the PR so it gets a run.
   if (gate.state === 'absent' && !gate.failing.length && pr.base && cfg.stale) {
@@ -783,6 +784,12 @@ export function undraftCall(t, pr, cfg) {
     const bc = buildCall(gate, cfg, n, pr.head, t);
     if (bc) return (bc.call === 'wait' && stuck()) || bc;
   }
+  // Past the reruns and builds, which start at once, checks still running are a wait, whatever is red so
+  // far: a gate that reads the others (a review or CI gate) is red until they finish, so a fix worker or
+  // the person gets the draft only once every check has finished. Only a check with an Actions run, which
+  // stuckCall can time out, holds it: a status or app check with no run could pend forever unseen.
+  const watched = latestPerCheck(pr.checks ?? []).some((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
+  if (red && watched) return running();
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));

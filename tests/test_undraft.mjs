@@ -964,4 +964,16 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('#806 negative control: nor beside a required check that has not reported', missing?.action, 'fix or re-run the checks on #806');
 }
 
+// A red check beside checks still running is a wait on CI, not the person's or a fix worker's, as long
+// as a running check has an Actions run that stuckCall can time out.
+{
+  const ci = (checks) => rerunPr(checks, { required: ['CI gate', 'Review gate'] });
+  const live = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'Build, typecheck, lint & unit tests', status: 'in_progress', conclusion: null, runId: 32 }, { name: 'Integration tests', status: 'in_progress', conclusion: null, runId: 33 }]);
+  t('#897 a red gate beside checks still running waits on them', `${live?.call} | ${live?.why}`, 'wait | checks still running (Build, typecheck, lint & unit tests, Integration tests)');
+  const done = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'CI gate', status: 'completed', conclusion: 'success', runId: 34 }]);
+  t('#897 once every check has finished, the red one goes on as before', done?.call, 'checks');
+  const status = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'external CI', status: 'in_progress', conclusion: null, runId: null }]);
+  t('#897 one pending with no run to time out does not hold a red draft', status?.call, 'checks');
+}
+
 process.exit(fails ? 1 : 0);

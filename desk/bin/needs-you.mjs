@@ -1564,7 +1564,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? x.t.added_at);
+      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
