@@ -370,6 +370,15 @@ t('git-author blank is unset', gitAuthor(''), 'exit 3');
 t('git-author none is unset', gitAuthor('`none`'), 'exit 3');
 t('git-author with no email is refused', gitAuthor('`Ben Lavender`'), 'exit 4');
 t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 4');
+// #750: outside a configured repo `paths` refuses, but `paths --machine` prints desk's machine paths.
+{
+  const none = { ...process.env, DESK_CONFIG: '', DESK_REPO_DIR: T, DESK_REPO_ROOT: '', DESK_MACHINE: join(T, 'none.md'), HOME: T };
+  delete none.DESK_CONFIG; delete none.DESK_REPO_ROOT;
+  let code = 0; try { execFileSync('node', [BIN, 'paths'], { stdio: 'ignore', env: none }); } catch (e) { code = e.status; }
+  t('#750 paths outside a configured repo still refuses', code, 4);
+  const m = execFileSync('node', [BIN, 'paths', '--machine'], { encoding: 'utf8', env: none });
+  t('#750 paths --machine prints the machine paths there', ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR'].every((k) => m.includes(`${k}=`)) && !m.includes('DESK_REPO_ROOT='), true);
+}
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

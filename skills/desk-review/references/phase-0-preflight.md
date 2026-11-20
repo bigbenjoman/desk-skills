@@ -14,6 +14,10 @@ read committed diffs, so an uncommitted fix is never reviewed, and the round-end
 tell it from a finder's stray edit. Anything listed: stop with "commit first, then re-run". Never
 stash or discard it for the author.
 
+`/desk-ticket`'s own resume file, an untracked `.claude/desk-ticket-<TICKET>.json`, is not a change
+and is never committed: leave it out of this check (`git status --porcelain | grep -vE
+'^\?\? \.claude/desk-ticket-[^/]+\.json$'`) and of the round-end check in Phase 3.
+
 **1. Which GitHub account** (interactive; a worker skips this, since `gh auth` is denied to it and
 its `gh` is already the user's). `gh auth status --active` and read the account line. It must be §1
 GitHub handle. If it is not, stop and tell the user to switch it themselves

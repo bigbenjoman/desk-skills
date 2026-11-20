@@ -45,7 +45,8 @@
 //                                             perm-or-unset and budget prints, as shell assignments for
 //                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
-//   node desk-env.mjs paths                   print KEY=value lines for the shell
+//   node desk-env.mjs paths [--machine]       print KEY=value lines for the shell (--machine: only the ones
+//                                             no repo is needed for, DESK_SKILLS_DIR among them)
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
@@ -2155,7 +2156,10 @@ if (isMain) {
         for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
         break;
       case 'paths': {
-        const lines = Object.entries(PATHS).map(([k, f]) => [k, f()]);
+        // --machine: only the entries no repo is needed for, so a caller outside a configured repo
+        // can still find desk's own directories.
+        const keys = args[0] === '--machine' ? MACHINE_PATHS : Object.keys(PATHS);
+        const lines = keys.map((k) => [k, PATHS[k]()]);
         for (const [k, v] of lines) console.log(`${k}=${shellQuote(v)}`);
         break;
       }
