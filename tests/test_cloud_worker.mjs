@@ -3,7 +3,7 @@
 // records, the start parsed from `claude --cloud`, a real start through `script` with no terminal of
 // its own (a fake claude that prints the recording, and one that refuses the way --print does), the
 // PR a session opened, and the batch report's cloud row.
-import { mkdtempSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,7 @@ t('DS-450 AC5 at local the lever gives no reason to state', leverOnAt('local'), 
 // ---- the maintenance window counts only workers on this computer --------------
 t('a cloud session is not running here', runningHere({ state: 'running', location: 'cloud' }), false);
 t('a local worker is', runningHere({ state: 'running', location: null }), true);
+t('a review try on a cloud ticket\'s PR is', runningHere({ state: 'running', location: 'cloud', result: { pr: 9 }, fix: { kind: 'rereview' } }), true);
 
 // ---- the prompt carries the ticket (AC2) ------------------------------------
 const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', branch: 'feat/K-1-x', text: 'Fix the widget.\n\nAC1: it works', tests: ['bash tests/run.sh'] });
@@ -103,6 +104,17 @@ t('AC2 its session URL is under its row', table.some((l) => l.trim() === `cloud 
 t('DS-450 AC3 its session line shows start, model and effort, with no cost invented', table.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
 t('AC2 one with no PR yet has no wall time', (table.find((l) => l.startsWith('  K-2 ')) ?? '').includes('no PR yet'), true);
 t('AC2 the total leaves cloud workers out and says so', table.at(-2).includes('2 cloud worker(s) not counted') || table.at(-1).includes('2 cloud worker(s) not counted'), true);
+
+// A review try on a cloud ticket's PR runs here and logs here: its run is added under the cloud row.
+mkdirSync(join(S, 'logs'), { recursive: true });
+writeFileSync(join(S, 'logs', 'K-3.log'), `${JSON.stringify({ type: 'result', subtype: 'success', is_error: false, duration_ms: 60000, num_turns: 1, total_cost_usd: 2.5,
+  usage: { input_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 1 }, modelUsage: { m: { inputTokens: 100, outputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: 2.5 } } })}\n`);
+const both = ticketCost(S, { key: 'K-3', location: 'cloud', cloud: { started: since, url: 'u3', pr_at: '2026-10-28T10:40:00Z' } });
+t('a cloud ticket with a local review run counts both runs, its usage the local one\'s', `${both?.runs} ${both?.usage?.cost} ${both?.cloud?.url}`, '2 2.5 u3');
+const bothTable = costTable([both]).split('\n');
+t('its row shows the local cost and its cloud session stays under it, with no cost', (bothTable.find((l) => l.startsWith('  K-3 ')) ?? '').includes('$2.50')
+  && bothTable.some((l) => l.trim() === 'cloud session: u3') && bothTable.some((l) => l.trim() === 'session: start 0, model default, effort default: cost not reported for cloud'), true);
+t('the total counts its local run and says the cloud session is left out', bothTable.at(-1).includes('1 cloud worker(s) counted for their local review runs only'), true);
 
 rmSync(S, { recursive: true, force: true });
 console.log(fails ? `cloud worker: ${fails} failed` : 'cloud worker: all checks passed');

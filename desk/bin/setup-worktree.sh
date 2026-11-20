@@ -440,12 +440,27 @@ $stashed"
   say "branch $BRANCH was checked out in $holder, clean and level with origin — detached that worktree at ${head:0:12} to free the branch"
 }
 
+# A branch another session owns (DESK_BRANCH_FROM_ORIGIN) is brought to origin's tip in a worktree
+# that already has it, as a reader wants the head the PR is at. Fast-forward only: work there that
+# origin does not have fails setup, naming the branch, rather than be moved or lost.
+to_origin_tip(){ # to_origin_tip <worktree>
+  [ -n "${DESK_BRANCH_FROM_ORIGIN:-}" ] || return 0
+  local rc=0
+  desk_timeout "$FETCH_LIMIT" git -C "$MAIN" fetch origin --quiet || rc=$?
+  [ "$rc" -eq 0 ] || fail "git fetch origin failed ($rc), so $BRANCH could not be brought to origin's tip"
+  git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH" || return 0
+  git -C "$1" merge --ff-only --quiet "origin/$BRANCH" 2>/dev/null \
+    || fail "$BRANCH in $1 cannot fast-forward to origin/$BRANCH (it has commits origin does not) — refusing to hand out a copy behind the PR"
+  say "brought $BRANCH to origin's tip $(git -C "$1" rev-parse --short=12 HEAD)"
+}
+
 mkdir -p "$DESK_WORKTREES_DIR"
 
 if [ -d "$WT" ] && [ ! -f "$MARKER" ]; then
   say "worktree already exists at $WT — leaving its code alone"
   have_branch="$(git -C "$WT" branch --show-current 2>/dev/null || true)"
   [ "$have_branch" = "$BRANCH" ] || fail "$WT is on branch '${have_branch:-?}', not $BRANCH — refusing to hand it out for this ticket"
+  to_origin_tip "$WT"
   # ...but ALWAYS re-sync the harness rules and the agent links (a worktree created before either
   # existed has none), and re-apply the database rule, so the `database=` line below is true now.
   sync_local_settings
@@ -480,6 +495,7 @@ else
     say "branch $BRANCH already exists — checking it out into the worktree"
     free_branch
     git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
+    to_origin_tip "$WT"
   elif [ -n "${DESK_BRANCH_FROM_ORIGIN:-}" ] && git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
     # A branch another session owns (a cloud worker's), checked out as origin has it for a worker that
     # only reads it (a review try): never cut afresh from the base.
