@@ -21,6 +21,7 @@ const before = readFileSync(join(root, 'tests/fixtures/desk-ticket-before-split.
 // Round 2 reads the fix range and carries P2s, so the round-3 wording of these was rewritten.
 const REWRITTEN = [
   ['#746', 'Read the `CONFIG` file it prints, before anything else.', 1], // read through desk-env show: the rows, not the prose or the §3c ledger
+  ['#748', "when the ticket's Design section says anything other than `No UI`", 1], // the planned change decides; the section is a hint
   ['DS-368', 'The third round reads only the fix range, the commits since round 2', 1],
   ['DS-368', '"Round 3 found only P2s, so I\'ll ask whether to fix them"', 1],
   ['DS-368', 'The branch has been read whole twice by round 3', 1],

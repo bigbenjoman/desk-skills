@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed, sameStep, settleSteps } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -60,7 +60,7 @@ import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, 
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
-import { heldPutOff } from './needs-you.mjs';
+import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
@@ -80,6 +80,8 @@ import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
+import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
+import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1676,12 +1678,6 @@ const tierFor = (t) => {
   return E.modelTier({ lane: t.lane, size });
 };
 
-// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
-// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
-// default 2 / 3). The report says whose number it is.
-const CONC = batchConcurrency(fresh, E.concurrencyLimits());
-const concurrency = CONC.n;
-
 // Memory gate. Weighing only budget and concurrency would leave the whole memory ladder resting on
 // the orchestrator remembering to apply it between passes — and its context is deliberately flat,
 // so it forgets, and a session restart forgets for certain. Gate on "room to
@@ -1696,6 +1692,11 @@ const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
+// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
+// default 2 / 3). The report says whose number it is, and whether memory lowered it.
+const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
+const concurrency = CONC.n;
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
 // test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
 // and none resumes into a stage that runs suites, since each would only join the queue. Every other
@@ -3558,6 +3559,102 @@ if (Object.values(qNow.tickets).some(gatedFollow)) {
   const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
   if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
 }
+
+// ---- follow steps ----------------------------------------------------------
+// The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
+// desk's logs or desk's state go to a follow-step checker (follow-steps.mjs), and what it found is
+// recorded on the ticket (follow_checks), for its PR. A step it passed is settled as needs-you's done
+// settles one, in the same write, and the PR is told under §3 pr-self-review-comment; one it failed
+// stays, and needs-you lists it with what it found; one still pending is checked again later. A run is
+// still the same run only while its process carries the run's id. The checker reads this repo's state
+// and queue directories, never another repo's. Its lines go in this section's `out`, as the report's
+// lists were printed before it.
+const followAlive = (run) => {
+  if (!run?.pid || !run.id) return false;
+  const r = shOut('ps', ['-o', 'args=', '-p', String(run.pid)]);
+  return r.ok && r.out.includes(run.id);
+};
+const followDirs = [...new Set([STATE, E.repoStateOf(STATE), dirname(QUEUE_FILE)])];
+const FOLLOW_HANDLERS = {
+  ...PHASE_HANDLERS,
+  start: (a) => {
+    const t = queue().tickets[a.key];
+    const n = t.result?.pr;
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would start a follow-step checker on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge`); return; }
+    const run = startFollow({ state: STATE, slug: E.repoSlug(), repo: GH_REPO, bin: BIN, t, steps: a.steps, dirs: followDirs, cwd: MAIN });
+    if (run.wait) { out.push(`${a.key} follow steps: no checker started yet, ${run.wait}; the next pass tries again`); return; }
+    q('set', a.key, `follow_run=${JSON.stringify(run)}`);
+    out.push(`${a.key} follow steps: a follow-step checker started (pid ${run.pid}${run.login ? `, login ${run.login}` : ''}) on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge; its output is ${run.out}`);
+  },
+  stop: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would stop its follow-step checker, past ${FOLLOW_MINUTES} minutes`); return; }
+    try { process.kill(a.run.pid); } catch { /* it ended meanwhile: the next pass reads it */ }
+    out.push(`${a.key} follow steps: its follow-step checker ran past ${FOLLOW_MINUTES} minutes and was stopped; the next pass records its steps as failed`);
+  },
+  harvest: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would record what its follow-step checker found`); return; }
+    const t = queue().tickets[a.key];
+    const r = readFollow(a.run.out, a.run.steps);
+    if (r.limit) {
+      q('set', a.key, 'follow_run=null');
+      out.push(`${a.key} follow steps: its follow-step checker stopped at the usage limit, so nothing was recorded; a later pass starts another`);
+      return;
+    }
+    const at = new Date().toISOString();
+    const n = t.result?.pr;
+    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) }));
+    const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c) && String(c.pr ?? '') === String(n ?? '')));
+    // The record and the settling of what passed are one write (queue-writer.mjs, as harvest.mjs
+    // settleSteps settles them for needs-you's done), made only while the run and the steps are as read,
+    // or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+    // Refused or skipped, follow_run stays, and the next pass reads the run again.
+    const { left, fields } = settleSteps(t.follow_on, found.filter((c) => c.result === 'pass'), at);
+    const stateOf = (x) => JSON.stringify([x.follow_run?.id ?? null, x.follow_on ?? null, x.follow_on_done ?? null]);
+    const after = fields.length ? { follow_on: left.length ? left : t.follow_on, follow_on_done: left.length ? t.follow_on_done : at } : t;
+    const ok = [stateOf(t), stateOf({ ...after, follow_run: null })];
+    const args = ['set', a.key, 'follow_run=null', `follow_checks=${JSON.stringify([...kept, ...found])}`, ...fields];
+    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
+    const f = w.ok && !w.skipped ? flushQueue() : null;
+    if (!f?.ok || f.skipped.includes(a.key)) {
+      if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+      out.push(`${a.key} follow steps: what its follow-step checker found was not recorded (${f && !f.ok ? 'the queue write was refused' : 'the ticket changed since it was read'}); the next pass reads it again`);
+      return;
+    }
+    const count = (k) => found.filter((c) => c.result === k).length;
+    const done = found.filter((c) => c.result !== 'pending');
+    let told = '';
+    if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
+    else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
+    else {
+      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done)]);
+      told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
+    }
+    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${told}`);
+  },
+};
+const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
+// The keys of queue `qx`'s tickets whose code is out, to when it went out, in ms.
+const followOut = (qx) => new Map(Object.values(qx.tickets).map((t) => [t.key, Date.parse(outAt(qx, t) ?? '')]).filter(([, at]) => Number.isFinite(at)));
+const followActs = runPhase({
+  name: 'follow steps',
+  snapshot: () => {
+    const qx = queue();
+    const tickets = qx.tickets;
+    return {
+      tickets, now: Date.now(), labels: E.personStepLabels(),
+      out: followOut(qx),
+      // Each gate a ticket's runnable steps wait on (production's never runs), as needs-you judges it.
+      held: new Set(Object.values(tickets).filter((t) => followOnPending(t) && outAt(qx, t)).flatMap((t) => ['merge', 'main']
+        .filter((g) => t.follow_on.some((s) => (s.after ?? 'merge') === g && followGateHeld(E.repoSlug(), qx, t, s))).map((g) => `${t.key}:${g}`))),
+      alive: new Set(Object.values(tickets).filter((t) => followAlive(t.follow_run)).map((t) => t.key)),
+    };
+  },
+  decide: decideFollowSteps, handlers: FOLLOW_HANDLERS, report,
+});
+// A checker running, owed and not yet started, or due again for a step it found pending, keeps the
+// batch from idling, so a pass reads it.
+const followPending = followActs.some((a) => a.type === 'start')
+  || followAwaits({ tickets: queue().tickets, labels: E.personStepLabels(), out: followOut(queue()), now: Date.now() });
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));
@@ -4681,7 +4778,7 @@ if (!DRY) {
 const qEnd = queue();
 const verdictSnap = {
   ...baseSnapshot(), tickets: qEnd.tickets, queue: qEnd, report, blocked, putOff: new Set(Object.values(qEnd.tickets).filter(putOff).map((t) => t.key)),
-  parkNotes, prStates, gatePending, epicPending, promotionPending, spawned: report.spawned.length,
+  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, spawned: report.spawned.length,
 };
 const { waiting, parked, idle, status } = verdictOf(verdictSnap);
 const lines = [];

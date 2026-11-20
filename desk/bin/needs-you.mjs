@@ -87,6 +87,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
@@ -106,6 +107,7 @@ import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } fro
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
 import { followOnPending, postMergeOwed } from './harvest.mjs';
+import { followKind, checkOf, settled, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
@@ -845,8 +847,10 @@ function stepItem(key, ws) {
 
 // ---- follow-on steps: what a ticket left for after its PR merges (pass.mjs follow_on) -------------
 // Once the PR has merged, its steps are one item, `follow:<KEY>`, each with the §3 row it names and
-// that row's value: nothing of desk's runs a step after the merge, so each is the person's. Done
-// records them settled (follow_on_done) and the item leaves the list.
+// that row's value. A step that only reads CI, desk's logs or desk's state is a follow-step checker's
+// (follow-steps.mjs), which the pass starts: it is held off the list while one runs or is still to,
+// gone once one passed it, and listed with what it found once one failed it. Every other step is the
+// person's. Done records them settled (follow_on_done) and the item leaves the list.
 const FOLLOW = 'follow:';
 // A child of a feature or epic batch merged into the base, not the default branch: its code is out once
 // a promotion PR merged after it, as the pass records each (promotion.merged, merged_at, since) or the
@@ -854,7 +858,7 @@ const FOLLOW = 'follow:';
 // then. A batch with a base desk opens no promotion PR for, and a ticket carried in from an earlier
 // batch, are judged by the ticket's own merge.
 const viaBase = (q, t) => !t.promoted_at && (q?.feature === true || epicBatch(q)) && !!q.base && !('carried_from' in t);
-function outAt(q, t) {
+export function outAt(q, t) {
   if (t.promoted_at) return t.promoted_at;
   return viaBase(q, t) ? promotedAt(q, t) : t.merged_at;
 }
@@ -932,12 +936,29 @@ function gateHeld(r, t, s) {
   const at = entry ? Date.parse(git(['log', '-1', '--format=%cI', entry]) ?? '') : NaN;
   return { held: true, note: null, on: 'production', ...(Number.isFinite(at) ? { at } : {}) };
 }
-// A ticket's steps split by their gates: `ready` listed now (each with its note), `waiting` not yet.
-function followSplit(r, t) {
+// Whether step `s` of ticket `t` in queue `q` of repo `slug` has its gate held, for the pass's follow-step
+// checker (pass/follow-steps.mjs), which runs a step only once needs-you would list it.
+export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).held;
+// A ticket's steps split by their gates: `ready` listed now (each with its note, `checked` where it is a
+// checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
+// checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
+// to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
+function followSplit(r, t, now = Date.now()) {
   const ready = [], waiting = [];
+  const labels = personStepLabels(r.slug);
+  const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
+  const running = !!t.follow_run && now - Date.parse(t.follow_run.started) < FOLLOW_TIMEOUT_MS;
   for (const s of t.follow_on) {
+    const c = checkOf(t, s);
+    if (c?.result === 'pass') continue;
     const g = gateHeld(r, t, s);
-    if (g.held) ready.push({ s, note: g.note, on: g.on, at: g.at }); else waiting.push(s);
+    if (!g.held) { waiting.push(s); continue; }
+    // A step a checker ran stays its own, whatever the labels read now.
+    const checked = settled(c) || followKind(s, labels) === 'runnable';
+    const runnable = checked && !settled(c);
+    if (runnable && (running || !waited)) continue;
+    const note = runnable ? [g.note, 'no follow-step checker has passed or failed it yet'].filter(Boolean).join('; ') : g.note;
+    ready.push({ s, note, on: g.on, at: g.at, checked, ...(settled(c) ? { failed: c } : {}) });
   }
   return { ready, waiting };
 }
@@ -950,13 +971,20 @@ const gateOf = (s) => s?.after ?? 'merge';
 const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // A ticket's ready steps are one item per gate: `follow:<KEY>` for the merge's, `follow:<KEY>:<gate>` for
 // the others. Steps sharing a gate open together, so done records only the steps its item showed, and a
-// gate that opens after the list was read is a new item rather than one taken as run unseen.
+// gate that opens after the list was read is a new item rather than one taken as run unseen. A checker's
+// step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
+// result comes in on its own time, and would otherwise join an item the person was already shown.
+const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
 function followItems(r) {
   return followsOf(r).flatMap((t) => {
     const { ready, waiting } = followSplit(r, t);
-    return GATES.filter((g) => ready.some((x) => gateOf(x.s) === g)).map((g, i) => ({
-      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}` },
-      item: followItem(r, t, { gate: g, ready: ready.filter((x) => gateOf(x.s) === g), waiting: i === 0 ? waiting : [] }),
+    const groups = GATES.flatMap((g) => {
+      const here = ready.filter((x) => gateOf(x.s) === g);
+      return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
+    }).filter((x) => x.ready.length);
+    return groups.map(({ g, id, ready: shown }, i) => ({
+      r, t: { key: `${FOLLOW}${t.key}${g === 'merge' ? '' : `:${g}`}${id ? `:checked:${id}` : ''}` },
+      item: followItem(r, t, { gate: g, ready: shown, waiting: i === 0 ? waiting : [] }),
     }));
   });
 }
@@ -971,9 +999,11 @@ function followItem(r, t, { gate, ready, waiting }) {
     return ` (§3 ${row} is "${v}")`;
   };
   // A step's own closing period gives way to the line's; any other last character (a command's `.`) is kept.
-  const checks = ready.map(({ s }) => {
+  const stop = (x) => `${x}${x.endsWith('.') ? '' : '.'}`;
+  const checks = ready.map(({ s, failed }) => {
     const said = `${reviewStep(one(s.step)).trim().replace(/([^\s.])\.$/, '$1')}${rowSaid(s.row)}`;
-    return ` Check: ${said}${said.endsWith('.') ? '' : '.'}`;
+    const ran = failed ? ` A follow-step checker ran it and it failed: ${one(failed.found).replace(/\.$/, '')} (evidence: ${one(failed.evidence)}).` : '';
+    return ` Check: ${stop(said)}${ran}`;
   }).join('');
   const notes = [...new Set(ready.map((x) => x.note).filter(Boolean))].map((x) => ` ${capital(x)}.`).join('');
   const n = ready.length;
