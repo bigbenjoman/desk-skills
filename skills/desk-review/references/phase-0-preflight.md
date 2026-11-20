@@ -15,8 +15,10 @@ tell it from a finder's stray edit. Anything listed: stop with "commit first, th
 stash or discard it for the author.
 
 `/desk-ticket`'s own resume file, an untracked `.claude/desk-ticket-<TICKET>.json`, is not a change
-and is never committed: leave it out of this check (`git status --porcelain | grep -vE
-'^\?\? \.claude/desk-ticket-[^/]+\.json$'`) and of the round-end check in Phase 3.
+and is never committed: leave it out of this check and of the round-end check in Phase 3. List
+untracked files one by one, since plain `--porcelain` shows an untracked `.claude/` as the directory:
+`git status --porcelain --untracked-files=all | grep -vE '^\?\? \.claude/desk-ticket-[^/]+\.json$'`
+must print nothing.
 
 **1. Which GitHub account** (interactive; a worker skips this, since `gh auth` is denied to it and
 its `gh` is already the user's). `gh auth status --active` and read the account line. It must be §1
