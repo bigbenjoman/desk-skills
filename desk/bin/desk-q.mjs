@@ -2868,6 +2868,19 @@ const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
 const PUT_OFF = 'putoff';
 // TITLE for a Needs you item that is not a ticket row, by its kind; any other kind shows as itself.
 const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
+// A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
+// with where its ticket is, which the TICKET column already names, so WHAT IT NEEDS starts at its
+// first check. In a repo of several batches, TITLE names the item's batch.
+const itemRowOf = (r, k, { now, nw, tw }) => ({ r: b, t, item }) => {
+  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
+  const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
+  const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
+  return segRow(null, [
+    [`  ${rpad('-', 4)}  ${pad(cut(t.key.replace(/^follow:/, ''), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    ...fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
+    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
+  ], null);
+};
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
@@ -2877,7 +2890,16 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
-  if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
+  if (!r.q) {
+    const setUp = `${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`;
+    // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
+    const nc = needsCount(r), nw = NEED_W, tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
+    const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
+    if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
+    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
+    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
+      rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
+  }
   const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   // A repo of several batches dates and words each row by its own batch, `x.b`.
@@ -2924,11 +2946,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   // Needs you row too, so the count above never names more than the table shows.
   // A put-off item goes under Put off, grey, as a put-off ticket row does.
   const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
-  const itemRow = (k) => ({ t, item }) => segRow(null, [
-    [`  ${rpad('-', 4)}  ${pad(cut(t.key.replace(/^follow:/, ''), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
-    ...fitSegs([[String(item.need ?? '').replace(/\s+/g, ' ').trim(), k === PUT_OFF ? GREY : null]], nw - 2, nw),
-    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(ITEM_TITLE[item.kind] ?? item.kind ?? '', tw)}`, null],
-  ], null);
+  const itemRow = (k) => itemRowOf(r, k, { now, nw, tw });
   const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);

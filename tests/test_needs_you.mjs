@@ -2036,7 +2036,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
-// DS-934: every item desk-q counts has a Queue row, even when every ticket is done.
+// Every item desk-q counts has a Queue row, even when every ticket is done.
 {
   const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
   put('phi934', { port: 4410, beat: 1, supervised: true, merge: 'yes', tickets: {
@@ -2044,7 +2044,7 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   } });
   const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
   t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
-    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +P-1 is on main since/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
   N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
   t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
     `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
@@ -3219,6 +3219,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 the list shows it', cli('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
   const standing = loadRepos(Date.now(), 'ask811').find((r) => r.slug === 'acme__ask811' && r.batch == null);
   t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
+  const askScreen = strip(repoScreen(standing));
+  t('DS-934 with no batch, the repo Queue has a row for each ask, not "Nothing to show"',
+    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
   const { shownRepos } = await import('../desk/bin/desk-q.mjs');
   t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
   t('#811 left counts them', cli('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
