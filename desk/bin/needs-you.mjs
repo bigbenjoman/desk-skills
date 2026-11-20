@@ -2210,7 +2210,8 @@ const isMain = (() => {
 })();
 if (isMain) {
   const { code, out, err } = run(process.argv.slice(2));
-  process.stdout.write(out);
-  process.stderr.write(err);
+  // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
+  if (out) console.log(out.replace(/\n$/, ''));
+  if (err) console.error(err.replace(/\n$/, ''));
   process.exitCode = code;
 }
