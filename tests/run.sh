@@ -31,7 +31,7 @@ if [ $jset = 0 ]; then
     jobs=$((cores / 4)); [ "$jobs" -ge 1 ] || jobs=1 ;;
   esac
 fi
-case "$jobs" in ''|*[!0-9]*) jobs=0 ;; esac
+case "$jobs" in ''|*[!0-9]*) jobs=0 ;; *) jobs=$((10#$jobs)) ;; esac
 [ "$jobs" -ge 1 ] || { echo "-j wants how many suites run at once, a whole number from 1"; exit 2; }
 T="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=suite_env.sh

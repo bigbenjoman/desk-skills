@@ -61,6 +61,10 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   check "AC2 $at no desk-env on PATH: $quarter at once ($cores cores)" '[ $rc -eq 0 ] && [ "$(jobs_of)" = "$quarter" ]'
   out=$(CAP='' PATH="$STUB:$PATH" "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
   check "AC2 $at test-cap unset: $quarter at once" '[ $rc -eq 0 ] && [ "$(jobs_of)" = "$quarter" ]'
+  # A leading zero is decimal, as the scheduler's test comparisons read it, never octal.
+  out=$(CAP=08 PATH="$STUB:$PATH" "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
+  check "AC1 $at test-cap 08 runs and records 8 at once" \
+    '[ $rc -eq 0 ] && printf "%s" "$out" | grep -q "^up to 8 suites at once$" && [ "$(jobs_of)" = 8 ]'
 
   # AC3: -j 1 runs one at a time in name order, whatever the recorded durations.
   export LOG="$T/log1-$v"; : > "$LOG"
