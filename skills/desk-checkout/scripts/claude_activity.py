@@ -269,7 +269,7 @@ def main():
     ap.add_argument("--prompt-chars", type=int, default=280)
     ap.add_argument("--max-prompts", type=int, default=8)
     args = ap.parse_args()
-    since, until = window.resolve(args.day)
+    since, until = window.resolve(args.day, since=args.since)
     REPOS, CURRENT = desk_repos.load_all(args.include)
     SIDE_ROOTS = desk_repos.side_roots()
     TICKET_RES = [r.ticket_regex for r in REPOS if r.scope == "this" and r.ticket_regex]

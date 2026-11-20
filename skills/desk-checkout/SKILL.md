@@ -50,6 +50,15 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
+**A second check-out of the same day starts where the first ended.** Step 2 reads the
+destination back (the channel's, or the file's, previous check-out). If one that covered this same
+day (its header or date names it) was posted during it, run the collectors again with `--since <the
+time it was posted>`: their window then starts there, and their headers say `from HH:MM`. A
+check-out for an earlier day, even one posted this morning, leaves the window whole, and a draft
+never sent posted nothing, so it moves nothing.
+Where the destination cannot be read back (no connector, no permission, or `none`), cover the whole
+day and say so. Say the window in your one line.
+
 ## 2. Gather
 
 Run the three collectors in one Bash call, from inside the repo (they use its config to decide
@@ -179,6 +188,8 @@ short version:
 - Only say what the sources support. Where you inferred a status or a cause, don't hedge
   inside the post. Put the claim in the checklist below instead.
 - Stay as long as the day warrants. A quiet day is five lines, and that's fine.
+- Leave out what the previous check-out already said, unless its state has moved since (a PR it
+  called in review that has merged is news; the same merge again is not).
 
 ## 5. Hand over
 
