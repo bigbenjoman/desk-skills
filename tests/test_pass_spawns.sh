@@ -1432,4 +1432,54 @@ check "KAN-629 its cells filled, the next pass takes it out of draft with no sec
 rm -f "$T/upload-fills"
 for k in 1 2 3 4 5; do q set "K-$k" state=done session_id=null; dragbody "78$k" "no cell"; done
 
+# DS-798: a merged ticket's follow step that only reads CI goes to a follow-step checker the pass starts,
+# and the next pass records what it found, settles a step it passed and says so on the PR. The checker is
+# the claude stub answering a prompt that opens as a follow-step checker's: FS-2's step fails, any other passes.
+node -e 'const fs = require("fs"); const [src, dst] = process.argv.slice(1); fs.writeFileSync(dst, fs.readFileSync(src, "utf8").replace(/^(\| `pr-images` .*)$/m, "$1\n| `pr-self-review-comment` | Post the review | `yes` | `yes` |"))' "$T/config.md" "$T/config-fs.md"
+cp "$T/stub/claude" "$T/claude-before-fs"
+cat > "$T/stub/claude" <<EOF
+#!/bin/sh
+case "\$1 \$2" in
+  "-p You are the autopilot follow-step checker for "*)
+    echo started >> "$T/follow-prompts"
+    case "\$2" in *"FS-2's PR"*) r=fail ;; *) r=pass ;; esac
+    $NODE -e 'console.log(JSON.stringify({ type: "result", total_cost_usd: 0.03, result: "FOLLOW_RESULT: " + JSON.stringify({ steps: [{ n: 0, result: process.argv[1], found: process.argv[1] === "pass" ? "run 9 is green" : "run 9 failed lint", evidence: "https://github.com/acme/widgets/actions/runs/9" }] }) }))' "\$r"
+    exit 0 ;;
+esac
+exec "$T/claude-before-fs" "\$@"
+EOF
+chmod +x "$T/stub/claude"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr list "*) echo '[]' ;;
+  "pr comment "*) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T/stub/gh"
+CI_STEP='{"step":"the CI run on main for the merge commit is green","row":null}'
+PAGE_STEP='{"step":"check the page loads","row":null}'
+fs_merged(){ q add "$1"; q set "$1" state=done result.pr="$2" merged_at=2026-11-20T09:00:00Z "pr_status={\"pr\":$2,\"state\":\"MERGED\",\"merged_at\":\"2026-11-20T09:00:00Z\",\"checks\":[]}" "$3"; }
+q init fs
+fs_merged FS-1 801 "follow_on=[$CI_STEP,$PAGE_STEP]"
+fs_merged FS-2 802 "follow_on=[$CI_STEP]"
+fs_merged FS-3 803 "follow_on=[$PAGE_STEP]"
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+check "DS-798 AC1 once the merge is recorded, the pass starts a follow-step checker on each ticket's step that only reads CI" \
+  'echo "$out" | grep -qF "FS-1 follow steps: a follow-step checker started" && [ "$(field FS-1 follow_run.steps | jq -c "[.[].step]")" = "[\"the CI run on main for the merge commit is green\"]" ] && [ "$(field FS-2 follow_run.steps | jq length)" = 1 ]'
+check "DS-798 AC4 a ticket with no step a checker can run gets none" '[ "$(field FS-3 follow_run)" = null ] && ! echo "$out" | grep -qF "FS-3 follow steps"'
+for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ "$(grep -l FOLLOW_RESULT "$DESK_AUTOPILOT_STATE"/follow/FS-*.json 2>/dev/null | grep -vc settings)" -ge 2 ] && break; sleep 0.2; done
+: > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" 2>&1)
+check "DS-798 AC1 the next pass records the step it passed and settles it, leaving the person's step" \
+  '[ "$(field FS-1 follow_run)" = null ] && [ "$(field FS-1 follow_checks | jq -c "[.[] | [.result, .evidence, .pr]]")" = "[[\"pass\",\"https://github.com/acme/widgets/actions/runs/9\",801]]" ] && [ "$(field FS-1 follow_on)" = "[$PAGE_STEP]" ]'
+check "DS-798 AC1 and says what it found on the ticket's PR" \
+  'grep -q "^pr comment 801 --repo acme/widgets --body A desk follow-step checker ran the step FS-1 left" "$T/gh-calls" && echo "$out" | grep -qF "FS-1 follow steps: its follow-step checker passed 1 and failed 0; said on PR #801"'
+check "DS-798 AC2 a step it failed is recorded with what it found and the run URL, and stays a follow step" \
+  '[ "$(field FS-2 follow_checks | jq -c "[.[] | [.result, .found]]")" = "[[\"fail\",\"run 9 failed lint\"]]" ] && [ "$(field FS-2 follow_on | jq length)" = 1 ] && [ "$(field FS-2 follow_on_done)" = null ] && echo "$out" | grep -qF "FS-2 follow steps: its follow-step checker passed 0 and failed 1, each listed in needs-you"'
+check "DS-798 a step a checker ran is not run again" \
+  ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
+cp "$T/claude-before-fs" "$T/stub/claude"
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
