@@ -125,12 +125,20 @@ print(json.dumps({
   'yesterday_hhmm': hm(window.resolve('yesterday', tue(18), since='12:30')),
   'utc_z': hm(window.resolve('today', tue(18), since=tue(16, 5).astimezone().astimezone(__import__('datetime').timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))),
   'none_upper': hm(window.resolve('today', tue(18), since='NONE')),
-  'label': window.label(window.resolve('today', tue(18), since='12:30')[0])}))`);
+  'label': window.label(window.resolve('today', tue(18), since='12:30')[0]),
+  'evening': hm(window.resolve('today', tue(18), since=datetime(2026, 10, 26, 22, 3).astimezone().isoformat(), since_for='2026-10-26')),
+  'evening_label': window.label(*window.resolve('today', tue(18), since=datetime(2026, 10, 26, 22, 3).astimezone().isoformat(), since_for='2026-10-26')),
+  'next_morning': hm(window.resolve('today', tue(18), since=tue(9).astimezone().isoformat(), since_for='2026-10-26')),
+  'after_day': hm(window.resolve('yesterday', tue(18), since=tue(9).astimezone().isoformat()))}))`);
 t('#814 with no previous check-out, the window is the whole day', since?.whole, '2026-10-27 00:00');
 t('#814 --since none covers the whole day', since?.none, '2026-10-27 00:00');
 t('#814 --since takes HH:MM on the day', since?.hhmm, '2026-10-27 15:45');
 t('#814 --since takes an ISO timestamp', since?.iso, '2026-10-27 16:05');
-t('#814 a check-out posted on another day leaves the window whole', since?.other_day, '2026-10-27 00:00');
+t('#1008 a check-out posted the evening before moves the window back to it', since?.other_day, '2026-10-26 17:00');
+t('#1008 so a merge between that post and midnight is in it', since?.evening, '2026-10-26 22:03');
+t('#1008 the label names the evening it starts from', since?.evening_label, 'Tuesday 27 October 2026, from Monday 26 October 22:03 (the previous check-out)');
+t('#1008 one written the next morning for its own day covered only that day: the window starts at midnight', since?.next_morning, '2026-10-27 00:00');
+t('#1008 a post after the day covered leaves that day whole', since?.after_day, '2026-10-26 00:00');
 t('#814 a time not yet past leaves it whole', since?.later_than_now, '2026-10-27 00:00');
 t('#814 HH:MM is on the day covered, not today', since?.yesterday_hhmm, '2026-10-26 12:30');
 t('#814 a UTC timestamp ending in Z (as an API gives it) is read, not refused', since?.utc_z, '2026-10-27 16:05');
@@ -289,8 +297,8 @@ has('#819 each PR\'s state is read again when its line is written', skill, '**Re
 has('#818 the hand-over saves it with slack_send_message_draft', skill, '`slack_send_message_draft`');
 has('#818 by default, not as an offer', skill, 'the default, not something to offer');
 has('#818 a private channel is found too', skill, '`channel_types` `public_channel,private_channel`');
-has('#814 only a check-out that covered the same day moves the window', skill, 'If one that covered this same\nday (its header or date names it) was posted during it');
-has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
+has('#1008 the window starts where the previous check-out ended, the evening before included', skill, 'their window then starts where that check-out stopped, the evening before\nincluded, so nothing posted between it and midnight drops out');
+has('#1008 the collectors are given when it was posted and the day it covered', skill, '`--since <the time it\nwas posted, as an ISO timestamp>` and `--since-for <the day it covered, YYYY-MM-DD, as its header or\ndate names it>`');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
