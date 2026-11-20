@@ -1,7 +1,7 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -2495,6 +2495,23 @@ try {
 } finally {
   fsCjs.readFileSync = realReadFileSync;
   syncBuiltinESMExports();
+}
+
+// ---- #912: a triage running for a ticket in no queue yet is said on the row and the repo's screen
+{
+  const tw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    sv: { port: 3100, conc: '2 / 3', beat: 1, queue: { batch: 'sv', concurrency: 2, tickets: { 'SV-0': { state: 'triaged', open_questions: 0 } } } } });
+  const dir = join(tw.env.HOME, '.desk-autopilot', 'acme__sv', 'triage');
+  mkdirSync(dir, { recursive: true });
+  for (const k of ['SV-2', 'SV-1', 'SV-0', 'SV-9']) writeFileSync(join(dir, `${k}.log`), '{}\n');
+  const old = (NOW - 10 * 60000) / 1000;
+  utimesSync(join(dir, 'SV-9.log'), old, old);
+  const row = rowOf(tw.run('--plain').out, 'sv') ?? '';
+  t('#912 the row names the tickets triaging, not one already queued nor a triage that ended', row.endsWith(' · triaging SV-1, SV-2'), true);
+  t('#912 the repo screen says so beside its workers', lines(tw.run('--plain', 'sv').out).some((l) => /workers 0 of 2 · cap \d+ .*· triaging SV-1, SV-2/.test(l)), true);
+  const { triagingKeys } = await import('../desk/bin/desk-q.mjs');
+  t('#912 more than three are cut to three and a count', (() => { for (const k of ['SV-3', 'SV-4']) writeFileSync(join(dir, `${k}.log`), '{}\n'); return rowOf(tw.run('--plain').out, 'sv')?.endsWith(' · triaging SV-1, SV-2, SV-3 +1'); })(), true);
+  t('#912 a batch with no triage folder has none', triagingKeys(join(tw.T, 'nowhere'), null).length, 0);
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');

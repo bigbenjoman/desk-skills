@@ -29,7 +29,7 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
-import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
@@ -616,6 +616,25 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
+// The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
+// writes <state>/triage/<KEY>.log as it runs, and a ticket in no queue yet is not admitted. A log
+// untouched for TRIAGE_LIVE_MS is a triage that ended. Sorted keys, [] with none.
+export const TRIAGE_LIVE_MS = 5 * 60 * 1000;
+export function triagingKeys(stateDir, q, now = Date.now()) {
+  const dir = join(stateDir, 'triage');
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => n.endsWith('.log')).map((n) => n.slice(0, -4)).filter((k) => {
+    if (q?.tickets?.[k]) return false;
+    try { return now - statSync(join(dir, `${k}.log`)).mtimeMs < TRIAGE_LIVE_MS; } catch { return false; }
+  }).sort();
+}
+// "triaging A-1, A-2", the first three and how many more, or '' with none.
+const triagingText = (r) => {
+  const ks = r.triaging ?? [];
+  return ks.length ? `triaging ${ks.slice(0, 3).join(', ')}${ks.length > 3 ? ` +${ks.length - 3}` : ''}` : '';
+};
+
 function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
@@ -737,6 +756,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.prs = rows.filter(prRow).map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: null, pr: true, st: rowStage(stateDir, t, r.last) }));
   r.done = rows.length - r.rows.length - r.prs.length;
   r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
+  r.triaging = triagingKeys(stateDir, r.q, now);
   r.run = r.q ? whoRuns(r) : null;
   r.stall = r.q ? stallOf(r, now) : null;
   return r;
@@ -910,6 +930,7 @@ export function repoRow(bs) {
   return { ...lead, name: lead.repo, word: lead.repo, id: lead.slug, batch: null, batches: ok,
     unreadable: ok.length ? bs.filter((b) => b.error) : [], error: ok.length ? null : lead.error,
     rows: ok.flatMap((b) => tag(b, b.rows)), prs: ok.flatMap((b) => tag(b, b.prs)), done: ok.reduce((a, b) => a + b.done, 0),
+    triaging: [...new Set(ok.flatMap((b) => b.triaging ?? []))].sort(),
     workers: Math.min(lead.cap, ok.reduce((a, b) => a + (b.workers ?? 0), 0)) };
 }
 // A merged row's batch whose queue cannot be read, said where its tickets would have been.
@@ -2485,7 +2506,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] },
@@ -2564,6 +2585,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       notes.push({ tag: `▸ ${r.name}`, sgr: STATE_SGR.merging, text: [[`${m} PR${m === 1 ? '' : 's'} merging. Its screen lists ${m === 1 ? 'it' : 'them'}.`, null]] });
     }
   }
+  if (!lay.slot) for (const r of ok.filter((x) => triagingText(x))) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${capital(triagingText(r))}: the batch admits ${r.triaging.length === 1 ? 'it' : 'them'} once triage finishes.`, null]] });
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
   const you = [...needs.values()].reduce((a, y) => a + y.shown, 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
@@ -2620,6 +2642,7 @@ function passHead(r, now) {
   const line = segLine([[on ? cell.split(' · ')[0] : cell, sgr], ['  ', null], ...last, BAR,
     ['workers ', GREY], [`${workersRunning(r)} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD],
     ...(r.machine?.cap == null ? [] : [[' · machine ', GREY], [`${r.machine.running} of ${r.machine.cap}`, r.machine.running >= r.machine.cap ? WARN : BOLD]]),
+    ...(triagingText(r) ? [[' · ', GREY], [triagingText(r), null]] : []),
     ...(r.batches?.length > 1 ? [] : [BAR, [`batch ${r.q.batch ?? '-'}`, GREY]])]);
   if (on) return [line];
   const log = r.run?.agent === 'loaded' ? supervisorLogLine(r) : null;
