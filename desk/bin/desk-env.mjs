@@ -547,24 +547,24 @@ export function unansweredRows(path) {
 // (`` `ABC` (not `parent`) `` is one item, ABC). With no spans, the whole cell is the one item.
 export function cellItems(raw) {
   // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
-  // copied into a value, the doubled backticks are display only.
-  const cell = raw.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
-  const spans = [...stripTrailingNote(cell).matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
-  return spans.length ? spans : [cell];
+  // copied into a value, the doubled backticks are display only. The note goes before they do, since
+  // a note may hold longer runs they are part of. A cell has one trailing note, so a parenthesis before
+  // it is value text (`` `A` (CI: `B`) (note) `` is A and B): only where none trailed the cell is one
+  // looked for again after, a note inside that display form.
+  const undoubled = (s) => s.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
+  const whole = raw.trim();
+  const noted = stripTrailingNote(whole);
+  const cell = noted === whole ? stripTrailingNote(undoubled(whole)) : undoubled(noted);
+  const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
+  return spans.length ? spans : [undoubled(raw)];
 }
 
 // The cell less a trailing `(…)` note, found by walking back from the closing paren to its match.
-// Parens inside backtick spans are value text (a regex like `(-FIX)?`), so they are skipped. A
+// Parens inside code spans are value text (a regex like `(-FIX)?`), so they are skipped. A
 // cell that is only a note, or whose last paren never opens, is returned whole.
-// A code span, read as CommonMark does: a run of backticks closes only on a run of its own length, and
-// a run with no partner is left as text. evidence.mjs reads PR bodies with it too.
-export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
-
 function stripTrailingNote(cell) {
   if (!cell.endsWith(')')) return cell;
-  // Which characters sit inside a code span, so a note quoting ``` or ```` stays in step.
-  const inSpan = new Array(cell.length).fill(false);
-  for (const m of cell.matchAll(CODE_SPAN)) for (let k = m.index; k < m.index + m[0].length; k++) inSpan[k] = true;
+  const inSpan = codeSpanMask(cell);
   let depth = 0;
   for (let i = cell.length - 1; i >= 0; i--) {
     if (inSpan[i]) continue;
@@ -573,6 +573,18 @@ function stripTrailingNote(cell) {
     else if (c === '(' && --depth === 0) return cell.slice(0, i).trim() ? cell.slice(0, i) : cell;
   }
   return cell;
+}
+
+// A code span as CommonMark reads one: a run of N backticks opens a span that closes at the next run of
+// exactly N on its line, so ```` ```x ```` is one span; a run never closed is text. evidence.mjs reads
+// a PR body's spans by it too.
+export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+
+// Which characters sit inside a code span.
+function codeSpanMask(s) {
+  const mask = new Array(s.length).fill(false);
+  for (const m of s.matchAll(CODE_SPAN)) mask.fill(true, m.index, m.index + m[0].length);
+  return mask;
 }
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
@@ -2287,7 +2299,12 @@ if (isMain) {
         break;
       case 'ids':
         for (const [id, key] of Object.entries(PERMISSION_KEYS)) console.log(`perm ${id} -> §3 ${key} = ${permission(id)}`);
-        for (const [id, r] of Object.entries(CONFIG_ROWS)) console.log(`get  ${id} -> §${r.section} "${r.row}" = ${configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        for (const [id, r] of Object.entries(CONFIG_ROWS)) {
+          // A row `list` refuses is not set, whatever its first item reads as through `get`.
+          let refused = null;
+          try { configValues(id); } catch (e) { if (!(e instanceof DeskConfigError)) throw e; refused = e.message; }
+          console.log(`get  ${id} -> §${r.section} "${r.row}" = ${refused ? `(not readable: ${refused})` : configValue(id)?.replaceAll('\n', ' · ') ?? '(unset)'}`);
+        }
         break;
       case 'paths': {
         // --machine: only the entries no repo is needed for, so a caller outside a configured repo

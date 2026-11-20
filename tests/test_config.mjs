@@ -20,6 +20,12 @@ t('a mid-cell parenthesis is not trailing', items('`A` (x) `B`'), 'A | B');
 t('a note-only cell is left whole', items('(`a`)'), 'a');
 t('doubled display backticks', items('`` `A` `B` `` (see `C`)'), 'A | B');
 t('no spans: the cell is the item', items('none (no tracker)'), 'none (no tracker)');
+t('DS-844 AC3 a note holding a fenced example in runs of three backticks adds no item', items('`a` `b` (write ```evidence``` as ```` ```evidence ```` then `c`)'), 'a | b');
+t('DS-844 AC3 an unclosed run in the note is text, not a span', items('`a` (one ``` here, `c`)'), 'a');
+t('DS-844 a note inside the doubled display form adds no item', items('`` `ABC` (not `parent`) ``'), 'ABC');
+t('DS-844 a none row copied in the doubled display form with its note is none alone', items('`` `none` (not `pr-evidence.yml`) ``'), 'none');
+t('DS-844 only the one trailing note is stripped: a parenthesis before it keeps its items', items('`Lint` (CI build: `Build`) (names from GitHub)'), 'Lint | Build');
+t('DS-844 a note after the doubled display form is the one note: a parenthesis inside keeps its items', items('`` `Lint` (CI build: `Build`) `` (names from GitHub)'), 'Lint | Build');
 // #770: a note quoting a run of three or four backticks keeps the spans in step, as CommonMark reads them.
 t('#770 a note quoting a fenced block adds no item', items('`none` (it carries a fenced ```` ```evidence ```` block, as `` `<file>.yml` ``)'), 'none');
 t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
@@ -40,7 +46,8 @@ t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
 }
 
 // End to end: `desk-env list` on a §4 row that carries a note.
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
 const T = mkdtempSync(join(tmpdir(), 'desk-config-'));
 const cfg = join(T, 'config.md');
 writeFileSync(cfg, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n'
@@ -81,6 +88,47 @@ t('cmds prints nothing for a plain none', plain('cmds', 'lint-cmd'), '');
 t('list prints a plain none', plain('list', 'lint-cmd'), 'none');
 t('a backticked note in trailing parens is still one none', plain('cmds', 'test-cmd'), '');
 
+// The shipped template with every TODO answered none: each row reads as none alone through `list`,
+// as it does through `get`, though a note may hold backtick runs of any length.
+const answered = join(T, 'answered-none.md');
+writeFileSync(answered, readFileSync(join(ROOT, 'desk-config.md'), 'utf8').replaceAll('`TODO`', '`none`'));
+const answeredEnv = { ...process.env, DESK_CONFIG: answered, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const evidence = (() => {
+  try { return `exit 0: ${execFileSync('node', [BIN, 'list', 'evidence-workflow'], { encoding: 'utf8', env: answeredEnv, stdio: 'pipe' }).trim()}`; }
+  catch (e) { return `exit ${e.status}: ${String(e.stderr).trim()}`; }
+})();
+t('DS-844 AC1 the template Evidence workflow cell answered none lists none alone', evidence, 'exit 0: none');
+// Which rows the template leaves TODO is read from a copy answered with a marker no reader treats as
+// none or unset, so a row `get` misreads as anything but none is checked too, not skipped.
+const marked = join(T, 'answered-marker.md');
+writeFileSync(marked, readFileSync(join(ROOT, 'desk-config.md'), 'utf8').replaceAll('`TODO`', '`DS844ANSWER`'));
+const readRows = (file, script) => execFileSync('node', ['--input-type=module', '-e', `
+  import { CONFIG_ROWS, configValue, configValues } from ${JSON.stringify(BIN)};
+  ${script}`], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: file, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
+const todoRows = readRows(marked, `console.log(Object.keys(CONFIG_ROWS).filter((id) => !CONFIG_ROWS[id].table && configValue(id) === 'DS844ANSWER').join(' '));`).split(' ').filter(Boolean);
+const todoCells = readFileSync(join(ROOT, 'desk-config.md'), 'utf8').split('\n').filter((l) => /^\|.*`TODO`/.test(l)).length;
+t('DS-844 AC2 the template rows left TODO are found (at least half its TODO cells)', todoRows.length >= Math.ceil(todoCells / 2) && todoRows.length > 0, true);
+const misread = readRows(answered, `
+  const bad = [];
+  for (const id of ${JSON.stringify(todoRows)}) {
+    let got; try { got = [configValue(id), configValues(id)]; } catch (e) { got = e.message; }
+    if (JSON.stringify(got) !== '["none",["none"]]') bad.push(id + ' = ' + JSON.stringify(got));
+  }
+  console.log(bad.join('; '));`);
+t(`DS-844 AC2 every template row answered none (${todoRows.length} rows) reads none alone through get and list`, misread, '');
+
+// A `none` beside another item, with no note, is still refused; `ids` names such a row as not readable.
+const mixed = join(T, 'mixed.md');
+writeFileSync(mixed, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `pr-evidence.yml` |\n');
+const mixedEnv = { ...process.env, DESK_CONFIG: mixed, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const mixedList = (() => {
+  try { execFileSync('node', [BIN, 'list', 'evidence-workflow'], { encoding: 'utf8', env: mixedEnv, stdio: 'pipe' }); return 'exit 0'; }
+  catch (e) { return `exit ${e.status}: ${/mixes `none` with other items \(none \| pr-evidence\.yml\)/.test(String(e.stderr))}`; }
+})();
+t('DS-844 AC4 none beside pr-evidence.yml is still refused', mixedList, 'exit 4: true');
+const idsLine = execFileSync('node', [BIN, 'ids'], { encoding: 'utf8', env: mixedEnv }).split('\n').find((l) => l.startsWith('get  evidence-workflow '));
+t('DS-844 AC5 ids names a row get and list read differently as not readable', /= \(not readable: .*mixes `none`/.test(idsLine ?? ''), true);
+
 // The worker rows: known ids, `no` when the row is missing, read by key when it is there.
 const perms = join(T, 'perms.md');
 writeFileSync(perms, '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
@@ -112,7 +160,6 @@ rmSync(away, { recursive: true, force: true });
 
 // `desk-env drift`: rows the template has that a config lacks, `ask` rows an unattended batch parks
 // on, and a settings file that starts sessions in dontAsk.
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tpl = join(T, 'template.md');
 const P3 = '## 3. Permissions\n\n### Git\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n';
 const B3 = '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n';
