@@ -91,13 +91,16 @@ fieldtree port1 'port: 47704, cloud: { port: 47704 }' 'spawned: A-1 port=47704 m
 fieldtree port2 'port: 47705, cloud: { port: 47705 }' 'spawned: A-1 port=47705 model=default\n  RUNNING  A-1  stage 4b  port 47705  on localhost:47705'
 cmp "$T/port1" "$T/port2"
 check "DS-819 AC1 a port that differs in a queue field and a report line is not reported" "$same0"
+fieldtree port3 'port: 47704, cloud: { port: 47705 }' 'spawned: A-1 port=47704 model=default\n  RUNNING  A-1  stage 4b  port 47704  on localhost:47704'
+cmp "$T/port1" "$T/port3"
+check "DS-819 AC1 two ports where the base had one is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head port <PORT2>"'
 
 for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s'; do
   fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
   cmp "$T/span1" "$T/span2"
   check "DS-819 AC2 an elapsed time ${form%|*} against ${form#*|} is not reported" "$same0"
 done
-fieldtree span2 '' 'A-1 in_progress for 17d 12h'
+fieldtree span1 '' 'A-1 in_progress for 15d 12h'; fieldtree span2 '' 'A-1 in_progress for 17d 12h'
 cmp "$T/span1" "$T/span2"
 check "DS-819 AC2 an elapsed time in days two days apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 15d 12h" && echo "$out" | grep -qF "for 17d 12h"'
 
@@ -129,7 +132,10 @@ cmp "$T/stamp1" "$T/stamp2"
 check "DS-819 AC5 queue stamps that differ only in value are not reported" "$same0"
 fieldtree stamp0 'updated_at: new Date(now).toISOString(), spawned_at: null, last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
 cmp "$T/stamp0" "$T/stamp1"
-check "DS-819 AC6 a queue stamp the head sets and the base leaves unset is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base null, head <STAMP>" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+check "DS-819 AC6 a queue stamp the head sets and the base leaves unset is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base null, head <STAMP:number>" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(now).toISOString(), last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+cmp "$T/stamp1" "$T/stamp3"
+check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'

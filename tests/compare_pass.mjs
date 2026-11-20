@@ -75,8 +75,9 @@ const TMP = /(?:\/private)?(?:\/var\/folders\/[^/\s"']+\/[^/\s"']+\/T|\/tmp)\/(?
 const MEM = /\b((?:vmmem|avail|rss)=)[0-9.]+[KMGT]?i?B?|\b[0-9.]+[KMGT]i?B?(?= available\b)/g;
 const PID = /\b(pid:? |"pid":\s*)\d+/g;
 const SLUG = /\b(local__[\w.-]*?)-[0-9a-f]{8}\b/g;
-// A port the pass took from what was free on the machine when it ran ("port=47704", "port 47704").
-const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)\d{2,5}\b/g;
+// A port the pass took from what was free on the machine when it ran ("port=47704", "port 47704"),
+// named per run as a SHA is (renamer).
+const PORT = /\b(port[= ]|localhost:|127\.0\.0\.1:)(\d{2,5})\b/g;
 // git words one refused fetch differently, depending on which side of the connection reports it first.
 const UPLOAD_PACK = /\bfatal: (?:remote error: |git )?upload-pack: /g;
 
@@ -93,7 +94,6 @@ function normalizer(roots) {
       .replace(MEM, (_, key) => `${key || ''}<MEM>`)
       .replace(PID, '$1<PID>')
       .replace(SLUG, '$1-<HASH>')
-      .replace(PORT, '$1<PORT>')
       .replace(UPLOAD_PACK, 'fatal: upload-pack: ');
   };
 }
@@ -107,10 +107,14 @@ function normalizer(roots) {
 // digits, and no time the pass prints has 9, 12 or 40 digits.
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is named the same way, digits or not: each tree's pass started at a different time.
-const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b/g;
+// One the pass cut short ("4a1f0c2…") is not named, so it cannot shift the names after it.
+// Ports are named the same way: two runs take different free ports, but two tickets given one port on
+// one tree and two on the other still differ.
+const SHA = /\b(?:(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,40}|[0-9a-f]{40}|[0-9a-f]{12}|[0-9a-f]{9}|(?<=\bfix-)[0-9a-f]{8})\b(?!…)/g;
 function renamer() {
-  const seen = new Map();
-  return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); });
+  const seen = new Map(), ports = new Map();
+  return (s) => s.replace(SHA, (x) => { if (!seen.has(x)) seen.set(x, `<SHA${seen.size + 1}>`); return seen.get(x); })
+    .replace(PORT, (_, pre, n) => { if (!ports.has(n)) ports.set(n, `<PORT${ports.size + 1}>`); return pre + ports.get(n); });
 }
 
 // A normalized string split into its shape, each time in it as <TIME>, and those times.
@@ -161,13 +165,16 @@ function sameTime(a, b, run, cb, ch) {
 const count = (s) => s.split('<TIME>').length - 1;
 // Text the pass cuts at a length ends there with "…", perhaps with more after it. As a path, port or
 // SHA before the cut is longer on one tree than the other, the two cut at different places: they match
-// when the shorter head (less the word the cut fell in) starts the other side and both end alike.
+// when the shorter head (less the word the cut fell in, which goes unchecked) starts the other side
+// and both end alike.
 function sameCut(x, y, eqTime) {
   const parts = (v) => { const i = v.shape.indexOf('…'); return i < 0 ? null : { head: v.shape.slice(0, i).replace(/\S*$/, ''), tail: v.shape.slice(i + 1) }; };
   let px = parts(x), py = parts(y);
   if (!px && !py) return false;
   if (!px || (py && py.head.length < px.head.length)) { [x, y] = [y, x]; [px, py] = [py, px]; }
   const { head, tail } = px;
+  // A cut in the first word leaves nothing to compare, which would match anything.
+  if (!/\w/.test(head)) return false;
   const ok = py ? py.head.startsWith(head) && py.tail === tail
     : y.shape.length >= head.length + tail.length && y.shape.startsWith(head) && y.shape.endsWith(tail);
   if (!ok) return false;
@@ -188,16 +195,17 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
 // by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
 // the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does,
-// and so does a port (a `port` field). A queue stamp, which says when the pass last wrote a ticket or
-// started its worker, lands wherever the load of the machine put that write in its run, so it is
-// compared as set or not: <STAMP> when it holds a value.
+// and a port (a `port` field) is named as a printed one is (renamer). A queue stamp, which says when
+// the pass last wrote a ticket or started its worker, lands wherever the load of the machine put that
+// write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
+// string.
 const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
 function flatten(rec, norm, rn) {
   const out = new Map();
   const key = (k) => rn(norm(k));
   const leaf = (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
-    : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? '<PORT>'
-      : v != null && STAMP.test(path) ? '<STAMP>' : norm(JSON.stringify(v)));
+    : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? `port ${v}`
+      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v)));
   const walk = (v, path) => {
     if (v && typeof v === 'object' && Object.keys(v).length) {
       for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
