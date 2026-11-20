@@ -108,6 +108,29 @@ pj
 check "pass: open questions exit 11 and are listed as waiting"  '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^T-4: 2 question(s) open"'
 q drop T-4
 
+# An answer settles one triage question, or every one with --all, and the count never goes below zero.
+ans(){ out=$(node "$B/answer.mjs" "$@" 2>&1); rc=$?; }
+oq(){ node "$B/queue.mjs" get "$1" | jq -r ".$2"; }
+q add T-30; q set T-30 state=triaged lane=A branch=fix/T-30 open_questions=3
+ans T-30 "use the helper"
+check "DS-846 AC1: one answer of three leaves two open, and says so" '[ $rc -eq 0 ] && [ "$(oq T-30 open_questions)" = 2 ] && echo "$out" | grep -q "^T-30: answered; 2 question(s) still open"'
+pj
+check "DS-846 AC2: with two open, the pass does not spawn it and lists it as waiting on answers" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^T-30: 2 question(s) open" && ! js .message | grep -q "spawned: T-30"'
+q set T-30 open_questions=3
+ans T-30 --all "use the helper, keep the copy, skip the flag"
+check "DS-846 AC3: one answer with --all settles all three" '[ $rc -eq 0 ] && [ "$(oq T-30 open_questions)" = 0 ] && echo "$out" | grep -q "^T-30: answered\.$"'
+pj
+check "DS-846 AC3: and the next pass spawns it" 'js .message | grep -q "spawned: T-30"'
+q drop T-30
+q add T-31; q set T-31 state=triaged lane=A branch=fix/T-31 open_questions=2; q hold T-31 T-1
+ans T-31 "use the helper"
+check "DS-846 AC4: a held ticket answered once keeps one open and its hold" '[ "$(oq T-31 open_questions)" = 1 ] && [ "$(oq T-31 held_by)" = T-1 ] && echo "$out" | grep -q "^T-31: answered; 1 question(s) still open.*It is held"'
+q drop T-31
+q add T-32; q set T-32 state=triaged lane=A branch=fix/T-32 open_questions=0
+ans T-32 "a late note"
+check "DS-846 AC5: with none open, an answer leaves the count at zero" '[ $rc -eq 0 ] && [ "$(oq T-32 open_questions)" = 0 ]'
+q drop T-32
+
 # A worker that exits with no marker and no PR fails in this pass, while T-1 still runs.
 q add T-9; q set T-9 state=running lane=A branch=fix/T-9 session_id=gone
 { say "AUTOPILOT_STAGE: 3/9 implement"; echo '{"type":"result","is_error":false,"num_turns":1,"result":""}'; } > "$T/state/logs/T-9.log"
