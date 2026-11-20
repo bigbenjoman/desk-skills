@@ -2,7 +2,7 @@
 // usage-pace.mjs with a fixed clock against fake worker logs carrying rate_limit_event lines, then the
 // real pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, once per acceptance criterion.
 // A throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT: nothing touches your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -132,7 +132,7 @@ rmSync(root, { recursive: true, force: true });
 // A world for passes: a DESK_HOME whose bin holds the real queue scripts beside stubs, and this repo
 // with one running worker and one ready ticket. -> { state, run }, where run() resolves to the output.
 let floor = 46100;
-function world({ pacing } = {}) {
+function world({ pacing, sub } = {}) {
   rmSync(join(T, 'w'), { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(env.DESK_HOME, { recursive: true, force: true });
@@ -169,7 +169,8 @@ function world({ pacing } = {}) {
     'Y-1': { key: 'Y-1', state: 'triaged', open_questions: 0, branch: 'fix/Y-1' },
   } }));
   const penv = { ...gitEnv, PATH: `${join(W, 'stub')}:${process.env.PATH}`, DESK_CONFIG: config, DESK_QUEUE: q, DESK_AUTOPILOT_STATE: state,
-    WT_DIR: join(W, 'wt'), AUTOPILOT_MIN_AVAIL_GB: '0', AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor += 100) };
+    WT_DIR: join(W, 'wt'), AUTOPILOT_MIN_AVAIL_GB: '0', AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor += 100),
+    ...(sub ? { DESK_SUBSCRIPTIONS: sub.file, DESK_SUBSCRIPTION: sub.email } : {}) };
   const run = () => new Promise((res) => {
     const c = spawn('node', [join(BIN, 'pass.mjs')], { env: penv, cwd: join(W, 'repo') });
     let out = '';
@@ -202,7 +203,7 @@ w = world();
 log(w.state, 'R-1', [event(0.9, soon(3.5))], 7 * HOUR);
 out = await w.run();
 t('pass AC3: it spawns as usual', w.ticket('Y-1'), 'running');
-t('pass AC3: it reports no recent data', /^usage: no recent data$/m.test(out), true);
+t('pass AC3: it reports no recent data, naming the login it read', /^usage: no recent data for login default$/m.test(out), true);
 
 // AC4: pacing off, usage well ahead of pace.
 w = world({ pacing: 'off' });
@@ -231,7 +232,37 @@ w = world({ pacing: '5' });
 log(w.state, 'R-1', [event(0.99, soon(-0.1))]);
 out = await w.run();
 t('pass AC7: usage is unknown, so it spawns', w.ticket('Y-1'), 'running');
-t('pass AC7: it reports no recent data', /^usage: no recent data \(the newest reading's 7-day window reset at /m.test(out), true);
+t('pass AC7: it reports no recent data', /^usage: no recent data for login default \(the newest reading's 7-day window reset at /m.test(out), true);
+
+// #772: the pass paces on the login this repo's workers spawn on, not the one it runs under. The
+// repo's subscription is a second login; its worker's log is ahead of pace; the pass runs on default.
+{
+  const acct = (dir, email, json = join(dir, '.claude.json')) => { mkdirSync(dir, { recursive: true }); writeFileSync(json, JSON.stringify({ oauthAccount: { emailAddress: email, planDisplayName: 'Max' } })); };
+  acct(join(env.HOME, '.claude'), 'own@example.com', join(env.HOME, '.claude.json'));
+  const second = join(env.HOME, '.claude-logins', 'login-2');
+  acct(second, 'repo@example.com');
+  const file = join(T, 'subscriptions-772.md');
+  writeFileSync(file, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `unused` |\n');
+  w = world({ pacing: '5', sub: { file, email: 'repo@example.com' } });
+  mkdirSync(join(w.state, 'workers'), { recursive: true });
+  writeFileSync(join(w.state, 'workers', 'R-1.login.json'), JSON.stringify({ config_dir: second }));
+  log(w.state, 'R-1', [event(0.62, soon(3.5))]);
+  out = await w.run();
+  t('#772 a worker log on the repo\'s login, ahead of pace, holds its spawns', `${w.ticket('Y-1')} ${/^usage: 7-day 62%, pace 50% \+ 5: holding spawns$/m.test(out)}`, 'triaged true');
+}
+
+// #772: with no reading for the login it paces on, the pass probes it once; a plan whose newest event
+// names no 7-day window has none to read, so it is not probed.
+{
+  const stamp = () => existsSync(join(root, 'usage', 'probe.at'));
+  w = world({ pacing: '5' });
+  out = await w.run();
+  t('#772 no reading at all: the pass probes the login once', stamp(), true);
+  w = world({ pacing: '5' });
+  log(w.state, 'R-1', [both(win(0.1, 4 * HOUR), null)]);
+  out = await w.run();
+  t('#772 a plan with no 7-day window is not probed', `${stamp()} ${w.ticket('Y-1')}`, 'false running');
+}
 
 console.log(fails ? `${fails} FAILED` : 'all usage pace checks passed');
 process.exit(fails ? 1 : 0);

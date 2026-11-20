@@ -58,11 +58,15 @@ node ~/.claude/desk/bin/desk-design.mjs check <TICKET>
   not block a build.
 - `advisory … but not its saved copy <path>`: saved, but the Design section lacks the repo path:
   add it beside the link (end of step 2).
+- `advisory … uses no board from it`: the Design section links a canvas but says no board applies to
+  the ticket, so nothing needs saving.
 - `blocking` (exit 1): no copy is saved on the base. It names the URL and the folder: step 2.
 
 ## 2. Save a canvas or deck
 
-Read every file the design needs, with the Artifact tool, into `$DESK_STATE/designs/<TICKET>/`
+First check who owns the artifact, before listing or reading any file (`design-canvas.md`'s
+`blocking` step): one created outside the user's organisation goes straight to the ask below.
+Otherwise read every file the design needs, with the Artifact tool, into `$DESK_STATE/designs/<TICKET>/`
 (`desk-env paths` prints `DESK_STATE`). **Read `desk-ticket/references/design-canvas.md` first**: it
 lists the files (`project/canvas.json`, every `project/*.dc.html`, what they load), and the two kinds
 a board needs that are not among the published files (each `/_blob/<id>` asset, one `read` apiece;

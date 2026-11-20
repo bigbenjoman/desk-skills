@@ -2,8 +2,8 @@
 //
 // A batch base (queue.mjs set-batch base=<branch>) drifts from the default branch for as long as the
 // batch runs. pass.mjs keeps one worktree for it under the worktrees directory, a plain
-// `git worktree add` (setup-worktree.sh also makes a database and copies env files, which the base
-// needs neither of), and, before any pass that spawns and on any pass that finds the base behind,
+// `git worktree add` with §4 Env files copied in, so the repo's pre-push hook finds them (no database:
+// setup-worktree.sh makes one only for a ticket), and, before any pass that spawns and on any pass that finds the base behind,
 // merges the default branch into the base there and pushes it, so new workers start on a current tree
 // and a park waiting on the base containing the default branch clears.
 //
@@ -11,10 +11,13 @@
 // base would strand them. It is all or nothing: a conflict is aborted and a refused push is rolled
 // back, so the worktree is never left holding a merge origin does not have. A feature-mode batch's
 // promotion PR needs the base to hold a commit the default branch lacks, which openingCommit pushes.
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { baseFixKey, runBin, commandPrefix, configValues, isNone, parseCommandItem } from './desk-env.mjs';
+import { rewriteEnvFiles } from './env-rewrite.mjs';
 import { runItem } from './baseline.mjs';
 import { execGit } from './remote-git.mjs';
 import { hookEnvFailure, refusalLine } from './push-retry.mjs';
@@ -27,13 +30,46 @@ const firstLine = (s) => String(s).split('\n').map((l) => l.trim()).find(Boolean
 
 export const baseWorktreePath = (worktreesDir, base) => join(worktreesDir, baseFixKey(base));
 
+const rowItems = (id) => {
+  let v = null;
+  try { v = configValues(id); } catch { /* no config: the row reads as unset */ }
+  return v && !isNone(v[0]) ? v : [];
+};
+// §4 Env files the base worktree lacks, copied from the primary checkout by copy-env.sh --base, so a
+// pre-push hook that reads one finds it. The base has no database of its own, so every §4 Database URL
+// variable in them is blanked by the worker database rule (env-rewrite.mjs); a copy whose blanking
+// does not read back is removed. -> { copied: [rel], missing: [rel] }
+export function seedEnvFiles({ main, path }) {
+  // A path outside the worktree is never read, removed or rewritten here; copy-env.sh refuses it too.
+  const files = rowItems('env-files');
+  const outside = files.filter((rel) => isAbsolute(rel) || rel.split(/[/\\]/).includes('..'));
+  const lacking = files.filter((rel) => !outside.includes(rel) && !existsSync(join(path, rel)));
+  if (!lacking.length) return { copied: [], missing: outside };
+  try {
+    execFileSync('bash', [join(dirname(fileURLToPath(import.meta.url)), 'copy-env.sh'), '--base'],
+      { cwd: path, env: { ...process.env, DESK_ENV_FROM: main }, stdio: 'ignore' });
+  } catch { /* a file it could not copy is missing below */ }
+  const vars = rowItems('db-url-var');
+  const copied = [], missing = [...outside];
+  for (const rel of lacking) {
+    const there = existsSync(join(path, rel)) && rewriteEnvFiles({ mode: 'blank', wt: path, vars, files: [rel], log: () => {}, error: () => {} }).bad === 0;
+    if (!there) rmSync(join(path, rel), { force: true });
+    (there ? copied : missing).push(rel);
+  }
+  return { copied, missing };
+}
+
 // The base worktree is made on a detached HEAD at origin's base, never on the branch: every sync and
 // push goes through origin/<base> and HEAD:refs/heads/<base>, and a branch can be checked out in one
 // worktree only, so the primary checkout or another worktree holding <base> would otherwise leave
 // nowhere to sync it. Neither of those is ever touched. One made on the branch by an earlier pass is
-// still reused: it is known by its path.
-// -> { ok: true, path, made } | { ok: false, path, why }
+// still reused: it is known by its path. Either way it gets the env files it lacks (seedEnvFiles).
+// -> { ok: true, path, made, env: { copied, missing } } | { ok: false, path, why }
 export function ensureBaseWorktree({ main, worktrees, base }) {
+  const r = baseWorktree({ main, worktrees, base });
+  return r.ok ? { ...r, env: seedEnvFiles({ main, path: r.path }) } : r;
+}
+function baseWorktree({ main, worktrees, base }) {
   const path = baseWorktreePath(worktrees, base);
   const list = git(main, ['worktree', 'list', '--porcelain']);
   if (!list.ok) return { ok: false, path, why: `could not list worktrees: ${firstLine(list.out)}` };

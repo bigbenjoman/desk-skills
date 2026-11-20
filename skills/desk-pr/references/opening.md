@@ -71,6 +71,9 @@ close-out once it merges: the move to Done, and `closeout.mjs` telling any batch
 the ticket. If `gh`
 fails, fall back to handing over the raw markdown to paste.
 
+Arming or merging, claim it first and record it after in the merge log, as `desk-ticket` Stage 7
+says (`merge-log.mjs claim`, then `record --event armed` or `merged`, and `disarmed` when you turn auto-merge off).
+
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits
 `type(scope): <TICKET> description`), where the key sits, and whether CI checks it. When §4 Merge
 method is `squash` and the repo squash-titles from the PR title, this one string is what reaches the

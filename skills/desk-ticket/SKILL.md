@@ -27,7 +27,8 @@ it, then runs the same tail every time so nothing gets forgotten.
 desk-env where        # SLUG=, GH_REPO=, CONFIG=, CREDS=, EXISTS=yes|no  (exit 3 outside a repo)
 ```
 
-Read the `CONFIG` file it prints, before anything else. **`EXISTS=no` means stop**: say which slug
+Then read it, before anything else, with `desk-env show`: the `CONFIG` file's rules for the agent
+reading it, then its headings and tables, without the rest of its prose or the §3c rule ledger. **`EXISTS=no` means stop**: say which slug
 was looked up and offer `/desk-setup`. Exit 3 means you are not inside a git repo; say so and stop.
 A `TODO` in any row this skill needs is a question, not a default: stop, ask, and offer
 `/desk-setup`. A row the file lacks is unset (a `no` in §3); name it and offer `/desk-setup`.
