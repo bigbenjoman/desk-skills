@@ -2577,5 +2577,44 @@ try {
     `${/▲ stop +the merge driver stopped at \d\d:\d\d: gh is signed out/.test(W935.run('--plain').out)} ${W935.run('--plain', 'stop').out.includes('merge driver up')}`, 'true false');
 }
 
+// ---- DS-937: a ticket page says who merged or armed its PR at which head, from the merge log
+{
+  const at = (h) => new Date(NOW - h * 3600000).toISOString();
+  const W937 = world({ merges: { port: 3700, conc: '2 / 3', beat: 1, queue: { batch: 'mg', concurrency: 2, tickets: {
+    'MG-1': { state: 'done', result: { pr: 21 }, merged_at: at(2) },
+    'MG-2': { state: 'done', result: { pr: 22 }, pr_status: { pr: 22, state: 'OPEN', checks: [] } },
+    'MG-3': { state: 'done', result: { pr: 23 }, merged_at: at(2) },
+    'MG-4': { state: 'done', result: { pr: 24 }, merged_at: at(30) },
+    'MG-5': { state: 'done', result: { pr: 25 }, pr_status: { pr: 25, state: 'OPEN', checks: [] } },
+    'MG-6': { state: 'done', result: { pr: 26 }, merged_at: at(2), pr_status: { pr: 26, state: 'OPEN', checks: [] } },
+    'MG-7': { state: 'done', result: { pr: 27 }, pr_status: { pr: 27, state: 'OPEN', checks: [] } },
+    'MG-8': { state: 'done', result: { pr: 28 }, merged_at: at(2), pr_status: { pr: 18, state: 'MERGED', checks: [] } },
+  } } } });
+  const sha = 'abcdef0123456789abcdef0123456789abcdef01';
+  const ev = (pr, event, by, h, repo = 'Acme/Merges') => JSON.stringify({ at: at(h), repo, pr: String(pr), sha, by, event });
+  mkdirSync(join(W937.env.HOME, '.desk-autopilot'), { recursive: true });
+  writeFileSync(join(W937.env.HOME, '.desk-autopilot', 'merges.jsonl'), `${[
+    ev(21, 'claim', 'merge-driver acme__merges', 24), ev(21, 'merged', 'merge-driver acme__merges', 2.1),
+    ev(22, 'claim', 'session s-1', 3), ev(22, 'armed', 'session s-1', 3),
+    ev(23, 'merged', 'merge-driver acme__other', 2, 'acme/other'),
+    ev(27, 'armed', 'session s-2', 3), ev(27, 'failed', 'session s-2', 2.5),
+  ].join('\n')}\n`);
+  const mergeLine = (key, env = W937.env) => lines(spawnSync('node', [BIN, '--plain', 'merges', 'show', key], { encoding: 'utf8', env, cwd: W937.T }).stdout).find((l) => l.startsWith('Merge ')) ?? null;
+  t('DS-937 AC1 a merged entry: the page names who merged the PR and at which head, the log\'s repo matched whatever its case',
+    mergeLine('MG-1'), 'Merge     #21 merged by merge-driver acme__merges at abcdef012345');
+  t('DS-937 AC3 an armed-only entry reads as armed, by whom and at which head, not merged',
+    mergeLine('MG-2'), 'Merge     #22 auto-merge armed by session s-1 at abcdef012345');
+  t('DS-937 AC2 a merged PR with no entry for its repo says it was merged outside desk',
+    mergeLine('MG-3'), 'Merge     #23 merged outside desk: the merge log has no entry for it');
+  t('DS-937 a PR merged before the log\'s first entry is not called outside desk',
+    mergeLine('MG-4'), 'Merge     #24 merged before desk kept a merge log, so who merged it is not recorded');
+  t('DS-937 an open PR with no entry has no Merge line', mergeLine('MG-5'), null);
+  t('DS-937 a requeued ticket\'s earlier merge time does not read its open PR as merged', mergeLine('MG-6'), null);
+  t('DS-937 nor while its recorded status is still the earlier PR\'s', mergeLine('MG-8'), null);
+  t('DS-937 auto-merge its armer records failed is no longer shown as armed', mergeLine('MG-7'), null);
+  t('DS-937 a merge log that cannot be read says so, and the page still shows',
+    mergeLine('MG-1', { ...W937.env, DESK_MERGE_LOG: W937.T }), 'Merge     the merge log could not be read (EISDIR)');
+}
+
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');
 process.exit(fails ? 1 : 0);

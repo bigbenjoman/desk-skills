@@ -1,7 +1,10 @@
 {
   "seconds": {
     "test_base_fix.mjs": 1,
-    "test_base_sync.sh": 83,
+    "test_base_sync.sh": 15,
+    "test_base_sync_epic.sh": 20,
+    "test_base_sync_fix.sh": 20,
+    "test_base_sync_push.sh": 28,
     "test_baseline.mjs": 1,
     "test_bash32_check.mjs": 1,
     "test_batch.mjs": 8,
