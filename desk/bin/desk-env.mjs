@@ -64,6 +64,8 @@
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
+//                                             (harmStep) SWAP-GROWING, OOM-KILL and TMPFS-HIGH on the
+//                                             harm signals, and OOM-UNKNOWN once when dmesg cannot be read
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -131,7 +133,7 @@
 //                                             email), ignoring DESK_SUBSCRIPTION
 //   node desk-env.mjs subscription set <slug> <default|email>
 //                                             write that repo's Subscription row, naming the previous value
-import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
@@ -1658,6 +1660,57 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
   return { state: { since, fired: true }, line: `SUSTAINED-HIGH: avail=${avail.toFixed(1)}G below ${band}G for ${mins}m with nothing heavy running` };
 }
 
+// The harm signals the watch also reads, which preceded real damage where the host's free memory did
+// not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM-killer line newer
+// than the watch's start (`oom` is the count of such lines, null when the kernel log cannot be read),
+// and a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
+// leak). Each line is said once, and again only after the signal has cleared.
+//   sample { now, swapGiB, oom, tmpGiB }  ->  { state, lines }
+export function harmStep(state, { now, swapGiB, oom, tmpGiB }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4 } = {}) {
+  const st = { swap: [], oom0: null, oomSeen: null, swapFired: false, tmpFired: false, oomUnread: false, ...state };
+  const lines = [];
+  if (swapGiB != null) {
+    const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
+    const low = Math.min(...swap.map((x) => x.gib));
+    const grew = swapGiB - low;
+    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
+    st.swapFired = grew >= swapGrowGiB ? true : grew < swapGrowGiB / 2 ? false : st.swapFired;
+    st.swap = swap;
+  }
+  if (oom == null) {
+    if (!st.oomUnread) lines.push('OOM-UNKNOWN: the kernel log cannot be read (dmesg), so OOM kills are not watched');
+    st.oomUnread = true;
+  } else {
+    st.oomUnread = false;
+    if (st.oom0 == null) st.oom0 = oom;
+    if (oom > (st.oomSeen ?? st.oom0)) lines.push(`OOM-KILL: the kernel killed ${oom - (st.oomSeen ?? st.oom0)} process(es) for memory: drop to the ladder's lowest count`);
+    st.oomSeen = Math.max(oom, st.oomSeen ?? st.oom0);
+  }
+  if (tmpGiB != null) {
+    if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
+    st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
+  }
+  return { state: st, lines };
+}
+
+// What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
+// when it is a tmpfs. Each is null where it cannot be read (macOS has none of them).
+export function harmSample() {
+  const m = linuxMeminfo();
+  const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
+  let oom = null;
+  try {
+    const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
+    oom = (out.match(/Out of memory: Killed process|oom-kill:/g) ?? []).length;
+  } catch { /* dmesg_restrict, or no dmesg */ }
+  let tmpGiB = null;
+  try {
+    const tmpfs = readFileSync('/proc/mounts', 'utf8').split('\n').some((l) => { const f = l.split(' '); return f[1] === '/tmp' && f[2] === 'tmpfs'; });
+    if (tmpfs) { const st = statfsSync('/tmp'); tmpGiB = ((st.blocks - st.bfree) * st.bsize) / GiB; }
+  } catch { /* not Linux */ }
+  return { swapGiB, oom, tmpGiB };
+}
+
 // ---- misc ----------------------------------------------------------------------------------
 export const uuid = () => randomUUID();
 
@@ -2185,6 +2238,7 @@ if (isMain) {
           const cfg = { band: sustainedBandGiB(), windowMs: opt('--window', 300) * 1000 };
           const intervalMs = opt('--interval', 30) * 1000;
           let state = null;
+          let harm = null;
           let unread = null;
           for (;;) {
             // A sample whose processes cannot be read is skipped, said once until ps reads again.
@@ -2196,6 +2250,9 @@ if (isMain) {
             const r = heavy === null ? { state } : sustainedStep(state, { now: Date.now(), avail: availableGiB(), heavy }, cfg);
             state = r.state;
             if (r.line) console.log(r.line);
+            const h = harmStep(harm, { now: Date.now(), ...harmSample() }, { windowMs: Math.max(cfg.windowMs, 600_000) });
+            harm = h.state;
+            for (const l of h.lines) console.log(l);
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }
