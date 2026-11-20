@@ -47,6 +47,8 @@ printf '{"permissions":{"allow":["Bash(gh pr merge * --squash)","Bash(gh pr merg
 C="$HOME/.config/desk/repos/o__r"; mkdir -p "$C"
 printf '## 2. Paths on your machine\n\n| Field | Value | Notes |\n|---|---|---|\n| Primary repo root | `%s` | x |\n' "$R" > "$C/config.md"
 printf '{"rules":[{"list":"allow","rule":"Bash(gh pr merge * --squash)","rows":["pr-merge-green"],"added":"2026-01-01"}]}\n' > "$C/harness-rules.json"
+# The repo ships its own desk-kiss, which the install also links at user level: a shadowed pair.
+mkdir -p "$R/.claude/skills/desk-kiss"; printf -- '---\nname: desk-kiss\n---\nthe repo copy\n' > "$R/.claude/skills/desk-kiss/SKILL.md"
 
 # retired local CI runner: a desk installed while it shipped one, with its scripts, shim, state and
 # launchd jobs, each of which the install removes.
@@ -110,6 +112,10 @@ done
 check "#736 a skip names its id" '[[ "$summary" == *"  SKIP  Make one real codex call to prove it can answer? (--accept=codex-call)"* ]]'
 check "#736 a hook registration's apply line is the install with its id accepted" \
   '[[ "$summary" == *"(--accept=hook-attribution)"*"apply: cd "*"./install.sh --accept=hook-attribution"* ]]'
+# #738: a user-level skill shadowing a configured repo's own copy is warned of and listed in the summary.
+check "#738 the repo's line warns of both user-level paths of the shadowed skill" '[[ "$out" == *"WARN  o__r: 2 user-level skill path(s) shadow a skill this repo ships"* ]]'
+check "#738 the summary lists the pair, with the repo's slug" \
+  '[[ "$summary" == *"Shadowed: "*"  o__r: "*"skills/desk-kiss"*"shadows the repo copy at .claude/skills/desk-kiss"* ]]'
 check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
 check "DS-224 AC6: with nothing running, the summary says so in one line" \
