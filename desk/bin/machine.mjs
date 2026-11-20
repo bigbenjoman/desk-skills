@@ -60,13 +60,15 @@ export const LEASE_MODES = Object.freeze(['off', 'shadow', 'on']);
 export const DEFAULT_LEASE_MODE = 'shadow';
 // `port=on slot=shadow` (spaces or commas between entries) -> { modes: { kind: mode }, unknown: [entry] }.
 export function parseLeaseKinds(raw) {
-  const modes = {}; const unknown = [];
+  const modes = {}; const unknown = []; const garbled = new Set();
   for (const entry of String(raw ?? '').split(/[\s,]+/).filter(Boolean)) {
     const m = /^([\w-]+)=([\w-]+)$/.exec(entry);
     const kind = m?.[1].toLowerCase(); const mode = m?.[2].toLowerCase();
     if (m && LEASE_KINDS.includes(kind) && LEASE_MODES.includes(mode)) modes[kind] = mode;
-    else unknown.push(entry);
+    else { unknown.push(entry); if (LEASE_KINDS.includes(kind)) garbled.add(kind); }
   }
+  // A kind with any entry it cannot read is the default, whatever another entry sets it to.
+  for (const k of garbled) delete modes[k];
   return { modes, unknown };
 }
 // What is wrong with a lease-kinds value, naming each entry it does not know, or null.
@@ -96,7 +98,8 @@ export function benchSettingError(key, raw) {
   const rule = benchRule(key);
   if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')} or ${benchRunLimitKey('<provider>')}`;
   const v = String(raw ?? '').trim();
-  if (rule.text) return rule.problem(v);
+  // A profile row is one line, so a value that breaks across lines would be read back cut short.
+  if (rule.text) return /[\r\n]/.test(v) ? `\`${key}\` holds a line break: give it on one line` : rule.problem(v);
   return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
 }
 

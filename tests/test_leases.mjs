@@ -251,7 +251,7 @@ try {
     t('and is left as it is', readFileSync(join(d, 'leases.json'), 'utf8'), '{ not json');
   }
 
-  // ---- DS-908: shadow and off kinds, grace before a hard lapse, renew, Claude-session owners,
+  // ---- shadow and off kinds, grace before a hard lapse, renew, Claude-session owners,
   // force-release and reset.
   // Makes lease `id` look taken (or last renewed) `s` seconds ago, its expiry its TTL after that.
   const age = (d, id, s) => {
@@ -295,6 +295,10 @@ try {
     t('DS-908 AC3: says the kind is off', r.err, 'the port lease kind is off: nothing taken');
     t('DS-908 AC3: took nothing and logged nothing', `${existsSync(join(d, 'leases.json'))} ${existsSync(join(d, 'leases.log.jsonl'))}`, 'false false');
     t('DS-908 AC3: a bad key is still a usage error', cli(d, ['acquire', 'port', 'x', '--ttl', '900'], { DESK_MACHINE: machineWith({ 'lease-kinds': 'port=off' }) }).code, 2);
+    const memOff = machineWith({ 'lease-kinds': 'mem=off' });
+    const m = cli(d, ['acquire', 'mem', 'suite', '--ttl', '900', '--units', '4', '--pid', String(a.pid)], { DESK_MACHINE: memOff });
+    t('an off mem kind takes nothing without a memory ceiling', `${m.code} ${m.err}`, '0 the mem lease kind is off: nothing taken');
+    t('and renews nothing without one', cli(d, ['renew', 'L-00000000cc', 'mem', 'suite', '--ttl', '900', '--pid', String(a.pid)], { DESK_MACHINE: memOff }).code, 0);
   }
 
   // AC4: a live owner that has not renewed keeps its lease through its grace (1350s of a 900s TTL).
@@ -366,13 +370,15 @@ try {
   }
 
   // AC10: a lease owned by the Claude session outlives the shell command that took it. A symlink named
-  // claude to node stands in for the claude binary; it runs the acquire through sh and stays up.
+  // claude to node stands in for the claude binary; it runs the acquire through sh and stays up. The
+  // shell has work after the acquire, so it forks rather than execs it: the session is two hops up,
+  // and neither the caller's parent nor the default owner is the session.
   {
     const d = fresh();
     const bin = join(S, 'bin'); mkdirSync(bin, { recursive: true });
     const claude = join(bin, 'claude');
     if (!existsSync(claude)) symlinkSync(process.execPath, claude);
-    const cmd = `"${process.execPath}" "${join(root, 'desk/bin/leases.mjs')}" acquire port 4109 --ttl 900 --label session --owner claude`;
+    const cmd = `"${process.execPath}" "${join(root, 'desk/bin/leases.mjs')}" acquire port 4109 --ttl 900 --label session --owner claude; s=$?; exit $s`;
     const code = `const r = require('child_process').spawnSync('/bin/sh', ['-c', ${JSON.stringify(cmd)}], { encoding: 'utf8' }); console.log(JSON.stringify({ code: r.status, out: r.stdout.trim(), err: r.stderr.trim() })); setInterval(() => {}, 1000);`;
     const session = spawn(claude, ['-e', code], { env: env({ DESK_LEASE_DIR: d }), stdio: ['ignore', 'pipe', 'ignore'] });
     owners.push(session);
@@ -395,6 +401,12 @@ try {
     t('DS-908 AC11: nothing was taken', existsSync(join(d, 'leases.json')), false);
     const npm = [{ pid: 10, ppid: 11, args: 'sh -c x' }, { pid: 11, ppid: 12, args: 'node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --resume' }, { pid: 12, ppid: 1, args: '/opt/homebrew/bin/claude' }];
     t('the nearest Claude Code ancestor is found, an npm install run under node included', claudeAncestor(npm, 10), 11);
+    const deep = [{ pid: 20, ppid: 21, args: 'node leases.mjs' }, { pid: 21, ppid: 22, args: '/bin/sh -c x' }, { pid: 22, ppid: 23, args: 'npm run test' }, { pid: 23, ppid: 1, args: '/Users/me/.local/bin/claude --resume' }];
+    t('a Claude session behind several other processes is found', claudeAncestor(deep, 20), 23);
+    const linked = [{ pid: 30, ppid: 31, args: 'sh -c x' }, { pid: 31, ppid: 1, args: 'node /opt/homebrew/bin/claude' }];
+    t('an npm install run through its claude link on the PATH is found', claudeAncestor(linked, 30), 31);
+    const shell = [{ pid: 40, ppid: 41, args: 'node leases.mjs' }, { pid: 41, ppid: 1, args: 'sh -c /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --version' }];
+    t('a shell that only names the Claude Code entry point is not a session', claudeAncestor(shell, 40), null);
     t('a process is not its own Claude session', claudeAncestor([{ pid: 5, ppid: 1, args: 'claude' }], 5), null);
   }
 
@@ -463,6 +475,7 @@ try {
     const bad = machineWith({ 'lease-kinds': 'port=on sockets=on slot=maybe' });
     const r = cli(d, ['mode'], { DESK_MACHINE: bad });
     t('DS-908 AC17: a kind with an unknown mode reads as shadow, the known entry as set', r.out.split('\n').slice(0, 2), ['port\ton', 'slot\tshadow']);
+    t('a kind set on and also to an unknown mode reads as shadow', kindMode('port', { machineValue: () => 'port=on port=maybe' }).mode, 'shadow');
     t('DS-908 AC17: the entries it does not know are named', r.err, 'desk-env lease: the machine profile\'s `lease-kinds` names entries it does not know: "sockets=on", "slot=maybe": want <kind>=<mode> entries, kinds port, slot, preview-build, merge, mem and modes off, shadow, on');
   }
 } finally {

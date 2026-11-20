@@ -68,6 +68,9 @@ export const capacities = (env) => ({
   previewBuild: whole(env.machineValue('preview-build-slots')) ?? 1,
   mem: whole(env.machineValue('memory-ceiling-gb')),
 });
+// The same for a kind that is off, which takes nothing: only the key's form is checked, so a mem
+// lease is not refused for a memory ceiling it would never draw on.
+const offCaps = (caps) => ({ ...caps, mem: caps.mem ?? Infinity });
 
 // A kind's mode from the machine profile's lease-kinds row: off, shadow or on. -> { mode, problem },
 // `problem` naming any entry the row holds that it does not know (null when none).
@@ -131,12 +134,16 @@ export function startTimes(pids, psRows) {
   return out;
 }
 
-// A process that is a Claude Code session: the claude binary, or node running the Claude Code CLI's
-// entry point (so an npm install of it, run under node, is found too). `args` is ps's args column.
-const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js(\s|$)/;
-export const isClaudeProcess = (args) => {
+// A process that is a Claude Code session: the claude binary, or node running the Claude Code CLI as
+// its script, named by its entry point or by the `claude` link an npm install puts on the PATH (a
+// `#!/usr/bin/env node` script shows in ps as `node <the link's path>`). `args` is ps's args column.
+const CLAUDE_ENTRY = /(^|\/)@anthropic-ai\/claude-code\/cli\.m?js$/;
+const isClaudeProcess = (args) => {
   const words = String(args ?? '').trim().split(/\s+/);
-  return basename(words[0] ?? '') === 'claude' || words.slice(1, 3).some((w) => CLAUDE_ENTRY.test(w));
+  if (basename(words[0] ?? '') === 'claude') return true;
+  if (!/^node(js)?$/.test(basename(words[0] ?? ''))) return false;
+  const script = words.slice(1).find((w) => !w.startsWith('-')) ?? '';
+  return CLAUDE_ENTRY.test(script) || basename(script) === 'claude';
 };
 // The nearest ancestor of `pid` that is a Claude Code session, or null. `rows` is
 // psRows('pid=,ppid=,args=').
@@ -273,7 +280,7 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
 export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
-    poolOf(req.kind, req.key, caps);
+    poolOf(req.kind, req.key, offCaps(caps));
     return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing taken` };
   }
   const wait = req.wait ?? 0;
@@ -292,8 +299,11 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
 // and refused (or in shadow granted) where another owner holds it. -> { code, lease?, why }.
 export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const { mode } = kindMode(req.kind, env);
+  if (mode === 'off') {
+    poolOf(req.kind, req.key, offCaps(caps));
+    return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing renewed` };
+  }
   const p = poolOf(req.kind, req.key, caps);
-  if (mode === 'off') return { code: EXIT_OK, why: `the ${req.kind} lease kind is off: nothing renewed` };
   return withStore(dir, (store, log) => {
     const t = now();
     const starts = ownerStarts(store, env, req.pid == null ? [] : [req.pid]);
@@ -446,10 +456,10 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       if (extra != null) throw usage(`${sub} takes ${sub === 'renew' ? 'a lease id, ' : ''}a kind and a key, not "${extra}"`);
       if (sub === 'renew' && !id) throw usage('renew takes a lease id, a kind and a key');
       const caps = capacities(env);
-      poolOf(kind, key, caps); // a bad kind or key is named before a missing --ttl
+      const { mode, problem } = kindMode(kind, env);
+      poolOf(kind, key, mode === 'off' ? offCaps(caps) : caps); // a bad kind or key is named before a missing --ttl
       const s = sizing(opt, sub);
       if (opt.wait != null && !/^\d+(\.\d+)?$/.test(opt.wait)) throw usage(`--wait is a number of seconds, not "${opt.wait}"`);
-      const { problem } = kindMode(kind, env);
       if (problem) err(`desk-env lease: the machine profile's ${problem}`);
       const req = { kind, key, ...s, wait: opt.wait == null ? 0 : Number(opt.wait), pid: requestedOwner(opt, kind, env) };
       const r = sub === 'acquire' ? acquire(req, { env, dir, caps }) : renew(id, req, { env, dir, caps });
