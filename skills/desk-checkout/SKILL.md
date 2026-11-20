@@ -143,8 +143,9 @@ Then sort:
 - Anything the collectors mark **NOT work for this check-out** or **Other desk repo**. List it
   under the draft so the user can pull one back in.
 - Messages Claude drafted for the user to send (a Slack reply, an update to one of the §4 Slack
-  channels). If Slack can't confirm they posted one, don't present its content as announced. Use
-  the facts, and put "was the <channel> update sent?" under Check before posting.
+  channels), unless they posted it. Read the channel or thread after the draft's time to see: their
+  message there settles it. Only when no read can (no Slack connector, or §3 bars that channel),
+  use the facts and put "was the <channel> update sent?" under Check before posting, saying why.
 - Claude Code housekeeping: auth errors, `/login`, model switching, context-size prompts.
 - Anything sensitive, from any source (meeting notes, DMs, private channels, transcripts): HR,
   pay, probation, investor terms, individual performance, personal matters, customer or user
@@ -190,8 +191,10 @@ from a heredoc. On WSL a copy may not reach the Windows desktop, so the printed 
 to that. When §4 Check-out destination is a file path, also write it there as the table at the top
 says, and give the path. Under it, briefly:
 
-- **Check before posting**: every inferred claim, each with its source ("#1534 shown in
-  review from Claude's narration; GitHub says open").
+- **Check before posting**: only what no read settles. Before handing over, run every check a
+  read §3 grants can answer (a PR's state on GitHub, a ticket's in Jira, whether a message reached
+  a channel) and put the answer in the post. What is left, each with its source and the read that
+  was missing ("#1534 shown in review from Claude's narration; GitHub says open").
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
 - **Missing sources**: any role with no connector or no permission, and the fix.
 

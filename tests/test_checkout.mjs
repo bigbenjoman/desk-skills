@@ -261,6 +261,10 @@ has('#818 a private channel is found too', skill, '`channel_types` `public_chann
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
+has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
+has('#816 it is asked only when no read can settle it', skill, 'Only when no read can (no Slack connector, or §3 bars that channel)');
+has('#816 every check a read can answer is run before handing over', skill, '**Check before posting**: only what no read settles. Before handing over, run every check a\n  read §3 grants can answer');
+lacks('#816 an unread channel is no longer handed over by default', skill, 'If Slack can\'t confirm they posted one');
 
 t('nothing wrote a __pycache__ into the skill', existsSync(join(SCRIPTS, '__pycache__')), false);
 rmSync(R, { recursive: true, force: true });
