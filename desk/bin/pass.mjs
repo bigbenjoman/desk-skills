@@ -1461,6 +1461,8 @@ for (const t of CLAIMS.hours > 0 ? Object.values(queue().tickets) : []) {
 // included, is stopped with its session kept, and queued to resume once the window is done.
 const MAINT = await maintenance({
   selfQueue: QUEUE_FILE,
+  // This pass's view, so a handoff harvested above and not yet written still holds the release.
+  selfView: queue(),
   running: runningWorkers(queue()),
   stop: (t) => stopForWindow(t, {
     live: registryOk ? live : null,

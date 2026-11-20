@@ -112,6 +112,19 @@ rm -r "$T/desk/repos"
 printf '{"version":1,"batch":"r","tickets":{"R-1":{"key":"R-1","state":"running","stage":null,"handoff_stage":7}}}\n' > "$T/queue.json"
 step 2026-10-27T09:16:00Z
 check "AC4 a worker started at Stage 7 in this repo's queue holds it too" '[ "$(calls install)" = 0 ] && grep -q "R-1 at Stage 7" <<< "$out"'
+# #773: a ticket handed off to Stage 7 is triaged with its handoff pending until its session starts,
+# keeping the stage its last session reached.
+printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"triaged","stage":"6/9","handoff":"pending","handoff_stage":"7"},"R-3":{"key":"R-3","state":"triaged","stage":"3/9","handoff":"pending","handoff_stage":"4b"}}}\n' > "$T/queue.json"
+step 2026-10-27T09:16:20Z
+check "#773 a ticket waiting on its Stage 7 session holds the install, named as waiting" '[ "$(calls install)" = 0 ] && grep -q "waiting to install it for .*R-2 waiting on its Stage 7 session\"" <<< "$out" && ! grep -q "R-3" <<< "$out"'
+# A pass that harvested the handoff has it in memory before writing it: its view is judged, not the file.
+printf '{"version":1,"batch":"r","tickets":{"R-6":{"key":"R-6","state":"running","stage":"6/9"}}}\n' > "$T/queue.json"
+out=$(DESK_MAINT_NOW=2026-10-27T09:16:40Z MAINT_MJS="$B/maintenance.mjs" QF="$T/queue.json" node --input-type=module -e '
+  const { maintenance } = await import(process.env.MAINT_MJS);
+  const view = { version: 1, batch: "r", tickets: { "R-6": { key: "R-6", state: "triaged", stage: "6/9", handoff: "pending", handoff_stage: "7" } } };
+  console.log(JSON.stringify(await maintenance({ running: [], stop: () => ({ ok: false }), selfQueue: process.env.QF, selfView: view })));
+' 2>&1)
+check "#773 a handoff the pass holds in memory, not yet written, holds the install" '[ "$(calls install)" = 0 ] && grep -q "R-6 waiting on its Stage 7 session" <<< "$out"'
 printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
 
 # ---- AC5: the checkout off main, dirty, or with untracked files in the way --------------------
@@ -138,7 +151,10 @@ git -C "$T/desk-src" clean -fq -- added.txt
 # ---- AC1: passed, nobody pushing, a clean main; unrelated untracked files do not block ----------
 mkdir -p "$T/desk-src/.playwright-mcp" "$T/desk-src/docs/brand"
 echo a > "$T/desk-src/.playwright-mcp/log.txt"; echo b > "$T/desk-src/docs/brand/logo.svg"
+printf '{"version":1,"batch":"r","tickets":{"R-4":{"key":"R-4","state":"running","stage":"4/9"},"R-5":{"key":"R-5","state":"triaged"}}}\n' > "$T/queue.json"
 step 2026-10-27T09:26:00Z
+printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
+check "#773 the install line names the running workers that pick it up" 'grep -q "installed, main.s tests check passed on it; running workers that pick it up on their next call: .*R-4\"" <<< "$out" && ! grep -q "R-5" <<< "$out"'
 check "AC1 the checkout is fast-forwarded to origin/main's head" '[ "$(srchead)" = "$new" ]'
 check "AC1 install.sh runs once with nothing on stdin"      '[ "$(calls install)" = 1 ] && grep -qx "installed args=--any-branch stdin=0" "$T/install.calls"'
 check "AC1 installed.json names the new commit"             '[ "$(installed)" = "$new" ]'
