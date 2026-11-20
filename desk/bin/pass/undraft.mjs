@@ -54,7 +54,8 @@ const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync'
 // says it (its `at` aside) or on a dry run.
 export function undraftWrite(t, rec, { dry, at: now }) {
   const was = t.undraft ?? {};
-  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) return null;
+  // unknown_since too, so a record from before it was kept gains one on its first pass with no answer.
+  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr', 'unknown_since'].some((k) => (was[k] ?? null) !== (rec[k] ?? null))) return null;
   // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
   // when it became theirs, not from each pass that rewords it.
   const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? now : now;
