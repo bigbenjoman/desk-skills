@@ -3275,5 +3275,26 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#911 the next pass drops it', stalled('stall911').length, 0);
 }
 
+// ---- DS-925: an open ci-main-red issue assigned to the person is one item, read through gh on listing
+{
+  put('red925', { port: 4925, beat: 1, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+  const issue = { number: 12, title: 'main is red: a CI lane on main is failing, cancelled or stale', url: 'https://github.com/acme/red925/issues/12', createdAt: minsAgo(30) };
+  const reads = { ...N.READS, ciRed: (r) => (r.slug === 'acme__red925' ? [issue] : []) };
+  const reds = () => N.collect({ word: 'red925', reads }).items.filter((i) => i.kind === 'ci-red');
+  const s = reds();
+  t('DS-925 one item an issue, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ci-red:12 standing');
+  t('DS-925 its need names the issue and what to do', s[0]?.need, 'main is red in acme/red925: issue #12 (main is red: a CI lane on main is failing, cancelled or stale, https://github.com/acme/red925/issues/12) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked');
+  t('DS-925 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  t('DS-925 desk-q\'s count reads no gh', N.needsCount(loadRepos(Date.now(), 'red925').find((r) => r.slug === 'acme__red925' && r.batch == null)).shown, 0);
+  writeFileSync(GH_LOG, '');
+  N.collect({ word: 'red925' });
+  t('DS-925 listing asks gh for the open issues assigned to the person', readFileSync(GH_LOG, 'utf8').includes('issue list --repo acme/red925 --label ci-main-red --state open --assignee @me'), true);
+  t('DS-925 no read, no item', N.collect({ word: 'red925', reads: null }).items.filter((i) => i.kind === 'ci-red').length, 0);
+  const done = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'done', reads });
+  t('DS-925 done records nothing and says what clears it', `${done.ok} ${done.line} ${reds().length}`, 'true red925 ci-red:12: noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing. 1');
+  const off = N.record({ word: 'red925', ticket: 'ci-red:12', action: 'not-now', reads });
+  t('DS-925 not-now puts it off', `${off.ok} ${reds().length}`, 'true 0');
+}
+
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

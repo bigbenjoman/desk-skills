@@ -252,6 +252,12 @@ export const READS = {
       return { pr: p ? Number(p.number) : null, err: '' };
     } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
   },
+  // The repo's open ci-main-red issues assigned to the person gh is signed in as: [{ number, title,
+  // url, createdAt }], none when unread.
+  ciRed: (r) => {
+    try { return JSON.parse(execFileSync('gh', ['issue', 'list', '--repo', ghRepoOf(r), '--label', 'ci-main-red', '--state', 'open', '--assignee', '@me', '--limit', '5', '--json', 'number,title,url,createdAt'], quiet)); }
+    catch { return []; }
+  },
 };
 const mergedRead = new Map();
 // The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
@@ -1308,6 +1314,20 @@ const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
   item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
 
+// ---- a red main assigned to the person (tests/ci_main_red.mjs): one item an issue -------------------
+// CI's alarm keeps one issue labelled ci-main-red open, assigned to the repo's owner, while a lane on
+// main is red, cancelled or stale. It is read through gh only when items are listed (`read`, READS.ciRed),
+// never for desk-q's count, and listed on the repo's standing batch. done records nothing: the alarm
+// closes the issue once every lane is green and fresh, and the item goes with it.
+const CI_RED = 'ci-red:';
+const ciRedItems = (repos, scope, read) => [...new Set(scope.filter((b) => !b.error).map((b) => b.slug))].flatMap((slug) => {
+  const r = repos.find((b) => b.slug === slug && b.batch == null && !b.error) ?? scope.find((b) => b.slug === slug && !b.error);
+  return (read(r) ?? []).map((i) => ({ r, dir: r.stateDir, t: { key: `${CI_RED}${i.number}` }, item: { kind: 'ci-red', repoLevel: true,
+    need: `main is red in ${ghRepoOf(r)}: issue #${i.number} (${one(i.title)}, ${i.url}) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked`,
+    actions: [['done', 'the alarm closes the issue once every lane on main is green and fresh, and this item goes with it; done records nothing'], ['not-now']],
+    since: timeOf(i.createdAt) } }));
+});
+
 // ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
 // A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
 // passes again, so when that session stalls (a turn that ended short of its next step, a request that
@@ -1618,7 +1638,8 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 // A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
-export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
+// `ciRed` (READS.ciRed) reads the red-main issues assigned to the person; null reads none.
+export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS, ciRed = reads?.ciRed ?? null } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
@@ -1673,6 +1694,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  if (ciRed) for (const s of ciRedItems(repos, scope, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1758,7 +1780,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2054,8 +2076,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
 // row is set, each in its own batch (or names the live session to message); done on behind templates
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
-function recordRepoItem({ word, ticket, action, now, repos }) {
-  const c = collect({ word, now, repos, reads: null });
+function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
+  const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
   let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
@@ -2091,6 +2113,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     return say(true, 'done, so it is off your list.');
   }
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
+  if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
