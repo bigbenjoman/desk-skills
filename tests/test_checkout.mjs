@@ -263,7 +263,7 @@ has('#818 the clipboard is the fallback, said with its reason', skill, '"No draf
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
 has('#815 a meeting line needs evidence of attendance', skill, 'only for a meeting the user is shown to have attended');
 has('#815 an accepted invite or invite-only notes are not that evidence', skill, 'An accepted invite, or notes that list the user only as an invitee, is not evidence');
-has('#815 such a meeting is asked about, not posted', skill, '"Were you in <meeting> (<time>)? It has no\nline until you say so"');
+has('#815 such a meeting is asked about, not posted', skill, '"Were you in <meeting> (<time>)? It has no\n  line until you say so"');
 has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
 has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
 
