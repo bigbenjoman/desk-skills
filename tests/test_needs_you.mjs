@@ -3318,6 +3318,8 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   put('red756', { port: 4756, beat: 1, tickets: {
     'B-1': ticket(31, hold(['tests'], minsAgo(40))),
     'B-2': ticket(32, hold(['lint', 'tests'], minsAgo(20))),
+    // Held on two checks, one of them green since: only the red one is named.
+    'B-3': ticket(37, hold(['tests', 'typecheck'], minsAgo(10)), { pr_status: st(37, ['tests']) }),
     'M-1': { state: 'done', result: { pr: 29 }, merged_at: '2026-11-20T17:58:00.000Z' },
     'M-2': { state: 'done', result: { pr: 30 }, merged_at: '2026-11-20T18:10:00.000Z', base_red: hold(['tests'], minsAgo(90)) },
     // Records that are not holds now: a PR closed unmerged, one green at the head the hold read, one at
@@ -3331,7 +3333,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const s = reds();
   t('#756 one item for the base, on the standing batch', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'base-red:default standing');
   t('#756 its need names the checks, the open PRs held and the last merges desk made, newest first', s[0]?.need,
-    `the default branch is red on "lint" and "tests", so #31 (B-1) and #32 (B-2) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
+    `the default branch is red on "lint" and "tests", so #31 (B-1), #32 (B-2) and #37 (B-3) hold with no fix try and no worker repairs the default branch. The last merges desk made: #30 (M-2) on ${dayAndTime('2026-11-20T18:10:00.000Z')} and #29 (M-1) on ${dayAndTime('2026-11-20T17:58:00.000Z')}. Fix it on the default branch, or revert the merge that turned it red, then say done`);
   t('#756 it is aged from the earliest open hold', s[0]?.since, Date.parse(minsAgo(40)));
   t('#756 desk-q\'s count lists it', N.needsCount(loadRepos(Date.now(), 'red756').find((r) => r.slug === 'acme__red756' && r.batch == null)).items.some((i) => i.item.kind === 'base-red'), true);
   const done = N.record({ word: 'red756', ticket: 'base-red:default', action: 'done' });

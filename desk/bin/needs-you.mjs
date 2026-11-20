@@ -1073,23 +1073,25 @@ function baseRedItems(r) {
   const tickets = Object.values(r.q?.tickets ?? {});
   // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
   // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
-  const held = tickets.filter((t) => {
+  // `live` is each held ticket's checks still red on its PR, the only ones the item names.
+  const liveOf = (t) => {
     const b = t.base_red, st = prStatusOf(t);
-    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return false;
-    return latestPerCheck(st.checks ?? []).some((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion));
-  });
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
+    return latestPerCheck(st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name);
+  };
+  const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
   if (!held.length) return [];
   const base = r.q.base ?? 'the default branch';
-  const checks = [...new Set(held.flatMap((t) => t.base_red.checks))].sort();
+  const checks = [...new Set(held.flatMap((x) => x.live))].sort();
   const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
   const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
     .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
   const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
   return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,
     item: { kind: 'base-red', repoLevel: true, checks,
-      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map(prOf))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
+      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map((x) => prOf(x.t)))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
       actions: [['done', 'the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last'], ['not-now']],
-      since: timeOf(held.map((t) => t.base_red.since).filter(Boolean).sort()[0]) } }];
+      since: timeOf(held.map((x) => x.t.base_red.since).filter(Boolean).sort()[0]) } }];
 }
 
 // ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
