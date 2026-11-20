@@ -2510,6 +2510,10 @@ try {
   t('#912 the row names the tickets triaging, not one already queued nor a triage that ended', row.endsWith(' · triaging SV-1, SV-2'), true);
   t('#912 the repo screen says so beside its workers', lines(tw.run('--plain', 'sv').out).some((l) => /workers 0 of 2 · cap \d+ .*· triaging SV-1, SV-2/.test(l)), true);
   const { triagingKeys } = await import('../desk/bin/desk-q.mjs');
+  writeFileSync(join(tw.env.DESK_HOME, 'repos', 'acme__sv', 'queue.archive.json'), JSON.stringify({ version: 1, tickets: { 'SV-5': { key: 'SV-5', state: 'done', result: { pr: 3 } } } }));
+  writeFileSync(join(dir, 'SV-5.log'), '{}\n');
+  t('#912 a ticket archived from the queue and triaged again is triaging', rowOf(tw.run('--plain').out, 'sv')?.endsWith(' · triaging SV-1, SV-2, SV-5'), true);
+  rmSync(join(dir, 'SV-5.log'));
   t('#912 more than three are cut to three and a count', (() => { for (const k of ['SV-3', 'SV-4']) writeFileSync(join(dir, `${k}.log`), '{}\n'); return rowOf(tw.run('--plain').out, 'sv')?.endsWith(' · triaging SV-1, SV-2, SV-3 +1'); })(), true);
   t('#912 a batch with no triage folder has none', triagingKeys(join(tw.T, 'nowhere'), null).length, 0);
 }

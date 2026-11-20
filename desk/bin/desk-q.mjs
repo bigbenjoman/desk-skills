@@ -617,7 +617,7 @@ export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').fil
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
 // The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
-// writes <state>/triage/<KEY>.log as it runs, and a ticket in no queue yet is not admitted. A log
+// writes <state>/triage/<KEY>.log as it runs, and a ticket in no live queue row is not admitted yet. A log
 // untouched for TRIAGE_LIVE_MS is a triage that ended. Sorted keys, [] with none.
 export const TRIAGE_LIVE_MS = 5 * 60 * 1000;
 export function triagingKeys(stateDir, q, now = Date.now()) {
@@ -625,7 +625,8 @@ export function triagingKeys(stateDir, q, now = Date.now()) {
   let names;
   try { names = readdirSync(dir); } catch { return []; }
   return names.filter((n) => n.endsWith('.log')).map((n) => n.slice(0, -4)).filter((k) => {
-    if (q?.tickets?.[k]) return false;
+    // Live tickets only: an archived one, found behind them (attachArchive), can be admitted again.
+    if (q?.tickets && Object.hasOwn(q.tickets, k)) return false;
     try { return now - statSync(join(dir, `${k}.log`)).mtimeMs < TRIAGE_LIVE_MS; } catch { return false; }
   }).sort();
 }
