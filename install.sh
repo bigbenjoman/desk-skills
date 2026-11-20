@@ -837,10 +837,22 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Commit-attribution hook"
 
-install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
-chmod +x "$HOOK"
-ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
-wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+write_hook=1
+# A hook script desk never installed here (no pristine copy) is another tool's of the same name, and
+# can guard a repo desk has no config for yet: asked, as desk-jira is, and kept with no terminal.
+if [ -f "$HOOK" ] && ! cmp -s "$SRC/hooks/deny-ai-attribution.py" "$HOOK" && [ ! -f "$PRISTINE/.claude/hooks/deny-ai-attribution.py" ]; then
+  note "your ~/.claude/hooks/deny-ai-attribution.py was not installed by desk (another tool's, or your own)"
+  note "desk's blocks AI attribution only in a repo whose desk config sets §5 AI attribution to forbidden, so a repo yours guards has none until /desk-setup writes its config"
+  confirm "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" || write_hook=0
+fi
+if [ "$write_hook" = 1 ]; then
+  install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
+  chmod +x "$HOOK"
+  ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
+  wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+else
+  warn "kept your ~/.claude/hooks/deny-ai-attribution.py; desk's attribution rules do not run until it is replaced"
+fi
 
 # register_hook <check|apply> <script name> <command> <timeout> <matcher or ""> <event>...
 # Every desk hook in settings.json goes through this. A hook counts as registered on an event when a
@@ -877,8 +889,11 @@ PY
 }
 
 settings_hook() { register_hook "$1" deny-ai-attribution.py "python3 \"$HOOK\"" 10 Bash PreToolUse; }
-rc=0; settings_hook check || rc=$?
+rc=0
+# A hook script kept as yours is not desk's to register, nor to describe as desk's: its registration is left as it is.
+if [ "$write_hook" = 1 ]; then settings_hook check || rc=$?; else rc=3; fi
 case "$rc" in
+  3) note "registration left as it is: the hook script there is yours, not desk's" ;;
   0) ok "already registered in ~/.claude/settings.json" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the hook" ;;
   *)
