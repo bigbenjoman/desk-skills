@@ -347,6 +347,7 @@ export const CONFIG_ROWS = Object.freeze({
   'baseline-checks': { section: '4', row: 'Baseline checks' },
   'test-cmd': { section: '4', row: 'Unit tests' },
   'related-test-cmd': { section: '4', row: 'Related tests' },
+  'suite-weight': { section: '4', row: 'Suite weight' },
   'e2e-cmd': { section: '4', row: 'E2E tests' },
   'storybook-cmd': { section: '4', row: 'Storybook' },
   'build-cmd': { section: '4', row: 'Build' },

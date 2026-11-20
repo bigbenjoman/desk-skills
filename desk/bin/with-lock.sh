@@ -6,6 +6,7 @@
 #   with-lock.sh test  <config §4 Unit tests command> <specs>   # at config §3b's test worker cap: 4, 2 while the spawn gate says hold
 #   with-lock.sh tsc   <config §4 Typecheck command>
 #   with-lock.sh browser <screenshot or image script>
+#   with-lock.sh light <a suite §4 Suite weight calls light>  # what `test` becomes in such a repo
 #   with-lock.sh browser -- node shot.mjs                     # a leading -- is dropped with or without --cwd
 #   with-lock.sh test --cwd apps/api -- uv run pytest tests/x.py
 #   with-lock.sh nolock --cwd portal -- pnpm dev              # a directory, no lock
@@ -31,7 +32,14 @@
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
-name="${1:?usage: with-lock.sh <test|tsc|browser|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|light|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
+# A repo whose §4 Suite weight is `light` runs its suites under the light lock instead: one slot of its
+# own, box-wide, so a long light suite neither holds nor queues behind the heavy suites and typechecks
+# that share the test lock. It runs again under that name, so the pass, which counts only `test` and
+# `tsc` wrappers and the test lock's files (suite-wait.mjs), counts none of it. Typechecks stay heavy.
+if [ "$name" = test ] && [ "$(node "$here/desk-env.mjs" get suite-weight 2>/dev/null)" = light ]; then
+  exec bash "$here/with-lock.sh" light "$@"
+fi
 timeout=""
 if [ "${1:-}" = "--timeout" ]; then
   case "${2:-}" in ''|*[!0-9]*) echo "with-lock.sh: --timeout needs a whole number of seconds" >&2; exit 2 ;; esac
@@ -64,6 +72,7 @@ dir="${DESK_LOCK_DIR:-/tmp}"
 case "$name" in
   test|tsc) lock="$dir/desk-test.lock" ;;
   browser)  lock="$dir/desk-browser.lock" ;;
+  light)    lock="$dir/desk-light.lock" ;;
   # nolock: no lock at all, only --cwd. A §4 command item with a directory that is not heavy (a dev
   # server, a lint) runs this way, because the worker allow-list has no `cd`.
   nolock)   lock="" ;;

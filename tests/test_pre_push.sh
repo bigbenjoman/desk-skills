@@ -127,6 +127,28 @@ mkdir -p "$DESK_LOCK_DIR/desk-test.lock.d" "$DESK_LOCK_DIR/desk-test.lock.2.d"
 echo 999999 > "$DESK_LOCK_DIR/desk-test.lock.d/pid"; echo 999998 > "$DESK_LOCK_DIR/desk-test.lock.2.d/pid"
 out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 sh -c 'exit 7' 2>&1); rc=$?
 check "with-lock slots: a dead holder's slot is taken over" '[ $rc -eq 7 ]'
+# §4 Suite weight light: a repo's test lock becomes the light lock, apart from the heavy test lock.
+cp "$DESK_CONFIG" "$T/config.bak" 2>/dev/null || :
+printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Suite weight | `light` |\n' > "$DESK_CONFIG"
+bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/light1'; sleep 3" & h3=$!
+n=0; while [ ! -f "$T/light1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+out=$(bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 sh -c 'exit 8' 2>&1); rc=$?
+check "suite weight light: a typecheck runs beside a light suite, on the test lock" '[ $rc -eq 8 ]'
+out=$(bash "$SRC/desk/bin/with-lock.sh" test --timeout 0 true 2>&1); rc=$?
+check "suite weight light: a second light suite waits for the light lock" '[ $rc -eq 75 ] && [[ "$out" == *"the light lock"* ]]'
+if command -v flock >/dev/null 2>&1; then
+  check "suite weight light: it holds the light lock, not the test lock" '! flock -n "$DESK_LOCK_DIR/desk-light.lock" true && flock -n "$DESK_LOCK_DIR/desk-test.lock" true'
+else
+  check "suite weight light: it holds the light lock, not the test lock" '[ -d "$DESK_LOCK_DIR/desk-light.lock.d" ] && [ ! -e "$DESK_LOCK_DIR/desk-test.lock.d" ]'
+fi
+wait "$h3"
+printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Suite weight | `heavy` |\n' > "$DESK_CONFIG"
+DESK_TEST_LOCK_SLOTS=1 bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/heavy1'; sleep 3" & h4=$!
+n=0; while [ ! -f "$T/heavy1" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done
+out=$(DESK_TEST_LOCK_SLOTS=1 bash "$SRC/desk/bin/with-lock.sh" tsc --timeout 0 true 2>&1); rc=$?
+check "suite weight heavy: a suite holds the test lock as before" '[ $rc -eq 75 ]'
+wait "$h4"
+if [ -f "$T/config.bak" ]; then mv "$T/config.bak" "$DESK_CONFIG"; else rm -f "$DESK_CONFIG"; fi
 rm -f "$DESK_MACHINE"
 out=$(bash "$SRC/desk/bin/with-lock.sh" test sh -c ": > '$T/one'; sleep 2" 2>&1) & h3=$!
 n=0; while [ ! -f "$T/one" ] && [ $n -lt 100 ]; do sleep 0.05; n=$((n + 1)); done

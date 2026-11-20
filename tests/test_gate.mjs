@@ -353,6 +353,18 @@ rmSync(gtmp, { recursive: true, force: true });
   const holders = new Set([11, 12]);
   t('DS-662 waiters: every unheld with-lock test|tsc wrapper and childless flock, whatever the worktree', lockWaiters({ procs, holders }), 3);
   t('DS-662 waiters: none when ps cannot be read', lockWaiters({ procs: null, holders }), null);
+  // A light suite (§4 Suite weight) waits on the light lock, which holds no heavy run back: not counted.
+  const light = [...procs, { pid: 81, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh light --cwd . -- bash tests/run.sh' },
+    { pid: 91, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }];
+  t('a run waiting on the light lock is no waiter on the test lock', lockWaiters({ procs: light, holders }), 3);
+  // But a worker's suite on the light lock is still running or waiting: it is never taken for wedged.
+  const { suiteWait } = await import('../desk/bin/suite-wait.mjs');
+  const wt = '/w/T-1';
+  const at = (procs, cwds) => suiteWait(wt, { procs, cwds, holders: new Set() });
+  const runs = [{ pid: 100, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/run.sh' }, { pid: 101, ppid: 100, args: 'bash tests/run.sh' }];
+  t('a light suite running in the worktree is its suite', at(runs, [{ pid: 100, cwd: wt }]), 'suite');
+  t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
+  t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
   t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
     JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
   t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
