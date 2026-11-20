@@ -1233,12 +1233,7 @@ function dropDuplicate(t) {
   if (!baseFetched) { baseFetched = true; git('fetch', '-q', 'origin', DEFAULT_BRANCH); }
   const base = git('rev-parse', '--verify', '-q', `origin/${DEFAULT_BRANCH}`);
   if (!base.ok) return false;
-  const baseTree = git('rev-parse', `${base.out}^{tree}`);
-  const addsNothing = (head) => {
-    const own = git('rev-list', '--count', `${base.out}..${head}`);
-    const tree = git('merge-tree', '--write-tree', base.out, head);
-    return Number(own.out) > 0 && tree.ok && baseTree.ok && tree.out.split('\n')[0] === baseTree.out;
-  };
+  const addsNothing = (head) => Number(git('rev-list', '--count', `${base.out}..${head}`).out) > 0 && E.baseHolds(git, base.out, head);
   // Checked once per base and local head. The local branch goes first, with no network, so one that
   // adds something is never fetched for.
   const local = git('rev-parse', '--verify', '-q', `refs/heads/${t.branch}`);
