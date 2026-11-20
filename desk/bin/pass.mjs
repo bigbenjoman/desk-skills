@@ -3485,6 +3485,7 @@ const merges = [];
 const drafts = [];
 const undrafted = [];
 const reopens = [];
+const prReads = {};
 for (const t of Object.values(qNow.tickets)) {
   // A fix try is over once its worker has finished: later spawns are no longer that try's.
   if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) {
@@ -3504,19 +3505,27 @@ for (const t of Object.values(qNow.tickets)) {
     prStates[n] = t.pr_status.state;
     if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
     if (t.pr_status.merged_at && !commitOwed(t)) s = t.pr_status;
-  } else if (n in prStates) continue;
+  }
   if (!s) {
-    s = readPrStatus(n);
+    // A PR recorded on two tickets (the merge driver's shipped_pr on one, shippedElsewhere's on the
+    // other) is read once a pass, and each ticket keeps its status: one left without it would owe that
+    // PR's review for good (harvest.mjs postMergeUnmade). Only the first acts on it as a draft,
+    // undrafted or reopened PR, so nothing is done to the PR twice.
+    const again = n in prReads;
+    s = again ? prReads[n] : readPrStatus(n);
     if (!s) continue;
+    prReads[n] = s;
     s = withErrors(withUntriggered(withHistory(s, t.pr_status)), t.pr_status);
     // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
     // behind it reads as stuck while the reopen is outstanding.
-    prStates[n] = owed && s.state === 'CLOSED' ? 'OPEN' : s.state;
+    if (!again || (owed && s.state === 'CLOSED')) prStates[n] = owed && s.state === 'CLOSED' ? 'OPEN' : s.state;
     q('set', t.key, `pr_status=${JSON.stringify(s)}`);
-    if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
-    if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
-    if ((s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) || (owed && s.state === 'CLOSED')) reopens.push({ t, s, owed });
-    else if (owed && !DRY) q('set', t.key, 'reopening=null');
+    if (!again) {
+      if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
+      if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
+      if ((s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) || (owed && s.state === 'CLOSED')) reopens.push({ t, s, owed });
+      else if (owed && !DRY) q('set', t.key, 'reopening=null');
+    }
   }
   if (s.state === 'MERGED' && !t.merged_at && !DRY) {
     const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));

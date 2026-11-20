@@ -823,6 +823,27 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view (70[4-8]|710) " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
+# DS-796: one PR recorded on two tickets, by the pass's shippedElsewhere on PM-15 (queued first) and by
+# the merge driver's shipped_pr on PM-16. Both get its status from one read, so neither owes it for good.
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+writeFileSync('$T/pm-715.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/715'));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 715 "*) cat "$T/pm-715.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q add PM-15; q set PM-15 state=done result.pr=715
+q add PM-16; q set PM-16 state=done result.pr=715 shipped_pr=715 merged_at=2026-11-10T09:00:00Z
+unmade(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { postMergeUnmade } from '$B/harvest.mjs'; console.log(postMergeUnmade(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a PR recorded on two tickets is read once, and each keeps its status, so the merge driver's owes its review no longer" \
+  '[ "$(grep -c "pr view 715 " "$T/gh-calls")" = 1 ] && [ "$(field PM-15 pr_status.pr)" = 715 ] && [ "$(field PM-16 pr_status.pr)" = 715 ] && [ "$(field PM-16 post_merge_read)" = 715 ] && [ "$(unmade PM-16)" = false ] && [ "$(unmade PM-15)" = false ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.
