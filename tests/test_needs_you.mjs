@@ -2694,6 +2694,16 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
 }
 
+// #925: a park waiting on an outside reviewer's review of the PR names no step of the person's, so it
+// waits and needs-you does not count it.
+{
+  const rv = { ...parked('A', 30, 'Wait for agent-pullbot to review PR #3468 at the head'), park: { question: 'Wait for agent-pullbot to review PR #3468 at the head', since: minsAgo(30), clears_when: { kind: 'pr-reviewed', pr: 3468, login: 'agent-pullbot' } } };
+  put('i925', { port: 4652, beat: 1, supervised: true, tickets: { 'R-1': rv, 'R-2': { ...parked('A', 30, 'Which price?'), park: { question: 'Which price?', since: minsAgo(30), clears_when: { kind: 'none' } } } } });
+  const r925 = loadRepos().find((r) => r.name === 'i925');
+  t('#925 a park cleared by a PR review is not listed by needs-you', N.collect({ word: 'i925' }).items.map((i) => i.t.key).join(), 'R-2');
+  t('#925 desk-q shows it waiting, and counts only the one the person settles', `${r925.rows.find((x) => x.t.key === 'R-1').k} ${N.needsCount(r925).shown}`, 'waiting 1');
+}
+
 // A ticket held behind `by`, and the keys needs-you lists for batch `name`, for the blocks below.
 const behind = (k, by) => ({ state: 'parked', lane: 'A', held_by: by, park: { question: `held by orchestrator: blocked by ${by} — starts once their PRs merge (${k})` } });
 const keysIn = (name) => N.collect({ word: name }).items.map((i) => i.t.key);

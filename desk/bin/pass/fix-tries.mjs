@@ -92,7 +92,12 @@ function* fixTry(t, p, s) {
   // worker before anything is put to the person.
   let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads));
   if (!c) { if (t.stuck && !s.dry) yield set(t.key, 'stuck=null'); return; }
-  if (c.call === 'wait') { yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); return; }
+  // Waiting on an outside reviewer leaves the person nothing to do, so an earlier stuck record goes.
+  if (c.call === 'wait') {
+    if (c.external && t.stuck && !s.dry) yield set(t.key, 'stuck=null');
+    yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`);
+    return;
+  }
   // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
   const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
   if (b) {

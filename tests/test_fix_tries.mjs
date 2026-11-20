@@ -724,7 +724,7 @@ const bot = (oid, body, state = 'COMMENTED', id = 'R1') => ({ id, author: { logi
 const extPl = (reviews, threads = []) => ({ data: { repository: { pullRequest: { headRefOid: HEAD, reviews: { nodes: reviews }, reviewThreads: { nodes: threads } } } } });
 const thread = (id, review, body, resolved = false) => ({ id, isResolved: resolved, path: 'src/a.ts', line: 3, comments: { nodes: [{ author: { login: 'agent-pullbot' }, body, pullRequestReview: { id: review } }] } });
 const extCtx = (payload) => ({ required: ['tests'], stateChecks: EXT, external: (login) => externalReview(payload, login) });
-t('#737 no review of the bot\'s at the head: it waits, with no desk review posted', verdictTry(tk(), extRed, extCtx(extPl([bot(OLD_737, 'P0: old')]))), null);
+t('#737 no review of the bot\'s at the head: it waits, with no desk review posted', verdictTry(tk(), extRed, extCtx(extPl([bot(OLD_737, 'P0: old')])))?.call, 'wait');
 const ex737 = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, 'P0 (1): src/a.ts drops the row', 'CHANGES_REQUESTED')], [thread('T1', 'R1', 'P0 drops the row'), thread('T2', 'R1', 'fixed already', true)])));
 t('#737 its review at the head goes to a feedback fix try, not a review try', `${ex737?.call} ${ex737?.fix.kind}`, 'requeue feedback');
 t('#737 the try quotes its open threads and its review text', `${ex737?.fix.threads.map((x) => x.id ?? "body").join()} ${ex737?.fix.threads.at(-1).text.startsWith("agent-pullbot's review at the head: P0 (1)")}`, 'T1,body true');
@@ -732,6 +732,14 @@ const extStuck = verdictTry(tk(), extRed, extCtx(extPl([bot(HEAD, '', 'APPROVED'
 t('#737 reviewed at the head with nothing to work, still red: the person\'s', extStuck?.call, 'stuck');
 t('#737 an external check\'s error line saying no verdict is at the head sends no review try', gateTry(tk(), pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['no review verdict is at the head'] }]), { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
 t('#737 externalReview reads no payload as null', externalReview({}, 'agent-pullbot'), null);
+// #925: whatever an external gate's text names (protected files, an approval, a missing review), it
+// waits for its reviewer: no protected-files try, and the wait says so.
+const protRed = pr([ok('tests'), { ...red('🔐 Review gate', '88'), errors: ['Approval required — 1 protected file(s): `supabase/migrations/1.sql`'] }]);
+t('#925 an external gate asking a protected-path approval gets no protected-files try', gateTry(tk(), protRed, { ...ctx({ stateChecks: EXT }), base: 'main' }), null);
+t('#925 nor does a draft', draftGateTry(tk(), { ...protRed, isDraft: true }, { required: ['tests'], stateChecks: EXT }), null);
+t('#925 a non-external check asking the same still gets one', gateTry(tk(), protRed, { ...ctx({ stateChecks: [] }), base: 'main' })?.fix?.kind, 'protected');
+const w925 = verdictTry(tk(), protRed, extCtx(extPl([])));
+t('#925 with no review of the bot\'s at the head it waits, naming the bot', `${w925?.call} ${w925?.why}`, 'wait its "🔐 Review gate" check reads agent-pullbot\'s review, so it waits for agent-pullbot to review the head');
 t('#737 the try is marked for the outside reviewer', JSON.stringify(ex737?.fix.external), JSON.stringify({ login: 'agent-pullbot', check: '🔐 Review gate' }));
 t('#737 its brief names that reviewer and asks for no desk review', fixBrief(tk({ fix: ex737.fix })).includes("Post no desk review on this PR: agent-pullbot's next review of the head you push is what the check reads."), true);
 t('#737 its task posts no desk review on the new head', /review the new head with desk-review|post that review/.test(fixTask(tk({ fix: ex737.fix }))), false);

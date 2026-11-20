@@ -693,7 +693,8 @@ export function verdictTry(t, s, ctx) {
 // A ready PR red on a §4 State check of kind external, which reads an outside reviewer's review: that
 // reviewer's to clear, so desk posts no review for it, and its review feedback goes ahead of desk's own
 // feedback route (feedbackFix's merge-feedback-first, whose reviewDecision stays changes-requested
-// until that reviewer reviews again). With no review of theirs at the head it waits (null); with one,
+// until that reviewer reviews again). With no review of theirs at the head it waits ({ call: 'wait' },
+// which the pass reports; null while a check is still pending); with one,
 // its open threads and its review's text go to a fix worker as review feedback (`external` on the try:
 // the worker posts no desk review, and the PR waits for that reviewer's next review). undefined where
 // no such check is red. ctx: { required, advisory, stateChecks, external(login) (review-threads.mjs
@@ -704,7 +705,8 @@ export function externalTry(t, s, ctx, gate = evaluateGate(s.checks ?? [], { req
   if (gate.pending.length) return null;
   const f = reds[0];
   const r = ctx.external?.(f.login);
-  if (!r?.reviewed || r.head !== s.head) return null;
+  // No review of theirs at the head: the PR waits for one, whatever the check's text names, and says so.
+  if (!r?.reviewed || r.head !== s.head) return { call: 'wait', external: true, why: `its "${f.name}" check reads ${f.login}'s review, so it waits for ${f.login} to review the head` };
   const body = r.body ? [{ id: null, text: `${f.login}'s review at the head: ${r.body.replace(/\s+/g, ' ').slice(0, 500)}` }] : [];
   const c = feedbackFix(t, { pr: s.pr, head: s.head, decision: r.state, threads: [...r.threads, ...body], external: { login: f.login, check: f.name } });
   return c ?? { call: 'stuck', why: `its "${f.name}" check, which reads ${f.login}'s review, is red though ${f.login} reviewed the head with nothing to work: re-run the check if its run started before that review` };
@@ -737,7 +739,7 @@ export function gateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== false || !s.head) return null;
   const gate = readGate(s, ctx);
   if (!gate) return null;
-  const lines = errorLinesOf(s, gate);
+  const lines = errorLinesOf(s, gate, ctx);
   const prot = protectedTry(t, s, lines, false);
   if (prot) return prot;
   // An external reviewer's check is never one a desk review clears, whatever its error line says.
@@ -759,9 +761,12 @@ function readGate(s, ctx) {
   const gate = evaluateGate(s.checks ?? [], { required: ctx.required ?? [], advisory: ctx.advisory ?? [] });
   return gate.state === 'fail' && !gate.pending.length ? gate : null;
 }
-// The error lines of the gate's failing checks, each with its check's name.
-const errorLinesOf = (s, gate) => {
-  const failing = new Set(gate.failing.map((f) => f.name));
+// The error lines of the gate's failing checks, each with its check's name. A §4 State check of kind
+// external is left out: what it asks (a protected-path approval, a review) its outside reviewer gives,
+// so no protected-files or review try is sent for it (externalTry waits for that reviewer instead).
+const errorLinesOf = (s, gate, ctx = {}) => {
+  const external = new Set((ctx.stateChecks ?? []).filter((x) => x.kind === 'external').map((x) => x.name));
+  const failing = new Set(gate.failing.map((f) => f.name).filter((n) => !external.has(n)));
   return (s.checks ?? []).filter((c) => failing.has(c.name)).flatMap((c) => (c.errors ?? []).map((line) => ({ name: c.name, line })));
 };
 // The protected-files try for the files these error lines ask an approval for, where one is left
@@ -782,7 +787,7 @@ function protectedTry(t, s, lines, draft) {
 export function draftGateTry(t, s, ctx) {
   if (s?.state !== 'OPEN' || s.isDraft !== true || !s.head) return null;
   const gate = readGate(s, ctx);
-  return gate ? protectedTry(t, s, errorLinesOf(s, gate), true) : null;
+  return gate ? protectedTry(t, s, errorLinesOf(s, gate, ctx), true) : null;
 }
 
 // A draft whose required checks are red (undraft.mjs `checks`) goes to a fix worker, with each failing
