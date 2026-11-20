@@ -926,19 +926,36 @@ export function sections(text) {
   return out;
 }
 
-// The ticket's Design section, up to the next heading. Null when there is none.
-// A design tool's link, wherever it sits: a Figma file, or a Claude Design artifact.
-export const DESIGN_URL = /https?:\/\/(?:[a-z0-9-]+\.)*(?:figma\.com\/|claude\.ai\/\S*\b(?:design|artifact)\b)/i;
-// The ticket's Design section, and, when it holds no link, every line elsewhere with a design tool's
-// link (one filed under References or a heading of the ticket's own is the ticket's design all the
-// same). Null when there is neither.
+// The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
+// code reads as prose and line numbers still match the source.
+export function blankCode(text) {
+  let fence = null; let macro = false;
+  return String(text ?? '').split(/\r?\n/).map((l) => {
+    if (macro) { if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
+    if (fence) { if (l.trim().startsWith(fence)) fence = null; return ''; }
+    const f = /^\s*(`{3,}|~{3,})/.exec(l);
+    if (f) { fence = f[1]; return ''; }
+    const m = /\{(?:code|noformat)(?::[^}]*)?\}/i.exec(l);
+    if (m) { if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
+    return l;
+  });
+}
+
+// A design tool's link outside the Design section: a Figma file, or a Claude Design project
+// (claude.ai/design/...). Any other claude.ai link (a report, a dashboard) is no design.
+export const DESIGN_URL = /https?:\/\/(?:[a-z0-9-]+\.)*(?:figma\.com\/|claude\.ai\/design\/)/i;
+// The ticket's Design section, up to the next heading. With no Design section, or a blank one, every
+// line elsewhere holding a design tool's link stands in for it (one filed under References is the
+// ticket's design all the same). Lines in a code block are not read. Null when there is neither. A
+// Design section with anything in it, "No UI." included, is the answer as written.
 export function designSection(text) {
   const all = sections(text);
   const s = all.find((x) => /^design\b/i.test(x.name));
   const own = s ? s.lines.map((l) => l.text).join('\n') : null;
-  if (own && /https?:\/\//i.test(own)) return own;
-  const elsewhere = all.filter((x) => x !== s).flatMap((x) => x.lines.map((l) => l.text)).filter((l) => DESIGN_URL.test(l));
-  return elsewhere.length ? [own, ...elsewhere].filter((l) => l != null).join('\n') : own;
+  if (own != null && own.trim()) return own;
+  const plain = sections(blankCode(text).join('\n'));
+  const elsewhere = plain.filter((x) => !/^design\b/i.test(x.name)).flatMap((x) => x.lines.map((l) => l.text)).filter((l) => DESIGN_URL.test(l));
+  return elsewhere.length ? elsewhere.join('\n') : own;
 }
 
 export function claudeDesignLinks(section) {

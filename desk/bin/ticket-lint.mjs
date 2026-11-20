@@ -17,24 +17,10 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { baseRef, checkTicket, designDir, designSection, sections } from './desk-design.mjs';
+import { baseRef, blankCode, checkTicket, designDir, designSection, sections } from './desk-design.mjs';
 import { configValue, isNone, stateDir } from './desk-env.mjs';
 import { isEpic } from './desk-q-eta.mjs';
 
-// The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
-// code reads as prose and line numbers still match the source.
-function blankCode(text) {
-  let fence = null; let macro = false;
-  return String(text ?? '').split(/\r?\n/).map((l) => {
-    if (macro) { if (/\{(?:code|noformat)\}/i.test(l)) macro = false; return ''; }
-    if (fence) { if (l.trim().startsWith(fence)) fence = null; return ''; }
-    const f = /^\s*(`{3,}|~{3,})/.exec(l);
-    if (f) { fence = f[1]; return ''; }
-    const m = /\{(?:code|noformat)(?::[^}]*)?\}/i.exec(l);
-    if (m) { if (!/\{(?:code|noformat)\}/i.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
-    return l;
-  });
-}
 
 // Prose only: monospace, code spans and URLs say nothing about the ticket's own state.
 const prose = (s) => s.replace(/\{\{.*?\}\}/g, ' ').replace(/`[^`\n]*`/g, ' ').replace(/\b(?:https?|mailto):[^\s|\]]+/gi, ' ');
@@ -100,7 +86,7 @@ export function lintTicket(t, { root, dir, ref } = {}) {
 
   const noUi = all.some((l) => /^\W*no ui\b/i.test(prose(l.text)));
   if (!noUi && !/https?:\/\//i.test(designSection(lines.join('\n')) ?? '')) {
-    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section (one elsewhere in the description counts too), or write "No UI." there');
+    add('blocking', 'design', 'no design link and no "No UI." line: put the Figma or Claude Design URL in a Design section (with none, one elsewhere in the description counts), or write "No UI." there');
   }
 
   if ('size' in t && !/sub-?task/i.test(t.type ?? '')) {
