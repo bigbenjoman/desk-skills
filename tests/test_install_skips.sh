@@ -176,4 +176,17 @@ q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" d
 check "desk-q is on PATH and runs from any directory" \
   '[ -x "$HOME/.local/bin/desk-q" ] && [[ "$q_out" == "◆ "* ]] && [[ "$q_out" == *" workers running │ "* ]] && [[ "$q_out" == *"  r  "*"no batch"* ]]'
 
+# #733: another tool's hook script of the same name, which desk never installed (no pristine copy), on
+# an install with no terminal: replacing it is asked and skipped, the file kept, and it is not registered.
+rm -f "$HOME/.agents/.desk-pristine/.claude/hooks/deny-ai-attribution.py"
+printf '#!/usr/bin/env python3\n# theirs\n' > "$HOME/.claude/hooks/deny-ai-attribution.py"
+out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
+check "#733 replacing another tool's hook script is asked, and skipped with no terminal" \
+  '[[ "$summary" == *"  SKIP  Replace your ~/.claude/hooks/deny-ai-attribution.py with desk'"'"'s (yours is backed up first)?"* ]]'
+check "#733 the file is kept, and the install says so" \
+  '[ "$(sed -n 2p "$HOME/.claude/hooks/deny-ai-attribution.py")" = "# theirs" ] && [[ "$out" == *"kept your ~/.claude/hooks/deny-ai-attribution.py"* ]]'
+check "#733 a kept hook script is not registered or described as desk's" \
+  '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
+
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]
