@@ -3,7 +3,7 @@
 # and copied for every case. Written for bash 3.2 as well as 4+.
 #   repo_template <name> <builder>  builds template <name> unless it is already built
 #   repo_copy <name> <dest>         copies it into <dest> (made if missing), remotes pointed there
-# Templates live under $DESK_TPL_ROOT, which tests/run.sh sets once per run; a suite run on its own
+# Templates live under $REPO_TPL_ROOT, which tests/run.sh sets once per run; a suite run on its own
 # sets it to a directory of its own first. A name is one builder's: suites share a template only
 # under the same name and builder.
 # The builder is called with an empty directory to build in, and its exit status is the build's.
@@ -29,8 +29,8 @@ repo_tpl_remotes(){
 
 repo_template(){
   local name=$1 builder=$2 root dir lock build pid
-  root=${DESK_TPL_ROOT:-}
-  [ -n "$root" ] || { echo "repo_template: DESK_TPL_ROOT is not set" >&2; return 2; }
+  root=${REPO_TPL_ROOT:-}
+  [ -n "$root" ] || { echo "repo_template: REPO_TPL_ROOT is not set" >&2; return 2; }
   mkdir -p "$root" || return 2
   dir="$root/$name"; lock="$root/$name.lock"
   while [ ! -d "$dir" ]; do
@@ -62,7 +62,7 @@ repo_template(){
 }
 
 repo_copy(){
-  local dir="${DESK_TPL_ROOT:-}/$1" dest=$2
+  local dir="${REPO_TPL_ROOT:-}/$1" dest=$2
   [ -d "$dir" ] || { echo "repo_copy: no template $1 (repo_template builds it)" >&2; return 2; }
   mkdir -p "$dest" && cp -a "$dir/." "$dest/" || return 1
   repo_tpl_remotes "$dest" "$REPO_TPL_MARK/" "$dest/"

@@ -52,7 +52,7 @@ export PATH="$T/stub:$PATH" DESK_HOME="$T/desk" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPIL
 # The repos every case starts from: an origin holding main and feat/x, with main two commits ahead,
 # and a primary checkout on main.
 # shellcheck source=lib/repo_template.sh
-. "$S/lib/repo_template.sh"; export DESK_TPL_ROOT="${DESK_TPL_ROOT:-$T/tpl}"
+. "$S/lib/repo_template.sh"; export REPO_TPL_ROOT="${REPO_TPL_ROOT:-$T/tpl}"
 base_sync_repos(){
   git init -q --bare "$1/origin.git" && git init -q "$1/repo" && git -C "$1/repo" remote add origin "$1/origin.git" &&
   echo base > "$1/repo/a.txt" && git -C "$1/repo" add a.txt && git -C "$1/repo" commit -q -m init &&
