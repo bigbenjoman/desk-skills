@@ -6,23 +6,39 @@
 #   tests/run.sh test_jira.sh test_ci.mjs only those suites (file names or paths under tests/), plus
 #                                         the attribution hook self-test; an unknown name is an error
 #   tests/run.sh --no-hook-test <suite>...  without the hook self-test (every CI shard but the first)
-#   tests/run.sh -j 3 [<suite>...]        up to 3 suites at once (default 1, one after another); each
-#                                         suite's report is printed in one piece, in name order
+#   tests/run.sh -j 3 [<suite>...]        up to 3 suites at once, the longest recorded in
+#                                         suite_durations.json first; each suite's report is printed in
+#                                         one piece, in name order. -j 1 runs them one after another in
+#                                         name order. Without -j: `desk-env get test-cap`, else a quarter
+#                                         of the cores (at least 1).
+# Each report gives the suite's user plus system CPU seconds, and a run that finishes appends one line
+# to ~/.desk-autopilot/test-runs.jsonl ($TEST_RUNS_LOG): its date, suites, job count, wall and CPU
+# seconds, and the one-minute load average at its start.
 set -u
-hook=1; jobs=1
+hook=1; jobs=; jset=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-hook-test) hook=0; shift ;;
-    -j) jobs=${2:-}; shift; [ $# -gt 0 ] && shift ;;
-    -j*) jobs=${1#-j}; shift ;;
+    -j) jobs=${2:-}; jset=1; shift; [ $# -gt 0 ] && shift ;;
+    -j*) jobs=${1#-j}; jset=1; shift ;;
     *) break ;;
   esac
 done
-case "$jobs" in ''|*[!0-9]*) jobs=0 ;; esac
+if [ $jset = 0 ]; then
+  jobs=$(desk-env get test-cap 2>/dev/null); jobs=${jobs//[[:space:]]/}
+  case "$jobs" in ''|*[!0-9]*|0) cores=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
+    case "$cores" in ''|*[!0-9]*) cores=4 ;; esac
+    jobs=$((cores / 4)); [ "$jobs" -ge 1 ] || jobs=1 ;;
+  esac
+fi
+case "$jobs" in ''|*[!0-9]*) jobs=0 ;; *) jobs=$((10#$jobs)) ;; esac
 [ "$jobs" -ge 1 ] || { echo "-j wants how many suites run at once, a whole number from 1"; exit 2; }
 T="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=suite_env.sh
 . "$T/suite_env.sh"
+# Where the run's record goes ($TEST_RUNS_LOG, set empty for none). A run.sh a suite starts records
+# nothing: only the outer run is a run.
+runs_log=${TEST_RUNS_LOG-$HOME/.desk-autopilot/test-runs.jsonl}; export TEST_RUNS_LOG=
 OUT="$(mktemp -d "${TMPDIR:-/tmp}/desk-test.XXXXXX")" || exit 1
 pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
@@ -32,13 +48,21 @@ trap stop_jobs EXIT
 trap 'exit 130' INT; trap 'exit 143' TERM
 echo "bash $BASH_VERSION ($SH); scripts with #!/usr/bin/env bash get $(command -v bash)"
 [ "$jobs" -eq 1 ] || echo "up to $jobs suites at once"
-fail=0; total=0; failed=""
+fail=0; total=0; failed=""; cpu_all=0; ran=""; start=$SECONDS
+# The one-minute load average now: Linux's /proc/loadavg, else macOS's `{ 1.23 1.45 1.67 }`.
+if [ -r /proc/loadavg ]; then read -r load _ </proc/loadavg; else load=$(sysctl -n vm.loadavg 2>/dev/null); load=${load#\{ }; load=${load%% *}; fi
+case "$load" in ''|*[!0-9.]*) load=null ;; esac
 # The run's suites, by index: label, how it runs (hook, sh or mjs), its file and the name a failure gives.
 n=0
 add() { lab[n]=$1; kind[n]=$2; file[n]=$3; name[n]=$4; n=$((n + 1)); }
-# Runs suite $1 into its own output file, then writes "<exit> <seconds>" to its done file, last, so a
-# done file means the output is complete. The suite replaces its subshell (exec), so with -j above 1
-# the pid this job waits on and passes a TERM to is the suite's own.
+# Milliseconds in a `times` figure such as 1m2.345s (1m2,345s where the locale's decimal point is a
+# comma), into $ms.
+to_ms() { local m=${1%%m*} w=${1#*m} f; w=${w%s}; w=${w/,/.}; f=${w#*.}; [ "$f" = "$w" ] && f=0; f="${f}000"
+  ms=$(( (10#$m * 60 + 10#${w%%.*}) * 1000 + 10#${f:0:3} )); }
+# Runs suite $1 into its own output file, then writes "<exit> <seconds> <CPU ms>" to its done file,
+# last, so a done file means the output is complete. The suite replaces its subshell (exec), so with -j
+# above 1 the pid this job waits on and passes a TERM to is the suite's own. The CPU is the second line
+# of `times` (the job's waited-for children), written to a file because $(times) would be a new process.
 job() { s=$SECONDS; c=
   suite() { case "${kind[$1]}" in
       hook) exec python3 "${file[$1]}" --self-test ;;
@@ -51,15 +75,20 @@ job() { s=$SECONDS; c=
     (suite "$1") >"$OUT/$1.out" 2>&1 & c=$!
     wait "$c"; rc=$?
   fi
-  echo "$rc $((SECONDS - s))" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
+  times >"$OUT/$1.times"; { read -r _; read -r cu cs; } <"$OUT/$1.times"
+  to_ms "$cu"; cpu=$ms; to_ms "$cs"; cpu=$((cpu + ms))
+  echo "$rc $((SECONDS - s)) $cpu" >"$OUT/$1.tmp" && mv "$OUT/$1.tmp" "$OUT/$1.done"; }
+# Whole and thousandths of a second for $1 milliseconds.
+secs() { printf '%d.%03d' $(($1 / 1000)) $(($1 % 1000)); }
 # A suite fails the run on a FAIL line, a non-zero exit, a bash error, or no checks at all. A failed
 # suite's whole output but its ok lines is printed, so whatever it said about the failure is in the log.
 # `took: <s> s` is the suite's own time, which tests/plan_shards.mjs --record reads.
-report() { o="$OUT/$1.out"; read -r rc took <"$OUT/$1.done"; bad=0
+report() { o="$OUT/$1.out"; read -r rc took cpu <"$OUT/$1.done"; bad=0
   printf '\n== %s\n' "${lab[$1]}"
   grep -E "checks passed|^SKIP" "$o"; c=$(grep -c "^ok" "$o")
   [ "$c" -gt 0 ] || c=$(grep -oE '[0-9]+ checks passed' "$o" | grep -oE '^[0-9]+' | head -n 1)
-  c=${c:-0}; total=$((total + c)); echo "ok: $c"; echo "took: $took s"
+  c=${c:-0}; total=$((total + c)); echo "ok: $c"; echo "took: $took s"; echo "cpu: $(secs "$cpu") s"
+  cpu_all=$((cpu_all + cpu)); ran="$ran${ran:+,}\"${name[$1]}\""
   grep -qE 'FAIL|too many arguments|unbound variable|bad substitution|syntax error' "$o" && bad=1
   [ "$rc" -eq 0 ] || { echo "exit $rc"; bad=1; }
   [ "$c" -gt 0 ] || { echo "no checks ran"; bad=1; }
@@ -90,21 +119,41 @@ while IFS= read -r f; do
 done <<EOF
 $suites
 EOF
+# The order suites start in, ord[]: name order with -j 1, otherwise the order plan_shards.mjs plans
+# CI's shards in (the longest recorded in suite_durations.json first), or name order if it cannot say.
+# It is named by its physical path: it runs its CLI only when argv[1] is its own resolved path.
+name_order() { i=0; while [ $i -lt $n ]; do ord[i]=$i; i=$((i + 1)); done; }
+name_order
+if [ "$jobs" -gt 1 ] && [ $n -gt 1 ]; then
+  k=0; TP=$(cd "$T" && pwd -P)
+  while IFS= read -r s; do
+    i=0; while [ $i -lt $n ] && [ "${name[$i]}" != "$s" ]; do i=$((i + 1)); done
+    [ $i -lt $n ] && { ord[k]=$i; k=$((k + 1)); }
+  done <<EOF
+$(node "$TP/plan_shards.mjs" --order "${name[@]}" 2>/dev/null)
+EOF
+  [ $k -eq $n ] || name_order
+fi
 # Up to $jobs suites run at once, each in its own temporary HOME and directories (the suites' own
-# mktemp), and each is reported once it and every suite before it have finished. With -j 1 each runs
-# in the foreground, one after another.
-started=0; shown=0
+# mktemp), and each is reported once it and every suite before it in name order have finished. With
+# -j 1 each runs in the foreground, one after another. $live holds the started suites not yet done.
+started=0; shown=0; live=""
 while [ $shown -lt $n ]; do
   if [ -f "$OUT/$shown.done" ]; then report $shown; shown=$((shown + 1)); continue; fi
-  running=$((started - shown)); k=$shown
-  while [ $k -lt $started ]; do [ -f "$OUT/$k.done" ] && running=$((running - 1)); k=$((k + 1)); done
+  still=""; running=0
+  for k in $live; do [ -f "$OUT/$k.done" ] || { still="$still $k"; running=$((running + 1)); }; done
+  live=$still
   if [ $running -lt "$jobs" ] && [ $started -lt $n ]; then
-    if [ "$jobs" -eq 1 ]; then (job $started); else job $started & pids="$pids $!"; fi
-    started=$((started + 1)); continue
+    i=${ord[$started]}
+    if [ "$jobs" -eq 1 ]; then (job "$i"); else job "$i" & pids="$pids $!"; fi
+    live="$live $i"; started=$((started + 1)); continue
   fi
   sleep 0.2
 done
 wait; pids=""
+wall=$((SECONDS - start))
+[ -z "$runs_log" ] || ( mkdir -p "$(dirname "$runs_log")" && printf '{"date":"%s","suites":[%s],"jobs":%d,"wall_s":%d,"cpu_s":%s,"load":%s}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ran" "$jobs" "$wall" "$(secs "$cpu_all")" "$load" >>"$runs_log" ) 2>/dev/null
 # The last line names each failed suite by file, for the CI shard that ran it to report.
 [ "$fail" = 0 ] && { echo; echo "all passed: $total checks"; } || { echo; echo "FAILURES above ($total checks passed)"; echo "failed suites:$failed"; }
 exit $fail
