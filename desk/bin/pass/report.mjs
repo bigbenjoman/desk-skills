@@ -197,7 +197,7 @@ export function decideGroups(s) {
 // Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
 // clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
 // releases by itself, nor is a park a pass settles: its live reads, or a clears-when a script reads,
-// unless the park carries a note saying the PR it waits on conflicts with its base).
+// unless the park carries a note saying the PR it waits on conflicts with its base or was closed).
 // The snapshot adds:
 //   queue                    the queue as the pass ends
 //   report, blocked          the report lists, and blockedOf the pass's rows
@@ -222,8 +222,8 @@ export function verdictOf(s) {
     ...r.personStalls,
     ...s.blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
   ];
-  // A park with a note is still the person's: the PR it waits on conflicts with its base, so it cannot
-  // merge on its own and the condition a pass checks would never hold.
+  // A park with a note is still the person's: the PR it waits on conflicts with its base or was closed
+  // unmerged, so it cannot merge on its own and the condition a pass checks would never hold.
   const parked = ownParks(s).filter(({ t, p }) => p.note || !passChecks(t)).map(({ p }) => p);
   const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';

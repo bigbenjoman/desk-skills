@@ -79,7 +79,8 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen, and every 2 minutes
   (`DESK_RUN_RECHECK_MS`) while a park waits on an Actions run or a PR's checks. A park with a recorded
   condition is settled by those checks, so neither the decider, the digest nor the pass's NOTIFY line takes it up, unless
-  only the person makes it hold (a file they are asked to save, or issue links).
+  only the person makes it hold (a file they are asked to save, or issue links). A park on a PR
+  merging whose PR conflicts with its base or was closed unmerged stays in NOTIFY, with that note.
 - **A park on a push GitHub refused with a 5xx clears by being pushed**: `git push origin <branch>
   succeeds` (`git push --force-with-lease=<branch>:<sha> origin <branch> succeeds` for a lease push,
   naming the SHA it may overwrite) is one more condition, and its check is the push itself, from the

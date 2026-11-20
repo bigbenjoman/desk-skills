@@ -4367,13 +4367,15 @@ for (const t of stuck) report.waiting.push(stoppedHold(t)
 // holds, waits on itself: one line names the cycle. The PR is read for its merge state, which the done
 // tickets' reads above never cover for a held ticket's PR, so a conflict is said there, or on the park's
 // own item when there is no cycle (`parkNotes`, read into the verdict). No fix try goes to it: the hold
-// may still be the person's to settle.
+// may still be the person's to settle. A PR closed unmerged is noted the same way: the park can never
+// clear, and a note keeps it with the person rather than the pass (pass/report.mjs verdictOf).
 const parkNotes = new Map();
 {
   const states = new Map();
   const conflictOf = (n) => {
     if (!states.has(n)) states.set(n, readPrStatus(n));
     const s = states.get(n);
+    if (s?.state === 'CLOSED') return `PR #${n} was closed without merging`;
     return s?.state === 'OPEN' && s.mergeState === 'DIRTY' ? `PR #${n} conflicts with ${s.base ?? REPO_DEFAULT}` : null;
   };
   for (const w of prParkWaits(qNow, (t) => !putOff(t) && !waitingOnRead(t))) {

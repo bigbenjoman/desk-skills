@@ -96,5 +96,10 @@ fresh ac5; held B X 12; pr 12 BLOCKED
 out=$(verdict)
 check "DS-615 AC5 a mergeable PR with no cycle adds nothing" "has '$CYCLE.length === 0 && !v.parked.some((p) => p.note) && !/PARK NOTES/.test(v.message)'"
 
+# DS-852: no cycle, PR 12 closed unmerged: the park can never clear, so it stays the person's.
+fresh closed; printf '{"state":"CLOSED","isDraft":false,"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","baseRefName":"main","headRefOid":"abc"}\n' > "$T/fx/12.json"
+out=$(verdict)
+check "DS-852 a park on a PR closed unmerged is parked for the person, with a note" "has 'v.parked.find((p) => p.key === \"A\")?.note === \"PR #12 was closed without merging\"'"
+
 echo "park cycle: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
