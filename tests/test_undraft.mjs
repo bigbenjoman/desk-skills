@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { followOnIn, followOnPending } from '../desk/bin/harvest.mjs';
+import { undraftWrite } from '../desk/bin/pass/undraft.mjs';
 import { undraftCall, buildPark, mergePark, undraftComment, leftOver, verdictCarries, restsOnCarries, reviewCarries, targetedReview, reviewScope, restsOn, restsOnAlways, personHold, cellPlan, humanReviewed, DESK_REVIEW_CLEAN, VERDICT_CHECK } from '../desk/bin/undraft.mjs';
 import { untriggeredChecks, runnerFault, DEFAULT_STATE_CHECKS } from '../desk/bin/gate.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
@@ -981,6 +982,45 @@ t('DS-576 and another login still is', humanReviewed({ reviews: [review('looks o
   t('#897 once every check has finished, the red one goes on as before', done?.call, 'checks');
   const status = ci([{ name: 'Review gate', status: 'completed', conclusion: 'failure', runId: 31 }, { name: 'external CI', status: 'in_progress', conclusion: null, runId: null }]);
   t('#897 one pending with no run to time out does not hold a red draft', status?.call, 'checks');
+}
+
+
+// #752: a draft GitHub has no mergeability answer for is aged per head, and is the person's past the limit.
+{
+  const NOW = '2026-11-20T12:00:00.000Z';
+  const ago = (m) => new Date(Date.parse(NOW) - m * 60000).toISOString();
+  const wedged = (undraft, head = HEAD) => undraftCall({ key: 'T-752', undraft }, { number: 752, head, mergeable: 'UNKNOWN', mergeState: 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO), head)], checks: [] },
+    { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: NOW });
+  const first = wedged(undefined);
+  t('#752 a first pass with no answer waits, from now', `${first?.call} ${first?.unknown_since}`, `wait ${NOW}`);
+  const later = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(30) });
+  t('#752 within the hour it still waits, from when it was first seen at that head', `${later?.call} ${later?.unknown_since}`, `wait ${ago(30)}`);
+  const late = wedged({ call: 'wait', pr: 752, sha: HEAD, unknown_since: ago(61) });
+  t('#752 past the hour it is the person\'s, naming the wedged merge ref and what gives a fresh one', `${late?.call} | ${late?.why} | ${late?.action}`,
+    `person | GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 61 minutes: its merge ref looks wedged, and GitHub starts no run for that head | push a new commit to #752 (an empty one will do) for a fresh merge ref; if it still has no answer, open a new PR from its branch`);
+  t('#752 once the person\'s, it stays theirs from the same time', wedged({ call: 'person', pr: 752, sha: HEAD, unknown_since: ago(90) })?.unknown_since, ago(90));
+  t('#752 a new head starts the clock again', wedged({ call: 'wait', pr: 752, sha: OLD, unknown_since: ago(90) })?.call, 'wait');
+}
+
+
+// #752: a draft already waiting on no answer when this shipped (its record has no unknown_since) gains one
+// on its first pass, and passes on from there reach the person: undraftCall and undraftWrite together.
+{
+  const HEAD752 = HEAD;
+  const pass = (t, now) => {
+    const c = undraftCall(t, { number: 752, head: HEAD752, mergeable: 'UNKNOWN', mergeState: 'UNKNOWN', body: '', reviews: [review(marker(ALL_ZERO))], checks: [] },
+      { perm: 'yes', localReview: '/code-review', clean: ALL_ZERO, handle: 'ben', required: ['tests'], passAt: now });
+    const rec = { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: HEAD752, carried_from: null, pr: 752, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}) };
+    const w = undraftWrite(t, rec, { dry: false, at: now });
+    return { c, t: w ? { ...t, undraft: JSON.parse(w.fields[0].slice('undraft='.length)) } : t, wrote: !!w };
+  };
+  const legacy = { key: 'T-752', undraft: { call: 'wait', why: 'GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)', action: null, sha: HEAD752, carried_from: null, pr: 752, at: '2026-11-20T08:00:00.000Z' } };
+  const p1 = pass(legacy, '2026-11-20T10:00:00.000Z');
+  t('#752 a pre-change wait record gains unknown_since on its first pass', `${p1.wrote} ${p1.t.undraft.unknown_since}`, 'true 2026-11-20T10:00:00.000Z');
+  const p2 = pass(p1.t, '2026-11-20T10:30:00.000Z');
+  t('#752 a pass within the hour writes nothing and keeps it', `${p2.wrote} ${p2.c.call} ${p2.c.unknown_since}`, 'false wait 2026-11-20T10:00:00.000Z');
+  const p3 = pass(p2.t, '2026-11-20T11:05:00.000Z');
+  t('#752 a pass past the hour is the person\'s', `${p3.c.call} ${p3.wrote}`, 'person true');
 }
 
 process.exit(fails ? 1 : 0);

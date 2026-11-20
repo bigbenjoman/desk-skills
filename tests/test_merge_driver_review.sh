@@ -186,4 +186,18 @@ rv_prs ext2 "211|fix/T-211|$SHA211|fix: T-211 reviewed outside|"
 RV_CONFIG="$T/config-rv-ext.md"; rvloop; rvloop; RV_CONFIG=""
 check "#991 with that check not at the head, the desk verdict is still wanted" '[ -z "$(merged)" ] && echo "$out" | grep -q "#211 green at d21111111, HELD with no clean review at its head"'
 
+# #752: a ready PR GitHub has no mergeability answer for is aged per head; past the limit the queue asks
+# the person for a new commit, and any answer clears that.
+SHA221=d221111111111111111111111111111111111111
+vp 221 "$SHA221" -
+rv_prs unk "221|fix/T-221|$SHA221|fix: T-221 wedged|"
+jq '.["221"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+rvloop
+check "#752 the first loop with no answer records when it was first seen, and asks nobody yet" '[ "$(cut -d" " -f1 "$SD/unknown-221")" = "$SHA221" ] && [ "$(qf T-221 .merge_blocked)" = null ]'
+out=$(DESK_CONFIG="$T/config-rv.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 MERGE_DRIVER_UNKNOWN_SECS=0 bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1)
+check "#752 past the limit the queue asks the person for a new commit, naming the wedged merge ref" '[ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 0 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 0 minutes"'
+jq '.["221"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+rvloop
+check "#752 once GitHub answers, the note and the record are cleared" '[ "$(qf T-221 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-221" ]'
+
 finish review
