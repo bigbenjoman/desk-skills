@@ -293,6 +293,10 @@ has('#814 only a check-out that covered the same day moves the window', skill, '
 has('#814 one for an earlier day, posted this morning, leaves it whole', skill, 'A\ncheck-out for an earlier day, even one posted this morning, leaves the window whole');
 has('#818 and says where it went', skill, 'Say "Saved as a draft in #name, not sent"');
 has('#818 the clipboard is the fallback, said with its reason', skill, '"No draft saved (<why>); copied to the clipboard"');
+has('#816 a drafted channel update is settled by reading the channel', skill, 'Read the channel or thread after the draft\'s time to see');
+has('#816 it is asked only when no read can settle it', skill, 'Only when no read can (no Slack connector, or §3 bars that channel)');
+has('#816 every check a read can answer is run before handing over', skill, '**Check before posting**: only what no read settles. Before handing over, run every check a\n  read §3 grants can answer');
+lacks('#816 an unread channel is no longer handed over by default', skill, 'If Slack can\'t confirm they posted one');
 lacks('#818 a draft no longer waits for the user to ask', skill, 'only if they ask');
 has('#817 work a batch did is reported as ordinary items', skill, '**Work a batch did is the person\'s work, reported the same way.**');
 has('#817 never the tooling that ran it', skill, 'Never what ran\nit: no "the autopilot", "a worker" or "the batch" in the post, unless the user asks for that.');
