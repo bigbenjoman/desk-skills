@@ -75,6 +75,7 @@ import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
+import { FAILED, normaliseRollup, latestPerCheck } from './gate.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
@@ -140,6 +141,18 @@ export function intakeReasons(r) {
 // Blockers not yet done, by key.
 const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter((b) => b.category !== 'done').map((b) => b.key);
 
+// `gh pr list` on `repo` with `args`, as an array, or null when GitHub cannot be read.
+const ghPrList = (repo, args) => {
+  const r = spawnSync('gh', ['pr', 'list', '--repo', repo, ...args, '--limit', '50'], { encoding: 'utf8' });
+  try { const v = r.status === 0 ? JSON.parse(r.stdout) : null; return Array.isArray(v) ? v : null; } catch { return null; }
+};
+// The PRs in `state` whose title or head branch names `key`, with `fields`, or null when GitHub cannot be read.
+const prsNamingKey = (repo, state, key, fields) => {
+  const names = new RegExp(keyPattern(key));
+  return ghPrList(repo, ['--state', state, '--search', key, '--json', `number,title,headRefName,${fields}`])
+    ?.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`)) ?? null;
+};
+
 // Whether ticket `key`'s code is on `base`: true once a PR naming it has merged into `base`, or into
 // another branch with its merge commit on origin/<base> or with a PR from that branch merged into `base`
 // after it (a squash or rebase promotion, which writes new commits), and when no PR is left to land
@@ -148,14 +161,9 @@ const openBlockers = (r) => (Array.isArray(r.blockers) ? r.blockers : []).filter
 export function landedOn(key, base) {
   let repo, root;
   try { repo = E.ghRepo(); root = E.repoRoot(); } catch { return null; }
-  const list = (args) => {
-    const r = spawnSync('gh', ['pr', 'list', '--repo', repo, ...args, '--limit', '50'], { encoding: 'utf8' });
-    try { const v = r.status === 0 ? JSON.parse(r.stdout) : null; return Array.isArray(v) ? v : null; } catch { return null; }
-  };
-  const prs = list(['--state', 'all', '--search', key, '--json', 'number,state,title,headRefName,baseRefName,mergeCommit,mergedAt']);
-  if (!prs) return null;
-  const names = new RegExp(keyPattern(key));
-  const mine = prs.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`));
+  const list = (args) => ghPrList(repo, args);
+  const mine = prsNamingKey(repo, 'all', key, 'state,baseRefName,mergeCommit,mergedAt');
+  if (!mine) return null;
   const reaches = (sha) => !!sha && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', sha, `origin/${base}`], { stdio: 'ignore' }).status === 0;
   const merged = mine.filter((p) => p.state === 'MERGED');
   if (merged.some((p) => p.baseRefName === base || reaches(p.mergeCommit?.oid))) return true;
@@ -168,6 +176,27 @@ export function landedOn(key, base) {
   }
   if (unread) return null;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
+}
+
+// Where ticket `key`'s code waits when landedOn finds it merged only into another branch: { branch, pr,
+// state }, `branch` the latest branch other than `base` a PR naming it merged into, and the open PR from
+// that branch into `base` as `pr` (its number, null for none) and `state`: none, draft, red (the latest
+// run of a check failed, as gate.mjs reads a rollup) or open. null when no PR naming it merged
+// elsewhere, or GitHub cannot be read.
+export function unpromotedBase(key, base) {
+  let repo;
+  try { repo = E.ghRepo(); } catch { return null; }
+  const prs = prsNamingKey(repo, 'merged', key, 'baseRefName,mergedAt');
+  if (!prs) return null;
+  const away = prs.filter((p) => p.baseRefName && p.baseRefName !== base)
+    .sort((a, b) => (Date.parse(b.mergedAt) || 0) - (Date.parse(a.mergedAt) || 0))[0];
+  if (!away) return null;
+  const open = ghPrList(repo, ['--state', 'open', '--head', away.baseRefName, '--base', base, '--json', 'number,isDraft,statusCheckRollup']);
+  if (!open) return null;
+  const p = open[0];
+  if (!p) return { branch: away.baseRefName, pr: null, state: 'none' };
+  const red = latestPerCheck(normaliseRollup(p.statusCheckRollup)).some((c) => FAILED.has(c.conclusion));
+  return { branch: away.baseRefName, pr: p.number, state: p.isDraft ? 'draft' : red ? 'red' : 'open' };
 }
 
 // How a triaged ticket's blockers hold it in a batch holding `tickets`, on `base`: `held`, those in

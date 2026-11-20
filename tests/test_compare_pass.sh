@@ -63,6 +63,15 @@ mktree due running running 2
 cmp "$T/base" "$T/due"
 check "DS-763 AC2 a deadline worked out from now differently lists both times" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue A-1 due: base \"20[0-9-]+T[0-9:.]+Z\", head \"20[0-9-]+T[0-9:.]+Z\"$" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
 
+# An elapsed wall time two runs print a second apart is noise; one minutes apart is a difference.
+mktree wall0 running running 1 ' (0m 00s since it started)'
+mktree wall1 running running 1 ' (0m 01s since it started)'
+mktree wall5 running running 1 ' (5m 00s since it started)'
+cmp "$T/wall0" "$T/wall1"
+check "#917 an elapsed wall time a second apart on the two trees is not reported" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+cmp "$T/wall0" "$T/wall5"
+check "#917 one minutes apart is listed, with both times" '[ $rc = 1 ] && echo "$out" | grep -qF "(0m 00s since it started)" && echo "$out" | grep -qF "(5m 00s since it started)"'
+
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
 mktree shahead running running 1 ' at origin/main 4a1f0c2e9'

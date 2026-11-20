@@ -419,7 +419,7 @@ q set C-8 'undraft={"call":"ready","why":null,"action":null,"sha":"'"$H0"'","pr"
 check "DS-316 AC1 a verdict carried across a merge of the base undrafts the PR at the new head" \
   'grep -q "^pr ready 751 --repo acme/widgets" "$T/gh-calls" && [ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 fix_tries)" = null ]'
 check "DS-316 AC1 and the pass record says it was carried from the reviewed commit" \
-  '[ "$(field C-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #751 (C-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as only clean merges of main came since"'
+  '[ "$(field C-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #751 (C-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as only clean merges of main and empty commits came since"'
 check "DS-316 AC1 its comment names the commit reviewed and the head it holds on" \
   'grep -qF "pr comment 751 --repo acme/widgets --body Out of draft: the desk-review verdict posted on \`${CA:0:12}\` is clean" "$T/gh-calls" && grep -qF "holds on this head (\`${CB:0:12}\`)" "$T/gh-calls"'
 check "DS-316 AC2 a verdict its own commits moved past sends the head to a review worker" \

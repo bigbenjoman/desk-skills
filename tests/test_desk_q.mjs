@@ -1,7 +1,7 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -93,11 +93,13 @@ const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
 // ---- AC1: live batches first, then the quiet one that needs you, then the no-batch line
 const ov = W.run('--plain');
 const order = lines(ov.out).filter((l) => /^ {2}[a-z]/.test(l)).map((l) => l.trim().split(/\s+/)[0]);
-t('AC1 live batches, then the quiet batch that needs you', order.join(), 'desk-skills,voicepa,pr-ninja');
+// pranicuk's KAN-2 waits only on a pass to release it, and its session's passes stopped an hour ago (#911).
+t('AC1 live batches, then the quiet batches that need you', order.join(), 'desk-skills,voicepa,pr-ninja,pranicuk');
 t('AC1 one line names the three repos with no batch', lines(ov.out).some((l) => l.startsWith('  3 more set up with no batch: forewatt, gygg-platform, yield-index')), true);
 t('a fresh heartbeat for another queue file leaves a quiet batch quiet', /^\s+pr-ninja\s+■ stopped · 2h 0m /.test(rowOf(ov.out, 'pr-ninja') ?? ''), true);
-// ---- AC2: a quiet batch whose unfinished tickets all wait is not listed
-t('AC2 quiet batch with only waiting tickets is hidden', rowOf(ov.out, 'pranicuk'), undefined);
+// ---- AC2: a quiet batch whose unfinished tickets all wait is listed only for its stopped passes (#911):
+// nothing else in it needs you, and it counts that one item
+t('AC2 quiet batch with only waiting tickets is listed for its stopped passes alone', / 1 +1 +no history /.test(rowOf(ov.out, 'pranicuk') ?? ''), true);
 // ---- AC3: --all lists every set-up repo, no-batch ones marked
 const all = W.run('--plain', '--all');
 t('AC3 every set-up repo listed', ['voicepa', 'desk-skills', 'pr-ninja', 'pranicuk', 'forewatt', 'yield-index', 'gygg-platform'].every((n) => rowOf(all.out, n)), true);
@@ -164,7 +166,7 @@ const S = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch:
 t('AC6 (DS-217 AC5) held behind a ticket parked for its own reason reads waiting, which needs you', /VPL-6\s+· waiting\s+behind VPL-5, which needs you\s/.test(S.run('--plain', 'voicepa').out), true);
 const blockedViews = { overview: S.run('--plain').out, queue: S.run('--plain', 'voicepa').out, ticket: S.run('--plain', 'voicepa', 'show', 'VPL-7').out };
 t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no screen says blocked or stuck',
-  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 3 tickets need you .*│ voicepa 2 · pr-ninja 1$/.test(lines(blockedViews.overview)[0]),
+  JSON.stringify([...Object.values(blockedViews).map((s) => /stuck|blocked/i.test(s)), /^◆ 4 tickets need you .*│ voicepa 2 · pr-ninja 1 · pranicuk 1$/.test(lines(blockedViews.overview)[0]),
     /VPL-7\s+◆ needs you\s+held by 2 Jira tickets outside: start anyway\?/.test(blockedViews.queue),
     lines(blockedViews.ticket)[0].startsWith('VPL-7  ◆ needs you'), lines(blockedViews.ticket).some((l) => /^ {2}◌ EXT-2 +In Progress$/.test(l))]),
   '[false,false,false,true,true,true,true]');
@@ -1132,7 +1134,7 @@ const NY = world({ voicepa: { port: 3100, conc: '3 / 5', beat: 4, queue: { batch
   'VPL-1': { state: 'parked', park: { question: 'which copy?' } }, 'VPL-2': { state: 'parked', park: { question: 'which price?' } },
   'VPL-3': { state: 'parked', held_by: 'VPL-1', park: { question: 'held by orchestrator: blocked by VPL-1' }, open_questions: 1, outside_blockers: [{ key: 'EXT-3', category: 'new' }] } } } } });
 t('DS-187 AC1 (DS-279 AC6) the overview opens with how many need you, each repo\'s count, most first, a ticket held outside the batch among them',
-  lines(NY.run('--plain').out)[0], '◆ 4 tickets need you │ voicepa 3 · pr-ninja 1');
+  lines(NY.run('--plain').out)[0], '◆ 5 tickets need you │ voicepa 3 · pr-ninja 1 · pranicuk 1');
 const NYs = screen({ kind: 'overview', all: false }, 400);
 await sleep(20);
 t('DS-187 AC1 on the screen it is the first line under the tabs', `${NYs.frame()[1].startsWith('1 Queue')} ${NYs.frame()[3].startsWith('◆ ')} ${NYs.frame()[3] === lines(Q.overview(Q.loadRepos(), { avail: 30 }))[0]}`, 'true true true');
@@ -1188,7 +1190,8 @@ put(I.T, I.env, 'halted', { port: 4840, conc: '1 / 2', beat: 300, queue: { batch
 const Hs = screen({ kind: 'repo', slug: 'acme__halted' }, 60);
 await sleep(20);
 const hsFrame = Hs.frame();
-const hsHead = hsFrame.slice(2, hsFrame.findIndex((l) => /^ +# {2}TICKET/.test(l)));
+// The lines under the dates badge, which the stopped passes' item (#911) brings in, cut at this width as any badge is.
+const hsHead = hsFrame.slice(2, hsFrame.findIndex((l) => /^ +# {2}TICKET/.test(l))).filter((l) => !l.startsWith('Tickets that need your answer'));
 t('DS-187 AC5 on a narrow terminal the stopped batch\'s resume instruction wraps, never cut with …',
   `${hsHead.some((l) => l.endsWith('…'))} ${hsHead.every((l) => l.length <= 60)} ${hsHead.includes('To resume: run /desk-autopilot in halted.')}`, 'false true true');
 Hs.ui.finish(0);
@@ -1663,6 +1666,22 @@ const r541 = () => Q.loadRepos(FIXED).find((r) => r.name === 's541');
 t('DS-541 AC5 held behind a blocker outside the batch that is Done but not on the base: it says so, never "until it is Done"; an open one still waits until it is Done',
   [railText(Q.ticketScreen(r541(), 'DS-541', { now: FIXED, width: 120 })), railText(Q.ticketScreen(r541(), 'DS-542', { now: FIXED, width: 120 }))].join(' / '),
   'Moves without you: behind OUT-2, outside this batch: Done, waiting for its code to reach main. / Moves without you: behind OUT-1, outside this batch, until it is Done and on main.');
+// DS-811 AC6: held behind a blocker Done a day or more whose code sits on another branch, recorded by the
+// pass (unpromoted): the row and the ticket page show that branch's promotion PR state, never "no date".
+dated('s811', 5811, { hours: twelveHours, tickets: {
+  'DS-705': { ...heldBy('OUT-2'), held_outside: 'OUT-2', outside_blockers: [], unpromoted: { 'OUT-2': { branch: 'feat/DS-631-levers', pr: 640, state: 'red', since: new Date(FIXED - 48 * 3600_000).toISOString() } } },
+  'DS-706': { ...heldBy('OUT-3'), held_outside: 'OUT-3', outside_blockers: [], unpromoted: { 'OUT-3': { branch: 'feat/DS-631-levers', pr: null, state: 'none', since: new Date(FIXED - 48 * 3600_000).toISOString() } } } } });
+for (const [k, b] of [['DS-705', 'OUT-2'], ['DS-706', 'OUT-3']]) writeFileSync(join(I.env.HOME, '.desk-autopilot', 'acme__s811', 'triage', `${k}.json`), JSON.stringify({ ticket: k, summary: 'held outside', size: 'M', blockers: [{ key: b, category: 'done' }] }));
+{
+  const r811 = Q.loadRepos(FIXED).find((r) => r.name === 's811');
+  const row = (k) => lines(Q.repoScreen(r811, { now: FIXED })).find((x) => new RegExp(`^ +\\d+ {2}${k} `).test(x)) ?? '';
+  t('DS-811 AC6 its row shows the promotion PR state where the date would be, never "no date"',
+    ['DS-705', 'DS-706'].map((k) => `${/promo (red|none)/.exec(row(k))?.[0]} ${row(k).includes('no date')}`).join(' / '), 'promo red false / promo none false');
+  const page = lines(Q.ticketScreen(r811, 'DS-705', { now: FIXED, width: 120 }));
+  t('DS-811 AC6 its page says it ships once the branch is promoted, with the promotion PR, and why it waits',
+    `${page.find((l) => l.startsWith('Ships'))} | ${railText(Q.ticketScreen(r811, 'DS-705', { now: FIXED, width: 120 }))}`,
+    'Ships     not until feat/DS-631-levers is promoted  Promotion PR #640, red. | Moves without you: behind OUT-2, outside this batch: Done, its code on feat/DS-631-levers with promotion PR #640, red, asked whether to promote it.');
+}
 // DS-685 AC5: held behind a step only the person takes, in no batch (a Person-input label), it needs
 // the person and its row names the step; behind an ordinary ticket in no batch it still waits.
 dated('s685', 5685, { hours: twelveHours, tickets: { 'DS-685': { ...heldBy('OPS-7'), held_outside: 'OPS-7' }, 'DS-686': { ...heldBy('CODE-1'), held_outside: 'CODE-1' } } });
@@ -2479,6 +2498,27 @@ try {
 } finally {
   fsCjs.readFileSync = realReadFileSync;
   syncBuiltinESMExports();
+}
+
+// ---- #912: a triage running for a ticket in no queue yet is said on the row and the repo's screen
+{
+  const tw = world({ voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null,
+    sv: { port: 3100, conc: '2 / 3', beat: 1, queue: { batch: 'sv', concurrency: 2, tickets: { 'SV-0': { state: 'triaged', open_questions: 0 } } } } });
+  const dir = join(tw.env.HOME, '.desk-autopilot', 'acme__sv', 'triage');
+  mkdirSync(dir, { recursive: true });
+  for (const k of ['SV-2', 'SV-1', 'SV-0', 'SV-9']) writeFileSync(join(dir, `${k}.log`), '{}\n');
+  const old = (NOW - 10 * 60000) / 1000;
+  utimesSync(join(dir, 'SV-9.log'), old, old);
+  const row = rowOf(tw.run('--plain').out, 'sv') ?? '';
+  t('#912 the row names the tickets triaging, not one already queued nor a triage that ended', row.endsWith(' · triaging SV-1, SV-2'), true);
+  t('#912 the repo screen says so beside its workers', lines(tw.run('--plain', 'sv').out).some((l) => /workers 0 of 2 · cap \d+ .*· triaging SV-1, SV-2/.test(l)), true);
+  const { triagingKeys } = await import('../desk/bin/desk-q.mjs');
+  writeFileSync(join(tw.env.DESK_HOME, 'repos', 'acme__sv', 'queue.archive.json'), JSON.stringify({ version: 1, tickets: { 'SV-5': { key: 'SV-5', state: 'done', result: { pr: 3 } } } }));
+  writeFileSync(join(dir, 'SV-5.log'), '{}\n');
+  t('#912 a ticket archived from the queue and triaged again is triaging', rowOf(tw.run('--plain').out, 'sv')?.endsWith(' · triaging SV-1, SV-2, SV-5'), true);
+  rmSync(join(dir, 'SV-5.log'));
+  t('#912 more than three are cut to three and a count', (() => { for (const k of ['SV-3', 'SV-4']) writeFileSync(join(dir, `${k}.log`), '{}\n'); return rowOf(tw.run('--plain').out, 'sv')?.endsWith(' · triaging SV-1, SV-2, SV-3 +1'); })(), true);
+  t('#912 a batch with no triage folder has none', triagingKeys(join(tw.T, 'nowhere'), null).length, 0);
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');

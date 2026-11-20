@@ -492,8 +492,9 @@ export async function health({ state = E.stateDir(), slug = E.repoSlug(), now = 
   let held = null;
   if (reviewerTold) {
     held = reviewerItem(slug, reviewerOut);
-    stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${HELD_WORDS}`);
-    push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${HELD_WORDS}. Fix: ${reviewerOut.fix}` });
+    const words = `${HELD_WORDS}${reviewerOut.kind === 'mismatch' ? MISMATCH_WORDS : ''}`;
+    stalls.push(`health: reviewer: ${reviewerOut.why} — fix: ${reviewerOut.fix}; ${words}`);
+    push.push({ key: held.key, text: `desk ${slug}: ${held.signin ? `the account desk posts review verdicts from cannot be read (${reviewerOut.why})` : reviewerOut.why}, so ${words}. Fix: ${reviewerOut.fix}` });
   }
   return { off: false, reused, at, results, failing, holding, recovered, unconfirmed, notRequired: skip, line, stalls, push, reviewer: held, logins: loginResults };
 }
@@ -510,7 +511,10 @@ export function refusedIn(rec, login, own) {
 // The same, read from the last health run at `state`.
 export const refusedLogin = (state, login, own) => refusedIn(readRecord(state), login, own);
 
-const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
+const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, except a fix for a review at its head with findings, and build workers still start';
+// A mismatch still lets through the review the merge driver needs (pass/fix-tries.mjs heldReview): it
+// counts desk's verdict though the gate does not.
+export const MISMATCH_WORDS = ', except the review a head with no clean verdict needs, which the merge driver counts though the gate does not';
 // The repo item a failing reviewer check is told as, and that holds a PR's tries: a sign-in failure is
 // a sign-in item of its own, not a mismatch. { key, signin, why, fix, ... the check's result }.
 export function reviewerItem(slug, r) {

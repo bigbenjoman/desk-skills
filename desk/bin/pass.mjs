@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed, sameStep, settleSteps } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -29,7 +29,7 @@ import { urgentPromotion, promotionRef } from './promotion.mjs';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom } from './scope-report.mjs';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
-import { batchCost, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -52,15 +52,15 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry, personCall, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES } from './failure-class.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
-import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, isProgress, holdsFor } from './intake.mjs';
-import { heldPutOff } from './needs-you.mjs';
+import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
+import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
@@ -81,6 +81,8 @@ import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
+import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
+import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -793,6 +795,10 @@ function buildParkOf(t, question) {
 // §1 GitHub handle, with the §4 Review account desk posts verdicts from, whose desk-review verdicts
 // and reviews count as the user's own (E.verdictLogins), or null unread.
 const conflictHandle = E.verdictLogins();
+// §4 Gate reviewers' logins as loginIn reads a list; null where the row is unset or does not read.
+const gateHandle = () => {
+  try { return E.gateReviewers()?.join(',') || null; } catch { return null; /* the reviewer check says it */ }
+};
 // A park whose only question is who merges its PR (undraft.mjs mergePark): its clears-when `cond` is
 // its own open PR merging, and that PR is green with a clean review at its head. Null when it is not,
 // or unread. `grantedOnly` reads nothing from GitHub unless desk may undraft and merge it.
@@ -858,7 +864,7 @@ const ADVANCE_HANDLERS = {
   'open-pr': (a) => sh('gh', ['pr', 'list', '--repo', GH_REPO, '--head', a.branch, '--state', 'open', '--json', 'number', '-q', '.[0].number'], { tolerant: true }),
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
-  'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir()) }),
+  'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { light: true }) }),
   kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
   park: (a) => { q('park', a.key, a.question); },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
@@ -1239,12 +1245,7 @@ function dropDuplicate(t) {
   if (!baseFetched) { baseFetched = true; git('fetch', '-q', 'origin', DEFAULT_BRANCH); }
   const base = git('rev-parse', '--verify', '-q', `origin/${DEFAULT_BRANCH}`);
   if (!base.ok) return false;
-  const baseTree = git('rev-parse', `${base.out}^{tree}`);
-  const addsNothing = (head) => {
-    const own = git('rev-list', '--count', `${base.out}..${head}`);
-    const tree = git('merge-tree', '--write-tree', base.out, head);
-    return Number(own.out) > 0 && tree.ok && baseTree.ok && tree.out.split('\n')[0] === baseTree.out;
-  };
+  const addsNothing = (head) => Number(git('rev-list', '--count', `${base.out}..${head}`).out) > 0 && E.baseHolds(git, base.out, head);
   // Checked once per base and local head. The local branch goes first, with no network, so one that
   // adds something is never fetched for.
   const local = git('rev-parse', '--verify', '-q', `refs/heads/${t.branch}`);
@@ -1683,12 +1684,6 @@ const tierFor = (t) => {
   return E.modelTier({ lane: t.lane, size });
 };
 
-// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
-// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
-// default 2 / 3). The report says whose number it is.
-const CONC = batchConcurrency(fresh, E.concurrencyLimits());
-const concurrency = CONC.n;
-
 // Memory gate. Weighing only budget and concurrency would leave the whole memory ladder resting on
 // the orchestrator remembering to apply it between passes — and its context is deliberately flat,
 // so it forgets, and a session restart forgets for certain. Gate on "room to
@@ -1703,6 +1698,11 @@ const GATE = E.spawnGate();
 const MIN_AVAIL_GB = GATE.start;
 const availGB = E.availableGiB();
 const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
+// Concurrency: the queue's field (the orchestrator's per-pass ladder decision, or a count the user
+// set), never above the cap from config §3b "Autopilot worker concurrency" (`<default> / <cap>`,
+// default 2 / 3). The report says whose number it is, and whether memory lowered it.
+const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
+const concurrency = CONC.n;
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
 // test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
 // and none resumes into a stage that runs suites, since each would only join the queue. Every other
@@ -1711,12 +1711,18 @@ const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
+  const holders = lockHolders(E.lockDir());
   return lockQueue({
-    waiting: lockWaiters({ procs: processList(), holders: lockHolders(E.lockDir()) }),
+    waiting: lockWaiters({ procs: processList(), holders }),
+    held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
     slots: whole(process.env.DESK_TEST_LOCK_SLOTS || E.machineValue('test-lock-slots'), 1),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
 })();
+// The stage a requeue resumes its last round at, or null where it starts again: no round to resume,
+// or an unfinished fix try, whose next worker gets the try's own task (fixTask), which runs suites.
+// resumeRound and the test lock gate both read it, so they agree on where a requeue starts.
+const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last_round?.stage));
 // Held by the gate: a local session that starts at Stage 0 or one that runs suites: a killed worker last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
@@ -1724,7 +1730,7 @@ const lockQueueHolds = (r) => {
   if (!LOCK_QUEUE?.deep || r.location === 'cloud') return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
-  const round = existsSync(join(WORKTREES, r.key)) ? roundStage(r.last_round?.stage) : null;
+  const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
   return !round || SUITE_STAGES.includes(round);
 };
 const lockQueueHeld = [];
@@ -2526,7 +2532,9 @@ function fixturesBrief(key, wt, { heading = true } = {}) {
 // briefing, and the worker starts at Stage 0. Returns { stage, brief, line }: stage null for Stage 0.
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
-  const stage = roundStage(round?.stage);
+  // An unfinished fix try is never resumed as a desk-ticket round (resumedStage): its next worker gets
+  // the try's own task again (fixTask), whatever stage the last one reached.
+  const stage = resumedStage(t);
   if (!stage || !kept) return { stage: null, brief: '', line: '' };
   const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
@@ -3047,7 +3055,7 @@ for (const t of spawnable) {
   // spawn-worker.sh appends to the log, and a kept park file reads as this worker's question.
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
-  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? '0/9'}`, 'last_round=null', 'cleared=null',
+  const recorded = recordRunning(t.key, [`session_id=${sid}`, `worktree=${wt}`, `branch=${branch}`, `stage=${resumed.stage ?? (t.fix && !t.fix.finished ? fixStartStage(t.fix) : '0/9')}`, 'last_round=null', 'cleared=null',
     `port=${port}`, `database=${database}`, `log_bytes=${logBytes}`, 'idle_passes=0',
     'result=null', ...keepMergedPr(t), 'draft_pr=null', 'images_uploaded=null', 'images_reported=null',
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
@@ -3312,6 +3320,7 @@ runSteps({
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
     landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
 });
@@ -3620,6 +3629,102 @@ if (Object.values(qNow.tickets).some(gatedFollow)) {
   const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
   if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
 }
+
+// ---- follow steps ----------------------------------------------------------
+// The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
+// desk's logs or desk's state go to a follow-step checker (follow-steps.mjs), and what it found is
+// recorded on the ticket (follow_checks), for its PR. A step it passed is settled as needs-you's done
+// settles one, in the same write, and the PR is told under §3 pr-self-review-comment; one it failed
+// stays, and needs-you lists it with what it found; one still pending is checked again later. A run is
+// still the same run only while its process carries the run's id. The checker reads this repo's state
+// and queue directories, never another repo's. Its lines go in this section's `out`, as the report's
+// lists were printed before it.
+const followAlive = (run) => {
+  if (!run?.pid || !run.id) return false;
+  const r = shOut('ps', ['-o', 'args=', '-p', String(run.pid)]);
+  return r.ok && r.out.includes(run.id);
+};
+const followDirs = [...new Set([STATE, E.repoStateOf(STATE), dirname(QUEUE_FILE)])];
+const FOLLOW_HANDLERS = {
+  ...PHASE_HANDLERS,
+  start: (a) => {
+    const t = queue().tickets[a.key];
+    const n = t.result?.pr;
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would start a follow-step checker on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge`); return; }
+    const run = startFollow({ state: STATE, slug: E.repoSlug(), repo: GH_REPO, bin: BIN, t, steps: a.steps, dirs: followDirs, cwd: MAIN });
+    if (run.wait) { out.push(`${a.key} follow steps: no checker started yet, ${run.wait}; the next pass tries again`); return; }
+    q('set', a.key, `follow_run=${JSON.stringify(run)}`);
+    out.push(`${a.key} follow steps: a follow-step checker started (pid ${run.pid}${run.login ? `, login ${run.login}` : ''}) on ${a.steps.length} step(s) PR #${n ?? '?'} left for after its merge; its output is ${run.out}`);
+  },
+  stop: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would stop its follow-step checker, past ${FOLLOW_MINUTES} minutes`); return; }
+    try { process.kill(a.run.pid); } catch { /* it ended meanwhile: the next pass reads it */ }
+    out.push(`${a.key} follow steps: its follow-step checker ran past ${FOLLOW_MINUTES} minutes and was stopped; the next pass records its steps as failed`);
+  },
+  harvest: (a) => {
+    if (DRY) { out.push(`${a.key} follow steps (dry run): would record what its follow-step checker found`); return; }
+    const t = queue().tickets[a.key];
+    const r = readFollow(a.run.out, a.run.steps);
+    if (r.limit) {
+      q('set', a.key, 'follow_run=null');
+      out.push(`${a.key} follow steps: its follow-step checker stopped at the usage limit, so nothing was recorded; a later pass starts another`);
+      return;
+    }
+    const at = new Date().toISOString();
+    const n = t.result?.pr;
+    const found = (r.error ? failedRun(a.run, r.error) : r.results).map((c) => ({ ...c, at, pr: n ?? null, ...(r.cost != null ? { cost: r.cost } : {}) }));
+    const kept = (t.follow_checks ?? []).filter((c) => !found.some((x) => sameStep(x, c) && String(c.pr ?? '') === String(n ?? '')));
+    // The record and the settling of what passed are one write (queue-writer.mjs, as harvest.mjs
+    // settleSteps settles them for needs-you's done), made only while the run and the steps are as read,
+    // or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
+    // Refused or skipped, follow_run stays, and the next pass reads the run again.
+    const { left, fields } = settleSteps(t.follow_on, found.filter((c) => c.result === 'pass'), at);
+    const stateOf = (x) => JSON.stringify([x.follow_run?.id ?? null, x.follow_on ?? null, x.follow_on_done ?? null]);
+    const after = fields.length ? { follow_on: left.length ? left : t.follow_on, follow_on_done: left.length ? t.follow_on_done : at } : t;
+    const ok = [stateOf(t), stateOf({ ...after, follow_run: null })];
+    const args = ['set', a.key, 'follow_run=null', `follow_checks=${JSON.stringify([...kept, ...found])}`, ...fields];
+    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
+    const f = w.ok && !w.skipped ? flushQueue() : null;
+    if (!f?.ok || f.skipped.includes(a.key)) {
+      if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+      out.push(`${a.key} follow steps: what its follow-step checker found was not recorded (${f && !f.ok ? 'the queue write was refused' : 'the ticket changed since it was read'}); the next pass reads it again`);
+      return;
+    }
+    const count = (k) => found.filter((c) => c.result === k).length;
+    const done = found.filter((c) => c.result !== 'pending');
+    let told = '';
+    if (!done.length) { /* nothing settled to say */ } else if (n == null) told = '; it has no PR to comment on';
+    else if (E.permission('pr-self-review-comment') !== 'yes') told = `; not said on PR #${n}, as config §3 ${E.permissionKey('pr-self-review-comment')} is not "yes"`;
+    else {
+      const c = shOut('gh', ['pr', 'comment', String(n), '--repo', GH_REPO, '--body', followComment(a.key, done)]);
+      told = c.ok ? `; said on PR #${n}` : `; its comment on PR #${n} was not posted (${c.out.split('\n').pop()})`;
+    }
+    out.push(`${a.key} follow steps: its follow-step checker passed ${count('pass')} and failed ${count('fail')}${count('fail') ? ', each listed in needs-you' : ''}${count('pending') ? `, and found ${count('pending')} still pending, checked again later` : ''}${told}`);
+  },
+};
+const FOLLOW_MINUTES = FOLLOW_TIMEOUT_MS / 60000;
+// The keys of queue `qx`'s tickets whose code is out, to when it went out, in ms.
+const followOut = (qx) => new Map(Object.values(qx.tickets).map((t) => [t.key, Date.parse(outAt(qx, t) ?? '')]).filter(([, at]) => Number.isFinite(at)));
+const followActs = runPhase({
+  name: 'follow steps',
+  snapshot: () => {
+    const qx = queue();
+    const tickets = qx.tickets;
+    return {
+      tickets, now: Date.now(), labels: E.personStepLabels(),
+      out: followOut(qx),
+      // Each gate a ticket's runnable steps wait on (production's never runs), as needs-you judges it.
+      held: new Set(Object.values(tickets).filter((t) => followOnPending(t) && outAt(qx, t)).flatMap((t) => ['merge', 'main']
+        .filter((g) => t.follow_on.some((s) => (s.after ?? 'merge') === g && followGateHeld(E.repoSlug(), qx, t, s))).map((g) => `${t.key}:${g}`))),
+      alive: new Set(Object.values(tickets).filter((t) => followAlive(t.follow_run)).map((t) => t.key)),
+    };
+  },
+  decide: decideFollowSteps, handlers: FOLLOW_HANDLERS, report,
+});
+// A checker running, owed and not yet started, or due again for a step it found pending, keeps the
+// batch from idling, so a pass reads it.
+const followPending = followActs.some((a) => a.type === 'start')
+  || followAwaits({ tickets: queue().tickets, labels: E.personStepLabels(), out: followOut(queue()), now: Date.now() });
 // A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
 if (!DRY) {
   const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));
@@ -3674,7 +3779,7 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
 // such a head, since the last try's, gets its own review try, outside the fix tries. With the
 // review-reuse lever on, a verdict holds only while the files its review rests on are unchanged
-// (restsOnCarries), after a rebase or any base merge; off, across clean base merges alone. On, a clean
+// (restsOnCarries), after a rebase or any base merge; off, across clean base merges and empty commits alone. On, a clean
 // verdict that does not hold is narrowed to what the base moved under it where it can be (scope:
 // reviewScope), so the head's review try reads only that.
 const reviewReuse = E.leverOn('review-reuse');
@@ -3710,7 +3815,7 @@ function markGateHold(t, s, on) {
     q('set', t.key, `gate_hold=${JSON.stringify({ item: h.key, head: s.head ?? null, why: h.why, at: t.gate_hold?.at ?? new Date().toISOString() })}`);
   }
   if (t.stuck && !DRY) q('set', t.key, 'stuck=null');
-  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes`);
+  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes${h.kind === 'mismatch' ? MISMATCH_WORDS : ''}`);
 }
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
@@ -3848,7 +3953,7 @@ if (drafts.length) {
     try { v = JSON.parse(raw); } catch { v = null; }
     if (!v || typeof v !== 'object') { out.push(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
     const spine = t.key === qNow.spine || t.spine_check != null || t.approved === true;
-    // A verdict for an older head holds at this one when only clean merges of the base came since.
+    // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.
     const { carry, scope, baseMerge, behind } = baseMoves(t, v.headRefOid);
     const c = undraftCall(t, { number: n, head: v.headRefOid, base: v.baseRefName ?? null, baseHead: s.base_head ?? null, branch: v.headRefName ?? null, mergeState: v.mergeStateStatus, mergeable: v.mergeable, body: v.body, reviews: v.reviews, comments: v.comments, checks: latestPerCheck(normaliseRollup(v.statusCheckRollup)), carry, scope }, { ...cfg, spine, ...driverReruns(n, v.headRefOid), built: (head) => buildRecord(BUILD_DIR, n, head), behind, evidenceRun: (head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun), missingShots: (body) => missingShots(body, ticketShots(t, STATE)), shotDir: ticketShotDir(t, STATE) });
     if (!c) continue;
@@ -3875,10 +3980,14 @@ if (drafts.length) {
       if (r.error) out.push(`undraft: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);
       return r.comments;
     };
-    // Red only on a verdict state check while the reviewer check fails: no review or fix worker,
-    // findings fixes included, as out of draft.
-    const gated = !hold && ['review', 'checks', 'findings'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
-    markGateHold(t, s, gated);
+    // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
+    // as out of draft. A review at the head with findings is not held: the hold is for a review that is
+    // missing or stale, and those findings are the fix worker's whatever the reviewer check says.
+    const held = !hold && ['review', 'checks'].includes(c.call) && s.head === v.headRefOid && gatedByReviewer(s);
+    markGateHold(t, s, held);
+    // Unless the check fails only because the gate counts another account: the merge driver still
+    // counts desk's verdict, so a head with none that holds still gets its review while the gate is red.
+    const gated = held && !(c.call === 'review' && HEALTH.reviewer?.kind === 'mismatch');
     // A red required check goes to a fix worker, and a head with no verdict to read to a review worker.
     const rf = hold || gated ? null : gateFix ? gateFix : c.call === 'findings' ? reviewFix(t, { pr: n, head: v.headRefOid, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement })
       : c.call === 'checks' && !fixRowErrors.length ? draftChecksFix(t, { pr: n, head: v.headRefOid, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { repo: GH_REPO, base: DEFAULT_BRANCH, ...clearsRows, stateChecks: stateRow.checks, builds: [], ...baseReads(v.headRefOid), classRerun: { perm: cfg.rerun, ...driverReruns(n, v.headRefOid), classes: FAILURE_CLASS, changed: prFiles(n, v.headRefOid) } })
@@ -3897,7 +4006,7 @@ if (drafts.length) {
     if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
     const carried = !c.carried ? ''
       : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
-        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} and empty commits came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
     else if (gated) { /* markGateHold reported it */ }
@@ -3941,7 +4050,10 @@ if (drafts.length) {
 }
 function saveUndraft(t, rec) {
   const was = t.undraft ?? {};
-  if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at: PASS_AT })}`);
+  // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
+  // when it became theirs, not from each pass that rewords it.
+  const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? PASS_AT : PASS_AT;
+  if (!DRY && ['call', 'why', 'action', 'sha', 'carried_from', 'pr'].some((k) => (was[k] ?? null) !== rec[k])) q('set', t.key, `undraft=${JSON.stringify({ ...rec, at })}`);
 }
 // The person's own undraft releases their hold: recorded as out of draft, so putting it back holds it again.
 for (const { t, s } of undrafted) {
@@ -4220,7 +4332,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
       'gate-hold': (a) => { const { t, s } = fixTicket(a.key); markGateHold(t, s, a.on); },
       'human-seen': (a) => humanSeen(a.pr),
       reads: (a) => { const { t, s } = fixTicket(a.key); return fixReads(t, s, a.dirty, a.dirtyFiles); },
-      feedback: (a) => readFeedback(a.pr),
+      feedback: (a) => readFeedback(a.pr, a.gate),
       'settle-worked': (a) => settleWorked(fixTicket(a.key).t, a.pr, a.head, a.worked),
       'check-build': (a) => {
         const { t } = fixTicket(a.key);
@@ -4230,14 +4342,19 @@ function fixReads(t, s, dirty, dirtyFiles) {
     },
   });
 }
-function readFeedback(n) {
+// With `gate`, the read also holds `gateReview`: the latest desk-review a §4 Gate reviewer posted, where
+// it is at the head and not clean, read apart from desk's own so a later verdict of desk's cannot hide
+// it. A PR the reviewer check holds still gets those findings fixed (pass/fix-tries.mjs heldTry).
+function readFeedback(n, gate = false) {
   const [owner, name] = GH_REPO.split('/');
   const r = shOut('gh', ['api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-F', `n=${n}`, '-f', `query=${THREADS_QUERY}`]);
   if (!r.ok) return null;
   try {
     const payload = JSON.parse(r.out);
-    const read = readThreads(payload, { handle: conflictHandle, clean: E.configValue('clean-verdict') });
-    return read && { ...read, payload };
+    const clean = E.configValue('clean-verdict');
+    const read = readThreads(payload, { handle: conflictHandle, clean });
+    const g = gate && gateHandle();
+    return read && { ...read, payload, ...(gate ? { gateReview: (g && readThreads(payload, { handle: g, clean })?.review) || null } : {}) };
   } catch { return null; }
 }
 // Replies on each thread a finished feedback try worked, then resolves it: -> the ids resolved. Each
@@ -4731,7 +4848,7 @@ if (!DRY) {
 const qEnd = queue();
 const verdictSnap = {
   ...baseSnapshot(), tickets: qEnd.tickets, queue: qEnd, report, blocked, putOff: new Set(Object.values(qEnd.tickets).filter(putOff).map((t) => t.key)),
-  parkNotes, prStates, gatePending, epicPending, promotionPending, spawned: report.spawned.length,
+  parkNotes, prStates, gatePending, epicPending, promotionPending, followPending, spawned: report.spawned.length,
 };
 const { waiting, parked, idle, status } = verdictOf(verdictSnap);
 const lines = [];
@@ -4775,7 +4892,7 @@ runPhase({
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);
-    const cost = idle ? batchCost(STATE, Object.values(qEnd.tickets)) : [];
+    const cost = idle ? batchCost(STATE, batchTickets(qEnd)) : [];
     return { ...verdictSnap, push, out, footer, idle, costTable: cost.length ? costTable(cost) : null };
   },
   decide: decideVerdictLines,

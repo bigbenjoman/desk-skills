@@ -90,8 +90,9 @@ chmod +x "$T/stub0/gh"
 # The process listing a pass reads for each kept worktree: what $T/lsof.out says, else nothing.
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
-# The process table the pass reads: what $T/ps.out says, else the real ps.
-printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
+# The process table the pass reads: what $T/ps.out says, else the real ps; with $T/ps.out, the ages
+# it reads are what $T/ps-ages.out says, else none, so a fake pid never reads a real process's age.
+printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,etime=" ] && { cat "%s/ps-ages.out" 2>/dev/null; exit 0; }\nexec "%s" "$@"\n' "$T" "$T" "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ jq -c '.tickets |= map_values(.state = "done" | if .result.pr != null then .merged_at //= "2026-10-23T10:00:00Z" | .pr_status = { pr: .result.pr, state: "MERGED", merged_at: .merged_at, checks: [] } else . end)' "$DESK_QUEUE" > "$DESK_QUEUE.all-done" && mv "$DESK_QUEUE.all-done" "$DESK_QUEUE"; }
 

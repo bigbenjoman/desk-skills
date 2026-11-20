@@ -20,9 +20,11 @@ need no consult. A repo with no project subagents has no consult: put the design
 yourself and say so. Lane D is the exception (routing reference).
 
 **A ticket that renders UI loads the design skills before any UI code (Stage 3).** It renders UI
-when autopilot triage says `renders: true`, when the ticket's Design section says anything other
-than `No UI`, or when the change alters what a user sees. Nobody has to ask; load them in every lane,
-before the first component, style or message-file edit:
+when autopilot triage says `renders: true`, or when the planned change alters what a user sees: its
+markup, styles, layout or user-facing copy. The Design section is a hint, not the test: a section
+that does not say `No UI` points at UI work, but a plan that touches none of those renders nothing,
+and the plan says so ("no rendered-output change: design skills not loaded"). Nobody has to ask;
+load them in every lane, before the first component, style or message-file edit:
 
 - **`ux-designer`** for the flow and every state the UI can be in: empty, loading, error and
   success, plus any the ticket implies. A state the design or ticket does not show is designed here,

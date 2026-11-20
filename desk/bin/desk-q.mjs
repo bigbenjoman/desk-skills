@@ -29,14 +29,14 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
-import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough }from './batch-state.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { RULES } from './machine.mjs';
@@ -254,6 +254,9 @@ function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
   if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
     if (ctx.stepOf?.(key, b)) return { k: 'needs', name: b, step: b, text: `waits to start on your step ${b}: take it and move it to Done in Jira` };
+    // Its code merged into another branch, raised in needs-you to promote or start without it.
+    const u = unpromotedHolds(q.tickets[key]).find(([k]) => k === b)?.[1];
+    if (u) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch: Done, its code on ${u.branch} with ${promotionWords(u)}, asked whether to promote it` };
     return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
       : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   }
@@ -615,6 +618,26 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => !blockerThrough(q.tickets?.[p]));
 
+// The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
+// writes <state>/triage/<KEY>.log as it runs, and a ticket in no live queue row is not admitted yet. A log
+// untouched for TRIAGE_LIVE_MS is a triage that ended. Sorted keys, [] with none.
+export const TRIAGE_LIVE_MS = 5 * 60 * 1000;
+export function triagingKeys(stateDir, q, now = Date.now()) {
+  const dir = join(stateDir, 'triage');
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => n.endsWith('.log')).map((n) => n.slice(0, -4)).filter((k) => {
+    // Live tickets only: an archived one, found behind them (attachArchive), can be admitted again.
+    if (q?.tickets && Object.hasOwn(q.tickets, k)) return false;
+    try { return now - statSync(join(dir, `${k}.log`)).mtimeMs < TRIAGE_LIVE_MS; } catch { return false; }
+  }).sort();
+}
+// "triaging A-1, A-2", the first three and how many more, or '' with none.
+const triagingText = (r) => {
+  const ks = r.triaging ?? [];
+  return ks.length ? `triaging ${ks.slice(0, 3).join(', ')}${ks.length > 3 ? ` +${ks.length - 3}` : ''}` : '';
+};
+
 function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
@@ -736,6 +759,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.prs = rows.filter(prRow).map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: null, pr: true, st: rowStage(stateDir, t, r.last) }));
   r.done = rows.length - r.rows.length - r.prs.length;
   r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
+  r.triaging = triagingKeys(stateDir, r.q, now);
   r.run = r.q ? whoRuns(r) : null;
   r.stall = r.q ? stallOf(r, now) : null;
   return r;
@@ -909,6 +933,7 @@ export function repoRow(bs) {
   return { ...lead, name: lead.repo, word: lead.repo, id: lead.slug, batch: null, batches: ok,
     unreadable: ok.length ? bs.filter((b) => b.error) : [], error: ok.length ? null : lead.error,
     rows: ok.flatMap((b) => tag(b, b.rows)), prs: ok.flatMap((b) => tag(b, b.prs)), done: ok.reduce((a, b) => a + b.done, 0),
+    triaging: [...new Set(ok.flatMap((b) => b.triaging ?? []))].sort(),
     workers: Math.min(lead.cap, ok.reduce((a, b) => a + (b.workers ?? 0), 0)) };
 }
 // A merged row's batch whose queue cannot be read, said where its tickets would have been.
@@ -953,9 +978,9 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const left = r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+    const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
-      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
+      paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
@@ -966,6 +991,9 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
 const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+// A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
+// needs-you's stalled item for a batch a session runs.
+export const passesPaused = (r) => !r.live && r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
@@ -974,7 +1002,10 @@ const startsCell = (F, x, now) => {
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
-const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+// An undated ticket held behind a blocker whose code waits on another branch's promotion shows that
+// promotion PR's state (none, draft, open or red) in place of "no date".
+const promoOf = (t) => unpromotedHolds(t)[0]?.[1] ?? null;
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 // The same under a note's repo tag, which already names the repo.
 const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
@@ -2481,7 +2512,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] },
@@ -2560,6 +2591,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       notes.push({ tag: `▸ ${r.name}`, sgr: STATE_SGR.merging, text: [[`${m} PR${m === 1 ? '' : 's'} merging. Its screen lists ${m === 1 ? 'it' : 'them'}.`, null]] });
     }
   }
+  if (!lay.slot) for (const r of ok.filter((x) => triagingText(x))) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${capital(triagingText(r))}: the batch admits ${r.triaging.length === 1 ? 'it' : 'them'} once triage finishes.`, null]] });
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
   const you = [...needs.values()].reduce((a, y) => a + y.shown, 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
@@ -2616,6 +2648,7 @@ function passHead(r, now) {
   const line = segLine([[on ? cell.split(' · ')[0] : cell, sgr], ['  ', null], ...last, BAR,
     ['workers ', GREY], [`${workersRunning(r)} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD],
     ...(r.machine?.cap == null ? [] : [[' · machine ', GREY], [`${r.machine.running} of ${r.machine.cap}`, r.machine.running >= r.machine.cap ? WARN : BOLD]]),
+    ...(triagingText(r) ? [[' · ', GREY], [triagingText(r), null]] : []),
     ...(r.batches?.length > 1 ? [] : [BAR, [`batch ${r.q.batch ?? '-'}`, GREY]])]);
   if (on) return [line];
   const log = r.run?.agent === 'loaded' ? supervisorLogLine(r) : null;
@@ -3042,6 +3075,8 @@ function timingFields(r, F, x, h, now) {
   const why = !F ? null : F.idle ? idleNote(r) : F.none ? noHistory(r, F) : F.paused ? `${capital(stoppedNote(r, now))}.`
     : h || ['stuck', 'running', 'failed'].includes(k) ? null : r.workers === 0 ? 'Workers are set to 0, so nothing starts.'
       : k === 'needs' ? 'Press c to date it as if answered at the next check-in.' : b.length ? `Until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.` : null;
+  const u = promoOf(t);
+  if (u) return [['Starts', [[starts, null]]], ['Ships', [[`not until ${u.branch} is promoted`, null], [`  ${capital(promotionWords(u))}.`, DIM]]]];
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
 }
 

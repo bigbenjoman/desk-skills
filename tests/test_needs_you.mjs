@@ -28,7 +28,8 @@ const GH_PRS = join(T, 'prs');
 mkdirSync(GH_PRS);
 writeFileSync(join(T, 'bin', 'gh'), `#!/bin/sh\necho "$*" >> ${JSON.stringify(GH_LOG)}\n` +
   `if [ "$1 $2" = "pr view" ]; then f=${JSON.stringify(GH_PRS)}/"$3".json; [ -f "$f" ] || { echo "GraphQL: Could not resolve to a PullRequest ($3)" >&2; exit 1; }; cat "$f"; fi\n` +
-  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\nexit 0\n`, { mode: 0o755 });
+  `if [ "$1 $2 $5" = "pr list --state" ]; then f=${JSON.stringify(GH_PRS)}/list-"$6".json; [ -f "$f" ] && cat "$f"; fi\n` +
+  `if [ "$1 $2" = "pr create" ]; then echo "https://github.com/$4/pull/931"; fi\nexit 0\n`, { mode: 0o755 });
 const onGitHub = (pr, v) => writeFileSync(join(GH_PRS, `${pr}.json`), JSON.stringify(v));
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_LOCK_DIR: join(T, 'locks'), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
@@ -73,6 +74,7 @@ function put(name, r) {
     (r.owner ? `\n## 1. Who you are\n\n| Field | Value |\n|---|---|\n| Jira display name | \`${r.owner}\` |\n` : '') +
     (r.promotionRef ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Promotion ref | \`${r.promotionRef}\` |\n` : '') +
     (r.inputLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-input labels | \`${r.inputLabels}\` |\n` : '') +
+    (r.stepLabels ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Person-step labels | \`${r.stepLabels}\` |\n` : '') +
     (r.people ? `\n## 4. Repo\n\n### People, by role\n\n| Role | Currently | Confirmed |\n|---|---|---|\n${Object.entries(r.people).map(([k, v]) => `| ${k} | \`${v}\` | \`yes\` |`).join('\n')}\n` : ''));
   const state = join(env.HOME, '.desk-autopilot', slug);
   if (!r.tickets) return;
@@ -212,9 +214,10 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you.
-t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
-t('DS-324 AC4 left matches list', N.collect().items.length, 2);
+// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you, and so do
+// gamma's stopped passes (#911): G-1 requeued waits on a pass its session no longer runs.
+t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 3 items needing you. 2 put off with not-now, left out until they change.');
+t('DS-324 AC4 left matches list', N.collect().items.map((i) => i.t.key).sort().join(), 'A-2,A-8,stalled');
 
 // ---- desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
 const { overview } = await import('../desk/bin/desk-q.mjs');
@@ -225,8 +228,8 @@ const needsCell = () => {
   return h.find((l) => l.startsWith('  alpha '))?.slice(0, end).match(/(\d+(?: \(\+\d+ put off\))?)$/)?.[1];
 };
 t('DS-376 AC1 the NEEDS YOU cell shows what needs you, then how many are put off', needsCell(), '2 (+2 put off)');
-t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 2 tickets need you'), true);
-t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '2 2');
+t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 3 tickets need you'), true);
+t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '3 2');
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
@@ -767,6 +770,13 @@ put('ds494', { port: 4610, beat: 1, supervised: true, merge: 'yes', tickets: {
   'E-2': stuckPr(202, [lintRed, ...passed], why375([{ name: LINT }])),
 } });
 const e494 = Object.fromEntries(N.collect({ word: 'ds494' }).items.map((i) => [i.t.key, i]));
+// A PR held for the person is aged from when it became theirs (undraft.at), not from its admit.
+put('ds897', { port: 4612, beat: 1, supervised: true, merge: 'yes', tickets: {
+  'G-1': { ...stuckPr(301, [lintRed, ...passed], why375([{ name: LINT }])), undraft: { call: 'person', why: 'w', at: minsAgo(5) } },
+} });
+const g897 = N.collect({ word: 'ds897' }).items.find((i) => i.t.key === 'G-1');
+t('#897 a PR item is aged from when it became the person\'s, not from its admit', Math.round((NOW - g897?.since) / 60000), 5);
+
 t('DS-494 AC2 the item quotes the error line', e494['E-1']?.need, `PR #201: "${LINT}" is failing, and desk's own repairs did not fix it. "${LINT}" says: "ReferenceError: React is not defined". Fix it on its branch; desk then merges it once its checks are green.`);
 t('DS-494 AC2 and is not worded as a step only the person can do', /only you can/.test(e494['E-1']?.actions[0][1] ?? 'only you can'), false);
 t('DS-494 AC3 with no error line it is as today', `${e494['E-2']?.need} | ${e494['E-2']?.actions[0][1]}`, `PR #202: "${LINT}" is failing, and desk's own repairs did not fix it. Fix it on its branch; desk then merges it once its checks are green. | only you can do this step; say done once you have, and the PR is checked on GitHub there and then`);
@@ -2002,6 +2012,68 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
+{
+  const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
+  const CI = { step: "on the merge commit's tests run on main, check the slowest shard takes about 300 s or less", row: null };
+  const LOG = { step: 'read audit.jsonl for the worker cost', row: null };
+  const failed = (pr, more = {}) => ({ ...CI, pr, result: 'fail', found: 'the slowest shard took 412 s', evidence: 'https://github.com/acme/x/actions/runs/9', at: minsAgo(1), ...more });
+  const run = (mins) => ({ id: 'K-x', pid: 1, started: minsAgo(mins), out: '/x', steps: [CI] });
+  put('follow798', { port: 4798, beat: 1, supervised: true, merge: 'yes', stepLabels: 'needs-ben', tickets: {
+    'K-1': merged(91, 5, { follow_on: [CI] }),
+    'K-2': merged(92, 5, { follow_on: [CI], follow_checks: [failed(92)] }),
+    'K-3': merged(93, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }] }),
+    'K-4': merged(94, 5, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+    'K-5': merged(95, 5, { follow_on: [CI], follow_checks: [failed(95, { result: 'pass' })] }),
+    'K-6': merged(96, 300, { follow_on: [CI] }),
+    'K-7': merged(97, 300, { follow_on: [CI], follow_run: run(1) }),
+    'K-8': merged(98, 300, { follow_on: [CI], follow_run: run(60) }),
+    'K-9': merged(99, 5, { follow_on: [CI], follow_checks: [failed(90, { result: 'pass' })] }),
+    'K-10': merged(100, 5, { follow_on: [CI], follow_checks: [failed(100, { result: 'pending' })] }),
+    'K-11': merged(101, 300, { follow_on: [CI], follow_checks: [failed(101, { result: 'pending', found: 'run 9 in progress' })] }),
+    'K-12': merged(102, 5, { follow_on: [CI, { step: 'check the invoice totals look right', row: null }] }),
+    'K-13': merged(103, 5, { follow_on: [CI, LOG], follow_checks: [failed(103), { ...LOG, pr: 103, result: 'pending', found: 'run 9 in progress', at: minsAgo(1) }] }),
+    // A label added after the checker failed the step: it is the checker's still.
+    'K-14': merged(104, 5, { follow_on: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null }, { step: 'check the invoice totals look right', row: null }],
+      follow_checks: [{ step: 'needs-ben: read audit.jsonl for the worker cost', row: null, pr: 104, result: 'fail', found: 'no cost line', evidence: '/x/audit.jsonl', at: minsAgo(1) }] }),
+  } });
+  const byKey = () => Object.fromEntries(N.collect({ word: 'follow798' }).items.filter((i) => i.kind === 'follow').map((i) => [i.t.key, i]));
+  // A checker's step is an item of its own, keyed by the ticket and the step.
+  const checked = (g, k) => Object.entries(g).filter(([key]) => key.startsWith(`follow:${k}:checked:`)).map(([, i]) => i);
+  const g = byKey();
+  t('DS-798 AC1 a step that only reads CI is not listed while a checker is still to run it, nor once one passed it, nor while one runs, nor while one found it pending',
+    ['K-1', 'K-5', 'K-7', 'K-9', 'K-10'].filter((k) => `follow:${k}` in g || checked(g, k).length).join(), '');
+  t('DS-798 once the wait is over, a run past its time or a step still pending is listed for the person',
+    ['K-8', 'K-11'].map((k) => /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(checked(g, k)[0]?.need ?? '')).join(), 'true,true');
+  t('DS-798 AC2 a step a checker failed is one item naming the step, what it found and the run URL',
+    `${checked(g, 'K-2').length} ${/Check: on the merge commit's tests run on main, check the slowest shard takes about 300 s or less\. A follow-step checker ran it and it failed: the slowest shard took 412 s \(evidence: https:\/\/github\.com\/acme\/x\/actions\/runs\/9\)\./.test(checked(g, 'K-2')[0]?.need ?? '')}`, '1 true');
+  t('DS-798 AC2 a failed step is listed at once beside a step of the same ticket still pending',
+    `${checked(g, 'K-13').map((i) => i.steps.map((s) => s.step).join()).join('|')} ${'follow:K-13' in g}`, `${CI.step} false`);
+  t('DS-798 a step a checker failed stays its own item though a person-step label now names it',
+    `${checked(g, 'K-14').length} ${JSON.stringify(g['follow:K-14']?.steps.map((s) => s.step))}`, '1 ["check the invoice totals look right"]');
+  t('DS-798 AC3 a step carrying a person-step label is listed as today', /Check: needs-ben: read audit\.jsonl/.test(g['follow:K-3']?.need ?? ''), true);
+  t('DS-798 AC4 a step the classifier cannot tell is runnable is listed as today', /Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-4']?.need ?? ''), true);
+  t('DS-798 a runnable step no checker ran once the wait is over is listed, saying so',
+    /No follow-step checker has passed or failed it yet\. Check: on the merge commit/.test(checked(g, 'K-6')[0]?.need ?? ''), true);
+  t('DS-798 a person\'s step is listed at once beside a checker\'s step still to run, which its item does not hold',
+    `${checked(g, 'K-12').length} ${/Check: check the invoice totals look right\. Then say done\.$/.test(g['follow:K-12']?.need ?? '')} ${JSON.stringify(g['follow:K-12']?.steps.map((s) => s.step))}`,
+    '0 true ["check the invoice totals look right"]');
+  // The checker fails the step once the person was shown the item: done on it settles only the step it showed.
+  const q798 = queueOf('follow798');
+  q798.tickets['K-12'].follow_checks = [failed(102)];
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__follow798', 'queue.json'), JSON.stringify(q798));
+  const g12 = byKey();
+  t('DS-798 a step a checker failed after the person\'s item was shown is an item of its own',
+    `${JSON.stringify(g12['follow:K-12']?.steps.map((s) => s.step))} ${/it failed: the slowest shard took 412 s/.test(checked(g12, 'K-12')[0]?.need ?? '')}`, '["check the invoice totals look right"] true');
+  const done12 = N.record({ word: 'follow798', ticket: 'follow:K-12', action: 'done' });
+  t('DS-798 so done on the person\'s item leaves the failed step listed',
+    `${done12.ok} ${JSON.stringify(queueOf('follow798').tickets['K-12'].follow_on.map((s) => s.step))} ${'follow:K-12' in byKey()} ${checked(byKey(), 'K-12').length}`,
+    `true ${JSON.stringify([CI.step])} false 1`);
+  const k2 = Object.keys(g).find((k) => k.startsWith('follow:K-2:checked:'));
+  const done = N.record({ word: 'follow798', ticket: k2, action: 'done' });
+  t('DS-798 AC2 done on the failed step settles it', `${done.ok} ${typeof queueOf('follow798').tickets['K-2'].follow_on_done} ${k2 in byKey()}`, 'true string false');
+}
+
 // A follow step's gate: `main` waits on the merge commit reaching origin/<default>, `production` on it
 // reaching config §4 Promotion ref. Each repo root holds a real origin/main and origin/production.
 {
@@ -2291,6 +2363,47 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-717 a ticket finished with no PR lists no link item, since nothing waits on the link', li().length, 0);
   q2.tickets['W-2'].merge_after = 'X-2'; writeFileSync(join(env.DESK_HOME, 'repos', 'acme__phi717', 'queue.json'), JSON.stringify(q2));
   t('DS-717 a done ticket whose merge waits on the link still lists it', li().map((i) => i.t.key).join(), 'link:W-2:X-2');
+}
+
+// DS-811: a DS-705-shaped hold. The blocker is Done, and its PR merged into a feature base with no
+// promotion PR, recorded by the pass (unpromoted). Once it has been Done a day it is one held item,
+// offering promote or start.
+{
+  const BASE = 'feat/DS-631-levers-auto-trial-adopt';
+  const heldOn = (b, hours, more = {}) => ({ state: 'parked', lane: 'A', held_by: b, held_outside: b, park: { question: `held by orchestrator: blocked by ${b} — starts once ${b} is Done and on the base`, since: minsAgo(3000) },
+    unpromoted: { [b]: { branch: BASE, pr: null, state: 'none', since: minsAgo(hours * 60), ...more } } });
+  put('ds811', { port: 4811, beat: 1, supervised: true, pattern: 'DS-[0-9]+', tickets: {
+    'DS-705': heldOn('DS-692', 48), 'DS-706': heldOn('DS-693', 23), 'DS-707': heldOn('DS-694', 48), 'DS-708': heldOn('DS-695', 48),
+  }, triage: { 'DS-705': { blockers: [{ key: 'DS-692', category: 'done', resolution: 'Done', summary: 'Adopt the lever' }] } } });
+  const items = () => N.collect({ word: 'ds811' }).items;
+  const keys = () => items().map((i) => i.t.key).sort().join();
+  const i705 = items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692');
+  t('DS-811 AC1 one held item for the hold, naming the base and its promotion PR, offering promote first then start',
+    `${i705?.kind} ${/^DS-705 is held behind DS-692 \("Adopt the lever"\), Done since \d{4}-\d\d-\d\d, whose code merged into feat\/DS-631-levers-auto-trial-adopt, not main\. No PR promotes feat\/DS-631-levers-auto-trial-adopt into main, so nothing lands it\. Promote feat\/DS-631-levers-auto-trial-adopt, or start DS-705 without DS-692/.test(i705?.need ?? '')} ${i705?.actions.map(([a]) => a).join()}`,
+    'held true promote,start,not-now');
+  t('DS-811 AC2 a blocker Done under a day lists nothing, and no held ticket is listed on its own', keys(), 'unpromoted:DS-705:DS-692,unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  t('DS-811 AC5 listed again with nothing answered, it is still one item', items().filter((i) => i.t.key === 'unpromoted:DS-705:DS-692').length, 1);
+  const before = readFileSync(GH_LOG, 'utf8');
+  const p = N.record({ word: 'ds811', ticket: 'unpromoted:DS-705:DS-692', action: 'promote' });
+  const made = readFileSync(GH_LOG, 'utf8').slice(before.length);
+  const q705 = queueOf('ds811').tickets['DS-705'];
+  t('DS-811 AC3 promote with none open opens one from the base into main, ready for review',
+    `${p.ok} ${made.includes(`pr create --repo acme/ds811 --base main --head ${BASE} --title DS-631: promote ${BASE} to main`)} ${made.includes('--draft')}`, 'true true false');
+  t('DS-811 AC3 the dependant stays held, with the PR recorded as asked for', `${q705.state} ${q705.held_by} ${q705.unpromoted['DS-692'].pr} ${q705.unpromoted['DS-692'].promote}`, 'parked DS-692 931 931');
+  t('DS-811 AC3 and its item leaves the list while that PR is open', keys(), 'unpromoted:DS-707:DS-694,unpromoted:DS-708:DS-695');
+  const q2 = queueOf('ds811'); q2.tickets['DS-705'].unpromoted['DS-692'].state = 'red';
+  writeFileSync(join(env.DESK_HOME, 'repos', 'acme__ds811', 'queue.json'), JSON.stringify(q2));
+  t('DS-811 it comes back once that PR goes red', /Promotion PR #931, feat\/DS-631-levers-auto-trial-adopt into main, is red, and DS-705 waits until it merges\./.test(items().find((i) => i.t.key === 'unpromoted:DS-705:DS-692')?.need ?? ''), true);
+  writeFileSync(join(GH_PRS, 'list-open.json'), JSON.stringify([{ number: 640, isDraft: true }]));
+  const mark = readFileSync(GH_LOG, 'utf8').length;
+  const named = N.record({ word: 'ds811', ticket: 'unpromoted:DS-707:DS-694', action: 'promote' });
+  rmSync(join(GH_PRS, 'list-open.json'));
+  t('DS-811 AC3 promote with one open names it and opens none',
+    `${named.ok} ${/promotion PR #640 \(.*\) is already open, as a draft; DS-707 stays held/.test(named.line)} ${readFileSync(GH_LOG, 'utf8').slice(mark).includes('pr create')}`, 'true true false');
+  const s = N.record({ word: 'ds811', ticket: 'unpromoted:DS-708:DS-695', action: 'start' });
+  const q708 = queueOf('ds811').tickets['DS-708'];
+  t('DS-811 AC4 start lifts that hold and queues it', `${s.ok} ${q708.state} ${q708.held_by ?? null} ${q708.held_outside ?? null} ${q708.unpromoted ?? null} ${q708.freed_from}`, 'true triaged null null null DS-695');
+  t('DS-811 AC4 and its item leaves the list', items().some((i) => i.t.key === 'unpromoted:DS-708:DS-695'), false);
 }
 
 // A hold on a ticket dropped from the batch (dropped_link), a blocker in this batch closed as
@@ -2642,6 +2755,16 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   put('ds562off', { port: 4651, beat: 120, tickets: { 'W-6': waits('Hold W-6 for PR #994?', { kind: 'pr-merged', pr: 994 }) } });
   const off = ticketScreen(loadRepos().find((r) => r.name === 'ds562off'), 'W-6', { width: 200 });
   t('DS-562 passes stopped: its page says it will not move until they resume, waiting on PR #994', off.includes('Will not move until passes resume: waiting on PR #994 merged: a pass requeues it then.'), true);
+}
+
+// #925: a park waiting on an outside reviewer's review of the PR names no step of the person's, so it
+// waits and needs-you does not count it.
+{
+  const rv = { ...parked('A', 30, 'Wait for agent-pullbot to review PR #3468 at the head'), park: { question: 'Wait for agent-pullbot to review PR #3468 at the head', since: minsAgo(30), clears_when: { kind: 'pr-reviewed', pr: 3468, login: 'agent-pullbot' } } };
+  put('i925', { port: 4652, beat: 1, supervised: true, tickets: { 'R-1': rv, 'R-2': { ...parked('A', 30, 'Which price?'), park: { question: 'Which price?', since: minsAgo(30), clears_when: { kind: 'none' } } } } });
+  const r925 = loadRepos().find((r) => r.name === 'i925');
+  t('#925 a park cleared by a PR review is not listed by needs-you', N.collect({ word: 'i925' }).items.map((i) => i.t.key).join(), 'R-2');
+  t('#925 desk-q shows it waiting, and counts only the one the person settles', `${r925.rows.find((x) => x.t.key === 'R-1').k} ${N.needsCount(r925).shown}`, 'waiting 1');
 }
 
 // A ticket held behind `by`, and the keys needs-you lists for batch `name`, for the blocks below.
@@ -3097,6 +3220,36 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     blockerThrough({ state: 'triaged', merged_at: minsAgo(5) }), blockerThrough(q796.tickets['M-3']), blockerThrough(q796.tickets['M-2']),
     blockerThrough({ state: 'done', result: { pr: 5 }, pr_status: { pr: 5, state: 'CLOSED' } }), blockerThrough({ state: 'done', result: { pr: 5 } }, gh(null)), blockerThrough(undefined),
   ].join(), 'false,false,false,false,false,false');
+}
+
+// ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
+{
+  put('stall911', { port: 4911, beat: 90, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'S-2': { state: 'running', lane: 'A', stage: '3/9' } } });
+  put('stallsup911', { port: 4912, beat: 90, supervised: true, tickets: { 'U-1': { state: 'triaged', lane: 'A' } } });
+  put('stallpark911', { port: 4913, beat: 90, tickets: { 'P-1': parked('A', 60, 'Which one?') } });
+  put('stalllive911', { port: 4914, beat: 1, tickets: { 'L-1': { state: 'triaged', lane: 'A' } } });
+  const beatAt = (name, m) => writeFileSync(join(env.HOME, '.desk-autopilot', `acme__${name}`, 'orchestrators', 'q.json'),
+    JSON.stringify({ queue: join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), batch: `${name}-batch`, pid: 1, at: minsAgo(m) }));
+  const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
+  const s = stalled('stall911');
+  t('#911 one item for the batch, naming its last pass and how to resume it', s.length === 1 && s[0].t.key === 'stalled'
+    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+  t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago. Running workers carry on.');
+  t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);
+  t('#911 desk-q counts it', N.needsCount(standing()).shown, N.collect({ word: 'stall911' }).items.length);
+  t('#911 a supervised batch is not one: its supervisor starts passes', stalled('stallsup911').length, 0);
+  t('#911 nor a batch whose tickets all wait on the person', stalled('stallpark911').length, 0);
+  t('#911 nor a live one', stalled('stalllive911').length, 0);
+  const done = N.record({ word: 'stall911', ticket: 'stalled', action: 'done' });
+  t('#911 done records nothing and says what clears it', `${done.ok} ${done.line} ${stalled('stall911').length}`, 'true stall911 stalled: noted: this item goes once a pass runs again; done records nothing. 1');
+  const off = N.record({ word: 'stall911', ticket: 'stalled', action: 'not-now' });
+  t('#911 not-now puts it off', `${off.ok} ${stalled('stall911').length}`, 'true 0');
+  t('#911 put off where it is listed, it is put off in every scope: the whole list and desk-q\'s count', `${N.collect().items.some((i) => i.kind === 'stalled' && i.r.slug === 'acme__stall911')} ${N.needsCount(standing()).putOff}`, 'false 1');
+  beatAt('stall911', 30);
+  t('#911 a later stall, after a pass that ran, brings it back', stalled('stall911').length, 1);
+  beatAt('stall911', 0);
+  t('#911 the next pass drops it', stalled('stall911').length, 0);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
