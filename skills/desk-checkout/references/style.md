@@ -30,7 +30,7 @@ Side project (internal agent framework) - The first version was too large and bl
 ## What makes it work
 
 - **Meetings first, one line each, with who.** "Triage P1s with Sam, Priya, Alex & Jo."
-  No times, no rundown of the meeting.
+  No times, no rundown of the meeting. Only meetings they were shown to attend (SKILL.md step 3).
 - **The problem comes before the fix, in terms a non-engineer can follow.** "The portal
   middleware can be bypassed with a URL suffix", then the mechanism, then the consequence
   ("reaches real data"), then the state ("PR #1425, waiting on approval").

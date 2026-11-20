@@ -132,6 +132,11 @@ Then sort:
 1. **Meetings**: one line each. Skip declined events, focus blocks and "busy" holds. Name who
    was in it by first name, and what it was about or decided. A meeting whose Gemini notes
    carry a decision others need gets that decision in its line.
+   **A meeting line needs evidence they were there**: they speak in its notes or transcript, the
+   notes are their own, or their Slack or Claude sessions show them in it. An accepted event, or
+   generated notes that only list them as invited, prove nothing: a recurring meeting can stay
+   accepted at an hour they never attend. Leave such a meeting out of the post and ask under
+   **Check before posting**: "Were you in <meeting>?"
 2. **Substantive work**: the few things that mattered most, biggest first. Security, prod and
    launch-blocking items lead.
 3. **Asks**: approvals, decisions, budget caps. Each as `@Name`, what, and why now.
@@ -191,7 +196,8 @@ to that. When §4 Check-out destination is a file path, also write it there as t
 says, and give the path. Under it, briefly:
 
 - **Check before posting**: every inferred claim, each with its source ("#1534 shown in
-  review from Claude's narration; GitHub says open").
+  review from Claude's narration; GitHub says open"), and each meeting left out for want of
+  evidence they attended.
 - **Left out**: the out-of-scope or sensitive items you dropped, one line each.
 - **Missing sources**: any role with no connector or no permission, and the fix.
 
