@@ -661,6 +661,7 @@ config yes yes yes
 out=$(sup install --interval 300 --reload)
 check "DS-838 AC1: on WSL with lingering off, install keeps the lingering note" 'grep -q "loginctl enable-linger" <<< "$out"'
 check "DS-838 AC1: and says ticks run only while WSL is up, naming both ways to keep it up" 'grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -q "Keep a terminal open" <<< "$out" && grep -qF "Windows Task Scheduler entry at logon that runs \`wsl.exe --exec sleep infinity\`" <<< "$out"'
+check "DS-838 AC1: and says how to name a non-default distro and to lift the task's 3-day limit" 'grep -qF "\`-d <distro>\` if this is not your default distro" <<< "$out" && grep -qF "\"Stop the task if it runs longer than 3 days\" turned off" <<< "$out"'
 printf '#!/bin/sh\necho Linger=yes\n' > "$T/fakes/loginctl"
 out=$(sup install --interval 300 --reload)
 check "DS-838 AC2: on WSL with lingering on, install still says ticks run only while WSL is up" '! grep -q "Lingering is off" <<< "$out" && grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -qF "wsl.exe --exec sleep infinity" <<< "$out"'

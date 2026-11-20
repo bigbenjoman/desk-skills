@@ -150,7 +150,7 @@ const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr |
 function lingerNote() {
   const r = spawnSync('loginctl', ['show-user', String(process.env.USER || process.getuid()), '-p', 'Linger'], { encoding: 'utf8' });
   const linger = /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
-  const wsl = E.isWSL() ? ' On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity`.' : '';
+  const wsl = E.isWSL() ? ' On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if this is not your default distro), with "Stop the task if it runs longer than 3 days" turned off.' : '';
   return linger + wsl;
 }
 

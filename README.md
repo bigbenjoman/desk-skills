@@ -242,7 +242,8 @@ batch the orchestrator handed over at Stage 4, and appends each report to `<stat
 Linux, ticks stop at logout unless lingering is on (`loginctl enable-linger`); install says when it is
 off. On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every
 terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs
-`wsl.exe --exec sleep infinity`; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
+`wsl.exe --exec sleep infinity` (with `-d <distro>` if the supervisor's distro is not your default),
+with "Stop the task if it runs longer than 3 days" turned off; install says this on WSL. It keeps the batch's merge driver running, sends one desktop notification for each new set of items
 that need you (osascript on macOS; on Linux notify-send, else a Windows toast under WSL, else only the
 log), and stops once the batch is idle. It passes on only the approvals the batch recorded at Stage 3.
 Each tick does this for every batch the repo holds, one after another: the standing batch, then each
