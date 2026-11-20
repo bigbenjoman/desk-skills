@@ -2635,7 +2635,7 @@ function leaseLines({ now, width }) {
   // names itself (the store with the command that starts an empty one); anything else, such as ps
   // failing while the owners are checked, is shown as it is.
   const trouble = (e, reset) => (e instanceof LeaseStoreError
-    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]])] : [])]
+    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [{ ...segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]]), whole: true }] : [])]
     : wrapped([[`▲ The leases could not be read: ${printable(String(e?.message ?? e))}.`, WARN]], width));
   const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
   return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
@@ -2658,7 +2658,7 @@ function heldLines(held, now) {
     const late = overdue(l, now), expires = Date.parse(l.expires);
     out.push(segLine([[`  ${pad(text(l.kind), kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
       late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
-    if (late) out.push(segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]));
+    if (late) out.push({ ...segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]), whole: true });
   }
   return out;
 }
