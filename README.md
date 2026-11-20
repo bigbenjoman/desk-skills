@@ -909,8 +909,13 @@ every shell script when shellcheck is installed (it says when it is not). On mac
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
 those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
 chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
-`DESK_TEST_JOBS=3` runs three at once). `bash tests/run.sh -j 3` runs up to three suites at once, each
-reported in one piece in name order (CI's shards do). `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
+set). `bash tests/run.sh -j 3` runs up to three suites at once, the longest
+in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
+Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
+is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
+seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
+date, suites, job count, wall and CPU seconds and the load average at its start. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
 `run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
@@ -961,8 +966,9 @@ shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers
 `desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
 a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
 CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
-shards (the `macOS` workflow, not a required check); its nightly run only runs the suite when no
-macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
+Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
+the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
 cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
 owner, and `/desk-needs-you` lists it for them.
 

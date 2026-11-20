@@ -111,12 +111,9 @@ jobs:
           HOOK: ${{ matrix.hook }}
         run: |
           bash --version | head -1
-          echo "shard $SHARD/$OF: $SUITES"
-          flags="-j 3 --no-hook-test"
-          [ "$HOOK" = true ] && flags="-j 3"
           set +e
-          # shellcheck disable=SC2086  # flags (3 suites at once on the 4 vCPU runner) and suite names, one per word
-          bash tests/run.sh $flags $SUITES 2>&1 | tee "$RUNNER_TEMP/run.log"
+          # 3 suites at once on the 4 vCPU runner
+          bash tests/ci_shard.sh 3 2>&1 | tee "$RUNNER_TEMP/run.log"
           rc=${PIPESTATUS[0]}
           mkdir -p "$RUNNER_TEMP/result"
           failed=$(grep -m 1 '^failed suites:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)

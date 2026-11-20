@@ -13,8 +13,8 @@ T="$(cd "$(mktemp -d)" && pwd -P)"; trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/home" "$T/bin"
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
-# desk-env answers the default-branch lookup.
-printf '#!/usr/bin/env bash\necho main\n' > "$T/bin/desk-env"; chmod +x "$T/bin/desk-env"
+# desk-env answers the default-branch lookup, and run.sh's test-cap one (its default -j).
+printf '#!/usr/bin/env bash\ncase "$2" in test-cap) echo 3 ;; *) echo main ;; esac\n' > "$T/bin/desk-env"; chmod +x "$T/bin/desk-env"
 export PATH="$T/bin:$PATH"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
@@ -63,11 +63,13 @@ related
 check "an uncommitted deletion runs every suite" '[ $rc -eq 0 ] && ran a && ran b && [[ "$out" == *"scope full against origin/main (lib/b.sh was deleted), so every suite runs"* ]]'
 git -C "$R" reset -q --hard HEAD
 
-# DS-818 AC1: run.sh's -j, from DESK_TEST_JOBS, else run.sh's default of one at a time.
+# DS-818 AC1: as many at once as run.sh's default (here its test-cap of 3), or DESK_TEST_JOBS.
 related
-check "DS-818 AC1 by default suites run one at a time"       '[ $rc -eq 0 ] && ran a && [[ "$out" != *"suites at once"* ]]'
+check "DS-818 AC1 by default as many run at once as run.sh's default" '[ $rc -eq 0 ] && ran a && [[ "$out" == *"up to 3 suites at once"* ]]'
 out=$(cd "$R" && DESK_TEST_JOBS=2 bash tests/related.sh 2>&1); rc=$?
 check "DS-818 AC1 DESK_TEST_JOBS sets how many run at once"  '[ $rc -eq 0 ] && ran a && ran lint && [[ "$out" == *"up to 2 suites at once"* ]]'
+out=$(cd "$R" && DESK_TEST_JOBS=1 bash tests/related.sh 2>&1); rc=$?
+check "DS-818 AC1 DESK_TEST_JOBS=1 runs them one at a time"  '[ $rc -eq 0 ] && ran a && [[ "$out" != *"suites at once"* ]]'
 printf 'x\n' > "$R/.gitignore"; git -C "$R" add .gitignore; git -C "$R" commit -q -m 'root file'
 out=$(cd "$R" && DESK_TEST_JOBS=2 bash tests/related.sh 2>&1); rc=$?
 check "DS-818 AC1 and so does a run of every suite"          '[ $rc -eq 0 ] && ran b && [[ "$out" == *"up to 2 suites at once"* ]]'
