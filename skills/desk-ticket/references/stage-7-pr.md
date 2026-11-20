@@ -76,6 +76,13 @@ Stage 4b post (the method is §4 Merge method, `desk-env get merge-method`):
 gh pr ready <n> && gh pr merge <n> --auto --<§4 Merge method> --match-head-commit <headRefOid>
 ```
 
+**Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
+another session never race one PR and who merged it is on record. Before merging or arming:
+`node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
+it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+"session <your session name>" --event merged` (`armed` for auto-merge, `failed` when gh refuses).
+`merge-log.mjs show --pr <n>` says who did.
+
 Where the repo does not allow auto-merge, undrafting is the same and the merge is yours to make on
 green under `pr-merge-green`, always pinned: `gh pr merge <n> --<§4 Merge method>
 --match-head-commit <the head SHA whose checks you read>`. **A PR that touches a glob in §4 Merge

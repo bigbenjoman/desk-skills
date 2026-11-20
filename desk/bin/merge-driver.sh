@@ -343,6 +343,9 @@ GATE="$DESK_RUN_BIN/gate.mjs"
 THREADS="$DESK_RUN_BIN/review-threads.mjs"
 THREADS_QUERY="$(node "$THREADS" query)" || { log "FAIL: review-threads.mjs could not be read"; exit 1; }
 REPO="$DESK_GH_REPO"
+# This driver's name in the merge log (merge-log.mjs): its state directory under ~/.desk-autopilot, the
+# repo's slug or a named batch's, as one driver runs per state directory (its lock, below).
+MERGER="merge-driver ${DESK_STATE#"$HOME/.desk-autopilot/"}"
 AUTHOR="$DESK_GITHUB_HANDLE"
 # The logins whose review verdicts are desk's own: the handle, and the §4 Review account it posts from.
 VERDICT_BY="$(node "$DESK_ENV_MJS" verdict-logins 2>/dev/null || printf '%s' "$AUTHOR")"
@@ -1129,7 +1132,13 @@ EOF_RESOLVE
   instruction_held "$n" "$key" "$g" && return 1
   if [ -n "$waived" ]; then log "#$n WAIVED $waived at ${sha:0:9}: §4 Known flaky checks, still red after 2 reruns, no listed path touched — merging (pinned to that commit)"
   else log "#$n gate GREEN at ${sha:0:9} — merging (pinned to that commit)"; fi
+  # Claimed in the machine-wide merge log first (merge-log.mjs), so a session merging the same PR, or
+  # one that already did, stops this merge instead of racing it, and who merged it is recorded.
+  if ! claimed=$(node "$DESK_RUN_BIN/merge-log.mjs" claim "$n" "$sha" --by "$MERGER" --repo "$REPO" 2>&1); then
+    log "#$n NOT merged: ${claimed#merge-log: } — backing off 10m"; back_off "$n"; return 1
+  fi
   if out=$(gh pr merge "$n" --repo "$REPO" "--$MERGE_METHOD" --match-head-commit "$sha" 2>&1); then
+    node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event merged --repo "$REPO" >/dev/null 2>&1 || log "#$n merge not written to the merge log"
     log "#$n MERGED ($key)"; rm -f "$SD/green-$n"
     # A hold it merged past goes with the ticket to the base's own PR into the default branch (pass.mjs).
     if [ -n "$carried" ]; then
@@ -1157,6 +1166,7 @@ EOF_RESOLVE
     [ -n "$EPIC_KEY" ] || close_merged "$n" "$key"
     return 0
   fi
+  node "$DESK_RUN_BIN/merge-log.mjs" record "$n" "$sha" --by "$MERGER" --event failed --why "$(printf '%s' "$out" | tail -1)" --repo "$REPO" >/dev/null 2>&1
   if printf '%s' "$out" | grep -qiE 'not up to date|behind|out of date|update the branch'; then behind "$n" "$sha" "$key"
   else log "#$n merge refused: $(printf '%s' "$out" | tail -1) — backing off 10m, the rest carry on"; back_off "$n"; fi
   return 1
