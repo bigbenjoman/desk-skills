@@ -855,14 +855,14 @@ const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machi
 export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
 // A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
 // writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
-export function driverUp(b, now = Date.now()) {
+function driverUp(b, now = Date.now()) {
   if (!b.stateDir || mergeDriverHolder(b.stateDir) == null) return null;
   let at = null;
   try { at = statSync(join(b.stateDir, 'merge-driver.lock.d')).mtimeMs; } catch { /* released since */ }
   return { b, up: at == null ? null : Math.max(0, now - at), last: tailLines(join(b.stateDir, 'merge-driver.log')).at(-1) ?? null };
 }
 // The merge drivers running in every repo here, each batch's state folder once.
-export const machineDrivers = (repos, now = Date.now()) => {
+const machineDrivers = (repos, now = Date.now()) => {
   const dirs = new Set(withOthers(repos).flatMap((r) => r.batches ?? [r]).map((b) => b.stateDir).filter(Boolean));
   return [...dirs].filter((d) => driverUp({ stateDir: d }, now)).length;
 };
