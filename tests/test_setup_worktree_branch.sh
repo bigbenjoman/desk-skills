@@ -103,4 +103,17 @@ held 6; H="$T/other-6"; printf 'six\n' > "$H/a.txt"; git -C "$H" stash -q
 out=$(bash "$B/setup-worktree.sh" --for-worker T-6 fix/T-6 2>&1); rc=$?
 check "a stash on the branch fails setup and names it"          '[ $rc -ne 0 ] && [[ "$out" == *"$H"*"stashed work"* ]] && on_branch "$H" fix/T-6'
 
+# #1003: a branch only origin has (a cloud worker's) is checked out from origin with DESK_BRANCH_FROM_ORIGIN,
+# and cut afresh from the base without it.
+remote_only() { # remote_only <branch>: a commit on <branch> pushed to origin, with no local branch left.
+  git -C "$T/repo" checkout -q -b "$1" main; printf 'cloud\n' > "$T/repo/c.txt"; git -C "$T/repo" add c.txt
+  git -C "$T/repo" commit -q -m cloud; git -C "$T/repo" push -q origin "$1"; git -C "$T/repo" checkout -q main; git -C "$T/repo" branch -q -D "$1"
+}
+remote_only claude/t-31; tip=$(git -C "$T/repo" rev-parse origin/claude/t-31)
+out=$(DESK_BRANCH_FROM_ORIGIN=1 bash "$B/setup-worktree.sh" --for-worker T-31 claude/t-31 2>&1); rc=$?
+check "#1003 with DESK_BRANCH_FROM_ORIGIN, a branch only origin has is checked out as origin has it" '[ $rc -eq 0 ] && on_branch "$T/wt/T-31" claude/t-31 && [ "$(git -C "$T/wt/T-31" rev-parse HEAD)" = "$tip" ] && [[ "$out" == *"on origin only"* ]]'
+remote_only claude/t-32
+out=$(bash "$B/setup-worktree.sh" --for-worker T-32 claude/t-32 2>&1); rc=$?
+check "#1003 without it, such a branch is cut from the base as before" '[ $rc -eq 0 ] && [ "$(git -C "$T/wt/T-32" rev-parse HEAD)" = "$(git -C "$T/repo" rev-parse main)" ]'
+
 echo "setup-worktree branch: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

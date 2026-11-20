@@ -181,3 +181,9 @@ export function rebootReady(t, { bootMs, drainMins, drainRow, now = Date.now() }
 export const liveReadsUnparsed = (readRow) => (readRow.errors.length
   ? `live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`
   : null);
+
+// A cloud ticket back on its open PR for a review try: a review reads the PR's head and pushes nothing,
+// so a local worker takes it on the session's branch, checked out from origin (setup-worktree.sh with
+// DESK_BRANCH_FROM_ORIGIN), where any other try on that branch stays the session's.
+export const cloudReviewHere = (t) => t?.location === 'cloud' && t.result?.pr != null && Boolean(t.fix && !t.fix.finished && t.fix.kind === 'rereview');
+export const runsInCloud = (t) => t?.location === 'cloud' && !cloudReviewHere(t);

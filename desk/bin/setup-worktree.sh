@@ -23,6 +23,8 @@
 #   §4 Database URL variable   every variable repointed at that database, or blanked when there is none
 #   §4 Database migrate        run against the per-ticket database only
 #
+# DESK_BRANCH_FROM_ORIGIN=1: a branch only origin has is checked out from origin/<branch> rather than cut
+# from the base (a review try on a cloud worker's branch).
 # DESK_GIT_FETCH_TIMEOUT_S (seconds, default 120) limits the fetch from origin, so a hung remote fails setup.
 # DESK_PSQL_TIMEOUT (seconds, default 30) limits each psql call, so a wedged container fails setup.
 # DESK_PSQL_RETRY_S (seconds, default 120) is how long the first psql call is retried, with backoff,
@@ -478,6 +480,12 @@ else
     say "branch $BRANCH already exists — checking it out into the worktree"
     free_branch
     git -C "$MAIN" worktree add "$WT" "$BRANCH" --quiet
+  elif [ -n "${DESK_BRANCH_FROM_ORIGIN:-}" ] && git -C "$MAIN" show-ref --verify --quiet "refs/remotes/origin/$BRANCH"; then
+    # A branch another session owns (a cloud worker's), checked out as origin has it for a worker that
+    # only reads it (a review try): never cut afresh from the base.
+    say "branch $BRANCH is on origin only — checking it out from origin/$BRANCH"
+    git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "origin/$BRANCH" --quiet
+    CREATED_BRANCH=1
   else
     say "creating $BRANCH off $BASE"
     git -C "$MAIN" worktree add -b "$BRANCH" "$WT" "$BASE" --quiet

@@ -179,6 +179,9 @@ const { threw, calls } = withNoIo(() => {
     const resume = step(snap(ticket('A', { resume: 'pending' }), { resume: true }), { fresh: false, login: () => { throw new Error('read'); } });
     t('a resume starts on its own login', resume.verdict.how, 'resume');
     t('a cloud ticket starts in the cloud', step(snap(ticket('A', { location: 'cloud' }))).verdict.how, 'cloud');
+    const reviewBack = step(snap(ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'rereview', try: 1, of: 2, pr: 31 } })));
+    t('#1003 a cloud ticket back for a review try on its PR is set up for a local worker', j([types(reviewBack.actions).includes('setup'), reviewBack.verdict.how]), j([true, 'local']));
+    t('#1003 any other try on its PR still goes the cloud way', step(snap(ticket('A', { location: 'cloud', result: { pr: 31 }, fix: { kind: 'feedback', try: 1, of: 2, pr: 31 } }))).verdict.how, 'cloud');
     t('every start takes a slot first', j(types(step(snap(ticket('A'))).actions).slice(-3)), j(['take-slot', 'setup', 'start']));
   }
 });
