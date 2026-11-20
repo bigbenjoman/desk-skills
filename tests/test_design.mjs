@@ -264,6 +264,9 @@ t('DS-860 AC2: "no board for the empty state yet" beside a named board blocks', 
 t('DS-860 AC2: "the empty state has no board" beside a named board blocks', sev(`Board "Order summary" on ${URL1}. The empty state has no board.`), 'blocking');
 t('DS-860 AC2: "no board for the error state in this ticket" blocks', sev(`Board "Order summary" on ${URL1}. No board for the error state in this ticket.`), 'blocking');
 t('DS-860 AC2: a no-board note on one link leaves another blocking', sev(`* Epic canvas: ${URL1}. No board for this ticket.\n* Board "Order summary": https://claude.ai/design/p/other`), 'advisory blocking');
+t('DS-860 AC2: a note beside a longer URL does not clear its prefix', sev(`No board for DS-70: https://claude.ai/design/p/other-v2\nBuild the Order summary board: https://claude.ai/design/p/other`), 'advisory blocking');
+t('DS-860 AC2: "no board for DS-70\'s empty state" blocks', sev(`Build the Order summary board on ${URL1}. No board for DS-70’s empty state.`), 'blocking');
+t('DS-860 AC1: "no board on this canvas for this ticket" is advisory', sev(`Epic canvas: ${URL1}. There is no board on this canvas for this ticket.`), 'advisory');
 const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
 t('DS-860: triage\'s design fact leaves out a canvas the ticket uses no board from', fact.canvases.length, 0);
 

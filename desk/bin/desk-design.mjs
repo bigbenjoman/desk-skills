@@ -1015,14 +1015,17 @@ export function propose(src, { root, dir, ref, worktrees }) {
 }
 
 // Whether the Design section says ticket <key> uses no board from the artifact at <url>: "no board for
-// this ticket", "no board specific to <key>", "this ticket uses no board". The phrase names the ticket,
-// so "no board for the empty state" beside a named board is not one. With several links it must sit
-// on <url>'s own line, so a note about one artifact never clears another.
+// this ticket", "no board on this canvas for <key>", "this ticket uses no board". The phrase names the
+// whole ticket, so "no board for the empty state" or "for this ticket's empty state" beside a named
+// board is not one. With several links it must sit on a line linking <url> itself, so a note about one
+// artifact never clears another.
 export function usesNoBoard(section, url, key) {
   const ticket = `(?:(?:this|the)\\s+ticket|${key ? key.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&') : '(?!)'})`;
-  const re = new RegExp(`\\bno\\s+boards?\\s+(?:(?:exists?|yet)\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-])|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
+  const qualifier = `(?:exists?|yet|(?:on|in|from)\\s+(?:this|the|that|its\\s+epic['’]s)\\s+(?:canvas|artifact|design))`;
+  const re = new RegExp(`\\bno\\s+boards?\\s+(?:${qualifier}\\s+)*(?:for|in|specific\\s+to)\\s+${ticket}(?![\\w-]|['’]s\\b)|\\b${ticket}\\s+(?:uses|has|needs)\\s+no\\s+boards?\\b`, 'i');
   const text = String(section ?? '');
-  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter((l) => l.includes(url)).join('\n') : text);
+  const own = (l) => claudeDesignLinks(l).some((u) => canonicalUrl(u) === canonicalUrl(url));
+  return re.test(claudeDesignLinks(text).length > 1 ? text.split('\n').filter(own).join('\n') : text);
 }
 
 // What a lane D worker can build from: {ref, canvases: [{url, saved, snapshot}], figma}. A canvas is
