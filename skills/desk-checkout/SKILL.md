@@ -50,6 +50,12 @@ If they name no day, use `auto`: that's today, except before 10:00, when it's ye
 because a check-out written first thing is for the day before. Say which day you covered in
 one line. Evidence from outside the day is context, not content.
 
+**A second check-out the same day starts where the first ended.** The collectors start the window at
+the last check-out this computer handed over (step 5 records it), when that falls inside the day,
+and their headers say `from HH:MM`. When the previous check-out you find in step 2 was posted later
+than that (written elsewhere, say), run them again with `--since <its time>`; `--since none` covers
+the whole day, and is what a redraft of the same check-out uses. Say the window in your one line.
+
 ## 2. Gather
 
 Run the three collectors in one Bash call, from inside the repo (they use its config to decide
@@ -167,11 +173,14 @@ short version:
 - Only say what the sources support. Where you inferred a status or a cause, don't hedge
   inside the post. Put the claim in the checklist below instead.
 - Stay as long as the day warrants. A quiet day is five lines, and that's fine.
+- Leave out what the previous check-out already said, unless its state has moved since (a PR it
+  called in review that has merged is news; the same merge again is not).
 
 ## 5. Hand over
 
 Print the post inside a single ```text fence so it copies cleanly. Then put it where §4 Check-out
-destination says, and say in one line where it went:
+destination says, say in one line where it went, and record it as the last check-out, so the next
+one starts after it: `python3 ~/.claude/skills/desk-checkout/scripts/window.py mark`.
 
 - **A Slack channel, `§3 slack-draft` `yes`:** save it as a draft in that channel with the Slack
   connector's `slack_send_message_draft`. Find the channel's id first with `slack_search_channels`,

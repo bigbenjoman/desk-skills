@@ -91,7 +91,7 @@ def main():
     args = ap.parse_args()
     repos, _current = desk_repos.load_all(args.include)
     skipped = set()
-    start, end = window.resolve(args.day)
+    start, end = window.resolve(args.day, since=args.since)
     since, until = start.astimezone(timezone.utc), end.astimezone(timezone.utc)
     login = (gh("api", "user", "-q", ".login") or "").strip()
     day = (start.astimezone(timezone.utc)).strftime("%Y-%m-%d")  # search is date-granular; filter below
