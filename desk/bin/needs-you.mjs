@@ -76,6 +76,8 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `stalled` is the repo's too: its batches a session runs whose passes stopped with work left (done
+// records nothing; the next pass clears it).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
 // first, then most held tickets waiting behind it (each item says how many), then the longest waiting,
 // less any put off with not-now whose inputs are unchanged and, where its entry recorded the actions it
@@ -99,7 +101,7 @@ import { promotionTitle } from './pass/promotion-pr.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, AUTOPILOT_STATES } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -1265,6 +1267,30 @@ const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
   item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
 
+// ---- a session-run batch whose passes stopped (desk-q liveBeat): one item for the repo --------------
+// A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
+// passes again, so when that session stalls (a turn that ended short of its next step, a request that
+// hung) nothing moves, and only desk-q's screen said so. Once such a batch has run a pass, still has a
+// ticket autopilot could move, and is no longer live (no pass for LIVE_MS, and its next pass due more
+// than PASS_GRACE_MS ago), it is one item for its repo, naming each such batch and its last pass. It is
+// shown and put off in the standing batch, else the first such batch by name. Its need names each last
+// pass, so not-now holds until a later stall; done records nothing: the next pass drops it.
+const STALLED = 'stalled';
+const utc = (ms) => `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+function stalledItems(batches, now = Date.now()) {
+  const stopped = batches.filter((b) => !b.error && b.q && !b.live && b.last != null && b.run?.by === 'session'
+    && (b.rows ?? []).some((x) => AUTOPILOT_STATES.includes(x.k)));
+  if (!stopped.length) return [];
+  const r = stopped.find((b) => b.batch == null) ?? [...stopped].sort((a, c) => String(a.batch).localeCompare(String(c.batch)))[0];
+  const single = stopped.length === 1;
+  const each = stopped.map((b) => `${b.name} (last pass ${utc(b.last)}${b.next != null ? `, next was due ${utc(b.next)}` : ''})`);
+  return [{ r, dir: standingDir(r), t: { key: STALLED }, item: { kind: STALLED, repoLevel: true,
+    need: `${single ? 'a batch' : 'batches'} of ${r.repo} that a session runs stopped making passes, so nothing new starts or merges there: ${andList(each)}. The session running ${single ? 'it' : 'them'} looks stalled: resume it, or ${stopped.map(resumeOf).join('; ')}`,
+    note: `Passes stopped ${stopped.map((b) => `${since(now - b.last)} ago in ${b.name}`).join(', ')}.${stopped.some((b) => b.rows.some((x) => x.k === 'running')) ? ' Running workers carry on.' : ''}`,
+    actions: [['done', 'once a pass runs again this item leaves the list; done records nothing'], ['not-now']],
+    since: Math.min(...stopped.map((b) => b.last)) } }];
+}
+
 // One item's kind, its one-line need and its actions, the recommended one first with its reason.
 // `reads` (READS) lets a draft's need quote the gaps its review lists; without it none is read.
 // `finds` (READS) lets a stopped or outside-held ticket's merged PR in another repo be looked for on
@@ -1351,8 +1377,8 @@ function itemOf(r, x, reads = null, finds = reads) {
   // start without them.
   if (x.k === 'stuck') {
     const outside = outsideHolds(r, t), freeHolds = outside.filter((o) => !o.batch), free = freeHolds.map((o) => o.key);
-    const one1 = free.length === 1;
-    const admitWhy = `${andList(free)} ${one1 ? 'is' : 'are'} in no batch, so nothing works ${one1 ? 'it' : 'them'}: admitting queues ${one1 ? 'it' : 'them'} for a worker`;
+    const single = free.length === 1;
+    const admitWhy = `${andList(free)} ${single ? 'is' : 'are'} in no batch, so nothing works ${single ? 'it' : 'them'}: admitting queues ${single ? 'it' : 'them'} for a worker`;
     const rules = free.length ? admitRules(r) : null;
     const notYours = freeHolds.map((o) => notAdmittable(o, rules)).filter(Boolean);
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
@@ -1526,7 +1552,7 @@ export function needsCount(r) {
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
-  for (const s of askItems(r.batches ?? [r])) {
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own)]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
   }
   return { shown: rows.length + steps, putOff, rows, stepRows };
@@ -1589,6 +1615,9 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
     for (const s of reviewerItems(repos.filter((x) => x.slug === slug && !x.error && x.q))) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  }
+  for (const slug of new Set(inScope.map((x) => x.slug))) {
+    for (const s of stalledItems(inScope.filter((x) => x.slug === slug), now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   }
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
@@ -1678,7 +1707,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK)) return recordRepoItem({ word, ticket, action, now, repos });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2009,6 +2038,7 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     try { removeAsk(i.r.stateDir, i.id); } catch (e) { return say(false, `it could not be taken off the list (${one(e.message)}).`); }
     return say(true, 'done, so it is off your list.');
   }
+  if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);

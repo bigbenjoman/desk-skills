@@ -213,9 +213,10 @@ t('AC16 the record line says passes are stopped', /Passes are stopped in gamma/.
 
 // ---- AC11: the end prints the desk-q count left, then each stopped repo and how to resume it
 const left = cli('left').out.trim().split('\n');
-// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you.
-t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 2 items needing you. 2 put off with not-now, left out until they change.');
-t('DS-324 AC4 left matches list', N.collect().items.length, 2);
+// A-1, A-3, A-7, B-1 and G-1 are settled; A-4 and A-6 are put off; A-2 and A-8 still need you, and so do
+// gamma's stopped passes (#911): G-1 requeued waits on a pass its session no longer runs.
+t('AC11 (DS-324 AC4) the count left is what list prints', left[0], 'desk-q counts 3 items needing you. 2 put off with not-now, left out until they change.');
+t('DS-324 AC4 left matches list', N.collect().items.map((i) => i.t.key).sort().join(), 'A-2,A-8,stalled');
 
 // ---- desk-q's NEEDS YOU and left's count are one number, the put-off items said beside it
 const { overview } = await import('../desk/bin/desk-q.mjs');
@@ -226,8 +227,8 @@ const needsCell = () => {
   return h.find((l) => l.startsWith('  alpha '))?.slice(0, end).match(/(\d+(?: \(\+\d+ put off\))?)$/)?.[1];
 };
 t('DS-376 AC1 the NEEDS YOU cell shows what needs you, then how many are put off', needsCell(), '2 (+2 put off)');
-t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 2 tickets need you'), true);
-t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '2 2');
+t('DS-376 AC1 the header counts what needs you, as the cell does', home()[0].startsWith('◆ 3 tickets need you'), true);
+t('DS-376 AC2 left attributes to desk-q the count its table shows', `${left[0].match(/^desk-q counts (\d+) /)?.[1]} ${N.needsCount(loadRepos().find((r) => r.name === 'alpha'))?.shown}`, '3 2');
 
 // ---- DS-324 AC2: a put-off item comes back once its blocker or its inputs change
 const aq = queueOf('alpha');
@@ -3115,6 +3116,35 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const done = N.record({ word: 'ask811', ticket: 'ask:1', action: 'done' });
   t('#811 done takes it off the list', `${done.ok} ${done.line} ${asks().length}`, 'true ask811 ask:1: done, so it is off your list. 0');
   t('#811 an empty ask is refused', cli('ask', 'ask811', '  ').code, 11);
+}
+
+// ---- #911: a session-run batch whose passes stopped, with work autopilot could move, is one item
+{
+  put('stall911', { port: 4911, beat: 90, tickets: { 'S-1': { state: 'triaged', lane: 'A' }, 'S-2': { state: 'running', lane: 'A', stage: '3/9' } } });
+  put('stallsup911', { port: 4912, beat: 90, supervised: true, tickets: { 'U-1': { state: 'triaged', lane: 'A' } } });
+  put('stallpark911', { port: 4913, beat: 90, tickets: { 'P-1': parked('A', 60, 'Which one?') } });
+  put('stalllive911', { port: 4914, beat: 1, tickets: { 'L-1': { state: 'triaged', lane: 'A' } } });
+  const beatAt = (name, m) => writeFileSync(join(env.HOME, '.desk-autopilot', `acme__${name}`, 'orchestrators', 'q.json'),
+    JSON.stringify({ queue: join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), batch: `${name}-batch`, pid: 1, at: minsAgo(m) }));
+  const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
+  const s = stalled('stall911');
+  t('#911 one item for the repo, naming its batch, its last pass and how to resume it', s.length === 1
+    && /^a batch of stall911 that a session runs stopped making passes, so nothing new starts or merges there: stall911 \(last pass \d{4}-\d\d-\d\d \d\d:\d\d UTC\)\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+  t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago in stall911. Running workers carry on.');
+  t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
+  const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);
+  t('#911 desk-q counts it', N.needsCount(standing()).shown, N.collect({ word: 'stall911' }).items.length);
+  t('#911 a supervised batch is not one: its supervisor starts passes', stalled('stallsup911').length, 0);
+  t('#911 nor a batch whose tickets all wait on the person', stalled('stallpark911').length, 0);
+  t('#911 nor a live one', stalled('stalllive911').length, 0);
+  const done = N.record({ word: 'stall911', ticket: 'stalled', action: 'done' });
+  t('#911 done records nothing and says what clears it', `${done.ok} ${done.line} ${stalled('stall911').length}`, 'true stall911 stalled: noted: this item goes once a pass runs again; done records nothing. 1');
+  const off = N.record({ word: 'stall911', ticket: 'stalled', action: 'not-now' });
+  t('#911 not-now puts it off', `${off.ok} ${stalled('stall911').length}`, 'true 0');
+  beatAt('stall911', 30);
+  t('#911 a later stall, after a pass that ran, brings it back', stalled('stall911').length, 1);
+  beatAt('stall911', 0);
+  t('#911 the next pass drops it', stalled('stall911').length, 0);
 }
 
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');

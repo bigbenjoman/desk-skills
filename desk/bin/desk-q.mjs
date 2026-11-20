@@ -966,7 +966,7 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+export const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
