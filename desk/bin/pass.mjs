@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, postMergeOwed, sameStep, settleSteps } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -47,7 +47,7 @@ import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
 import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
-import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps, fromReview, reviewStep } from './undraft.mjs';
+import { undraftCall, buildCall, buildPark, mergePark, undraftComment, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
@@ -67,6 +67,7 @@ import { queueWriter } from './queue-writer.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
+import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
@@ -3367,19 +3368,9 @@ runPhase({
 const qNow = queue();
 const heldNow = Object.values(qNow.tickets).filter(isHeld);
 const prStates = {};
-// Each done ticket's PR is read once a pass, its state, draft, review decision, mergeable state and
-// checks in one call, and kept on the ticket as pr_status for desk-q, which makes no network call of
-// its own. A PR recorded merged or closed is not read again, unless it merged and the ticket has no
-// merged_at yet. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
+// Each done ticket's PR is read once a pass (pass/pr-status.mjs decidePrStatus), and kept on the ticket
+// as pr_status. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
-const PR_FINAL = ['MERGED', 'CLOSED'];
-// A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
-// (harvest.mjs postMergeOwed).
-// A follow step gated on the default branch or production (needs-you.mjs gateHeld) waits on its PR's
-// merge commit, which a merge recorded without reading the PR (needs-you's done, a hand-ship) lacks, so
-// that PR is read again for it. GitHub names a merged PR's merge commit, so one read records it.
-const gatedFollow = (t) => followOnPending(t) && t.follow_on.some((s) => (s?.after ?? 'merge') !== 'merge');
-const commitOwed = (t) => gatedFollow(t) && !t.pr_status?.merge_commit;
 function readPrStatus(n) {
   const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
@@ -3483,82 +3474,51 @@ function withErrors(s, was) {
   });
   return { ...s, checks };
 }
-// A merge is recorded here whoever made it, the merge driver or anyone else: merged_at on the ticket
-// and its eta-history line (queue.mjs merged keeps the first merge time and appends a key once).
+// The decision is pass/pr-status.mjs decidePrStatus: it reads the tickets as qNow holds them, and the
+// lists it builds hold those same tickets, which the steps after this one read. A finished fix try is
+// marked on them as on the queue.
 const merges = [];
 const drafts = [];
 const undrafted = [];
 const reopens = [];
-for (const t of Object.values(qNow.tickets)) {
-  // A fix try is over once its worker has finished: later spawns are no longer that try's.
-  if (t.state === 'done' && t.fix && !t.fix.finished && !DRY) {
-    q('set', t.key, `fix.finished=${PASS_AT}`); t.fix.finished = PASS_AT;
-    // The merge driver holds PRs sharing a file behind a repair, timed from when its worker finished.
-    if (t.fix.kind === 'conflict') {
-      t.fix_tries = (t.fix_tries ?? []).map((x) => (x.kind === 'conflict' && x.at === t.fix.at && !x.finished ? { ...x, finished: PASS_AT } : x));
-      q('set', t.key, `fix_tries=${JSON.stringify(t.fix_tries)}`);
-    }
-  }
-  const n = t.state === 'done' ? t.result?.pr : null;
-  if (n == null) continue;
-  let s = null;
-  // A PR this pass's reopen closed and could not reopen is read again until it reopens.
-  const owed = t.reopening != null && String(t.reopening) === String(n);
-  if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
-    prStates[n] = t.pr_status.state;
-    if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;
-    if (t.pr_status.merged_at && !commitOwed(t)) s = t.pr_status;
-  } else if (n in prStates) continue;
-  if (!s) {
-    s = readPrStatus(n);
-    if (!s) continue;
-    s = withErrors(withUntriggered(withHistory(s, t.pr_status)), t.pr_status);
-    // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
-    // behind it reads as stuck while the reopen is outstanding.
-    prStates[n] = owed && s.state === 'CLOSED' ? 'OPEN' : s.state;
-    q('set', t.key, `pr_status=${JSON.stringify(s)}`);
-    if (s.state === 'OPEN' && s.isDraft === true) drafts.push({ t, s });
-    if (s.state === 'OPEN' && s.isDraft === false) undrafted.push({ t, s });
-    if ((s.state === 'OPEN' && Object.keys(s.reopen ?? {}).length && s.base_head) || (owed && s.state === 'CLOSED')) reopens.push({ t, s, owed });
-    else if (owed && !DRY) q('set', t.key, 'reopening=null');
-  }
-  if (s.state === 'MERGED' && !t.merged_at && !DRY) {
-    const rec = q('merged', t.key, ...(s.merged_at ? [s.merged_at] : []));
-    if (rec) merges.push(`${t.key} (PR #${n}): ${rec.split('\n').join('; ')}`);
-  }
-  // A criterion its review left for after the merge is a follow-on step from now on, which needs-you
-  // lists: the person checks it once, on the live system, rather than before the merge. Kept apart from
-  // merged_at, which the merge driver, needs-you and a hand-shipped ticket may have recorded first. An
-  // item the person already marked run (an earlier PR's, on a requeued ticket) is reopened with only
-  // these steps. One write, so a refused one leaves the criteria owed to the next pass, and one made only
-  // while the follow-on steps are as read: needs-you's done (queue.mjs follow-ran) changing them before
-  // this is written skips it whole, so the next pass adds the criteria to what done left. Steps the worker
-  // declared for after the merge win over the criteria: the two word one check differently, so both would
-  // ask for it twice, and the criteria are the fallback for a worker that declared none. Kept link steps
-  // and an earlier PR's criteria, still unrun on a requeued ticket, are not the worker's.
-  if (s.state === 'MERGED' && !DRY && (s.post_merge ?? []).length && String(t.post_merge_read ?? '') !== String(n)) {
-    const have = t.follow_on_done ? [] : t.follow_on ?? [];
-    const declared = have.some((h) => !fromReview(h) && !String(h?.step ?? '').startsWith(LINK_STEP));
-    const later = declared ? [] : s.post_merge.map((x) => ({ step: reviewStep(x.step).slice(0, FOLLOW_ON_MAX), row: null, from: 'review', ...(x.after ? { after: x.after } : {}) })).filter((x) => !have.some((h) => reviewStep(h?.step) === x.step && (h?.after ?? null) === (x.after ?? null)));
-    const steps = later.length ? [`follow_on=${JSON.stringify([...have, ...later])}`, ...(t.follow_on_done ? ['follow_on_done=null'] : [])] : [];
-    // As read, or as this write leaves them, which is what the check under the lock sees when nobody else wrote.
-    const stateOf = (x) => JSON.stringify([x.follow_on ?? null, x.follow_on_done ?? null]);
-    const ok = [stateOf(t), later.length ? stateOf({ follow_on: [...have, ...later], follow_on_done: null }) : stateOf(t)];
-    const args = ['set', t.key, ...steps, `post_merge_read=${n}`];
-    const w = QW.apply(args, { when: (x) => ok.includes(stateOf(x)) });
-    if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
-    if (w.ok && !w.skipped && later.length) {
-      merges.push(`${t.key} (PR #${n}): ${later.length} ${later.length === 1 ? 'criterion' : 'criteria'} its review left for after the merge, now follow-on steps`);
-    }
-  }
-}
-for (const m of merges) out.push(`merge recorded: ${m}`);
-// needs-you judges a gated follow step from the repo root's remote refs, so origin is fetched each pass
-// while one waits: nothing else moves origin/<default> or the Promotion ref there on a quiet repo.
-if (Object.values(qNow.tickets).some(gatedFollow)) {
-  const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
-  if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
-}
+runSteps({
+  name: 'PR status',
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT }),
+  decide: decidePrStatus,
+  handlers: {
+    ...OUT_HANDLERS,
+    'fix-finished': (a) => {
+      const t = qNow.tickets[a.key];
+      q('set', a.key, `fix.finished=${a.at}`); t.fix.finished = a.at;
+      if (a.fixTries) { t.fix_tries = a.fixTries; q('set', a.key, `fix_tries=${JSON.stringify(a.fixTries)}`); }
+    },
+    'read-pr': (a) => {
+      const s = readPrStatus(a.pr);
+      return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
+    },
+    'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),
+    merged: (a) => q('merged', a.key, ...(a.at ? [a.at] : [])),
+    'follow-on': (a) => {
+      const args = ['set', a.key, ...a.fields];
+      const w = QW.apply(args, { when: (x) => a.expect.includes(followState(x)) });
+      if (!w.ok) report.failed.push(refusedLine(args, 'not recorded', w.why));
+      return w;
+    },
+    'fetch-origin': () => {
+      const f = shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin']);
+      if (!f.ok) out.push(`follow gates: git fetch origin in ${MAIN} failed (${f.out.split('\n').pop()}), so a follow step gated on the default branch or production is judged from the refs as last fetched`);
+    },
+    'prune-builds': (a) => {
+      const open = new Set(a.open);
+      for (const f of pruneTrees(TREE_DIR, BUILD_DIR, (n) => open.has(n))) report.failed.push(`check build checkout ${join(TREE_DIR, f.n)}: PR #${f.n} is closed, but it could not be removed — ${f.why}`);
+    },
+    lists: (a) => {
+      drafts.push(...a.drafts); undrafted.push(...a.undrafted); reopens.push(...a.reopens);
+      Object.assign(prStates, a.prStates); merges.push(...a.merges);
+    },
+  },
+  report,
+});
 
 // ---- follow steps ----------------------------------------------------------
 // The decision is pass/follow-steps.mjs decideFollowSteps: a merged ticket's steps that only read CI,
@@ -3655,11 +3615,6 @@ const followActs = runPhase({
 // batch from idling, so a pass reads it.
 const followPending = followActs.some((a) => a.type === 'start')
   || followAwaits({ tickets: queue().tickets, labels: E.personStepLabels(), out: followOut(queue()), now: Date.now() });
-// A PR's check-build checkout goes once its ticket closes: its PR merged or closed, or the ticket out of the queue.
-if (!DRY) {
-  const open = new Set(Object.values(qNow.tickets).map((t) => t.result?.pr).filter((n) => n != null && !PR_FINAL.includes(prStates[n])).map(String));
-  for (const f of pruneTrees(TREE_DIR, BUILD_DIR, (n) => open.has(n))) report.failed.push(`check build checkout ${join(TREE_DIR, f.n)}: PR #${f.n} is closed, but it could not be removed — ${f.why}`);
-}
 
 // ---- reopen --------------------------------------------------------------
 // A PR whose required checks never reported, though its base's copy of the workflow now runs them (the
