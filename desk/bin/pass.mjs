@@ -812,20 +812,6 @@ function advanceCloud(t) {
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
 const buildRow = parseOperatorChecks(E.configValues('check-builds'));
-// The rows below are used only after the spawns, but read here, before any: a row that cannot be read
-// stops the pass before it starts a worker rather than after.
-// §4 Evidence workflow, for the evidence runs of done tickets' draft PRs.
-const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
-// §4 Checks workers can't fix, for a draft's red checks and a ready PR's in the fix tries.
-const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
-// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
-// applied to staging), so no fix worker is sent for it and the person is told the step.
-const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
-// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
-// sends a review worker for one reading the verdict).
-const stateRow = parseStateChecks(E.configValues('state-checks'));
-// §4 Known flaky checks, for the fix tries.
-const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // What green means here, config §4 Required and Advisory checks: for undrafting and for READY TO MERGE.
 const gateLists = () => gateListsOf({ required: E.configValues('required-checks'), advisory: E.configValues('advisory-checks') });
 // A park whose only blocker is a red check §4 Check builds names (undraft.mjs buildPark): the ticket's
@@ -1681,6 +1667,21 @@ const linkLines = [];
 }
 
 // ---- spawn ---------------------------------------------------------------
+// The rows below are used only after the spawns, but read here, before any and after the running
+// tickets are advanced: a row that cannot be read stops the pass before it starts a worker rather than
+// after, and still lets it record what the running workers finished.
+// §4 Evidence workflow, for the evidence runs of done tickets' draft PRs.
+const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
+// §4 Checks workers can't fix, for a draft's red checks and a ready PR's in the fix tries.
+const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
+// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
+// applied to staging), so no fix worker is sent for it and the person is told the step.
+const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
+// sends a review worker for one reading the verdict).
+const stateRow = parseStateChecks(E.configValues('state-checks'));
+// §4 Known flaky checks, for the fix tries.
+const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 const fresh = queue();
 const all = Object.values(fresh.tickets);
 const running = all.filter((r) => r.state === 'running');
