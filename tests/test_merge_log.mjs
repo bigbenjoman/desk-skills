@@ -122,5 +122,30 @@ t('DS-835 CLI: show --latest needs --pr', cli('show', '--latest').status, 11);
 const c5 = cli('record', '51', 'cafe123', '--by', S, '--event', 'merged', '--ticket', 'DS-2');
 t('DS-835 CLI: record --ticket writes the ticket', [c5.status, M.readLog(path).find((e) => e.pr === '51')?.ticket], [0, 'DS-2']);
 
+// DS-936: the session merge steps. Each skill step that merges or arms claims first and records after,
+// as the session; a second session's claim on a PR the first armed is refused, naming it and the head.
+const SKILLS = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills');
+const steps = {
+  'desk-ticket Stage 7': 'desk-ticket/references/stage-7-pr.md',
+  'desk-clearance merge lane': 'desk-clearance/references/phase-6-merge-lane.md',
+  'desk-autopilot merging': 'desk-autopilot/references/merging.md',
+};
+for (const [name, file] of Object.entries(steps)) {
+  const s = readFileSync(join(SKILLS, file), 'utf8').replace(/\s+/g, ' ');
+  const claimAt = s.indexOf('merge-log.mjs claim <n> <head> --by "session <your session name>"');
+  const recordAt = s.indexOf('merge-log.mjs record <n> <head> --by "session <your session name>" --event merged');
+  t(`DS-936 AC1-3 ${name} claims as the session, then records merged or armed after`, [claimAt >= 0, recordAt > claimAt, /`armed` for auto-merge/.test(s)], [true, true, true]);
+  t(`DS-936 AC4 ${name} stops on a refused claim and reports who and at which head`, /When it refuses \(exit 11\), another desk path already merged, armed or claimed the PR: do not merge or arm it, and report the line it printed, which names who did it and at which head/.test(s), true);
+}
+const opening = readFileSync(join(SKILLS, 'desk-pr/references/opening.md'), 'utf8').replace(/\s+/g, ' ');
+t('DS-936 AC3-4 desk-pr arming claims, records armed, and stops on a refusal', [/merge-log\.mjs claim`, then `record --event armed`/.test(opening), /A refused claim means another desk path already has the PR: do not arm or merge it/.test(opening)], [true, true]);
+const A = 'session DS-1-story', B = 'session DS-2-bug';
+const armedClaim = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: A, now: NOW, path }).ok;
+M.record({ repo: R, pr: 70, sha: 'abcdef1', by: A, event: 'armed', now: NOW + 1000, path });
+t('DS-936 AC3 a session arming auto-merge claims, then records armed at its head', [armedClaim, M.readLog(path).filter((e) => e.pr === '70').map((e) => [e.event, e.sha, e.by].join(' '))], [true, [`claim abcdef1 ${A}`, `armed abcdef1 ${A}`]]);
+const b = M.claim({ repo: R, pr: 70, sha: 'abcdef1', by: B, now: NOW + 3 * M.CLAIM_MS, armedNow: () => true, path });
+t('DS-936 AC4 a second session reaching its merge step is refused, naming who armed it and at which head', [b.ok, b.why], [false, `${R}#70 is already armed by ${A} (2026-11-20T10:00:01.000Z, at abcdef1): not merging`]);
+t('DS-936 AC4 and nothing is written for the refused session', M.readLog(path).filter((e) => e.pr === '70' && e.by === B).length, 0);
+
 console.log(fails ? `${fails} FAILED` : 'all merge log checks passed');
 process.exit(fails ? 1 : 0);

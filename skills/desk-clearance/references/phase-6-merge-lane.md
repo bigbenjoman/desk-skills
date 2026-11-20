@@ -30,8 +30,9 @@ Before each merge, from freshly derived state:
    *enqueues* — poll `.merged`. Merge stacks bottom-up.
    **Every merge is claimed and recorded** in the machine-wide merge log, so the merge driver and
    another session never race one PR and who merged it is on record. Before merging or arming:
-   `node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`; when
-   it refuses, naming the other merger, do not merge. After: `merge-log.mjs record <n> <head> --by
+   `node ~/.claude/desk/bin/merge-log.mjs claim <n> <head> --by "session <your session name>"`. When
+   it refuses (exit 11), another desk path already merged, armed or claimed the PR: do not merge or
+   arm it, and report the line it printed, which names who did it and at which head. After: `merge-log.mjs record <n> <head> --by
    "session <your session name>" --event merged` (`armed` for auto-merge, `disarmed` when you turn it off, `failed` when gh refuses).
    `merge-log.mjs show --pr <n>` says who did.
 6. **Confirm** `state == MERGED`, that the merged head (`headRefOid`) is the SHA you checked, and
