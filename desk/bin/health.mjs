@@ -514,7 +514,7 @@ export const refusedLogin = (state, login, own) => refusedIn(readRecord(state), 
 const HELD_WORDS = 'no PR red only on a §4 State check of kind verdict gets a review or fix try until it passes, and build workers still start';
 // A mismatch still lets through the review the merge driver needs (pass/fix-tries.mjs heldReview): it
 // counts desk's verdict though the gate does not.
-const MISMATCH_WORDS = ', except the review a head with no clean verdict needs, which the merge driver counts though the gate does not';
+export const MISMATCH_WORDS = ', except the review a head with no clean verdict needs, which the merge driver counts though the gate does not';
 // The repo item a failing reviewer check is told as, and that holds a PR's tries: a sign-in failure is
 // a sign-in item of its own, not a mismatch. { key, signin, why, fix, ... the check's result }.
 export function reviewerItem(slug, r) {

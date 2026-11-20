@@ -1099,7 +1099,7 @@ EOF_RESOLVE
         fi
       fi
     elif [ -n "$carried_from" ]; then
-      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want came since"
+      log "#$n its clean review at ${carried_from:0:9} holds at ${sha:0:9}: only clean merges of $want and empty commits came since"
     fi
   fi
 

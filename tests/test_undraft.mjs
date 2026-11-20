@@ -753,7 +753,7 @@ t('DS-316 a head whose first parents pass the reviewed commit by is not a carry'
 // Its only commit since is a clean merge of the base, but its first parent is older than the reviewed commit.
 g('checkout', '-q', '-b', 'pr5', BASE); g('merge', '-q', '--no-ff', '--no-edit', 'main');
 t('DS-316 a clean base merge onto a commit before the reviewed one is not a carry', carries(A, g('rev-parse', 'HEAD')), false);
-// #881: an empty commit adds nothing, so with clean base merges it carries the verdict too.
+// An empty commit adds nothing, so with clean base merges it carries the verdict too.
 g('checkout', '-q', '-b', 'pr6', A); g('commit', '-q', '--allow-empty', '-m', 'empty'); const E = g('rev-parse', 'HEAD');
 t('#881 an empty commit alone carries the verdict', carries(A, E), true);
 g('merge', '-q', '--no-edit', 'main'); g('commit', '-q', '--allow-empty', '-m', 'empty again'); g('merge', '-q', '--no-edit', 'main');

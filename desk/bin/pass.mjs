@@ -40,7 +40,7 @@ import { probeNow, probeDue, loginProbeLog, usageDir } from './usage-probe.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
-import { health, markFailed as markHealthFailed, refusedIn } from './health.mjs';
+import { health, markFailed as markHealthFailed, refusedIn, MISMATCH_WORDS } from './health.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, UNREADABLE, ownDraftWhy, withQuestion, describeCond } from './clears-when.mjs';
 import { transientPush, unreachedPush } from './push-retry.mjs';
@@ -3635,7 +3635,7 @@ function markGateHold(t, s, on) {
     q('set', t.key, `gate_hold=${JSON.stringify({ item: h.key, head: s.head ?? null, why: h.why, at: t.gate_hold?.at ?? new Date().toISOString() })}`);
   }
   if (t.stuck && !DRY) q('set', t.key, 'stuck=null');
-  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes`);
+  report.waiting.push(`${t.key}: GATE — PR #${s.pr} is red only on its review gate, held by ${h.key}: ${h.why}. No review or fix try goes to it until that check passes${h.kind === 'mismatch' ? MISMATCH_WORDS : ''}`);
 }
 // The rows the fix tries read: one that does not parse makes none this pass.
 const fixRowErrors = [[`§4 Checks workers can't fix`, operatorRow, '`<check>: <what fixes it>`'], ['§4 Pre-merge steps', preMergeRow, '`<check>: <what fixes it>`'], ['§4 State checks', stateRow, '`<check>` or `<check>: verdict|approval`']]
@@ -3825,7 +3825,7 @@ if (drafts.length) {
     if (t.stuck && stale && !DRY) q('set', t.key, 'stuck=null');
     const carried = !c.carried ? ''
       : c.range ? `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as its own diff is unchanged and ${DEFAULT_BRANCH}'s range ${c.range} changed none of the files the review rests on`
-        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} came since`;
+        : `; its review verdict is carried from ${String(c.carried).slice(0, 12)}, as only clean merges of ${DEFAULT_BRANCH} and empty commits came since`;
     if (hold) report.waiting.push(`${t.key}: HELD — PR #${n} stays draft: ${hold.why}. ${hold.action[0].toUpperCase()}${hold.action.slice(1)} (gh pr ready ${n} --repo ${GH_REPO})`);
     else if (rf) { applyFix(t, n, v.headRefOid, rf); if (rf.call === 'rerun' || rf.call === 'wait') rec = { ...rec, call: rf.call, why: rf.why, action: null }; }
     else if (gated) { /* markGateHold reported it */ }

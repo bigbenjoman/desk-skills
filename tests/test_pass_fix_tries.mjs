@@ -100,7 +100,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('a held PR marks its hold and gets nothing else', j(as), j([{ type: 'gate-hold', key: 'T-1', on: true }]));
 }
 
-// #881: held only because the gate counts another account, a head the merge driver would hold for want
+// Held only because the gate counts another account, a head the merge driver would hold for want
 // of a clean verdict still gets its review try while the gate is red.
 {
   const verdictPr = pr([ok('tests'), red('desk-review', '9')]);
