@@ -3,6 +3,10 @@ import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
 import { registryView } from '../desk/bin/pass/shared.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
+import { parkApproval } from '../desk/bin/batch-state.mjs';
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -31,7 +35,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null,
+  'refuse-lease': false, lifted: false, 'exit-code': null, approval: { approve: null, missing: null },
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -152,7 +156,7 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","approval","set","keep-links","decisions","report"]');
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });
   t('a park the person put off is reported put off', j(lines(off, 'putOff')), j(['Q-1: which colour? (put off on 2026-11-01)']));
@@ -161,6 +165,35 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
     j([built.find((a) => a.type === 'done')?.pr, types(built).includes('merge-park')]), '["9",false]');
   const merged = advance(s, { 'merge-park': { call: 'done', pr: 5, head: 'abcdef1234567', grant: 'config §3 pr-merge is "yes"' } });
   t('a park asking only who merges a green PR desk may merge is recorded done', j(merged.find((a) => a.type === 'done')?.sets.slice(1)), '["follow_on_comment=due"]');
+}
+
+// DS-839: a park on a write config §3 does not grant carries the exact text in its park file.
+{
+  const BODY = 'Fixed in PR #12.\n\n(DS-9/desk-ticket)';
+  const APPROVE = { kind: 'jira-comment', target: 'DS-9', body: BODY };
+  const dir = mkdtempSync(join(tmpdir(), 'ds839-'));
+  mkdirSync(join(dir, 'parks'));
+  const Q = 'JIRA COMMENT on DS-9 awaiting approval. Not reached: the Jira comment';
+  writeFileSync(join(dir, 'parks', 'A-1.json'), JSON.stringify({ question: Q, approve: APPROVE }));
+  t('DS-839 AC1 the park file\'s approve is read whole, its body verbatim', j(parkApproval(dir, 'A-1', Q)), j({ approve: APPROVE, missing: null }));
+  writeFileSync(join(dir, 'parks', 'A-2.json'), JSON.stringify({ question: Q }));
+  t('DS-839 AC4 a question awaiting approval with no approve names what is missing',
+    parkApproval(dir, 'A-2', Q).missing, 'its park file carries no approve object ({"kind", "target", "body"}) holding the exact text to approve');
+  writeFileSync(join(dir, 'parks', 'A-3.json'), JSON.stringify({ question: Q, approve: { kind: 'jira-comment', target: 'DS-9' } }));
+  t('DS-839 AC4 an approve with no body names the field', parkApproval(dir, 'A-3', Q).missing, 'its park file\'s approve object has no body');
+  t('DS-839 a park asking no approval, with no file, lacks nothing', j(parkApproval(dir, 'A-4', 'which colour?')), j({ approve: null, missing: null }));
+  t('DS-839 AC4 nor does a park file that is not there for one that asks', parkApproval(dir, 'A-5', Q).missing !== null, true);
+
+  const P = `AUTOPILOT_PARK: ${Q}`;
+  const s = snap(ticket('A-1'), logOf('A-1', P, [said(P), RESULT]));
+  const as = advance(s, { approval: { approve: APPROVE, missing: null } });
+  t('DS-839 AC1 the pass keeps the approve on the ticket\'s park', sets(as).includes(`park.approve=${JSON.stringify(APPROVE)}`), true);
+  t('DS-839 AC3 and reports the park naming its kind and target', j(lines(as, 'parked')), j([`A-1: ${Q} — awaiting approval: jira-comment on DS-9`]));
+  const bare = advance(s, { approval: { approve: null, missing: 'its park file carries no approve object' } });
+  t('DS-839 AC4 a park missing its payload is reported incomplete, naming it',
+    j(lines(bare, 'parked')), j([`A-1: ${Q} — incomplete: its park file carries no approve object`]));
+  t('DS-839 AC4 and keeps no approve', sets(bare).some((f) => f.startsWith('park.approve=')), false);
+  t('DS-839 a park with nothing to approve is reported as before', j(lines(advance(s, { approval: { approve: null, missing: null } }), 'parked')), j([`A-1: ${Q}`]));
 }
 
 // The usage limit, in the advance step and after it.

@@ -1694,6 +1694,15 @@ const runLine = (r) => {
 // The put-off count, after the item count: they are not listed again until their inputs change.
 const putOffLine = (c) => (c.putOff ? ` ${c.putOff} put off with not-now, left out until ${c.putOff === 1 ? 'it changes' : 'they change'}.` : '');
 
+// A parked write awaiting approval, as listText prints it under its item: a header naming its kind and
+// target, the body line for line as the worker wrote it, and an end line, so the body is never cut or
+// reworded and nothing after it reads as part of it.
+export const approvalLines = (key, a) => [
+  `--- ${key} awaiting approval: ${a.kind} on ${a.target}, the exact text ---`,
+  ...String(a.body).split('\n'),
+  `--- end of ${key}'s text awaiting approval ---`,
+];
+
 export function listText(c, now = Date.now()) {
   if (!c.items.length) return `Nothing needs you${c.named ? ` in ${c.named.name}` : ''}.${putOffLine(c)}`;
   // A repo-level item is the person's own step, so who runs the batch says nothing about it.
@@ -1705,6 +1714,9 @@ export function listText(c, now = Date.now()) {
     // survive. A done note follows it whole: what GitHub showed when the person last said done.
     const need = `${i.need}${i.note ? ` ${i.note}` : ''}`;
     lines.push(`${i.r.word} ${i.t.key} ${i.kind}${waited} | ${need} | ${i.actions.map(actionText).join(' | ')}`);
+    // A write its park waits for the person to approve: the exact text, verbatim, under the question.
+    const a = i.t.state === 'parked' ? i.t.park?.approve : null;
+    if (a?.body) lines.push(...approvalLines(i.t.key, a));
   }
   const n = new Set(repos.map((r) => r.slug)).size;
   lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);

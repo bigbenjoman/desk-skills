@@ -146,7 +146,7 @@ Your settings are an **allow-list**: anything not named here is refused.
 - `curl` is denied: drive a page with Playwright rather than probing it over HTTP
 - Scratch scripts go at the worktree root and get `git clean`ed; `/tmp` is readable, not writable
 - **Files outside your worktree**: you may write only `$DESK_STATE/parks/<TICKET>.json` (your park
-  record, `{"question": "<one line>"}`) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
+  record, `{"question": …, "approve": …}`, core section 1) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
   Everything else in the state directory (answers, briefings, the queue, locks, other workers'
   files, your own settings) is read-only to you
 - **And your handoff briefing**, `$DESK_STATE/handoffs/<TICKET>.json`, written when you hand off

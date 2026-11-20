@@ -147,6 +147,18 @@ t('DS-587 batch-notes-header states the same rule, so the stricter-wins reading 
   notes.includes('A busy lock is never a park: once your run has waited 20 minutes without starting, commit your work, stop it (`TaskStop`), record the suite as "not run locally: test lock busy (<holder>); CI\'s required tests cover it", log an engineering decision naming the suite and the holder, and carry on.') && !/Blocked (over|more than) ~20 minutes/.test(notes), true);
 t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
 
+// DS-839: a park is the park file and the marker, with no step that messages the orchestrator, and a
+// gated write's exact text goes in the park file's approve.
+{
+  const steps = core.split('When the call parks, or `desk-ticket` says stop and wait for anything else:')[1]?.split('**A park asking for a file**')[0] ?? '';
+  t('DS-839 AC5 the park steps write the park file and end the turn', steps.includes('**Write the park file**') && steps.includes('**End your turn.**'), true);
+  t('DS-839 AC5 and no step messages the orchestrator', /SendMessage|ListAgents|notify_when_idle/.test(steps), false);
+  t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
+  t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
+    steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+  t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
+}
+
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
 const headings = before.split('\n').filter((l) => /^#{1,3} /.test(l));
@@ -193,6 +205,13 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // a park is its park file, with a gated write's exact text as `approve`, and never a message
+  ['DS-839', '1. **Print the question**', 1],
+  ['DS-839', '`SendMessage` the orchestrator with `notify_when_idle: true`', 1],
+  ['DS-839', '3. If you are re-invoked, read the answer file', 1],
+  ['DS-839', '4. Otherwise **end your turn**.', 1],
+  ['DS-839', 'target, fields, the exact body), then `AUTOPILOT_PARK`.', 1],
+  ['DS-839', 'record, `{"question": "<one line>"}`) and', 1],
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

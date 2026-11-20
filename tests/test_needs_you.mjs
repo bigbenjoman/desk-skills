@@ -3272,5 +3272,22 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#911 the next pass drops it', stalled('stall911').length, 0);
 }
 
+// ---- DS-839: a park on a write awaiting approval shows its exact text under the question.
+{
+  const body = 'Fixed in PR #12: the park file carries the text.\n\n* AC1 met\n(AP-1/desk-ticket)';
+  const question = 'JIRA COMMENT on AP-1 awaiting approval. Not reached: the Jira comment';
+  put('approve839', { port: 4839, beat: 1, supervised: true, tickets: {
+    'AP-1': { state: 'parked', lane: 'A', park: { question, since: minsAgo(5), approve: { kind: 'jira-comment', target: 'AP-1', body } } },
+    'AP-2': { state: 'parked', lane: 'A', park: { question: 'which colour?', since: minsAgo(5) } },
+  } });
+  const list = N.listText(N.collect({ word: 'approve839' })).split('\n');
+  const at = list.findIndex((l) => l.startsWith('approve839 AP-1 '));
+  t('DS-839 AC2 the question comes first, then the kind and target', list[at + 1], '--- AP-1 awaiting approval: jira-comment on AP-1, the exact text ---');
+  t('DS-839 AC2 then the body, verbatim', list.slice(at + 2, at + 2 + body.split('\n').length).join('\n'), body);
+  t('DS-839 AC2 and an end line', list[at + 2 + body.split('\n').length], '--- end of AP-1\'s text awaiting approval ---');
+  const other = list.findIndex((l) => l.startsWith('approve839 AP-2 '));
+  t('DS-839 a park with nothing to approve has no block under it', /awaiting approval/.test(list[other + 1] ?? ''), false);
+}
+
 console.log(fails ? `\n${fails} check(s) did not pass` : '\nall passed');
 process.exit(fails ? 1 : 0);

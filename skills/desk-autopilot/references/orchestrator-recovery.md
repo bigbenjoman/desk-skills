@@ -62,8 +62,8 @@ pass and holds the pass lock while it works, so a pass started meanwhile refuses
 with no running worker and 2 for a key the queue does not hold. Stopping every worker is `/desk-reboot`.
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
-assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
-you go idle, which is the one wait that works.
+assuming. A parked worker never messages you: it writes its park file and ends its turn, and the
+pass reads the park.
 
 ## Answering a live worker
 
@@ -233,10 +233,10 @@ re-running a ticket from scratch.
   items wait for the next one, while triage and epic planning still run on it. A subscription no
   login here is signed in to runs none of them: triage fails naming it, and none falls back to
   another login.
-- **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
-  batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
-  once; exactly one row that is the same batch with tickets added or removed is the same session.
-  No plausible row means nobody is listening: stop.
+- **A worker never reaches the orchestrator.** It runs with no setting sources, often on another
+  login, whose agent registry the orchestrator is not in. So a park is only its park file and its
+  `AUTOPILOT_PARK` line, read at the next pass; a gated write's exact text is the park file's
+  `approve`.
 - **A permission denial may be the filesystem, not the rule list.** Workers can only reach their
   worktree plus `additionalDirectories`. The lock directory (`DESK_LOCK_DIR`, default `/tmp`) and
   `/proc` (Linux meminfo) needed adding there; a `Bash(flock:*)` rule never could have fixed it.
