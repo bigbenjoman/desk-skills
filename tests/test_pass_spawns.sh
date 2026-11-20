@@ -828,24 +828,32 @@ check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds
 node --input-type=module -e "
 import { readFileSync, writeFileSync } from 'node:fs';
 writeFileSync('$T/pm-715.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/715'));
+writeFileSync('$T/pm-716.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/716'));
 "
 cat > "$T/stub/gh" <<EOF
 #!/bin/sh
 echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 715 "*) cat "$T/pm-715.json" ;;
+  "pr view 716 "*) cat "$T/pm-716.json" ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
 esac
 EOF
 q add PM-15; q set PM-15 state=done result.pr=715
 q add PM-16; q set PM-16 state=done result.pr=715 shipped_pr=715 merged_at=2026-11-10T09:00:00Z
+# PR 716's criteria were already taken by PM-19 (its follow item since run): PM-18, recorded on it later
+# with a lower key, takes none.
+q add PM-18; q set PM-18 state=done result.pr=716 shipped_pr=716 merged_at=2026-11-10T09:00:00Z
+q add PM-19; q set PM-19 state=done result.pr=716 merged_at=2026-11-10T09:00:00Z post_merge_read=716
 unmade(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { postMergeUnmade } from '$B/harvest.mjs'; console.log(postMergeUnmade(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a PR recorded on two tickets is read once, and each keeps its status, so the merge driver's owes its review no longer" \
   '[ "$(grep -c "pr view 715 " "$T/gh-calls")" = 1 ] && [ "$(field PM-15 pr_status.pr)" = 715 ] && [ "$(field PM-16 pr_status.pr)" = 715 ] && [ "$(field PM-16 post_merge_read)" = 715 ] && [ "$(unmade PM-16)" = false ] && [ "$(unmade PM-15)" = false ]'
 check "DS-796 and its review's post-merge criteria go to one of the two tickets, so the person is not asked for each twice" \
-  '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
+  '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ] && [ "$(field PM-16 post_merge_by)" = "\"PM-15\"" ] && [ "$(field PM-15 post_merge_by)" = null ]'
+check "DS-796 a ticket recorded on a PR whose criteria another ticket already took takes none, whatever its key" \
+  '[ "$(field PM-18 follow_on)" = null ] && [ "$(field PM-18 post_merge_read)" = 716 ] && [ "$(field PM-18 post_merge_by)" = "\"PM-19\"" ] && [ "$(unmade PM-18)" = false ]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 nor on a later pass" '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
 
