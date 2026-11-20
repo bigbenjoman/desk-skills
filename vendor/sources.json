@@ -610,12 +610,12 @@
         "path": "skills/ai-seo/"
       },
       "pin": {
-        "commit": "c01f0843c",
-        "date": "2026-11-09"
+        "commit": "71b8044dc",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Installed via `npx skills` 2026-09-27 (lock). All files incl. references/ and evals/ byte-identical; folder tree == lock skillFolderHash; current with upstream HEAD 5b2c000. Commit is the one that introduced this blob; it is also upstream HEAD.",
-      "tree_sha256": "f8527c33e3b53cad915b3c625664244c8aa17ad69e22958c0c87a4fd7d047d1a"
+      "tree_sha256": "b7f4b0ccb1127415fc81c9e60a03f6a7bee76d1cbfb41faf00e2c6a82756289b"
     },
     "async-python-patterns": {
       "source": {
