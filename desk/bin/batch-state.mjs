@@ -33,11 +33,18 @@ export function readJsonOrRefuse(path, action) {
   try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
   try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
 }
+// The paths this module builds under a batch's state folder, `<KEY>` standing for the ticket. Every
+// one goes through statePath, which refuses a name not declared here.
+export const STATE_PATHS = Object.freeze({ triage: 'triage/<KEY>.json', parks: 'parks/<KEY>.json', answers: 'answers/<KEY>.txt' });
+export function statePath(stateDir, name, key) {
+  if (!Object.hasOwn(STATE_PATHS, name)) throw new Error(`not a declared state path: ${name}`);
+  return join(stateDir, STATE_PATHS[name].replace('<KEY>', key));
+}
 // The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
 // are found by key behind its live ones (queue-store.mjs attachArchive).
 export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
-export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -114,8 +121,8 @@ export const moveOffer = (ts) => `move <batch> takes it out of this batch and qu
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {
-  const park = join(stateDir, 'parks', `${t}.json`);
-  if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
+  const park = statePath(stateDir, 'parks', t);
+  if (!existsSync(park) || existsSync(statePath(stateDir, 'answers', t))) return null;
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
 
@@ -124,7 +131,7 @@ export function openQuestion(stateDir, t) {
 // file is never read as this one's, and only with a body to relay.
 export function parkApprove(stateDir, t, question) {
   let f;
-  try { f = JSON.parse(readFileSync(join(stateDir, 'parks', `${t}.json`), 'utf8')); } catch { return null; }
+  try { f = JSON.parse(readFileSync(statePath(stateDir, 'parks', t), 'utf8')); } catch { return null; }
   const a = f?.approve;
   if (!a || typeof a.body !== 'string' || !a.body.trim() || String(f.question ?? '').trim() !== String(question ?? '').trim()) return null;
   return { kind: String(a.kind ?? 'write'), target: a.target == null ? null : String(a.target), body: a.body };
