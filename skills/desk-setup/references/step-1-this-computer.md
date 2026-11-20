@@ -78,6 +78,12 @@ both, and list each such folder as signed out.
   refused and name that other login. For a login the check could not run, mark it `not checked`
   with the reason.
 
+To add a login, say how, and run none of it: `CLAUDE_CONFIG_DIR=~/.claude-logins/<name> claude`, then
+`/login` with the other account; `desk-env logins check` then lists it with its account and plan; and
+`desk-env logins default claude <name>` makes it the default here, or *This repo's subscription*,
+below, pins this repo to it. desk-q view 6 does the same: `a` adds a login, and the default is chosen
+there.
+
 ### This repo's subscription
 
 Which subscription runs this repo is the repo's own choice, its config §3b `Subscription` row:
