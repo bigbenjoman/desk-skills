@@ -29,9 +29,6 @@ const SIZING_RULES = Object.freeze({
   'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
   'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
   'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
-  // No proposal makes this one: the lease broker (leases.mjs) reads it, 1 when unset, and only
-  // `desk-env machine set` writes it.
-  'preview-build-slots': { ok: wholeAtLeast(1), want: 'a whole number of preview builds at once per Vercel team, 1 or more' },
 });
 export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
@@ -44,6 +41,10 @@ const BENCH_RULES = Object.freeze({
     why: 'points of each weekly allowance the bench may spend, set in /desk-setup' },
   [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
     why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
+  // Not the bench's, but set the same way: a Sizing row no proposal makes, which the lease broker
+  // (leases.mjs) reads, 1 when unset.
+  'preview-build-slots': { ok: (n) => Number.isInteger(n) && n >= 1, want: 'a whole number of preview builds at once per Vercel team, 1 or more',
+    why: 'preview builds one Vercel team may run at once, read by desk-env lease; set by its user' },
 });
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.
