@@ -117,10 +117,12 @@ export function runningWorkers(q) {
 
 // Running workers in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
 // the queues that cannot be read. `rows(q)` picks a queue's rows to judge (runningWorkers by default),
-// and `label(t)` adds to each one's name.
-function othersRunning(selfQueue, { self = false, where = () => true, rows = runningWorkers, label = () => '' } = {}) {
+// and `label(t)` adds to each one's name. `selfView`, the calling pass's queue with its unwritten
+// changes, stands in for this repo's file, which can lag what the pass has already decided.
+function othersRunning(selfQueue, { self = false, selfView = null, where = () => true, rows = runningWorkers, label = () => '' } = {}) {
   const queues = otherQueues({ self: selfQueue });
-  if (self && selfQueue && existsSync(selfQueue)) {
+  if (self && selfView) queues.unshift({ slug: selfSlug(), q: selfView });
+  else if (self && selfQueue && existsSync(selfQueue)) {
     try { queues.unshift({ slug: selfSlug(), q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug: selfSlug(), error: e.message }); }
   }
   const running = []; const unreadable = [];
@@ -287,7 +289,7 @@ export function releasePush({ dir = maintDir(), src = sourceCheckout() } = {}) {
 }
 
 // One step of the auto-release. -> {lines}
-export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
+export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, selfView = null, src = sourceCheckout() } = {}) {
   const none = { lines: [] };
   if (!src || !existsSync(src)) return none;
   mkdirSync(dir, { recursive: true });
@@ -352,7 +354,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
 
-    const o = othersRunning(selfQueue, { self: true, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
+    const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
       label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
     const pushing = [...o.running, ...o.unreadable];
     if (pushing.length) {
@@ -361,7 +363,7 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     }
 
     // The workers still running here pick the new bin up on their next call to it.
-    const live = othersRunning(selfQueue, { self: true }).running;
+    const live = othersRunning(selfQueue, { self: true, selfView }).running;
     const u = updateDesk(src, { to });
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
@@ -381,7 +383,7 @@ export async function maintenance(opts = {}) {
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
   const lines = [...m.lines];
-  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null })).lines);
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
   return { ...m, lines, push: releasePush({ dir }) };
 }
 

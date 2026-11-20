@@ -117,6 +117,14 @@ check "AC4 a worker started at Stage 7 in this repo's queue holds it too" '[ "$(
 printf '{"version":1,"batch":"r","tickets":{"R-2":{"key":"R-2","state":"triaged","stage":"6/9","handoff":"pending","handoff_stage":"7"},"R-3":{"key":"R-3","state":"triaged","stage":"3/9","handoff":"pending","handoff_stage":"4b"}}}\n' > "$T/queue.json"
 step 2026-10-27T09:16:20Z
 check "#773 a ticket waiting on its Stage 7 session holds the install, named as waiting" '[ "$(calls install)" = 0 ] && grep -q "waiting to install it for .*R-2 waiting on its Stage 7 session\"" <<< "$out" && ! grep -q "R-3" <<< "$out"'
+# A pass that harvested the handoff has it in memory before writing it: its view is judged, not the file.
+printf '{"version":1,"batch":"r","tickets":{"R-6":{"key":"R-6","state":"running","stage":"6/9"}}}\n' > "$T/queue.json"
+out=$(DESK_MAINT_NOW=2026-10-27T09:16:40Z MAINT_MJS="$B/maintenance.mjs" QF="$T/queue.json" node --input-type=module -e '
+  const { maintenance } = await import(process.env.MAINT_MJS);
+  const view = { version: 1, batch: "r", tickets: { "R-6": { key: "R-6", state: "triaged", stage: "6/9", handoff: "pending", handoff_stage: "7" } } };
+  console.log(JSON.stringify(await maintenance({ running: [], stop: () => ({ ok: false }), selfQueue: process.env.QF, selfView: view })));
+' 2>&1)
+check "#773 a handoff the pass holds in memory, not yet written, holds the install" '[ "$(calls install)" = 0 ] && grep -q "R-6 waiting on its Stage 7 session" <<< "$out"'
 printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
 
 # ---- AC5: the checkout off main, dirty, or with untracked files in the way --------------------
