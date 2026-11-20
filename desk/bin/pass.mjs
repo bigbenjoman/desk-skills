@@ -4239,7 +4239,7 @@ function applyFix(t, n, head, c) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
   }
-  if (c.call === 'held') { report.waiting.push(`${t.key}: BASE RED — PR #${n}: ${c.why}`); return; }
+  if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
     if (DRY) out.push(`undraft (dry run): would re-run run(s) ${c.gate.failedRuns.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
