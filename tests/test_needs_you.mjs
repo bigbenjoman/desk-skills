@@ -2036,6 +2036,28 @@ t('DS-439 AC3 needs-you lists nothing for a PR the pass undrafted; negative cont
   t('DS-509 AC5 done records it run and takes it off the list', `${done509.ok} ${typeof queueOf('upsilon509').tickets['F-1'].follow_on_done} ${fi().length}`, 'true string 0');
 }
 
+// Every item desk-q counts has a Queue row, even when every ticket is done.
+{
+  const merged = (pr, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(5), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(5) }, ...more });
+  put('phi934', { port: 4410, beat: 1, supervised: true, merge: 'yes', tickets: {
+    'P-1': merged(71, { follow_on: [{ step: 'check the invoice totals look right', row: null }] }),
+  } });
+  const scr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__phi934')));
+  t('DS-934 every ticket done: the follow item is a Needs you row, the count matches it, and the Queue does not say there is nothing',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__phi934')).shown} ${/Needs you · 1\b/.test(scr())} ${/P-1 +◆ needs you +Check: check the invoice totals look right/.test(scr())} ${scr().includes('No unfinished tickets')}`, '1 true true false');
+  N.record({ word: 'phi934', ticket: 'follow:P-1', action: 'not-now' });
+  t('DS-934 put off, it is a grey Put off row, and the Queue still does not say there is nothing',
+    `${/Put off · 1\b/.test(scr())} ${/P-1 +◇ put off/.test(scr())} ${/Needs you ·/.test(scr())} ${scr().includes('No unfinished tickets')}`, 'true true false false');
+  // A batch's base-push item is the repo's, not a ticket's, and is a Needs you row all the same.
+  put('chi934', { port: 4411, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main' } },
+    tickets: { 'C-1': { state: 'triaged', lane: 'A' } } });
+  const bpScr = () => strip(repoScreen(loadRepos().find((r) => r.slug === 'acme__chi934')));
+  t('DS-934 a base-push item is a Needs you row, matching the count',
+    `${N.needsCount(loadRepos().find((r) => r.slug === 'acme__chi934')).shown} ${/Needs you · 1\b/.test(bpScr())} ${/base-push +◆ needs you +feat\/x is behind main/.test(bpScr())}`, '1 true true');
+  N.record({ word: 'chi934', ticket: 'base-push', action: 'not-now' });
+  t('DS-934 put off, the base-push item is a Put off row', `${/Put off · 1\b/.test(bpScr())} ${/base-push +◇ put off/.test(bpScr())} ${/Needs you ·/.test(bpScr())}`, 'true true false');
+}
+
 // DS-798: a follow step that only reads CI, desk's logs or desk's state is a follow-step checker's.
 {
   const merged = (pr, mins, more = {}) => ({ state: 'done', lane: 'A', result: { pr }, merged_at: minsAgo(mins), pr_status: { pr, state: 'MERGED', merged_at: minsAgo(mins) }, ...more });
@@ -3207,6 +3229,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#811 the list shows it', cli('list', 'ask811').out.split('\n').filter((l) => l.startsWith('ask811 ask:')).length, 2);
   const standing = loadRepos(Date.now(), 'ask811').find((r) => r.slug === 'acme__ask811' && r.batch == null);
   t('#811 desk-q counts both', N.needsCount(standing).shown, 2);
+  const askScreen = strip(repoScreen(standing));
+  t('DS-934 with no batch, the repo Queue has a row for each ask, not "Nothing to show"',
+    `${/Needs you · 2\b/.test(askScreen)} ${/ask:1 +◆ needs you +File the follow-up issue/.test(askScreen)} ${/ask:2 +◆ needs you +Merge PR #12/.test(askScreen)} ${askScreen.includes('Nothing to show')}`, 'true true true false');
   const { shownRepos } = await import('../desk/bin/desk-q.mjs');
   t('#811 desk-q shows a repo whose only items are asks', shownRepos(loadRepos(Date.now()), false).some((r) => r.slug === 'acme__ask811'), true);
   t('#811 left counts them', cli('left', 'ask811').out.split('\n')[0], 'desk-q counts 2 items needing you in ask811.');
