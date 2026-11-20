@@ -2522,7 +2522,9 @@ function fixturesBrief(key, wt, { heading = true } = {}) {
 function resumeRound(t, { wt, kept, branch }) {
   const round = t.last_round;
   const stage = roundStage(round?.stage);
-  if (!stage || !kept) return { stage: null, brief: '', line: '' };
+  // An unfinished fix try is never resumed as a desk-ticket round: its next worker gets the try's own
+  // task again (fixTask), whatever stage the last one reached.
+  if (!stage || !kept || (t.fix && !t.fix.finished)) return { stage: null, brief: '', line: '' };
   const r = resumeCheck({ worktree: wt, key: t.key, branch, stateDir: STATE });
   if (!r.ok) {
     return { stage: null, brief: renderNoResume({ round: { stage }, why: r.why, path: r.path }), line:` from Stage 0 (not resumed from Stage ${stage}: ${r.why})` };

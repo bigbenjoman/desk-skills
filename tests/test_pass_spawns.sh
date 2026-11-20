@@ -156,8 +156,9 @@ EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; exit 0; fi
 echo "\$1 resume=\${AUTOPILOT_RESUME:+yes} stage=\${AUTOPILOT_START_STAGE:-}" >> "$T/rr-spawns"; echo "[spawn] ticket=\$1"
+[ -n "\${AUTOPILOT_TASK:-}" ] && echo "\$1" >> "$T/rr-tasks"; exit 0
 EOF
-: > "$T/rr-spawns"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
+: > "$T/rr-spawns"; : > "$T/rr-tasks"; rm -f "$T/cloud-prompt" "$T/cloud-fail"
 spawns_of(){ grep -c "^$1 " "$T/rr-spawns"; }
 refused_pass(){ touch "$T/refuse-running-$1"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/refuse-running-$1"; }
 q init rr
@@ -253,6 +254,14 @@ lq_pass
 check "DS-662 AC4 a requeue resuming its last round at Stage 7 starts as today, while the held ones stay held" \
   'grep -qx "LQ-7 resume= stage=7" "$T/rr-spawns" && [ "$(field LQ-7 state)" = "\"running\"" ] && [ "$(spawns_of LQ-2)" = 0 ] && [ "$(spawns_of LQ-3)" = 0 ] && ! echo "$out" | grep -q "Stage 4 (.*LQ-7"'
 q set LQ-7 state=done session_id=null
+# A fix try whose last worker reached Stage 3 and parked starts again on its fix task, at its try's stage,
+# never as a desk-ticket round resumed from Stage 3.
+git -C "$T/repo" worktree add -q -b fix/LQ-9 "$T/wt/LQ-9"
+q add LQ-9; q set LQ-9 state=triaged lane=A branch=fix/LQ-9 "worktree=$T/wt/LQ-9" 'last_round={"stage":"3/9","question":"which?"}' 'fix={"kind":"review","try":1,"of":2,"pr":9,"head":"x","what":"review not clean"}'
+lq_pass
+check "an unfinished fix try is spawned on its fix task, not resumed from its last round's stage" \
+  'grep -qx "LQ-9 resume= stage=" "$T/rr-spawns" && grep -qx LQ-9 "$T/rr-tasks" && [ "$(field LQ-9 stage)" = "\"3/9\"" ]'
+q set LQ-9 state=done session_id=null
 # One waiter drains: below the hold, the held resume and handoff start in the pass's two places.
 printf ' 9101     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh\n 9102  9101 bash tests/run.sh\n 9201     1 /bin/bash /home/u/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck\n' > "$T/ps.out"
 lq_pass
