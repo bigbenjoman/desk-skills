@@ -110,7 +110,7 @@ export function lockHolderStamps(dir) {
 
 // The process itself, by its first words: a worker's own command line quotes these commands in its
 // prompt, and must not read as one.
-const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc|lint)(?:\s|$)/;
+const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 // The same for the light lock, which a worker's suite takes in a repo whose §4 Suite weight is light.
 const LIGHT_WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+light(?:\s|$)/;

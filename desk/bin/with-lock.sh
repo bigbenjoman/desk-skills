@@ -33,8 +33,8 @@
 # is always one slot. Slots raise throughput; the profile keeps the memory bound.
 #
 # Each run also takes its slot as a lease from the machine's lease broker (slot-lease.mjs), so every
-# holder on the machine is in `desk-env lease list` with where it runs and what. test, tsc and lint
-# share the heavy pool (a lint run under `tsc` is told apart and holds a `lint` slot); browser and light
+# holder on the machine is in `desk-env lease list` with where it runs and what. test and tsc share the
+# heavy pool (a lint, which runs under `tsc`, is told apart and holds a `lint` slot); browser and light
 # are a slot each. The slot kind's lever (desk-env lease mode slot) says how:
 #   off     the lock files above, as before, and no lease.
 #   shadow  the lock files above, waited on as before, and then a lease beside them that never holds
@@ -46,7 +46,7 @@
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
-name="${1:?usage: with-lock.sh <test|tsc|lint|browser|light|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
+name="${1:?usage: with-lock.sh <test|tsc|browser|light|nolock> [--timeout <seconds>] [--cwd <dir> -- | --] <command...>}"; shift
 # A repo whose §4 Suite weight is `light` runs its suites under the light lock instead: one slot of its
 # own, box-wide, so a long light suite neither holds nor queues behind the heavy suites and typechecks
 # that share the test lock. It runs again under that name, so the pass, which counts only `test` and
@@ -90,9 +90,9 @@ fi
 dir="${DESK_LOCK_DIR:-/tmp}"
 # `tsc` deliberately maps to the TEST lock, not a lock of its own. Separate locks let a suite (~3GB)
 # and a typecheck (~3.5GB) run at the same time from two different workers, each correctly believing
-# it was serialised, and OOM-kill a full suite. Typechecks queue behind suites. A lint is as heavy.
+# it was serialised, and OOM-kill a full suite. Typechecks queue behind suites.
 case "$name" in
-  test|tsc|lint) lock="$dir/desk-test.lock" ;;
+  test|tsc) lock="$dir/desk-test.lock" ;;
   browser)  lock="$dir/desk-browser.lock" ;;
   light)    lock="$dir/desk-light.lock" ;;
   # nolock: no lock at all, only --cwd. A §4 command item with a directory that is not heavy (a dev
@@ -124,7 +124,7 @@ shadow_lease() {
 
 # How many commands may hold this lock at once.
 slots=1
-if [ "$name" = test ] || [ "$name" = tsc ] || [ "$name" = lint ]; then
+if [ "$name" = test ] || [ "$name" = tsc ]; then
   want="${DESK_TEST_LOCK_SLOTS:-}"
   # desk-env reads the profile as every other caller does; with no profile, row or node it prints
   # nothing and the lock keeps one slot.
@@ -229,12 +229,13 @@ release() { rm -rf "$ldir" 2>/dev/null || true; }
 "$@" <&0 &
 child=$!
 echo "$$ $child" > "$ldir/pid"
-# The shadow lease is the command's own, not this wrapper's: a SIGKILLed wrapper leaves it held.
-shadow_lease "$child" "$@"
-# On INT/TERM, pass it on and keep holding the lock until the command has actually exited.
+# On INT/TERM, pass it on and keep holding the lock until the command has actually exited. Set before
+# the shadow lease below, so a signal while it is taken still reaches the command.
 on_signal() { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit "$1"; }
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
+# The shadow lease is the command's own, not this wrapper's: a SIGKILLed wrapper leaves it held.
+shadow_lease "$child" "$@"
 wait "$child"; rc=$?
 release
 exit "$rc"

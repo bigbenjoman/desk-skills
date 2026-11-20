@@ -73,9 +73,11 @@ const caseEnv = ({ leases, locks, profile, extra = {} }) => {
 const wl = (env, args, opts = {}) => spawnSync('bash', [script, ...args], { env, encoding: 'utf8', ...opts });
 // A run that holds its lock until release(): resolves once its command has started.
 const held = [];
-const hold = async (env, args, opts = {}) => {
+// `cmd` turns the mark file into the command, which must create it and then wait for `<mark>.go`.
+const holdSh = (mark) => ['sh', '-c', `: > '${mark}'; while [ ! -e '${mark}.go' ]; do sleep 0.05; done`];
+const hold = async (env, args, opts = {}, cmd = holdSh) => {
   const mark = join(S, `held-${n++}`);
-  const c = spawn('bash', [script, ...args, '--', 'sh', '-c', `: > '${mark}'; while [ ! -e '${mark}.go' ]; do sleep 0.05; done`], { env, stdio: ['ignore', 'ignore', 'pipe'], ...opts });
+  const c = spawn('bash', [script, ...args, '--', ...cmd(mark)], { env, stdio: ['ignore', 'ignore', 'pipe'], ...opts });
   let err = ''; c.stderr.on('data', (d) => { err += d; });
   // 'exit', not 'close': a wrapper SIGKILLed leaves its stderr open in the command it ran.
   const h = { c, mark, err: () => err, release: () => writeFileSync(`${mark}.go`, ''), done: new Promise((r) => c.on('exit', (code) => r(code))) };
@@ -110,27 +112,31 @@ try {
     t('DS-909 AC1 it runs once a slot is released', [await done, existsSync(ran)], [0, true]);
     b.release(); await a.done; await b.done;
   }
-  // AC2, AC3: a lint holds a lint slot in the heavy pool, owned by its command, for as long as it runs.
+  // AC2, AC3: a lint, run under the tsc class as the worker contract runs it, holds a lint slot in the
+  // heavy pool, owned by its command, for as long as it runs.
   {
     const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: ON2 });
-    const h = await hold(env, ['lint']);
+    const bin = fresh('nm');
+    writeFileSync(join(bin, 'eslint'), '#!/bin/sh\n[ -n "$1" ] || exit 0\n: > "$1"; while [ ! -e "$1.go" ]; do sleep 0.05; done\n'); chmodSync(join(bin, 'eslint'), 0o755);
+    const h = await hold(env, ['tsc'], {}, (mark) => [join(bin, 'eslint'), mark]);
     const [l] = leaseList(env);
-    t('DS-909 AC2 a lint run holds a lint slot in the heavy pool, owned by its command', [l?.kind, l?.key, l?.owner?.pid === h.c.pid, leaseList(env).length], ['slot', 'lint', true, 1]);
+    t('DS-909 AC2 a linter binary run under the tsc class holds a lint slot in the heavy pool, owned by its command', [l?.kind, l?.key, l?.owner?.pid === h.c.pid, leaseList(env).length], ['slot', 'lint', true, 1]);
     h.release(); await h.done;
     t('DS-909 AC3 the slot is released as the command exits', leaseList(env).length, 0);
-    // A linter run under the tsc class, as the worker contract runs it, holds a lint slot too.
-    const bin = fresh('nm'); writeFileSync(join(bin, 'eslint'), '#!/bin/sh\nexit 0\n'); chmodSync(join(bin, 'eslint'), 0o755);
-    const ran = spawn('bash', [script, 'tsc', '--', 'sh', '-c', `sleep 1; ${join(bin, 'eslint')}`], { env, stdio: 'ignore' });
-    const lint = spawn('bash', [script, 'tsc', '--', join(bin, 'eslint'), '--slow'], { env, stdio: 'ignore' });
-    await Promise.all([new Promise((r) => ran.on('close', r)), new Promise((r) => lint.on('close', r))]);
+    // A typecheck under the same class holds a tsc slot, though its shell names a linter later on.
+    wl(env, ['tsc', '--', 'sh', '-c', `true; ${join(bin, 'eslint')}`]);
     const keys = leaseLog(env.DESK_LEASE_DIR).filter((e) => e.event === 'grant').map((e) => e.key);
-    t('DS-909 AC2 a linter binary run under the tsc class holds a lint slot; a typecheck a tsc one', [keys.includes('lint'), keys.includes('tsc')], [true, true]);
+    t('DS-909 AC2 a typecheck under the tsc class holds a tsc slot', keys, ['lint', 'tsc']);
     const cfg = join(S, `config-${n++}.md`);
     writeFileSync(cfg, '## 4. Tools\n| Field | Value |\n|---|---|\n| Lint | `sh lint.sh` |\n');
     const e2 = { ...caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: ON2 }), DESK_CONFIG: cfg };
     writeFileSync(join(S, 'lint.sh'), 'exit 0\n');
     wl(e2, ['tsc', '--', 'sh', 'lint.sh', '--strict'], { cwd: S });
     t('DS-909 AC2 a §4 Lint item run under the tsc class, arguments added, holds a lint slot', leaseLog(e2.DESK_LEASE_DIR).filter((e) => e.event === 'grant').map((e) => e.key), ['lint']);
+    // The pre-push hook and the baseline runner run each item as the one argument of `bash -c` / `sh -c`.
+    wl(e2, ['tsc', '--timeout', '60', '--', 'bash', '-c', 'sh lint.sh'], { cwd: S });
+    wl(e2, ['tsc', '--', 'sh', '-c', 'sh lint.sh --fix'], { cwd: S });
+    t('DS-909 AC2 a §4 Lint item run through bash -c or sh -c holds a lint slot', leaseLog(e2.DESK_LEASE_DIR).filter((e) => e.event === 'grant').map((e) => e.key), ['lint', 'lint', 'lint']);
   }
   // AC4: the wrapper SIGKILLed while its command runs leaves the slot held until the command exits.
   // The mkdir fallback is the path that keeps a wrapper beside its command; in shadow, its lease is the command's.
