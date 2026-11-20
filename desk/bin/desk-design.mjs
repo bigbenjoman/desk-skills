@@ -729,6 +729,14 @@ function serve(dir) {
 // The design tool's own host (claude.ai, or the host the artifact URL names), which serves a board's
 // runtime, fonts and assets only to a signed-in browser. A saved board that still asks it for a file
 // does not render offline.
+export function callsHome(url, artifactUrl) {
+  const host = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } };
+  const h = host(url);
+  if (!h) return false;
+  const own = artifactUrl ? host(artifactUrl) : null;
+  return /(^|\.)claude\.ai$/.test(h) || (!!own && h === own);
+}
+
 // A request for a template binding the runtime has not filled in yet (`<img src="{{logo}}">` outside
 // a <template>): the browser fetches the literal before the runtime sets the real file, so its 404
 // names no file, as `references` already treats it when saving.
@@ -736,14 +744,6 @@ export function unbound(url) {
   let u = String(url ?? '');
   try { u = decodeURIComponent(u); } catch { /* keep it as written */ }
   return u.includes('{{');
-}
-
-export function callsHome(url, artifactUrl) {
-  const host = (u) => { try { return new URL(u).hostname.toLowerCase(); } catch { return null; } };
-  const h = host(url);
-  if (!h) return false;
-  const own = artifactUrl ? host(artifactUrl) : null;
-  return /(^|\.)claude\.ai$/.test(h) || (!!own && h === own);
 }
 
 // One page at a width, loaded and settled with its fonts ready. A request to the design tool's host
