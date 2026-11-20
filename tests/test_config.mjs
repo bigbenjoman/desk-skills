@@ -24,6 +24,7 @@ t('DS-844 AC3 a note holding a fenced example in runs of three backticks adds no
 t('DS-844 AC3 an unclosed run in the note is text, not a span', items('`a` (one ``` here, `c`)'), 'a');
 t('DS-844 a note inside the doubled display form adds no item', items('`` `ABC` (not `parent`) ``'), 'ABC');
 t('DS-844 a none row copied in the doubled display form with its note is none alone', items('`` `none` (not `pr-evidence.yml`) ``'), 'none');
+t('DS-844 only the one trailing note is stripped: a parenthesis before it keeps its items', items('`Lint` (CI build: `Build`) (names from GitHub)'), 'Lint | Build');
 
 // End to end: `desk-env list` on a §4 row that carries a note.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -78,16 +79,24 @@ const evidence = (() => {
   catch (e) { return `exit ${e.status}: ${String(e.stderr).trim()}`; }
 })();
 t('DS-844 AC1 the template Evidence workflow cell answered none lists none alone', evidence, 'exit 0: none');
-const misread = execFileSync('node', ['--input-type=module', '-e', `
+// Which rows the template leaves TODO is read from a copy answered with a marker no reader treats as
+// none or unset, so a row `get` misreads as anything but none is checked too, not skipped.
+const marked = join(T, 'answered-marker.md');
+writeFileSync(marked, readFileSync(join(ROOT, 'desk-config.md'), 'utf8').replaceAll('`TODO`', '`DS844ANSWER`'));
+const readRows = (file, script) => execFileSync('node', ['--input-type=module', '-e', `
   import { CONFIG_ROWS, configValue, configValues } from ${JSON.stringify(BIN)};
+  ${script}`], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: file, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
+const todoRows = readRows(marked, `console.log(Object.keys(CONFIG_ROWS).filter((id) => !CONFIG_ROWS[id].table && configValue(id) === 'DS844ANSWER').join(' '));`).split(' ').filter(Boolean);
+const todoCells = readFileSync(join(ROOT, 'desk-config.md'), 'utf8').split('\n').filter((l) => /^\|.*`TODO`/.test(l)).length;
+t('DS-844 AC2 the template rows left TODO are found (at least half its TODO cells)', todoRows.length >= Math.ceil(todoCells / 2) && todoRows.length > 0, true);
+const misread = readRows(answered, `
   const bad = [];
-  for (const [id, r] of Object.entries(CONFIG_ROWS)) {
-    if (r.table || configValue(id) !== 'none') continue;
-    let got; try { got = configValues(id); } catch (e) { got = e.message; }
-    if (JSON.stringify(got) !== '["none"]') bad.push(id + ' = ' + JSON.stringify(got));
+  for (const id of ${JSON.stringify(todoRows)}) {
+    let got; try { got = [configValue(id), configValues(id)]; } catch (e) { got = e.message; }
+    if (JSON.stringify(got) !== '["none",["none"]]') bad.push(id + ' = ' + JSON.stringify(got));
   }
-  console.log(bad.join('; '));`], { encoding: 'utf8', env: answeredEnv }).trim();
-t('DS-844 AC2 every template row answered none lists none alone', misread, '');
+  console.log(bad.join('; '));`);
+t(`DS-844 AC2 every template row answered none (${todoRows.length} rows) reads none alone through get and list`, misread, '');
 
 // A `none` beside another item, with no note, is still refused; `ids` names such a row as not readable.
 const mixed = join(T, 'mixed.md');

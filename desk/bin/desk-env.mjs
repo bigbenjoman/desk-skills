@@ -500,9 +500,13 @@ function parseConfigFile(path) {
 export function cellItems(raw) {
   // The template's notes show list values as `` `A` `B` `` (a code span holding backticks);
   // copied into a value, the doubled backticks are display only. The note goes before they do, since
-  // a note may hold longer runs they are part of, and again after, for a note inside that display form.
+  // a note may hold longer runs they are part of. Only where they were there does it go again after,
+  // for a note inside that display form: a cell has one trailing note, so a parenthesis before it is
+  // value text (`` `A` (CI: `B`) (note) `` is A and B).
   const undoubled = (s) => s.replace(/``\s?/g, '').replace(/\s?``/g, '').trim();
-  const cell = stripTrailingNote(undoubled(stripTrailingNote(raw.trim())));
+  const noted = stripTrailingNote(raw.trim());
+  const shown = undoubled(noted);
+  const cell = shown === noted.trim() ? shown : stripTrailingNote(shown);
   const spans = [...cell.matchAll(/`([^`]*)`/g)].map((m) => m[1].trim());
   return spans.length ? spans : [undoubled(raw)];
 }
