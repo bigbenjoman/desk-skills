@@ -954,9 +954,9 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const left = r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+    const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
-      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
+      paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
@@ -966,7 +966,10 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-export const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+// A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
+// needs-you's stalled item for a batch a session runs.
+export const passesPaused = (r) => !r.live && r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.

@@ -3128,9 +3128,9 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
     JSON.stringify({ queue: join(env.DESK_HOME, 'repos', `acme__${name}`, 'queue.json'), batch: `${name}-batch`, pid: 1, at: minsAgo(m) }));
   const stalled = (w) => N.collect({ word: w }).items.filter((i) => i.kind === 'stalled');
   const s = stalled('stall911');
-  t('#911 one item for the repo, naming its batch, its last pass and how to resume it', s.length === 1
-    && /^a batch of stall911 that a session runs stopped making passes, so nothing new starts or merges there: stall911 \(last pass \d{4}-\d\d-\d\d \d\d:\d\d UTC\)\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
-  t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago in stall911. Running workers carry on.');
+  t('#911 one item for the batch, naming its last pass and how to resume it', s.length === 1 && s[0].t.key === 'stalled'
+    && /^passes stopped in stall911, a batch a session runs, so nothing new starts or merges there: its last pass ran at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. The session running it looks stalled: resume it, or run \/desk-autopilot in stall911$/.test(s[0].need), true);
+  t('#911 its note says how long, and that its running worker carries on', s[0]?.note, 'Passes stopped 1h ago. Running workers carry on.');
   t('#911 it offers done and not-now', s[0]?.actions.map((a) => a[0]).join(), 'done,not-now');
   const standing = () => loadRepos(Date.now(), 'stall911').find((r) => r.slug === 'acme__stall911' && r.batch == null);
   t('#911 desk-q counts it', N.needsCount(standing()).shown, N.collect({ word: 'stall911' }).items.length);
@@ -3141,6 +3141,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#911 done records nothing and says what clears it', `${done.ok} ${done.line} ${stalled('stall911').length}`, 'true stall911 stalled: noted: this item goes once a pass runs again; done records nothing. 1');
   const off = N.record({ word: 'stall911', ticket: 'stalled', action: 'not-now' });
   t('#911 not-now puts it off', `${off.ok} ${stalled('stall911').length}`, 'true 0');
+  t('#911 put off where it is listed, it is put off in every scope: the whole list and desk-q\'s count', `${N.collect().items.some((i) => i.kind === 'stalled' && i.r.slug === 'acme__stall911')} ${N.needsCount(standing()).putOff}`, 'false 1');
   beatAt('stall911', 30);
   t('#911 a later stall, after a pass that ran, brings it back', stalled('stall911').length, 1);
   beatAt('stall911', 0);
