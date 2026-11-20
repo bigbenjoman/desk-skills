@@ -721,8 +721,8 @@ for k in 1 2 3; do q add "V-$k"; q set "V-$k" state=done lane=A "branch=fix/V-$k
 fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
 fbx 762 "$HB2" tests:FAILURE:9002 "Flows image:FAILURE:9002"
 fbx 763 "$HB3" tests:SUCCESS "Lambda image:FAILURE:9003"
-# Waits for PR n's build at head to write its exit code.
-built(){ for _ in $(seq 1 100); do [ -f "$T/state-b/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
+# Waits for PR n's build at head to write its exit code, in the state directory in force.
+built(){ for _ in $(seq 1 100); do [ -f "$DESK_AUTOPILOT_STATE/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1); built 761 "$HB1"; built 763 "$HB3"
 check "DS-327 AC1 a draft red only on a named check gets its command, once, from the pass's checkout of main, given its head (DS-489)" \
   '[ "$(cat "$T/built")" = "$(cd "$BCO" && pwd -P) $HB1 $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
@@ -763,8 +763,7 @@ node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(process.
 export DESK_CONFIG="$T/config-n8.md" DESK_QUEUE="$T/queue-n8.json" DESK_AUTOPILOT_STATE="$T/state-n8"; mkdir -p "$T/state-n8/logs"
 q init n8; q set-batch concurrency=5
 for k in 1 2; do q add "N8-$k"; q set "N8-$k" state=done lane=A "branch=fix/N8-$k" "worktree=$T/wt/N8-$k" "result.pr=86$k"; done
-n8built(){ for _ in $(seq 1 100); do [ -f "$T/state-n8/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
-: > "$T/gh-calls"; : > "$T/none-built"; out=$(node "$B/pass.mjs" 2>&1); n8built 861 "$HN1"; n8built 862 "$HN2"
+: > "$T/gh-calls"; : > "$T/none-built"; out=$(node "$B/pass.mjs" 2>&1); built 861 "$HN1"; built 862 "$HN2"
 check "DS-863 AC1 first pass: the draft's build starts at its head, and nothing is re-run yet" \
   '[ "$(field N8-1 undraft.call)" = "\"build\"" ] && grep -qx "$HN1" "$T/none-built" && ! grep -q "^run rerun" "$T/gh-calls"'
 check "DS-863 AC2 first pass: the ready PR's fix tries start its build" \
@@ -1030,8 +1029,7 @@ HC1=$(git -C "$T/wt/C-1" rev-parse HEAD); HC2=$(git -C "$T/wt/C-2" rev-parse HEA
 for k in 1 2; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "worktree=$T/wt/C-$k" "result.pr=77$k"; done
 fbx 771 "$HC1" tests:SUCCESS "Flows image:FAILURE:9011"
 fbx 772 "$HC2" tests:SUCCESS "Flows image:FAILURE:9012"
-cbuilt(){ for _ in $(seq 1 100); do [ -f "$T/state-c/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
-: > "$T/c-built"; : > "$T/c-cwd"; : > "$T/c-tree"; out=$(node "$B/pass.mjs" 2>&1); cbuilt 771 "$HC1"
+: > "$T/c-built"; : > "$T/c-cwd"; : > "$T/c-tree"; out=$(node "$B/pass.mjs" 2>&1); built 771 "$HC1"
 CTREE="$T/state-c/check-trees/771"
 check "DS-489 AC1 the script that runs is the one on origin's main, and the head's version does not run" \
   '[ ! -e "$T/branch-built" ] && [ "$(cut -d" " -f1 "$T/c-built")" = main ] && [ "$(wc -l < "$T/c-built" | tr -d " ")" = 1 ]'

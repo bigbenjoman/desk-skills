@@ -477,14 +477,12 @@ function stuckCall(gate, checks, cfg, n) {
 // step), and nothing for a check still red after it (a plain red check).
 // A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
 export function buildCall(gate, cfg, n, head, t) {
-  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
-  const failing = gate.failing;
-  if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
-  const names = [...new Set(failing.map((f) => f.name))];
-  const checks = names.map((x) => `"${x}"`).join(', ');
+  const named = cfg.rerun === 'yes' ? buildsNamed(gate, cfg) : null;
+  if (!named) return null;
+  const { failing, names, checks } = named;
   const at = String(head ?? '?').slice(0, 9);
   const rec = cfg.built?.(head) ?? null;
-  const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const command = rec?.command ?? named.command;
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
   // The build needs nothing else to finish: it starts on the first pass that sees the check red.
   if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
@@ -511,17 +509,24 @@ export function buildCall(gate, cfg, n, head, t) {
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
 }
 
+// The red gate's failing checks, their quoted names and their §4 Check builds command, when that row
+// names every one of them; null otherwise.
+function buildsNamed(gate, cfg) {
+  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
+  const failing = gate.failing;
+  if (!builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  const names = [...new Set(failing.map((f) => f.name))];
+  return { failing, names, checks: names.map((x) => `"${x}"`).join(', '), command: [...new Set(names.map((x) => builds.get(x)))].join(' && ') };
+}
+
 // A red gate whose every failing check §4 Check builds names, while §3 ci-rerun is not yes: the pass
 // builds none and re-runs none, and no change on the branch builds it, so it is the person's, with the
 // command and why it was not built, and whatever else holds the gate. A cancelled or timed-out check
 // tested nothing, so no build is blamed for it. Null otherwise.
 export function unbuiltCall(gate, cfg, n, head) {
-  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
-  const failing = gate.failing;
-  if (cfg.rerun === 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name) || INTERRUPTED.has(f.conclusion))) return null;
-  const names = [...new Set(failing.map((f) => f.name))];
-  const checks = names.map((x) => `"${x}"`).join(', ');
-  const command = [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const named = cfg.rerun === 'yes' ? null : buildsNamed(gate, cfg);
+  if (!named || named.failing.some((f) => INTERRUPTED.has(f.conclusion))) return null;
+  const { names, checks, command } = named;
   const others = (gate.reasons ?? []).filter((r) => !names.some((x) => r.includes(`"${x}"`)));
   return {
     call: 'person',
