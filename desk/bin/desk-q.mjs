@@ -2636,7 +2636,7 @@ function leaseLines({ now, width }) {
   // failing while the owners are checked, is shown as it is.
   const trouble = (e, reset) => (e instanceof LeaseStoreError
     ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]])] : [])]
-    : wrapped([[`▲ The leases could not be read: ${describeCrash(e)}.`, WARN]], width));
+    : wrapped([[`▲ The leases could not be read: ${printable(String(e?.message ?? e))}.`, WARN]], width));
   const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
   return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
 }
