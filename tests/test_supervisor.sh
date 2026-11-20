@@ -398,7 +398,7 @@ check "DS-852 AC2 once the run interval has passed, an idle batch waiting on a r
 out=$(DESK_RUN_RECHECK_MS=300000 tick)
 check "DS-852 AC2 that pass starts the run interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","clears_when":{"kind":"none"}}}}' b10
-# P's answer from the DS-269 case is not this batch's: backdated past it, the idle would read it as new.
+# P's answer from the idle-recheck cases above is not this batch's: backdated past it, the idle would read it as new.
 rm -f "$T/state/briefings/P.md"; : > "$T/pass.calls"
 out=$(tick); backdate 600
 out=$(DESK_RUN_RECHECK_MS=300000 tick)

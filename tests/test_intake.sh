@@ -84,7 +84,7 @@ EOF
 # `<file><TAB><extended regex>`, and the run goes on once every line's regex matches a line of its file.
 # What it waits for is a line in triage.events, in admit.out (an admit's output, as it is printed), in
 # claude.calls, or in release, which the test writes (release <KEY>). A gate still shut after 30 s lets
-# the run go on and is logged in $T/gate.timeouts, so a wrong gate fails its check rather than hanging.
+# the run go on and is logged in $T/gate.timeouts, which fails the suite's last check rather than hanging.
 mkdir -p "$T/gates"
 cat > "$T/gate.sh" <<'EOF'
 #!/bin/sh
@@ -155,13 +155,11 @@ search(){ printf '{"issues":[%s]}\n' "$(printf '{"key":"%s"},' "$@" | sed 's/,$/
 # rec <KEY> <lane> [extra json fields]
 rec(){ printf '{"ticket":"%s","type":"Story","lane":"%s","lane_reason":"needs a plan","files_in_scope":["src/%s.js"],"unknowns":[],"size":"S","blockers":[],"lint":[]%s}\n' "$1" "$2" "$1" "${3:+,$3}" > "$T/recs/$1.json"; }
 count(){ if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
+# shellcheck source=jq_at.sh
+. "$S/jq_at.sh"
 # jget <file> <dot path>: the value there, read by jq (a node per read costs the suite seconds): a string
 # bare, anything else as JSON, and undefined where the path leads nowhere (a null is a value: null).
-jget(){ jq -r --arg p "$2" 'reduce ($p | split("."))[] as $k ([.]; if length == 0 then . else .[0] as $o
-  | if ($o | type) == "object" and ($o | has($k)) then [$o[$k]]
-    elif ($o | type) == "array" and ($k | test("^[0-9]+$")) and ($k | tonumber) < ($o | length) then [$o[$k | tonumber]]
-    else [] end end)
-  | if length == 0 then "undefined" elif (.[0] | type) == "string" then .[0] else .[0] | tojson end' "$1"; }
+jget(){ jq -r --arg p "$2" "$JQ_AT"' at_or($p; "undefined") | if type == "string" then . else tojson end' "$1"; }
 qget(){ jget "$DESK_QUEUE" "$1"; }
 handed(){ node -e 'const r=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const e=r.tickets[process.argv[2]]; console.log(e?`${e.outcome}: ${e.text}`:"none")' "$T/state/intake.json" "$1"; }
 running_batch(){ printf '{"version":1,"batch":"b1","supervised":true,"concurrency":2,"tickets":{"R":{"key":"R","state":"running"}}}\n' > "$DESK_QUEUE"; }
@@ -606,7 +604,7 @@ n=$(count "$T/triage.calls"); out=$(intake)
 check "DS-307 AC3: it is not triaged again while that batch is live" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$out" = "intake: nothing new" ]'
 before=$(cat "$DESK_QUEUE")
 NQ="$NB/queue.json"; NS="$HOME/.desk-autopilot/acme__widgets/batches/X-1"
-nget(){ node -e 'const q=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=process.argv[2].split(".").reduce((o,k)=>o?.[k],q); console.log(typeof v==="object"?JSON.stringify(v):String(v))' "$NQ" "$1"; }
+nget(){ jget "$NQ" "$1"; }
 # Pinned, as a session that has loaded its paths is: the child's triage in X-1 must not inherit it.
 out=$(DESK_DEFAULT_BRANCH=main admit X-4 --by ben); rc=$?
 check "DS-300 AC4: /desk-admit adds a live epic's child to its feature batch" '[ $rc -eq 0 ] && [ "$(nget tickets.X-4.state)" = triaged ] && [ "$(nget tickets.X-4.admitted_by)" = ben ] && grep -q "^admitted X-4 by ben into feature batch X-1 (lane A, size S)$" <<< "$out"'
@@ -1391,6 +1389,9 @@ check "DS-507 AC3: with Triage concurrency left TODO, one triage runs at a time"
 check "DS-507 AC3: the template recommends 1" 'grep -q "^| Triage concurrency | \`1\` |" "$S/../desk-config.md"'
 check "DS-507 AC1: the desk-admit skill starts more than 3 tickets in the background and waits for the notification" \
   'grep -q "^\*\*With more than 3 tickets, start the call in the background\*\* (\`run_in_background\`" "$SK" && grep -q "and wait for its notification" "$SK"'
+
+out=$(cat "$T/gate.timeouts" 2>/dev/null)
+check "no triage gate timed out: each case ran in the order its gates set" '[ -z "$out" ]'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
