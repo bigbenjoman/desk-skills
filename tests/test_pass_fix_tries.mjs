@@ -197,7 +197,7 @@ t('tryLabel: the capture try', tryLabel({ kind: 'capture' }), 'capture try');
   const as = drive(snap(three, { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
   const lines = as.filter((a) => a.type === 'out').map((a) => a.line);
   t('outage: the pass says it once, naming the PRs', lines.filter((l) => l.includes('red on 3 ready PRs at once')).join('|'),
-    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and the driver\'s reruns go on');
+    'fix tries: "Vercel Preview" is red on 3 ready PRs at once (#701, #702, #703), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs');
   t('outage: each PR is held as an outage, none requeued', applied(as).map((a) => `${a.key} ${a.call.call} ${a.call.label}`).join(), 'O-701 held OUTAGE,O-702 held OUTAGE,O-703 held OUTAGE');
   const two = drive(snap(three.slice(0, 2), { gate: G }), { reads: () => reads({ ctx: { required: G.required } }) });
   t('outage: on two PRs it is not one, and each gets its fix try', applied(two).map((a) => a.call.call).join(), 'requeue,requeue');

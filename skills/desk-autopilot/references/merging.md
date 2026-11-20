@@ -128,7 +128,8 @@ the stuck reason quotes the line. A check
 and its briefing says the other is not the worker's to fix. A required check that no GitHub Actions
 run of the repo reports (a deploy or preview service's status), red on three or more ready PRs at
 once, reads as that platform failing: the pass says so once, and a PR red only on it is held
-(`OUTAGE`) with no fix try and no stuck answer while the driver's reruns go on. desk-q shows each ticket's try and
+(`OUTAGE`) with no fix try or stuck answer, naming the step: once the platform is back, redeploy
+there or push to the PR. A PR also red on another kind of check keeps that check's route. desk-q shows each ticket's try and
 what it is fixing. Usage pacing never holds a fix try: while 7-day usage is ahead of pace, new
 tickets wait and fix tries still start, within the batch's worker count.
 

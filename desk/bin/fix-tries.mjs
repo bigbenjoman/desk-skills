@@ -329,19 +329,20 @@ export function fixCall(t, s, ctx) {
         : null;
     }
     if (ctx.waived?.(mine.map((f) => f.name))) return null;
+    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
+    // not this PR's code: held with no fix try, whose worker could not fix it. Only where every red
+    // check is one, so a check a person clears, a state check or a check build keeps its own route. It
+    // comes before the rerun gate: the driver reruns no such check, so that gate would wait in silence.
+    if (ctx.outage && !notMine.length && !state.length && !built && mine.every((f) => ctx.outage.has(f.name))) {
+      return { call: 'held', label: 'OUTAGE', why: outageWhy(mine.map((f) => f.name), ctx.outage, s.pr) };
+    }
     if (!ctx.cooledDown || mine.some((f) => (ctx.reruns?.(f.name) ?? 0) < RERUNS_MAX)) {
       if (!noTryLeft) return null;
       waiting = true;
     }
     base = againstBase(t, s.head, mine, notMine, ctx);
     if (base?.held) return waiting ? null : base.held;
-    // A check red on many ready PRs at once (ctx.outage, outageChecks) reads as its platform failing,
-    // not this PR's code: held with no fix try, whose worker could not fix it, and not the person's.
-    const left = base?.mine ?? mine;
-    if (ctx.outage && left.length && left.every((f) => ctx.outage.has(f.name))) {
-      return withRecord({ call: 'held', label: 'OUTAGE', why: outageWhy(left.map((f) => f.name), ctx.outage, s.pr) }, base?.record);
-    }
-    fix = checksFix(left, notMine, ctx.repo, base);
+    fix = checksFix(base?.mine ?? mine, notMine, ctx.repo, base);
     if (base) split = { mine: base.mine, notMine: base.notMine, record: base.record };
   }
   if (conflict) return conflictSpent(done, s.head, now) ? { call: 'stuck', why: stillInConflict(t, done, ctx.base, undefined, now, fix.files, fix.check) } : nextConflictTry(done, s.pr, s.head, fix, now);
@@ -370,7 +371,8 @@ export function outageChecks(undrafted, lists) {
 }
 const outageWhy = (names, outage, pr) => {
   const others = [...new Set(names.flatMap((x) => outage.get(x)))].filter((n) => n !== pr).sort((a, b) => a - b);
-  return `${names.map((x) => `"${x}"`).join(', ')} ${names.length === 1 ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as its platform failing, not this PR's code, so no fix try is spent on it; the driver's reruns go on, and it goes on as before once ${names.length === 1 ? 'it passes' : 'they pass'} or fewer PRs are red on ${names.length === 1 ? 'it' : 'them'}`;
+  const one = names.length === 1;
+  return `${names.map((x) => `"${x}"`).join(', ')} ${one ? 'is' : 'are'} red on ${others.length + 1} ready PRs at once (this one and #${others.join(', #')}), which reads as ${one ? 'its' : 'their'} platform failing, not this PR's code, so no fix try is spent on ${one ? 'it' : 'them'}. Nothing desk reruns turns ${one ? 'it' : 'them'} green: once the platform is back, redeploy there or push to the PR, and it goes on as before once ${one ? 'it passes' : 'they pass'} or fewer PRs are red on ${one ? 'it' : 'them'}`;
 };
 // A requeue that read the base carries the base red record to keep, null once none is held.
 const withRecord = (c, record) => (record === undefined ? c : { ...c, base_red: record });

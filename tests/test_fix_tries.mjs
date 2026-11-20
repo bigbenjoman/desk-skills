@@ -1094,8 +1094,10 @@ t('its task asks for AUTOPILOT_STAGE from its start', /Print AUTOPILOT_STAGE as 
   const octx = (o = {}) => ctx({ required: lists.required, outage: many, ...o });
   const held = fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx());
   t('outage: a PR red only on it is held, with no fix try', `${held?.call} ${held?.label}`, 'held OUTAGE');
-  t('outage: its reason names the other PRs and that the reruns go on', held?.why,
-    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it; the driver\'s reruns go on, and it goes on as before once it passes or fewer PRs are red on it');
+  t('outage: its reason names the other PRs and the step that clears it', held?.why,
+    '"Vercel Preview" is red on 3 ready PRs at once (this one and #702, #703), which reads as its platform failing, not this PR\'s code, so no fix try is spent on it. Nothing desk reruns turns it green: once the platform is back, redeploy there or push to the PR, and it goes on as before once it passes or fewer PRs are red on it');
+  t('outage: held with tries left before any rerun, which the driver never makes for it', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx({ reruns: () => 0, cooledDown: false }))?.label, 'OUTAGE');
+  t('outage: beside a check a person clears, that check keeps its route, not held', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Flows image missing')], { pr: 701 }), octx({ required: [...lists.required, 'Flows image missing'] }))?.call !== 'held', true);
   t('outage: with no try left it is held too, not the person\'s', fixCall(tk({ fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'checks' }, { try: 2, head: 'c'.repeat(40), kind: 'checks' }] }), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), octx())?.call, 'held');
   t('outage: a PR red on another check too still gets its fix try', fixCall(tk(), pr([ok('tests'), red('Vercel Preview'), red('Lint', '1')], { pr: 703 }), octx())?.call, 'requeue');
   t('outage: with none, the same PR gets its fix try as before', fixCall(tk(), pr([ok('tests'), red('Vercel Preview')], { pr: 701 }), ctx({ required: lists.required }))?.call, 'requeue');

@@ -53,7 +53,7 @@ export function* decideFixTries(s) {
   // A check red on many ready PRs at once is said once here, and each PR it holds is held (fixCall).
   const outage = outageChecks(s.undrafted, s.gate);
   for (const [name, prs] of outage) {
-    yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and the driver's reruns go on`);
+    yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs`);
   }
   const snap = outage.size ? { ...s, outage } : s;
   for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, snap);
