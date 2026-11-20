@@ -124,6 +124,10 @@ export function parkApprove(stateDir, t, question) {
   return { kind: String(a.kind ?? 'write'), target: a.target == null ? null : String(a.target), body: a.body };
 }
 
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
+
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.
 export const failedWhy = (t) => String(t?.failed?.why ?? '').trim() || String(t?.park?.question ?? '').trim()
