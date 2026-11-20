@@ -80,7 +80,8 @@
 //                                             the warning on stderr) when it is dontAsk
 //   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
-//                                             may run (UNLISTED), an app directory other command rows
+//                                             may run or, with worker-local-services yes, a Local services
+//                                             item with no service name (UNLISTED), an app directory other command rows
 //                                             name with no Dev server item (NODEV), a §4 Pre-merge steps item
 //                                             keyed to a job of several steps (JOBKEY), a dontAsk settings file (DONTASK);
 //                                             "no drift" and exit 0, else exit 1. --all: every repo

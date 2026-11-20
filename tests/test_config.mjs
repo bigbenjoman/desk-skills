@@ -173,7 +173,8 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
 const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
-  const keys = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'].filter((k) => !omit.includes(k));
+  const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
+  const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
     + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
