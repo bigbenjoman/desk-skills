@@ -904,12 +904,13 @@ function promotionOf(q, t) {
   return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
 }
 const SHA40 = /^[0-9a-f]{40}$/;
-function gateHeld(r, t, s) {
+// `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
+function gateHeld(r, t, s, reads = null) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
   const root = gitRootOf(r);
   if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
-  const git = (args) => READS.git(root, args);
+  const git = (args) => (reads?.git ?? READS.git)(root, args);
   const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
   const within = (a, b) => git(['merge-base', a, b]) === a;
   const pr = `PR #${t.result?.pr ?? '?'}`;
@@ -959,7 +960,7 @@ export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).hel
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
 // checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
 // to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
-function followSplit(r, t, now = Date.now()) {
+function followSplit(r, t, now = Date.now(), reads = null) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
@@ -967,7 +968,7 @@ function followSplit(r, t, now = Date.now()) {
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
-    const g = gateHeld(r, t, s);
+    const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
     const checked = settled(c) || followKind(s, labels) === 'runnable';
@@ -991,9 +992,9 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
 // result comes in on its own time, and would otherwise join an item the person was already shown.
 const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
-function followItems(r) {
+function followItems(r, reads = null) {
   return followsOf(r).flatMap((t) => {
-    const { ready, waiting } = followSplit(r, t);
+    const { ready, waiting } = followSplit(r, t, Date.now(), reads);
     const groups = GATES.flatMap((g) => {
       const here = ready.filter((x) => gateOf(x.s) === g);
       return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
@@ -1685,7 +1686,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
