@@ -39,11 +39,13 @@ file name, saves it as `assets/<id>.<ext>` and points the boards at it, and save
 its epic's) but says no board applies to this ticket: nothing needs saving, and the ticket builds
 without it.
 
-A `blocking` line means no copy is saved yet. **First, before listing or reading any file, check who
-owns the artifact**: list the artifact itself with the Artifact tool (`action:list` with no
-`scope:files`, which lists no file), and if the listing shows it was created outside the user's
-organisation, stop there and ask for access or an export (below), saving nothing.
-Otherwise list the artifact's files (`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
+**Before you list or read any file of a canvas a `blocking` line names, check who owns the
+artifact**: list the artifact itself with the Artifact tool (`action:list` with no `scope:files`,
+which lists no file). If the listing shows it was created outside the user's organisation, stop there
+and ask for access or an export (below), saving nothing. Otherwise carry on as below.
+
+A `blocking` line means no copy is saved yet. With the Artifact tool, list the artifact's files
+(`action:list scope:files`) and read `project/canvas.json`, every board's `project/*.dc.html`, and
 the `support.js`, stylesheets and fonts they load, with `paths` and `out_dir: $DESK_STATE/designs/<TICKET>/`.
 Then, on the branch after Stage 1:
 
