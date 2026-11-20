@@ -152,6 +152,17 @@ if [ -f "$EARLIER" ]; then
   [ -n "$OPEN" ] || OPEN='{"unknowns":[],"ben_steps":[],"answered":0}'
 fi
 OPEN_LIST="$(node -e 'const o=JSON.parse(process.argv[1]); console.log([...o.unknowns.map((u)=>`- unknown: ${u}`), ...o.ben_steps.map((s)=>`- person step: ${s.step}`)].join("\n"))' "$OPEN")"
+OPEN_SECTION=''
+if [ -n "$OPEN_LIST" ]; then
+  read -r -d '' OPEN_RULE <<'OPEN_RULE_END' || true
+Nothing recorded has settled these since. Keep each one in `unknowns` or `ben_steps`, worded as it is
+here, unless the ticket's text now answers the question or removes the step. For each one you leave
+out, add `{"item": "<it, worded as it is here>", "why": "<the ticket text that answers or removes it, quoted>"}`
+to a `dropped_earlier` list in the record. One left out with no entry there is carried into your
+record as it was.
+OPEN_RULE_END
+  OPEN_SECTION=$'\n'"**Still open from $TICKET's earlier triage.** $OPEN_RULE"$'\n\n'"$OPEN_LIST"$'\n'
+fi
 
 read -r -d '' PROMPT <<PROMPT_END || true
 Triage ticket $TICKET in $DESK_GH_REPO${REPO_DESC:+ ($REPO_DESC)}. Read-only: change nothing, create
@@ -254,16 +265,7 @@ ${RECORDED:+
 criterion or any other, and judge the lane and scope with them applied.
 
 $RECORDED
-}${OPEN_LIST:+
-**Still open from $TICKET's earlier triage.** Nothing recorded has settled these since. Keep each one
-in \`unknowns\` or \`ben_steps\`, worded as it is here, unless the ticket's text now answers the
-question or removes the step. For each one you leave out, add
-\`{"item": "<it, worded as it is here>", "why": "<the ticket text that answers or removes it, quoted>"}\`
-to a \`dropped_earlier\` list in the record. One left out with no entry there is carried into your
-record as it was.
-
-$OPEN_LIST
-}
+}$OPEN_SECTION
 Write ONLY this JSON to $OUT — no prose, no code fence:
 
 {
