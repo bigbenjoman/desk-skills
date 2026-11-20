@@ -130,7 +130,7 @@ rmSync(away, { recursive: true, force: true });
 
 // `desk-env drift`: rows the template has that a config lacks, `ask` rows an unattended batch parks
 // on, and a settings file that starts sessions in dontAsk.
-const tpl =join(T, 'template.md');
+const tpl = join(T, 'template.md');
 const P3 = '## 3. Permissions\n\n### Git\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n';
 const B3 = '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n';
 const P2 = '## 2. Paths\n\n| Field | Value | Notes |\n|---|---|---|\n';
