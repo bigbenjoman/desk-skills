@@ -433,7 +433,7 @@ check "DS-606 a pass that finds a worker exited records the head its worktree wa
   '[ "$(field W-9 state)" = "\"parked\"" ] && [ "$(field W-9 worker_head.sha)" = "\"$W9_HEAD\"" ]'
 # W-11 is ahead with a head no worker of its own left; W-12's push is refused by origin; W-13 has an
 # uncommitted change on its last worker's head. W-10's origin ref is stale, its head already pushed.
-for k in 11 12 13 14 15 16 17 18; do wb_clone "W-$k"; q add "W-$k"; done
+for k in 11 12 13 14 15 16 17 18 19; do wb_clone "W-$k"; q add "W-$k"; done
 q set W-11 "worker_head={\"sha\":\"$(git -C "$T/wt/W-11" rev-parse HEAD)\"}"; git -C "$T/wt/W-11" commit -q --allow-empty -m "by hand"
 git -C "$T/wt/W-12" commit -q --allow-empty -m "worker's"; q set W-12 "worker_head={\"sha\":\"$(git -C "$T/wt/W-12" rev-parse HEAD)\"}"
 q set W-13 "worker_head={\"sha\":\"$(git -C "$T/wt/W-13" rev-parse HEAD)\"}"; echo b >> "$T/wt/W-13/a.txt"
@@ -456,19 +456,23 @@ for k in 14 15 16; do
   q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"
 done
 # W-17's worker folded its fix into origin's c with an amend, so c's patch changed; W-18's re-made c by
-# hand after a reset, with its fix in another file, so the head still holds c's change.
-for k in 17 18; do
+# hand after a reset, with its fix in another file, so the head still holds c's change. W-19's rebased c,
+# then reset away from it and committed e: c is in neither its head nor its tree.
+for k in 17 18 19; do
   echo c > "$T/wt/W-$k/c.txt"; git -C "$T/wt/W-$k" add c.txt; git -C "$T/wt/W-$k" commit -q -m c
   git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
 done
-echo fix >> "$T/wt/W-17/c.txt"; git -C "$T/wt/W-17" commit -q -a --amend -m "c, with its fix"
+echo fix >> "$T/wt/W-17/c.txt"; git -C "$T/wt/W-17" commit -q -a --amend --no-edit
 git -C "$T/wt/W-18" reset -q --hard HEAD~1; echo c > "$T/wt/W-18/c.txt"; echo fix > "$T/wt/W-18/e.txt"
 git -C "$T/wt/W-18" add c.txt e.txt; git -C "$T/wt/W-18" commit -q -m "c, with its fix"
-for k in 17 18; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; done
+git -C "$T/wt/W-19" commit -q --amend --no-edit --date=now; git -C "$T/wt/W-19" reset -q --hard HEAD~1
+echo e > "$T/wt/W-19/e.txt"; git -C "$T/wt/W-19" add e.txt; git -C "$T/wt/W-19" commit -q -m e
+W19_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)
+for k in 17 18 19; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; done
 W17_HEAD=$(git -C "$T/wt/W-17" rev-parse HEAD); W18_HEAD=$(git -C "$T/wt/W-18" rev-parse HEAD)
 W14_HEAD=$(git -C "$T/wt/W-14" rev-parse HEAD); W15_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)
 W16_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)
-for k in 11 12 13 14 15 16 17 18 9; do wb_fix "W-$k"; done
+for k in 11 12 13 14 15 16 17 18 19 9; do wb_fix "W-$k"; done
 printf '#!/bin/sh\nwhile read o n r; do [ "$r" = refs/heads/fix/W-12 ] && { echo "W-12 is protected" >&2; exit 1; }; done; exit 0\n' > "$T/wb-origin.git/hooks/pre-receive"
 chmod +x "$T/wb-origin.git/hooks/pre-receive"
 out=$(node "$B/pass.mjs" 2>&1)
@@ -492,17 +496,19 @@ check "one that dropped a commit origin has is not overwritten: held, naming the
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)" = "$W15_ORIGIN" ] && ! grep -q "^W-15 " "$T/wb-spawns" && field W-15 worktree_busy.why | grep -qF "but origin/fix/W-15 has 1 commit(s) the head does not hold by their patch, so the pass does not overwrite them. Check them, then push with git push --force-with-lease=fix/W-15:$W15_ORIGIN origin fix/W-15"'
 check "nor one whose origin holds a merge git cherry cannot compare: held, naming it" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)" = "$W16_ORIGIN" ] && ! grep -q "^W-16 " "$T/wb-spawns" && field W-16 worktree_busy.why | grep -qF "but origin/fix/W-16 has 1 merge commit(s) the head does not hold, whose resolutions git cherry cannot compare, so the pass does not overwrite them"'
-check "a branch whose worker amended its fix into origin's commit is lease-pushed: its reflog records the rewrite" \
-  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-17)" = "$W17_HEAD" ] && echo "$out" | grep -qF "W-17: pushed fix/W-17 to ${W17_HEAD:0:9}" && echo "$out" | grep -qF "the branch'"'"'s own reflog records its worker rebasing or amending them from origin'"'"'s tip"'
+check "a branch whose worker amended its fix into origin's commit is lease-pushed: the commit keeps its author, date and subject" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-17)" = "$W17_HEAD" ] && echo "$out" | grep -qF "W-17: pushed fix/W-17 to ${W17_HEAD:0:9}" && echo "$out" | grep -qF "each is rewritten in it: a commit there keeps its author, author date and subject"'
 q set W-17 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "and one whose head holds origin's change by its tree, after a reset, is lease-pushed" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-18)" = "$W18_HEAD" ] && echo "$out" | grep -qF "W-18: pushed fix/W-18 to ${W18_HEAD:0:9}" && echo "$out" | grep -qF "the head holds their change"'
-q set W-18 state=done
+q set W-18 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "one rewritten, then reset away from origin's commit, is not overwritten: held" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)" = "$W19_ORIGIN" ] && field W-19 worktree_busy.why | grep -qF "but origin/fix/W-19 has 1 commit(s) the head does not hold by their patch"'
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \
   'grep -q "^W-10 " "$T/wb-spawns" && [ "$(field W-10 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-10: WORKTREE IN USE"'
-for k in 10 11 12 13 14 15 16 17 18; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
+for k in 10 11 12 13 14 15 16 17 18 19; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
 
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its

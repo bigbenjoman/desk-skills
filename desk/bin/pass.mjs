@@ -2916,7 +2916,7 @@ function busyWorktree(t, { push = false } = {}) {
     const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
     const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
     const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
-    const anyway = lost?.length ? heldAnyway(git, wt, branch, tip) : null;
+    const anyway = lost?.length ? heldAnyway(git, wt, branch, tip, lost) : null;
     if (lost && (!lost.length || anyway)) {
       const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
       if (forced.ok) {
@@ -2932,23 +2932,22 @@ function busyWorktree(t, { push = false } = {}) {
   }
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
-// Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for are still
-// the head's when either holds, and the reason, else null:
-// - the branch's own reflog records a rebase or an amend from `tip` or a descendant of it, so the
-//   ticket's worker rewrote those commits (folding its fix in), never someone else's pushed since. A
-//   reset or a checkout away from them is no rewrite: it drops them, so it holds;
-// - the head already holds their change: origin's diff from the merge base applies in reverse to it.
-const REFLOG_ENTRIES = 200;
-function heldAnyway(git, wt, branch, tip) {
-  // Newest first: each entry's subject says how the branch moved from the entry after it.
-  const log = (git(['reflog', 'show', '--format=%H %gs', '-n', String(REFLOG_ENTRIES), `refs/heads/${branch}`]) ?? '')
-    .split('\n').filter(Boolean).map((l) => ({ sha: l.slice(0, l.indexOf(' ')), how: l.slice(l.indexOf(' ') + 1) }));
-  const fromTip = (sha) => sha === tip || shOut('git', ['-C', wt, 'merge-base', '--is-ancestor', tip, sha]).ok;
-  if (log.some((e, i) => /^(rebase\b.*\((finish|squash|fixup|pick)\)|commit \(amend\))/.test(e.how) && log[i + 1] && fromTip(log[i + 1].sha))) {
-    return `the branch's own reflog records its worker rebasing or amending them from origin's tip ${tip.slice(0, 9)}`;
-  }
+// Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for (`lost`,
+// its '+ <sha>' lines) are still the head's when either holds, and the reason, else null:
+// - each is rewritten in the head: a commit since the merge base keeps its author, author date and subject,
+//   as a rebase, an amend or a fixup folded into it does. A commit dropped (a reset away, a rebase that
+//   drops it) or someone else's pushed since has none, so it holds;
+// - the head holds their change: origin's diff from the merge base applies to it in reverse.
+function heldAnyway(git, wt, branch, tip, lost) {
   const base = git(['merge-base', 'HEAD', tip]);
-  if (base && shOut('sh', ['-c', 'git -C "$1" diff --binary "$2" "$3" | git -C "$1" apply --check -R --cached', 'sh', wt, base, tip]).ok) {
+  if (!base) return null;
+  const who = (range) => (git(['log', '--no-walk=unsorted', '--format=%ae %ad %s', '--date=raw', ...range]) ?? '').split('\n').filter(Boolean);
+  const ours = new Set((git(['log', '--format=%ae %ad %s', '--date=raw', `${base}..HEAD`]) ?? '').split('\n').filter(Boolean));
+  const theirs = who(lost.map((l) => l.slice(2).trim()));
+  if (theirs.length === lost.length && theirs.every((x) => ours.has(x))) {
+    return `each is rewritten in it: a commit there keeps its author, author date and subject`;
+  }
+  if (shOut('sh', ['-c', 'git -C "$1" diff --binary "$2" "$3" | git -C "$1" apply --check -R --cached', 'sh', wt, base, tip]).ok) {
     return `the head holds their change: origin's diff from ${base.slice(0, 9)} applies to it in reverse`;
   }
   return null;
