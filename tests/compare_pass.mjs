@@ -159,14 +159,14 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // "T-1 state" for a ticket's field, "archive T-1 state" in the archive, "queue <path>" otherwise.
 // Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
 // by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
-// the names.
+// the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does.
 function flatten(rec, norm, rn) {
   const out = new Map();
   const key = (k) => rn(norm(k));
   const walk = (v, path) => {
     if (v && typeof v === 'object' && Object.keys(v).length) {
       for (const [k, x] of Object.entries(v)) walk(x, path ? `${path}.${key(k)}` : key(k));
-    } else out.set(path, norm(JSON.stringify(v)));
+    } else out.set(path, Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>' : norm(JSON.stringify(v)));
   };
   const top = (doc, prefix) => {
     if (!doc) return;

@@ -203,6 +203,7 @@ export function decideGroups(s) {
 //   parkNotes                a Map of a parked ticket's note, by key
 //   prStates                 { [pr]: state } for each PR the pass read
 //   gatePending, epicPending, promotionPending   a base gate, epic PR or promotion still to come
+//   followPending            a follow-step checker running or still to start (pass/follow-steps.mjs)
 //   spawned                  how many tickets this pass spawned
 // -> { waiting, parked, idle, status, needsYou }
 export function verdictOf(s) {
@@ -215,7 +216,7 @@ export function verdictOf(s) {
   ];
   const parked = Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t))
     .map((t) => ({ key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) }));
-  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending;
+  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
   return { waiting, parked, idle, status, needsYou };
