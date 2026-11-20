@@ -657,9 +657,10 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   const rec = (k, n = 1, by = []) => writeFileSync(join(SO, 'triage', `${k}.json`), JSON.stringify({ ticket: k, type: 'Task', lane: 'A', lane_reason: 'r', summary: 's', size: 'S', branch: `feat/${k}`,
     files_in_scope: Array.from({ length: n }, (_, i) => `src/${k}/${i}.ts`), unknowns: [], blockers: by.map((key) => ({ key, category: 'new' })) }));
   // Plans and seeds `keys` into a fresh queue -> { seeded: the queue's key order, msg: the plan }.
-  const seed = (keys, flags = []) => {
+  // `queued`: tickets already in the queue before it seeds, in that order, as an epic's admitted children are.
+  const seed = (keys, flags = [], queued = {}) => {
     const env = { DESK_CONFIG: soCfg, DESK_QUEUE: join(SO, `queue-${Math.random().toString(36).slice(2)}.json`), DESK_AUTOPILOT_STATE: SO, AUTOPILOT_WRITE_QUEUE: '1' };
-    writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'so', tickets: {} }));
+    writeFileSync(env.DESK_QUEUE, JSON.stringify({ version: 1, batch: 'so', tickets: Object.fromEntries(Object.entries(queued).map(([k, t]) => [k, { key: k, state: 'parked', ...t }])) }));
     const x = cli('plan-batch.mjs', ['--json', ...flags, ...keys], env);
     let msg = x.out;
     try { msg = String(JSON.parse(x.out).message); } catch { /* the raw output, to show what failed */ }
@@ -671,6 +672,11 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-847 AC1 a ticket gating three others, named after two gating none, is seeded before them', hub.seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
   t('DS-847 AC6 the plan lists the spawn order with each ticket\'s transitive dependents count',
     ['  1. SO-3  gates 3, 1 planned file(s)', '  2. SO-4  gates 1, 1 planned file(s)', '  3. SO-1  gates 0, 1 planned file(s)', '  6. SO-6  gates 0, 1 planned file(s)'].map((l) => hub.msg.includes(`\n${l}`)).join(' '), 'true true true true');
+  const all = ['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'];
+  t('DS-847 AC1 tickets already queued in the order named (an epic\'s admitted children) are reordered too',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, {}]))).seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
+  t('DS-847 a ticket the user placed keeps its slot when the order is laid over the queue',
+    seed(all, [], Object.fromEntries(all.map((k) => [k, k === 'SO-1' ? { placed: true } : {}]))).seeded, 'SO-1 SO-3 SO-4 SO-2 SO-5 SO-6');
   rec('SO-11', 8); rec('SO-12', 2);
   t('DS-847 AC2 of two tickets gating none, the one planned to touch two files comes before the one planned to touch eight', seed(['SO-11', 'SO-12']).seeded, 'SO-12 SO-11');
   rec('SO-21', 2); rec('SO-22', 2);
