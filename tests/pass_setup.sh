@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Shared setup for the pass suites (tests/test_pass_*.sh), which each source it first: a scratch HOME,
-# a git repo and its config, a DESK_HOME whose bin holds the real queue and harvest scripts beside stubs
+# a git repo and its config, a DESK_HOME whose bin holds the real desk/bin scripts beside stubs
 # for everything that would touch GitHub, a browser, a worktree or a worker, and the helpers more than
 # one suite uses. Not a suite: tests/run.sh runs only tests/test_*.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -39,9 +39,8 @@ cat > "$T/config.md" <<EOF
 | \`pr-images\` | Upload PR screenshots | \`yes\` | \`yes\` |
 EOF
 
-# A DESK_HOME whose bin holds the real queue and harvest scripts beside stubs for everything that
-# would touch GitHub, a browser, a worktree or a worker.
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# A DESK_HOME whose bin holds the real scripts (link_bin, after the stubs) beside stubs for everything
+# that would touch GitHub, a browser, a worktree or a worker.
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
@@ -64,6 +63,8 @@ const fr = '$T/fr/' + process.argv[2] + '.json';
 if (existsSync('$T/upload-fills') && existsSync(fr)) { const j = JSON.parse(readFileSync(fr, 'utf8')); j.body = j.body.replace(/_drag (\S+?)\.png_/g, '<img alt="\$1" src="https://github.com/user-attachments/assets/1">'); writeFileSync(fr, JSON.stringify(j)); }
 console.log('done: 1 image(s) in the body, 0 placeholder(s) left');
 EOF
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -138,7 +139,6 @@ cat >> "$T/config.md" <<'EOF'
 | Tracker | `jira` |
 | Ticket key pattern | `T-[0-9]+` |
 EOF
-ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
 cat > "$T/stub/desk-jira" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$JIRA_CALLS"

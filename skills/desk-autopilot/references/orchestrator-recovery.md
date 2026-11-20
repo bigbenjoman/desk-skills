@@ -65,6 +65,11 @@ with no running worker and 2 for a key the queue does not hold. Stopping every w
 assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
 you go idle, which is the one wait that works.
 
+Sessions see and message only those on their own login. A worker on another login than yours (the
+repo's §3b Subscription, or a borrowed login) cannot reach you, nor you it: its briefing says so,
+and its park reaches you at your next pass. A park on a write it may not make keeps the exact text
+as the park's `approve` (`{kind, target, body}`), which needs-you shows whole: relay that, verbatim.
+
 ## Answering a live worker
 
 The `<state>/answers/<TICKET>.txt` mailbox is read only by a worker that is **parked on a
@@ -193,9 +198,13 @@ re-running a ticket from scratch.
 
 ## Stalls that do not look like stalls
 
-- **A hung `codex exec` keeps the log growing.** It emits a `tool_progress` heartbeat every 30s, so
-  log-growth stall detection never fires: one call sat 8h29m and only 4 workers spawned all night.
-  Check the newest `tool_progress` `elapsed_time_seconds` in the log tail; a single
+- **A hung `codex exec` keeps the log growing, for ten minutes.** It emits a `tool_progress`
+  heartbeat every 30s, so the log grows while it hangs. The harness caps a foreground Bash call at
+  600s: past that it moves the call to the background ("did not complete within its 600s timeout and
+  was moved to the background") and the heartbeats stop, and a backgrounded call still running ten
+  minutes later is stopped. So the log then goes quiet and the pass's quiet and wedged counts take
+  over (an older harness heartbeated one call for 8h29m). Inside those ten minutes, check the newest
+  `tool_progress` `elapsed_time_seconds` in the log tail; a single
   tool call past a few minutes is a hang. Kill **that worker's** codex by the PID you resolved
   (`ps -o etimes= -p <pid>`), never `pkill -f codex`: other sessions run codex concurrently.
 - **A worker at a usage limit is paused, not dead.** Any limit counts: the 5-hour one, the weekly
