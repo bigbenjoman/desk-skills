@@ -147,13 +147,24 @@ t('DS-818 addedExports: a class, a value that runs code without a call, or a sec
   addedExports(env, `${env}export const f = (a) => a, g = main();\n`),
   addedExports(env, `${env}export function f() {}; main();\n`),
   addedExports(env, `${env}export const f = () => 1\n  main();\n`),
-], [null, null, null, null, null, null, null, null, null]);
+  addedExports(env, `${env}export const iife = function () { main(); }();\n`),
+  addedExports(env, `${env}export const arrowIife = (() => main())();\n`),
+  addedExports(env, `${env}export function g() {} (main());\n`),
+  addedExports(env, `${env}export function g() {} [main()];\n`),
+  addedExports(env, `${env}export const n = (null)();\n`),
+  addedExports(env, `${env}export const m = [][0]();\n`),
+  addedExports(env, `${env}export const k = null[0];\n`),
+  addedExports(env, `${env}export const s = ''['constructor']['constructor']('main()')();\n`),
+  addedExports(env, `${env}export const d = 1..constructor.constructor('main()')();\n`),
+  addedExports(env, `${env}export const spread = { ...other };\n`),
+], Array(19).fill(null));
 t('DS-818 addedExports: a new name that shadows a global or a name the module already uses is not export-only', [
   addedExports(env, `${env}export function fetch() {}\n`),
   addedExports(env, `${env}export const URL = 'x';\n`),
   addedExports(`${env}export function usesY() {\n  return y;\n}\n`, `${env}export function usesY() {\n  return y;\n}\nexport const y = 2;\n`),
 ], [null, null, null]);
 t('DS-818 addedExports: literal values, multi-line function bodies and arrows still count', addedExports(env, `${env}export const LIMITS = { max: 3, names: ['a', "b"], on: true, off: null, n: -1.5 };\nexport function g(a = 1) {\n  if (a) { return [a]; }\n  return null;\n}\nexport const h = async (x) => {\n  return x;\n};\n`), ['LIMITS', 'g', 'h']);
+t('DS-818 addedExports: an arrow with a default that calls, a body on the next line, and a regex count too', addedExports(env, `${env}export const dir = (slug = current().slug) => (slug ? join(slug) : null);\nexport const wrap = (a) =>\n  a.map((x) => x + 1);\nexport const SHOT = /\\.(png|jpe?g)$/i;\nexport const fe = function named(a) {\n  return a; // it's fine\n};\n`), ['dir', 'wrap', 'SHOT', 'fe']);
 
 // ---- this repo -----------------------------------------------------------------------------------
 const real = repoMap(R);

@@ -69,27 +69,43 @@ function topLevel(text) {
   }
   return out.map((c) => { while (c.length && !c.at(-1).trim()) c.pop(); return c.join('\n'); }).filter(Boolean);
 }
-// The characters of `text` outside every bracket and string, or null when its brackets or quotes do
-// not close. Not a parser: anything it misreads comes out unbalanced or with extra text, and is refused.
+// `text` with each outermost bracket group emptied to `()`, `[]` or `{}`, each string to `""` and each
+// comment dropped, or null when its brackets or quotes do not close. Not a parser: anything it
+// misreads comes out unbalanced or in a shape the callers do not accept, and is refused.
 function outside(text) {
   let d = 0, q = null, out = '';
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (q) { if (ch === '\\') i++; else if (ch === q) q = null; continue; }
+    if (q) { if (ch === '\\') i++; else if (ch === q) { q = null; if (d === 0) out += '""'; } continue; }
+    if (ch === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; i--; continue; }
+    if (ch === '/' && text[i + 1] === '*') { const e = text.indexOf('*/', i + 2); if (e < 0) return null; i = e + 1; continue; }
     if (ch === '"' || ch === "'" || ch === '`') q = ch;
-    else if ('([{'.includes(ch)) d++;
-    else if (')]}'.includes(ch)) { if (--d < 0) return null; }
+    else if ('([{'.includes(ch)) { if (d++ === 0) out += ch; }
+    else if (')]}'.includes(ch)) { if (--d < 0) return null; if (d === 0) out += ch; }
     else if (d === 0) out += ch;
   }
   return d === 0 && !q ? out : null;
 }
-// One expression and nothing after it: no second declarator or statement outside its brackets.
-const single = (rest) => rest !== null && !/[,;\n]/.test(rest.trim().replace(/;$/, ''));
-// A value built only of literals: strings, numbers, true, false, null, and arrays and objects of them.
+const NUMBER = /(?<![\w$.])(?:0[xob][\da-f_]+|\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?)n?(?![\w$.])/gi;
+// A value built only of literals: a regex, or strings, numbers, true, false and null and arrays and
+// objects of them. No call, member access, template, reference or spread.
 function literal(value) {
-  if (value.includes('`')) return false;
-  const bare = value.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(/[A-Za-z_$][\w$]*\s*:/g, '').replace(/\b\d[\w.]*/g, '0');
-  return (bare.match(/[A-Za-z_$][\w$]*/g) ?? []).every((w) => ['true', 'false', 'null'].includes(w));
+  const v = value.trim().replace(/;$/, '').trim();
+  if (/^\/(?:[^/\\\n[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+\/[dgimsuvy]*$/.test(v)) return true;
+  const bare = v.replace(/'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"/g, '""').replace(NUMBER, '0')
+    .replace(/([{,]\s*)(?:[A-Za-z_$][\w$]*|""|0)\s*:/g, '$1');
+  if (/["0\]}a-z]\s*\[/.test(bare)) return false;
+  return /^[\s"0[\]{},:+-]*(?:(?:true|false|null)(?![\w$])[\s"0[\]{},:+-]*)*$/.test(bare);
+}
+// A function expression or an arrow, and nothing after it: no call, second declarator or statement.
+// An arrow's body may start on the next line; after that, a line break could end the statement.
+function fnValue(value) {
+  const o = outside(value);
+  if (o === null) return false;
+  const v = o.trim().replace(/;$/, '').trim();
+  if (/^(?:async\s+)?function\s*\*?\s*(?:[A-Za-z_$][\w$]*\s*)?\(\)\s*\{\}$/.test(v)) return true;
+  const a = v.match(/^(?:async\s+)?(?:\(\)|[A-Za-z_$][\w$]*)\s*=>[ \t]*\n?([\s\S]*)$/);
+  return !!a && a[1].trim() !== '' && !/[\n,;]/.test(a[1]);
 }
 // A new top-level statement that declares an export and runs nothing when the module loads: a function
 // declaration, or a const whose value is a function or a literal. -> its name, or null. A class (its
@@ -100,13 +116,10 @@ function newExport(chunk, before) {
   const fn = chunk.match(/^export\s+(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/);
   if (fn) {
     const rest = outside(chunk);
-    if (rest !== null && new RegExp(`^export\\s+(?:async\\s+)?function\\s*\\*?\\s*${fn[1].replace(/\$/g, '\\$')}\\s*;?\\s*$`).test(rest)) name = fn[1];
+    if (rest !== null && new RegExp(`^export\\s+(?:async\\s+)?function\\s*\\*?\\s*${fn[1].replace(/\$/g, '\\$')}\\s*\\(\\)\\s*\\{\\}\\s*;?\\s*$`).test(rest)) name = fn[1];
   } else {
     const c = chunk.match(/^export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*([\s\S]*)$/);
-    if (!c || !single(outside(c[2]))) return null;
-    const value = c[2];
-    const fnValue = /^(?:async\s+)?(?:function\b|\([^()]*\)\s*=>|[A-Za-z_$][\w$]*\s*=>)/.test(value);
-    if (fnValue || literal(value)) name = c[1];
+    if (c && (fnValue(c[2]) || literal(c[2]))) name = c[1];
   }
   if (!name || name in globalThis || new RegExp(`(?<![\\w$])${name.replace(/\$/g, '\\$')}(?![\\w$])`).test(before)) return null;
   return name;
