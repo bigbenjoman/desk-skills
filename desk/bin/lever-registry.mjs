@@ -120,7 +120,7 @@ export const ENTRIES = Object.freeze({
   ledger: {
     layer: 'low-risk', trialled: false,
     mechanism: metric('missed ledger appends per pass', null),
-    trips: [],
+    trips: [POST_MERGE_REVERT, ownStepError('queue-ledger.mjs')],
     code: [code('desk/bin/queue-ledger.mjs')],
     preconditions: [],
   },

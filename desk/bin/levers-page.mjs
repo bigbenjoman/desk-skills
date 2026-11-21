@@ -60,6 +60,7 @@ const WHAT = Object.freeze({
   'review-reuse': 'Keeps review notes after a rebase instead of reviewing it all again',
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
+  ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);

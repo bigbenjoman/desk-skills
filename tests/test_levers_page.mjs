@@ -193,9 +193,9 @@ const tilesOf = (h) => [...h.split('aria-label="Headline numbers"')[1].split('</
   t('AC5 the needs-you tile', tilesOf(hSix)[3], 'Needs you=1');
   t('AC5 four WBR cards', count(hSix, /<article class="card wbr"/g), 4);
   const lev = section(hSix, 'lev-h');
-  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 7);
+  t('AC5 Is each lever working?, one row per lever', count(lev, /<tr data-lever=/g), 8);
   t('AC5 with results and progress', lev.includes('>Result so far</th>') && lev.includes('>Progress to a decision</th>'), true);
-  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort');
+  t('AC5 kept first, codex needing you after the tests', [...lev.matchAll(/<tr data-lever="([^"]+)"/g)].map((m) => m[1]).join(), 'preflight,wrappers,memory,failure-class,review-reuse,codex,effort,ledger');
   const ch = section(hSix, 'ch-h');
   t('AC5 Every change desk made', ch.includes('>Every change desk made</h2>'), true);
   t('AC5 since testing started', ch.includes('Newest first, since testing started on 17 Nov.'), true);
