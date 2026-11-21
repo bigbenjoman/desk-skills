@@ -5032,7 +5032,7 @@ let tableAt = -1;
 runPhase({
   name: 'verdict lines',
   snapshot: () => {
-    const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line,`memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
+    const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);
