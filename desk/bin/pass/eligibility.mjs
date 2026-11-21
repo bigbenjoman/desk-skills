@@ -143,6 +143,7 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 // profile its worker cap is a hard limit across every repo (machineBudget), and the repo's §3b cap is
 // shared by all its batches (repoBudget). Snapshot, beside planOf's:
 //   running       this batch's running tickets, and ownBaseFix 1 while its base conflict fix runs
+//   auditWorkers  the repo's blind audits running (levers-audit.mjs), which belong to no batch's queue
 //   baseWanted    whether a base worker with no ticket to spawn wants its one slot
 //   machineProfiled  whether there is a machine profile; repoCaps each repo's §3b cap, by slug
 //   otherRepos    every other queue (borrow.mjs otherQueues), and repoBatches this repo's other batches
@@ -150,12 +151,14 @@ const planOf =(s, workers, on = s.borrowOn) => borrowPlan({
 export function decideSlots(s) {
   const plan = planOf(s, s.running);
   const wanted = Math.min(plan.slots, s.spawnable) || (s.baseWanted ? 1 : 0);
+  // The batch's own workers, its base conflict fix and the repo's blind audits, as other batches count them.
+  const busy = s.running + s.ownBaseFix + (s.auditWorkers ?? 0);
   const machine = machineBudget({
-    running: s.running + s.ownBaseFix, wanted, machine: s.machineCap, queues: s.otherRepos,
+    running: busy, wanted, machine: s.machineCap, queues: s.otherRepos,
     profiled: s.machineProfiled, capOf: (slug) => s.repoCaps[slug],
   });
   const repo = repoBudget({
-    batch: s.batch, running: s.running + s.ownBaseFix, wanted, last: s.lastStart, cap: s.cap, batches: s.repoBatches,
+    batch: s.batch, running: busy, wanted, last: s.lastStart, cap: s.cap, batches: s.repoBatches,
   });
   // A repo's batches share its cap only under the lock: without it two passes could each count the same
   // free slot, so a batch with a sibling that is live, running or unreadable (the ones repoBudget counts)

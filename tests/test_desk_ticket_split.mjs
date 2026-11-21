@@ -44,6 +44,7 @@ const REWRITTEN = [
   ].map((s) => ['DS-405', s, 1]),
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
   ['DS-912', 'the Testing-bullet standard and the before/after image table. Ends with', 1], // desk-pr also owns the preview-build lease
+  ['DS-888', '`git status --porcelain` after every round; a dirty tree is an aborted round', 1], // the round-end check runs desk-env tree-status
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

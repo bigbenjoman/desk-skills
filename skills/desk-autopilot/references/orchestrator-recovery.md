@@ -24,7 +24,7 @@ it has already actioned. So:
 ## A park means the worker is already gone
 
 A worker cannot block under `dontAsk` (every wait primitive, `timeout … until`, `sleep`, `Monitor`,
-`inotifywait`, is refused) so it prints `AUTOPILOT_PARK`, messages you, and exits within a turn or
+`inotifywait`, is refused) so it writes its park file, prints `AUTOPILOT_PARK` and exits within a turn or
 two. Treat every park as "worker gone now". Any answer that needs the user arrives after it left,
 so a worker parked holding an approved Jira comment exits and nothing receives the answer.
 
@@ -42,7 +42,7 @@ How to resume, by what was parked:
 |---|---|
 | a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass. One a linked design frame answers, read through this session's design connector and write into the ticket's Design section first (`desk-admit` §2) |
 | triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
-| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload, then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base) |
+| a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the exact text the park holds (its `approve`, in `queue.mjs get <TICKET>`; else the worker's printed payload), then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>`, never a hand-written `queue.mjs set` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base, and for a running, held or claimed ticket, a spine or plan park, and a feature spine or a child owning criteria, changing nothing) |
 | a worker's `AUTOPILOT_PARK` whose only blocker is a red check §4 Check builds names (`desk-env list check-builds`): someone to run its build | not the person's. The pass records one done at harvest when its draft PR is red on such checks alone, and its undraft step runs the build. One still parked on lane A, B, D or E: requeue it, as its worker finishes DONE on that check (worker contract Stage 5 file) |
 | a worker's `AUTOPILOT_PARK` that needs more agent work | requeue it: `queue.mjs requeue <TICKET>` (below) |
 | any park whose worker read an answer | clear `<state>/answers/<TICKET>.txt` yourself: workers cannot delete it, and a stale one answers the next park instantly. A requeue moves it aside for you |
@@ -62,12 +62,12 @@ pass and holds the pass lock while it works, so a pass started meanwhile refuses
 with no running worker and 2 for a key the queue does not hold. Stopping every worker is `/desk-reboot`.
 
 `SendMessage` to a live worker works and is worth trying first: check `ListAgents` rather than
-assuming. A parked worker that sent `SendMessage` with `notify_when_idle: true` is re-invoked when
-you go idle, which is the one wait that works.
+assuming. A parked worker never messages you: it writes its park file and ends its turn, and the
+pass reads the park.
 
 Sessions see and message only those on their own login. A worker on another login than yours (the
-repo's §3b Subscription, or a borrowed login) cannot reach you, nor you it: its briefing says so,
-and its park reaches you at your next pass. A park on a write it may not make keeps the exact text
+repo's §3b Subscription, or a borrowed login) cannot be messaged, so `SendMessage` it only on your
+own; any worker's park reaches you at your next pass. A park on a write it may not make keeps the exact text
 as the park's `approve` (`{kind, target, body}`), which needs-you shows whole: relay that, verbatim.
 
 ## Answering a live worker
@@ -242,10 +242,10 @@ re-running a ticket from scratch.
   items wait for the next one, while triage and epic planning still run on it. A subscription no
   login here is signed in to runs none of them: triage fails naming it, and none falls back to
   another login.
-- **A briefing's orchestrator name can be stale.** The orchestrator session is named after its
-  batch, so adding a ticket renames it. A worker whose `SendMessage` fails should run `ListAgents`
-  once; exactly one row that is the same batch with tickets added or removed is the same session.
-  No plausible row means nobody is listening: stop.
+- **A worker never reaches the orchestrator.** It runs with no setting sources, often on another
+  login, whose agent registry the orchestrator is not in. So a park is only its park file and its
+  `AUTOPILOT_PARK` line, read at the next pass; a gated write's exact text is the park file's
+  `approve`.
 - **A permission denial may be the filesystem, not the rule list.** Workers can only reach their
   worktree plus `additionalDirectories`. The lock directory (`DESK_LOCK_DIR`, default `/tmp`) and
   `/proc` (Linux meminfo) needed adding there; a `Bash(flock:*)` rule never could have fixed it.

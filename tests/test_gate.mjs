@@ -239,7 +239,7 @@ const lintPush = lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_requ
 t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintPush, atDefault: lintPush })).join(), 'lint');
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
-const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',
+const brief = ['Answer file to wait on: x', '', 'These questions were put to the user before you started.', '',
   `${ANSWER_HEAD} (2026-10-09T04:40Z)`, '', 'credits from the homepage list', '',
   `${SIBLING_HEAD} in this batch have found`, '', '## MEMORY', 'cap tests', '',
   `${ANSWER_HEAD} (2026-10-09T05:30Z)`, '', 'BINDING FIX ROUND: + VAT beside each price', ''].join('\n');
@@ -461,6 +461,9 @@ rmSync(gtmp, { recursive: true, force: true });
   t('#831 the per-test form parses to its check, its file as its path and its test', JSON.stringify(row.flaky[0]), JSON.stringify({ name: 'Integration', paths: ['tests/orders.test.ts'], test: { file: 'tests/orders.test.ts', title: 'retries a timed-out order' } }));
   t('#831 the whole-check form beside it is unchanged', JSON.stringify(row.flaky[1]), JSON.stringify({ name: 'e2e', paths: ['e2e/**'] }));
   t('#831 a per-test item with no file, or a file with a space, is an error', row.errors.join(' '), '`Unit: > no file` `Unit: a b > two words`');
+  const whole = parseFlaky(['Run e2e tests: e2e/** playwright.config.ts', 'Lint:']);
+  t('DS-869 AC1 a whole-check item reads as its check and both globs', JSON.stringify(whole.flaky), JSON.stringify([{ name: 'Run e2e tests', paths: ['e2e/**', 'playwright.config.ts'] }]));
+  t('DS-869 AC2 an item with no glob is an error and waives nothing', `${whole.errors.join(' ')} ${whole.flaky.some((f) => f.name === 'Lint')}`, '`Lint:` false');
   const checks = normaliseRollup([cr('test', 'COMPLETED', 'SUCCESS', 1), cr('Integration', 'COMPLETED', 'FAILURE', 9)]);
   const listed = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > retries a timed-out order', message: 'AssertionError: expected 200 to be 504' };
   const other = { path: 'tests/orders.test.ts', title: 'tests/orders.test.ts > totals an order', message: 'AssertionError: expected 3 to be 4' };

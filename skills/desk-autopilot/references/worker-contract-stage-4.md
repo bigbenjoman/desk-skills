@@ -60,8 +60,7 @@ desk-env mem status   # gate on avail=, never on vmmem= or free's used
 
 Under ~4 GiB available, wait and retry rather than starting a suite; a sibling mid-suite will drain.
 Never raise the worker count because the machine looks idle: it looks idle until two workers hit Stage 4 together, and an OOM takes
-every worker, worktree, database and port with it. Your port is assigned in your briefing; never
-kill a server you did not start, it is likely another session's.
+every worker, worktree, database and port with it. Never kill a server you did not start.
 
 ### Then: the suites themselves
 
@@ -139,11 +138,10 @@ listed, and the line on why goes in the park on its run id, after the run id
 
 - **Every test is the exception.** A request for everything (`all`, or no filter) states why nothing
   narrower covers the change, such as a shared layout or config every journey loads. "To be safe" is
-  not a reason: a full run on a hosted runner can take over an hour, hang, and cost money, for a
-  change two specs cover.
+  not a reason: a full hosted run can take over an hour, hang and cost money.
 - **A tag the workflow does not offer is said, not widened.** Where the covering tests sit under a
-  tag the workflow has no input for (it offers `all`, `smoke` and `auth`, and yours are `@billing`),
-  never fall back to everything: say in the park that the workflow does not offer it, name the tag
+  tag the workflow has no input for (yours are `@billing`, it offers `all` and `smoke`), never fall
+  back to everything: say in the park that the workflow does not offer it, name the tag
   that would cover the change (`suite=billing`, or the specs by file), and leave the person to add the
   input or run those specs.
 
@@ -194,8 +192,8 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **A P0 you cannot fix**: park, naming the finding and its `file:line`. Do not push a branch
   carrying a P0 you have understood and left.
 - **Do not defer a P2.** A deferral keeps the verdict off clean, and a review gate that reads the
-  deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
-  Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
+  deferred count fails on any non-zero value, so a deferred finding never merges.
+  Carrying is not deferring: only a P2 is carried, from round 2 or when split, and it leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
   stands. **A fix that grows** (into a file, not its own spec, your diff does not touch)
   is a scope call: take it per `ask-or-take.md` where §3 `autopilot-judgement` is `yes`, else park
@@ -215,12 +213,13 @@ head again; still rejected, park. Exit 2: park.
 with the report). After `gh pr create --draft`, submit it as one `COMMENTED` review. Where the review
 command defines markers, its first line is exactly the command's local-review marker and its second
 the verdict marker it emits (the full `headRefOid`, the counts, the vendor and the round count). A
-later fix-up reply opens with the command's reply marker and carries no verdict: it posts at a head
-nothing has reviewed. **Never post a second verdict at a commit that already has one with different
-counts**, and never edit a posted verdict's counts: a gate reads the last one, so a re-count is
-indistinguishable from editing the result until it passes. A wrong count needs a new run. The one
-exception is a gap the person accepted after it posted, re-posted at its head, nothing
-pushed, from its round's results (desk-review `phase-7-post.md`).
+later fix-up reply opens with the command's reply marker and carries no verdict. **Never post a
+second verdict at a commit that already has one with different counts**, nor edit one: a gate
+reads the last, so a wrong count needs a new run. After a fix (desk-review `phase-7-post.md`):
+
+<!-- facts: push-nothing -->
+If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one. The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.
+<!-- /facts -->
 
 ```bash
 node ~/.claude/desk/bin/review-post.mjs <n> --repo <repo> --body-file <report>

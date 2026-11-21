@@ -189,7 +189,13 @@ api "repos/acme/widgets/compare/main...$H8" "$MC8"$'\t'"$MB8"
 api "repos/acme/widgets/compare/$MB8...main?per_page=100" "$MC8"$'\t'"$MB8,$BR8"$'\n'"$BR8"$'\t'"$MB8"
 runs "$MB8" Lint '[{"status":"completed","conclusion":"success"}]'; runs "$BR8" Lint '[{"status":"completed","conclusion":"failure"}]'; runs "$MC8" Lint '[]'
 q add FB-8; q set FB-8 state=done lane=A branch=fix/FB-8 result.pr=818; fx 818 "$H8" MERGEABLE tests:SUCCESS Lint:FAILURE:918; fbran 818 "$H8" Lint
+# FB-11, with the lever off: red on Lint, green on the base (FB-8's base), held behind a blocker.
+H11=1212121212121212121212121212121212121212
+api "repos/acme/widgets/compare/main...$H11" "$MC8"$'\t'"$MB8"
+q add FB-11; q set FB-11 state=done lane=A branch=fix/FB-11 result.pr=821 held_by=X-9; fx 821 "$H11" MERGEABLE tests:SUCCESS Lint:FAILURE:921; fbran 821 "$H11" Lint
 : > "$T/gh-calls"; out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-633 AC2 AC3 with the lever off, a try classed dependency wait still spawns, recorded with its class" \
+  '[ "$(field FB-11 state)" = "\"triaged\"" ] && [ "$(field FB-11 fix | jq -c "[.class, (.class_rule | length > 0)]")" = "[\"dependency wait\",true]" ] && [ "$(field FB-11 fix_tries | jq -r ".[0].class")" = "dependency wait" ]'
 check "DS-614 a merged branch's own commit is not read as the base: its red run holds nothing" \
   '[ "$(field FB-8 state)" = "\"triaged\"" ] && [ "$(field FB-8 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-8 base_red)" = null ]'
 check "DS-614 AC4 with no levers set, a check red on the base's latest run since the merge base is held as base red, and no fix worker" \
@@ -198,7 +204,7 @@ check "DS-614 AC4 and the item says so" 'echo "$out" | grep -qF "FB-4: BASE RED 
 runs "$MB5" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-614 AC2 once the job passes on the base, the hold clears and a fix try proceeds as today" \
-  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = null ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
+  '[ "$(field FB-4 state)" = "\"triaged\"" ] && [ "$(field FB-4 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-4 fix.class)" = "\"application defect\"" ] && [ "$(field FB-4 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
 H9=8888888888888888888888888888888888888888; TIP9=9999999999999999999999999999999999999999
 api "repos/acme/widgets/compare/main...$H9" "$TIP9"$'\t'"$MB"
 q add FB-9; q set FB-9 state=done lane=A branch=fix/FB-9 result.pr=819; fx 819 "$H9" CONFLICTING tests:SUCCESS
@@ -206,13 +212,22 @@ out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "a conflict try records the base tip and merge base its head stood at" '[ "$(field FB-9 fix_tries | jq -r ".[0].base_sha")" = "$TIP9" ] && [ "$(field FB-9 fix_tries | jq -r ".[0].merge_base")" = "$MB" ]'
 q set FB-9 state=done session_id=null fix=null stuck=null; fx 819 "$H9" MERGEABLE tests:SUCCESS
 q park FB-4 "which reviewer handle goes in the PR body?"
-check "DS-446 AC7 with the lever off, a park records no class" '[ "$(field FB-4 park.class)" = null ] && [ "$(field FB-4 park.question)" = "\"which reviewer handle goes in the PR body?\"" ]'
+check "DS-633 AC1 with the lever off, a park records its class and the rule that gave it" \
+  '[ "$(field FB-4 park | jq -c "[.class, (.class_rule | length > 0), .question]")" = "[\"missing decision\",true,\"which reviewer handle goes in the PR body?\"]" ]'
+q add FB-12; q park FB-12 "waiting on the weather"
+check "DS-633 AC5 with the lever off, a park no rule matches is unclassified and otherwise recorded as today" \
+  '[ "$(field FB-12 park | jq -c "[.class, .evidence, .question, (.since | length > 0)]")" = "[\"unclassified\",\"waiting on the weather\",\"waiting on the weather\",true]" ]'
 # FB-1 is red on Lint, and Lint is red at its merge base. FB-2 is red on Lint, with no run of Lint at its
 # merge base. FB-3 is FB-2's case, held behind a blocker.
 for k in 1 2 3; do q add "FB-$k"; q set "FB-$k" state=done lane=A "branch=fix/FB-$k"; done
 q set FB-1 result.pr=810; fx 810 "$H1" MERGEABLE tests:SUCCESS Lint:FAILURE:911; fbran 810 "$H1" Lint
 q set FB-2 result.pr=811; fx 811 "$H2" MERGEABLE tests:SUCCESS Lint:FAILURE:912; fbran 811 "$H2" Lint
 q set FB-3 result.pr=812 held_by=X-9; fx 812 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:913; fbran 812 "$H3" Lint
+# The pass reads the lever from each ticket's pin. FB-1 to FB-3 are pinned with it; FB-10 is
+# FB-3's case, pinned without it, in the same pass.
+for k in 1 2 3; do q set "FB-$k" 'levers={"set":["failure-class"],"at":"2026-11-14T00:00:00Z"}'; done
+q add FB-10; q set FB-10 state=done lane=A branch=fix/FB-10 result.pr=820 held_by=X-9 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
+fx 820 "$H3" MERGEABLE tests:SUCCESS Lint:FAILURE:920; fbran 820 "$H3" Lint
 # The base has gained twelve commits since FB-1's merge base, listed oldest first as the compare pages
 # them. Lint ran red on the oldest, MO, then on MT, and on none of the newest ten: MT's run is read only
 # by reading past the newest ten, and before MO's.
@@ -235,6 +250,8 @@ check "DS-446 AC2 the try records its class before its worker spawns" \
   '[ "$(field FB-2 fix.class)" = "\"application defect\"" ] && [ "$(field FB-2 fix_tries | jq -r ".[0].class")" = "application defect" ] && ! grep -q "^FB-2" "$T/spawns"'
 check "DS-446 AC4 a try classed dependency wait does not spawn, and the item says what it waits for" \
   '[ "$(field FB-3 state)" = "\"done\"" ] && [ "$(field FB-3 fix)" = null ] && [ "$(field FB-3 fix_tries)" = null ] && echo "$out" | grep -qF "FB-3: WAITING — PR #812: no fix try for red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since), classed dependency wait: waiting for X-9 to merge"'
+check "DS-639 AC2 in the same pass, the ticket pinned without the lever gets its fix try, though it waits on a dependency" \
+  '[ "$(field FB-10 state)" = "\"triaged\"" ] && [ "$(field FB-10 fix | jq -c "[.what, .class]")" = "[\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\",\"dependency wait\"]" ] && ! echo "$out" | grep -q "FB-10: WAITING"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
 check "and the next pass keeps when it began" '[ "$(field FB-1 base_red.since)" = "$since1" ]'
@@ -509,6 +526,27 @@ check "DS-448 AC8 lever on, a clean merge over a recorded file sends the head to
   '! grep -q "^pr ready 762" "$T/gh-calls" && [ "$(field R-2 fix.kind)" = "\"rereview\"" ] && [ "$(field R-2 undraft.carried_from)" = null ]'
 check "DS-449 AC1 that review try reads only the recorded file the base changed, and the PR code that names it" \
   '[ "$(field R-2 fix.targeted | jq -c "[.from, .files, .users]")" = "[\"$CA\",[\"c.txt\"],[]]" ]'
+# The pass reads the lever from each ticket's pin, with the row (review-reuse) only for a ticket
+# with no pin. fix/C-3 is C-1's reviewed commit CA rebased onto main (CR), past the base's c.txt: off,
+# a rebase never carries, and on it carries while the review rests on none of the files the base moved.
+# R-3 and R-4 rest on b.txt, R-5 and R-6 on c.txt; R-3 and R-5 are pinned with the lever, R-4 and R-6
+# without it, and R-7, resting on b.txt, has no pin.
+git -C "$T/carry" fetch -q origin; git -C "$T/carry" checkout -q -b fix/C-3 origin/main
+git -C "$T/carry" cherry-pick "$CA" >/dev/null; CR=$(git -C "$T/carry" rev-parse HEAD)
+git -C "$T/carry" checkout -q main; git -C "$T/carry" push -q origin fix/C-3
+q set-batch concurrency=12
+PIN_ON='levers={"set":["review-reuse"],"at":"2026-11-14T00:00:00Z"}'; PIN_OFF='levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
+for k in 3 4 5 6 7; do q add "R-$k"; q set "R-$k" state=done lane=A branch=fix/C-3 "result.pr=639$k"; done
+q set R-3 "$PIN_ON"; q set R-4 "$PIN_OFF"; q set R-5 "$PIN_ON"; q set R-6 "$PIN_OFF"; q set R-7 levers=null
+for k in 3 4 7; do frx "639$k" "$CR" "$CA" 'p0=0 p1=0 p2=0'; restsfile "639$k" b.txt; done
+for k in 5 6; do frx "639$k" "$CR" "$CA" 'p0=0 p1=0 p2=0'; restsfile "639$k" c.txt; done
+: > "$T/spawns"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-639 AC1 of two tickets with their reviewed files unchanged, only the one pinned with the lever carries its verdict" \
+  'grep -q "^pr ready 6393 --repo acme/widgets" "$T/gh-calls" && [ "$(field R-3 undraft.carried_from)" = "\"$CA\"" ] && ! grep -q "^pr ready 6394" "$T/gh-calls" && [ "$(field R-4 undraft.carried_from)" = null ] && [ "$(field R-4 fix.kind)" = "\"rereview\"" ]'
+check "DS-639 AC3 a ticket with no pin reads the row, and carries its verdict as today" \
+  'grep -q "^pr ready 6397 --repo acme/widgets" "$T/gh-calls" && [ "$(field R-7 undraft.carried_from)" = "\"$CA\"" ]'
+check "DS-639 AC4 of two needing a re-review after the base changed their files, only the one pinned with the lever gets the narrowed one" \
+  '[ "$(field R-5 fix.kind)" = "\"rereview\"" ] && [ "$(field R-5 fix.targeted | jq -c ".files")" = "[\"c.txt\"]" ] && [ "$(field R-6 fix.kind)" = "\"rereview\"" ] && [ "$(field R-6 fix.targeted)" = null ]'
 export DESK_CONFIG="$T/config-c.md"
 
 # ---- a review whose P0s and P1s are posted inline goes to a fix worker too

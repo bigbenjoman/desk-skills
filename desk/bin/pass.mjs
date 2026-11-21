@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApproval, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, blockerThrough, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -21,6 +21,7 @@ import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_K
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
 import { parseDecision, decisionEntry, appendDecisions, workerCalls, appendNotes, triageCalls, ticketCalls } from './decisions.mjs';
+import { recordFindings, recordCarry } from './findings.mjs';
 import { readRegister, lookup, parseInputs, refreshInputs, clearPutOff } from './not-now.mjs';
 import { pruneReadRepos, refreshReadRepos } from './read-repos.mjs';
 import { REMOTE_GIT_MS, execGit, remoteHung, markRemoteHung } from './remote-git.mjs';
@@ -38,7 +39,7 @@ import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claimedPorts } from './port-claims.mjs';
+import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
@@ -55,8 +56,9 @@ import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
 import { parseEvidenceRow, evidenceRunArgs, evidenceRecord, recordDispatch, missingShots, ticketShots, ticketShotDir, dragCells, dragFiles, errorLinesIn, readFixes, writeFixes, fixTicket } from './evidence.mjs';
 import { childRenames } from './migration-renames.mjs';
-import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, personCall, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
+import { fixBrief, fixTask, fixStartStage, parseOperatorChecks, failedSteps, redraftable, unrunFields, feedbackReply, RERUN_COOLDOWN_S } from './fix-tries.mjs';
 import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
@@ -66,8 +68,12 @@ import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, hold
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
+import { postMergeWatch } from './post-merge.mjs';
+import { evaluateDue } from './levers-evaluate.mjs';
+import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
 import { archivedOf, mergedPrs } from './queue-store.mjs';
+import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -178,29 +184,6 @@ const maySpawn = headlessPerm === 'yes' || (headlessPerm === 'ask' && !!process.
 // batch, asked at Stage 3 and passed to every pass as AUTOPILOT_BASE_PUSH_APPROVED=1.
 const { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase } = E.basePushGrant();
 const BASE_PUSH = { perm: basePushPerm, key: BASE_PUSH_KEY, ok: mayPushBase };
-
-// The orchestrator's own name, for the worker's briefing. Resolve it from this process's own
-// session id, which Claude Code exports, and fall back to the env var. Nothing set the env var
-// once, so every briefing said "nobody is listening" and told parked workers to give up.
-function orchestratorName() {
-  if (process.env.AUTOPILOT_ORCHESTRATOR) return process.env.AUTOPILOT_ORCHESTRATOR;
-  try {
-    const sid = process.env.CLAUDE_CODE_SESSION_ID;
-    if (sid) {
-      const me = readRegistry().live?.find((a) => a.sessionId === sid);
-      if (me?.name) return me.name;
-    }
-  } catch { /* fall through to the honest answer below */ }
-  return '(unresolved — try ListAgents once before assuming nobody is listening)';
-}
-// The briefing's orchestrator line for a worker starting on `login`. Sessions see and message only
-// the sessions in their own login's folder, so a worker on another login than the orchestrator's cannot
-// reach it: it is told so, and skips SendMessage (the worker contract's park step 2). Only a pass the
-// orchestrator's session runs knows that login, as its own: one the supervisor runs does not.
-function orchestratorLine(login) {
-  if (PASS_BY === 'session' && login && !sameLogin(OWN_LOGIN, login)) return `none reachable: you run on login ${login.name ?? login.dir}, the orchestrator on ${OWN_LOGIN.configDir ? OWN_LOGIN.name : 'the default login'}, and a session cannot message one on another login. Skip SendMessage: your AUTOPILOT_PARK line and park file reach it at its next pass`;
-  return orchestratorName();
-}
 
 // Two orchestrators would both spawn against the same tickets. "Claim the queue" was documented
 // and unenforced; this enforces it.
@@ -367,6 +350,18 @@ const PHASE_HANDLERS = {
 // The snapshot every phase starts from, read as the phase starts.
 const baseSnapshot = () => phaseSnapshot({ tickets: queue().tickets, registry: REGISTRY, now: Date.now() });
 
+// Config §3b Phase 0 levers, read per ticket: from its pin (lever-pin.mjs), and from the row only for
+// a ticket with no pin, or for no ticket at all (the epic PR). A pin that cannot be read is said once
+// and reads as every lever off.
+const ROW_LEVERS = E.levers();
+const badPins = new Set();
+const leverFor = (name, t) => {
+  try { return leverOnFor(name, t, ROW_LEVERS); } catch (e) {
+    if (!badPins.has(t.key)) { badPins.add(t.key); report.waiting.push(`${t.key}: LEVERS — ${e.message}; every lever reads off for it until the pin is fixed`); }
+    return false;
+  }
+};
+
 // The "not now" register (not-now.mjs), read once a pass. An unreadable one puts nothing off, so every
 // question is asked as it would be without one, and the person is told.
 const REGISTER = readRegister(STATE);
@@ -513,6 +508,7 @@ function logDecisions(t, log, pr) {
   const { entries, unreadable } = workerCalls(markers, { ticket: t.key, run: t.session_id, repo: GH_REPO, pr });
   for (const u of unreadable) report.waiting.push(`${t.key}: unreadable ${u.what} (${u.why}), nothing logged: ${u.raw}`);
   if (entries.length) appendDecisions(entries, STATE);
+  recordFindings(STATE, t.key, log, t.session_id ?? null);
 }
 
 // The value of marker `mark` printed after a worker's last park, read quietly, or null: none since that
@@ -942,12 +938,6 @@ const ADVANCE_HANDLERS = {
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
   kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
   park: (a) => { q('park', a.key, a.question); },
-  'park-approve': (a) => {
-    const approve = parkApprove(STATE, a.key, a.question);
-    if (!approve) return;
-    q('set', a.key, `park.approve=${JSON.stringify(approve)}`);
-    report.parked.push(`${a.key}: awaiting approval, ${approvalText(approve)}`);
-  },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {
     const m = mergeParkOf(s.t, parseClearsWhen(afterLastPark(s.log.path, 'AUTOPILOT_PARK_CLEARS_WHEN'), { here: GH_REPO }).cond);
@@ -965,6 +955,7 @@ const ADVANCE_HANDLERS = {
   'clears-when': (a, s) => clearsWhenOf(s.t, s.log.path, a.question),
   register: (a, s) => againstRegister(s.t, a.question, s.log.path, a.cond),
   recommends: (a, s) => recommendsOf(s.t, a.question, s.log.path),
+  approval: (a) => parkApproval(STATE, a.key, a.question),
   'keep-links': (a, s) => keepLinks(s.t, a.needs, a.pr),
   decisions: (a, s) => logDecisions(s.t, s.log.path, a.pr),
   'refuse-lease': (a, s) => refuseUnnamedLease(s.t, a.question),
@@ -1819,10 +1810,12 @@ const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(us
 // blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
 // is not repeated every pass. A probe that succeeds leaves a reading that lasts the recent window.
 const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+const PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
 const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
+let paceProbeFailed = null;
 const lastProbe = lastProbeAt(usageDir(), PACE_LOGIN);
 // A plan whose newest event names no 7-day window (READING.none) has nothing a probe could read.
 const noReading = !READING.seven_day && !READING.none?.includes('seven_day') && !PACE.bad && !/pacing off/.test(PACE.line)
@@ -1833,10 +1826,31 @@ if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, 
     READING = paceReading();
     PACE = usagePace({ usage: READING.seven_day });
     paceProbe = '; read by a probe call just now';
-  } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
+  } else {
+    paceProbeFailed = p.why;
+    paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
+  }
 }
-// "No recent data" names the login it read, so a reading kept under another login is not mistaken for none.
-if (/^usage: no recent data/.test(PACE.line)) PACE = { ...PACE, line: PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default'}`) };
+// "No recent data" names the login it read, so a reading kept under another login is not mistaken for
+// none, and why a probe for one failed: with no reading nothing holds, so no stall line would say it.
+const PACE_BLIND_NOW = /^usage: no recent data/.test(PACE.line);
+if (PACE_BLIND_NOW) {
+  const failed = paceProbeFailed ? `; pacing has no reading for it, as the probe call for one failed (${paceProbeFailed})` : '';
+  PACE = { ...PACE, line: `${PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_NAME}`)}${failed}` };
+}
+// Passes in a row pacing has had no reading for its login (the pass record's pace_blind, with the last
+// probe failure): from PACE_BLIND_PASSES on, the health section says the guard is blind. A plan with no
+// 7-day window is not counted, as there is nothing to read.
+const PACE_BLIND_PASSES = 3;
+const PACE_BLIND = (() => {
+  if (!PACE_BLIND_NOW || READING.none?.includes('seven_day')) return null;
+  const was = queue().pass?.pace_blind;
+  const same = was?.login === PACE_NAME;
+  return { login: PACE_NAME, n: same ? (Number(was.n) || 0) + 1 : 1, why: paceProbeFailed ?? (same ? was.why ?? null : null) };
+})();
+const paceBlindLine = PACE_BLIND && PACE_BLIND.n >= PACE_BLIND_PASSES
+  ? `health: pacing has had no 7-day usage reading for login ${PACE_NAME} for ${PACE_BLIND.n} passes in a row, so it holds no spawn whatever that login has used${PACE_BLIND.why ? `; the last probe call for one failed (${PACE_BLIND.why})` : ''}`
+  : null;
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -2100,6 +2114,8 @@ const SLOTS_SNAP = {
   others, machineCap: MACHINE_CAP, memory: { avail: availGB, start: MIN_AVAIL_GB }, spawnHeld, lockWhy,
   // This batch's own base conflict fix is a running worker too, as other batches count it (borrow.mjs).
   ownBaseFix: fresh.base_fix?.running ? 1 : 0,
+  // So are the repo's blind audits (levers-audit.mjs), which belong to no batch's queue.
+  auditWorkers: (() => { try { return auditsRunning(REPO_SLUG); } catch { return 0; } })(),
   // A base conflict fix, epic review or promotion check try due with no ticket to spawn still wants its one slot.
   baseWanted: !!(gateFixDue || epicReviewDue || promotionChecksDue),
   machineProfiled: MACHINE_CAP != null || E.machineProfile() != null,
@@ -2156,10 +2172,11 @@ function baseWtHolds(path) {
   const ahead = sh('git', ['-C', path, 'rev-list', '--count', `origin/${BASE}..HEAD`], quiet);
   return ahead === '0' ? null : `the base worktree ${path} holds ${ahead || 'an unread number of'} commit(s) origin's ${BASE} does not: push or drop them there`;
 }
-// Ends base_fix's last try with `outcome` (and `extra` on its record): the record drops its session
-// and port, and the try's merge is dropped from base worktree `path`, where there is one, once what it
-// committed is kept on keptRef and named on the try as `kept`.
+// Ends base_fix's last try with `outcome` (and `extra` on its record): its review rounds are recorded,
+// the record drops its session and port, and the try's merge is dropped from base worktree `path`,
+// where there is one, once what it committed is kept on keptRef and named on the try as `kept`.
 function endTry(outcome, path, extra = {}) {
+  recordEpicFindings(join(STATE, 'logs', `${BASE_FIX_KEY}.log`));
   const n = bf.tries.length;
   const last = bf.tries[n - 1];
   const kept = !DRY && path && cleanedTry(last) ? keepUnpushed({ path, base: BASE, ref: keptRef(n, last) }) : null;
@@ -2167,6 +2184,14 @@ function endTry(outcome, path, extra = {}) {
   if (DRY) return;
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   if (path) dropTryMerge(path, bf.tries[n - 1]);
+}
+// An epic PR review try runs Stage 4b and posts the epic PR's review, so its log's review rounds go to
+// the findings file as a ticket worker's do (findings.mjs), keyed by the epic: read as its try ends.
+// Recorded once each however often it is read.
+function recordEpicFindings(log) {
+  const last = bf?.tries?.[bf.tries.length - 1];
+  if (DRY || last?.kind !== 'review' || !fresh.epic) return;
+  recordFindings(STATE, fresh.epic, log, bf.running ?? null);
 }
 const baselineSetting = E.configValue('baseline-checks');
 const baselineOn = /^on$/i.test(String(baselineSetting ?? '').trim());
@@ -2489,7 +2514,10 @@ let leaseBatch;
 try { leaseBatch = E.batchName(); } catch { leaseBatch = null; }
 async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   const now = queue();
-  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
+  // A lapsed claim it drops, or a claims file it cannot read, goes in the report's port lines.
+  const claims = passClaims({ drop: !DRY });
+  for (const l of claims.lines) portLeaseLines.add(l);
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claims.ports]);
   const p = await pickPort({ env: E, taken, inUse: (n) => E.portInUse(n), own: own?.port, floor: E.workerPortFloor(), repo: GH_REPO, batch: leaseBatch, key, take: !DRY });
   for (const l of p.notes) portLeaseLines.add(l);
   portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
@@ -2527,6 +2555,12 @@ function repoLogin() {
   const email = REPO_SUB.email ?? REPO_CHECK.email ?? null;
   if (REPO_CHECK.state === 'signed out') {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
+    return null;
+  }
+  // A folder pinned to an account (DS-528) is used only while it is signed in to that account.
+  const live = REPO_CHECK.state === 'signed in' ? REPO_CHECK.email?.toLowerCase() ?? null : null;
+  if (login.account && live && live !== login.account) {
+    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
     return null;
   }
   const refused = refusedOf(login);
@@ -2699,7 +2733,7 @@ const tailBrief = (t) => `## Your PR has merged: run only the steps after the me
 // answer it was blocked on. A session started from a handoff gets the handoff briefing in place of the
 // sibling notes: what it needs is what the session before it did, and paying for the notes again is
 // what the handoff saves. A round resumed after a park keeps the notes: it may still be building.
-function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null, login = null } = {}) {
+function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = null } = {}) {
   const notesFile = join(STATE, 'batch-notes.md');
   const notesHead = `${SIBLING_HEAD} in this batch have found\n\n`;
   const answerFile = join(STATE, 'answers', `${t.key}.txt`);
@@ -2717,7 +2751,6 @@ function writeBrief(t, wt, handoff = '', { notes = !handoff, migrateFailed = nul
       ? `${ANSWER_HEAD}\n\n${readFileSync(answerFile, 'utf8')}`
       : '';
   const parts = (h) => [
-    `Orchestrator session name: ${orchestratorLine(login)}`,
     `Answer file to wait on: ${answerFile}`,
     `Screenshot directory (print it as AUTOPILOT_IMAGES once it holds your screenshots; captured none, print nothing): ${join(STATE, 'images', t.key)}/`,
     '',
@@ -2801,10 +2834,12 @@ function spawnCloud(t) {
     q('park', t.key, line);
     report.parked.push(`${t.key}: ${line}`);
   };
-  // Placed before the effort lever went on, or with a malformed row: the plan keeps these local now.
-  let effort;
-  try { effort = E.workerEffort('0'); } catch (e) { park(e.message); return; }
-  if (effort !== E.NO_EFFORT) { park(CLOUD_NO_EFFORT); return; }
+  // Placed before the effort lever went on for it, or with a malformed row: the plan keeps these local
+  // now. The lever is the ticket's pin's (leverFor).
+  if (leverFor('effort', t)) {
+    try { E.parseWorkerEffort(E.configValues('worker-effort')); } catch (e) { park(e.message); return; }
+    park(CLOUD_NO_EFFORT); return;
+  }
   let text;
   try { text = cloudTicketText(t.key); } catch (e) { park(`its ticket text could not be read (${e.message})`); return; }
   if (DRY) { report.spawned.push(`${t.key} (dry run: no cloud session started)`); return; }
@@ -2838,7 +2873,7 @@ async function spawnHandoff(t, pick) {
   if (refused) return parkIt(refused);
   const { data } = readHandoff(STATE, t.key);
   const commits = branchCommits(t.worktree, `origin/${DEFAULT_BRANCH}`);
-  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }), { login: pick.login });
+  const briefPath = writeBrief(t, t.worktree, renderHandoff({ key: t.key, stage, data, branch: t.branch, worktree: t.worktree, base: `origin/${DEFAULT_BRANCH}`, commits }));
   // The ticket's tier as the fresh spawn reads it, so a tier a requeue raised reaches this session too.
   // A Stage 7 session runs on §3b Worker models' text model where one is set; the tier is kept, so a
   // requeue raises the same tier it would have.
@@ -2920,7 +2955,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   attempts += 1;
   const model = models.off ? '' : models[tierFor({ key })];
   const workerEnv = { AUTOPILOT_BRANCH: BASE, AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model, ...pick.vars };
-  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true, login: pick.login });
+  const briefPath = writeBrief({ key }, wt, texts.brief(ctx), { notes: true });
   const pre = preflight(key, wt, workerEnv);
   // Refused at the usage limit: no try is spent, and the batch holds until the limit lifts.
   if (pre.limit) { unstart(); preflightHitLimit({ key }, pre.cost, pick.login); return; }
@@ -3351,7 +3386,7 @@ for (const t of spawnable) {
 
   const resumed = resumeRound(t, { wt, kept, branch });
   const migrateFailed = /\[setup-worktree\] migrate=failed/.test(setup) ? database : null;
-  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed, login: pick.login });
+  const briefPath = writeBrief(t, wt, resumed.brief, { notes: true, migrateFailed });
 
   const pre = preflight(t.key, wt, workerEnv);
   if (pre.limit) {
@@ -4032,8 +4067,9 @@ const undraftErrors = [];
 // (restsOnCarries), after a rebase or any base merge; off, across clean base merges and empty commits alone. On, a clean
 // verdict that does not hold is narrowed to what the base moved under it where it can be (scope:
 // reviewScope), so the head's review try reads only that.
-const reviewReuse = E.leverOn('review-reuse');
+// The lever is read per ticket (leverFor).
 const baseMoves = (t, head) => {
+  const reviewReuse = leverFor('review-reuse', t);
   // Fetched once for this head, however many of these ask.
   let got;
   const fetched = () => (got ??= !!t.branch && shOut('git', ['-C', MAIN, 'fetch', '-q', 'origin', DEFAULT_BRANCH, t.branch]).ok);
@@ -4090,7 +4126,6 @@ const clearsRows = { operator: operatorRow.checks, builds: buildRow.checks, prem
 // merge base, and its newest completed run among the newest commits the default branch has gained
 // since that merge base (latestOnBaseOf says how many). Each read once per pass; one gh cannot read is
 // unknown.
-const FAILURE_CLASS = E.leverOn('failure-class');
 const checkRunsAt = (sha, name) => cached(`check-runs:${sha}:${name}`, () => {
   const r = shOut('gh', ['api', `repos/${GH_REPO}/commits/${sha}/check-runs?check_name=${encodeURIComponent(name)}&filter=latest&per_page=100`, '--jq', '[.check_runs[] | {status, conclusion}]']);
   try { return r.ok ? JSON.parse(r.out) : null; } catch { return null; }
@@ -4170,6 +4205,7 @@ const UNDRAFT_HANDLERS = {
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
   ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
+  'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
   note: (a) => {
     const notesFile = join(STATE, 'batch-notes.md');
@@ -4199,7 +4235,7 @@ runSteps({
       // Cells whose files desk holds and never tried to upload go to uploadShots (cellCall `upload`).
       upload: uploadPerm === 'yes' || process.env.DESK_UPLOAD_APPROVED ? 'yes' : uploadPerm,
     },
-    gates: gateLists(), evidenceErrors: evidenceRow?.errors ?? null, buildErrors: buildRow.errors, fixRowErrors, clearsRows, failureClass: FAILURE_CLASS,
+    gates: gateLists(), evidenceErrors: evidenceRow?.errors ?? null, buildErrors: buildRow.errors, fixRowErrors, clearsRows, failureClass: (t) => leverFor('failure-class', t),
     gatedByReviewer, reviewerMismatch: HEALTH.reviewer?.kind === 'mismatch',
     reads: {
       untriggered: untriggeredOf, runOf, fault: faultOf,
@@ -4569,11 +4605,12 @@ function settleWorked(t, n, head, worked) {
   return now.map((x) => x.id);
 }
 // A fixCall or reviewFix answer, carried out: `stuck` is recorded on the ticket and put to the person,
-// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, and `held` (base
-// red) waits with no try. With the failure-class lever on, a requeue records its try's class
-// (failure-class.mjs fixClass) before the worker spawns, one classed missing decision or dependency
-// wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's checks classed
-// runner or resource instead of spawning a fix worker, `wait` holding that rerun for the run to finish.
+// `requeue` sends the ticket back for its fix try and appends the try to `fix_tries`, with its class
+// (failure-class.mjs fixClass) recorded before the worker spawns, and `held` (base red) waits with no
+// try. With the failure-class lever on (read per ticket, leverFor), one classed missing decision or
+// dependency wait is not requeued (the item says what it waits for), and `rerun` re-runs a draft's
+// checks classed runner or resource instead of spawning a fix worker, `wait` holding that rerun for
+// the run to finish.
 function applyFix(t, n, head, c) {
   const rec = keptHold(t.base_red, c, PASS_AT);
   if ('base_red' in c && JSON.stringify(t.base_red ?? null) !== JSON.stringify(rec)) {
@@ -4594,12 +4631,14 @@ function applyFix(t, n, head, c) {
     if (!DRY && (t.stuck?.why !== c.why || t.stuck?.head !== head)) q('set', t.key, `stuck=${JSON.stringify({ why: c.why, pr: n, head, at: PASS_AT, ...checks })}`);
     return;
   }
-  let f = c.fix;
-  if (FAILURE_CLASS) {
-    const fc = fixClass(f, t);
-    if (WAITING_CLASSES.includes(fc.class)) { report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${f.what}, classed ${fc.class}: ${fc.waiting}`); return; }
-    f = { ...f, class: fc.class, class_rule: fc.class_rule };
+  const fc = fixClass(c.fix, t);
+  if (leverFor('failure-class', t) && WAITING_CLASSES.includes(fc.class)) {
+    report.waiting.push(`${t.key}: WAITING — PR #${n}: no fix try for ${c.fix.what}, classed ${fc.class}: ${fc.waiting}`);
+    // The wait goes in the run record, where the stale-wait trip reads it (levers-trips.mjs).
+    if (!DRY) recordWait(STATE, t.key, { class: fc.class, waiting: fc.waiting, blockers: [...new Set(String(t.held_by ?? '').split('|').filter(Boolean))], pr: n, head }, PASS_AT);
+    return;
   }
+  const f = { ...c.fix, class: fc.class, class_rule: fc.class_rule };
   if (DRY) { out.push(`fix try (dry run): would requeue ${t.key} for ${f.kind === 'capture' ? 'a capture try' : f.extra ? `an extra ${f.kind === 'rereview' ? 'review' : 'fix'} try` : `try ${f.try} of ${f.of}`} on PR #${n} — ${f.what}`); return; }
   // The try is written first, so the spawn that follows the requeue reads it; a refused requeue takes it back.
   q('set', t.key, `fix=${JSON.stringify({ ...f, at: PASS_AT })}`);
@@ -4619,6 +4658,79 @@ function applyFix(t, n, head, c) {
 if (!DRY && readHistory(STATE) === null) {
   const built = buildHistory({ state: STATE, queue: queue(), mergedPrs: () => ghMergedPrs(GH_REPO) });
   out.push(`eta history built: ${describeHistory(built).split('\n').join('; ')}`);
+}
+// Merged PRs are watched for reverts and a red default branch, once a day (post-merge.mjs).
+if (!DRY) { const pm = postMergeWatch({ state: STATE, queue: queue(), repo: GH_REPO, branch: DEFAULT_BRANCH, cwd: MAIN }); if (pm) out.push(pm); }
+// A lever that did visible harm on one of this batch's tickets is reverted in this repo every pass.
+if (!DRY) {
+  try {
+    const tr = runTrips({ slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? null, state: STATE, queue: queue(), states: E.leverStates({}).states });
+    if (tr.line) out.push(tr.line);
+  } catch (e) { out.push(`levers trips: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+}
+// A sample of each quality-risk trial's merged PRs is reviewed again, blind, one at a time per repo:
+// as worker audit.<TICKET> in a worktree detached at the merge commit, with every lever off.
+async function spawnAudit({ key, item, sha, model, task, brief }) {
+  const pick = repoLogin();
+  if (!pick) return { wait: 'no login', why: 'this repo has no signed-in login to start on' };
+  const wt = join(WORKTREES, key);
+  if (!existsSync(wt)) {
+    if (!shOut('git', ['-C', MAIN, 'cat-file', '-e', `${sha}^{commit}`]).ok) sh('git', ['-C', MAIN, 'fetch', '-q', 'origin'], { tolerant: true });
+    const add = shOut('git', ['-C', MAIN, 'worktree', 'add', '--detach', wt, sha]);
+    if (!add.ok) return { error: `git worktree add at ${sha.slice(0, 12)} failed: ${add.out.split('\n').pop()}` };
+  }
+  const workerEnv = { AUTOPILOT_BRANCH: '', AUTOPILOT_DATABASE: 'none', AUTOPILOT_MODEL: model === 'default' ? '' : model, ...pick.vars };
+  // Its own briefing, with no sibling notes or triage: nothing in it may name the lever or the arm.
+  mkdirSync(join(STATE, 'briefings'), { recursive: true });
+  const briefPath = join(STATE, 'briefings', `${key}.md`);
+  writeFileSync(briefPath, brief);
+  const pre = preflight(key, wt, workerEnv);
+  const preflight_usd = pre.cost.skipped ? null : pre.cost.usd;
+  // Refused at the usage limit, it holds the batch as a ticket's would, and the audit waits untried.
+  if (pre.limit) { preflightHitLimit({ key }, pre.cost, pick.login); return { wait: 'window_tight', why: 'its preflight was refused at the usage limit', preflight_usd }; }
+  if (pre.failure) { logPreflight(key, pre.cost); return { error: `preflight failed — ${pre.failure.split('\n')[0]}`, preflight_usd }; }
+  const sid = E.uuid();
+  const port = await freePort();
+  E.rotateRound(key);
+  logPreflight(key, pre.cost);
+  const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), key, wt, sid, briefPath], {
+    cwd: MAIN,
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_TASK: task },
+  });
+  const refused = spawnRefusal(spawned.out);
+  if (refused) return { error: refused, preflight_usd };
+  // It takes a slot, as a ticket worker does, so a promotion check try later this pass counts it.
+  attempts += 1;
+  report.spawned.push(`${key} port=${port} model=${model}${pick.line} (blind audit of PR #${item.pr} at ${sha.slice(0, 12)}); ${preflightNote(pre.cost)}`);
+  return { session: sid, worktree: wt, state: STATE, preflight_usd };
+}
+// The PR's merge commit, and how many commits it had, so a rebase merge is audited whole.
+function auditMergeCommit(item) {
+  const out = sh('gh', ['pr', 'view', String(item.pr), '--repo', GH_REPO, '--json', 'mergeCommit,commits', '--jq', '[.mergeCommit.oid, (.commits | length)] | @tsv'],
+    { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const [sha, n] = String(out ?? '').trim().split('\t');
+  return sha ? { sha, commits: Number(n) } : null;
+}
+if (!DRY) {
+  try {
+    const au = await runAudits({
+      slug: E.repoSlug(), name: String(GH_REPO ?? E.repoSlug()).split('/').pop(), repo: GH_REPO ?? E.repoSlug(), states: E.leverStates({}).states,
+      spawn: spawnAudit,
+      mergeCommit: auditMergeCommit,
+      mergeMethod: String(E.configValue('merge-method') ?? '').toLowerCase().split(/\s+/)[0] || 'merge',
+      // Ended once its exit is recorded, or once the registry, read cleanly, no longer lists its session.
+      ended: (item) => endedFromExit(item) ?? (registryOk && !REGISTRY.liveSids.has(item.session) && Date.now() - Date.parse(item.started_at) > 120_000 ? { at: new Date().toISOString() } : null),
+      cleanup: (item) => { if (item.worktree) shOut('git', ['-C', MAIN, 'worktree', 'remove', '--force', item.worktree]); },
+      pace: () => PACE,
+      // The room the pass counted, less what it has spawned since.
+      room: () => (lowMemory || usageStop || MAINT.hold || repoUnlocked || MACHINE.room - report.spawned.length <= 0 || REPO.room - report.spawned.length <= 0 ? 'no room' : null),
+    });
+    if (au.line) out.push(au.line);
+  } catch (e) { out.push(`levers audits: not run (${String(e?.message ?? e).split('\n')[0]})`); }
+}
+// The levers are evaluated once a day across every repo, by the first pass to take its lock.
+if (!DRY) {
+  try { const ev = evaluateDue(); if (ev.line) out.push(ev.line); } catch (e) { out.push(`levers evaluate: not run (${String(e?.message ?? e).split('\n')[0]})`); }
 }
 const readPr = (n) => {
   if (!(n in prStates)) prStates[n] = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state', '--jq', '.state'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] }) || null;
@@ -4864,7 +4976,7 @@ async function promotionChecksStep(qx) {
   }
   clear();
   const last = bf?.tries?.[bf.tries.length - 1];
-  // The ticket workers this pass started took slots baseFixRoom counted before they did.
+  // The ticket workers and blind audits this pass started took slots baseFixRoom counted before they did.
   const roomLeft = attempts < Math.min(concurrency - running.length, MACHINE.room, REPO.room);
   if (baseFixLive) {
     out.push(last?.kind === 'checks' && last.pr === n ? `${said}; check try ${last.try} of ${FIX_TRIES_MAX} is at it (session ${bf.running})`
@@ -4924,7 +5036,8 @@ runSteps({
     feedback: (a) => readFeedback(a.pr),
     verdict: ({ fb }) => {
       const git = (args) => shOut('git', ['-C', MAIN, ...args]);
-      const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: reviewReuse, from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
+      // The epic PR is no ticket, so it reads the review-reuse lever from the row, not a pin.
+      const carry = (sha, body) => git(['fetch', '-q', 'origin', SOURCE, BASE]).ok && reviewCarries({ reuse: ROW_LEVERS.on.includes('review-reuse'), from: sha, head: fb.head, base: `origin/${SOURCE}`, body, git });
       return readVerdict(fb.payload, { handle: conflictHandle, clean: E.configValue('clean-verdict'), carry });
     },
     ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
@@ -5084,7 +5197,7 @@ let tableAt = -1;
 runPhase({
   name: 'verdict lines',
   snapshot: () => {
-    const footer = [HEALTH.line, PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
+    const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);
@@ -5143,7 +5256,7 @@ const late = recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, ...collisionRec };
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
 });
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.

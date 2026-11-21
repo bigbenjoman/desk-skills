@@ -9,16 +9,15 @@ from the skill's directory.
 
 Four checks, **before any agent is dispatched**.
 
-**0. A clean tree** (branch target only). `git status --porcelain` must print nothing. The finders
+**0. A clean tree** (branch target only). `desk-env tree-status` must print nothing. The finders
 read committed diffs, so an uncommitted fix is never reviewed, and the round-end check below cannot
 tell it from a finder's stray edit. Anything listed: stop with "commit first, then re-run". Never
 stash or discard it for the author.
 
-`/desk-ticket`'s own resume file, an untracked `.claude/desk-ticket-<TICKET>.json`, is not a change
-and is never committed: leave it out of this check and of the round-end check in Phase 3. List
-untracked files one by one, since plain `--porcelain` shows an untracked `.claude/` as the directory:
-`git status --porcelain --untracked-files=all | grep -vE '^\?\? \.claude/desk-ticket-[^/]+\.json$'`
-must print nothing.
+It prints `git status --porcelain --untracked-files=all` without the files desk skills leave
+untracked in a worktree, which are not changes and are never committed:
+<!-- facts: known-untracked -->desk-ticket's resume file `.claude/desk-ticket-<TICKET>.json`<!-- /facts -->.
+Run it rather than filtering git status by hand: desk-env holds that list.
 
 **1. Which GitHub account** (interactive; a worker skips this, since `gh auth` is denied to it and
 its `gh` is already the user's). `gh auth status --active` and read the account line. It must be §1

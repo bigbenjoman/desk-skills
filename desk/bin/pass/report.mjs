@@ -49,7 +49,7 @@ export function decideDrift(s) {
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
-//   portLeaseLines         what the port leases did this pass: unreadable, a stale holder dropped
+//   portLeaseLines         what the port leases and claims did this pass: unreadable, a stale holder or claim dropped
 //   concurrency, eligible  the batch's worker count, and how many triaged tickets could spawn
 //   queueBin               queue.mjs, as the person runs it
 export function decideReportOpening(s) {
@@ -142,7 +142,8 @@ export function decideReportLines(s) {
   if (hold) wait(hold);
   const fresh = [];
   for (const e of s.overrides) {
-    if (s.overridesSeen.includes(e.id)) continue;
+    // A lever's override is applied by the override itself (lever-changes.mjs): no ticket waits on it.
+    if (s.overridesSeen.includes(e.id) || e.lever) continue;
     fresh.push(e.id);
     wait(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`, e.ticket);
   }

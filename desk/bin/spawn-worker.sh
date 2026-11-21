@@ -60,6 +60,17 @@ PREFLIGHT_RECORD="$STATE/workers/$TICKET.preflight.json"
 [ -f "$CONTRACT" ] || { echo "FAIL: worker contract missing at $CONTRACT" >&2; exit 1; }
 mkdir -p "$STATE/workers" "$STATE/logs" "$STATE/parks" "$STATE/answers" "$STATE/briefings" "$STATE/images" "$STATE/handoffs" "$STATE/resume"
 
+# The ticket's levers pin (lever-pin.mjs) is every lever read from here on: this script's, the spawn
+# line's and the worker's own, its subagents and hooks included. A ticket with no pin reads the row.
+if PIN="$(node "$BIN/lever-pin.mjs" env "$TICKET" </dev/null)"; then
+  export DESK_LEVERS="$PIN"
+elif [ $? -eq 3 ]; then
+  unset DESK_LEVERS
+else
+  echo "FAIL: $TICKET's levers pin could not be read — refusing to spawn" >&2
+  exit 1
+fi
+
 # Never the user's own dev-server port: `next dev` fails EADDRINUSE rather than rebinding, so a clash
 # silently serves another worktree's code to screenshots and openapi:gen. The orchestrator assigns
 # the port, because scanning races: two workers spawned in the same pass both find the same port free
@@ -204,6 +215,13 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
       --part "gates=$TRACKER $CODEX_PERM jira:$HAVE_JIRA codex:$HAVE_CODEX ${AUTOPILOT_ALLOW_NO_CODEX:-}" </dev/null)" || FINGERPRINT=""
     [ -n "$FINGERPRINT" ] && PASSED="{\"fingerprint\":\"$FINGERPRINT\"}"
     if [ -n "$PASSED" ] && [ "$(cat "$PREFLIGHT_RECORD" 2>/dev/null || true)" = "$PASSED" ]; then
+      # The skip and what the preflight would have checked go in the run record, where the
+      # skipped-preflight trip reads them (levers-trips.mjs).
+      SKIP_ARGS=(--worktree "$WT")
+      for p in ${TOOL_PROBES[@]+"${TOOL_PROBES[@]}"}; do SKIP_ARGS+=(--probe "$p"); done
+      [ "$(printf '%s' "$TRACKER" | tr 'A-Z' 'a-z')" != none ] && [ -n "$HAVE_JIRA" ] && SKIP_ARGS+=(--jira 1)
+      [ "$CODEX_PERM" = yes ] && [ -n "$HAVE_CODEX" ] && SKIP_ARGS+=(--codex 1)
+      node "$BIN/levers-trips.mjs" record-skip --state "$STATE" --ticket "$TICKET" "${SKIP_ARGS[@]}" </dev/null >/dev/null 2>&1 || true
       echo "[preflight] $TICKET"
       echo "[preflight] skipped: its last pass had this fingerprint"
       echo "[preflight] pass"
@@ -215,18 +233,19 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
 $CHECKS"
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
-  # unknown, never zero. pass.mjs reads the [preflight] cost line.
-  read_raw() { # cost | reply
+  # unknown, never zero. pass.mjs reads the [preflight] cost line. One node run reads all three: the
+  # cost line, then yes or no for the usage limit, then the reply.
+  read_raw() {
     printf '%s\n' "$RAW" | node -e '
       let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
         let r = null;
         try { const d = JSON.parse(s); if (d?.type === "result") r = d; } catch {}
         for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
-        if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
-        else if (process.argv[1] === "limit") console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
-        else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
-      });' "$1" || true
+        console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
+        console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
+        process.stdout.write(r && typeof r.result === "string" ? r.result : s);
+      });' || true
   }
   # One preflight call: its raw output, recorded for the bench, then its cost, reply and limit.
   preflight_call() {
@@ -250,9 +269,10 @@ $CHECKS"
       --effort "${CALL_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
       --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
       ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
-    PRE_COST="$(read_raw cost)"
-    RESULT="$(read_raw reply)"
-    PRE_LIMIT="$(read_raw limit)"
+    PARSED="$(read_raw)"
+    PRE_COST="${PARSED%%$'\n'*}"; PARSED="${PARSED#*$'\n'}"
+    PRE_LIMIT="${PARSED%%$'\n'*}"; RESULT=""
+    case "$PARSED" in *$'\n'*) RESULT="${PARSED#*$'\n'}" ;; esac  # an empty reply leaves no line after the limit
   }
   # Two calls' "cost=<usd> turns=<n>" added up; either part unknown in one call is unknown in the sum.
   sum_cost() {
@@ -366,6 +386,9 @@ $CHECKS"
     echo "[preflight] pass"
     exit 0
   fi
+  # With the preflight lever on, its own step failing is the lever's own-step trip (levers-trips.mjs).
+  [ "${#PRE_EFFORT_ARGS[@]}" -gt 0 ] && node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --lever preflight --step "the preflight" --exit 1 \
+    --error "the preflight failed" </dev/null >/dev/null 2>&1 || true
   echo "[preflight] FAILED — refusing to spawn $TICKET" >&2
   exit 1
 fi
@@ -445,7 +468,13 @@ fi
 # sent to another login takes it whatever the lever says: its auto-memory is that login's folder's,
 # which does not hold this repo's index.
 if { [ "$MEMORY_LEVER" = on ] || [ -n "${AUTOPILOT_LOGIN_DIR:-}" ]; } && [ -z "${AUTOPILOT_RESUME:-}" ]; then
-  DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null || true)"
+  DIGEST_RC=0
+  DIGEST="$(node "$BIN/memory-digest.mjs" "$DESK_MEMORY_DIR" --log "$LOG" 2>/dev/null </dev/null)" || DIGEST_RC=$?
+  # With the memory lever on, the digest failing is the lever's own-step trip (levers-trips.mjs).
+  if [ "$DIGEST_RC" -ne 0 ] && [ "$MEMORY_LEVER" = on ]; then
+    node "$BIN/levers-trips.mjs" record-step --state "$STATE" --ticket "$TICKET" --session "$SID" --lever memory --step memory-digest.mjs \
+      --exit "$DIGEST_RC" </dev/null >/dev/null 2>&1 || true
+  fi
   if [ -n "$DIGEST" ]; then
     DIGEST="
 
@@ -454,7 +483,8 @@ $DIGEST"
   fi
 fi
 
-# The desk commit and levers this start runs on, and the bytes it is handed, one line per start for
+# The desk commit and levers this start runs on, its claude version and lever-code hashes, and the
+# bytes it is handed, one line per start for
 # phase0-report.mjs, and its start, model and effort into the log for worker-cost.mjs. A record that
 # cannot be written never stops a spawn.
 node "$BIN/phase0-report.mjs" spawn-line --ticket "$TICKET" --session "$SID" --stage "$START" --model "${MODEL:-default}" \

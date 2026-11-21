@@ -1,4 +1,5 @@
 // suite: worker tools (each headless claude -p call is offered only the tools it uses, and a batch's workers share one system prompt)
+// budget: 45 DS-943 (about 30 whole spawn-worker.sh runs, each a dozen node starts; 34-37 s on CI)
 // covers: desk/bin/worker-tools.mjs desk/bin/spawn-worker.sh desk/bin/desk-env.sh agents/** skills/**/*.md
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
 // directions; spawn-worker.sh passes it to the worker and its preflight, and passes nothing with the
@@ -116,12 +117,14 @@ writeFileSync(join(T, 'config.md'), `## 0. Repo
 | Unit tests | \`bash tests/run.sh\` |
 `);
 const SID = '11111111-2222-3333-4444-555555555555';
-// `claude agents --json` reports the session, so spawn-worker finds its pid at once; any other call
+// `claude agents --json` reports the session, so spawn-worker finds its pid at once; `claude --version`
+// (each start's spawn line) answers without being counted as a call; any other call
 // writes its argv, NUL-separated, to the next free $STUB_LOG.<n>, moved into place whole: a large
 // system prompt takes more than one write, and argv() below reads the file as soon as it is there.
 const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = agents ]; then printf '[{"sessionId":"%s","pid":4242}]' "${SID}"; exit 0; fi
+if [ "$1" = --version ]; then echo '2.1.0 (Claude Code)'; exit 0; fi
 n=0; while [ -e "$STUB_LOG.$n" ]; do n=$((n+1)); done
 printf '%s\\0' "$@" > "$STUB_LOG.$n.tmp"
 mv "$STUB_LOG.$n.tmp" "$STUB_LOG.$n"
@@ -175,7 +178,7 @@ t('AC6 off switch: the preflight passes no --tools', [!!finderCall('preoff'), to
 // briefing, compared by the system prompt and the first message each sends.
 const brief = (key) => {
   const p = join(T, 'state', `${key}.brief.md`);
-  writeFileSync(p, `Orchestrator session name: batch-x\nAnswer file to wait on: ${join(T, 'state', 'answers', `${key}.txt`)}\n\n` +
+  writeFileSync(p, `Answer file to wait on: ${join(T, 'state', 'answers', `${key}.txt`)}\n\n` +
     `## Answer from the user\n\nFor ${key}: use makeFixture from tests/helpers.\n`);
   return p;
 };

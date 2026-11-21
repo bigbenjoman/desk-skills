@@ -69,10 +69,13 @@ newest 7-day reading from the `rate_limit_event` lines in every repo's worker lo
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,
 read from the event's `resetsAt`. While utilisation is more than §3b "Usage pacing headroom
 (points)" (unset: 5; `off` turns it off) above pace, new spawns hold under `STALLED` and running
-workers carry on; it releases by itself as the week goes on. The report always carries one `usage:`
-line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
-or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
-`off` holds every spawn, naming the row, as a malformed budget does.
+workers carry on; it releases by itself as the week goes on. It reads the login this repo's new
+workers start on. The report always carries one `usage:` line: `usage: 7-day 40%, pace 50%`,
+`… + 5: holding spawns`, `usage: no recent data for login <name>` (no reading, or the newest one's
+window has reset; with none at all the pass probes that login once, and a failed probe says why), or
+`pacing off`. After three passes in a row with no reading, a `health:` line says pacing holds nothing
+for that login. A row that reads as neither a number nor `off` holds every spawn, naming the row, as
+a malformed budget does.
 
 **The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
 window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the
@@ -150,6 +153,21 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   An override is recorded in that repo's decision log with who and when, and the next pass there
   lists the ticket under `WAITING ON YOU` as `decision overridden`: redo the work to the new
   choice, or put it back to the person if it cannot be.
+- **Lever changes.** Each adopt or revert the levers controller makes (the daily evaluation, or a
+  hard trip) is a call taken in category `engineering`, logged in the repo's own decision log
+  (the one `decisions.mjs` writes in its state folder), and asks nothing. The page's `Levers` section,
+  machine-wide like `Maintenance` and left out when no lever changed state since the last digest,
+  has one line per change in any repo's lever log: the lever, the repo, the mechanism metric's change
+  and the cost per ticket's with their 90% intervals, the tickets per arm and the guardrails, or for
+  a trip the trip and its ticket. Each adopt or revert is a `- [ ]` item ending on its decision id
+  and its override (`digest.mjs override <slug> <id> off` or `on`), which writes one `override`
+  event, actor `ben`, in the repo's lever log (refused while that log has an unreadable line, which
+  admission would not read past) and ticks the item: the lever then reads `overridden`, every ticket
+  admitted after it is pinned to that value, and the evaluation and the trips leave it alone. No
+  ticket waits on it, so it is not listed under `WAITING ON YOU`. An adopt or revert whose decision
+  was never written is recorded when the digest lists it, and an event that lands up to an hour after
+  the time it carries is listed by the next digest. The digest rebuilds the Levers page, and the
+  section ends on `open:` and its `file://` URL.
 - **Between check-ins** only a park whose question starts `PRODUCTION BROKEN: ` is pushed, at once
   and on its own (the worker contract says when a worker may use it).
 - **Promotion, once a day.** Going to production is asked only in the day's last slot (`promotion.mjs`).

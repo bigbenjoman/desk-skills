@@ -51,11 +51,11 @@ const readJson = (file, what) => {
 const count = (s) => Number(s.replace(/,/g, ''));
 
 // phase0-report.mjs's text -> its total section's figures, or { why } when it is not that report.
-//   { date, days, tickets, accepted, perTicket: { input, output, over } | null, perTicketWhy,
-//     fixTries: number | null, quotaPoints: number | null }
+//   { date, days, window: { from, to }, tickets, accepted, perTicket: { input, output, over } | null,
+//     perTicketWhy, usdPerTicket, fixTries, denials, starts, quotaPoints } (each figure null when absent)
 export function parseBaseline(text) {
   const lines = String(text).split('\n');
-  const head = /^PHASE 0 BASELINE: .+?, the ([\d.]+) day\(s\) from \S+ to (\d{4}-\d{2}-\d{2})T\S*?Z\./.exec(lines[0] ?? '');
+  const head = /^PHASE 0 BASELINE: .+?, the ([\d.]+) day\(s\) from (\S+) to ((\d{4}-\d{2}-\d{2})T\S*?Z)\./.exec(lines[0] ?? '');
   if (!head) return { why: 'its first line is not a PHASE 0 BASELINE header' };
   const start = lines.findIndex((l) => /^total\b.*:$/.test(l));
   if (start < 0) return { why: 'it has no total section' };
@@ -65,12 +65,18 @@ export function parseBaseline(text) {
   const tickets = find(/^tickets with work or a merge in the window: (\d+), accepted \(PR merged\): (\d+)$/);
   const per = find(/^per accepted ticket: (.*)$/);
   if (!tickets || !per) return { why: 'its total section has no tickets or per accepted ticket line' };
-  const b = { date: head[2], days: Number(head[1]), tickets: Number(tickets[1]), accepted: Number(tickets[2]) };
-  const n = /^([\d,]+) input tokens · ([\d,]+) output tokens · \$[\d.]+ API-equivalent, over (\d+) of \d+/.exec(per[1]);
-  b.perTicket = n ? { input: count(n[1]), output: count(n[2]), over: Number(n[3]) } : null;
+  const b = { date: head[4], days: Number(head[1]), window: { from: head[2], to: head[3] }, tickets: Number(tickets[1]), accepted: Number(tickets[2]) };
+  const n = /^([\d,]+) input tokens · ([\d,]+) output tokens · \$([\d.]+) API-equivalent, over (\d+) of \d+/.exec(per[1]);
+  b.perTicket = n ? { input: count(n[1]), output: count(n[2]), over: Number(n[4]) } : null;
   b.perTicketWhy = n ? null : /^no ticket accepted/.test(per[1]) ? 'no ticket accepted' : 'not recorded';
+  b.usdPerTicket = n ? Number(n[3]) : null;
   const fix = find(/^fix tries per accepted ticket: ([\d.]+) /);
   b.fixTries = fix ? Number(fix[1]) : null;
+  const den = find(/^permission denials by command: ([\d,]+) in all/);
+  b.denials = den ? count(den[1]) : null;
+  const lev = find(/^levers on: (.*)$/);
+  const starts = lev ? [...lev[1].matchAll(/\((\d+) start\(s\)\)/g)].reduce((s, m) => s + Number(m[1]), 0) : 0;
+  b.starts = starts || null;
   const points = total.map((l) => /^quota, .*: \d+% to \d+%, (\d+) point\(s\) used/.exec(l)).filter(Boolean);
   b.quotaPoints = points.length ? points.reduce((s, m) => s + Number(m[1]), 0) : null;
   return b;

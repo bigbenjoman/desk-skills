@@ -55,7 +55,27 @@ t('AC6 and the same sync again is not recorded twice', recordConflicts(file, { f
 t('AC6 the default branch moving on is a new conflict', recordConflicts(file, { files: ['src/a.ts'], ticket: 'base-feat-x', head: 'b1', source: 'm2', at }).recorded.length, 1);
 const read = readConflicts(file);
 t('the record reads back', `${read.entries.length} ${read.bad}`, '5 null');
-t('by file', JSON.stringify([...conflictTimes(read.entries)].map(([f, ts]) => [f, ts.length])), '[["src/a.ts",4],["src/b.ts",1]]');
+t('by file, ticket PRs only', JSON.stringify([...conflictTimes(read.entries)].map(([f, ts]) => [f, ts.length])), '[["src/a.ts",2],["src/b.ts",1]]');
+
+// DS-940: base syncs (ticket base-<branch>, no PR) lower no file's places; ticket PRs still do.
+const mixed = join(dir, 'mixed.jsonl');
+const iso = (ms) => new Date(ms).toISOString();
+const places = (entries, f, configured) => k(conflictTimes(entries).get(f) ?? [], configured);
+[1, 2, 3, 4, 5].forEach((d) => recordConflicts(mixed, { files: ['src/big.ts'], ticket: 'base-feat-x', head: 'b1', source: `m${d}`, at: iso(ago(d)) }));
+const onlyBase = readConflicts(mixed).entries;
+t('DS-940 AC1 a file with only base-sync entries keeps its configured places', places(onlyBase, 'src/big.ts', 3), 3);
+t('DS-940 AC1 and has no ticket conflicts to count', conflictTimes(onlyBase).has('src/big.ts'), false);
+[1, 2, 3].forEach((d) => recordConflicts(mixed, { files: ['src/big.ts'], ticket: `DS-${d}`, pr: 800 + d, head: `h${d}`, at: iso(ago(d)) }));
+t('DS-940 AC2 three ticket-PR conflicts in the window still lower it by one', places(readConflicts(mixed).entries, 'src/big.ts', 3), 2);
+t('DS-940 AC2 counting the ticket PRs and not the base syncs', conflictTimes(readConflicts(mixed).entries).get('src/big.ts').length, 3);
+const stuck = Array.from({ length: 50 }, (_, i) => ({ file: 'src/pass.mjs', ticket: 'base-feat-usage', pr: null, head: 'stuck', source: `m${i}`, at: iso(ago(i / 10)) }));
+t('DS-940 AC3 a base stuck at one head over 50 default-branch commits lowers nothing', places(stuck, 'src/pass.mjs', 3), 3);
+const legacy = join(dir, 'legacy.jsonl');
+writeFileSync(legacy, stuck.map((e) => `${JSON.stringify(e)}\n`).join(''));
+const legacyRead = readConflicts(legacy);
+t('DS-940 AC4 an existing record of base-sync entries reads, unedited', `${legacyRead.entries.length} ${legacyRead.bad}`, '50 null');
+t('DS-940 AC4 and lowers no file', conflictTimes(legacyRead.entries).size, 0);
+t('DS-940 a ticket PR whose key starts base- still counts', conflictTimes([{ file: 'f', ticket: 'base-x', pr: 9, at }]).size, 1);
 
 // AC5: a record that does not read.
 writeFileSync(file, `${readFileSync(file, 'utf8')}{"file": "src/c.ts", "at": "not a time"}\nnot json\n`);

@@ -17,12 +17,19 @@
 //   desk-q <repo> move <KEY> <n>         put it at position n of the unfinished tickets
 //   desk-q <repo> workers <n>            the batch's worker count (queue.mjs set-batch), up to the cap
 //   desk-q <repo> supervisor [on|off]    the repo's supervisor: its status, or install or uninstall it
+//   desk-q levers                        opens the Levers page in the browser, rebuilt first when it is
+//                                        over 10 minutes old (levers-refresh.mjs); with --plain, prints
+//                                        home's Levers line and the page's path
+//   desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]
+//                                        the view as JSON: its figures, each input's age, and its plain
+//                                        lines; home carries the Levers line's figures from view.json
 //
 // A repo is named by its short name or any unique prefix of it, which is its standing batch; a named
 // batch (an epic's) has a row of its own and is named `<repo>:<name>`. In a terminal, without --plain,
 // the same views open full-screen, with arrow keys, Enter and Esc, ←→, Tab or 1–6 for a place's Queue,
 // Timeline, By day and Epics, Costs on home and on a repo, and Usage, every Claude and Codex login on this
-// computer, and clicks on the breadcrumb, the tabs and the rows; piped output gets the plain text.
+// computer, and clicks on the breadcrumb, the tabs, the rows and home's Levers line (as v, which opens
+// the Levers page); piped output gets the plain text.
 // The only queue writes are the move and workers commands, each a queue.mjs command against the queue
 // of the repo named. Usage changes a login's rule or removes it with desk-env's logins set and remove,
 // and adds one by showing its sign-in command and waiting until it is signed in; a Codex login's folder
@@ -35,7 +42,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, blockerThrough, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -55,8 +62,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, wo
 import { holdOn } from './call-login.mjs';
 import { codexReading } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { claudeAccount, claudeJsonPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins, nextLoginFolder, readSubscriptions,
-  repoSubscription, signInParts, toolDefault } from './logins.mjs';
+import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
+  multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -64,6 +71,7 @@ import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
+import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
 
 export { LIVE_MS };
@@ -701,13 +709,16 @@ function rowStage(stateDir, t, last) {
 // `id` names the row: the repo's slug for its standing batch, `<slug>:<name>` for a named one, which
 // `word` (`<repo>:<name>`) is typed as and `name` shows as `<repo> · <name> (<base>)`. `repo` is the
 // repo's own name, which the repo-wide commands (the supervisor) take.
+// A slug's name without its owner, and each slug's name as desk-q shows it (desk-env.mjs).
+export { shortName, shownNames } from './desk-env.mjs';
+
 // With `word`, only the repo it names (resolveRepo) is loaded: every other batch is read only for its
 // names and its running workers (lightBatch), so a slow batch elsewhere never holds up its listing.
 export function loadRepos(now = Date.now(), word = null) {
   const claims = repoPortClaims();
-  const short = claims.map((c) => c.slug.split('__').slice(1).join('__') || c.slug);
+  const names = shownNames(claims.map((c) => c.slug));
   const listed = claims.flatMap((c, i) => {
-    const name = short.filter((n) => n === short[i]).length > 1 ? c.slug.replace('__', '/') : short[i];
+    const name = names[i];
     const limits = concurrencyLimits(repoConfigValue(c.slug, 'concurrency'));
     return listBatches(c.slug).map((b) => ({ c, name, batch: b.name, limits }));
   });
@@ -911,12 +922,16 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // reading fresh. With more, the default and each login a repo is pinned to, desk-q's own among them,
 // while no worker runs on it, judged on that login's own probe reading. A subscription no repo runs on
 // is never probed, desk-q's own included; with no rule, as one login no file names, desk-q's own is.
+// With accounts pinned, ~/.claude is the person's own Claude Code and is never probed.
 //   -> [{ login }]
+// True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
+const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
+const pinnedOwn = (own) => !!own && !own.configDir && pinnedFile();
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
   const probed = probedBy();
-  const probeOwn = !own || own.rule == null || (inUse(own) && probed(own));
+  const probeOwn = !pinnedOwn(own) && (!own || own.rule == null || (inUse(own) && probed(own)));
   if (!own || !others.length) return probeOwn && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   return [...(probeOwn ? [own] : []), ...others.filter(probed)].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
@@ -1189,6 +1204,8 @@ const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.bl
 // The Notices colours: a warning yellow, what needs the user magenta (bold for a count to act on).
 // The band, when nothing can run, is bold and reversed on red.
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
+// A link's text, underlined in the terminal's own colour.
+const UNDERLINE = '4';
 // A PR number's cyan, and its checks: passed green, failed red.
 const PR_SGR = STATE_SGR.merging, GOOD = HUE.green, FAIL = HUE.red;
 // A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
@@ -1964,14 +1981,19 @@ const needsYou = (you) => (you ? [`◆ ${you} ticket${you === 1 ? ' needs' : 's 
 // The overview's first line: how many tickets need the user, then each repo's share, most first;
 // labels grey, figures bright. The count is followed by how long the oldest question has waited,
 // from when it parked, else from when it was added.
+// When the oldest question in `ok` (needsCount's for each, `c`) started waiting, or null with none.
+const oldestNeed = (ok, c) => {
+  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
+  return waited.length ? Math.min(...waited) : null;
+};
 function needsLine(list, now) {
   const ok = list.filter((r) => !r.error);
   const c = new Map(ok.map((r) => [r, needsCount(r)])), n = (r) => c.get(r).shown;
   const you = ok.reduce((a, r) => a + n(r), 0);
   const per = ok.filter((r) => n(r)).sort((a, x) => n(x) - n(a))
     .flatMap((r, i) => [...(i ? [[' · ', GREY]] : []), [`${r.name} `, GREY], [String(n(r)), BOLD]]);
-  const waited = ok.flatMap((r) => c.get(r).rows.filter((x) => x.k === 'needs').map((x) => timeOf(x.t.park?.since ?? x.t.added_at))).filter((t) => t != null);
-  const oldest = waited.length ? [['  oldest ', GREY], [since(Math.max(0, now - Math.min(...waited))), null]] : [];
+  const first = oldestNeed(ok, c);
+  const oldest = first != null ? [['  oldest ', GREY], [since(Math.max(0, now - first)), null]] : [];
   return segLine([needsYou(you), ...(you ? [...oldest, BAR, ...per] : [])]);
 }
 
@@ -1982,6 +2004,60 @@ function machineLine(running, cap, room, avail, drivers = 0) {
     ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
+
+// The Levers line, under the machine line: the levers' headline, its figures, then a link to the page
+// (levers-refresh.mjs pageState's `p`). `link: 'levers'` marks it for a click to find.
+const LEVERS_ARROW = ' ↗';
+const agoShort = (ms) => { const m = Math.floor(ms / 60000); return m < 60 ? `${m}m` : m < 48 * 60 ? `${Math.floor(m / 60)}h` : `${Math.floor(m / 1440)}d`; };
+// What stops the page updating, in words: build.json's failure, else a page built with a broken line.
+const leversFault = (p) => p.failed?.where ?? (p.view?.line?.state === 'broken' ? whereOf(p.view.line.error, p.view.repos) : null);
+function leversLine(p, now) {
+  const link = (text) => [BAR, [`${text}${LEVERS_ARROW}`, UNDERLINE]];
+  const fig = (label, n) => [[label, GREY], [String(n), BOLD]];
+  const fault = leversFault(p);
+  let segs;
+  if (fault) segs = [["● Levers couldn't update", HUE.red], BAR, [fault, GREY], ...link(p.page ? 'Open the last good page' : 'Try again')];
+  else if (!p.page) segs = [['○ Levers page not built yet', GREY], ...link('Build and open')];
+  else if (p.stale) segs = [[`● Levers page built ${agoShort(Math.max(0, now - p.builtAt))} ago`, WARN], BAR, ['the supervisor may be stopped', GREY], ...link('Rebuild and open')];
+  else {
+    const l = p.view.line;
+    const needs = l.needs_you ? [[' · ', GREY], [`${l.needs_you} need${l.needs_you === 1 ? 's' : ''} you`, YOU_BOLD]] : [];
+    if (l.state === 'today') {
+      const byLever = new Map();
+      for (const x of l.pinned ?? []) byLever.set(x.lever, [...(byLever.get(x.lever) ?? []), x.repo]);
+      segs = [['○ Levers not running yet', GREY], BAR, ...fig('repos on auto ', `${l.on_auto} of ${l.repos}`),
+        ...[...byLever].flatMap(([lever, repos]) => [[' · ', GREY], [`${lever} pinned in `, GREY], [repos.join(', '), BOLD]]), ...needs];
+    } else if (l.state === 'early') {
+      segs = [['○ Levers too early to say', GREY], BAR, ...fig('testing ', l.testing),
+        ...(l.smaller_arm ? [[' · ', GREY], ...fig('smaller arm ', `${l.smaller_arm.n} of ${l.smaller_arm.min}`), [' tickets', GREY]] : []), ...needs];
+    } else {
+      const pct = l.cheaper_pct;
+      const head = pct == null ? ['○ Levers no cost figure yet', GREY]
+        : pct >= 0 ? [`▼ Levers ${pct.toFixed(1)}% cheaper per ticket`, STATE_SGR.running] : [`▲ Levers ${(-pct).toFixed(1)}% dearer per ticket`, WARN];
+      segs = [head, BAR, ...fig('kept ', l.kept), [' · ', GREY], ...fig('testing ', l.testing), ...needs];
+    }
+    segs.push(...link('Open Levers'));
+  }
+  return { ...segLine(segs), link: 'levers' };
+}
+// The Levers line as plain text, less its arrow.
+const leversText = (p, now) => leversLine(p, now).line.replace(new RegExp(`${LEVERS_ARROW}$`), '');
+
+// What opening the page says, once any rebuild has ended: `p` as it is now, `before` the page's build
+// time before the rebuild (undefined when none ran). Opens the page where there is one.
+function openLeversPage(p, opener, before) {
+  const fault = leversFault(p);
+  if (fault && !p.page) {
+    const line = p.failed?.error?.line ?? p.view?.line?.error?.line;
+    return `Couldn't build Levers: ${fault}. There's no earlier page to open. Fix that${line ? ' line' : ''}, then press v again.`;
+  }
+  if (!p.page) return "Levers isn't built yet: another build is still running. Press v again in a moment.";
+  try { opener(p.page); } catch (e) { return `Could not open ${p.page}: ${describeCrash(e)}`; }
+  if (fault) return `Couldn't update Levers: ${fault}. Opened the last good page, built ${hhmm(p.builtAt)}.`;
+  return `Opened Levers in your browser. Built ${before !== undefined && p.builtAt !== before ? 'just now' : hhmm(p.builtAt)}.`;
+}
+// Whether opening the page rebuilds it first: none yet, old (pageState), or its last build failed.
+const leversDue = (p) => !p.page || p.old || !!leversFault(p);
 
 // The usage reading every header shows: the newest of both windows on the line's login (this computer's
 // Claude default with a subscriptions file, else lineLogin), how many workers run in every repo here,
@@ -2105,28 +2181,30 @@ const defaultOutNote = (s, now) => ({ tag: '▲ usage', sgr: WARN, text: default
 // ---- Usage -------------------------------------------------------------------------------------
 // View 6: every Claude and Codex login on this computer, a table per tool, each login with its plan, its
 // rule, both windows and the workers on it. A Claude login's plan and email are what its .claude.json
-// records; a Codex login's plan is what its newest reading logs, and its name is its label. Sign-in is
+// records; a Codex login's are its auth.json id_token's, never the plan its session log names, and with
+// no email its name is its label. Sign-in is
 // the account check's (`desk-env logins check`), which the screen runs in the background: `checked` maps
 // `<tool> <folder>` to each login it lists, and a found folder it leaves out is signed out. Until a check
 // has run, every login reads as signed in.
 const U_NAME = 25, U_PLAN = 9, U_USE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
 const UNUSED_CELL = ['○ unused', GREY];
-// A Claude login's .claude.json, read again only when it changes: the default's ~/.claude.json is large.
+// A login's account: a Claude login's .claude.json (the default's ~/.claude.json is large) or a Codex
+// login's auth.json id_token payload, each read again only when the file changes.
 const accounts = new Map();
 function accountOf(l) {
-  if (l.tool !== 'claude') return { email: null, plan: null };
-  const path = claudeJsonPath(l);
+  const codex = l.tool === 'codex';
+  const path = codex ? codexAuthPath(l) : claudeJsonPath(l);
   let m = null;
   try { m = statSync(path).mtimeMs; } catch { /* no file: nothing recorded */ }
   const had = accounts.get(path);
   if (had && had.m === m) return had.a;
-  const a = m == null ? { email: null, plan: null } : claudeAccount(l);
+  const a = m == null ? { email: null, plan: null } : codex ? codexAccount(l) : claudeAccount(l);
   accounts.set(path, { m, a });
   return a;
 }
-// What the view calls a login: a Claude login's email where its folder records one, a Codex login's
-// label where it was given one, else its name.
-const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
+// What the view calls a login: a Claude login's pinned account, else the email its folder records, else
+// a Codex login's label where it was given one, else its name.
+const loginLabel = (l) => (l.tool === 'claude' ? l.account : null) ?? accountOf(l).email ?? (l.tool === 'codex' ? loginLabelOf(l) : null) ?? l.name;
 // What a repo's subscription row is called: the login it names, else the email it names; null with no row.
 const subLabel = (s) => (s ? (s.login ? loginLabel(s.login) : s.email) : null);
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
@@ -2150,22 +2228,30 @@ function loginUses(subs = readSubscriptions(subscriptionsPath())) {
 const holdOut = (repos, l, now) => ((h) => (h ? { at: h.resets_at ?? null, type: h.type } : null))(
   holdOn(withOthers(repos).flatMap((r) => (r.batches ?? [r]).map((b) => b.q)), l, loginOf(process.env.CLAUDE_CONFIG_DIR), now));
 // A configured repo's name as desk-q shows it: its queue's name, else its slug's repo part.
-const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? String(slug).replace(/^.*__/, '');
+const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? shortName(String(slug));
 
 // Each tool's logins as the view's rows: { tool, login, plan, reading, out, workers, check, use }. `out` is
 // { at, type } while the login is at its limit (a batch here holds on it, or its Codex reading is at
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
 // check's entry, null with none; `use` is { def, pinned: [repo name] }, `def` the tool's default login.
+// A Claude row's `multi` is true while the file pins accounts: a found folder the check left out is then
+// not set up, never just signed out.
 function usageTable(repos, now, checked = null) {
   const dirs = stateDirs({ self: usageDir() });
-  const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
+  const multi = pinnedFile();
+  const missing = (l) => (l.source !== 'found' ? null : multi && l.tool === 'claude' ? { state: 'not set up', why: 'signed out' } : { state: 'signed out' });
+  const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? missing(l));
   let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
   const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
-  const claude = claudeLogins().map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
-    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) }));
-  const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
+  // With accounts pinned every account has a row, its folder there or not: a pinned account whose folder
+  // is gone shows as not signed in, with the command that signs it in (and makes the folder).
+  const listed = claudeLogins();
+  const gone = multi ? readSubscriptions(subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.account && !listed.some((o) => o.dir === l.dir)) : [];
+  const claude = [...listed, ...gone].map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
+    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi }));
+  const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: accountOf(x.login).plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
   for (const list of [claude, codex]) if (list.length === 1) list[0].use = { ...list[0].use, def: list[0].login, isDefault: true };
@@ -2240,17 +2326,31 @@ function useCell(x) {
   const n = x.use?.pinned.length ?? 0;
   return n ? [`● ${n} repo${n === 1 ? '' : 's'}`, HUE.blue] : UNUSED_CELL;
 }
-// A signed-out or refused login has one cell across both windows, saying desk won't use it.
-const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
-  : x.check?.state === 'duplicate' ? `◆ the same account as ${x.check.duplicateOf}: desk won't use it` : null);
+// The login a second folder on one account repeats (the check's `sameAs`), or null: a not set up folder
+// for another reason is not one.
+const sameAccountAs = (check) => (check?.state === 'not set up' ? check.sameAs ?? null : null);
+// A login desk won't use has one cell across both windows, saying why: with accounts pinned, not signed
+// in or on another account (which it names); without, signed out; either way, not set up.
+function unusable(x) {
+  const s = x.check?.state;
+  if (s === 'signed out') return x.multi ? '◆ not signed in: desk won\'t use it' : '◆ signed out: desk won\'t use it';
+  if (s === 'wrong account') return `◆ on ${x.check.liveEmail}: desk won't use it`;
+  return s === 'not set up' ? '◆ not set up: desk won\'t use it' : null;
+}
+// The command that makes a row desk won't use usable again, signing its folder in, or null.
+const fixCommand = (x) => (x?.login && unusable(x) ? signInParts(x.login).shell : null);
+// A row's name: with accounts pinned a not set up folder has no account, so its folder's name.
+const rowLabel = (x) => (x.multi && x.check?.state === 'not set up' ? x.login.name : loginLabel(x.login));
 function loginRow(x, now, solid) {
   const no = unusable(x);
   const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
     : [...fitCell(x.login.rule === 'off' ? [['not used', GREY]] : windowCell(x, 'five_hour', now, solid), U_5H), ...fitCell(windowCell(x, 'seven_day', now, solid), U_7D)];
   const workers = x.workers == null ? ['—', GREY] : [String(x.workers), x.workers ? null : GREY];
-  const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[x.plan ?? '—', no || !x.plan ? GREY : null]], U_PLAN),
+  // With accounts pinned, a row desk won't use shows no plan: its folder's may be another account's.
+  const plan = no && x.multi ? null : x.plan;
+  const segs = [['  ', null], ...fitCell([[cut(rowLabel(x), U_NAME - 1), null]], U_NAME), ...fitCell([[cut(plan ?? '—', U_PLAN - 1), no || !plan ? GREY : null]], U_PLAN),
     ...fitCell([useCell(x)], U_USE), ...windows, ...fitCell([workers], U_WORKERS, true)];
-  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use };
+  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use, fix: fixCommand(x) };
 }
 const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('USE', U_USE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
 
@@ -2316,57 +2416,79 @@ function dropdownRows(d) {
 // The grey line under the repo table, saying how to change a repo's subscription.
 const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', BOLD], [', or click its subscription, to change which one it runs on.', GREY]]);
 
-// The line under the tabs: the Claude default at its limit, and when its workers start again; else a
-// login that is signed out, which desk can't use; else with one login per tool, that every worker runs
-// on it; else the Claude default, which every repo not pinned runs on.
+// The line under the tabs: the Claude default at its limit, and when its workers start again; else an
+// account whose sign-in was switched to another, or a login that is signed out, which desk can't use;
+// else with one login per tool, that every worker runs on it; else the Claude default, which every repo
+// not pinned runs on.
 function usageHeadline(t, now) {
   const def = t.claude.find((x) => x.use?.isDefault);
   const l = def?.limit;
   if (l) return segLine(defaultLimitSegs(loginLabel(def.login), l, now));
+  const wrong = t.claude.find((x) => x.check?.state === 'wrong account');
+  if (wrong) return segLine([[loginLabel(wrong.login), BOLD], ["'s sign-in was switched to another account, so desk has stopped using it.", GREY]]);
   const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');
   if (out) return segLine([[loginLabel(out.login), BOLD], [" isn't signed in yet, so desk can't use it.", GREY]]);
   if (!def || (t.claude.length <= 1 && t.codex.length <= 1)) return segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
   return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], [", this computer's default, unless their repo is pinned.", GREY]]);
 }
 
-// A login being added: { tool, login, label }, its folder not signed in yet. It is one row, unused and
-// waiting, until the account check finds its folder signed in.
-const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+// A login being added: { tool, login, label, first, taken }, its folder not signed in yet. It is one row,
+// unused and waiting, until the account check finds its folder signed in. On a computer with no pins, a
+// Claude add first signs the current account in to a folder of its own: `first` is { email, next }, the
+// account and the new account's folder after it. `taken` is the pinned account the folder was signed in
+// to instead of a new one.
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && [adding.login.dir, adding.first?.next.dir].includes(x.login.dir);
 // What desk-q calls a login being added: a Codex one by the label typed for it, a Claude one as the new
 // account, never by its folder's name, which reads as an account in the column of emails.
 const addingName = (a) => a.label ?? 'the new account';
 function addingRow(a) {
-  const segs = [['  ', null], ...fitCell([[cut(a.label ?? 'new account', U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([UNUSED_CELL], U_USE),
-    ...fitCell([['waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  const claude = a.tool === 'claude';
+  const name = claude ? a.first?.email ?? 'new account' : a.label ?? a.login.name;
+  const segs = [['  ', null], ...fitCell([[cut(name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([UNUSED_CELL], U_USE),
+    ...fitCell([[claude ? 'waiting for you to sign in…' : 'waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[claude ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
 // Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
 const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length)).map((l, i) => segLine([[i ? ' '.repeat(lead.length) : lead, null], ...l]));
-// How to sign the login being added in, in place of the key and notes while desk-q waits.
-function addPanel(a, t, w) {
+// A numbered step, its runs wrapped under the text after the number.
+const stepLines = (n, segs, w) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
+// How to sign the Claude account being added in, in place of the key and notes while desk-q waits.
+function addAccountPanel(a, w) {
   const { shell, then } = signInParts(a.login);
-  const claude = a.tool === 'claude';
-  const tool = claude ? 'Claude' : 'Codex';
-  const step = (n, segs) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
+  const steps = a.first
+    ? [...stepLines('1', [['In another terminal, run ', null], [shell, HUE.cyan], [', then type ', null], [then, HUE.cyan], [` and sign in to ${a.first.email}.`, null]], w),
+      ...stepLines('2', [['Then desk asks for the account you want to add, in a folder of its own.', null]], w)]
+    : [{ ...segLine([['  ', null], ['1', BOLD], ['  In another terminal, run ', null], [shell, HUE.cyan]]), whole: true },
+      ...stepLines('2', [['Type ', null], [then, HUE.cyan], [' and sign in to the account you want to add.', null]], w)];
   return [
-    bold(`  Add another ${tool} account`),
-    ...leadLines('  ', [[`Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with ${claude ? "Claude Code's" : "Codex's"} own login, in a folder of its own.`, GREY]], w),
+    bold('  ADD A CLAUDE ACCOUNT'),
     '',
-    ...step('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]]),
+    ...steps,
+    '',
+    ...leadLines('  ', [["Desk adds the account, unused, as soon as it sees you're signed in. An account that's already listed isn't added twice: desk asks you to sign in to a different one.", GREY]], w),
+    ...(a.taken ? ['', ...leadLines('  ', [[`That's ${a.taken}, which desk already has. Sign this folder in to a different account, or press esc.`, null]], w)] : []),
+  ];
+}
+// How to sign the Codex login being added in.
+function addPanel(a, w) {
+  const { shell } = signInParts(a.login);
+  return [
+    bold('  Add another Codex account'),
+    ...leadLines('  ', [["Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with Codex's own login, in a folder of its own.", GREY]], w),
+    '',
+    ...stepLines('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]], w),
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
-    ...step('2', claude ? [['In that window, type ', null], [then, HUE.cyan], [' and sign in with an account not listed above.', null]]
-      : [['Sign in with an account not listed above.', null]]),
-    ...step('3', [[claude ? 'Come back here. Within a minute, "new account" changes to its email and plan.'
-      : `Come back here. Within a minute, ${a.label} shows as signed in.`, null], [' It starts unused: press ', null], ['d', BOLD], [' on it to make it the default.', null]]),
-    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['To add a Codex account, select the CODEX table and press ', GREY], ['a', BOLD], ['. It asks for a name first.', GREY]], w)] : []),
+    ...stepLines('2', [['Sign in with an account not listed above.', null]], w),
+    ...stepLines('3', [[`Come back here. Within a minute, ${a.label} shows its email and plan, or stays ${a.label} where its sign-in names no email.`, null], [' It starts unused: press ', null], ['d', BOLD], [' on it to make it the default.', null]], w),
   ];
 }
 
 // -> { head, rows, foot, following }: the line under the tabs; each tool's table, a heading row and a row
-// per login; then with one login per tool an offer to add one, a note per signed-out login and for logins
-// with no reading, and when they were read. While a login is being added (`adding`), its row waits,
-// unused, and the foot says how to sign it in. `following` names the repos on the Claude default.
-function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null, drop = null } = {}) {
+// per login; then with one login per tool an offer to add one, with accounts pinned the account lines, a
+// note per login desk won't use and for logins with no reading, and when they were read. While a login is
+// being added (`adding`), its row waits, unused, and the foot says how to sign it in. `following` names
+// the repos on the Claude default. `selected` is the selected row's id.
+function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null, drop = null, selected = null } = {}) {
   const u = usageTable(repos, now, checked);
   const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
   const solid = solidBars(width);
@@ -2389,16 +2511,13 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     ? [repoUseHead(), ...u.repos.flatMap((r) => (r === x ? [row(r), ...dropdownRows(d)] : [row(r)])), ...under] : [];
   const rows = [claudeRows, repoRows, codexRows].filter((b) => b.length).flatMap((b, i) => [...(i ? [{ line: '' }] : []), ...b]);
   const following = u.following;
-  if (adding) return { head: [usageHeadline(t, now), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
+  const head = [...leadLines('', usageHeadline(t, now).segs, w), ''];
+  if (adding) return { head, rows, foot: ['', ...(adding.tool === 'claude' ? addAccountPanel(adding, w) : addPanel(adding, w))], following };
   const all = [...t.claude, ...t.codex];
   const key = t.claude.length <= 1 && t.codex.length <= 1
     ? leadLines('  ', [['If you have another Claude or Codex subscription, add it to make it the default or pin repos to it. Nothing moves to another subscription on its own. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
     : [];
-  const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
-    const p = signInParts(x.login);
-    return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
-      ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
-  });
+  const notes = all.map(fixNote).filter(Boolean);
   const unread = t.claude.filter((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null);
   if (unread.length) {
     const probed = probedBy();
@@ -2408,8 +2527,49 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   }
   const read = all.map((x) => x.reading?.at).filter((a) => a != null);
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');
-  const blocks = [key, notes.length ? noteLines(notes, 14, w) : [], [readLine]].filter((b) => b.length);
-  return { head: [usageHeadline(t, now), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
+  const tagW = Math.max(14, ...notes.map((n) => n.tag.length + 1));
+  const blocks = [key, accountLines(t, rows, selected, w), notes.length ? noteLines(notes, tagW, w) : [], [readLine]].filter((b) => b.length);
+  return { head, rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
+}
+
+// With accounts pinned, the lines under the key: that desk's sign-ins are its own, the selected
+// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds.
+function accountLines(t, rows, selected, w) {
+  if (!t.claude.some((x) => x.multi)) return [];
+  const x = rows.find((r) => r.id != null && r.id === selected) ?? rows.find((r) => r.id != null);
+  const own = accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null;
+  const unpinned = own && !t.claude.some((c) => c.login.account === own) ? own : null;
+  return [...leadLines('  ', [['Desk keeps its own sign-ins, so switching account in your own Claude Code changes nothing here.', GREY]], w),
+    ...(x?.login?.tool === 'claude' && x.login.account ? leadLines('  ', [[`${x.login.account} signs in for desk through ${x.login.folder}.`, GREY]], w) : []),
+    ...(unpinned ? leadLines('  ', [[`${unpinned} isn't one of desk's accounts yet. Press `, GREY], ['a', BOLD], [' to add it.', GREY]], w) : [])];
+}
+
+// The note for a row desk won't use: what is wrong and the command that puts it right, which y copies.
+// Without accounts pinned, a signed-out login's note is the one it always was.
+function fixNote(x) {
+  const s = x.check?.state;
+  if (!unusable(x)) return null;
+  const p = signInParts(x.login);
+  const cmd = [p.shell, HUE.cyan];
+  const login = p.then ? [p.then, HUE.cyan] : null;
+  const press = [['Press ', null], ['y', BOLD], [' to copy the command', null]];
+  if (s === 'signed out' && !x.multi) {
+    return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], cmd,
+      ...(login ? [[', then ', null], login] : [])] };
+  }
+  const email = loginLabel(x.login);
+  const then = (to) => (login ? [[', then type ', null], login, [` and sign in to ${to}. `, null]] : [[`, and sign in to ${to}. `, null]]);
+  if (s === 'signed out') {
+    return { tag: '◆ sign in', sgr: YOU, text: [[`${email} isn't signed in for desk yet. In another terminal, run `, null], cmd, ...then(email), ...press, ['.', null]] };
+  }
+  if (s === 'wrong account') {
+    return { tag: '◆ wrong account', sgr: YOU, text: [[`Desk's sign-in for ${email} is now on ${x.check.liveEmail}, so desk counts that account once and has stopped using this one. To switch it back, run `, null],
+      cmd, [' in another terminal', null], ...then(email), ...press, ['.', null]] };
+  }
+  const name = x.login.name;
+  const first = x.check.sameAs && x.check.account ? `${name} is pinned to the same account as ${x.check.sameAs}.` : `${name} isn't one of desk's accounts.`;
+  return { tag: '◆ not set up', sgr: YOU, text: [[`${first} To add it, run `, null], cmd, [' in another terminal', null],
+    ...(login ? [[', type ', null], login, [', and', null]] : [[' and', null]]), [' sign in to an account desk doesn\'t have. ', null], ...press, [', or ', null], ['x', BOLD], [' to remove it.', null]] };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
@@ -2504,10 +2664,10 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 
 // Every repo's header: a band for each batch no pass can run, what needs the user in each repo, the
 // machine, then usage.
-function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false } = {}) {
+function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)),
+  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -2555,7 +2715,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   // RUNS ON's cell, empty while the column is not shown.
   const runs = (r) => (!lay.runsW ? ['', null] : ((t) => [pad(t, lay.runsW), t === '—' ? GREY : null])(runsOn(r.slug)));
   const head = [
-    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage }),
+    ...overviewHead(repos, shown, { now, solid: interactive && !process.env.NO_COLOR, avail, cap, gate, perWorker, pinUsage, levers: leversLine(pageState({ now }), now) }),
     '',
     bold(`  ${pad('REPO', w)}${lay.runsW ? pad('RUNS ON', lay.runsW) : ''}${pad('LAST PASS', lay.lastW)}${lay.cols.map(([h, , cw]) => rpad(h, cw)).join('')}  ${pad('ALL DONE BY', lay.qdW)}  WORKERS`),
   ];
@@ -3326,7 +3486,7 @@ export const ticketScreen = (r, key, opts) => joined(ticketParts(r, key, opts));
 
 // ---- the command -------------------------------------------------------------------------------
 
-class Usage extends Error {}
+export class Usage extends Error {}
 
 // Exact name first, then a unique prefix of the short name; owner/name and the slug match too. A
 // repo's name is its standing batch; a named batch is `<repo>:<name>`, its `word`.
@@ -3348,7 +3508,7 @@ const SHIPS = ['ships', 'when'];
 const VERBS = ['show', ...MOVES, 'workers', 'supervisor', 'ships', 'days'];
 const isWrite = (v) => v.kind === 'move' || v.kind === 'workers';
 // A command that prints a line rather than opening a view.
-const isCommand = (v) => isWrite(v) || v.kind === 'supervisor';
+const isCommand = (v) => isWrite(v) || v.kind === 'supervisor' || v.kind === 'levers';
 // The view a ships or days word names.
 const etaView = (word, slug) => ({ kind: word.toLowerCase() === 'days' ? 'days' : 'timeline', slug });
 
@@ -3360,6 +3520,10 @@ function target(repos, words) {
   if (repoWord.toLowerCase() === 'costs') {
     if (keyWord) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q costs [<repo>].`);
     return verb ? { kind: 'costs', ...costWord(repos, verb) } : { kind: 'costs' };
+  }
+  if (repoWord.toLowerCase() === 'levers') {
+    if (verb) throw new Usage(`Unknown command "${words.filter((a) => !a.startsWith('--')).join(' ')}". Try desk-q levers [--plain].`);
+    return { kind: 'levers' };
   }
   // `ships [<repo>]` and `days [<repo>]` read before a repo name, and `<repo> ships` after one.
   if ([...SHIPS, 'days'].includes(repoWord.toLowerCase())) {
@@ -3524,8 +3688,8 @@ function supervisor(r, op) {
 }
 
 function checkFlags(argv) {
-  const unknown = argv.filter((a) => a.startsWith('--') && !['--plain', '--all', '--help'].includes(a));
-  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all.`);
+  const unknown = argv.filter((a) => a.startsWith('--') && !['--plain', '--all', '--help', '--json'].includes(a));
+  if (unknown.length) throw new Usage(`Unknown option ${unknown.join(' ')}. Options: --plain, --all, --json.`);
 }
 
 function loadOrRefuse(now, word = null) {
@@ -3534,22 +3698,38 @@ function loadOrRefuse(now, word = null) {
   return repos;
 }
 
-// The repo `desk-q <repo> …` loads alone (loadRepos), else null for every repo. Costs, ships and days
-// read every repo, and so does a workers change, which is weighed against every live batch's workers
-// and every repo's ports.
-function scopeWord(argv) {
-  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
-  return first && !['costs', ...SHIPS, 'days'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
+// `desk-q levers`: opens the page as v does, rebuilding it first when it is due, `say` printing that it
+// is updating. --plain prints the Levers line, less its arrow, and the page's path.
+function leversCommand(argv, { now, opener, rebuild, say }) {
+  const p = pageState({ now });
+  if (argv.includes('--plain')) return `${leversText(p, now)}\n${p.file}`;
+  if (!leversDue(p)) return openLeversPage(p, opener);
+  say('Updating Levers…');
+  rebuild();
+  return openLeversPage(pageState({ now: Date.now() }), opener, p.builtAt);
 }
 
-export function run(argv, { now = Date.now() } = {}) {
+// The repo `desk-q <repo> …` loads alone (loadRepos), else null for every repo. Costs, ships, days and
+// levers read every repo, and so does a workers change, which is weighed against every live batch's
+// workers and every repo's ports. Of the --json views, whose first word is the view, only repo and
+// ticket name a repo, in their second word.
+function scopeWord(argv) {
+  const [first, verb] = argv.filter((a) => !a.startsWith('--'));
+  if (argv.includes('--json')) return ['repo', 'ticket'].includes(first?.toLowerCase()) && verb ? verb : null;
+  return first && !['costs', ...SHIPS, 'days', 'levers'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
+}
+
+export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
-    + '       desk-q <repo> supervisor [on|off]';
+    + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
+    + '       desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>]';
   checkFlags(argv);
   const word = scopeWord(argv);
   const repos = loadOrRefuse(now, word);
+  if (argv.includes('--json')) return jsonCommand(repos, argv, now);
   const v = target(repos, argv);
+  if (v.kind === 'levers') return leversCommand(argv, { now, opener, rebuild, say });
   if (v.kind === 'supervisor') return apply(repos, v);
   if (v.kind === 'overview') return overview(repos, { all: v.all, now });
   // Piped, the Timeline is drawn as plain text; --plain asks for the one-line-per-ticket list instead.
@@ -3563,6 +3743,126 @@ export function run(argv, { now = Date.now() } = {}) {
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
+}
+
+// ---- --json: the same views as data ------------------------------------------------------------
+// Each view's figures, read by the same functions its screen draws them with, beside the screen's
+// plain lines (`lines`). Every input carries its age, as levers-view.mjs's view.json does.
+
+export const JSON_VERSION = 1;
+const JSON_VIEWS = ['home', 'repo', 'ticket', 'usage', 'costs'];
+const msOf = (t) => (typeof t === 'number' ? (Number.isFinite(t) ? t : null) : t == null ? null : ((n) => (Number.isNaN(n) ? null : n))(Date.parse(t)));
+const isoOf = (t) => ((ms) => (ms == null ? null : new Date(ms).toISOString()))(msOf(t));
+// When an input was read, and how many seconds old that is now.
+export const inputAge = (t, now) => ((ms) => ({ as_of: isoOf(ms), age_s: ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)) }))(msOf(t));
+export const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
+const plainParts = (s) => ({ head: s.head.map(textOf), rows: s.rows.map((x) => ({ id: x.id ?? null, line: textOf(x), open: x.open ?? null })), foot: s.foot.map(textOf) });
+const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, generated_at: new Date(now).toISOString(), inputs, ...body, lines: plainParts(parts) });
+// Each batch's queue, by its file's last write.
+const queueAges = (list, now) => list.flatMap((r) => r.batches ?? [r]).filter((b) => b.queuePath).map((b) => ({ batch: b.word ?? b.name, ...inputAge(mtimeOf(b.queuePath), now) }));
+
+// A repo row's figures, each the home table's column of the same name.
+function repoFigures(r, needs, now, checkin) {
+  const id = { id: r.id, slug: r.slug, name: r.name };
+  if (r.error) return { ...id, error: r.error };
+  return { ...id, error: null, live: !!r.live, last_pass_at: isoOf(r.last), last_pass: lastPass(r, now)[0],
+    running: count(r, 'running'), ready: count(r, 'ready'), merging: count(r, 'merging'), waiting: count(r, 'waiting'),
+    needs_you: needs.shown, put_off: needs.putOff, done: r.done,
+    workers: { running: workersRunning(r), allowed: r.workers, cap: r.cap, ready_no_slot: Math.max(0, unslotted(r)) },
+    all_done_by: queueDone(r, now, checkin), wait_cause: waitCause(r) ?? null };
+}
+
+// The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
+// `figures` the view.json line it reads, `text` the line as home shows it.
+export function leversJson(p, now) {
+  const fault = leversFault(p);
+  const state = fault ? 'fault' : !p.page ? 'unbuilt' : p.stale ? 'stale' : p.view.line.state;
+  return { state, text: leversText(p, now), fault: fault ?? null,
+    page: p.page ? p.file : null, built: inputAge(p.builtAt, now), figures: p.view?.line ?? null };
+}
+
+const usageJson = (u) => ({ reading: u.reading, running: u.running, held: u.held, held_by: u.heldBy });
+
+export function homeJson(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), checkin = false } = {}) {
+  const shown = shownRepos(repos, all), list = byRepo(shown);
+  const ok = list.filter((r) => !r.error);
+  const needs = new Map(ok.map((r) => [r, needsCount(r)]));
+  const running = machineRunning(repos);
+  const levers = pageState({ now });
+  const usage = usageOf(repos, now, list);
+  const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
+  const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
+  return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
+    needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
+    machine: { running, cap: cap ?? null, room: headroom({ running, cap, avail, gate, perWorker }), avail_gib: avail },
+    levers: leversJson(levers, now),
+    usage: usageJson(usage),
+    repos: list.map((r) => repoFigures(r, needs.get(r), now, checkin)),
+    no_batch: none.map((r) => r.name),
+  }, parts);
+}
+
+// One repo's or batch's Queue: its home figures, and each ticket row under the group the screen shows it in.
+export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
+  const usage = usageOf(repos, now, [r]);
+  const parts = repoParts(r, { now, usage, title: true });
+  const groupKey = new Map(GROUPS.map(([name, k]) => [name, k]));
+  const all = [...(r.rows ?? []), ...(r.prs ?? [])];
+  const tickets = [];
+  let group = null;
+  for (const row of parts.rows) {
+    if (row.open?.kind !== 'ticket') { group = groupKey.get(String(row.segs?.[0]?.[0] ?? '').trim()) ?? group; continue; }
+    const x = all.find((y) => y.t.key === row.id);
+    tickets.push({ key: row.id, group, state: x?.k ?? null, pos: x?.pos ?? null, placed: !!x?.t.placed, lane: x?.t.lane ?? null, pr: x?.t.result?.pr ?? null, line: row.line });
+  }
+  const repo = r.error || !r.q ? { id: r.id, slug: r.slug, name: r.name, error: r.error ?? null } : repoFigures(r, needsCount(r), now, checkin);
+  return envelope('repo', now, { queues: queueAges([r], now), usage: inputAge(usage.reading?.at, now) }, { repo, tickets, usage: usageJson(usage) }, parts);
+}
+
+export function ticketJson(r, key, { now = Date.now() } = {}) {
+  const x = [...(r.rows ?? []), ...(r.prs ?? [])].find((y) => y.t.key === key);
+  const t = x?.t ?? r.q?.tickets?.[key] ?? null;
+  const ticket = { key, repo: r.name, state: x?.k ?? t?.state ?? null, group: x ? groupOf(x.k) : null, pos: x?.pos ?? null, lane: t?.lane ?? null, stage: t?.stage ?? null, pr: t?.result?.pr ?? null };
+  return envelope('ticket', now, { queues: queueAges([r], now) }, { ticket }, ticketParts(r, key, { now }));
+}
+
+// Every Claude and Codex login on this computer, as the Usage view lists them.
+export function usageViewJson(repos, { now = Date.now() } = {}) {
+  const u = usageTable(repos, now);
+  const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
+    workers: x.workers, reading: x.reading ?? null, read: inputAge(x.reading?.at, now), limit: x.limit ?? null });
+  return envelope('usage', now, { usage: [...u.claude, ...u.codex].map((x) => ({ login: loginLabel(x.login), ...inputAge(x.reading?.at, now) })) },
+    { logins: [...u.claude, ...u.codex].map(login), following: u.following }, usageParts(repos, { now }));
+}
+
+// This month's charges by name, or one name's by supplier, from the cost cache.
+export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
+  const c = costs.exists && costs.entries.length ? chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] }) : null;
+  const inputs = { costs: SUPPLIERS.filter((s) => cache?.[s]).map((s) => ({ supplier: s, ...inputAge(cache[s].at, now) })) };
+  const parts = v.name !== undefined ? supplierParts(repos, v.name, { now, costs, cache, label: v.label ?? v.name }) : costsParts(repos, { now, costs, cache });
+  const charges = !c ? null : v.name !== undefined ? { period: c.period, name: c.names.find((x) => x.name === v.name) ?? null }
+    : { period: c.period, total: c.total, suppliers: c.suppliers, names: c.names, shared: c.shared, credits: c.credits };
+  return envelope('costs', now, inputs, { name: v.name ?? null, charges }, parts);
+}
+
+const JSON_USAGE = 'Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].';
+function jsonCommand(repos, argv, now) {
+  const [view, ...rest] = argv.filter((a) => !a.startsWith('--'));
+  const k = view?.toLowerCase();
+  if (!JSON_VIEWS.includes(k)) throw new Usage(JSON_USAGE);
+  const arity = { home: [0, 0], repo: [1, 1], ticket: [2, 2], usage: [0, 0], costs: [0, 1] }[k];
+  if (rest.length < arity[0] || rest.length > arity[1]) throw new Usage(JSON_USAGE);
+  let out;
+  if (k === 'home') out = homeJson(repos, { all: argv.includes('--all'), now });
+  else if (k === 'repo') out = repoJson(repos, repoPlace(repos, resolveRepo(repos, rest[0]).id), { now });
+  else if (k === 'ticket') {
+    const t = target(repos, [rest[0], 'show', rest[1]]);
+    if (t.kind !== 'ticket') throw new Usage(JSON_USAGE);
+    out = ticketJson(repos.find((x) => x.id === t.slug), t.key, { now });
+  }
+  else if (k === 'usage') out = usageViewJson(repos, { now });
+  else out = costsJson(repos, target(repos, ['costs', ...rest]), { now });
+  return JSON.stringify(out, null, 2);
 }
 
 // ---- the interactive screen --------------------------------------------------------------------
@@ -3629,6 +3929,16 @@ function deskEnvRun(args, done) {
   p.on('error', (e) => done({ code: 1, out, err: e.message }));
   p.on('close', (code) => done({ code, out, err }));
 }
+// The Levers page's refresh (levers-refresh.mjs) in the background, so the screen keeps drawing while it
+// builds. done() once it has ended, whatever it did: the page and build.json say.
+const LEVERS_REFRESH_MJS = join(dirname(fileURLToPath(import.meta.url)), 'levers-refresh.mjs');
+function rebuildLevers(done) {
+  let ended = false;
+  const end = () => { if (!ended) { ended = true; done(); } };
+  const p = spawn(process.execPath, [LEVERS_REFRESH_MJS], { stdio: 'ignore' });
+  p.on('error', end);
+  p.on('close', end);
+}
 // The account check is rerun this often while Usage is shown, and while a login is being added, this
 // often whatever is shown, so a sign-in shows well within a minute.
 const CHECK_EVERY_MS = 60_000;
@@ -3646,7 +3956,7 @@ const SELECT_BG = LIGHT ? '48;5;254' : '48;5;236';
 const OPT_ON = SELECT_BG, OPT_BOLD = `1;${SELECT_BG}`, OPT_GREY = `${GREY};${SELECT_BG}`, OPT_GOOD = `${GOOD};${SELECT_BG}`;
 // What undoes each code that sets more than a colour; a colour alone is undone by 39, and a dimmed
 // colour by 22;39.
-const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49', [OPT_GOOD]: '39;49' };
+const OFF = { [BOLD]: '22', [FAINT]: '22', [REVERSE]: '27', [UNDERLINE]: '24', [YOU_BOLD]: '22;39', [BAND]: '22;27;39', [OPT_ON]: '49', [OPT_BOLD]: '22;49', [OPT_GREY]: '39;49', [OPT_GOOD]: '39;49' };
 // Under NO_COLOR, grey is drawn faint, bold magenta bold and the band reversed.
 const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 
@@ -3654,7 +3964,7 @@ const NO_COLOR_AS = { [GREY]: FAINT, [YOU_BOLD]: BOLD, [BAND]: REVERSE };
 // run wrapped in its SGR code. Each code is undone on its own (22 or 39), so a selected row's
 // background holds across the runs, and its erase to the end of the line (ESC [K, which the
 // terminal fills with the current background) carries the tint across the full width.
-// NO_COLOR drops the colours and keeps bold, faint and reverse, and selects in reverse video.
+// NO_COLOR drops the colours and keeps bold, faint, reverse and underline, and selects in reverse video.
 function paint(x, w, selected) {
   const plain = !!process.env.NO_COLOR;
   let segs = (x.segs ?? [[x.line, null]]).map(([s, k]) => [s, k]);
@@ -3667,7 +3977,7 @@ function paint(x, w, selected) {
   }
   const out = segs.map(([s, k0]) => {
     const k = plain ? NO_COLOR_AS[k0] ?? k0 : k0;
-    return k && s && !(plain && ![BOLD, FAINT, REVERSE].includes(k)) ? `${ESC}${k}m${s}${ESC}${OFF[k] ?? (k.startsWith(`${FAINT};`) ? '22;39' : '39')}m` : s;
+    return k && s && !(plain && ![BOLD, FAINT, REVERSE, UNDERLINE].includes(k)) ? `${ESC}${k}m${s}${ESC}${OFF[k] ?? (k.startsWith(`${FAINT};`) ? '22;39' : '39')}m` : s;
   }).join('');
   if (!selected) return out;
   return plain ? `${ESC}7m${out}${ESC}27m` : `${ESC}${SELECT_BG}m${out}${ESC}K${ESC}49m`;
@@ -3730,7 +4040,7 @@ export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
   probeMs = PROBE_EVERY_MS, probeWith = probe, costWith = startRefresh, loginsWith = deskEnvLogins, copier = (text) => systemCopier(text, output),
-  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, word = null,
+  addCheckMs = ADD_CHECK_MS, subscriptionWith = deskEnvSubscription, leversWith = rebuildLevers, word = null,
 } = {}) {
   // Started on a repo (`desk-q <repo>`, scopeWord), the screen loads only that repo, as run() does,
   // while it shows that repo's own queue, timeline, days, epics or tickets. Anywhere else, and a workers
@@ -3765,11 +4075,13 @@ export function interactive({
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
   // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
   let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
-  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
+  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` (as isAdding describes)
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
   // A repo's subscription dropdown, open: { slug, at }, `at` the option ↑↓ is on (null: the ✓ one).
   let drop = null;
+  // While the Levers page rebuilds before it opens.
+  let leversBusy = false;
   const stack = [];
   const width = () => Math.max(20, output.columns || 80);
   const height = () => Math.max(5, output.rows || 24);
@@ -3819,13 +4131,13 @@ export function interactive({
     keepTab();
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
-      const s = usageParts(repos, { now, width: w, checked, adding, drop });
-      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
+      const s = usageParts(repos, { now, width: w, checked, adding, drop, selected: selId });
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy command · esc stop adding · : command · q quit` };
       // The digits pick while it is open, so only ←→ change view.
       if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ←→ view · ${pickKeys(s.drop)} pick · enter save · esc close · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       if (x?.repo) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · enter change subscription · a add${undo ? ' · u undo' : ''} · ${cmdKeys}` };
-      const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
+      const copy = x?.fix ? ' · y copy command' : '';
       return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? 'd make default · ' : ''}a add${s.rows.length ? ` · x remove${copy}` : ''}${undo ? ' · u undo' : ''} · ${cmdKeys}` };
     }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
@@ -3851,7 +4163,7 @@ export function interactive({
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
       return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
-        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · ${cmdKeys}` };
+        keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · ${cmdKeys}` };
     }
     if (view.kind === 'repo') {
       const rp = repoPlace(repos, view.slug);
@@ -3917,7 +4229,9 @@ export function interactive({
       const n = Math.ceil(l.line.length / w);
       return [{ full: paint(l, Infinity, false), cut: fit(l), n }, ...Array(n - 1).fill(SPILL)];
     };
-    const head = screen.head.flatMap(lay);
+    const head = [];
+    let leversAt = null;
+    for (const l of screen.head) { if (l?.link === 'levers') leversAt = 1 + head.length; head.push(...lay(l)); }
     const body = ['', ...head, ...rows.map((x, i) => paint(x, w, i === sel && pickable(x))), ...screen.foot.flatMap(lay)];
     // A message can be longer than the line (a refused raise says what raising the cap takes). The
     // usage lines stay put above it and the keys, a blank line above them.
@@ -3939,7 +4253,9 @@ export function interactive({
     } else if (rows.length) scroll = 0;
     const shown = body.slice(top, top + room);
     while (shown.length < room) shown.push('');
-    layout = { pinned: pinned.length, top, room, first, rows: rows.length };
+    // `levers`: the screen line the Levers line is drawn on, null while it is not shown.
+    layout = { pinned: pinned.length, top, room, first, rows: rows.length,
+      levers: leversAt != null && leversAt >= top && leversAt < top + room ? pinned.length + leversAt - top : null };
     // A whole line is written in full only where every row it runs on to is shown, else cut; a SPILL
     // whose line scrolled off is a blank row.
     const out = [];
@@ -4007,20 +4323,48 @@ export function interactive({
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
       if (!done && adding) addChecked();
+      if (!done) settleAccounts();
       if (!done && usageTab()) draw();
+    });
+  }
+  // After a check, an old file is migrated to account pins, and then each signed-in folder no account is
+  // pinned to yet is pinned, unused, as desk-env logins migrate and pin do. Each is tried once a
+  // session, so one that fails is not retried on every check; the check after it shows the result. A
+  // session that has added a login migrates nothing: the folder it added is the add flow's.
+  const tried = new Set();
+  function settleAccounts() {
+    if (saving || !checked) return;
+    let subs;
+    try { subs = readSubscriptions(subscriptionsPath()); } catch { return; }
+    if (subs.errors.length) return;
+    const pin = [...checked.values()].find((l) => l.tool === 'claude' && l.pinnable && !tried.has(`pin ${l.name}`));
+    const args = needsPinMigration(subs) ? (tried.has('migrate') ? null : ['migrate']) : pin ? ['pin', 'claude', pin.name] : null;
+    if (!args) return;
+    tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
+    saving = true;
+    loginsWith(args, () => {
+      saving = false;
+      lastLogins = null;
+      if (!done && !checking) checkLogins();
     });
   }
 
   // ---- adding a login ----
   // The next folder for a login of `tool`, its row waiting on standby and the check rerun until it is
   // signed in. A Codex login's folder is made now, holding its label; a Claude one is made by its sign-in.
+  // With no Claude account pinned and ~/.claude signed in, the first folder is for ~/.claude's account
+  // and the next one for the new account.
   function startAdding(tool, name = null) {
     const subs = readSubscriptions(subscriptionsPath());
-    const f = nextLoginFolder(tool, subs, (tool === 'claude' ? claudeLogins() : codexLogins()).length);
+    const email = tool === 'claude' && !multiAccount(subs) ? accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null : null;
+    const f = nextLoginFolder(tool, subs, email ? 0 : (tool === 'claude' ? claudeLogins() : codexLogins()).length);
     if (tool === 'codex') {
       try { makeLabelledFolder(f.dir, name); } catch (e) { msg = `Could not make the new login's folder ${f.dir}: ${describeCrash(e)}`; return; }
     }
-    adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
+    const folder = (x) => makeLogin({ tool, name: x.name, folder: x.dir, rule: 'standby', source: 'found' });
+    adding = { tool, login: folder(f), label: name };
+    if (email) adding.first = { email, next: folder(nextLoginFolder(tool, { ...subs, logins: [...subs.logins, adding.login] }, 0)) };
+    tried.add('migrate');
     selId = 'adding';
     msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
@@ -4028,17 +4372,21 @@ export function interactive({
     if (!checking) checkLogins();
   }
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
-  // The check found the folder being added: signed in, it stays on standby (a computer with no
-  // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
-  // it is refused. Anything else waits for the next check, as does a save while another is running.
+  // The check found the folder being added. The first add's folder for the current account is pinned to
+  // whatever it signed in to. Otherwise, signed in, it stays unused (settleAccounts pins a new
+  // Claude folder first; a computer with no subscriptions file gets the rule written, so it has one);
+  // signed in to an account already listed, it keeps waiting and the panel says so. Anything else waits
+  // for the next check, as does a save while another is running.
   function addChecked() {
     const a = adding;
     const c = checked?.get(checkKey(a.tool, a.login.configDir));
-    if (c?.state === 'duplicate') {
-      stopAdding();
-      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      msg = `That account is already listed as ${c.duplicateOf}, so desk won't use it twice. x removes it.`;
-    } else if (c?.state === 'signed in') {
+    if (a.first) {
+      if (!saving && c?.liveEmail && ['signed in', 'not set up'].includes(c.state)) pinFirst(a, c.liveEmail.toLowerCase());
+      return;
+    }
+    const taken = sameAccountAs(c) ? c.liveEmail?.toLowerCase() ?? null : null;
+    if (taken !== (a.taken ?? null)) adding = { ...a, taken };
+    if (c?.state === 'signed in') {
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
@@ -4046,6 +4394,24 @@ export function interactive({
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'unused'], said, null);
     }
+  }
+  // The current account's folder is signed in: pinning it starts multi-account mode, ~/.claude going to
+  // the Removed table, and the folder takes over as the default where ~/.claude was it (logins.mjs
+  // pinLogin). Then the add waits for the new account.
+  function pinFirst(a, email) {
+    saving = true;
+    msg = 'Saving…';
+    const fail = (r) => { saving = false; stopAdding(); msg = notSaved(r); if (!done) draw(); };
+    const next = () => {
+      saving = false;
+      lastLogins = null;
+      adding = { tool: a.tool, login: a.first.next, label: null };
+      selId = 'adding';
+      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
+      if (!done && !checking) checkLogins();
+      if (!done) draw();
+    };
+    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
@@ -4064,7 +4430,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
-    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+    msg = 'Type a label for the new Codex login. desk-q lists it by its email once it is signed in, or by this label where it has none.';
   }
   function labelKey(str, key) {
     if (key.name === 'return' || key.name === 'enter') {
@@ -4079,6 +4445,7 @@ export function interactive({
     else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
     return frame();
   }
+  const notSaved = (r) => `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^(logins|desk-env subscription set): /, '') ?? `desk-env exited ${r.code}`}`;
   // A login made the default, given a rule or removed, then the footer says what changed (`said`,
   // `\n` between its lines) and u puts back `then`: { args, said }, the desk-env logins command that
   // undoes it and what the footer says once it has.
@@ -4089,7 +4456,7 @@ export function interactive({
     run(args, (r) => {
       saving = false;
       if (r.code === 0) { undo = then; msg = said; }
-      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^(logins|desk-env subscription set): /, '') ?? `desk-env exited ${r.code}`}`;
+      else msg = notSaved(r);
       if (!done) draw();
     });
   }
@@ -4169,7 +4536,7 @@ export function interactive({
     if (!x?.login) return;
     const l = x.login, label = loginLabel(l);
     if (k === 'y') {
-      if (x.check?.state !== 'signed out') { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
+      if (!x.fix) { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
       const { shell, then } = signInParts(l);
       try { copier(shell); msg = `Copied the sign-in command: ${shell}. Run it in another terminal${then ? `, then ${then}` : ''}.`; }
       catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }
@@ -4179,8 +4546,8 @@ export function interactive({
     if (k === 'x') removeKey(x);
   }
 
-  // A left click on the breadcrumb goes to that place, on the tab line to that view, on a row
-  // selects and opens it. The wheel moves the selection as the arrows do.
+  // A left click on the breadcrumb goes to that place, on the tab line to that view, on home's Levers
+  // line opens the Levers page as v does, on a row selects and opens it. The wheel moves the selection as the arrows do.
   function onMouse(b, x, y) {
     if (done || !layout || cmd != null || typed != null || ask) return;
     if (b === 64 || b === 65) return onKey(undefined, { name: b === 64 ? 'up' : 'down' });
@@ -4195,6 +4562,9 @@ export function interactive({
       const p = hit(tabParts());
       if (!p) return;
       setTab(p.id);
+    } else if (line === layout.levers) {
+      if (drop) drop = null;
+      openLevers();
     } else {
       const i = line - layout.pinned + layout.top - layout.first;
       if (line < layout.pinned || line >= layout.pinned + layout.room || i < 0 || i >= layout.rows) return;
@@ -4252,6 +4622,22 @@ export function interactive({
     exit(code);
   }
 
+  // Opens the Levers page, rebuilding it first (leversWith, in the background) when it is due; the
+  // message says what happened. desk-q stays open.
+  function openLevers() {
+    const p = pageState({ now: clock() });
+    if (!leversDue(p)) { msg = openLeversPage(p, opener); return; }
+    if (leversBusy) { msg = 'Still updating Levers…'; return; }
+    leversBusy = true;
+    msg = 'Updating Levers…';
+    leversWith(() => {
+      leversBusy = false;
+      if (done) return;
+      msg = openLeversPage(pageState({ now: clock() }), opener, p.builtAt);
+      draw();
+    });
+  }
+
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
@@ -4268,6 +4654,7 @@ export function interactive({
       if (scope != null && (w == null || !here())) widen(true);
       const v = target(repos, words);
       if (v.kind === 'supervisor') act(v);
+      else if (v.kind === 'levers') openLevers();
       else if (isWrite(v)) {
         // A change typed anywhere lands on that repo's Queue, with the moved ticket selected.
         if (!(view.kind === 'repo' && view.slug === v.slug && tab === 'queue')) { goPlace({ kind: 'repo', slug: v.slug }); tab = 'queue'; }
@@ -4352,6 +4739,7 @@ export function interactive({
       if (state === 'loaded') { ask = { name: r.repo, v: { ...v, op: 'off' } }; msg = ''; }
       else if (state) act({ ...v, op: 'on' });
     }
+    else if (str === 'v' && view.kind === 'overview' && tab === 'queue') openLevers();
     else if (str === 'z' && hasTabs() && tab === 'timeline') { zoom = ZOOMS[(ZOOMS.indexOf(zoom) + 1) % ZOOMS.length]; msg = ''; }
     else if (str === 'c' && view.kind !== 'log') {
       checkin = !checkin;
@@ -4418,7 +4806,7 @@ if (isMain) {
     // shell get the plain output.
     let start = null;
     const word = scopeWord(argv);
-    if (process.stdin.isTTY && process.stdout.isTTY && !argv.includes('--plain') && !argv.includes('--help')) {
+    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
       checkFlags(argv);
       start = target(loadOrRefuse(Date.now(), word), argv);
     }

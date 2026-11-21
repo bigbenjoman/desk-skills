@@ -30,7 +30,7 @@ parentheses at the end when it reads naturally (<TICKET>).>
 ### Not migrated     <- optional: only when equivalent sites were left on the old pattern
 - `<path>#<symbol>` — <one line on why it was left>
 
-### Carried review findings     <- optional: only when round 2 or 3 of the self-review carried P2s
+### Carried review findings     <- optional: only when the self-review carried P2s
 <verdict.mjs --carried output, verbatim: the fix range, then `file:line` and title for each>
 
 ### Decisions taken     <- optional: only when the work took a call on its recommendation
@@ -59,7 +59,8 @@ taken` when they apply). No title in the body, and no headings §5 does not list
 can overrule one in review rather than finding it in the diff.
 
 **Carried review findings** are the P2s a second or third self-review round carried rather than fixed
-(`desk-ticket` Stage 4b, "Three rounds, then stop"). Print the section with `node <desk-review>/bin/verdict.mjs
+(`desk-ticket` Stage 4b, "Three rounds, then stop"), or a first round split to a follow-up ticket
+under autopilot (`desk-autopilot`'s `ask-or-take.md`). Print the section with `node <desk-review>/bin/verdict.mjs
 --carried <results>` and paste it as printed, so every finding keeps its `file:line`. **More than
 five**, with §3 `jira-create` `yes` and §4 Tracker `jira`: create **one** follow-up ticket via
 `desk-jira create` whose body is that list, and in place of the list the section holds one line,

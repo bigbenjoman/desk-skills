@@ -57,12 +57,11 @@ cross-vendor verification that did not happen.
 
 **Finders must stay read-only.** They inherit Edit and Write, and one will sometimes implement a fix
 mid-round, even in a file the PR did not touch, so the review attests a tree nobody pushed. Check
-`git status --porcelain` after every round; a dirty tree is an aborted round: save the stray diff,
-restore, re-run, and say in the review that a round was discarded.
-
-This ticket's own resume file is not a stray edit. Read the tree file by file and leave it out, as
-`/desk-review` does: `git status --porcelain --untracked-files=all | grep -vE
-'^\?\? \.claude/desk-ticket-[^/]+\.json$'` printing nothing is a clean round.
+`desk-env tree-status --run <run>` after every round, as `/desk-review` does, `<run>` the id that
+round's `/desk-review` picked (the one in its `desk-review-results-<run>.json`); any other review
+command runs plain `desk-env tree-status`. A dirty tree is an aborted round: save the stray diff,
+restore, re-run, and say in the review that a round was discarded. It leaves out this ticket's own
+resume file and, with `--run`, that review's scratch files, so printing nothing is a clean round.
 
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
 finder can find something in. The branch has been read whole once by round 2, so from round 2 a
@@ -80,6 +79,9 @@ since round 2. After the third round there is no fourth without the user. From r
   section), or, when there are more than five and §3 `jira-create` is `yes`, into one follow-up
   ticket the body links instead (`desk-pr` §2). Nothing stops for them, whatever §3 `jira-create`
   says: without it they stay in the body.
+- **A P2 split to a filed follow-up ticket** (under autopilot, `desk-autopilot`'s `ask-or-take.md`)
+  is carried from round 1 too, the follow-up's key in its `follow_up`, and it stays in every later
+  round's results, carried, so the last round's section still names it.
 
 **With §4 Tracker (`desk-env get tracker`) `none`, a GitHub issue in this repo is the ticket.**
 Opening a follow-up issue is §3 `gh-issue-create`, and commenting on another issue is §3
@@ -89,6 +91,12 @@ closes it.
 
 The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
 starts again at one.
+
+**Every round ends with its findings line**: once its fixes are committed (or at once, with none, or
+before you stop on a round-3 P0 or P1 or any park, with what is fixed so far), mark each fixed finding
+`"fixed": true` in the round's results and print what
+`node <desk-review>/bin/verdict.mjs --findings <results> --reviewer self` prints, verbatim, in your
+reply (desk-review Phase 6, *The round's findings line*).
 
 **Declining a confirmed finding is a deferral, and a deferral does not read as clean.** It keeps the
 verdict off §4 Clean review verdict (`desk-env get clean-verdict`), and where a required check reads the verdict, the gate blocks
@@ -112,7 +120,7 @@ domains   : <what the knowledge check or the repo's instructions named, or "none
 P0 (n)      <file:line — one line each>
 P1 (n)
 P2 (n)
-CARRIED (n)   <file:line — the P2s round 2 or 3 carried to the PR body or follow-up ticket>
+CARRIED (n)   <file:line — the P2s carried to the PR body or a follow-up ticket>
 REQ GAPS (n)  <TICKET — the criterion>
 caveats   : <any check the run could not perform, or "none">
 outcome   : <per finding: fixed in <sha> · declined, and why · escalated, and which
@@ -122,7 +130,9 @@ re-review : <result at the new head, or "not needed — nothing was changed">
 ```
 
 With §4 Local review command `none`, the block is one line: `SELF-REVIEW skipped: §4 Local review
-command is none`.
+command is none`. An empty diff is the same one line, `SELF-REVIEW skipped: empty diff`. A stated
+skip runs no round, so it prints no findings line, and the pass reads those words as a skip rather
+than a missing one.
 
 **Every finding gets an outcome line, including the ones you fixed.** The block is a record rather
 than a request, so it is the only place a reader can see that a P0 existed at all: a finding that
@@ -142,7 +152,7 @@ verdict. Both change how much the verdict is worth, so both go in the slot.
 
 - Starting a fourth review round without the user
 - A round 2 or 3 that reads `origin/<default>...HEAD` rather than the fix range since the round before
-- Carrying a P0 or P1, or a P2 on round 1
+- Carrying a P0 or P1, or a P2 on round 1 that names no filed follow-up ticket in `follow_up`
 - Treating the local review command not resolving in this tree as a reason to skip it rather than to rebase
 - Dispatching finders in a worktree without having run §4 Project subagents sync (`desk-env cmds agents-sync`): they are all
   `general-purpose` and the report will not say so

@@ -344,14 +344,7 @@ pass
 check "DS-620 AC1 AC3 the real preflight and the worker both run on the repo's subscription, not the roomier login" '[ "$(cat "$T/logins.log")" = "$(printf "preflight %s\nworker %s" "$LOGIN_B" "$LOGIN_B")" ]'
 check "DS-465 AC1 the row and the worker's login file name it" '[ "$(field T-91 login.name)" = "\"b\"" ] && grep -q "\"login\":\"b\"" "$T/state-l/workers/T-91.login.json"'
 check "DS-465 a worker on another login gets the memory index in its brief, its auto-memory being that login's" 'run_has "$T/runs/T-91.1" prompt "the one to remember"'
-check "#775 a worker on another login than the pass is told no orchestrator is reachable, so it skips SendMessage" 'grep -q "^Orchestrator session name: none reachable: you run on login b, the orchestrator on the default login, .*Skip SendMessage" "$T/state-l/briefings/T-91.md"'
-printf '{"ticket": "T-92", "type": "Bug", "lane": "A", "size": "S", "branch": "fix/T-92", "files_in_scope": ["src/m.txt"], "unknowns": []}\n' > "$T/state-l/triage/T-92.json"
-printf 'WAIT\nAUTOPILOT_DONE: pr=192 jira=none\n' > "$T/scripts/T-92.1"
-q admit T-92
-out=$(node "$B/pass.mjs" --by supervisor 2>&1); rc=$?
-check "#775 a pass the supervisor runs does not know the orchestrator's login, so it names no login" '[ -f "$T/state-l/briefings/T-92.md" ] && grep -q "^Orchestrator session name: " "$T/state-l/briefings/T-92.md" && ! grep -q "none reachable" "$T/state-l/briefings/T-92.md"'
-finish T-92
-check "#775 a worker on the pass's own login is given its name as before" 'grep -q "^Orchestrator session name: " "$T/state/briefings/T-34.md" && ! grep -q "none reachable" "$T/state/briefings/T-34.md"'
+check "DS-839 a park never messages the orchestrator, so no briefing names one, on any login" '[ -f "$T/state-l/briefings/T-91.md" ] && ! grep -q "^Orchestrator session name" "$T/state-l/briefings/T-91.md" "$T/state/briefings/T-34.md"'
 finish T-91
 
 echo "batch e2e spine: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

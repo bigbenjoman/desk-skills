@@ -148,6 +148,32 @@ before = everything();
 r = move();
 t('a running decider: refused, naming it', r.code === 11 && r.out.includes(`decider session (pid ${process.pid}) is running`), true);
 t('a running decider: nothing changed', everything(), before);
+// A blind audit spawned into the standing slot, running or ended and not yet recorded, reads its log
+// from there: the move is refused rather than lose its findings. One spawned elsewhere does not hold it.
+for (const [why, state, dir, refused] of [
+  ['a running audit spawned here', 'running', standingS, true],
+  ['an ended audit not yet recorded', 'recording', `${standingS}/`, true],
+  ['an audit running from another batch', 'running', namedS('OTHER'), false],
+  ['an audit queued, not started', 'queued', null, false],
+]) {
+  reset();
+  put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true }));
+  put(join(standingS, 'logs', 'K-3-audit.log'), '{"type":"system"}\n');
+  put(join(standingS, 'audit-queue.json'), JSON.stringify({ items: { 'K-3': { ticket: 'K-3', key: 'K-3-audit', state, state_dir: dir } } }));
+  before = everything();
+  r = move();
+  if (refused) {
+    t(`${why}: refused, naming it`, r.code === 11 && r.out.includes('the blind audit of K-3 is running or not yet recorded'), true);
+    t(`${why}: nothing changed`, everything(), before);
+  } else t(`${why}: moved, the audit queue staying`, r.code === 0 && existsSync(join(standingS, 'audit-queue.json')), true);
+}
+reset();
+put(standingQ, queue({ base: 'feat/x', epic: 'E-1', supervised: true }));
+put(join(standingS, 'audit-queue.json'), '{"items":');
+before = everything();
+r = move();
+t('an audit queue that does not read: refused, naming it', r.code === 11 && r.out.includes('audit queue') && r.out.includes('does not read'), true);
+t('an audit queue that does not read: nothing changed', everything(), before);
 
 // AC1: a live standing batch on a feature branch moves whole to batches/E-1/, and the slot is empty.
 reset();
@@ -165,6 +191,12 @@ const moving = {
 const staying = {
   'intake.json': '{"seen":{}}',
   'supervisor.agent.log': 'agent\n',
+  'levers.jsonl': '{"v":1,"kind":"freeze"}\n',
+  'audit.jsonl': '{"v":1}\n',
+  'audit-queue.json': '{"items":{}}',
+  'audit-queue.json.lock/pid': '1\n',
+  'lever-evals.jsonl': '{"v":1}\n',
+  'levers-evidence/e1.jsonl': '{"v":1}\n',
   'ref/acme__web/f.txt': 'a read-only clone is the repo\'s, not a batch\'s\n',
   'batches/OTHER/parks/O-1.json': '{"question":"other batch"}',
 };

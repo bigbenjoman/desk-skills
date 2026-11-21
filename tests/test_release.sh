@@ -166,7 +166,7 @@ check "DS-841 the install line says which merge driver it restarted, once, and n
 check "AC1 the checkout is fast-forwarded to origin/main's head" '[ "$(srchead)" = "$new" ]'
 check "AC1 install.sh runs once with nothing on stdin"      '[ "$(calls install)" = 1 ] && grep -qx "installed args=--any-branch stdin=0" "$T/install.calls"'
 check "AC1 installed.json names the new commit"             '[ "$(installed)" = "$new" ]'
-check "AC1 the report and the log say so"                   'grep -q "release: desk-skills ${old:0:12} -> ${new:0:12} (3 commit(s)) installed" <<< "$out" && mlog | grep -q "release: desk-skills ${old:0:12} -> ${new:0:12}"'
+check "AC1 the report and the log say so"                   'grep -q "release: desk-skills ${old:0:12} -> ${new:0:12} (3 merge(s) to main) installed" <<< "$out" && mlog | grep -q "release: desk-skills ${old:0:12} -> ${new:0:12}"'
 check "AC5 the unrelated untracked files are left"          '[ -f "$T/desk-src/.playwright-mcp/log.txt" ] && [ -f "$T/desk-src/docs/brand/logo.svg" ]'
 step 2026-10-27T09:27:00Z
 check "AC1 the next pass has nothing to do"                 '[ "$(calls install)" = 1 ] && ! grep -q "release:" <<< "$out"'
@@ -191,19 +191,19 @@ upstream g0; g0=$(originhead); pass "$g0"; upstream g1; g1=$(originhead); pass "
 : > "$T/check.calls"
 step 2026-10-27T09:46:00Z
 check "DS-754 AC1 a cancelled head installs the newest passing commit before it" '[ "$(srchead)" = "$g1" ] && [ "$(installed)" = "$g1" ] && [ "$(calls install)" = $((inst + 1)) ]'
-check "DS-754 AC1 the line names it and says why the head was not" 'grep -q "release: desk-skills ${was:0:12} -> ${g1:0:12} (2 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${h:0:12} was not installed: its tests check was cancelled, and is read again next pass (cancelled)" <<< "$out"'
+check "DS-754 AC1 the line names it and says why the head was not" 'grep -q "release: desk-skills ${was:0:12} -> ${g1:0:12} (2 merge(s) to main) installed, main'"'"'s tests check passed on it; main'"'"'s head ${h:0:12} was not installed: its tests check was cancelled, and is read again next pass (cancelled)" <<< "$out"'
 check "DS-754 AC1 checks are read newest first, and stop at the first that passed" '[ "$(tr "\n" " " < "$T/check.calls")" = "$h $mid $g1 " ]'
 check "DS-754 AC2 a cancelled head raises no failure"       '[ "$(pushes)" = 0 ] && ! grep -q "check failed" <<< "$out" && ! mlog | grep -q "check failed (cancelled)"'
 step 2026-10-27T09:47:00Z
 check "DS-754 AC6 nothing after the installed commit passed: nothing installed, the installed version stays" '[ "$(calls install)" = $((inst + 1)) ] && grep -q "waiting for main'"'"'s tests check on it (cancelled), and no commit since the installed one passed it, so the installed version stays at ${g1:0:12}" <<< "$out" && [ "$(pushes)" = 0 ]'
 pass "$h"
 step 2026-10-27T09:48:00Z
-check "DS-754 AC3 a successful re-run of the head installs it" '[ "$(installed)" = "$h" ] && grep -q "release: desk-skills ${g1:0:12} -> ${h:0:12} (2 commit(s)) installed, main'"'"'s tests check passed on it\"" <<< "$out"'
+check "DS-754 AC3 a successful re-run of the head installs it" '[ "$(installed)" = "$h" ] && grep -q "release: desk-skills ${g1:0:12} -> ${h:0:12} (2 merge(s) to main) installed, main'"'"'s tests check passed on it\"" <<< "$out"'
 
 upstream g2; g2=$(originhead); pass "$g2"; upstream red; f=$(originhead); echo failure > "$T/check.$f"
 step 2026-10-27T09:53:00Z
 check "DS-754 AC4 a failed head pushes once, naming it, and the newest passing commit is installed" '[ "$(pushes)" = 1 ] && grep -q "release-failed-$f" <<< "$out" && grep -q "check failed (failure) on ${f:0:12}, so it was not installed; ${g2:0:12}, the newest commit before it whose check passed, is installed in its place when nothing blocks it" <<< "$out" && [ "$(installed)" = "$g2" ]'
-check "DS-754 AC4 the install line says why the head was not" 'grep -q "${h:0:12} -> ${g2:0:12} (1 commit(s)) installed, main'"'"'s tests check passed on it; main'"'"'s head ${f:0:12} was not installed: its tests check failed (failure)" <<< "$out"'
+check "DS-754 AC4 the install line says why the head was not" 'grep -q "${h:0:12} -> ${g2:0:12} (1 merge(s) to main) installed, main'"'"'s tests check passed on it; main'"'"'s head ${f:0:12} was not installed: its tests check failed (failure)" <<< "$out"'
 inst=$(calls install)
 step 2026-10-27T09:54:00Z
 check "DS-754 AC4 a later pass keeps the push, logs the failure once and installs nothing more" '[ "$(pushes)" = 1 ] && [ "$(mlog | grep -c "check failed (failure) on ${f:0:12}")" = 1 ] && [ "$(calls install)" = "$inst" ]'
@@ -211,7 +211,7 @@ check "DS-754 AC4 a later pass keeps the push, logs the failure once and install
 echo pending > "$T/check.state"
 upstream g3; g3=$(originhead); pass "$g3"; upstream running; p=$(originhead)
 step 2026-10-27T09:59:00Z
-check "DS-754 AC5 a pending head installs the earlier passing commit" '[ "$(installed)" = "$g3" ] && grep -q "${g2:0:12} -> ${g3:0:12} (2 commit(s)) installed, .*main'"'"'s head ${p:0:12} was not installed: its tests check is still running (pending)" <<< "$out"'
+check "DS-754 AC5 a pending head installs the earlier passing commit" '[ "$(installed)" = "$g3" ] && grep -q "${g2:0:12} -> ${g3:0:12} (2 merge(s) to main) installed, .*main'"'"'s head ${p:0:12} was not installed: its tests check is still running (pending)" <<< "$out"'
 
 echo cancelled > "$T/check.state"; inst=$(calls install)
 upstream g4; g4=$(originhead); pass "$g4"; upstream head4; c=$(originhead)
@@ -220,6 +220,17 @@ step 2026-10-27T10:05:00Z
 check "DS-754 AC7 a worker at Stage 7 holds the earlier commit's install too" '[ "$(calls install)" = "$inst" ] && [ "$(installed)" = "$g3" ] && grep -q "desk-skills main ${g4:0:12} passed its tests check; main'"'"'s head ${c:0:12} was not installed: .*; waiting to install it for .*R-9 at Stage 7" <<< "$out"'
 printf '{"version":1,"batch":"r","tickets":{}}\n' > "$T/queue.json"
 echo success > "$T/check.state"; inst=$(calls install)
+
+# ---- a PR merged with a merge commit counts once: the line counts main's own commits ------------
+was=$(installed)
+git -C "$T/seed" checkout -q -b long
+for i in 1 2 3; do git -C "$T/seed" commit -q --allow-empty -m "long $i"; done
+git -C "$T/seed" checkout -q main; git -C "$T/seed" merge -q --no-ff -m "Merge pull request from long" long; git -C "$T/seed" push -q "$T/origin.git" main
+upstream direct; new=$(originhead)
+fp=$(git -C "$T/seed" rev-list --first-parent --count "$was..$new"); all=$(git -C "$T/seed" rev-list --count "$was..$new")
+step 2026-10-27T10:10:00Z
+check "a merge-commit history counts main's own commits, not each merged branch's" '[ "$fp" != "$all" ] && [ "$(installed)" = "$new" ] && grep -q "release: desk-skills ${was:0:12} -> ${new:0:12} ($fp merge(s) to main) installed" <<< "$out" && ! grep -q "($all " <<< "$out"'
+inst=$(calls install)
 
 # ---- AC8: the maintenance window open ----------------------------------------------------------
 upstream six; new=$(originhead)

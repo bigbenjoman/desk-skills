@@ -31,7 +31,7 @@ function parity(text, list) {
   ];
 }
 
-t('the switch handles every listed subcommand (44)', DESK_ENV_COMMANDS.length, 44);
+t('the switch handles every listed subcommand (45)', DESK_ENV_COMMANDS.length, 45);
 t('the switch equals DESK_ENV_COMMANDS', parity(source, DESK_ENV_COMMANDS), []);
 const added = source.replace("      case 'uuid':", "      case 'frob':\n        break;\n      case 'uuid':");
 t('a subcommand the list lacks fails, named', parity(added, DESK_ENV_COMMANDS), ['desk-env.mjs handles "frob", which DESK_ENV_COMMANDS lacks']);

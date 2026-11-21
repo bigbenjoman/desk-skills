@@ -81,7 +81,7 @@ printf '{"question": "which fixture helper should the spec use?", "approve": {"k
 finish T-6
 pass
 check "a worker that parks leaves the ticket parked with its question, exit 11" '[ $rc -eq 11 ] && [ "$(state T-6)" = parked ] && field T-6 park | grep -q "which fixture helper"'
-check "#775 and the pass's report carries it, whole" 'grep -qF "T-6: awaiting approval, its exact text (jira-comment on T-6, as JSON): \"Line one.\\nLine two.\"" <<< "$out"'
+check "#775 and the pass's report carries it, whole" 'grep -qF "T-6: which fixture helper should the spec use? — awaiting approval, its exact text (jira-comment on T-6, as JSON): \"Line one.\\nLine two.\"" <<< "$out"'
 check "#775 the text its park file says awaits approval is kept with the park" '[ "$(field T-6 park.approve)" = "{\"kind\":\"jira-comment\",\"target\":\"T-6\",\"body\":\"Line one.\\nLine two.\"}" ]'
 out=$(node "$B/answer.mjs" T-6 "use makeFixture from tests/helpers" 2>&1); arc=$?
 out=$(node "$B/queue.mjs" requeue T-6 2>&1); rc=$?

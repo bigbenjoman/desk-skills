@@ -585,6 +585,12 @@ out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --
 check "DS-594 a base fix worker may push HEAD to the base, and nothing else" \
   'ok "git push origin HEAD:refs/heads/feat/x" && no "git push origin feat/x" "git push origin HEAD:refs/heads/main" "git push origin HEAD" "git push --force origin HEAD:refs/heads/feat/x"'
 rm -f "$DESK_QUEUE"
+# DS-645 AC8: a blind audit (levers-audit.mjs) posts nothing, whatever §3 grants a ticket's worker.
+WRITES='"desk-jira comment X-1 hi" "desk-jira transition X-1 Done" "desk-jira create x" "desk-jira edit X-1" "desk-jira attach X-1 f" "gh pr comment 1 --body x" "gh pr review 1 --comment" "gh pr create --draft" "gh pr edit 1"'
+settings '`bash tests/run.sh`' "$(rows3 jira-comment=yes jira-transition=yes jira-create=yes jira-edit=yes pr-open=yes pr-edit=yes pr-self-review-comment=yes pr-reply=yes)"
+check "DS-645 AC8 a ticket's worker has the tracker and PR writes §3 grants" "ok $WRITES"
+out=$(cd "$T/repo" && DESK_CONFIG="$CFG" node "$B/worker-settings.mjs" worker --ticket audit.fix-thing --wt "$T/repo" --branch "" --out "$T/ws.json" 2>&1)
+check "DS-645 AC8 an audit worker has none of them" "no $WRITES && [[ \"\$out\" == *'CONFIG_DENIED: jira-comment (an audit posts nothing)'* ]]"
 
 # ---- a named batch's worker reads the repo's design snapshots ----
 BATCH="$T/state/batches/b1"; mkdir -p "$BATCH" "$T/state/triage"

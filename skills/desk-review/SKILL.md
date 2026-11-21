@@ -94,9 +94,8 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 ## Phases
 
 Each phase's rules are in its own file under `references/`. **Read a phase's file when the review
-reaches it.** The phases overlap, so some are read together: Phase 3 dispatches Bea (Phase 5) in the
-same message as the finders, and its codex cold call follows Phase 4's quoting rules, so read all
-three at Phase 3.
+reaches it.** Some phases are read together: Phase 3 dispatches Bea (Phase 5) in the
+same message as the finders, and its codex cold call follows Phase 4's quoting rules.
 
 | # | Phase | Read at its start |
 |---|---|---|
@@ -106,7 +105,7 @@ three at Phase 3.
 | 3 | Find | `references/phase-3-find.md`, with `references/phase-5-requirements.md` and `references/phase-4-refute.md` |
 | 4 | Refute | `references/phase-4-refute.md` |
 | 5 | Requirements | `references/phase-5-requirements.md` (dispatched at Phase 3) |
-| 6 | Report | `references/phase-6-report.md` |
+| 6 | Report | `references/phase-6-report.md`; also at each round's end (findings line) |
 | 7 | Post | `references/phase-7-post.md`, after *The verdict* below |
 
 **A phase file you cannot read stops the review.** If the file for the phase you are starting is
@@ -197,11 +196,11 @@ round reads the whole branch again, and the report header says why. That applies
   range would hand the finders every base commit that merge brought in as this branch's fixes.
 
 **From round 2 a P2 can be carried** instead of blocking: `"carried": true` on its finding, which
-takes it out of `p2` and counts it on the carried line instead. Carry a P2 when fixing it would mean
-another round. A P0 or P1 is never carried; verdict.mjs refuses one, naming the finding, and a P2 on
-round 1 is fixed rather than carried. A carried finding needs `where` as `file:line`.
+counts it on the carried line, not in `p2`. Carry one when fixing it would mean another round. A P0
+or P1 is never carried (verdict.mjs refuses one), and a P2 on round 1 is fixed rather than carried,
+unless split to the filed ticket its `follow_up` names. A carried finding needs `where` as `file:line`.
 `node verdict.mjs --carried <results>` prints the PR body's `### Carried review findings` section,
-one `file:line` per finding (desk-pr places it).
+`file:line` each (desk-pr places it).
 
 ## The verdict
 
@@ -229,7 +228,7 @@ worker: at its worktree root, left in place, `phase-7-post.md`):
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
   refutation `result` and the refuter's vendor (<!-- facts: refuted-by -->`refuted_by`: `claude` or `codex`, not an agent; absent when `UNREFUTED`<!-- /facts -->).
   Scope findings are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
-  finding deliberately left unfixed; `carried: true` for a P2 carried from round 2 (above). A
+  finding deliberately left unfixed; `carried: true` for a carried P2 (above). A
   merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it
   still counts unless that one is counted at the same severity or higher: merging must never drop a
   confirmed finding behind a rejected one.
@@ -262,7 +261,7 @@ this line to:
 | Field | Meaning |
 | --- | --- |
 | `sha` | The full SHA the finders read, equal to the PR head when posted. It attests that commit and no other |
-| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except P2s carried from round 2, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
+| `p0` `p1` `p2` | Findings **outstanding at this head**: `CONFIRMED` or `UNREFUTED`, deferred ones included, except carried P2s, which count only on the carried line. One raised and already fixed in this SHA is not in the results file |
 | `deferred` | Findings deliberately left unfixed, any severity (also counted in their `p` field). A body reading "clean" that defers one is `deferred=1` |
 | `gaps` | Open requirement gaps, excluding `UNVERIFIED CODE CLAIM` ones (never posted) |
 | `unrefuted` | Findings whose refutation did not run (also counted in their `p` field, or on the carried line when carried) |
@@ -271,7 +270,8 @@ this line to:
 | `round` | The round this review is |
 
 From round 2 a fourth line follows the heading, `<!-- desk-review:carried v=1 p2=<n> since=<full SHA> -->`:
-the P2 findings carried (counted there, **not** in `p2`) and the fix range's start. It never decides
+the P2 findings carried (counted there, **not** in `p2`) and the fix range's start (none on a round 1
+that carries). It never decides
 clean; the blocking counts above do. It sits after the heading, not in the verdict line: a repo's
 committed gate copy matches that line exactly, and would read an extra field as no verdict at all
 (`tests/test_review_gate.mjs`). So does `<!-- desk-review:accepted v=1 gaps=<n> -->`, next: the gaps

@@ -83,6 +83,7 @@ const REWRITTEN = [
   // trimmed so the core holds the generated refuted_by region under its cap
   ...['and never one remembered from an earlier run', 'is the expected result for most changes and is not a failure',
     'goes in place of `~/.agents/skills` where it is set'].map((s) => ['DS-886', s, 1]),
+  ['DS-888', '`git status --porcelain` must print nothing. The finders', 1], // Phase 0 runs desk-env tree-status
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

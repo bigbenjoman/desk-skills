@@ -3,7 +3,7 @@
 import { readFileSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { STATE_PATHS, statePath, openQuestion, parkApprove, readTriage } from '../desk/bin/batch-state.mjs';
+import { STATE_PATHS, statePath, openQuestion, parkApproval, readTriage } from '../desk/bin/batch-state.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -51,7 +51,7 @@ try {
   writeFileSync(join(dir, 'parks', 'A-1.json'), JSON.stringify({ question: 'q?', approve: { kind: 'jira-comment', target: 'A-1', body: 'b' } }));
   writeFileSync(join(dir, 'triage', 'A-1.json'), JSON.stringify({ lane: 'A' }));
   t('openQuestion reads the park file', openQuestion(dir, 'A-1'), 'q?');
-  t('parkApprove reads its approve', parkApprove(dir, 'A-1', 'q?')?.body, 'b');
+  t('parkApproval reads its approve', parkApproval(dir, 'A-1', 'q?').approve?.body, 'b');
   t('readTriage reads the triage record', readTriage(dir, 'A-1'), { lane: 'A' });
   writeFileSync(join(dir, 'answers', 'A-1.txt'), 'yes');
   t('an answer beside it closes the question', openQuestion(dir, 'A-1'), null);

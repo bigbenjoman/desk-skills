@@ -991,7 +991,9 @@ failed shard's suites. To refresh the committed durations from a green run on ma
 
 Every suite has a CPU-second budget in CI: 30 for a `.mjs` suite and 150 for any other, or the N of a
 `# budget: N <ticket>` line (`//` in `.mjs`) in its first ten lines, which `test_lint.sh` requires to
-name a ticket and caps at 600. A suite over its budget prints a `::warning::`; on a pull request it
+name a ticket and caps at 600. A suite that does more on a main push than on a pull request (as
+`test_compare_pass.sh` replays every pass suite there) writes `# budget: N (main M) <ticket>`: N on a
+pull request, M on a main push or a local run, and the cap holds N only. A suite over its budget prints a `::warning::`; on a pull request it
 fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push to main never fails on
 a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
 and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
