@@ -8,12 +8,13 @@
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
 //     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
 //
-//   node compare_pass.mjs diff <base records> <head records> <tree>...
+//   node compare_pass.mjs diff [--base-cached] <base records> <head records> <tree>...
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
 //     that change between runs (each <tree> the runs saw included) are normalized and times are
 //     matched across the trees; and every run that only one tree recorded, or that crashed on only
 //     one, as not compared. Exit 0 when nothing differs, 1 on a difference, 2 when anything was not
-//     compared.
+//     compared. --base-cached: the base was recorded by an earlier comparison, so hours or days
+//     before the head.
 //
 //   node compare_pass.mjs clean <records>
 //     Exit 0 when no pass in one tree's records crashed, 1 when one did.
@@ -223,12 +224,15 @@ function clock(recs) {
 // Two times match when they are the same, a few seconds apart, or the same offset from the start of
 // one run on each tree: a time a run made, or one its suite worked out just before it, sits there
 // however far apart the two trees ran. A time worked out differently (an hour on, not two) does not.
+// Where the base was cached, any gap between the trees can make two such times a few seconds apart,
+// so there only an elapsed time matches by its length.
+let baseCached = false;
 function sameTime(a, b, run, cb, ch) {
   if (a === b) return true;
   const ta = ms(a), tb = ms(b);
   if (!Number.isFinite(ta) || !Number.isFinite(tb)) return false;
   const within = Math.max(slack(a), slack(b));
-  if (Math.abs(ta - tb) <= within) return true;
+  if (Math.abs(ta - tb) <= within && (!baseCached || (SPAN.test(a) && SPAN.test(b)))) return true;
   for (const j of new Set([run, ...cb.around(ta), ...ch.around(tb)])) {
     if (j > run) continue;
     const sb = cb.start(j), sh = ch.start(j);
@@ -358,7 +362,9 @@ function lineDiff(a, b, eq = (x, y) => x === y) {
   return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)), matched };
 }
 
-function diff([baseDir, headDir, ...roots]) {
+function diff(args) {
+  baseCached = args[0] === '--base-cached';
+  const [baseDir, headDir, ...roots] = baseCached ? args.slice(1) : args;
   const norm = normalizer(roots);
   const suites = [...new Set([...readdirSync(baseDir), ...readdirSync(headDir)])]
     .filter((s) => !s.endsWith('.log')).sort();
@@ -429,4 +435,4 @@ function clean([dir]) {
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
 else if (mode === 'clean') clean(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff <base records> <head records> <tree>... | clean <records>'); process.exitCode = 2; }
+else { console.error('usage: compare_pass.mjs record <node args...> | diff [--base-cached] <base records> <head records> <tree>... | clean <records>'); process.exitCode = 2; }

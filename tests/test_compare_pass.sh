@@ -302,6 +302,17 @@ ccmp HEAD~3 HEAD~2
 check "DS-963 AC8 a sixth entry removes the oldest, keeping 5" '[ "$(entries)" = 5 ] && [ ! -e "$CD/old1.tar" ] && [ -e "$CD/old2.tar" ]'
 ccmp HEAD~3 HEAD~2
 check "DS-963 AC8 the entry just written is the one kept" '! replayed'
+# A cached base's run an hour and 5 seconds before the head's: a deadline worked out 2 hours on, where
+# the head works out 1, reads 5 seconds apart, and is still a difference; a time the run made, a fixed
+# one and an elapsed time a few seconds apart are not.
+farrec(){ mkdir -p "$T/far/$1/test_pass.sh"; node -e '
+const [f, start, due, span] = process.argv.slice(1), s = Number(start), iso = (t) => new Date(t).toISOString();
+require("fs").writeFileSync(f, JSON.stringify({ run: 1, started: s, at_line: 0, exit: 0, signal: null,
+  out: `A-1 in_progress for ${span}\n`, archive: null, queue: { tickets: { "A-1": { at: iso(s + 1000),
+  due: iso(s + due * 3600e3), added_at: "2026-01-02T03:04:05Z" } } } }));' "$T/far/$1/test_pass.sh/1.json" "$2" "$3" "$4"; }
+farrec base 1780000000000 2 '0m 05s'; farrec head 1780003605000 1 '0m 09s'
+out=$(node "$S/compare_pass.mjs" diff --base-cached "$T/far/base" "$T/far/head" "$T/far"); rc=$?
+check "DS-963 AC1 against a cached base a deadline worked out differently is listed though it reads seconds apart" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue A-1 due: base \"[0-9TZ:.-]+\", head \"[0-9TZ:.-]+\"$" && [ "$(echo "$out" | grep -c "^  ")" = 1 ]'
 
 # A pass stopped by a signal: the recorder in its place ends with the same status, and records it.
 echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/stopped.mjs"

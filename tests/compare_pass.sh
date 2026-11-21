@@ -29,6 +29,8 @@ while [ $# -gt 0 ]; do
 done
 [ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: bash tests/compare_pass.sh [--suite <name>]... <base> [<head>]" >&2; exit 2; }
 base=$1; head=${2:-HEAD}
+# A base ref is read once, so the tree replayed is the commit its recording is cached under.
+[ -d "$base" ] || base=$(git -C "$SRC" rev-parse --verify -q "$base^{commit}") || base=$1
 NODE=$(command -v node) || { echo "compare_pass: node is not on PATH" >&2; exit 2; }
 W="$(mktemp -d "${TMPDIR:-/tmp}/compare-pass.XXXXXX")" || exit 2
 trap 'rm -rf "$W"' EXIT
@@ -86,7 +88,7 @@ side(){ mkdir -p "$W/rec/$1"
 # recorder and suite_env.sh come from this checkout rather than the base.
 C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=; stopped=
 if [ "${PASS_CMP_CACHE:-1}" != 0 ] && [ ! -d "$base" ]; then
-  key=$({ git -C "$SRC" rev-parse "$base^{commit}"; "$NODE" --version; git --version; echo "$BASH_VERSION"
+  key=$({ echo "$base"; "$NODE" --version; git --version; echo "$BASH_VERSION"
     printf '%s\n' "${suites[@]}" | sort; cat "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh"
   } | git hash-object --stdin) || key=
 fi
@@ -111,10 +113,11 @@ if [ -n "$key" ] && [ -z "$hit" ] && [ -z "$stopped" ] && "$NODE" "$S/compare_pa
   ls -1t "$C"/*.tar 2>/dev/null | tail -n +6 | while IFS= read -r f; do rm -f "$f"; done
 fi
 side head
-"$NODE" "$S/compare_pass.mjs" diff "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; rc=$?
+# A cached base ran long before the head, which the diff is told so it matches times by run only.
+"$NODE" "$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; rc=$?
 if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
   trap - EXIT
   echo "compare_pass: kept the recordings and both trees in $W; list them again with:" >&2
-  { printf '  node'; printf ' %q' "$S/compare_pass.mjs" diff "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; echo; } >&2
+  { printf '  node'; printf ' %q' "$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; echo; } >&2
 fi
 exit $rc
