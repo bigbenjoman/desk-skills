@@ -37,7 +37,7 @@ checked, so it is not run through the checks again.
 ### Open it
 
 Opening the PR starts its preview build: first take the preview-build lease as `../SKILL.md` §4
-*Before opening the PR, and before every push to it* says (off, or §4 Vercel `none`: no lease;
+*Before opening the PR, and before every push to it* says (off, or §4 Vercel `none` (`desk-env list vercel`): no lease;
 `shadow`: take it without waiting; `on`: wait for a unit), then open, then put the PR's number on
 the unit with the `desk-env lease renew` that section gives.
 

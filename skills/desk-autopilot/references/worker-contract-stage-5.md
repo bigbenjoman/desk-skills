@@ -83,8 +83,8 @@ goes through, so you carry on from the steps you did not reach. **Any
 other exit is a refusal, not an outage** (a failed pre-push check, a non-fast-forward, a branch
 rule): it was not retried, so fix it or park on it as for any failed step.
 
-**A push to your open PR, and opening it, takes the preview-build lease first**, where §4 Vercel is
-set: `desk-pr` §4 *Before opening the PR, and before every push to it* (off: as before; shadow: take
+**A push to your open PR, and opening it, takes the preview-build lease first**, where §4 Vercel
+(`desk-env list vercel`) is set: `desk-pr` §4 *Before opening the PR, and before every push to it* (off: as before; shadow: take
 it without waiting; on: wait for a unit, saying you wait on the preview build). Its
 `desk-env lease` commands are yours to run.
 
