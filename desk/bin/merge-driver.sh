@@ -100,6 +100,14 @@
 #                                            it merges, goes red or parks, or 60 minutes after its repair.
 #                                            Repaired PRs are not held behind each other
 #   - refused by `gh pr merge`               backed off for 10 minutes, then retried
+#   - its base is red                        the newest completed run of a §4 Required check on the base
+#                                            failed (base-red.mjs, read once per loop down its newest
+#                                            commits): no PR merges into it but its repair ticket's
+#                                            (base-red-<base>), and the loop logs the hold naming the
+#                                            check. The record it keeps in <state>/base-red.json is the
+#                                            pass's to report and repair; it goes once the check passes
+#                                            there. A base whose runs cannot be read merges as before,
+#                                            logging that its state is unknown
 # The one red that merges is a written waiver: every failing check is named in §4 Known flaky checks,
 # none is a §4 Required check (merging past one is a bypass, and §3 merge-bypass is never), the PR's
 # files touch none of the paths the row gives for it, each is still red after two reruns the driver
@@ -321,7 +329,7 @@ log(){
     *$'\n'*) ;;
     '#'[0-9]*' '*) key="${msg%% *}"; key="${key#\#}" ;;
     'epic PR #'[0-9]*' '*) key="${msg#epic PR \#}"; key="${key%% *}" ;;
-    'draft (still reviewing): '*|'no ready batch PRs'*) key=loop ;;
+    'draft (still reviewing): '*|'no ready batch PRs'*|'HOLDING on red '*|'base state unknown on '*) key=loop ;;
   esac
   case "$key" in loop) ;; *[!0-9]*) key="" ;; esac
   if [ -n "$key" ] && [ -n "$SAID" ] && said "$key" "$msg"; then return 0; fi
@@ -1247,6 +1255,23 @@ while true; do
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 "\t-" }')
   epic=$(epic_pr </dev/null)
   [ -n "$epic" ] && ready="${ready:+$ready$'\n'}$epic"
+
+  # The base is read every loop, PRs ready or not, so the record the pass reports from is current: a
+  # red base takes no merge but its repair ticket's PR, which may be none this loop. A base whose runs
+  # cannot be read merges as before.
+  fixkey=""
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" 2>/dev/null </dev/null); then
+    case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
+      red)
+        log "$(printf '%s' "$base_state" | jq -r .line)"
+        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
+      green|none) ;;
+      *) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
+    esac
+  else
+    log "base state unknown on $BASE_BRANCH (base-red.mjs could not read it) — merging as before"
+  fi
+
   if [ -z "$ready" ]; then
     # A driver started on the wrong base lists nothing and would say only that, forever: name the batch
     # PRs open on any other base, so the mismatch shows in the log.
@@ -1254,6 +1279,11 @@ while true; do
     if [ -n "$elsewhere" ]; then log "no ready batch PRs on $BASE_BRANCH, the only base this driver watches; batch PRs open on another base: $elsewhere"
     else log "no ready batch PRs"; fi
     pause 60; continue
+  fi
+
+  if [ -n "$fixkey" ]; then
+    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
+    if [ -z "$ready" ]; then pause 120; continue; fi
   fi
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)

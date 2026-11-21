@@ -61,6 +61,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -1716,6 +1717,40 @@ const linkLines = [];
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }
 }
+
+// ---- red base --------------------------------------------------------------
+// The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
+// one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
+// allows. A repair ticket not yet merged is the one, and so is one that merged in this red spell, live or
+// archived: none is admitted beside it, nor a second once it merged with the base still red. One that
+// merged in an earlier spell is done with: dropped where the queue still holds it (a batch with a base
+// archives nothing), and the key admitted again.
+const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
+let baseRedRepair = null;
+if (BASE_RED) {
+  const key = BASE_RED.repair_key;
+  const tickets = queue().tickets;
+  const had = tickets[key] ?? null;
+  const merged = had?.merged_at ?? null;
+  if (had && !merged) baseRedRepair = { key, state: had.state };
+  else if (merged && Date.parse(merged) >= Date.parse(BASE_RED.since)) baseRedRepair = { key, state: `merged at ${merged} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
+  else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
+  else {
+    mkdirSync(join(STATE, 'tickets'), { recursive: true });
+    mkdirSync(join(STATE, 'triage'), { recursive: true });
+    writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+    writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+    // An earlier red spell's repair left its log under the same key, whose AUTOPILOT_DONE would keep
+    // this one from spawning: moved aside, as a requeue does.
+    E.rotateRound(key);
+    const dropped = had && Object.hasOwn(tickets, key) ? qTry(['drop', key]) : { ok: true };
+    const r = dropped.ok ? qTry(['admit', key, '--by', 'base-red']) : dropped;
+    baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+  }
+}
+// The PRs held on it, which its one line names in place of a BASE RED line each.
+const baseRedHeld = [];
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
@@ -4583,6 +4618,13 @@ function applyFix(t, n, head, c) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
   }
+  // Held only on checks the red base names, it is one of the PRs the batch's red base line names; held on
+  // another too, it keeps its own line, as needs-you keeps its item.
+  const heldOn = c.base_red?.checks ?? [];
+  if (c.call === 'held' && !c.label && BASE_RED && heldOn.length && heldOn.every((x) => BASE_RED.checks.some((b) => b.name === x))) {
+    baseRedHeld.push(`#${n} (${t.key})`);
+    return;
+  }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
@@ -5095,6 +5137,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
+      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
     };
   },
   decide: decideReportLines,
