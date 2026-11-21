@@ -26,13 +26,15 @@ const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'home', '.claude', 'desk
   DESK_PLATFORM: 'darwin', DESK_UI_TEST_PORT: String(PORT), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
 mkdirSync(join(T, 'bin'), { recursive: true });
 mkdirSync(env.HOME, { recursive: true });
-// launchd: `print` answers while loaded, `bootstrap` starts the server, `bootout` stops it.
+// launchd: `print` answers while loaded, `bootstrap` starts the server, `bootout` stops it, and fails
+// (as launchctl does, "No such process") when the job is not loaded.
 writeFileSync(join(T, 'bin', 'launchctl'), `#!/bin/sh
 echo "$@" >> "${T}/launchctl.calls"
 case "$1" in
   print) [ -f "${T}/loaded" ] ;;
   bootstrap) : > "${T}/loaded"; node "${BIN}" serve >> "${T}/server.out" 2>&1 & echo $! > "${T}/server.pid" ;;
-  bootout) [ -f "${T}/server.pid" ] && kill "$(cat "${T}/server.pid")" 2>/dev/null; rm -f "${T}/loaded" "${T}/server.pid"; sleep 0.3 ;;
+  bootout) [ -f "${T}/loaded" ] || exit 3
+    [ -f "${T}/server.pid" ] && kill "$(cat "${T}/server.pid")" 2>/dev/null; rm -f "${T}/loaded" "${T}/server.pid"; sleep 0.3 ;;
 esac
 `, { mode: 0o755 });
 process.on('exit', () => { try { process.kill(Number(readFileSync(join(T, 'server.pid'), 'utf8')), 'SIGTERM'); } catch { /* not running */ } });
@@ -101,13 +103,15 @@ t('uninstalling again says it was not installed', [twice.status, /was not instal
 
 t('install.sh --help lists --uninstall-ui', spawnSync('bash', [join(ROOT, 'install.sh'), '--help'], { env, encoding: 'utf8' }).stdout.includes('--uninstall-ui'), true);
 
-// install.sh's own functions, taken from it and run with its output helpers stubbed: the install step
-// on macOS, and what --rollback does about the job. DESKDIR's bin is this checkout's desk/bin.
+// install.sh's own functions, taken from it and run under its shell options with its output helpers
+// stubbed: the install step on macOS, and what --rollback does about the job. DESKDIR's bin is this
+// checkout's desk/bin.
 const DESKDIR = join(T, 'deskdir');
 mkdirSync(DESKDIR, { recursive: true });
 symlinkSync(join(ROOT, 'desk', 'bin'), join(DESKDIR, 'bin'));
 const shFn = (name, more = {}) => {
-  const r = spawnSync('bash', ['-c', `eval "$(sed -n '/^${name}() {$/,/^}$/p' "$1")"
+  const r = spawnSync('bash', ['-c', `set -euo pipefail
+eval "$(sed -n '/^${name}() {$/,/^}$/p' "$1")"
 note(){ echo "note: $*"; }; ok(){ echo "ok: $*"; }; warn(){ echo "warn: $*"; }; wrote(){ echo "wrote: $*"; }; show_err(){ echo "err: $*"; }
 declare -F ${name} >/dev/null || { echo "no ${name} in install.sh"; exit 9; }
 ${name}`, 'sh', join(ROOT, 'install.sh')], { env: { ...env, DESKDIR, OS: 'mac', ...more }, encoding: 'utf8', timeout: 30000 });
@@ -134,8 +138,10 @@ const keep = shFn('ui_after_rollback');
 t('a rollback onto a release with desk-ui leaves the job', [keep.code, existsSync(PLIST), calls().length], [0, true, 0]);
 const OLD = join(T, 'olddesk');
 mkdirSync(join(OLD, 'bin'), { recursive: true });
+// The job is not loaded here (stopped above, and the refused install left its plist), so the bootout
+// fails, as launchctl's does: the plist must still go and the rollback must not fail.
 const gone = shFn('ui_after_rollback', { DESKDIR: OLD });
-t('a rollback onto a release without desk-ui unloads the job and removes its plist', [gone.code, calls().includes(`bootout gui/${UID}/com.desk-skills.ui`), existsSync(PLIST), /removed com\.desk-skills\.ui/.test(gone.out)], [0, true, false, true]);
+t('a rollback onto a release without desk-ui removes its plist, even with the job not loaded', [gone.code, calls().includes(`bootout gui/${UID}/com.desk-skills.ui`), existsSync(PLIST), /removed com\.desk-skills\.ui/.test(gone.out)], [0, true, false, true]);
 t('and changes no queue or state file', state(), before);
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');

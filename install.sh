@@ -85,7 +85,8 @@ ui_after_rollback() {
   local plist="$HOME/Library/LaunchAgents/com.desk-skills.ui.plist"
   [ -f "$DESKDIR/bin/desk-ui.mjs" ] && return 0
   [ -f "$plist" ] || return 0
-  launchctl bootout "gui/$(id -u)/com.desk-skills.ui" >/dev/null 2>&1
+  # Not loaded (a failed bootstrap, a port clash, an ssh session) fails the bootout; the plist still goes.
+  launchctl bootout "gui/$(id -u)/com.desk-skills.ui" >/dev/null 2>&1 || true
   rm -f "$plist"
   echo "  desk-ui: removed com.desk-skills.ui: the release now current has no desk-ui server"
 }
