@@ -110,7 +110,9 @@ function normalizer(roots) {
 // The id the pass hashes from its own start time into an evidence fix's key (`evidence-fix-<id>`,
 // `fix-<id>.md`) is treated the same way, digits or not: each tree's pass started at a different time.
 // Ports are treated the same way: two runs take different free ports, but two tickets given one port
-// on one tree and two on the other still differ.
+// on one tree and two on the other still differ. A port a stale lease held was picked by an earlier
+// pass, from what was free on the machine then, so whether it is one of this run's ports differs
+// between replays: those ports stand one for one among themselves only (STALE_LEASE).
 // Text the pass cut short ("…") is cut at a different place on each tree, so a SHA or port in it can be
 // whole on one and cut, or gone, on the other. Only the SHAs and ports before the word the cut falls
 // in and after the "…" are paired (sameCut): one cut short, or past the cut on one tree only, pairs
@@ -147,10 +149,12 @@ function renamer() {
 
 // A normalized string with each port and SHA in it as <PORT> or <SHA>, and those values in order,
 // each marked when the pass cut it short. Ports first, so a port cut short is not taken for a SHA.
+// The text before the port a pass names in dropping a stale lease (port-lease.mjs pickPort).
+const STALE_LEASE = /\bdropped the stale lease on $/;
 function tokens(s) {
   const found = [];
-  const mark = (tag, v, cut) => { found.push({ tag, v, cut }); return `\u0001${found.length - 1}\u0002`; };
-  const marked = s.replace(PORT, (m, pre, p, at, all) => pre + mark('PORT', p, all[at + m.length] === '…'))
+  const mark = (tag, v, cut, stale = false) => { found.push({ tag, v, cut, stale }); return `\u0001${found.length - 1}\u0002`; };
+  const marked = s.replace(PORT, (m, pre, p, at, all) => pre + mark('PORT', p, all[at + m.length] === '…', STALE_LEASE.test(all.slice(0, at))))
     .replace(SHA, (x, at, all) => mark('SHA', x, all[at + x.length] === '…'));
   const vals = [];
   const key = marked.replace(/\u0001(\d+)\u0002/g, (_, i) => { vals.push(found[i]); return `<${found[i].tag}>`; });
@@ -158,10 +162,11 @@ function tokens(s) {
 }
 
 // The SHAs and ports of matched text, paired base to head across one run: each value stands for one
-// value on the other tree, both ways. A pair of texts whose values break that differs.
+// value on the other tree, both ways. A pair of texts whose values break that differs. A stale lease's
+// port is paired apart from the run's own ports.
 function pairer() {
   let fwd = new Map(), back = new Map();
-  const id = (v) => `${v.tag} ${v.v}`;
+  const id = (v) => `${v.tag}${v.stale ? ' stale' : ''} ${v.v}`;
   return {
     seed(tag, a, b) { fwd.set(`${tag} ${a}`, `${tag} ${b}`); back.set(`${tag} ${b}`, `${tag} ${a}`); },
     // x and y match, and pairs says which of x's values stands where each of y's does.
