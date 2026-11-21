@@ -293,6 +293,25 @@ check "#823 a port range a peer claimed is skipped, though its server is down" '
 node "$B/port-claims.mjs" release --by 'peer acme/shop' >/dev/null
 spawn_one P-177
 check "#823 once the peer releases it, the port is used again" '[ "$(field P-177 state)" = "\"running\"" ] && [ "$(field P-177 port)" = 47501 ]'
+# DS-910: with the port lease kind on, a pass skips a port a peer session leases, and hands each
+# worker's port lease to the pid spawn-worker.sh printed. The peer and the worker are sleep processes.
+export DESK_LEASE_DIR="$T/leases" DESK_MACHINE="$T/machine-ports-on.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=on` | test |\n' > "$DESK_MACHINE"
+other '{"tickets":{}}'
+PEER=$( (sleep 300 >/dev/null 2>&1 & echo $!) ); WPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+node "$B/leases.mjs" acquire port 47501 --ttl 3600 --label 'peer session acme/shop' --pid "$PEER" >/dev/null
+cp "$T/desk/bin/spawn-worker.sh" "$T/spawn-worker.kept"
+printf 'if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1 pid=%s port=$AUTOPILOT_PORT"; fi\n' "$WPID" > "$T/desk/bin/spawn-worker.sh"
+spawn_one P-910
+check "DS-910 AC1 a port a peer session leases is not given out, though nothing listens on it" '[ "$(field P-910 state)" = "\"running\"" ] && [ "$(field P-910 port)" = 47502 ]'
+check "DS-910 AC3 the lease list shows the worker's port held by its process, with its repo, batch and ticket" 'node "$B/leases.mjs" list --json | jq -e --argjson p "$WPID" "select(.key == \"47502\" and .owner.pid == \$p and .label == \"acme/widgets standing P-910\")" >/dev/null'
+kill "$PEER"; while kill -0 "$PEER" 2>/dev/null; do sleep 0.1; done
+spawn_one P-911
+check "DS-910 AC6 a peer whose process exited no longer holds its port, and the report says so" '[ "$(field P-911 port)" = 47501 ] && echo "$out" | grep -qF "ports: dropped the stale lease on port 47501 held by peer session acme/shop (pid $PEER): owner exited"'
+printf '{not json' > "$T/leases/leases.json"
+spawn_one P-912
+check "DS-910 AC9 an unreadable lease store picks by the legacy rule and the report says so" '[ "$(field P-912 state)" = "\"running\"" ] && [ "$(field P-912 port)" = 47501 ] && echo "$out" | grep -qF "ports: leases were unreadable ("'
+kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
 
 # DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
 # with its reset moved to suit each case. Each case is a running ticket whose log stopped growing

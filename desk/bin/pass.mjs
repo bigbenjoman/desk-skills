@@ -39,6 +39,7 @@ import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { claimedPorts } from './port-claims.mjs';
+import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
 import { firstSpawnFromLogs, readHistory, buildHistory, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
@@ -2404,19 +2405,32 @@ function otherQueuePorts() {
   }
   return ports;
 }
-// Assign a port nothing else holds. Four things make one unavailable: another ticket in this batch
+// Assign a port nothing else holds. Five things make one unavailable: another ticket in this batch
 // already holds it (a worker's port is unbound until it starts a server, so a bind check alone races),
 // a running worker in another batch's queue holds it (two batches' worker blocks can meet), a peer
-// session claimed it at handshake (port-claims.mjs: its server may be down just now), or something
-// is listening on it. The floor is one above the user's own dev port (E.workerPortFloor, shared with
-// spawn-worker.sh; AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free.
-async function freePort(own = null) {
+// session claimed it at handshake (port-claims.mjs: its server may be down just now), with the port
+// lease kind on another session leases it (port-lease.mjs), or something is listening on it. The
+// floor is one above the user's own dev port (E.workerPortFloor, shared with spawn-worker.sh;
+// AUTOPILOT_PORT_FLOOR overrides). A resumed worker keeps its own port if it is free. Unless the port
+// kind is off, the port is leased to this pass, and leaseToWorker hands it to the worker it spawns.
+const portLeaseLines = new Set();
+const portLeases = new Map();
+let leaseBatch;
+try { leaseBatch = E.batchName(); } catch { leaseBatch = null; }
+async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   const now = queue();
   const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
-  if (Number(own?.port) > 0 && !taken.has(Number(own.port)) && !(await E.portInUse(Number(own.port)))) return Number(own.port);
-  let port = E.workerPortFloor();
-  while (taken.has(port) || await E.portInUse(port)) port += 1;
-  return port;
+  const p = await pickPort({ env: E, taken, inUse: (n) => E.portInUse(n), own: own?.port, floor: E.workerPortFloor(), repo: GH_REPO, batch: leaseBatch, key, take: !DRY });
+  for (const l of p.notes) portLeaseLines.add(l);
+  portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
+  return p.port;
+}
+// Once spawn-worker.sh has started `key`'s worker, its port lease moves from this pass to the worker's pid.
+function leaseToWorker(key, port, spawnOut) {
+  const l = portLeases.get(key);
+  if (!l || l.port !== port) return;
+  const why = handToWorker({ env: E, id: l.id, port, workerPid: spawnedPid(spawnOut), label: workerLabel(GH_REPO, leaseBatch, key) });
+  if (why) portLeaseLines.add(`ports: ${key}'s lease on port ${port} stays with this pass, which frees it on exit: ${why}`);
 }
 
 const loginVars = (dir) => (dir === OWN_LOGIN.configDir ? {} : { AUTOPILOT_LOGIN_DIR: dir ?? '' });
@@ -2582,6 +2596,7 @@ async function resumeKilled(t) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
+  leaseToWorker(t.key, port, spawned.out);
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : budget ? `after its per-worker budget, with $${BUDGET_EXTRA_USD} to commit, push and finish` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
@@ -2772,6 +2787,7 @@ async function spawnHandoff(t, pick) {
   });
   const spawnRefused = spawnRefusal(spawned.out);
   if (spawnRefused) return fail(spawnRefused);
+  leaseToWorker(t.key, port, spawned.out);
   report.spawned.push(`${t.key} fresh session from Stage ${stage} (handed off) port=${port} model=${model || 'default'}${pick.line}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
@@ -2844,6 +2860,7 @@ async function spawnBaseFix({ wt, fix: asked }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) { failed('could not be spawned', refused); return; }
+  leaseToWorker(key, port, spawned.out);
   made[made.length - 1].session = sid;
   record({ running: sid, port, log_bytes: logBytes, idle_passes: 0 });
   // In the file now, as a ticket's running write is, so a pass that ends early never loses the session.
@@ -2904,6 +2921,7 @@ async function resumeBaseFix({ wt, why, ended, clear }) {
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
+  leaseToWorker(key, port, spawned.out);
   bf = { ...bf, port, log_bytes: logBytes, idle_passes: 0, ...clear };
   q('set-batch', `base_fix=${JSON.stringify(bf)}`);
   flushQueue();
@@ -3270,7 +3288,7 @@ for (const t of spawnable) {
   const sid = E.uuid();
 
   // eslint-disable-next-line no-await-in-loop
-  const port = await freePort();
+  const port = await freePort(null, t.key);
 
   // Reset the stall counters: a respawn after a log rotation starts a smaller log than the stored
   // size, and without this the stall killer shoots each fresh worker within a pass or two.
@@ -3316,6 +3334,7 @@ for (const t of spawnable) {
     markFailed(t.key, refused, { sets: ['session_id=null', 'port=null', 'spawn_failed=true'] });
     continue;
   }
+  leaseToWorker(t.key, port, spawned.out);
   // The first spawn is kept across requeues: the eta history measures spawn to merge from it.
   if (!t.spawned_at) q('set', t.key, `spawned_at=${spawnedAt}`);
   // Only once spawn-worker.sh started it: a refused spawn ran no worker, so its try is still unrun.
@@ -3624,7 +3643,7 @@ runPhase({
     ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, epicLines,
     incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, conflictRecordBad: conflictRecord.bad,
     conflicts: [...conflictsBy].map(([f, times]) => ({ file: f, configured: configuredPlaces(f), now: placesFor(f), recent: recentCount(times, PASS_MS) })),
-    unreadableQueues: [...unreadableQueues], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
+    unreadableQueues: [...unreadableQueues], portLeaseLines: [...portLeaseLines], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
   }),
   decide: decideReportOpening,
   handlers: OUT_HANDLERS,
@@ -4776,8 +4795,10 @@ async function promotionChecksStep(qx) {
 // Starts a try on a PR of the base's in the base worktree, after the spawn summary is printed, so it says
 // its own.
 async function startBaseTry(fix) {
-  const [s0, f0] = [report.spawned.length, report.failed.length];
+  const [s0, f0, l0] = [report.spawned.length, report.failed.length, portLeaseLines.size];
   await spawnBaseFix({ wt: baseWt, fix });
+  // The report's port lines were printed before this try picked its port.
+  for (const l of [...portLeaseLines].slice(l0)) out.push(l);
   // A preflight refused at the usage limit held the batch after the save.
   saveUsage();
   if (report.spawned.length > s0) {
