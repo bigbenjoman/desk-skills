@@ -2,10 +2,11 @@
 // covers: desk/bin/desk-q-model.mjs desk/bin/desk-q.mjs
 // A Node process that imports desk-q-model.mjs alone builds home's JSON for a fixture repo under a
 // throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT, and it matches `desk-q --json home` for the same
-// state; and the model's import graph, walked file by file, reaches neither node:readline nor
-// desk-q.mjs. launchctl and vm_stat are fakes on PATH, so nothing reads launchd or this computer's memory.
-import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { delimiter, dirname, join, resolve } from 'node:path';
+// state; and a resolve hook in that process sees every module it loads, through the build too, and
+// neither node:readline nor desk-q.mjs is among them. launchctl and vm_stat are fakes on PATH and
+// available memory is pinned (DESK_MEM_AVAIL_GB), so nothing reads launchd or this computer's memory.
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { delimiter, dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { scratch } from './scratch.mjs';
@@ -23,8 +24,9 @@ mkdirSync(BIN);
 const fake = (name, body) => writeFileSync(join(BIN, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
 fake('vm_stat', `echo 'Mach Virtual Memory Statistics: (page size of 4096 bytes)'; echo 'Pages free: 1000000.'`);
 fake('launchctl', 'exit 1');
+// Each process reads available memory for itself, so a live reading would differ between the two builds.
 const env = { ...process.env, HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'),
-  DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_REPO_DIR: T, PATH: `${BIN}${delimiter}${process.env.PATH}` };
+  DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_REPO_DIR: T, DESK_MEM_AVAIL_GB: '12', PATH: `${BIN}${delimiter}${process.env.PATH}` };
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 
 // One repo with a batch: a running ticket and a triaged one.
@@ -44,12 +46,21 @@ writeFileSync(queuePath, JSON.stringify({ version: 1, batch: 'alpha', concurrenc
 const timeless = (v) => (Array.isArray(v) ? v.map(timeless)
   : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).filter(([k]) => !['generated_at', 'as_of', 'age_s'].includes(k)).map(([k, x]) => [k, timeless(x)])) : v);
 
-// ---- AC1: the model alone builds what desk-q --json home prints ---------------------------------
-const alone = `const m = await import(${JSON.stringify(pathToFileURL(MODEL).href)});
-const now = Date.now();
-console.log(JSON.stringify(m.homeJson(m.loadRepos(now), { now }), null, 2));`;
+// A Node process that records every module it resolves (import, import() and require alike, a query
+// string dropped) while it imports `mod` and runs `build`, and prints { out, loaded }.
+const traced = (mod, build) => `import { registerHooks } from 'node:module';
+const loaded = new Set();
+registerHooks({ resolve(s, c, next) { const r = next(s, c); loaded.add(r.url.replace(/[?#].*$/, '')); return r; } });
+const m = await import(${JSON.stringify(pathToFileURL(mod).href)});
+const out = ${build};
+console.log(JSON.stringify({ out, loaded: [...loaded] }));`;
 const node = (args) => execFileSync(process.execPath, args, { env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-const fromModel = JSON.parse(node(['--input-type=module', '-e', alone]));
+const run = (mod, build) => JSON.parse(node(['--input-type=module', '-e', traced(mod, build)]));
+const terminal = (urls) => urls.filter((u) => u === 'node:readline' || u.endsWith('/desk-q.mjs'));
+
+// ---- AC1: the model alone builds what desk-q --json home prints ---------------------------------
+const alone = run(MODEL, '(() => { const now = Date.now(); return m.homeJson(m.loadRepos(now), { now }); })()');
+const fromModel = alone.out;
 const fromCli = JSON.parse(node([DESK_Q, '--json', 'home']));
 t('the fixture repo is on home, its ticket running', fromModel.repos.map((r) => [r.name, r.running]), [['alpha', 1]]);
 if (!t('AC1 the model alone builds the home JSON desk-q --json home prints, ages aside', timeless(fromModel), timeless(fromCli))) {
@@ -58,26 +69,10 @@ if (!t('AC1 the model alone builds the home JSON desk-q --json home prints, ages
 }
 t('AC1 the plain lines are the same too', fromModel.lines, fromCli.lines);
 
-// ---- AC2: the model's import graph holds neither node:readline nor desk-q.mjs -------------------
-// Every module specifier in a file: static imports, re-exports and dynamic import() of a literal.
-const specs = (file) => [...readFileSync(file, 'utf8').matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*)['"]([^'"]+)['"]/g)].map((m) => m[1]);
-function graph(start) {
-  const seen = new Set(), builtins = new Set(), todo = [start];
-  while (todo.length) {
-    const f = todo.pop();
-    if (seen.has(f)) continue;
-    seen.add(f);
-    for (const s of specs(f)) {
-      if (s.startsWith('node:')) builtins.add(s);
-      else if (s.startsWith('.')) { const p = resolve(dirname(f), s); if (existsSync(p)) todo.push(p); }
-    }
-  }
-  return { files: [...seen], builtins: [...builtins] };
-}
-const g = graph(MODEL);
-t('the walk follows the model\'s own imports (needs-you.mjs among them)', g.files.some((f) => f.endsWith('/needs-you.mjs')), true);
-t('AC2 no module the model reaches imports node:readline', g.builtins.filter((b) => b === 'node:readline'), []);
-t('AC2 no module the model reaches imports desk-q.mjs, the terminal module', g.files.filter((f) => f.endsWith('/desk-q.mjs')), []);
-t('desk-q.mjs itself does import node:readline, so the walk would see it', specs(DESK_Q).includes('node:readline'), true);
+// ---- AC2: what the model loads holds neither node:readline nor desk-q.mjs -----------------------
+t('the hook saw the model\'s own imports (needs-you.mjs among them)', alone.loaded.some((u) => u.endsWith('/needs-you.mjs')), true);
+t('AC2 importing the model and building home loads neither node:readline nor desk-q.mjs', terminal(alone.loaded), []);
+t('importing desk-q.mjs does load both, so the hook would see them',
+  terminal(run(DESK_Q, 'null').loaded).map((u) => u.replace(/^.*\//, '')).sort(), ['desk-q.mjs', 'node:readline']);
 
 process.exit(fails ? 1 : 0);
