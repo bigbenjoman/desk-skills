@@ -3,17 +3,17 @@
 // with a primary and a secondary window, plan_type and rate_limit_reached_type. Two CODEX_HOME folders,
 // ~/.codex and ~/.codex-logins/b, plus one with no logs. Nothing reads this computer's Codex folders.
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { zstdCompressSync } from 'node:zlib';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-codex-usage-'));
+const T = scratch('desk-codex-usage-');
 const H = join(T, 'home');
 mkdirSync(H, { recursive: true });
 for (const k of ['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_CONFIG', 'DESK_QUEUE', 'DESK_AUTOPILOT_STATE']) delete process.env[k];

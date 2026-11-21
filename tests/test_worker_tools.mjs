@@ -5,12 +5,12 @@
 // off switch set. Two tickets' workers send the same appended system prompt, drop the per-machine
 // sections, and carry their own briefing in the first message, at a later stage too, and never again
 // on a resume. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync, cpSync, rmSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WORKER_TOOLS, TRIAGE_TOOLS } from '../desk/bin/worker-tools.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -82,7 +82,7 @@ t('worker-tools.mjs none is empty', cli('none').stdout, '\n');
 t('worker-tools.mjs <unknown> exits 2', cli('bogus').status, 2);
 
 // Dry-run spawns through a stub claude.
-const T = mkdtempSync(join(tmpdir(), 'desk-tools-'));
+const T = scratch('desk-tools-');
 for (const d of ['home', 'state', 'stub', 'repo']) mkdirSync(join(T, d), { recursive: true });
 // spawn-worker.sh builds the --agents file from the user-level agents and refuses a spawn without them.
 cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });
@@ -146,6 +146,8 @@ const argv = (log, n) => {
 };
 const toolsOf = (a) => (a && a.includes('--tools') ? a[a.indexOf('--tools') + 1] : undefined);
 const LIST = WORKER_TOOLS.join(',');
+// The finder model check's call: it follows the preflight's one or two (a reply that ran no check is retried).
+const finderCall = (log) => [1, 2].map((n) => argv(log, n)).find((c) => c?.includes('Reply with exactly one word: MODEL_OK')) ?? null;
 
 // AC1: the worker's own claude -p call, in a dry run.
 let r = spawnWorker(SID, 'run', { AUTOPILOT_DRY_RUN: '1' });
@@ -159,7 +161,7 @@ r = spawnWorker('preflight', 'pre', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER
 const pre = argv('pre', 0);
 t('AC3 the preflight runs', !!pre && pre.includes('-p') && pre.includes('--settings'), true);
 t('AC3 the preflight offers the same list as the worker', toolsOf(pre), LIST);
-t('the finder model check is offered no tool', toolsOf(argv('pre', 1)), '');
+t('the finder model check is offered no tool', toolsOf(finderCall('pre')), '');
 
 // AC6: the off switch gives every call Claude Code's default list.
 r = spawnWorker(SID, 'off', { AUTOPILOT_DRY_RUN: '1', AUTOPILOT_DEFAULT_TOOLS: '1' });
@@ -167,7 +169,7 @@ a = argv('off', 0);
 t('AC6 off switch: the worker still launches', !!a && a.includes('-p'), true);
 t('AC6 off switch: no --tools, so the default list', toolsOf(a), undefined);
 r = spawnWorker('preflight', 'preoff', { AUTOPILOT_PREFLIGHT: '1', AUTOPILOT_FINDER_MODEL: 'opus', AUTOPILOT_DEFAULT_TOOLS: '1' });
-t('AC6 off switch: the preflight passes no --tools', [toolsOf(argv('preoff', 0)), toolsOf(argv('preoff', 1))], [undefined, undefined]);
+t('AC6 off switch: the preflight passes no --tools', [!!finderCall('preoff'), toolsOf(argv('preoff', 0)), toolsOf(finderCall('preoff'))], [true, undefined, undefined]);
 
 // A batch's ticket workers share one system prompt: dry-run spawns of two tickets, each with its own
 // briefing, compared by the system prompt and the first message each sends.

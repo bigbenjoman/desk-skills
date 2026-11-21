@@ -76,10 +76,12 @@ export function firstSpawnFromLogs(state, key) {
 
 // The size triage recorded, or `unknown`: never guessed from anything else.
 export function sizeOf(state, key) {
-  try {
-    const s = String(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8')).size ?? '').trim().toUpperCase();
-    return SIZES.includes(s) ? s : 'unknown';
-  } catch { return 'unknown'; }
+  try { return sizeIn(JSON.parse(readFileSync(join(state, 'triage', `${key}.json`), 'utf8'))); } catch { return 'unknown'; }
+}
+// The size triage record `rec` holds, as sizeOf reads it.
+export function sizeIn(rec) {
+  const s = String(rec?.size ?? '').trim().toUpperCase();
+  return SIZES.includes(s) ? s : 'unknown';
 }
 
 export function historyLine({ key, size, spawned_at, merged_at }) {
@@ -313,6 +315,12 @@ export const blockersFact = (issue) => (issue?.fields?.issuelinks ?? [])
   .filter((l) => l.inwardIssue && /blocked by/i.test(l.type?.inward ?? ''))
   .map((l) => ({ key: l.inwardIssue.key, category: l.inwardIssue.fields?.status?.statusCategory?.key ?? 'new',
     summary: l.inwardIssue.fields?.summary ?? null, type: l.inwardIssue.fields?.issuetype?.name ?? null }));
+
+// Whether a blocker record is Done in Jira under a resolution that ships nothing (Won't Do, Duplicate,
+// Cannot Reproduce): its code never lands, so a hold waiting for it to land waits for ever. A Done one
+// with no resolution read, or none set, is an ordinary Done blocker.
+const LANDS = /^(done|fixed)$/i;
+export const closedUnlanded = (b) => b?.category === 'done' && typeof b.resolution === 'string' && !!b.resolution.trim() && !LANDS.test(b.resolution.trim());
 
 // A ticket's blockers split from those that are its own epic: its Jira parent epic (`epicKey`) or the
 // epic its batch runs (`batchEpic`). An epic is Done only once its children are, so a link to it would

@@ -2,11 +2,11 @@
 // The machine profile: hardware parsing from fixture output, the sizing rules, the profile file, and
 // the §3b fallback through desk-env. Scratch directories only; nothing reads this computer.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed } from '../desk/bin/machine.mjs';
+import { parseMac, parseLinux, propose, renderProfile, parseProfile, hardwareChanges, sizingChanges, countCpuList, rewrittenSizing, sizesProposed, sizingOverrides, isOverride } from '../desk/bin/machine.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const sized = (hw) => Object.fromEntries(propose(hw).map((r) => [r.key, r]));
@@ -56,9 +56,9 @@ const mini = sized(macMini);
 t('desktop: sizes nothing for a CI runner', Object.keys(mini).filter((k) => k.startsWith('runner-')).join(), '');
 t('desktop: ceiling is memory less the OS', `${mini['memory-ceiling-gb'].value} ${mini['memory-ceiling-gb'].why}`, '56 64 GB - 8 for the OS');
 t('desktop: workers at 3 GB each', mini['autopilot-concurrency'].value, '9 / 18');
-t('desktop: test cap = performance cores shared by the lock slots', `${mini['test-cap'].value} ${mini['test-cap'].why}`, '4 the 8 performance cores, shared by 2 test lock slots');
-t('desktop: 2 test lock slots (56 GB / 16 = 3, 8 P-cores / 3 = 2)', mini['test-lock-slots'].value, '2');
-t('desktop: slots x test cap stays within the P-cores', Number(mini['test-lock-slots'].value) * Number(mini['test-cap'].value) <= 8, true);
+t('desktop: test cap = counted cores shared by the lock slots', `${mini['test-cap'].value} ${mini['test-cap'].why}`, '3 the 8 performance cores and 4 efficiency cores at 0.5 each, 10 counted, shared by 3 test lock slots');
+t('desktop: 3 test lock slots (56 GB / 16 = 3, 8 + 4 / 2 = 10 cores / 3 = 3)', mini['test-lock-slots'].value, '3');
+t('desktop: slots x test cap stays within the counted cores', Number(mini['test-lock-slots'].value) * Number(mini['test-cap'].value) <= 10, true);
 t('desktop: typecheck lock timeout', mini['typecheck-lock-timeout-min'].value, '20');
 t('desktop: pre-push lock timeout', mini['pre-push-lock-timeout-s'].value, '60');
 
@@ -78,8 +78,8 @@ t('laptop has a battery', laptop.battery, 'yes');
 const lap = sized(laptop);
 t('laptop: ceiling 32 - 8', lap['memory-ceiling-gb'].value, '24');
 t('laptop: workers', lap['autopilot-concurrency'].value, '4 / 8');
-t('laptop: test cap', lap['test-cap'].value, '8');
-t('laptop: one test lock slot (24 GB / 16), so the test cap keeps every P-core', lap['test-lock-slots'].value, '1');
+t('laptop: test cap = 8 P-cores + 2 E-cores at half', lap['test-cap'].value, '9');
+t('laptop: one test lock slot (24 GB / 16), so the test cap keeps every counted core', lap['test-lock-slots'].value, '1');
 t('laptop: battery or mains sizes the same', JSON.stringify(propose({ ...laptop, battery: 'no' })), JSON.stringify(propose(laptop)));
 
 // ---- an Intel Mac: one kind of core
@@ -121,7 +121,7 @@ t('wsl model', wsl.model, 'WSL virtual machine');
 t('hybrid P/E split', `${wsl['performance-cores']} ${wsl['efficiency-cores']}`, '16 8');
 const ws = sized(wsl);
 t('wsl: ceiling 16', ws['memory-ceiling-gb'].value, '16');
-t('wsl: test cap = P-cores', ws['test-cap'].value, '16');
+t('wsl: test cap = 16 P-cores + 8 E-cores at half', ws['test-cap'].value, '20');
 t('wsl: test lock slots bound by the 16 GB ceiling', ws['test-lock-slots'].value, '1');
 t('cpu list', countCpuList('0-7,16-23'), 16);
 
@@ -132,6 +132,16 @@ t('64 GB, 6 P-cores: 2 slots of 3 test workers', slotsOf(box(64, 6)), '2 3');
 t('16 GB, 6 P-cores: 1 slot keeps all 6', slotsOf(box(16, 6)), '1 6');
 t('64 GB, 4 P-cores: 1 slot of 4', slotsOf(box(64, 4)), '1 4');
 t('64 GB, cores unknown: 1 slot', sized(box(64, 'unknown'))['test-lock-slots'].value, '1');
+t('no efficiency cores: as on P-cores alone', slotsOf({ ...box(64, 6), 'efficiency-cores': 0 }), '2 3');
+t('efficiency cores unknown: as on P-cores alone', slotsOf({ ...box(64, 6), 'efficiency-cores': 'unknown' }), '2 3');
+t('no efficiency cores: the reason names only the P-cores', sized({ ...box(64, 6), 'efficiency-cores': 0 })['test-cap'].why, 'the 6 performance cores, shared by 2 test lock slots');
+
+// ---- efficiency cores count at half: 64 GB, 6 P-cores and 12 E-cores (an M5 Pro Mac mini)
+const m5 = sized({ 'memory-gb': 64, 'cpu-cores': 18, 'performance-cores': 6, 'efficiency-cores': 12, wsl: 'no' });
+t('6P + 12E: memory sets 3 slots (56 / 16 = 3; 6 + 12 / 2 = 12 cores / 3 = 4)', m5['test-lock-slots'].value, '3');
+t('6P + 12E: test cap 12 counted cores / 3 slots', m5['test-cap'].value, '4');
+t('6P + 12E: slots x test cap stays within the 12 counted cores', Number(m5['test-lock-slots'].value) * Number(m5['test-cap'].value) <= 12, true);
+t('6P + 12E: the reason shows the count', m5['test-lock-slots'].why.includes('floor(12 cores / 3'), true);
 
 // ---- the file round-trips, and detect reports only real hardware changes
 const doc = renderProfile(macMini, propose(macMini), '2026-10-17');
@@ -157,7 +167,7 @@ t('memory change re-proposes', sizingChanges(back, propose(more)).some((c) => c.
 // desk-env refuses its config writes inside an autopilot worker; these tests are not one.
 delete process.env.DESK_AUTOPILOT_WORKER;
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-machine-'));
+const T = scratch('desk-machine-');
 const profile = join(T, 'machine.md');
 // A stray park-after row, so the repo-only check below fails if the fallback ever reaches every id.
 writeFileSync(profile, `${renderProfile(small, propose(small), '2026-10-17')}| \`park-after\` | \`99\` | stray |\n`);
@@ -200,7 +210,7 @@ const before = readFileSync(profile, 'utf8');
 t('a non-number is refused, named', setErr(['bench-cap-points=10', 'bench-reserve-percent=lots']),
   'exit 1: nothing written: `bench-reserve-percent` is "lots": want a percentage of the weekly allowance from 0 to under 100');
 t('a refused set stores nothing', readFileSync(profile, 'utf8') === before, true);
-t('a key that is not a bench setting is refused', setErr(['test-cap=4']).startsWith('exit 1: nothing written: `test-cap` is not a bench setting'), true);
+t('a key that is neither a bench setting nor a size is refused', setErr(['nope=4']).startsWith('exit 1: nothing written: `nope` is not a bench setting'), true);
 t('machine set stores both', setErr(['bench-cap-points=10', 'bench-reserve-percent=25']), 'exit 0');
 t('both read back', `${env(['machine', 'get', 'bench-cap-points'], absent)} ${env(['machine', 'get', 'bench-reserve-percent'], absent)}`, '10 25');
 t('the sizes beside them are kept', env(['machine', 'get', 'memory-ceiling-gb'], absent), '8');
@@ -210,6 +220,50 @@ const reread = parseProfile(readFileSync(profile, 'utf8'));
 t('a changed value replaces its row', `${reread.sizing['bench-cap-points'].value} ${reread.sizing['bench-reserve-percent'].value} ${Object.keys(reread.sizing).filter((k) => k.startsWith('bench-')).length}`, '10 30 2');
 const rewritten = parseProfile(renderProfile(small, rewrittenSizing(reread, propose(small)), '2026-11-07'));
 t('a re-proposed profile keeps the bench rows', `${rewritten.sizing['bench-cap-points']?.value} ${rewritten.sizing['bench-reserve-percent']?.value}`, '10 30');
+
+// ---- a proposed size set by hand is an override: stored with its reason, kept by detect and write
+const ov = join(T, 'override.md');
+writeFileSync(ov, readFileSync(profile, 'utf8'));
+const ovBefore = readFileSync(ov, 'utf8');
+t('a bad size is refused, named', setErr(['test-lock-slots=0'], ov), 'exit 1: nothing written: `test-lock-slots` is "0": want a whole number of slots, 1 or more');
+t('a bad concurrency is refused', setErr(['autopilot-concurrency=4 / 2'], ov).startsWith('exit 1: nothing written: `autopilot-concurrency`'), true);
+t('--reason with no text is refused', setErr(['test-lock-slots=3', '--reason'], ov).startsWith('exit 1: nothing written: --reason'), true);
+t('a refused size stores nothing', readFileSync(ov, 'utf8') === ovBefore, true);
+t('clearing a size that is no override is refused', setErr(['test-cap='], ov), 'exit 1: nothing written: `test-cap` holds no override to clear');
+t('machine set test-lock-slots=3 is written', setErr(['test-lock-slots=3', '--reason', 'measured: 3 suites fit'], ov), 'exit 0');
+t('machine set reads the override back from the file', env(['machine', 'set', 'test-lock-slots=3', '--reason', 'measured: 3 suites fit'], absent, ov).split('\n').pop(), '  test-lock-slots: 3 (override: measured: 3 suites fit)');
+t('the override reads back',`${env(['machine', 'get', 'test-lock-slots'], absent, ov)} | ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, '3 | override: measured: 3 suites fit');
+t('with no reason, the override says it was set by hand', `${setErr(['test-cap=6'], ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 override: set by hand with desk-env machine set');
+const ovProfile = parseProfile(readFileSync(ov, 'utf8'));
+t('the bench rows beside the override are kept', `${ovProfile.sizing['bench-cap-points']?.value} ${Object.keys(ovProfile.sizing).filter((k) => k === 'test-lock-slots').length}`, '10 1');
+t('an override is no change to re-propose', sizingChanges(ovProfile, propose(small)).map((c) => c.key).join(), '');
+t('an override is listed as one', sizingOverrides(ovProfile, propose(small)).map((o) => `${o.key}:${o.value}<-${o.proposed}`).join(), 'test-cap:6<-16,test-lock-slots:3<-1');
+const reWritten = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, propose(small)), '2026-11-15'));
+t('a re-write keeps each override', `${reWritten.sizing['test-lock-slots'].value} ${reWritten.sizing['test-cap'].value} ${isOverride(reWritten.sizing['test-lock-slots'])}`, '3 6 true');
+const dropped = parseProfile(renderProfile(small, rewrittenSizing(ovProfile, propose(small), ['test-cap']), '2026-11-15'));
+t('a re-write drops only the override named', `${dropped.sizing['test-cap'].value} ${isOverride(dropped.sizing['test-cap'])} ${dropped.sizing['test-lock-slots'].value}`, '16 false 3');
+t('clearing an override puts the proposal for the recorded hardware back', `${setErr(['test-cap='], ov)} ${env(['machine', 'get', 'test-cap'], absent, ov)} ${env(['machine', 'why', 'test-cap'], absent, ov)}`, 'exit 0 16 the 16 performance cores');
+// detect and write size from this computer, so the override is one more slot than it proposes: an
+// override equal to the proposal would read as no change whether or not it is kept.
+const hostSlots = Number(env(['machine', 'propose'], absent, ov).match(/^test-lock-slots\s+(\d+)/m)?.[1]);
+t('this computer proposes a slot count', Number.isInteger(hostSlots), true);
+const pinned = String(hostSlots + 1);
+t('an override this computer does not propose is written', setErr([`test-lock-slots=${pinned}`, '--reason', 'measured'], ov), 'exit 0');
+const detected = env(['machine', 'detect'], absent, ov);
+t('detect lists the override as one', detected.includes('overrides kept') && detected.includes(`  test-lock-slots: ${pinned} (the rules propose ${hostSlots})`), true);
+t('detect does not list the override as a change', /^ {2}test-lock-slots: \d+ ->/m.test(detected), false);
+t('write refuses to drop what is no override', env(['machine', 'write', '--drop-override', 'bench-cap-points'], absent, ov), 'exit 1');
+const wrote = env(['machine', 'write'], absent, ov);
+t('write names the override it kept', wrote.includes(`kept override test-lock-slots: ${pinned}`), true);
+t('write keeps the override', `${env(['machine', 'get', 'test-lock-slots'], absent, ov)} ${env(['machine', 'why', 'test-lock-slots'], absent, ov)}`, `${pinned} override: measured`);
+const dropWrote = env(['machine', 'write', '--drop-override', 'test-lock-slots'], absent, ov);
+t('write --drop-override drops it', `${dropWrote.includes('dropped override test-lock-slots')} ${isOverride(parseProfile(readFileSync(ov, 'utf8')).sizing['test-lock-slots'])}`, 'true false');
+const fromSet = join(T, 'override-only.md');
+t('with no profile, a size override starts one', `${setErr(['test-lock-slots=2'], fromSet)} ${sizesProposed(parseProfile(readFileSync(fromSet, 'utf8')))}`, 'exit 0 false');
+const detectedOnly = env(['machine', 'detect'], absent, fromSet);
+t('detect lists an override in a profile with no sizes proposed yet', `${detectedOnly.includes('  test-lock-slots: 2 (the rules propose')} ${detectedOnly.includes('no sizes proposed')}`, 'true true');
+t('and clearing it there removes the row', `${setErr(['test-lock-slots='], fromSet)} ${env(['machine', 'get', 'test-lock-slots'], absent, fromSet)}`, 'exit 0 exit 3');
+
 t('with no profile, the bench keeps its defaults', quotaLine(missing), 'quota: cap 10 points of each weekly allowance, reserve 25% (the defaults: neither is set on this computer)');
 const fresh = join(T, 'fresh.md');
 t('a refused set with no profile writes no file', `${setErr(['bench-cap-points=ten'], fresh).startsWith('exit 1: nothing written')} ${existsSync(fresh)}`, 'true false');
@@ -222,6 +276,20 @@ t('a §3b TODO row still has nothing to fall back to', env(['get', 'test-cap'], 
 t('detect still offers the proposal', env(['machine', 'detect'], absent, fresh).includes('no sizes proposed'), true);
 const proposedOver = parseProfile(renderProfile(small, rewrittenSizing(started, propose(small)), '2026-11-08'));
 t('a later write keeps the bench rows and proposes the sizes', `${sizesProposed(proposedOver)} ${proposedOver.sizing['bench-cap-points']?.value} ${proposedOver.sizing['memory-ceiling-gb']?.value}`, 'true 12 8');
+
+// lease-kinds, the lease broker's per-kind lever, is a Sizing row set by machine set.
+const kinds = join(T, 'lease-kinds.md');
+t('machine set stores a lease-kinds row', setErr(['lease-kinds=port=on slot=shadow,merge=off'], kinds), 'exit 0');
+t('it reads back whole', env(['machine', 'get', 'lease-kinds'], absent, kinds), 'port=on slot=shadow,merge=off');
+t('DS-908 AC17: machine set refuses an entry it does not know, naming it',
+  setErr(['lease-kinds=port=on sockets=on'], kinds).startsWith('exit 1: nothing written: `lease-kinds` names an entry it does not know: "sockets=on": want <kind>=<mode> entries'), true);
+t('and an empty row', setErr(['lease-kinds='], kinds).startsWith('exit 1: nothing written: `lease-kinds` is empty'), true);
+t('and a value broken across lines, which the row would cut short', setErr(['lease-kinds=port=on\nslot=on'], kinds), 'exit 1: nothing written: `lease-kinds` holds a line break: give it on one line');
+const handEdited = join(T, 'lease-kinds-bad.md');
+writeFileSync(handEdited, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=maybe sockets=on slot=on` | by hand |\n');
+t('DS-908 AC17: the profile check names each entry a hand-edited row holds that it does not know',
+  env(['machine', 'detect'], absent, handEdited).includes('`lease-kinds` names entries it does not know: "port=maybe", "sockets=on"'), true);
+t('a good row is no problem to detect', env(['machine', 'detect'], absent, kinds).includes('cannot read'), false);
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'machine: all checks passed');

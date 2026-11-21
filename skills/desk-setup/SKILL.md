@@ -52,9 +52,9 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
 
 | Excuse | Reality |
 |---|---|
-| "They said yes to this in voicepa, so here too" | Different repo, different blast radius. Offer it as the starting point; ask the row. |
+| "They said yes to this in voicepa, so here too" | Different repo, different blast radius. Show it in the start-point table with what it unlocks here; they confirm or edit it. |
 | "They took Recommended on the Jira rows, so the PR rows too" | Different capabilities, different answers. Ask each row. |
-| "Forty rows is tedious; I'll offer accept-all" | The user asked to be asked. Four per round, as many rounds as it takes. |
+| "Forty rows is tedious; I'll offer accept-all" | The user asked to be asked. Four per round, as many rounds as it takes; only a start from another repo shows them as one table. |
 | "They didn't answer that one; leave it as recommended" | Unanswered is `no`. Say which rows you left off. |
 | "I detected their GitHub handle, I can detect their permissions" | Facts can be detected. Consent cannot. |
 | "It's their own solo repo, the people rows don't matter" | Write `you`. The skills route questions by those rows. |
@@ -79,8 +79,8 @@ the gate and an unattended batch cannot ask; on a repo with no branch protection
    them, or from scratch. **Recommended: the configured repo that shares the most with this one**
    (same GitHub owner, then same Jira site); its description says which rows will be pre-filled.
    Starting from another repo pre-fills **§1** (identity, confirmed row by row, because the email
-   and Jira account can differ per client), and **§3 / §3b as the first option of each question**,
-   never as answers. §0, §2, §4 and §5 are always detected fresh for this repo.
+   and Jira account can differ per client), and **§3 / §3b as one table to confirm or edit** (step 2's
+   *Starting from another repo*), never written unshown. §0, §2, §4 and §5 are always detected fresh for this repo.
 4. If that repo uses the same Jira site, offer to copy its `jira-email` and `atlassian-token` into
    this repo's `CREDS` (`cp -p`, then `chmod 600` on both). Say that the token is then shared by both repos
    and that revoking it in Atlassian breaks both.
@@ -93,7 +93,7 @@ for it**, and only that one; the sections it names moved there word for word.
 | Step | Sections | Read |
 |---|---|---|
 | 1. Detecting this repo, then confirming each config section with the user: the scan, the rows it proposes, and what to fix before the interview | *1. Detect, then confirm* | `references/step-1-detect.md` |
-| 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, and which logins new workers rotate between | *This computer*, *Subscriptions on this computer* | `references/step-1-this-computer.md` |
+| 1, this computer: the machine profile, the bench's cap and reserve, how the §3b rows fall back to it, this computer's subscriptions, and which one runs this repo | *This computer*, *Subscriptions on this computer*, *This repo's subscription* | `references/step-1-this-computer.md` |
 | 1, once §4 Pre-push checks is confirmed and is not `none`: committing the hook and setting `core.hooksPath` | *The pre-push hook* | `references/step-1-pre-push-hook.md` |
 | 1, once §4 Local review command is `/desk-review`: committing the CI gate | *The desk gate workflow* | `references/step-1-desk-gate.md` |
 | 2. The permission interview: how to ask the §3 rows, the autopilot warning, the consistency checks and what is not on offer | *2. The permission interview* | `references/step-2-interview.md` |
@@ -129,7 +129,9 @@ done. Both are here, read by every run that reaches them:
 rows to an `AskUserQuestion` call, as many calls as it takes. Read the rows from the template, never
 from a list here. The Recommended option is the template's Recommended value unless a rule here
 names another. A value this repo's config already holds for a row, `off` and `none` included, is the
-first option, as it stands; the memory ceiling above is the one exception. The preferred
+first option, as it stands; the memory ceiling above is the one exception. Starting from another repo,
+these rows are in step 2's start-point table instead. The Subscription row is
+never in these calls: step 1 asks it once per repo (*This repo's subscription*). The preferred
 dev-server port is the one row asked out of order: it is left out of these calls and asked after
 them, once the autopilot worker concurrency answer is in (*The dev-server port is read, not
 recalled*, below). For resume a killed
@@ -141,10 +143,11 @@ desk-q open beside a batch run in the session: the status watch prints one line 
 changed and the orchestrator answers a spawn or stage step in a line or less, so the session spends
 fewer tokens; parks, questions, PRs, merges and failures are still reported, and the Stage 8 report
 and any status you ask for carry the full table), and record the answer. For batches run by, run
-`node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS (`ask: true`) offer `supervisor`
-(Recommended: once Stage 3 has asked, the supervisor runs the batch from launchd, the session ends,
-and you follow it in desk-q, opening a session only when it needs you) and `session` (the batch runs
-in the interactive session through `/loop`). Off macOS (`ask: false`) don't ask: record
+`node ~/.claude/desk/bin/run-by.mjs offer` first. On macOS, or Linux where `systemctl --user`
+answers (`ask: true`), offer `supervisor` (Recommended: once Stage 3 has asked, the supervisor runs
+the batch from launchd or a systemd timer, the session ends, and you follow it in desk-q, opening a
+session only when it needs you) and `session` (the batch runs in the interactive session through
+`/loop`). Elsewhere (`ask: false`) don't ask: record
 `session` and say its `line` in one sentence. Once the config is written with `supervisor`, run
 `node ~/.claude/desk/bin/run-by.mjs ensure` in the repo, which installs and loads the supervisor, and
 report its result; on exit 11 give its `error` and `retry` command, and leave the row at
@@ -191,7 +194,8 @@ location: a path only, never the token.
 - **An `UNLISTED` line from `desk-env drift` is blocking.** It names a §4 command item a worker's
   allow-list cannot hold (a `$(…)`, a pipe, `&&`, an env prefix, a bare shell), so every worker is
   refused it. Propose one plain command in its place, usually the logic moved into a repo script run
-  as `bash <path>.sh`, and do not finish setup until the row has none.
+  as `bash <path>.sh`, and do not finish setup until the row has none. On §4 Local services it names
+  an item with no compose service name first: write the name first (`search :8108`), not a script.
 - Ask what they want to change instead of re-interviewing. The `MISSING` rows are asked; a
   `STALLS` or `DONTASK` line is offered as a change, never made without an answer; nothing else is
   asked unless the user names it.
@@ -224,7 +228,9 @@ location: a path only, never the token.
 ## Red flags — stop
 
 - About to write a `yes` the user did not choose in this conversation, or copy one from another repo
-- Offering an accept-all instead of one question per row
+  without showing it in the table they confirmed
+- Offering an accept-all instead of one question per row, outside the start-point table, which
+  shows every row and its value
 - Filling a field from detection without showing it
 - Asking the user to paste a token into the conversation
 - Calling a connector tool to "check" it

@@ -24,7 +24,8 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 git init -q -b main "$T/repo"; git -C "$T/repo" commit -q --allow-empty -m init
-# config <codex-review> <pr-images>; $DBROW, when set, is §4 Local database, with a per-ticket database made in it
+# config <codex-review> <pr-images>; $DBROW, when set, is §4 Local database, with a per-ticket database made in it;
+# $SUBROW, when set, is §3b Subscription
 config(){
   local perm="" rows=""
   if [ -n "${DBROW:-}" ]; then
@@ -60,6 +61,7 @@ $perm
 | Field | Recommended | Your setting |
 |---|---|---|
 | Free disk floor (GB) | \`20\` | \`20\` |
+${SUBROW:+| Subscription | \`default\` | \`$SUBROW\` |}
 
 ## 4. Tracker
 | Field | Value |
@@ -70,7 +72,8 @@ EOF
 }
 config yes yes
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 # Setup answers per $T/mode.setup: ok, pgdown (Postgres not answering), other (any other failure), lock
 # (git cannot lock a moved remote-tracking ref, every time) or lockonce (that once per ticket, then ok).
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
@@ -94,6 +97,14 @@ for c in gh claude codex desk-jira; do
 case "\$1" in
   agents) echo '[{"sessionId": "live-1"}]'; exit 0 ;;
   auth|login|whoami) echo "\$@" >> "$T/calls.$c" ;;
+  # A real call: refused with the HTTP status in \$T/mode.api (the default login) or in the login
+  # folder's \`refused\` file, else answered.
+  -p) echo "\${CLAUDE_CONFIG_DIR:-default}" >> "$T/calls.$c-p"
+      st=""
+      if [ -n "\${CLAUDE_CONFIG_DIR:-}" ]; then [ -f "\$CLAUDE_CONFIG_DIR/refused" ] && st=\$(cat "\$CLAUDE_CONFIG_DIR/refused")
+      else [ -f "$T/mode.api" ] && st=\$(cat "$T/mode.api"); fi
+      if [ -n "\$st" ]; then printf '{"is_error":true,"api_error_status":%s,"result":"Failed to authenticate. API Error: %s Attention Required! | Cloudflare","type":"result"}\n' "\$st" "\$st"; exit 1; fi
+      echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; exit 0 ;;
   *) exit 0 ;;
 esac
 # Another Claude login's folder holding signed-out is signed out, whatever the default's mode.
@@ -183,19 +194,43 @@ check "AC8 the browser profile is listed as not required"   'grep -q "browser pr
 config yes yes
 q set H-3 state=done
 q add H-4; q set H-4 state=triaged branch=fix/H-4
+mode codex ok
 pj
-check "AC8 where §3 pr-images is yes, a stale login holds"  '[ "$(field H-4 state)" = triaged ] && grep -q "the GitHub login in $T/profile.github-session.json expired" <<< "$out"'
-check "a local check is told on its first failing run"     '[[ "$(pushes)" =~ :browser$ ]] && grep -q "rechecking before telling you: codex)" <<< "$out"'
+check "DS-675 AC3 an expired login holds no spawn"            '[ "$(field H-4 state)" = running ] && grep -q "the GitHub login in $T/profile.github-session.json expired" <<< "$out" && ! grep -q "a failing health check (.*browser" <<< "$out"'
+check "DS-675 AC3 the health line says it holds no spawn"     'grep -q "health: 1 check(s) failing — browser — not holding spawns (.*browser failing, not holding spawns: every repo.s screenshot uploads with that login wait in the machine.s upload queue)" <<< "$out"'
+check "DS-675 AC1 told at once as one machine item, naming the sign-in command" '[[ "$(pushes)" =~ ^health:browser-signin:[0-9a-f]{12}$ ]] && grep -qF "health: browser profile failed: the GitHub login in $T/profile.github-session.json expired" <<< "$out" && grep -qF "fix: node ~/.claude/desk/bin/github-signin.mjs" <<< "$out"'
+# Another slot on the machine (another repo's batch) finds the same login expired.
+json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json")
+check "DS-675 AC1 a second slot raises no second item"        '[ -z "$(pushes)" ] && ! grep -q "browser profile failed" <<< "$out" && grep -q "told once for the machine by" <<< "$out"'
+rm -rf "$T/state2"
+mode codex out
+pj
+check "a local check is told on its first failing run"     '[[ "$(pushes)" =~ ^health:browser-signin:[0-9a-f]{12}$ ]] && grep -q "rechecking before telling you: codex" <<< "$out"'
 pj
 check "AC7 where §3 codex-review is yes, codex signed out holds" 'grep -q "health: Codex (codex login status) failed" <<< "$out"'
 mode codex ok
 signin "$(( $(date +%s) + 31536000 ))"
+pj
+check "DS-675 AC2 signed in again: the machine's sign-in item is gone" '[ -d "$HOME/.desk-autopilot/health-browser-signin" ] && [ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ] && [ -z "$(pushes)" ] && grep -q "recovered: .*browser" <<< "$out"'
+# A session file that does not parse is still its login's item, which signing it in clears.
+sid=$(node --input-type=module -e 'const { signinId } = await import(process.argv[1]); console.log(signinId(process.argv[2]))' "$B/health.mjs" "$T/profile.github-session.json")
+printf 'not json\n' > "$T/profile.github-session.json"
+pj
+check "DS-675 a session file that does not parse is its login's item, naming the file" '[ -f "$HOME/.desk-autopilot/health-browser-signin/$sid.json" ] && grep -qF "the GitHub login in $T/profile.github-session.json could not be read" <<< "$out"'
+signin "$(( $(date +%s) + 31536000 ))"
+pj
+check "DS-675 and signing it in clears it"                    '[ -z "$(ls -A "$HOME/.desk-autopilot/health-browser-signin")" ]'
 
 # ---- AC9: results under 15 minutes old are reused ----------------------------------------------
 pj
 n=$(calls gh)
 mode gh out
+# Another slot has found the login failing since: a reused passing result does not clear its item.
+mkdir -p "$HOME/.desk-autopilot/health-browser-signin"
+printf '{"at":"2026-11-16T08:00:00.000Z","why":"x","state":"%s","slug":"other","file":"%s"}\n' "$T" "$T/profile.github-session.json" > "$HOME/.desk-autopilot/health-browser-signin/$sid.json"
 out=$(node "$B/pass.mjs" 2>&1)
+check "DS-675 a reused passing result keeps another slot's sign-in item" '[ -f "$HOME/.desk-autopilot/health-browser-signin/$sid.json" ]'
+rm -rf "$HOME/.desk-autopilot/health-browser-signin"
 check "AC9 the checks do not run again"                     '[ "$(calls gh)" = "$n" ]'
 check "AC9 the last results are reused"                     'grep -q "health: all checks pass (checked 0 min ago, reused)" <<< "$out"'
 pj
@@ -265,12 +300,12 @@ pj
 check "a test pass can turn the checks off"                 'out=$(AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" 2>&1); grep -q "health: checks off" <<< "$out"'
 
 # ---- AC3 / AC4: the supervisor notifies once per newly failing check ---------------------------
-# The real supervisor and its notifier, running the real pass.
+# The real supervisor and its notifier, running the real pass, as on macOS: its notifier is the stub osascript.
 q set-batch supervised=true
 q add H-5; q set H-5 state=triaged branch=fix/H-5
 rm -f "$T/state/health.json" "$T/notify.calls"
 mode gh out
-sup(){ node "$B/supervisor.mjs" tick --foreground >/dev/null 2>&1; }
+sup(){ DESK_PLATFORM=darwin node "$B/supervisor.mjs" tick --foreground >/dev/null 2>&1; }
 notes(){ if [ -f "$T/notify.calls" ]; then wc -l < "$T/notify.calls" | tr -d ' '; else echo 0; fi; }
 sup
 check "DS-333 gh failing once: no notification yet"        '[ "$(notes)" = 0 ]'
@@ -288,22 +323,30 @@ q set-batch supervised=false
 mode gh ok; rm -f "$T/state/health.json"
 mkdir -p "$HOME/.claude-logins/b"; : > "$HOME/.claude-logins/b/signed-out"
 export DESK_SUBSCRIPTIONS="$T/subscriptions.md"
-printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `in rotation` |\n| `claude` | `b` | `~/.claude-logins/b` | `standby` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
+printf '{"oauthAccount":{"emailAddress":"b@example.com"}}\n' > "$HOME/.claude-logins/b/.claude.json"
+# ---- DS-629 AC3: an unused subscription signed out is not checked, and not named
+before=$(calls claude)
+pj
+check "DS-629 AC3 an unused login signed out is not checked" '[ "$(calls claude)" = $((before + 1)) ]'
+check "DS-629 AC3 nor named under STALLED, nor pushed"       '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ] && grep -q "health: all checks pass" <<< "$out"'
+# ---- DS-629 AC4: this repo pinned to login b
+SUBROW=b@example.com config yes yes; rm -f "$T/state/health.json"
 before=$(calls claude)
 pj
 check "DS-463 AC7 login b is checked in its own folder"     '[ "$(calls claude)" = $((before + 2)) ]'
 check "DS-463 AC7 the default login's result is unchanged"  'grep -q "health: all checks pass" <<< "$out"'
-check "DS-463 AC7 login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+check "DS-463 AC7 DS-629 AC4 the pinned login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
 check "DS-463 AC7 and pushed under its own key"             '[[ "$(pushes)" =~ health:.+:claude:b ]]'
 rm -f "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
 pj
 check "DS-463 AC7 signed back in, nothing is said of it"    '! grep -q "Claude login b" <<< "$out" && [ -z "$(pushes)" ]'
 
 # ---- DS-602: a listed login whose folder does not exist ----------------------------------------
-# Login c is on standby at a folder never made. Another slot is the same health checks run with its
+# Login c is unused, at a folder never made. Another slot is the same health checks run with its
 # own state folder, on the same machine.
 slot(){ json=$(DESK_AUTOPILOT_STATE="$T/state2" node --input-type=module -e 'const { health } = await import(process.argv[1]); const h = await health(); console.log(JSON.stringify({ message: [h.line, ...h.stalls].join("\n"), push: h.push }))' "$B/health.mjs"); out=$(node -e 'console.log(JSON.parse(process.argv[1]).message)' "$json"); }
-printf '| `claude` | `c` | `~/.claude-logins/c` | `standby` |\n' >> "$DESK_SUBSCRIPTIONS"
+printf '| `claude` | `c` | `~/.claude-logins/c` | `unused` |\n' >> "$DESK_SUBSCRIPTIONS"
 note_c="claude login c listed at ~/.claude-logins/c, which does not exist: remove its row (desk-env logins remove claude c) or sign it in (CLAUDE_CONFIG_DIR=~/.claude-logins/c claude, then /login)"
 rm -f "$T/state/health.json"
 before=$(calls claude)
@@ -333,6 +376,40 @@ slot
 check "DS-602 a slot whose owner's state folder is gone takes the push over" '[ "$(pushes)" = "health:claude-missing:c" ]'
 pj
 check "DS-602 and the slot it took it from no longer lists it"     '[ -z "$(pushes)" ] && grep -qF "$note_c" <<< "$out"'
+
+# ---- DS-616: the subscriptions file in its default/unused vocabulary ---------------------------
+printf '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `b` | `~/.claude-logins/b` | `unused` |\n' > "$DESK_SUBSCRIPTIONS"
+: > "$HOME/.claude-logins/b/signed-out"; rm -f "$T/state/health.json"
+pj
+check "a file saying default and unused: the pinned login b is named signed out, with its sign-in command" 'grep -qF "health: Claude login b (~/.claude-logins/b) is signed out" <<< "$out" && grep -qF "sign it in, in another terminal: CLAUDE_CONFIG_DIR=~/.claude-logins/b claude, then /login" <<< "$out"'
+rm -f "$HOME/.claude-logins/b/signed-out" "$T/state/health.json"
+
+# ---- DS-812: a login the API refuses, though `claude auth status` passes -----------------------
+# Still pinned to login b. Each login whose sign-in passes makes one real call (the stub's -p).
+q add H-30; q set H-30 state=triaged branch=fix/H-30
+mode api 403
+pj
+check "DS-812 AC1 the default login refused with 403 is marked failing, holding spawns" 'grep -q "health: 1 check(s) failing — claude — holding new spawns" <<< "$out" && [ "$(field H-30 state)" = triaged ]'
+check "DS-812 AC1 with the error text"                        'grep -qF "health: Claude (claude auth status) failed: a real call was refused: the Claude API refused the call with HTTP 403 (Failed to authenticate. API Error: 403 Attention Required! | Cloudflare)" <<< "$out"'
+check "DS-812 AC1 told at once, under the claude key"         '[[ "$(pushes)" =~ ^health:.+:claude$ ]]'
+rm -f "$T/mode.api" "$T/state/health.json"; echo 401 > "$HOME/.claude-logins/b/refused"
+pj
+check "DS-812 AC1 the pinned login refused with 401 is named with the error" 'grep -qF "health: Claude login b (~/.claude-logins/b) is refused by the Claude API (a real call was refused: the Claude API refused the call with HTTP 401" <<< "$out"'
+check "DS-812 AC3 no worker starts on it"                     '[ "$(field H-30 state)" = triaged ] && grep -qF "(login b, ~/.claude-logins/b) failed its health check, a real call was refused" <<< "$out"'
+check "DS-812 AC3 one notification names it"                  '[[ "$(pushes)" =~ ^health:[^\ ]+:claude:b$ ]] && [[ "$json" == *"Claude login b is refused by the Claude API"* ]]'
+dec=$(node --input-type=module -e 'const { startDecider } = await import(process.argv[1]); const r = startDecider({ state: process.argv[2], slug: "acme__widgets", bin: process.argv[3], report: "", items: [], rules: "", cwd: process.argv[2] }); console.log(JSON.stringify(r))' "$B/decider.mjs" "$T/state" "$B")
+check "DS-812 AC3 nor a decider: it waits, naming the login"  '[[ "$dec" == *"\"wait\":\"its login b failed its health check, a real call was refused: the Claude API refused the call with HTTP 401"* ]] && [ ! -d "$T/state/decider" ]'
+rm -f "$HOME/.claude-logins/b/refused" "$T/state/health.json"
+before=$(calls claude-p)
+pj
+check "DS-812 both logins answer: the ticket spawns"          '[ "$(field H-30 state)" = running ] && [ "$(calls claude-p)" = $((before + 2)) ] && grep -q "health: all checks pass" <<< "$out"'
+before=$(calls claude-p)
+pj
+check "DS-812 AC2 checks run again under 15 minutes after a passing call: no new call" '[ "$(calls claude-p)" = "$before" ] && [ "$(calls claude)" -gt 0 ] && grep -q "health: all checks pass (checked now" <<< "$out"'
+node -e 'const f = process.argv[1]; const h = JSON.parse(require("fs").readFileSync(f, "utf8")); for (const c of Object.values(h.calls)) c.at = new Date(Date.now() - 16 * 60000).toISOString(); require("fs").writeFileSync(f, JSON.stringify(h))' "$T/state/health.json"
+pj
+check "DS-812 AC2 a call older than 15 minutes is made again" '[ "$(calls claude-p)" = $((before + 2)) ]'
+rm -f "$T/state/health.json"
 unset DESK_SUBSCRIPTIONS
 
 # ---- DS-589: the local Postgres container ------------------------------------------------------
@@ -456,6 +533,7 @@ check "DS-577 AC1 a mismatch is one repo item, health:<slug>:reviewer"  '[[ "$(p
 check "DS-577 AC1 it names both logins"                                  'grep -qF "the review gate counts agent-pullbot; desk posts verdicts as bigbenjoman" <<< "$out"'
 check "DS-577 AC1 read from the default gh login with no Review account" '[ "$(lastdir)" = default ]'
 check "DS-577 AC3 it holds no spawn"                                     'grep -q "^health: all checks pass" <<< "$out" && grep -q "reviewer failing, holding review and fix tries on PRs red only on a verdict state check, not spawns" <<< "$out"'
+check "#881 a mismatch says the review the merge driver needs still goes" 'grep -qF "except the review a head with no clean verdict needs, which the merge driver counts though the gate does not" <<< "$out"'
 
 echo agent-pullbot > "$T/ghuser"
 hl

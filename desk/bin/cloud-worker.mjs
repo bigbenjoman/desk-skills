@@ -38,6 +38,19 @@ export function placement(rec, location, { feature = null, effort = false } = {}
   return why.length ? { where: 'local', why: why.join('; ') } : { where: 'cloud', why: null };
 }
 
+// Where a placed ticket runs, as the batch plan and a mid-batch admit both say it: `runs: <where>`, and
+// why it stays local where placement gave a reason.
+export const runsText = ({ where, why }) => `runs: ${where}${why ? ` — ${why}` : ''}`;
+
+// Ticket `key`'s part in a feature batch that keeps it local, as placement's `feature` takes it, or null.
+// `batch` is the feature batch's { spine, owners } (the owner table: criterion id -> ticket), or null
+// outside feature mode.
+export function featureRole(batch, key) {
+  if (!batch) return null;
+  if (key === batch.spine) return 'it is the feature spine, whose specs are checked in a local worktree before it parks for approval';
+  return Object.values(batch.owners ?? {}).includes(key) ? 'it owns acceptance specs, which are checked in a local worktree when it finishes' : null;
+}
+
 // The cloud session's whole brief: it reads nothing from this computer.
 export function cloudPrompt({ key, repo, base, branch, text, tests }) {
   const run = tests?.length ? `Run ${tests.map((c) => `\`${c}\``).join(' and ')} before you push, and fix what fails.` : 'Run the repo\'s tests for what you change before you push, and fix what fails.';
@@ -45,10 +58,12 @@ export function cloudPrompt({ key, repo, base, branch, text, tests }) {
     `Work ticket ${key} in ${repo}, unattended: nobody reads this session, so take every call yourself and say what you chose in the PR body.`,
     '',
     `1. Do the smallest change that meets the ticket's acceptance criteria below. ${run}`,
-    `2. Commit on a branch named exactly \`${branch}\`, cut from \`${base}\`, and push it to origin.`,
-    `3. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
-    '4. If you cannot finish, push what you have and open the draft PR anyway, with what is left in its body.',
-    `5. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
+    // A change that branches on a value it never read the source of is the P0 a local review then finds.
+    '2. Before you push: where your change branches on a value an API or server state sets (a status, flag, enum or role read from a response or a stored record), read where that value is set, the endpoint, handler or service that assigns it, and check your branch against every value it can set, not only the one the ticket names. If that source is not in this repository, say so in the PR body as a premise: which value, and why it could not be read.',
+    `3. Commit on a branch named exactly \`${branch}\`, cut from \`${base}\`, and push it to origin.`,
+    `4. Open a draft pull request from \`${branch}\` into \`${base}\` with ${key} in its title, and in its body what changed and how you tested it.`,
+    '5. If you cannot finish, push what you have and open the draft PR anyway, with what is left in its body.',
+    `6. Do not change the ticket in the tracker: you have no access to it, and the orchestrator updates it from your PR.`,
     '',
     `## The ticket`,
     '',

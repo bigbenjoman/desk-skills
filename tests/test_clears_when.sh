@@ -10,6 +10,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/logs" "$T/desk/bin" "$T/stub" "$T/wt" "$T/gh" "$T/jira"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -40,7 +41,8 @@ cat > "$T/config.md" <<EOF
 | \`git-force-with-lease\` | Force-push with a lease | \`ask\` | \`ask\` |
 EOF
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 printf 'echo "[spawn] ticket=$1"\n' > "$T/desk/bin/spawn-worker.sh"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 # gh: a PR is $T/gh/pr-<n>.json (none is a failed read), a branch's merged PR $T/gh/merged-<branch with
@@ -75,7 +77,10 @@ export PATH="$T/stub:$PATH" DESK_CONFIG="$T/config.md" DESK_HOME="$T/desk" DESK_
   DESK_QUEUE="$T/queue.json" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off AUTOPILOT_ORCHESTRATOR=test
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-field(){ node -e 'const t = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).tickets[process.argv[2]]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
+# A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.
+field(){ node -e 'const fs = require("fs"); const [, f, key] = process.argv; const live = JSON.parse(fs.readFileSync(f, "utf8")).tickets;
+  let a = {}; try { a = JSON.parse(fs.readFileSync(f.replace(/\.json$/, "") + ".archive.json", "utf8")).tickets; } catch {}
+  const t = Object.hasOwn(live, key) ? live[key] : a[key]; console.log(JSON.stringify(process.argv[3].split(".").reduce((o, k) => o?.[k], t) ?? null))' "$DESK_QUEUE" "$1" "$2"; }
 say(){ node -e 'console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: process.argv.slice(1).join("\n") }] } }))' "$@"; }
 # parked <KEY> <lane> <question> [<clears-when>]
 parked(){ q add "$1" Story "$2"; q park "$1" "$3"; q set "$1" "branch=feat/$1"; [ $# -lt 4 ] || q clears-when "$1" "$4"; }
@@ -296,8 +301,102 @@ check "DS-581 the queued form reads as SV-3994 wrote it, and as owner/name" \
 check "DS-581 an app's review, written with its [bot] suffix, counts at the head" '[ "$(cut -d"|" -f8 <<< "$r")" = "{\"holds\":true}" ]'
 check "DS-581 AC8 a failed reviews read is an error, not holding" '[ "$(cut -d"|" -f9 <<< "$r")" = "{\"error\":\"gh pr view 1: HTTP 502\"}" ]'
 check "DS-581 a file path is read under \$DESK_STATE or the worktree" '[ "$(cut -d"|" -f10,11 <<< "$r")" = "/s/a/b|/w/a/b" ]'
+# A file condition read against its park's question.
+r=$(node --input-type=module -e "
+import { withQuestion } from '$B/clears-when.mjs';
+const w = (cond, q) => JSON.stringify(withQuestion(cond, q, { state: '/h/.desk-autopilot/acme__w', home: '/h' }));
+const rel = { kind: 'file-exists', path: 'fixtures/DS-776/compare-pass.txt', root: 'worktree' };
+console.log([
+  w(rel, 'Please run compare_pass.sh on the host and save its output to ~/.desk-autopilot/acme__w/fixtures/DS-776/compare-pass.txt.'),
+  w(rel, 'Waiting on the evidence run, which writes /elsewhere/DS-776/compare-pass.txt'),
+  w(rel, 'Waiting on the evidence run to write fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Which copy should the heading use?'),
+  w({ kind: 'pr-merged', pr: 5 }, 'Please save it to out/x.txt'),
+  w({ kind: 'file-exists', path: '/h/.desk-autopilot/acme__w/fixtures/a.json', root: 'abs' }, 'Could you save it as \`\$DESK_STATE/fixtures/a.json\`?'),
+  w({ kind: 'file-exists', path: 'fixtures/meet.json', root: 'worktree' }, 'Please save the capture to out/meet.json'),
+].join('|'));
+")
+check "DS-807 AC4 a relative clears-when looks where the question's ~/ path under the state directory says, and is the person's where it asks them" \
+  '[ "$(cut -d"|" -f1 <<< "$r")" = "{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"fixtures/DS-776/compare-pass.txt\",\"root\":\"state\",\"person\":true}}" ]'
+check "DS-807 AC4 AC3 an absolute path a script writes is looked at there, and is not the person's" \
+  '[ "$(cut -d"|" -f2 <<< "$r")" = "{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"/elsewhere/DS-776/compare-pass.txt\",\"root\":\"abs\"}}" ]'
+check "DS-807 AC3 the same path a script writes, a question naming no file, and any other condition are kept as given" \
+  '[ "$(cut -d"|" -f3,4,5 <<< "$r")" = "{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"fixtures/DS-776/compare-pass.txt\",\"root\":\"worktree\"}}|{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"fixtures/DS-776/compare-pass.txt\",\"root\":\"worktree\"}}|{\"ok\":true,\"cond\":{\"kind\":\"pr-merged\",\"pr\":5}}" ]'
+check "DS-807 an absolute path under the state directory is the question's \$DESK_STATE one" \
+  '[ "$(cut -d"|" -f6 <<< "$r")" = "{\"ok\":true,\"cond\":{\"kind\":\"file-exists\",\"path\":\"/h/.desk-autopilot/acme__w/fixtures/a.json\",\"root\":\"abs\",\"person\":true}}" ]'
+check "DS-807 AC4 a relative path the question contradicts with another relative one is refused, saying the two paths differ" \
+  '[[ "$(cut -d"|" -f7 <<< "$r")" == "{\"ok\":false,\"why\":\"the question names \\\"out/meet.json\\\" and the clears-when \\\"fixtures/meet.json\\\": the two paths differ"* ]]'
+r=$(node --input-type=module -e "
+import { withQuestion } from '$B/clears-when.mjs';
+const w = (cond, q) => { const r = withQuestion(cond, q, { state: '/h/.desk-autopilot/acme__w', home: '/h' }); return r.ok ? [r.cond.root, r.cond.path, !!r.cond.person].join(' ') : r.why; };
+const rel = { kind: 'file-exists', path: 'fixtures/DS-776/compare-pass.txt', root: 'worktree' };
+const mov = { kind: 'file-exists', path: 'fixtures/Screen Recording.mov', root: 'worktree' };
+console.log([
+  w(rel, 'Please copy /tmp/DS-776/compare-pass.txt to \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w({ kind: 'file-exists', path: 'fixtures/X/out.txt', root: 'state' }, 'Please save it to ~/.desk-autopilot/<slug>/fixtures/X/out.txt'),
+  w(mov, 'Please save the recording to \"\$DESK_STATE/fixtures/Screen Recording.mov\".'),
+  w(mov, 'Please save it to ~/.desk-autopilot/acme__w/fixtures/Screen\\\\ Recording.mov'),
+  w(rel, 'The nightly job needs it to write \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Waiting on CI: run 991 writes \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Please run the check once the worker saves \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Waiting on runs that write /a/compare-pass.txt and /b/compare-pass.txt'),
+  w(rel, 'This needs Ben to save its output to \$DESK_STATE/fixtures/DS-776/compare-pass.txt. Then the check reruns.'),
+  w(rel, 'Please run the export and, after it finishes, save the output to \$DESK_STATE/fixtures/DS-776/compare-pass.txt'),
+  w(rel, 'Please copy the export to /tmp/delivery/compare-pass.txt from \$DESK_STATE/staging/compare-pass.txt'),
+  w(rel, 'Please save the export to \\\${DESK_STATE}/fixtures/DS-776/compare-pass.txt'),
+].join('|'));
+")
+check "DS-807 AC1 a further step of the same request after a timing clause is still the person's" '[ "$(cut -d"|" -f10 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
+check "DS-807 AC4 a copy's destination is looked at, never the path it copies from" '[ "$(cut -d"|" -f11 <<< "$r")" = "abs /tmp/delivery/compare-pass.txt true" ]'
+check "DS-807 AC4 a \${DESK_STATE} path is a place, not a placeholder" '[ "$(cut -d"|" -f12 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
+check "DS-807 AC4 a copy request looks at the \$DESK_STATE copy, not its source" '[ "$(cut -d"|" -f1 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
+check "DS-807 AC4 an absolute or \$DESK_STATE clears-when is kept when the question's path is a placeholder, and is still the person's" \
+  '[ "$(cut -d"|" -f2 <<< "$r")" = "state fixtures/X/out.txt true" ]'
+check "DS-807 AC1 a quoted or escaped path with a space is the question's file" \
+  '[ "$(cut -d"|" -f3,4 <<< "$r")" = "state fixtures/Screen Recording.mov true|state fixtures/Screen Recording.mov true" ]'
+check "DS-807 AC3 a file a job, a run or the worker makes is not the person's" \
+  '[ "$(cut -d"|" -f5,6,7 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt false|state fixtures/DS-776/compare-pass.txt false|state fixtures/DS-776/compare-pass.txt false" ]'
+check "DS-807 AC4 a question naming two places for the file is refused, naming both" \
+  '[[ "$(cut -d"|" -f8 <<< "$r")" == "the question names \"/a/compare-pass.txt\", \"/b/compare-pass.txt\" and the clears-when \"fixtures/DS-776/compare-pass.txt\": it names more than one place"* ]]'
+check "DS-807 AC1 a question asking the person by name is theirs" '[ "$(cut -d"|" -f9 <<< "$r")" = "state fixtures/DS-776/compare-pass.txt true" ]'
 check "DS-349 queue.mjs clears-when stores a run" '[ "$(field R-1 park.clears_when)" = "{\"kind\":\"run-completed\",\"run\":41048026730}" ]'
 check "queue.mjs clears-when stores the condition on the park" '[ "$(field D-1 park.clears_when)" = "{\"kind\":\"ticket-done\",\"ticket\":\"ABC-9\"}" ]'
+# A condition only the parked ticket's own draft leaving draft or merging makes hold is refused.
+draft(){ q set "$1" "pr_status={\"pr\":$2,\"state\":\"OPEN\",\"isDraft\":$3}"; }
+parked DR-1 A "the Review gate is red on #3085"; draft DR-1 3085 true
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3085 ready" 2>&1); rc=$?
+check "DS-582 AC1 its own draft PR leaving draft is refused, saying the park keeps it in draft, and nothing is recorded" \
+  '[ $rc -ne 0 ] && grep -q "PR #3085 is DR-1.s own draft, and the park itself keeps it in draft" <<< "$out" && grep -q "Nothing was recorded" <<< "$out" && [ "$(field DR-1 park.clears_when)" = null ]'
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3085 merged" 2>&1); rc=$?
+check "DS-582 AC2 and so is it merging" '[ $rc -ne 0 ] && grep -q "PR #3085 is DR-1.s own draft, and the park itself keeps it in draft" <<< "$out" && [ "$(field DR-1 park.clears_when)" = null ]'
+out=$(node "$B/queue.mjs" clears-when DR-1 "pr 3090 ready" 2>&1); rc=$?
+check "DS-582 AC4 another ticket's draft PR is accepted" '[ $rc -eq 0 ] && [ "$(field DR-1 park.clears_when)" = "{\"kind\":\"pr-ready\",\"pr\":3090}" ]'
+parked DR-2 A "waiting on a merge of #3086"; draft DR-2 3086 false
+out=$(node "$B/queue.mjs" clears-when DR-2 "pr 3086 merged" 2>&1); rc=$?
+check "DS-582 AC5 its own PR out of draft merging is accepted" '[ $rc -eq 0 ] && [ "$(field DR-2 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":3086}" ]'
+parked DR-3 A "waiting on #3087"
+out=$(node "$B/queue.mjs" clears-when DR-3 "pr 3087 ready" 2>&1); rc=$?
+check "DS-582 AC6 with no recorded PR it is accepted" '[ $rc -eq 0 ] && [ "$(field DR-3 park.clears_when)" = "{\"kind\":\"pr-ready\",\"pr\":3087}" ]'
+q drop DR-1; q drop DR-2; q drop DR-3
+q add C-10 Story A; q set C-10 state=running branch=feat/C-10 session_id=gone; draft C-10 3085 true
+say "AUTOPILOT_PARK: the Review gate is red on #3085" "AUTOPILOT_PARK_CLEARS_WHEN: PR #3085 out of draft" > "$T/state/logs/C-10.log"
+# A park asking the person to save a file, recorded by queue.mjs and by a worker's lines.
+parked FP-1 A "Please run compare_pass.sh on the host and save its output to \$DESK_STATE/fixtures/FP-1/compare-pass.txt" "file fixtures/FP-1/compare-pass.txt exists"
+parked FP-2 A "Please save the capture to out/meet.json"
+out=$(node "$B/queue.mjs" clears-when FP-2 "file fixtures/meet.json exists" 2>&1); rc=$?
+check "DS-807 AC4 queue.mjs clears-when refuses a path the question contradicts, saying the two paths differ, and records nothing" \
+  '[ $rc -ne 0 ] && grep -q "the two paths differ" <<< "$out" && grep -q "Nothing was recorded" <<< "$out" && [ "$(field FP-2 park.clears_when)" = null ]'
+check "DS-807 AC4 queue.mjs clears-when looks where the question's \$DESK_STATE path says, marked the person's" \
+  '[ "$(field FP-1 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/FP-1/compare-pass.txt\",\"root\":\"state\",\"person\":true}" ]'
+parked FP-3 A "Please save the export to \$DESK_STATE/fixtures/FP-3/export.csv"
+out=$(node "$B/queue.mjs" clears-when FP-3 "file fixtures/FP-3/export.csv exists" 2>&1)
+check "DS-807 AC4 queue.mjs clears-when says the path it recorded, and that the person makes it" \
+  'grep -qF "FP-3: its park clears when file \$DESK_STATE/fixtures/FP-3/export.csv exists, which the person makes" <<< "$out"'
+q drop FP-3
+q add C-11 Story A; q set C-11 state=running branch=feat/C-11 session_id=gone
+say "AUTOPILOT_PARK: Please save the export to $T/state/fixtures/C-11/export.csv" "AUTOPILOT_PARK_CLEARS_WHEN: file fixtures/C-11/export.csv exists" > "$T/state/logs/C-11.log"
+q add C-12 Story A; q set C-12 state=running branch=feat/C-12 session_id=gone
+say "AUTOPILOT_PARK: Please save the export to out/export.csv" "AUTOPILOT_PARK_CLEARS_WHEN: file fixtures/export.csv exists" > "$T/state/logs/C-12.log"
 
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-269 AC2 a worker's park records its condition" '[ "$(field C-1 state)" = "\"parked\"" ] && [ "$(field C-1 park.clears_when)" = "{\"kind\":\"pr-merged\",\"pr\":41}" ]'
@@ -307,12 +406,27 @@ check "DS-563 AC1 KAN-976's gh pr view command is recorded as PR 991 merged" '[ 
 check "DS-563 AC2 a check line is recorded as that check passing, and waits while it runs" \
   '[ "$(field C-7 park.clears_when)" = "{\"kind\":\"checks-pass\",\"pr\":874,\"checks\":[\"Flows image\"]}" ] && [ "$(field C-7 state)" = "\"parked\"" ] && grep -q "C-7: waiting on ..Flows image. passing on PR #874.s head. (.Flows image. is in_progress at ddddddddd): left parked" <<< "$out"'
 check "DS-563 AC3 prose is kept for the decider, not checked and not none" '[ "$(field C-8 park.clears_when.kind)" = "\"unreadable\"" ] && [ "$(field C-8 state)" = "\"parked\"" ]'
+check "DS-582 AC3 a worker's line on its own draft leaving draft is recorded none, and the report names why" \
+  '[ "$(field C-10 state)" = "\"parked\"" ] && [ "$(field C-10 park.clears_when)" = "{\"kind\":\"none\"}" ] && grep -q "C-10: clears-when \"PR #3085 out of draft\" recorded as none, for the person: PR #3085 is C-10.s own draft, and the park itself keeps it in draft" <<< "$out"'
 r=$(node --input-type=module -e "
 import { settlesByScript } from '$B/batch-state.mjs';
 const q = JSON.parse((await import('node:fs')).readFileSync('$DESK_QUEUE', 'utf8'));
 console.log([settlesByScript(q.tickets['C-8']), settlesByScript(q.tickets['E-2'])].join('|'));
 ")
 check "DS-563 AC3 a park waiting on its restate is not yet the person's (digest and needs-you leave it out), and one recorded none is" '[ "$r" = "true|false" ]'
+check "DS-807 AC4 a worker's relative clears-when is recorded where its question's path says, marked the person's" \
+  '[ "$(field C-11 park.clears_when)" = "{\"kind\":\"file-exists\",\"path\":\"fixtures/C-11/export.csv\",\"root\":\"state\",\"person\":true}" ] && grep -qF "C-11: clears-when \"file fixtures/C-11/export.csv exists\" recorded as file \$DESK_STATE/fixtures/C-11/export.csv exists, where its question says" <<< "$out"'
+check "DS-807 AC4 one its question contradicts is kept for the decider to restate, naming why" \
+  '[ "$(field C-12 park.clears_when.kind)" = "\"unreadable\"" ] && grep -q "C-12: unreadable clears-when (the question names \"out/export.csv\" and the clears-when \"fixtures/export.csv\": the two paths differ" <<< "$out"'
+r=$(node --input-type=module -e "
+import { settlesByScript } from '$B/batch-state.mjs';
+import { personClears } from '$B/clears-when.mjs';
+const q = JSON.parse((await import('node:fs')).readFileSync('$DESK_QUEUE', 'utf8'));
+console.log([settlesByScript(q.tickets['FP-1']), personClears(q.tickets['FP-1'].park.clears_when), settlesByScript(q.tickets['FE-2']), personClears(q.tickets['FE-2'].park.clears_when)].join('|'));
+")
+check "DS-807 AC1 AC2 a park on a file the person is asked to make is theirs, so the digest and needs-you list it" '[ "$(cut -d"|" -f1,2 <<< "$r")" = "false|true" ]'
+check "DS-807 AC3 a park on a file a script makes still settles by script" '[ "$(cut -d"|" -f3,4 <<< "$r")" = "true|false" ]'
+check "DS-807 the pass still checks the person's file, and leaves the park while it is not there" '[ "$(field FP-1 state)" = "\"parked\"" ]'
 check "DS-269 AC2 a condition printed before the last park is not that park's" '[ "$(field C-3 park.clears_when)" = "{\"kind\":\"none\"}" ]'
 check "DS-269 a condition that does not hold yet says nothing and leaves the park" '! grep -q "C-1: \"" <<< "$out" && ! grep -q "E-4: \"\|E-4: could not" <<< "$out" && [ "$(field E-4 state)" = "\"parked\"" ]'
 check "DS-269 AC4 a lane C park whose condition holds stays, and the report says so" '[ "$(field D-1 state)" = "\"parked\"" ] && grep -q "D-1: \"ABC-9 done\" holds, but it is lane C: left parked for a person" <<< "$out"'
@@ -384,12 +498,15 @@ fl='{"name":"Flows image","workflowName":"images","status":"COMPLETED","conclusi
 printf "{\"headRefOid\":\"%s\",\"statusCheckRollup\":[$fl,$fl]}\n" "$(printf d%.0s {1..40})" FAILURE 2026-11-01T10:00:00Z 1 SUCCESS 2026-11-01T11:00:00Z 2 > "$T/gh/checks-874.json"
 q add V-2 Story A; q park V-2 "set FOO"; q clears-when V-2 "variable FOO set"; touch "$T/gh/vars.fail"
 rm "$T/gh/refuse-feat_P-2" "$T/gh/refuse-feat_P-3"
+mkdir -p "$T/state/fixtures/FP-1"; : > "$T/state/fixtures/FP-1/compare-pass.txt"
 # C-8 waited past the restate window with no restate (no decider came, or a session left it); C-2 has
 # just parked.
 q set C-8 'park.clears_when={"kind":"unreadable","text":"KAN-1086s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-563 a park no restate reached within the window is recorded none, so the digest lists it" \
   '[ "$(field C-8 park.clears_when)" = "{\"kind\":\"none\"}" ] && [ "$(field C-8 state)" = "\"parked\"" ] && grep -q "C-8: unreadable clears-when \"KAN-1086s fix PR is merged to main\" not restated within 60 minutes: recorded as none, for the person" <<< "$out"'
+check "DS-807 AC5 the file saved where the question says: the next pass clears the park and requeues it" \
+  '[ "$(field FP-1 state)" = "\"triaged\"" ] && grep -q "FP-1: \"file \$DESK_STATE/fixtures/FP-1/compare-pass.txt exists\" holds: requeued" <<< "$out"'
 check "DS-563 one still inside the window keeps waiting on its restate" '[ "$(field C-2 park.clears_when.kind)" = "\"unreadable\"" ] && ! grep -q "C-2: unreadable" <<< "$out"'
 check "DS-496 AC2 the 5xx over: the next pass pushes and requeues" 'on_origin P-2 && [ "$(field P-2 state)" = "\"triaged\"" ]'
 check "DS-496 AC3 a refusal is not tried again" '! on_origin P-3 && [ "$(field P-3 state)" = "\"parked\"" ]'
@@ -403,8 +520,28 @@ check "DS-496 a dry run pushes nothing" '! on_origin P-7 && [ "$(field P-7 state
 git -C "$T/repo" remote set-url origin https://127.0.0.1:1/nothing.git; out=$(node "$B/pass.mjs" 2>&1); git -C "$T/repo" remote set-url origin "$T/origin.git"
 check "DS-496 a push that reached nothing keeps the park and its condition" \
   '[ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\"" <<< "$out"'
+mkdir -p "$T/hung-push"; printf '#!/bin/sh\ncase " $* " in *" push "*) exec sleep 30;; esac\nexec "%s" "$@"\n' "$(command -v git)" > "$T/hung-push/git"; chmod +x "$T/hung-push/git"
+out=$(PATH="$T/hung-push:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
+check "DS-779 a push that hangs past its limit keeps the park and its condition" \
+  '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\" (git push ran past its 1 seconds)" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
+# DS-912: the pass's push starts a preview build, so with §4 Vercel set it takes the team's
+# preview-build unit first, and leaves the push for a later pass while every unit is held.
+cp "$T/config.md" "$T/config-vercel.md"; printf '\n## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | `acme` |\n' >> "$T/config-vercel.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
+LD="$T/leases"; pvl(){ DESK_LEASE_DIR="$LD" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | paste -sd',' -; }
+DESK_LEASE_DIR="$LD" DESK_MACHINE="$T/machine-pv.md" node "$B/leases.mjs" acquire preview-build acme --ttl 1200 --no-owner --label acme/site#7 >/dev/null 2>&1
+pushpark P-11 A; q set P-11 result.pr=1911; pr 1911 OPEN true
+out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
+check "DS-912 with the team's one unit held, the pass does not push, keeps the park, and says it waits on the preview build" \
+  '! on_origin P-11 && [ "$(field P-11 state)" = "\"parked\"" ] && [ "$(field P-11 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-11\"}" ] && grep -q "P-11: waiting on \"git push origin feat/P-11 succeeds\" (it waits on the preview build for acme: the preview-build slot for acme is held by acme/site#7" <<< "$out"'
+rm -rf "$LD"
+# The label is the branch's open PR as GitHub lists it (the stub answers `pr list --head` from this file).
+echo 1911 > "$T/gh/merged-feat_P-11"
+out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
+rm -f "$T/gh/merged-feat_P-11"
+check "DS-912 once a unit is free the pass takes it, labelled with the PR, pushes and requeues" 'on_origin P-11 && [ "$(field P-11 state)" = "\"triaged\"" ] && [ "$(pvl)" = "acme/widgets#1911" ]'
 # While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.
 q add C-9 Story A; q park C-9 "waiting on KAN-1087"
 q set C-9 'park.clears_when={"kind":"unreadable","text":"KAN-1087s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'

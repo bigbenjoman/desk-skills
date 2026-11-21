@@ -3,21 +3,20 @@
 // Fixture batch state folders hold recorded calls with known Opus answers. A stub claude on PATH
 // answers the usage probe from a usage file and each replay with one matching and one mismatching
 // answer, recording its argv, its folder and the settings it was given. Scratch folders only.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, chmodSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync, chmodSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { checkNames, verdicts, deciderItems, preflightScript, deciderScript, collect, loggedPreflights, compare, movePreflight, sampleOf, NEEDS, REPLAY_NOTE } from '../desk/bin/bench-replay.mjs';
 import { recordPreflight, inputsOf, parseArgs as recordArgs } from '../desk/bin/preflight-record.mjs';
 import { deciderPrompt, RESULT_MARK } from '../desk/bin/decider.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'bench-replay.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-replay-test-')));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+const dir = realpathSync(scratch('bench-replay-test-'));
 
 const OPUS = { 'claude-opus-4-5': { inputTokens: 10, outputTokens: 40, cacheCreationInputTokens: 100, cacheReadInputTokens: 900 } };
 const reply = (text, modelUsage = OPUS) => JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: text, total_cost_usd: 0.05, modelUsage });

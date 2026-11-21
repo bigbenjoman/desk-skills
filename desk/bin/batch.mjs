@@ -7,7 +7,9 @@
 //                                          Required check's workflow runs on (gate.mjs admissionRefusal)
 //   node batch.mjs discard <EPIC>          removes a batch no ticket has started in and the supervisor does
 //                                          not run: its queue and state folders, and its branch from origin
-//                                          when that holds no commit the default branch lacks
+//                                          when that holds no commit the default branch lacks;
+//                                          --keep-triage keeps its state's triage/ records; on a slot
+//                                          holding only those, removes them
 //   node batch.mjs archive <EPIC>          the supervisor's archive check, once, now
 // Every refusal exits 11 (show the person) and changes nothing.
 //
@@ -19,15 +21,16 @@
 // in the batch, not done and not running, is moved to the standing batch first when a merged last
 // promotion leaves it ready to run, and otherwise parked and handed on the same way, holding the
 // archive until it is moved or dropped.
-import { existsSync, mkdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, realpathSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX } from './batch-state.mjs';
-import { listBatches, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
+import { readQueue, EXIT, crashShowsPerson, describeCrash, LEFT_PREFIX, promotedAt } from './batch-state.mjs';
+import { listBatches, onlyKeptTriage, finished, prState, prMergedAt, lastPromotion, lastPromotionRecorded, orchestratorHolder, supervisorHolder, batchEnv } from './batches.mjs';
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
+import { followOnPending, postMergeUnmade } from './harvest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -88,19 +91,28 @@ function start(epic, branch, slug = E.repoSlug()) {
 // A ticket some worker has begun: spawned, past triage, or with a PR.
 const startedTicket = (t) => t.spawned_at != null || ['running', 'done', 'failed'].includes(t.state) || t.result?.pr != null;
 
-// -> lines saying what was removed and what became of the branch.
-function discard(epic, slug = E.repoSlug()) {
+// -> lines saying what was removed and what became of the branch. With `keepTriage`, the state folder's
+// triage/ records stay, so the epic's next start triages only the children that have none.
+function discard(epic, { keepTriage = false } = {}, slug = E.repoSlug()) {
   checkName(epic);
   const b = named(slug, epic);
-  if (!b) refuse(`no batch ${epic} in this repo: nothing removed`);
+  if (!b) {
+    const left = E.batchPaths(slug, epic);
+    if (!onlyKeptTriage(left)) refuse(`no batch ${epic} in this repo: nothing removed`);
+    rmSync(left.state, { recursive: true, force: true });
+    return [`batch ${epic} had only the triage records an earlier start kept: removed ${left.state}`];
+  }
   let q;
   try { q = readQueue(b.queue); } catch (e) { refuse(`batch ${epic}'s queue cannot be read, so whether a ticket started cannot be told: nothing removed (${describeCrash(e)})`); }
   if (q.supervised === true) refuse(`batch ${epic} is handed to the supervisor: nothing removed. A batch it runs is archived once its work is promoted or abandoned`);
   const begun = Object.values(q.tickets ?? {}).filter(startedTicket).map((t) => t.key);
   if (begun.length) refuse(`batch ${epic} has started tickets (${begun.join(', ')}): nothing removed`);
   rmSync(dirname(b.queue), { recursive: true, force: true });
-  rmSync(b.state, { recursive: true, force: true });
-  const lines = [`batch ${epic} discarded: removed ${dirname(b.queue)} and ${b.state}`];
+  const triage = join(b.state, 'triage');
+  const kept = keepTriage && existsSync(triage);
+  if (kept) for (const f of readdirSync(b.state)) { if (f !== 'triage') rmSync(join(b.state, f), { recursive: true, force: true }); }
+  else rmSync(b.state, { recursive: true, force: true });
+  const lines = [`batch ${epic} discarded: removed ${dirname(b.queue)} and ${kept ? `everything in ${b.state} but its triage records, which its next start reuses` : b.state}`];
   if (q.base) lines.push(branchFate(q.base));
   return lines;
 }
@@ -149,7 +161,7 @@ function moveDone(dir, at) {
 // The archive check for one named batch {name, queue, state}. -> {archived, lines, log}: `lines` go in
 // the batch's own log, `log` in the standing batch's, since an archived batch's own log moves with it.
 // `stopped` is set when the check told the batch's merge driver to stop, and the batch waits for it to exit.
-export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
+export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = new Date(), move = moveToStanding, park = parkIn, mark = markIn, stop = (pid) => process.kill(pid, 'SIGTERM') } = {}) {
   const none = { archived: false, lines: [], log: [] };
   if (!b?.name) return none;
   let q;
@@ -161,7 +173,7 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
   // merged is one; a pass that saw that merge recorded it as the last (lastPromotionRecorded).
   const left = rows.filter((t) => !['done', 'running'].includes(t.state) && !t.merged_at);
   const kept = rows.filter((t) => !left.includes(t));
-  // A merged promotion ends the batch only when it was the last slice, as pass.mjs nextPromotion
+  // A merged promotion ends the batch only when it was the last slice, as pass/promotion-pr.mjs nextPromotion
   // decides; an earlier merged slice is followed by the next one. It is decided here too, since no
   // pass runs for a batch that went idle before its last promotion merged.
   const last = ps === 'MERGED' && (lastPromotion(q.tickets, mergedAt(p))
@@ -181,6 +193,22 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     if (added.length) lines.push(`archive: batch ${b.name} waits on ${added.map((x) => `${x.item.ticket} (PR #${x.pr})`).join(', ')}, handed to the digest`);
     return { ...none, lines };
   }
+  // A merged ticket whose follow-on steps the person has not run keeps a batch its last promotion took
+  // to the default branch: needs-you held them until now (needs-you.mjs outAt) and reads no archived
+  // batch, so archiving would drop them unseen. Each is stamped with the promotion merge that took it
+  // out, which needs-you lists it from, and the batch is archived, below, once every one is done.
+  const follows = last ? rows.filter(followOnPending) : [];
+  // So does one whose review's post-merge criteria a pass has not made follow-on steps yet: the batch
+  // is not idle while one is owed (batch-state.mjs batchIdle), so a pass adds them, and they are stamped
+  // above on a later tick.
+  const owedSteps = last ? rows.filter(postMergeUnmade) : [];
+  const stamped = [];
+  for (const t of follows.filter((x) => !x.promoted_at)) {
+    const r = mark(b, t.key, `promoted_at=${promotedAt(q, t) ?? mergedAt(p) ?? now.toISOString()}`);
+    if (r) lines.push(`archive: ${t.key} in batch ${b.name} could not be marked promoted (${r}), so needs-you does not list its follow-on steps yet; the next tick tries again`);
+    else stamped.push(t.key);
+  }
+  if (stamped.length) lines.push(`archive: batch ${b.name} waits on the follow-on steps of ${stamped.join(', ')}, which needs-you now lists; it is archived once each is done`);
   const busy = holder(b);
   // A shut batch leaves its merge driver nothing to merge, so it is stopped; a driver mid-merge finishes
   // that merge first. The archive waits for the lock to go, on a later tick.
@@ -230,6 +258,9 @@ export function archiveCheck(b, { state = prState, mergedAt = prMergedAt, now = 
     }
     return { ...none, lines };
   }
+  // Every ticket left behind has moved or been parked by now, so a batch kept for follow-on steps runs
+  // nothing more.
+  if (follows.length || owedSteps.length) return { ...none, lines: [...lines, ...(moved.length ? [`archive: batch ${b.name} ${movedText}and waits on follow-on steps`] : [])] };
   const told = readStopped(b.state);
   const q2 = moveDone(dirname(b.queue), now);
   const s2 = moveDone(b.state, now);
@@ -251,6 +282,7 @@ function queueIn(b, args) {
 // Moves `key` from named batch `b` to the standing batch (queue.mjs transfer). -> null, or why not.
 const moveToStanding = (b, key) => queueIn(b, ['transfer', key, 'standing']);
 const parkIn = (b, key, question) => queueIn(b, ['park', key, question]);
+const markIn = (b, key, pair) => queueIn(b, ['set', key, pair]);
 
 // Drops this batch's archive items no longer open. -> report lines.
 function dropArchiveItems(state, keep) {
@@ -271,7 +303,7 @@ if (isMain) {
   try {
     let lines;
     if (cmd === 'start' && rest.length === 2) lines = start(rest[0], rest[1]);
-    else if (cmd === 'discard' && rest.length === 1) lines = discard(rest[0]);
+    else if (cmd === 'discard' && rest.filter((a) => a !== '--keep-triage').length === 1) lines = discard(rest.find((a) => a !== '--keep-triage'), { keepTriage: rest.includes('--keep-triage') });
     else if (cmd === 'archive' && rest.length === 1) {
       checkName(rest[0]);
       const b = named(E.repoSlug(), rest[0]);
@@ -279,7 +311,7 @@ if (isMain) {
       const a = archiveCheck(b);
       lines = a.archived ? a.log : a.lines.length ? a.lines : [`batch ${rest[0]} is not archived: its promotion PR is not merged or closed, or a ticket still runs`];
     } else {
-      console.error('usage: batch.mjs start <EPIC> <branch> | discard <EPIC> | archive <EPIC>');
+      console.error('usage: batch.mjs start <EPIC> <branch> | discard <EPIC> [--keep-triage] | archive <EPIC>');
       process.exit(EXIT.SHOW_PERSON);
     }
     console.log(lines.join('\n'));

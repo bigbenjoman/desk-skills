@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # suite: installed version and restart (install.sh moves running autopilot onto new code)
 # installed.mjs with fake merge drivers (detached, as a supervisor tick leaves them) and a fake
-# launchctl: `record` writes the commit installed from, `restart` restarts a driver waiting between
+# launchctl and systemctl: `record` writes the commit installed from, `restart` restarts a driver waiting between
 # loops with the same tickets, leaves one mid-loop, rewrites and reloads each loaded supervisor agent
 # with this node, and says so in one line when nothing runs. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -20,7 +20,7 @@ trap cleanup EXIT
 mkdir -p "$T/home" "$T/bin" "$T/fakes" "$T/repo" "$T/desk"
 export HOME="$T/home"
 unset DESK_CONFIG DESK_REPO_DIR DESK_REPO_ROOT DESK_SLUG DESK_STATE DESK_QUEUE DESK_AUTOPILOT_STATE DESK_DEFAULT_BRANCH DESK_GH_REPO DESK_BATCH
-export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" DESK_RESTART_WAIT_MS=5000
+export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/desk" DESK_RESTART_WAIT_MS=5000 DESK_PLATFORM=darwin
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
@@ -40,8 +40,10 @@ EOF
 # installed.mjs beside the real supervisor and the modules it imports, and a fake merge driver that
 # behaves as the real one does at rest: it holds the lock, sleeps between loops, and on TERM drops the
 # lock once its sleep returns. With $T/busy it is mid-loop instead (its child is not `sleep`).
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/installed.mjs" "$T/bin/"
-for f in supervisor.mjs desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs closeout.mjs run-by.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
+link_bin "$B" "$T/bin"
 cat > "$T/bin/merge-driver.sh" <<EOF
 #!/usr/bin/env bash
 echo "\$(pwd) \$*" >> "$T/driver.calls"
@@ -90,6 +92,45 @@ check "AC4: version prints it back" '[ "$out" = "$head_sha" ]'
 out=$(node "$T/bin/installed.mjs" record "$T/repo" 2>&1); rc=$?
 check "AC4: a directory that is not a checkout replaces the commit with a version of its own, and says so" '[ $rc -eq 0 ] && grep -q "^unversioned-.* (not a git checkout)$" <<< "$out" && ! grep -q "$head_sha" "$T/desk/installed.json" && grep -q "\"commit\": \"unversioned-" "$T/desk/installed.json"'
 check "AC4: so what started at the commit before it reads as old code" 'node --input-type=module -e "import { oldCode } from \"$T/bin/installed.mjs\"; process.exit(oldCode(\"$head_sha\") ? 0 : 1)"'
+# ---- DS-810: a driver records the version of the release it runs from ----------------------------
+# Two release folders under a desk home of their own: relA (commit aaa1), relB (bbb2, installed), and
+# relC with no release.json. `current` links to relB, as install.sh leaves it.
+RH="$T/relhome"
+for r in relA relB relC; do
+  mkdir -p "$RH/releases/$r/bin"; cp "$B/installed.mjs" "$RH/releases/$r/bin/"
+  link_bin "$B" "$RH/releases/$r/bin"
+done
+printf '{"commit":"aaa1","release":"relA"}\n' > "$RH/releases/relA/release.json"
+printf '{"commit":"bbb2","release":"relB"}\n' > "$RH/releases/relB/release.json"
+printf '{"commit":"bbb2","release":"relB"}\n' > "$RH/installed.json"
+ln -s releases/relB "$RH/current"
+running(){ DESK_HOME="$RH" node "$1/installed.mjs" running; }
+# old_lock <version>: whether a driver lock holding <version> reads as old code, as desk-q and the
+# supervisor read it (oldCode of lockVersion).
+old_lock(){ mkdir -p "$T/lk/merge-driver.lock.d"; printf '%s\n' "$1" > "$T/lk/merge-driver.lock.d/version"
+  DESK_HOME="$RH" node --input-type=module -e "import { oldCode, lockVersion } from \"$RH/releases/relB/bin/installed.mjs\"; console.log(oldCode(lockVersion(\"$T/lk\")))"; }
+out=$(running "$RH/releases/relA/bin")
+check "DS-810 AC1: a script run from an older release prints that release's commit, not the installed one" '[ "$out" = aaa1 ]'
+check "DS-810 AC2/AC3: so the lock it writes reads as old code" '[ "$(old_lock "$out")" = true ]'
+out=$(running "$RH/releases/relB/bin")
+check "DS-810 AC4: a script run from the installed release prints the installed commit" '[ "$out" = bbb2 ] && [ "$(old_lock "$out")" = false ]'
+out=$(running "$RH/current/bin")
+check "DS-810 AC4: and run through the current link it reads the release the link resolves to" '[ "$out" = bbb2 ]'
+out=$(running "$RH/releases/relC/bin")
+check "DS-810: a release with no release.json prints release-<name>, as rollback records it" '[ "$out" = release-relC ] && [ "$(old_lock "$out")" = true ]'
+out=$(running "$T/bin")
+check "DS-810: outside a release folder it prints the installed commit" '[ "$out" = bbb2 ]'
+
+node "$T/bin/installed.mjs" record "$G" >/dev/null
+check "DS-760: a clean checkout records dirty false" 'grep -q "\"dirty\": false" "$T/desk/installed.json"'
+mkdir -p "$G/.playwright-mcp"; echo x > "$G/.playwright-mcp/log"; echo x > "$G/scratch.txt"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+check "DS-760 AC1: a checkout whose only changes are untracked files records dirty false" '[ "$out" = "$head_sha" ] && grep -q "\"dirty\": false" "$T/desk/installed.json"'
+echo one > "$G/tracked.txt"; gc0(){ git -C "$G" -c user.name=t -c user.email=t@t "$@"; }
+gc0 add tracked.txt; gc0 commit -q -m two; head_sha="$(git -C "$G" rev-parse HEAD)"; echo two > "$G/tracked.txt"
+out=$(node "$T/bin/installed.mjs" record "$G" 2>&1)
+check "DS-760 AC2: a checkout with a modified tracked file records dirty true" '[ "$out" = "$head_sha (with uncommitted changes)" ] && grep -q "\"dirty\": true" "$T/desk/installed.json"'
+git -C "$G" checkout -q -- tracked.txt
 node "$T/bin/installed.mjs" record "$G" >/dev/null
 
 # ---- AC6: nothing running ------------------------------------------------------------------------
@@ -214,6 +255,50 @@ check "AC5: the plist records the installed version the agent was loaded at" 'gr
 n=$(grep -c "^bootstrap" "$T/launchctl.calls")
 out=$(restart)
 check "AC3: an unchanged agent is still reloaded" '[ "$(grep -c "^bootstrap" "$T/launchctl.calls")" = $((n + 1)) ]'
+
+# ---- #735: a loaded systemd supervisor is rewritten with this node and restarted, as on Linux -----
+cat > "$T/fakes/systemctl" <<EOF
+#!/bin/sh
+echo "\$@" >> "$T/systemctl.calls"
+case "\$2" in
+  is-active) [ -f "$T/active" ] ;;
+  enable) touch "$T/active" ;;
+  disable) rm -f "$T/active" ;;
+  restart) [ -f "$T/active" ] ;;
+esac
+EOF
+printf '#!/bin/sh\necho Linger=yes\n' > "$T/fakes/loginctl"
+chmod +x "$T/fakes/systemctl" "$T/fakes/loginctl"
+# The launchd agent above goes, so nothing below can read it.
+rm -f "$PL" "$T/loaded"
+export DESK_PLATFORM=linux XDG_CONFIG_HOME="$T/xdg"
+UD="$T/xdg/systemd/user"; SV="$UD/com.desk-skills.supervisor.acme__widgets.service"; TM="$UD/com.desk-skills.supervisor.acme__widgets.timer"
+mkdir -p "$UD"
+cat > "$SV" <<EOF
+[Unit]
+Description=desk-skills supervisor for acme__widgets
+
+[Service]
+Type=oneshot
+ExecStart="/gone/node" "$T/bin/supervisor.mjs" tick
+WorkingDirectory=$T/repo
+Environment="PATH=/usr/bin:/bin"
+Environment="DESK_REPO_DIR=$T/repo"
+Environment="DESK_HOME=$T/desk"
+KillMode=process
+EOF
+printf '[Unit]\nDescription=x\n\n[Timer]\nOnActiveSec=0\nOnUnitActiveSec=240s\nAccuracySec=1s\n\n[Install]\nWantedBy=timers.target\n' > "$TM"
+rm -f "$T/active"
+out=$(restart)
+check "#735: a timer that is not active is left alone" '[ "$out" = "nothing to restart: no merge driver or supervisor agent is running" ] && grep -q "/gone/node" "$SV"'
+touch "$T/active"
+out=$(restart); rc=$?
+check "#735: restart exits 0 and says the unit was reloaded" '[ $rc -eq 0 ] && grep -q "^supervisor com.desk-skills.supervisor.acme__widgets: rewritten with node $NODE and reloaded$" <<< "$out"'
+check "#735: the service names this node, not the stale one, and keeps its working directory" 'grep -qF "ExecStart=\"$NODE\"" "$SV" && ! grep -q "/gone/node" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
+check "#735: the timer keeps its interval and is restarted" 'grep -qx "OnUnitActiveSec=240s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+out=$(node --input-type=module -e "import { agentVersion } from '$T/bin/installed.mjs'; console.log(agentVersion('acme__widgets'))")
+check "#735 AC5: the service records the installed version the timer was loaded at" '[ "$out" = "$head_sha" ]'
+unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin
 
 # ---- the --tickets and --deps a driver's command line gives -------------------------------------
 out=$(node --input-type=module -e "

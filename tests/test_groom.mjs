@@ -3,14 +3,16 @@
 // per DS-238 criterion (per ticket) and per DS-239 criterion (per epic), plus the close rule a
 // verifier's results go through. Nothing reads the real Jira, GitHub or this checkout's history.
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync, readFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, realpathSync, existsSync, readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
-  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf } from '../skills/desk-groom/bin/groom-scan.mjs'
+import { scratch } from './scratch.mjs';
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), '..')
+// The scan's desk/bin modules come from this checkout, not an older install under ~/.claude.
+process.env.DESK_ENV_MJS = join(SRC, 'desk', 'bin', 'desk-env.mjs')
+const { criteriaOf, citationsOf, closeVerdict, sharedPrefix, prefixOf, newer, plain, premiseName, priorityRank, ticketOf, groomEpics, precloseCheck,
+  batchOf, batchesOf, approvedNumbers, commandWords, readbackOf, priorityHandoff, handoffText, filesNamed, orderOf, groom, stepWords, holdLine, scanFindings, scanText } = await import('../skills/desk-groom/bin/groom-scan.mjs')
 const SCAN = join(SRC, 'skills', 'desk-groom', 'bin', 'groom-scan.mjs')
 let fails = 0
 const t = (name, got, want) => { const g = JSON.stringify(got), w = JSON.stringify(want); const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`) }
@@ -40,9 +42,9 @@ t('AC1 a key the scan named no candidate for is never a close', closeVerdict({ t
 t('AC1 an open PR on the key vetoes', closeVerdict({ ticket: 'K-1', criteria: [met('AC1')], open_prs: [7] }, ['AC1']).reasons, ['PR #7 on the key is still open'])
 
 // ---- fixture repo: origin/main holds the files the tickets cite, and the work landed under KAN-50
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-groom-')))
+const T = realpathSync(scratch('desk-groom-'))
 let stub = null
-process.on('exit', () => { if (stub) stub.kill(); rmSync(T, { recursive: true, force: true }) })
+process.on('exit', () => { if (stub) stub.kill() })
 writeFileSync(join(T, 'gitconfig'), '[user]\n\temail = t@example.com\n\tname = t\n[init]\n\tdefaultBranch = main\n')
 const env = { ...process.env, HOME: join(T, 'home'), GIT_CONFIG_GLOBAL: join(T, 'gitconfig'), GIT_CONFIG_NOSYSTEM: '1',
   DESK_CONFIG_ROOT: join(T, 'home', '.config', 'desk'), DESK_ENV_MJS: join(SRC, 'desk', 'bin', 'desk-env.mjs'), PATH: `${join(SRC, 'bin')}:${process.env.PATH}` }
@@ -182,10 +184,46 @@ writeFileSync(join(cfg, 'config.md'), `## 4. Tracker\n\n| Field | Value |\n|---|
 writeFileSync(join(cfg, 'jira-email'), 'me@example.com'); writeFileSync(join(cfg, 'atlassian-token'), 'good-token', { mode: 0o600 })
 
 const run = (...a) => spawnSync('node', [SCAN, ...a], { cwd: R, env, encoding: 'utf8' })
+// The one end-to-end scan of the backlog: desk-jira against the stub. Every other backlog scan reads the
+// same fixture in-process; the command line's text form and queue keep a two-ticket run, with the queue checks.
 const r = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--json')
 t('scan exits 0', r.status, 0)
 if (r.status !== 0) console.log(r.stderr)
-const found = r.status === 0 ? JSON.parse(r.stdout) : []
+
+// What `desk-jira <cmd> --json` prints from tests/stub_jira.py, answered from the fixture with no process.
+const stubIssue = (k) => {
+  const i = fixture.issues[k]
+  return i ? { key: k, fields: { summary: k, status: { name: 'To Do', statusCategory: { key: 'new' } }, issuetype: { name: 'Task', subtask: false, hierarchyLevel: 0 }, issuelinks: [], ...i }, names: i._names ?? {} } : null
+}
+const jiraFake = (cmd, k) => {
+  if (cmd === 'search') {
+    const keys = /^\s*key\s+in\s*\(([^)]*)\)/i.exec(k)?.[1].split(',').map((s) => s.trim()).filter(Boolean)
+    return { issues: (keys ?? fixture.search).map(stubIssue).filter(Boolean), isLast: true }
+  }
+  if (cmd === 'children') return (fixture.children[k] ?? []).map(stubIssue).filter(Boolean)
+  if (cmd === 'get') {
+    const i = stubIssue(k)
+    if (!i) throw Object.assign(new Error('HTTP 404'), { stderr: 'desk-jira: HTTP 404' })
+    return i
+  }
+  throw new Error(`no in-process answer for desk-jira ${cmd}`)
+}
+const stubRequests = () => (existsSync(join(T, 'requests.log')) ? readFileSync(join(T, 'requests.log'), 'utf8').split('\n').filter(Boolean).length : 0)
+// While an in-process scan runs, `desk-jira` on PATH is a stand-in that records the call and fails,
+// so a scan that spawned one instead of using the injected reader is counted, never sent to a real Jira.
+const NOJIRA = join(T, 'no-desk-jira'); mkdirSync(NOJIRA, { recursive: true })
+writeFileSync(join(NOJIRA, 'desk-jira'), `#!/bin/sh\necho "$*" >> '${join(T, 'desk-jira-spawns.log')}'\nexit 1\n`, { mode: 0o755 })
+const jiraSpawns = () => (existsSync(join(T, 'desk-jira-spawns.log')) ? readFileSync(join(T, 'desk-jira-spawns.log'), 'utf8').split('\n').filter(Boolean).length : 0)
+const scanIn = (o) => {
+  const path = process.env.PATH
+  process.env.PATH = `${NOJIRA}:${path}`
+  try {
+    return { status: 0, ...JSON.parse(JSON.stringify(scanFindings({ repo: R, default: 'main', project: 'KAN', ...o }, { jira: jiraFake, stepLabels: [], inputLabels: [] }))) }
+  } catch (err) { return { status: 2, error: err.message } } finally { process.env.PATH = path }
+}
+const full = { priority: P, fields: S, size: S, done: 'Done', 'in-progress': 'In Progress' }
+const found = scanIn(full).findings ?? []
+t('the CLI scan finds what the in-process scan finds from the same data', r.status === 0 && r.stdout.trim() === JSON.stringify(found, null, 2), true)
 const of = (check, ticket) => found.filter((f) => f.check === check && f.ticket === ticket)
 const cmds = (check, ticket) => of(check, ticket).flatMap((f) => f.propose)
 
@@ -227,6 +265,43 @@ t('order: wording before the key outranks a verb after it', ['Ship after DS-279 
   ['blocked-by', 'blocked-by', 'blocked-by'])
 t('order: every mention of the key is read', orderOf('See DS-279 for context. Ship after DS-279 merges.', 'DS-279'), 'blocked-by')
 t('order: mentions that disagree order nothing', orderOf('Lands before DS-279. Then after DS-279 merges, retry.', 'DS-279'), null)
+
+// A step only the person takes, blocking open work: which label it carries, and what a link to it holds.
+const bare = { commitsNaming: () => [], commitsTouching: () => [], resolve: () => null, exists: () => false, has: () => false, lines: () => [], renamedTo: () => null }
+const task = (key, summary, extra = {}) => ticketOf({ key, fields: { summary, description: '', issuetype: { name: 'Task' }, ...extra } })
+const steps = [
+  task('KAN-80', 'build: the checkout reads the webhook', { issuelinks: ['KAN-81', 'KAN-82', 'KAN-83', 'KAN-84', 'KAN-85'].map((k) => blocks(k)) }),
+  task('KAN-86', 'build: the refund page', { issuelinks: [blocks('KAN-81'), blocks('KAN-90')] }),
+  task('KAN-81', 'Ben: approval of the refund copy'),
+  task('KAN-82', 'Ben: record a real Stripe webhook fixture'),
+  task('KAN-83', 'Ben: create the Stripe API key'),
+  task('KAN-84', 'Ben: walkthrough of the checkout', { labels: ['ben-step'] }),
+  task('KAN-85', 'checkout: render the receipt'),
+  task('KAN-87', 'Ben: go-live sign-off for checkout'),
+  task('KAN-88', 'build: the receipt email', { description: 'Ship it after KAN-87 is done.\nThis needs the fixture from KAN-82.\nIt needs the key KAN-89 makes.\nOnce KAN-84 is done, it can merge.\nIt needs the fixture from KAN-91.' }),
+  task('KAN-89', 'Ben: create the signing key', { labels: ['ben-input'] }),
+  task('KAN-90', 'Ben: confirm the Stripe key'),
+  task('KAN-91', 'Ben: save the refund fixture'),
+]
+const labelled = groom({ tickets: steps, repo: bare, stepLabels: ['Ben-Step'], inputLabels: ['ben-input'] })
+const label = (k) => labelled.filter((f) => f.check === 'label' && f.ticket === k)
+t('label: one question per unlabelled step, naming every ticket it blocks', [label('KAN-81').length, label('KAN-81')[0]?.blocked, label('KAN-81')[0]?.kind], [1, ['KAN-80', 'KAN-86'], 'question'])
+t('label: an approval step recommends the Person-step label, as the row writes it', label('KAN-81')[0]?.recommend, 'KAN-81 gates only the merge of KAN-80, KAN-86: desk-jira labels KAN-81 add Ben-Step')
+t('label: a fixture step recommends the Person-input label', label('KAN-82')[0]?.recommend, 'KAN-82 makes something the build of KAN-80 reads: desk-jira labels KAN-82 add ben-input')
+t('label: a key step recommends the Person-input label', /add ben-input$/.test(label('KAN-83')[0]?.recommend ?? ''), true)
+t('label: a bare key in a confirm step recommends the Person-input label', [/add ben-input$/.test(label('KAN-90')[0]?.recommend ?? ''), label('KAN-90')[0]?.evidence?.[2]], [true, 'its title names an input the build reads: "key"'])
+t('label: a step named only in prose is not asked until it is linked', label('KAN-91').length, 0)
+t('label: both labels and neither are the options', label('KAN-81')[0]?.options?.length, 3)
+t('label: a step already labelled, or an ordinary blocker, asks nothing', [label('KAN-84').length, label('KAN-85').length], [0, 0])
+t('label: no finding where the rows are none', groom({ tickets: steps, repo: bare }).filter((f) => f.check === 'label').length, 0)
+t('step words: an input wins over a merge gate', [stepWords('approve the recorded payment response'), stepWords('open the account'), stepWords('render it')].map((w) => w.kind), ['input', 'merge', null])
+const linkHold = (k) => labelled.find((f) => f.check === 'link' && f.ticket === 'KAN-88' && f.other === k)?.evidence?.[1] ?? null
+t('link: a step with neither label holds the build, as an ordinary blocker', linkHold('KAN-82'), "KAN-82 reads as the person's step but carries no label that says so: the link holds KAN-88's build until KAN-82 is Done, as an ordinary blocker (see KAN-82's label finding)")
+t('link: a step with no label finding points at none', linkHold('KAN-91'), "KAN-91 reads as the person's step but carries no label that says so: the link holds KAN-88's build until KAN-91 is Done, as an ordinary blocker")
+t('link: a Person-input step holds the build', linkHold('KAN-89'), "KAN-89 is the person's step, labelled as an input: the link holds KAN-88's build until KAN-89 is Done")
+t('link: a Person-step step holds only the merge', linkHold('KAN-84'), "KAN-84 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
+t('link: a Task that says sign off holds only the merge, labelled or not', linkHold('KAN-87'), "KAN-87 is the person's step: the link holds only KAN-88's merge, so KAN-88 is built and reviewed meanwhile")
+t('link: an ordinary blocker adds no hold line', holdLine(steps.find((x) => x.key === 'KAN-85'), 'KAN-88'), null)
 
 // AC4
 const moved = of('stale', 'KAN-40')[0] ?? {}
@@ -348,9 +423,9 @@ const writes = spawnSync('grep', ['-cE', '"method": "(PUT|DELETE)"|issueLink"|/t
 t('the scan wrote nothing to Jira', writes, '0')
 
 // The text form and the verdict command
-const text = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S)
-t('the text form counts the tickets', /^groom-scan: 46 open tickets, \d+ findings/.test(text.stdout), true)
-t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text.stdout), true)
+const text = scanText(scanIn({ priority: P, fields: S }), 'main')
+t('the text form counts the tickets', /^groom-scan: 46 open tickets, \d+ findings/.test(text), true)
+t('the text form marks a question and its recommended option', /\nloose +KAN-141 +\[question\]\n(?:.*\n)*? {2}option {2}: KAN-150 .*\(recommended\)/.test(text), true)
 writeFileSync(join(T, 'scan.json'), r.stdout)
 writeFileSync(join(T, 'results.json'), JSON.stringify([{ ticket: 'KAN-10', criteria: [met('AC1')] }, { ticket: 'KAN-33', criteria: [{ id: 'AC1', met: false }] }, { ticket: 'KAN-31', criteria: [met('AC1')] }]))
 const v = run('verdict', join(T, 'results.json'), '--scan', join(T, 'scan.json'))
@@ -394,9 +469,9 @@ t('DS-240 AC1 the scan wrote nothing to Jira', jiraWrites(), 0)
 // AC2: a queue whose batch runs KAN-21, holds KAN-11 and KAN-30, and finished KAN-14
 const Q = join(T, 'queue.json')
 writeFileSync(Q, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-21': { state: 'running' }, 'KAN-11': { state: 'parked' }, 'KAN-30': { state: 'triaged' }, 'KAN-14': { state: 'done' } } }))
-const rq = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q, '--json')
+const rq = scanIn({ ...full, queue: Q })
 t('DS-240 AC2 the scan with a queue exits 0', rq.status, 0)
-const inQ = rq.status === 0 ? JSON.parse(rq.stdout) : []
+const inQ = rq.findings ?? []
 const names = (f, k) => [f.ticket, f.other, ...f.propose, ...(f.options ?? [])].some((s) => new RegExp(`\\b${k}\\b`).test(s ?? ''))
 const on = (k) => inQ.filter((f) => names(f, k))
 t('DS-240 AC2 a running ticket gets no proposal', on('KAN-21').map((f) => [f.check, f.kind, f.propose.length]), [['duplicate', 'left', 0], ['loose', 'left', 0]])
@@ -406,7 +481,14 @@ t('DS-240 AC2 a left candidate gets no verifier', on('KAN-21').some((f) => f.ver
 t('DS-240 AC2 a ticket the batch finished is groomed as before', cmds('blocker', 'KAN-13'), inQ.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').flatMap((f) => f.propose))
 t('DS-240 AC2 every other finding is unchanged', inQ.filter((f) => f.kind !== 'left').length, found.filter((f) => !['KAN-21', 'KAN-11', 'KAN-30'].some((k) => names(f, k))).length)
 writeFileSync(join(T, 'bad-queue.json'), '{')
-t('DS-240 AC2 an unreadable queue stops the scan', run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json')).status, 2)
+t('DS-240 AC2 an unreadable queue stops the scan', (({ status, error }) => [status, /^could not read the batch queue /.test(error)])(scanIn({ queue: join(T, 'bad-queue.json') })), [2, true])
+// The command line's own paths, end to end and cheaply: an unreadable queue stops before any Jira
+// read, and a two-ticket scan in the text form with the queue prints what the in-process one does.
+const asked = stubRequests(), badQ = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--queue', join(T, 'bad-queue.json'))
+t('DS-240 AC2 from the command line, an unreadable queue exits 2 before reading Jira', [badQ.status, /^groom-scan: could not read the batch queue /.test(badQ.stderr), stubRequests() - asked], [2, true, 0])
+const pair = { priority: P, fields: S, jql: 'key in (KAN-20, KAN-21)', queue: Q }
+const textQ = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--jql', pair.jql, '--queue', Q)
+t('DS-240 AC2 from the command line, the text form leaves the running ticket, as the in-process scan does', [textQ.status, /\nduplicate +KAN-21 · KAN-20 +\[left\]\n/.test(textQ.stdout), textQ.stdout.trim() === scanText(scanIn(pair), 'main')], [0, true, true])
 t('DS-240 AC2 no queue file is no batch', batchOf(null).running, false)
 t('DS-240 AC2 held: a key the batch now holds exits 1', [run('held', '--queue', Q, 'KAN-12', 'KAN-14').status, run('held', '--queue', Q, 'KAN-12', 'KAN-21').stdout.trim()], [0, 'left alone: KAN-21 is running in batch groom-7'])
 
@@ -419,8 +501,7 @@ writeFileSync(join(T, 'two', 'batches', 'X-1', 'queue.json'), JSON.stringify({ b
 writeFileSync(join(T, 'two', 'batches', '.done', 'X-0', 'queue.json'), JSON.stringify({ batch: 'X-0', tickets: { 'KAN-12': { state: 'parked' } } }))
 t('DS-306 AC4 held: a key the named batch holds exits 1, naming that batch', [run('held', '--queue', Q2, 'KAN-13').status, run('held', '--queue', Q2, 'KAN-13', 'KAN-21').stdout.trim()], [1, 'left alone: KAN-13 is running in batch X-1\nleft alone: KAN-21 is running in batch groom-7'])
 t('DS-306 AC4 a ticket a named batch finished, or an archived batch holds, is not held', run('held', '--queue', Q2, 'KAN-12').status, 0)
-const rq2 = run('scan', '--repo', R, '--default', 'main', '--project', 'KAN', '--priority', P, '--fields', S, '--size', S, '--done', 'Done', '--in-progress', 'In Progress', '--queue', Q2, '--json')
-const inQ2 = rq2.status === 0 ? JSON.parse(rq2.stdout) : []
+const inQ2 = scanIn({ ...full, queue: Q2 }).findings ?? []
 t('DS-306 AC4 the scan leaves the named batch\'s ticket alone, naming its batch', inQ2.filter((f) => f.check === 'blocker' && f.ticket === 'KAN-13').map((f) => [f.kind, f.propose.length, /KAN-13 is running in batch X-1/.test(f.left)]), [['left', 0, true]])
 t('DS-306 AC4 and still the standing batch\'s', on('KAN-21').map((f) => f.left).join(' | '), inQ2.filter((f) => names(f, 'KAN-21')).map((f) => f.left).join(' | '))
 t('DS-306 batchesOf keeps the standing batch\'s name for a hand-off, and every batch\'s keys', (() => { const b = batchesOf([{ batch: 's', tickets: {} }, { batch: 'X-1', tickets: { 'A-1': { state: 'done' } } }]); return [b.name, b.running, [...b.keys]] })(), ['s', false, ['A-1']])
@@ -502,6 +583,8 @@ const pr170 = run('priority', 'KAN-170', '--queue', Q, '--json')
 const pj = pr170.status === 0 ? JSON.parse(pr170.stdout) : {}
 t('DS-240 AC3 priority from Jira: the open child not in the queue', [pr170.status, (pj.list ?? []).map((x) => x.key), pj.inBatch, pj.batch], [0, ['KAN-172'], ['KAN-171'], { name: 'groom-7', supervised: false }])
 t('DS-240 AC3 the queue is not written', spawnSync('cat', [Q], { encoding: 'utf8' }).stdout, JSON.stringify({ batch: 'groom-7', tickets: { 'KAN-171': { state: 'running' } } }))
+
+t('every scan but the CLI ones read Jira in-process, starting no desk-jira', jiraSpawns(), 0)
 
 console.log(fails ? `${fails} FAILED` : 'all groom checks passed')
 process.exit(fails ? 1 : 0)

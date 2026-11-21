@@ -5,18 +5,18 @@
 // Playwright and are skipped where it is not installed.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { parseCapture, pngSize, collectCaptures, sheetHtml, stitch } from '../desk/bin/stitch-boards.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'stitch-boards.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-stitch-'));
+const T = scratch('desk-stitch-');
 const sha = (p) => createHash('sha256').update(readFileSync(p)).digest('hex');
 
 // A PNG of one colour with a stripe pattern, written without a dependency.

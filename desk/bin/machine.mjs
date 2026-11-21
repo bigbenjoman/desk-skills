@@ -18,10 +18,19 @@ export const HARDWARE_KEYS = Object.freeze([
   'model', 'chip', 'cpu-cores', 'performance-cores', 'efficiency-cores', 'gpu-cores',
   'memory-gb', 'disk-free-gb', 'os', 'arch', 'battery', 'wsl',
 ]);
-export const SIZING_KEYS = Object.freeze([
-  'autopilot-concurrency',
-  'memory-ceiling-gb', 'test-cap', 'test-lock-slots', 'typecheck-lock-timeout-min', 'pre-push-lock-timeout-s',
-]);
+// The sizes the proposal makes, in its order, each with the check a hand-set override must pass.
+const wholeAtLeast = (min) => (v) => /^\d+$/.test(v) && Number(v) >= min;
+const SIZING_RULES = Object.freeze({
+  'autopilot-concurrency': { ok: (v) => /^\d+ \/ \d+$/.test(v) && Number(v.split(' / ')[0]) >= 1 && Number(v.split(' / ')[0]) <= Number(v.split(' / ')[1]),
+    want: '"<default> / <cap>", whole numbers with the default from 1 to the cap' },
+  'memory-ceiling-gb': { ok: wholeAtLeast(1), want: 'a whole number of GB, 1 or more' },
+  'test-cap': { ok: wholeAtLeast(1), want: 'a whole number of test workers, 1 or more' },
+  'test-lock-slots': { ok: wholeAtLeast(1), want: 'a whole number of slots, 1 or more' },
+  'test-lock-queue-factor': { ok: wholeAtLeast(1), want: 'a whole number, 1 or more' },
+  'typecheck-lock-timeout-min': { ok: wholeAtLeast(0), want: 'a whole number of minutes' },
+  'pre-push-lock-timeout-s': { ok: wholeAtLeast(0), want: 'a whole number of seconds' },
+});
+export const SIZING_KEYS = Object.freeze(Object.keys(SIZING_RULES));
 
 // The bench's quota settings: Sizing rows no proposal makes, set by `desk-env machine set` from the
 // user's answers and read by bench-quota.mjs.
@@ -32,7 +41,49 @@ const BENCH_RULES = Object.freeze({
     why: 'points of each weekly allowance the bench may spend, set in /desk-setup' },
   [BENCH_RESERVE_KEY]: { ok: (n) => n < 100, want: 'a percentage of the weekly allowance from 0 to under 100',
     why: '% of each weekly allowance the bench leaves for interactive work, set in /desk-setup' },
+  // Not the bench's, but set the same way: a Sizing row no proposal makes, which the lease broker
+  // (leases.mjs) reads, 1 when unset.
+  'preview-build-slots': { ok: (n) => Number.isInteger(n) && n >= 1, want: 'a whole number of preview builds at once per Vercel team, 1 or more',
+    why: 'preview builds one Vercel team may run at once, read by desk-env lease; set by its user' },
+  // The lease broker's per-kind lever, read as text rather than a number.
+  'lease-kinds': { text: true, problem: (v) => leaseKindsProblem(v),
+    why: 'off, shadow or on for each lease kind desk-env lease decides; a kind not named is shadow' },
 });
+
+// ---- lease kinds ------------------------------------------------------------------------------
+// The lease broker's kinds (leases.mjs takes its list from here, as this file cannot import it) and
+// the modes the lease-kinds row sets each to: off takes nothing, shadow grants and logs what it
+// would have refused, on refuses. A kind the row does not name, or names wrongly, reads as
+// DEFAULT_LEASE_MODE, so a typo never turns a kind on.
+export const LEASE_KINDS = Object.freeze(['port', 'slot', 'preview-build', 'merge', 'mem']);
+export const LEASE_MODES = Object.freeze(['off', 'shadow', 'on']);
+export const DEFAULT_LEASE_MODE = 'shadow';
+// `port=on slot=shadow` (spaces or commas between entries) -> { modes: { kind: mode }, unknown: [entry] }.
+export function parseLeaseKinds(raw) {
+  const modes = {}; const unknown = []; const garbled = new Set();
+  for (const entry of String(raw ?? '').split(/[\s,]+/).filter(Boolean)) {
+    const m = /^([\w-]+)=(.*)$/.exec(entry);
+    const kind = m?.[1].toLowerCase(); const mode = m?.[2].toLowerCase();
+    if (m && LEASE_KINDS.includes(kind) && LEASE_MODES.includes(mode)) modes[kind] = mode;
+    else { unknown.push(entry); if (LEASE_KINDS.includes(kind)) garbled.add(kind); }
+  }
+  // A kind with any entry it cannot read is the default, whatever another entry sets it to.
+  for (const k of garbled) delete modes[k];
+  return { modes, unknown };
+}
+// What is wrong with a lease-kinds value, naming each entry it does not know, or null.
+export function leaseKindsProblem(raw) {
+  const { modes, unknown } = parseLeaseKinds(raw);
+  const want = `<kind>=<mode> entries, kinds ${LEASE_KINDS.join(', ')} and modes ${LEASE_MODES.join(', ')}`;
+  if (unknown.length) return `\`lease-kinds\` names ${unknown.length === 1 ? 'an entry' : 'entries'} it does not know: ${unknown.map((e) => `"${e}"`).join(', ')}: want ${want}`;
+  return Object.keys(modes).length ? null : `\`lease-kinds\` is empty: want ${want}`;
+}
+// The checks on Sizing rows a person may have edited by hand, one line each: today lease-kinds.
+export function profileProblems(profile) {
+  const v = profile?.sizing?.['lease-kinds']?.value;
+  const bad = v == null ? null : leaseKindsProblem(v);
+  return bad ? [bad] : [];
+}
 // `bench-run-limit-<provider>`: the most runs the bench may start in a rolling week on a provider it
 // has no meter or allowance ledger for, which it otherwise refuses.
 const BENCH_RUN_LIMIT_PREFIX = 'bench-run-limit-';
@@ -47,6 +98,8 @@ export function benchSettingError(key, raw) {
   const rule = benchRule(key);
   if (!rule) return `\`${key}\` is not a bench setting: want ${Object.keys(BENCH_RULES).join(' or ')} or ${benchRunLimitKey('<provider>')}`;
   const v = String(raw ?? '').trim();
+  // A profile row is one line, so a value that breaks across lines would be read back cut short.
+  if (rule.text) return /[\r\n]/.test(v) ? `\`${key}\` holds a line break: give it on one line` : rule.problem(v);
   return /^\d+(\.\d+)?$/.test(v) && rule.ok(Number(v)) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
 }
 
@@ -54,8 +107,23 @@ export function benchSettingError(key, raw) {
 // profile already written.
 export const RULES = Object.freeze({
   osReserveGB: 8, wslCeilingGB: 16, workerHeavyGB: 3, minTestWorkers: 3, memoryPerLockSlotGB: 16,
-  typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60,
+  efficiencyCoreWeight: 0.5, typecheckLockTimeoutMin: 20, prePushLockTimeoutS: 60, testLockQueueFactor: 2,
 });
+
+// ---- overrides -------------------------------------------------------------------------------
+// A Sizing row the proposal makes, set by hand with `desk-env machine set`: its Why starts with
+// "override", and detect and write keep it rather than reading it as drift.
+const OVERRIDE_WHY = /^override\b/i;
+export const isOverride = (row) => OVERRIDE_WHY.test(String(row?.why ?? '').trim());
+export const overrideWhy = (reason) => `override: ${String(reason ?? '').trim() || 'set by hand with desk-env machine set'}`;
+export const isSizingKey = (key) => Object.hasOwn(SIZING_RULES, key);
+// Why a value cannot be stored as an override of a proposed size, or null when it can.
+export function sizingSettingError(key, raw) {
+  const rule = SIZING_RULES[key];
+  if (!rule) return `\`${key}\` is not a size the proposal makes: want ${SIZING_KEYS.join(', ')}`;
+  const v = String(raw ?? '').trim();
+  return rule.ok(v) ? null : `\`${key}\` is "${raw}": want ${rule.want}`;
+}
 
 const num = (v) => (v === '' || v == null ? NaN : Number(v));
 const known = (v) => Number.isFinite(v);
@@ -223,14 +291,22 @@ export function propose(hw, r = RULES) {
   add('autopilot-concurrency', `${def} / ${cap}`, `cap floor(${ceiling} GB / ${r.workerHeavyGB} GB per worker in its heavy stage), default half the cap`);
   add('memory-ceiling-gb', ceiling, ceilingWhy);
   // with-lock.sh lets test-lock-slots suites or typechecks hold the test lock at once, each with
-  // test-cap test workers, so the slots share the P-cores between them: slots x test-cap stays within
-  // the P-cores. Each slot also needs room beside the workers in their own heavy stage.
-  const testCores = known(perf) ? Math.max(1, perf) : 4;
+  // test-cap test workers, so the slots share the counted cores between them: slots x test-cap stays
+  // within them. An efficiency core counts as efficiencyCoreWeight of a performance core, and an
+  // unknown count as none. Each slot also needs room beside the workers in their own heavy stage.
+  const eff = known(perf) && known(num(hw['efficiency-cores'])) ? Math.max(0, num(hw['efficiency-cores'])) : 0;
+  const effCounted = Math.floor(eff * r.efficiencyCoreWeight);
+  const testCores = known(perf) ? Math.max(1, perf + effCounted) : 4;
+  const coresWhy = !known(perf) ? 'core count unknown: 4'
+    : eff ? `the ${perf} performance cores and ${eff} efficiency cores at ${r.efficiencyCoreWeight} each, ${testCores} counted`
+      : `the ${perf} performance cores`;
   const slots = Math.max(1, Math.min(Math.floor(ceiling / r.memoryPerLockSlotGB), Math.floor(testCores / r.minTestWorkers)));
   add('test-cap', Math.max(1, Math.floor(testCores / slots)),
-    `${known(perf) ? `the ${perf} performance cores` : 'core count unknown: 4'}${slots > 1 ? `, shared by ${slots} test lock slots` : ''}`);
+    `${coresWhy}${slots > 1 ? `, shared by ${slots} test lock slots` : ''}`);
   add('test-lock-slots', slots,
     `min(floor(${ceiling} GB / ${r.memoryPerLockSlotGB} GB per slot), floor(${testCores} cores / ${r.minTestWorkers} test workers at least per suite)), at least 1: suites and typechecks that hold the test lock at once`);
+  add('test-lock-queue-factor', r.testLockQueueFactor,
+    'the pass starts no worker, and resumes none into Stage 4, while test-lock-slots x this many runs wait on the test lock');
   add('typecheck-lock-timeout-min', r.typecheckLockTimeoutMin,
     `how long a typecheck waits on the lock before the wait is reported; with-lock.sh itself never times out`);
   add('pre-push-lock-timeout-s', r.prePushLockTimeoutS,
@@ -292,7 +368,8 @@ export function renderProfile(hw, sizing, date) {
     '',
     'What this computer is, and how much local work desk sizes for it. Written by',
     '`desk-env machine write` once you confirmed the proposal in `/desk-setup`; every repo reads it.',
-    "A repo's §3b row that is set wins over the matching row here. Edit a value by hand if you need to;",
+    "A repo's §3b row that is set wins over the matching row here. To keep a size of your own, set it",
+    'with `desk-env machine set <key>=<value>`, which marks it an override that a re-write keeps;',
     '`desk-env machine detect` shows what has changed since, and `desk-env machine propose` re-proposes.',
     '',
     '## Hardware',
@@ -309,7 +386,8 @@ export function renderProfile(hw, sizing, date) {
 }
 
 // The profile text with each of rows ([{ key, value, why }]) set in its Sizing table: an existing
-// row for the key is replaced in place, a new one goes at the table's end. Everything else is kept.
+// row for the key is replaced in place, a new one goes at the table's end, and a row whose value is
+// null is removed. Everything else is kept.
 export function setSizingRows(text, rows) {
   const lines = String(text ?? '').replace(/\n+$/, '').split('\n');
   let start = lines.findIndex((l) => /^##\s+.*sizing/i.test(l.trim()));
@@ -320,8 +398,12 @@ export function setSizingRows(text, rows) {
   let end = start + 1;
   while (end < lines.length && !/^##\s/.test(lines[end].trim())) end++;
   for (const r of rows) {
-    const line = sizingRow(r);
     const at = lines.slice(start, end).findIndex((l) => l.trim().startsWith('|') && unquote(splitRow(l.trim())[0]).toLowerCase() === r.key);
+    if (r.value == null) {
+      if (at >= 0) { lines.splice(start + at, 1); end--; }
+      continue;
+    }
+    const line = sizingRow(r);
     if (at >= 0) { lines[start + at] = line; continue; }
     let last = end - 1;
     while (last > start && !lines[last].trim().startsWith('|')) last--;
@@ -336,7 +418,7 @@ export function setSizingRows(text, rows) {
 export const BENCH_ONLY_PROFILE = [
   '# Machine profile',
   '',
-  'Started by `desk-env machine set` to keep the bench settings below. No sizes are proposed yet:',
+  'Started by `desk-env machine set` to keep the settings below. No sizes are proposed yet:',
   '`desk-env machine propose` shows them, and `desk-env machine write` adds them once you confirm.',
   '',
 ].join('\n');
@@ -344,13 +426,21 @@ export const BENCH_ONLY_PROFILE = [
 // Whether the profile holds the confirmed proposal (`machine write` always records the hardware).
 export const sizesProposed = (profile) => Object.keys(profile?.hardware ?? {}).length > 0;
 
-// The Sizing rows a re-written profile holds: the proposal, then every row the profile has that the
-// proposal does not make (set by `desk-env machine set`), so a re-write keeps them.
-export function rewrittenSizing(profile, proposal) {
+// The Sizing rows a re-written profile holds: the proposal with each override in the profile kept
+// in its place unless its key is in drop, then every row the profile has that the proposal does not
+// make (the bench settings, set by `desk-env machine set`), so a re-write keeps them.
+export function rewrittenSizing(profile, proposal, drop = []) {
   const proposed = new Set(proposal.map((s) => s.key));
-  const kept = Object.entries(profile?.sizing ?? {}).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
-  return [...proposal, ...kept];
+  const sizing = profile?.sizing ?? {};
+  const placed = proposal.map((s) => (isOverride(sizing[s.key]) && !drop.includes(s.key) ? { key: s.key, value: sizing[s.key].value, why: sizing[s.key].why } : s));
+  const kept = Object.entries(sizing).filter(([k]) => !proposed.has(k)).map(([key, s]) => ({ key, value: s.value, why: s.why }));
+  return [...placed, ...kept];
 }
+
+// The proposed sizes the profile overrides: -> [{ key, value, proposed, why }].
+export const sizingOverrides = (profile, proposal) => proposal
+  .filter((s) => isOverride(profile?.sizing?.[s.key]))
+  .map((s) => ({ key: s.key, value: profile.sizing[s.key].value, proposed: s.value, why: profile.sizing[s.key].why }));
 
 // Hardware rows that differ from the profile. Free disk moves every day, so it never counts.
 export function hardwareChanges(profile, hw) {
@@ -358,8 +448,9 @@ export function hardwareChanges(profile, hw) {
     .filter((k) => profile?.hardware?.[k] && String(profile.hardware[k].value) !== String(hw[k]))
     .map((k) => ({ key: k, was: profile.hardware[k].value, now: String(hw[k]) }));
 }
+// Proposed sizes that differ from the profile's; an override is never one (sizingOverrides).
 export function sizingChanges(profile, proposal) {
   return proposal
-    .filter((s) => profile?.sizing?.[s.key] && profile.sizing[s.key].value !== s.value)
+    .filter((s) => profile?.sizing?.[s.key] && !isOverride(profile.sizing[s.key]) && profile.sizing[s.key].value !== s.value)
     .map((s) => ({ key: s.key, was: profile.sizing[s.key].value, now: s.value }));
 }

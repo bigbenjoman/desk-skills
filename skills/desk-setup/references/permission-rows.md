@@ -97,6 +97,7 @@ a row changes, say which of these applies.
 | `setup-worktree.sh` | `db-per-ticket` (a per-ticket database, or every §4 Database URL variable blanked) |
 | `merge-driver.sh` | `autopilot-merge`, `pr-merge-green`, `pr-update-branch`, `ci-rerun`, `merge-feedback-first`, `merge-hold-routine` (it never arms auto-merge, so `pr-auto-merge` does not reach it); through `linked-issues.mjs`, `gh-close-linked-issue` |
 | `linked-issues.mjs` | `gh-close-linked-issue` (unset reads as `no`: the issue is named as ready to close) |
+| `merged-branch.mjs` | `branch-delete` (`merged` or `yes` deletes a merged ticket's branches that hold nothing the base lacks; `ask` names each with its command; unset reads as `no`) |
 | `pass.mjs` | `autopilot-workers`, `pr-images`, `ci-rerun` (a draft's cancelled or timed-out runs), `batch-base-push` (unset is `ask`); through `maintenance.mjs`, `machine-reboot` (unset is `ask`) |
 | `triage.sh` | `autopilot-workers` (`yes` or `ask`: triage is read-only and foreground) |
 | `spawn-worker.sh` | `autopilot-workers`, `codex-review` |
@@ -184,6 +185,8 @@ rows).
 | `pr-conflict-reviewed` | ask | — | a silent resolution can revert a reviewer's merged work | yes | — |
 | `ci-rerun` | yes | a cancelled run or known flake retried, completed runs only | CI minutes; a rerun on a live run cancels it. _Reach_: any run; the skill checks it completed | ask | `Bash(gh run rerun *)` |
 | `gh-close-linked-issue` | yes | a GitHub issue a ticket's web link names closes, with a comment naming its tickets and their merged PRs, once every ticket linking it is done; `no` when §4 Tracker is `none` | a closed issue and a comment under your name. _Reach_: issues in this repo only, and only one every linking ticket has finished | ask · no (closeout names the issue as ready to close) | — (`linked-issues.mjs` reads the row and runs `gh issue close` itself) |
+| `gh-issue-create` | ask | a follow-up issue filed once, without a question each time, where GitHub issues are the tracker (§4 Tracker `none`) | a new issue under your name, its text printed as it goes. _Reach_: the rule opens an issue in **any** repo your gh login can reach; only the skills' written rules keep it to this one | yes · no (the session hands you the text to file) | `Bash(gh issue create *)` |
+| `gh-issue-comment` | ask | a comment on an issue in this repo (a follow-up's progress, a duplicate pointer) without a question each time | a comment under your name, its text printed as it goes. _Reach_: the rule comments on **any** issue in any repo your gh login can reach, the one a ticket works from included; only the skills' written rules keep it to this repo and off that issue, which its PR closes | yes · no (the session hands you the text to post) | `Bash(gh issue comment *)` |
 | `ci-protection` | ask | `/desk-ci protection` restores a snapshot, pins required checks to GitHub Actions and makes the default workflow token read-only; each change is printed in full first and applies only by its plan id | a wrong protection write can block every merge or let one through unchecked; a snapshot taken first restores it | yes · no (the plans still print; nothing applies) | — (the script reads the row; `node desk-ci.mjs` keeps prompting) |
 
 ## Round 9 — autopilot (say the plain explanation first)
@@ -227,7 +230,7 @@ short of `yes`, unset included, is refused to the worker, which parks naming the
 | `local-reindex` | ask | a shared local index or cache (§4 Local services) reflects your change | it is shared: every session's copy is rebuilt (skip when §4 Local services is `none`) | no | — |
 | `tests-shared-db` | no | database-backed tests without a per-ticket DB | test setup that truncates or deletes wipes another session's data | ask | — |
 | `worktree-remove` | yes | disk back (~4GB per worktree) | untracked files, local state | ask | — |
-| `branch-delete` | no | tidy branch list | `-D` discards commits `-d` refused to | ask | — |
+| `branch-delete` | merged | a merged ticket's local branch, and any backup branch it made, deleted with no question once its PR merged and the base holds all it has (`merged-branch.mjs`) | nothing the base lacks; each tip SHA is printed so `git branch <name> <sha>` restores it. At `yes`, `git branch -D` on any branch, discarding commits `-d` refused to | yes · ask · no | `Bash(node ~/.claude/desk/bin/merged-branch.mjs *)`, written at `merged` as at `yes` (the script reads the row and deletes only what it clears) |
 
 ## Round 12 — other
 

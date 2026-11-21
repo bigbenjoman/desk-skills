@@ -3,8 +3,7 @@
 // missing, stale SHA, each non-zero count, heading mismatch), CLAUDE.md size, and the protected-path
 // approval with its small fix/docs/chore exemption.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkVerdict, checkClaudeMd, checkApproval, titleType, exemptType, parseVerdict, COUNTS } from '../desk/templates/scripts/desk/review-gate.mjs';
@@ -12,6 +11,7 @@ import { parseVerdict as undraftVerdict, verdictAt } from '../desk/bin/undraft.m
 import * as oldGate from './fixtures/review-gate-v1.mjs';
 import { pullbotRound, PULLBOT_SHA, PULLBOT_CLEAN_COUNTS, PULLBOT_APPROVAL } from './fixtures/pullbot-review.mjs';
 import { render } from '../skills/desk-review/bin/verdict.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -136,6 +136,15 @@ t('DS-317 AC3 gate copy before accepting: reads gaps=0', oldGate.parseVerdict(ac
 t('DS-317 AC3 gate copy before accepting: no heading mismatch', oldGate.headingMismatch(oldGate.parseVerdict(acceptedAt.body)), null);
 t('DS-317 AC3 one gap accepted beside one open is not clean to either', `${checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok} ${oldGate.checkVerdict([review(round1({ gaps: 1, accepted: [ACC] }))], HEAD, WRITERS).ok}`, 'false false');
 
+// DS-570: a verdict whose only open criteria are left for after the merge reads clean to the new gate
+// and to a repo's committed copy from before the post-merge line, its heading still the heading.
+const PM = { gap: 'AC7', needs: 'production', step: 'fill in the switch date at the production relay run' };
+const postMergeAt = review(`${round1({ gaps: 0, post_merge: [PM] })}\n\n### After the merge\n- AC7 (needs production): ${PM.step}`);
+t('DS-570 AC1 new gate: only post-merge criteria open, clean', checkVerdict([postMergeAt], HEAD, WRITERS).ok, true);
+t('DS-570 AC1 gate copy before the post-merge line: clean', oldGate.checkVerdict([postMergeAt], HEAD, WRITERS).ok, true);
+t('DS-570 AC1 gate copy before the post-merge line: no heading mismatch', oldGate.headingMismatch(oldGate.parseVerdict(postMergeAt.body)), null);
+t('DS-570 a post-merge criterion beside an open gap is not clean to either', `${checkVerdict([review(round1({ gaps: 1, post_merge: [PM] }))], HEAD, WRITERS).ok} ${oldGate.checkVerdict([review(round1({ gaps: 1, post_merge: [PM] }))], HEAD, WRITERS).ok}`, 'false false');
+
 // The pass's undraft step reads the same bodies the same way: the same sha and counts where this
 // gate reads a verdict, and nothing it can call clean where this gate reads none.
 const marker = (rest) => `<!-- desk-review:local -->\n<!-- desk-review:verdict v=1 sha=${HEAD} ${rest} -->\nclean`;
@@ -167,7 +176,7 @@ has('it points at splitting', big.message, 'Split it');
 t('multibyte text is counted in characters', checkClaudeMd([{ path: 'CLAUDE.md', text: 'é'.repeat(15000) }]).ok, true);
 
 // The CLI, against a throwaway repo: only tracked CLAUDE.md files are read.
-const repo = mkdtempSync(join(tmpdir(), 'desk-gate-'));
+const repo = scratch('desk-gate-');
 const script = join(dirname(fileURLToPath(import.meta.url)), '../desk/templates/scripts/desk/review-gate.mjs');
 const git = (...a) => execFileSync('git', a, { cwd: repo });
 git('init', '-q');

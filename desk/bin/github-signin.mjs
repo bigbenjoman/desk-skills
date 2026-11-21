@@ -2,6 +2,7 @@
 // repo and worktree. Run it in a terminal on the machine with a screen, from anywhere:
 //
 //   node ~/.claude/desk/bin/github-signin.mjs
+//   node ~/.claude/desk/bin/github-signin.mjs --help    prints this, and opens no browser
 //
 // It opens a visible Chromium at github.com/login on the browser profile (the machine one,
 // ~/.cache/ms-playwright-mcp/desk-profile, unless config §2 "Signed-in browser profile" overrides
@@ -16,10 +17,25 @@
 // the profile, or its lock. The file is a live GitHub session until GitHub expires it: delete it
 // to sign out.
 //
-// Exit codes: 0 signed in and saved · 1 no sign-in within the wait · 6 setup or config
-import { existsSync, mkdirSync } from 'node:fs';
+// Exit codes: 0 signed in and saved (or --help) · 1 no sign-in within the wait · 2 an unknown argument ·
+// 6 setup or config
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { browserProfile, DeskConfigError } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, githubCookies, saveSession } from './find-playwright.mjs';
+
+// -h/--help prints the header above, its usage and exit codes; any other argument is refused. Either
+// way no browser opens, so reading the usage never waits on a sign-in.
+const args = process.argv.slice(2);
+if (args.some((a) => a === '-h' || a === '--help')) {
+  const head = readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n');
+  console.log(head.slice(0, head.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n'));
+  process.exit(0);
+}
+if (args.length) {
+  console.error(`github-signin: unknown argument "${args[0]}" (try --help)`);
+  process.exit(2);
+}
 
 let PROFILE;
 try {

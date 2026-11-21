@@ -6,9 +6,15 @@
 #   ./install.sh --yes     accepts those prompts too, except large downloads (scripted re-install)
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
+#   ./install.sh --rollback     makes the release before the current one current, installs nothing
+#   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
+#                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
 # Installs nothing from a checkout off the default branch or behind origin's (fetched first), or
 # when that cannot be checked, unless given --any-branch.
+#
+# desk's scripts and templates go into ~/.claude/desk/releases/<commit>/, which goes live in one step
+# (~/.claude/desk/current, which ~/.claude/desk/bin and /templates link through); the newest three are kept.
 #
 # Safe to re-run. desk-owned files (the skills, ~/.claude/desk/bin, desk-env, desk-q and desk-jira in
 # ~/.local/bin, the hook script) are written without asking and listed at the end; a copy you edited
@@ -38,17 +44,47 @@ PLAYWRIGHT_MCP_VERSION="0.0.83"
 PLUGINS="vercel@claude-plugins-official superpowers@claude-plugins-official frontend-design@claude-plugins-official code-review@claude-plugins-official code-simplifier@claude-plugins-official codex@openai-codex"
 
 YES=0
+ACCEPT=""
+DECLINE=""
+# Each prompt's id, for --accept and --decline. skill-<name> is the question about a skill folder of
+# your own in the way of skill <name>.
+PROMPT_IDS="codex-call retire-skills desk-jira hook-script hook-attribution hook-update-notice hook-handoff compaction deny-rules plugins playwright-mcp playwright-plugin-off skill-listing statusline"
 CHECK_ONLY=0
 ANY_BRANCH=0
+ROLLBACK=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=1 ;;
     --check) CHECK_ONLY=1 ;;
     --any-branch) ANY_BRANCH=1 ;;
-    -h|--help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --rollback) ROLLBACK=1 ;;
+    --accept=*) ACCEPT="$ACCEPT,${arg#--accept=}," ;;
+    --decline=*) DECLINE="$DECLINE,${arg#--decline=}," ;;
+    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# refresh_pristine <from> — for each release file read from stdin (bin/<script>, templates/<path>),
+# makes its pristine copy <from>'s, so the next install reads only your own edits as edits
+refresh_pristine() {
+  local rel
+  while IFS= read -r rel; do
+    [ -f "$1/$rel" ] || continue
+    mkdir -p "$(dirname "$PRISTINE/${DESKDIR#"$HOME"/}/$rel")"
+    cp "$1/$rel" "$PRISTINE/${DESKDIR#"$HOME"/}/$rel"
+  done
+}
+
+# --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
+# hold the release now current. Then it moves what runs onto it.
+if [ "$ROLLBACK" = 1 ]; then
+  if [ ! -f "$DESKDIR/bin/installed.mjs" ]; then echo "nothing rolled back: no desk is installed in $DESKDIR" >&2; exit 1; fi
+  DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
+  if [ -f "$DESKDIR/current/release-files" ]; then refresh_pristine "$DESKDIR/current" < "$DESKDIR/current/release-files"; fi
+  DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
+  exit 0
+fi
 
 case "$(uname -s)" in
   Darwin) OS=mac ;;
@@ -147,14 +183,21 @@ SKIPPED=""
 SKIPPED_N=0
 IN_TERMINAL="run in a terminal: cd \"$SRC\" && ./install.sh"
 
-# confirm "question" [big] [apply]  — big=1 means --yes does not accept it on your behalf; apply is
-# the command that does the same thing later, if there is one (otherwise: re-run in a terminal)
+# PROMPT_ID=<id> confirm "question" [big] [apply]  — big=1 means --yes does not accept it on your
+# behalf; apply is the command that does the same thing later, if there is one (otherwise
+# `./install.sh --accept=<id>`). --decline=<id>, then --accept=<id>, answer it before --yes or a
+# terminal is asked, and a skip names the id.
 confirm() {
+  local id="${PROMPT_ID:-}"
+  if [ -n "$id" ] && [[ "$DECLINE" == *",$id,"* ]]; then printf '  ?     %s [y/N] n (--decline=%s)\n' "$1" "$id"; return 1; fi
+  if [ -n "$id" ] && [[ "$ACCEPT" == *",$id,"* ]]; then printf '  ?     %s [y/N] y (--accept=%s)\n' "$1" "$id"; return 0; fi
   if [ "$YES" = 1 ] && [ "${2:-0}" != 1 ]; then printf '  ?     %s [y/N] y (--yes)\n' "$1"; return 0; fi
   if ! have_tty; then
     printf '  skip  %s (no terminal to ask on)\n' "$1"
-    SKIPPED="$SKIPPED  SKIP  $1
-        apply: ${3:-$IN_TERMINAL}
+    local apply="${3:-}"
+    [ -n "$apply" ] || apply="${id:+cd \"$SRC\" && ./install.sh --accept=$id}"
+    SKIPPED="$SKIPPED  SKIP  $1${id:+ (--accept=$id)}
+        apply: ${apply:-$IN_TERMINAL}
 "
     SKIPPED_N=$((SKIPPED_N + 1))
     return 1
@@ -175,8 +218,8 @@ need() {
   return 1
 }
 
-# install_file <src> <dest> — keeps a copy of <dest> if you had edited it since the last install
-install_file() {
+# save_edit <src> <dest> — keeps a copy of <dest> if you had edited it since the last install
+save_edit() {
   local src="$1" dest="$2" rel pristine
   rel="${dest#"$HOME"/}"
   pristine="$PRISTINE/$rel"
@@ -188,6 +231,14 @@ install_file() {
       wrote "backup   ~/$rel -> $BACKUP/$rel (your edit)"
     fi
   fi
+}
+
+# install_file <src> <dest> — the same, then writes <src> to <dest>
+install_file() {
+  local src="$1" dest="$2" rel pristine
+  rel="${dest#"$HOME"/}"
+  pristine="$PRISTINE/$rel"
+  save_edit "$src" "$dest"
   mkdir -p "$(dirname "$dest")" "$(dirname "$pristine")"
   # Written beside <dest> and renamed over it, so a script running from the old file keeps its
   # inode; copying the old file first keeps its mode.
@@ -196,6 +247,34 @@ install_file() {
   cp "$src" "$tmp"
   mv -f "$tmp" "$dest"
   cp "$src" "$pristine"
+}
+
+# prune_removed <src dir> <dest dir> [" name name "] [<write dir>] — removes each file an earlier install
+# put under <dest> (it has a pristine copy) that <src> no longer has, saving it to the backup first if
+# you had edited it. A file desk never installed has no pristine copy and is left alone; so is each name
+# kept. With <write dir>, the file is removed from there instead, and <dest> is only read.
+prune_removed() {
+  local src="${1%/}" dest="${2%/}" keep="${3:-}" write="${4:-${2%/}}" rel pristine p sub
+  rel="${dest#"$HOME"/}"
+  pristine="$PRISTINE/$rel"
+  [ -d "$pristine" ] || return 0
+  while IFS= read -r p; do
+    sub="${p#"$pristine"/}"
+    [ -e "$src/$sub" ] && continue
+    case "$keep" in *" $sub "*) continue ;; esac
+    if [ -f "$dest/$sub" ]; then
+      if ! cmp -s "$dest/$sub" "$p"; then
+        mkdir -p "$(dirname "$BACKUP/$rel/$sub")"
+        cp -p "$dest/$sub" "$BACKUP/$rel/$sub"
+        note "your edited ~/$rel/$sub was saved to $BACKUP/$rel/$sub"
+        wrote "backup   ~/$rel/$sub -> $BACKUP/$rel/$sub (your edit)"
+      fi
+      rm -f "$write/$sub"
+      ok "removed ~/$rel/$sub (no longer in desk)"
+      wrote "removed  ~/$rel/$sub (no longer in desk)"
+    fi
+    rm -f "$p"
+  done < <(find "$pristine" -type f)
 }
 
 # Python bytecode is build output, never shipped: not copied, and not counted as an edit.
@@ -221,6 +300,145 @@ install_dir() {
   cp -R "$src" "$pristine"
   prune_bytecode "$dest"
   prune_bytecode "$pristine"
+}
+
+# Releases: desk's scripts and templates go into $RELEASES/<name>/{bin,templates}, built beside it
+# under a dot name and renamed into place whole, then made live by renaming a new `current` link over
+# the old one. $DESKDIR/bin and /templates are links through `current`, so every absolute path to them
+# keeps working, and a script running from a release keeps its own release's files.
+RELEASES="$DESKDIR/releases"
+STAGE=""   # the release being built: removed if the install stops before it is complete
+trap '[ -z "$STAGE" ] || { rm -rf "$STAGE"; echo "the new release was not completed and is removed; the current release is unchanged" >&2; }' EXIT
+# rename_over <from> <to> — one rename(2), so <to> is never missing; it replaces a link, never a folder
+rename_over() {
+  python3 -c 'import os, sys; os.replace(sys.argv[1], sys.argv[2])' "$1" "$2"
+}
+# release_files — each file a release holds, relative to it: bin/<script>, bin/<dir>/<module> (the
+# modules a script imports from a folder beside it, e.g. bin/pass/) and templates/<path>
+release_files() {
+  local f
+  for f in "$SRC"/desk/bin/* "$SRC"/desk/bin/*/*; do
+    [ -f "$f" ] || continue
+    case "$f" in *.bak*|*.pyc|*/__pycache__/*) continue ;; esac
+    printf 'bin/%s\n' "${f#"$SRC"/desk/bin/}"
+  done
+  if [ -d "$SRC/desk/templates" ]; then (cd "$SRC/desk/templates" && find . -type f ! -name '*.bak*' | sed 's|^\./|templates/|'); fi
+}
+# same_release <dir> — <dir> holds this checkout's release files unchanged
+same_release() {
+  local rel
+  while IFS= read -r rel; do cmp -s "$SRC/desk/$rel" "$1/$rel" || return 1; done < <(release_files)
+}
+# release_name — the commit for a clean checkout; for a dirty one, or a commit whose release folder
+# holds other files or is not the current one, the commit and this install's time; for a checkout
+# outside git, unversioned-<time>. Only the current release is reused: an older one lacks the files
+# of your own the live folder has gained since, which a new release carries.
+release_name() {
+  local head n
+  if ! head="$(git -C "$SRC" rev-parse HEAD 2>/dev/null)"; then n="unversioned-$TS"
+  elif [ -z "$(git -C "$SRC" status --porcelain --untracked-files=no 2>/dev/null)" ] \
+     && { [ ! -e "$RELEASES/$head" ] || { [ "$(readlink "$DESKDIR/current" 2>/dev/null || true)" = "releases/$head" ] \
+                                           && same_release "$RELEASES/$head"; }; }; then
+    echo "$head"; return
+  else n="$head-$TS"
+  fi
+  [ ! -e "$RELEASES/$n" ] || n="$n-$$"
+  echo "$n"
+}
+# carry_own <bin|templates> [" name name "] — copies into the release being built each file in the live
+# folder desk never installed (no pristine copy, not in this checkout), and each name kept
+carry_own() {
+  local live="$DESKDIR/$1" keep="${2:-}" p sub
+  [ -d "$live" ] || return 0
+  while IFS= read -r p; do
+    sub="${p#"$live"/}"
+    case "$sub" in *.pyc|*__pycache__*|*.desk-tmp.*) continue ;; esac
+    case "$keep" in *" $sub "*) ;; *)
+      [ -e "$SRC/desk/$1/$sub" ] && continue
+      [ -e "$PRISTINE/${live#"$HOME"/}/$sub" ] && continue ;;
+    esac
+    mkdir -p "$(dirname "$STAGE/$1/$sub")"
+    cp -p "$p" "$STAGE/$1/$sub"
+  done < <(find -H "$live" -type f)
+}
+# go_live <name> — makes $RELEASES/<name> current. A real bin or templates folder (an install from
+# before releases) is first moved into a release of its own, so it can be rolled back to.
+go_live() {
+  local d old=""
+  for d in bin templates; do
+    if [ -d "$DESKDIR/$d" ] && [ ! -L "$DESKDIR/$d" ]; then
+      if [ -z "$old" ]; then
+        old="$RELEASES/before-releases-$TS"; mkdir -p "$old"
+        if [ -f "$DESKDIR/installed.json" ]; then cp -p "$DESKDIR/installed.json" "$old/release.json"; fi
+      fi
+      mv "$DESKDIR/$d" "$old/$d"
+    fi
+  done
+  # The files desk installed there, as a release built here lists its own.
+  if [ -n "$old" ]; then
+    (cd "$old" && find bin templates -type f 2>/dev/null || true) | while IFS= read -r p; do
+      if [ -e "$PRISTINE/${DESKDIR#"$HOME"/}/$p" ]; then printf '%s\n' "$p"; fi
+    done > "$old/release-files"
+  fi
+  ln -sfn "releases/$1" "$DESKDIR/.current.$$"
+  rename_over "$DESKDIR/.current.$$" "$DESKDIR/current"
+  for d in bin templates; do
+    [ "$(readlink "$DESKDIR/$d" 2>/dev/null || true)" = "current/$d" ] && continue
+    ln -sfn "current/$d" "$DESKDIR/.$d.$$"
+    rename_over "$DESKDIR/.$d.$$" "$DESKDIR/$d"
+  done
+  if [ -n "$old" ]; then
+    ok "the install from before releases is kept as release ${old##*/}"
+    wrote "moved    ~/.claude/desk/bin and templates -> ~/.claude/desk/releases/${old##*/}"
+  fi
+}
+# install_release [" name name "] — the scripts, and beside them the templates a repo commits (dotfiles
+# included: undraft.mjs reads review verdicts with the review gate's parser from there, and workers, who
+# cannot read this checkout, copy them from there), as a new current release; each name is kept from
+# the current one. An edit to the live copy is backed up first, as install_file does.
+install_release() {
+  local keep="${1:-}" name rel out count=0
+  name="$(release_name)"
+  local rel_dir="$RELEASES/$name"
+  while IFS= read -r rel; do
+    save_edit "$SRC/desk/$rel" "$DESKDIR/$rel"
+    case "$rel" in bin/*) count=$((count + 1)) ;; esac
+  done < <(release_files)
+  if [ -d "$rel_dir" ]; then
+    note "release $name already holds these files and is current"
+  else
+    STAGE="$RELEASES/.partial-$name.$$"
+    mkdir -p "$STAGE/bin" "$STAGE/templates"
+    while IFS= read -r rel; do
+      mkdir -p "$(dirname "$STAGE/$rel")"
+      cp "$SRC/desk/$rel" "$STAGE/$rel"
+    done < <(release_files)
+    chmod +x "$STAGE"/bin/*
+    release_files > "$STAGE/release-files"
+    carry_own bin "$keep"
+    carry_own templates
+    mv "$STAGE" "$rel_dir"
+    STAGE=""
+  fi
+  # After the copy, which carries a file desk never installed by its having no pristine copy.
+  prune_removed "$SRC/desk/bin" "$DESKDIR/bin" "$keep" "$rel_dir/bin"
+  prune_removed "$SRC/desk/templates" "$DESKDIR/templates" "" "$rel_dir/templates"
+  go_live "$name"
+  if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" record "$SRC" "$rel_dir" 2>&1)"; then
+    ok "installed version $out (~/.claude/desk/installed.json)"
+    wrote "version  ~/.claude/desk/installed.json"
+  else
+    warn "could not record the installed version"; show_err "$out"
+  fi
+  release_files | refresh_pristine "$SRC/desk"
+  ok "$count scripts in release $name, now current (queue.json, workers/ and batch state are never touched)"
+  wrote "scripts  ~/.claude/desk/releases/$name ($count), current; ~/.claude/desk/bin and templates link through ~/.claude/desk/current"
+  if out="$(DESK_HOME="$DESKDIR" node "$rel_dir/bin/installed.mjs" prune 2>&1)"; then
+    [ -z "$out" ] || printf '%s\n' "$out" | while IFS= read -r l; do ok "$l"; done
+  else
+    warn "could not remove the older releases"; show_err "$out"
+  fi
+  note "roll back to the release before this one: ./install.sh --rollback"
 }
 
 echo "desk-skills installer  ($SRC)"
@@ -299,7 +517,7 @@ if need codex 0 "brew install --cask codex, or npm i -g @openai/codex" \
   note "codex --version and codex login status pass even on a seat with no usage left; only a real call proves it."
   if [ "$CHECK_ONLY" = 1 ]; then
     note "no real codex call under --check; run ./install.sh without it, or /desk-setup, to make one"
-  elif confirm "Make one real codex call to prove it can answer?" 0 \
+  elif PROMPT_ID=codex-call confirm "Make one real codex call to prove it can answer?" 0 \
       "codex exec --sandbox read-only \"Reply with exactly: CODEX_OK\" </dev/null"; then
     if out="$(cd "$SRC" && codex exec --sandbox read-only "Reply with exactly: CODEX_OK" </dev/null 2>&1)" \
         && printf '%s' "$out" | grep -q CODEX_OK; then
@@ -341,6 +559,31 @@ case "$(resolved "$SKILLS_LINK")" in
   "$AGENTS_REAL") LINK_MODE=same; ok "your ~/.claude/skills resolves to ~/.agents/skills; no per-skill links needed" ;;
 esac
 
+# skill_kept <name> [<src>] [<own>] — whether to leave a skill folder of the user's own where desk
+# would put skill <name>: a real folder at ~/.agents/skills/<name> or ~/.claude/skills/<name>, other
+# than <own> (a checkout skill's clone, which is the skill), when desk never installed <name> here (no
+# pristine copy). Moving it to the backup is asked, saying whether it differs from <src> (its git
+# metadata aside, as a checkout skill's clone has one); declined, or
+# with no terminal, it stays (exit 0) and the skill is not installed or linked over it.
+skill_kept() {
+  local name="$1" src="${2:-}" own="${3:-}" p found="" how=""
+  [ -d "$PRISTINE/.agents/skills/$name" ] && return 1
+  for p in "$AGENTS/$name" "$SKILLS_LINK/$name"; do
+    { [ -d "$p" ] && [ ! -L "$p" ]; } || continue
+    [ -n "$own" ] && [ "$(resolved "$p")" = "$(resolved "$own")" ] && continue
+    case " $found " in *" ~/${p#"$HOME"/} "*) continue ;; esac
+    found="${found:+$found }~/${p#"$HOME"/}"
+    if [ -n "$src" ]; then
+      if ! diff -rq "${DIFF_X[@]}" -x .git "$src" "$p" >/dev/null 2>&1; then how="it differs from desk's"; elif [ -z "$how" ]; then how="the same as desk's"; fi
+    fi
+  done
+  [ -n "$found" ] || return 1
+  note "$found is a skill folder desk did not install (yours, or another tool's)${how:+; $how}"
+  PROMPT_ID="skill-$name" confirm "Move your $found to the backup and install desk's $name in its place?" && return 1
+  warn "kept your $found; desk's $name is not installed there"
+  return 0
+}
+
 shipped=" "
 count=0
 vcount=0
@@ -351,6 +594,7 @@ for dir in "$SRC"/skills/desk-*/ "$SRC"/vendor/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
   case "$dir" in "$SRC"/vendor/*) vcount=$((vcount + 1)) ;; *) shipped="$shipped$name " ;; esac
+  skill_kept "$name" "$dir" && continue
   install_dir "$dir" "$AGENTS/$name"
   count=$((count + 1))
   if [ "$LINK_MODE" = each ]; then
@@ -392,7 +636,7 @@ for d in "$AGENTS"/desk-*; do
 done
 if [ -n "$stale" ]; then
   warn "no longer shipped:$stale"
-  if confirm "Move the retired skills out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
+  if PROMPT_ID=retire-skills confirm "Move the retired skills out of ~/.agents/skills and ~/.claude/skills (kept under $BACKUP)?"; then
     mkdir -p "$BACKUP/.agents/skills"
     for name in $stale; do
       [ "$LINK_MODE" = each ] && [ -L "$SKILLS_LINK/$name" ] && rm -f "$SKILLS_LINK/$name"
@@ -433,6 +677,7 @@ checkouts="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(
 # link_skill <name> <real folder>: ~/.agents/skills/<name> and ~/.claude/skills/<name> end up pointing at it
 link_skill() {
   local name="$1" real="$2" a="$AGENTS/$1"
+  skill_kept "$name" "$real" "$real" && return 0
   if [ "$(resolved "$a")" != "$(resolved "$real")" ]; then
     if [ -e "$a" ] && [ ! -L "$a" ]; then
       mkdir -p "$BACKUP/.agents/skills"; mv "$a" "$BACKUP/.agents/skills/$name"
@@ -492,22 +737,38 @@ check_links
 section "Autopilot and clearance tooling  -> ~/.claude/desk/bin"
 
 if [ -d "$SRC/desk/bin" ]; then
-  mkdir -p "$DESKDIR/bin"
-  count=0
-  for f in "$SRC"/desk/bin/*; do
-    [ -f "$f" ] || continue
-    case "$f" in *.bak*|*.pyc) continue ;; esac
-    install_file "$f" "$DESKDIR/bin/$(basename "$f")"
-    chmod +x "$DESKDIR/bin/$(basename "$f")"
-    count=$((count + 1))
-  done
-  # The templates a repo commits (dotfiles included), beside bin: undraft.mjs reads review verdicts with
-  # the review gate's parser from there, and workers, who cannot read this checkout, copy them from there.
-  while IFS= read -r f; do
-    install_file "$f" "$DESKDIR/templates/${f#"$SRC/desk/templates/"}"
-  done < <(find "$SRC/desk/templates" -type f ! -name '*.bak*')
-  ok "$count scripts (queue.json, workers/ and batch state are never touched)"
-  wrote "scripts  ~/.claude/desk/bin ($count)"
+  # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
+  gone=""; runner_kept=""
+  # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
+  if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
+    && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
+    warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
+    runner_kept=" desk-runner runner-slot.sh runner-probe.sh mem-turns.mjs "
+  else
+    for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
+      "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
+      [ -e "$f" ] || continue
+      rm -f "$f"; gone="$gone ${f/#$HOME/~}"
+    done
+    for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
+      [ -d "$d" ] || continue
+      rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
+    done
+    # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
+    for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
+      plist="$HOME/Library/LaunchAgents/$label.plist"
+      [ -e "$plist" ] || continue
+      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
+      rm -f "$plist"; gone="$gone $label"
+    done
+    purge_runner_tart; gone="$gone$RUNNER_TART_GONE"
+  fi
+  if [ -n "$gone" ]; then
+    ok "removed the local CI runner:$gone"
+    wrote "removed  local CI runner:$gone"
+  fi
+  # end retired local CI runner
+  install_release "$runner_kept"
   # desk-env on PATH: the skills run `desk-env where` to find the current repo's config.
   mkdir -p "$HOME/.local/bin"
   ENV_SHIM="$(mktemp)"
@@ -533,36 +794,6 @@ if [ -d "$SRC/desk/bin" ]; then
   chmod +x "$HOME/.local/bin/desk-codex"
   ok "desk-codex -> ~/.local/bin (desk-codex probe|finder|refuter: codex review calls)"
   wrote "desk-codex ~/.local/bin/desk-codex"
-  # retired local CI runner: its scripts, PATH shim, launchd jobs, state, Tart VM and base image go.
-  gone=""
-  # Its VM runs outside launchd, so only the old tool's down stops it; that has to happen before the tool goes.
-  if [ -x "$DESKDIR/bin/desk-runner" ] && command -v tart >/dev/null 2>&1 \
-    && ! "$DESKDIR/bin/desk-runner" down </dev/null >/dev/null 2>&1; then
-    warn "the local CI runner did not stop: its files stay until ~/.claude/desk/bin/desk-runner down succeeds, then /desk-update"
-  else
-    for f in "$DESKDIR"/bin/desk-runner "$DESKDIR"/bin/runner-slot.sh "$DESKDIR"/bin/runner-probe.sh \
-      "$DESKDIR"/bin/mem-turns.mjs "$HOME/.local/bin/desk-runner"; do
-      [ -e "$f" ] || continue
-      rm -f "$f"; gone="$gone ${f/#$HOME/~}"
-    done
-    for d in "$DESKDIR/runner" "$DESKDIR/memory-turns"; do
-      [ -d "$d" ] || continue
-      rm -rf "$d"; gone="$gone ${d/#$HOME/~}/"
-    done
-    # Only a job whose plist is under this HOME is unloaded, so a scratch HOME never touches launchd.
-    for label in com.desk-skills.desk-runner com.desk-skills.desk-runner.nightly; do
-      plist="$HOME/Library/LaunchAgents/$label.plist"
-      [ -e "$plist" ] || continue
-      if command -v launchctl >/dev/null 2>&1; then launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true; fi
-      rm -f "$plist"; gone="$gone $label"
-    done
-    purge_runner_tart; gone="$gone$RUNNER_TART_GONE"
-  fi
-  if [ -n "$gone" ]; then
-    ok "removed the local CI runner:$gone"
-    wrote "removed  local CI runner:$gone"
-  fi
-  # end retired local CI runner
   # desk-q on PATH: every autopilot queue on this computer, to see, reorder and set workers.
   install_file "$SRC/bin/desk-q" "$HOME/.local/bin/desk-q"
   chmod +x "$HOME/.local/bin/desk-q"
@@ -588,7 +819,7 @@ if [ -f "$SRC/bin/desk-jira" ]; then
   if [ -e "$JIRA_DEST" ] && ! cmp -s "$SRC/bin/desk-jira" "$JIRA_DEST" \
      && { [ ! -f "$PRISTINE/.local/bin/desk-jira" ] || ! cmp -s "$JIRA_DEST" "$PRISTINE/.local/bin/desk-jira"; }; then
     note "your ~/.local/bin/desk-jira exists and is not the copy this installer last wrote (edited, or another tool's)"
-    confirm "Replace it with this checkout's desk-jira (yours is backed up first)?" || write_jira=0
+    PROMPT_ID=desk-jira confirm "Replace it with this checkout's desk-jira (yours is backed up first)?" || write_jira=0
   fi
   if [ "$write_jira" = 1 ]; then
     install_file "$SRC/bin/desk-jira" "$JIRA_DEST"
@@ -649,10 +880,22 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Commit-attribution hook"
 
-install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
-chmod +x "$HOOK"
-ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
-wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+write_hook=1
+# A hook script desk never installed here (no pristine copy) is another tool's of the same name, and
+# can guard a repo desk has no config for yet: asked, as desk-jira is, and kept with no terminal.
+if [ -f "$HOOK" ] && ! cmp -s "$SRC/hooks/deny-ai-attribution.py" "$HOOK" && [ ! -f "$PRISTINE/.claude/hooks/deny-ai-attribution.py" ]; then
+  note "your ~/.claude/hooks/deny-ai-attribution.py was not installed by desk (another tool's, or your own)"
+  note "desk's blocks AI attribution only in a repo whose desk config sets §5 AI attribution to forbidden, so a repo yours guards has none until /desk-setup writes its config"
+  PROMPT_ID=hook-script confirm "Replace your ~/.claude/hooks/deny-ai-attribution.py with desk's (yours is backed up first)?" || write_hook=0
+fi
+if [ "$write_hook" = 1 ]; then
+  install_file "$SRC/hooks/deny-ai-attribution.py" "$HOOK"
+  chmod +x "$HOOK"
+  ok "hook script -> ~/.claude/hooks/deny-ai-attribution.py"
+  wrote "hook     ~/.claude/hooks/deny-ai-attribution.py (script only; registering it is asked)"
+else
+  warn "kept your ~/.claude/hooks/deny-ai-attribution.py; desk's attribution rules do not run until it is replaced"
+fi
 
 # register_hook <check|apply> <script name> <command> <timeout> <matcher or ""> <event>...
 # Every desk hook in settings.json goes through this. A hook counts as registered on an event when a
@@ -689,8 +932,11 @@ PY
 }
 
 settings_hook() { register_hook "$1" deny-ai-attribution.py "python3 \"$HOOK\"" 10 Bash PreToolUse; }
-rc=0; settings_hook check || rc=$?
+rc=0
+# A hook script kept as yours is not desk's to register, nor to describe as desk's: its registration is left as it is.
+if [ "$write_hook" = 1 ]; then settings_hook check || rc=$?; else rc=3; fi
 case "$rc" in
+  3) note "registration left as it is: the hook script there is yours, not desk's" ;;
   0) ok "already registered in ~/.claude/settings.json" ;;
   2) warn "$SETTINGS is not valid JSON; fix it, then re-run to register the hook" ;;
   *)
@@ -700,7 +946,7 @@ case "$rc" in
     note "or file, also inside bash -c or eval) carrying a Co-Authored-By trailer naming Claude or"
     note "Anthropic, Claude-Session, an Anthropic noreply address, a Claude session link, 'Generated with"
     note "Claude Code' or the robot emoji is denied. Other repos are untouched. Other hooks are kept."
-    if confirm "Register the attribution hook in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-attribution confirm "Register the attribution hook in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if settings_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -728,7 +974,7 @@ case "$rc" in
   *)
     note "Registers a SessionStart hook: once a day it fetches this checkout (killed after 5 seconds)"
     note "and, if there are new commits, shows one line telling you to run /desk-update. Nothing is installed."
-    if confirm "Register the update notice in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-update-notice confirm "Register the update notice in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if update_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
@@ -737,11 +983,12 @@ case "$rc" in
     ;;
 esac
 
-# Context handoff: one script on four events. Past config §2 "Handoff at context %" (default 45) the
+# Context handoff: one script on five events. Past config §2 "Handoff at context %" (default 45) the
 # session finishes its step and writes .handoffs/<date>.md; after /clear or a compaction the next
-# session is told to read it. Silent in repos with no desk config.
+# session is told to read it. With CLAUDE_AUTOCOMPACT_PCT_OVERRIDE set, the session compacts on its own
+# instead of asking for /clear. Silent in repos with no desk config.
 HANDOFF_HOOK="$CLAUDE_DIR/hooks/desk-handoff.py"
-HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart"
+HANDOFF_EVENTS="UserPromptSubmit PostToolUse Stop SessionStart PreCompact"
 install_file "$SRC/hooks/desk-handoff.py" "$HANDOFF_HOOK"
 chmod +x "$HANDOFF_HOOK"
 wrote "hook     ~/.claude/hooks/desk-handoff.py (script only; registering it is asked)"
@@ -756,11 +1003,58 @@ case "$rc" in
     note "context passes §2 'Handoff at context %' (default 45, 0 turns it off; a 1M window has its own row) it asks the session to"
     note "finish its step and write .handoffs/<date>.md, blocks the end of that turn once until it is"
     note "written, and after /clear or a compaction tells the next session to read it. Other hooks are kept."
-    if confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
+    if PROMPT_ID=hook-handoff confirm "Register the context handoff in ~/.claude/settings.json (backed up first)?"; then
       backup_settings
       if handoff_hook apply; then ok "registered"; else warn "could not write ~/.claude/settings.json"; fi
     else
       note "not registered. To do it later, re-run ./install.sh (or answer it in /desk-update)"
+    fi
+    ;;
+esac
+
+# Compaction mode for the handoff: with CLAUDE_AUTOCOMPACT_PCT_OVERRIDE in settings.json's env, Claude
+# Code compacts a session on its own and the handoff carries over without /clear. AUTOCOMPACT_PCT is
+# above §2's default 45, so the handoff is written before the compaction. A value already set is kept.
+AUTOCOMPACT_PCT=55
+# settings_env check|apply <name> <value>: exit 0 when <name> is already in settings.json's env, 1 when
+# not (apply then sets it), 2 when settings.json is unreadable.
+settings_env() {
+  python3 - "$SETTINGS" "$@" <<'PY'
+import json, os, sys
+path, mode, name, value = sys.argv[1:5]
+data = {}
+if os.path.exists(path):
+    try:
+        with open(path) as f:
+            raw = f.read()
+        data = json.loads(raw) if raw.strip() else {}
+    except Exception:
+        sys.exit(2)
+if not isinstance(data, dict) or not isinstance(data.get("env", {}), dict):
+    sys.exit(2)
+if name in data.get("env", {}):
+    sys.exit(0)
+if mode == "check":
+    sys.exit(1)
+data.setdefault("env", {})[name] = value
+exec(os.environ["DESK_WRITE_JSON_PY"])
+write_json(path, data)
+PY
+}
+rc=0; settings_env check CLAUDE_AUTOCOMPACT_PCT_OVERRIDE "$AUTOCOMPACT_PCT" || rc=$?
+case "$rc" in
+  0) ok "compaction mode already set (CLAUDE_AUTOCOMPACT_PCT_OVERRIDE)" ;;
+  2) warn "$SETTINGS is not valid JSON; fix it, then re-run to set compaction mode" ;;
+  *)
+    note "Sets CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=$AUTOCOMPACT_PCT in settings.json's env: Claude Code then"
+    note "compacts a session at $AUTOCOMPACT_PCT% of its window and carries on, and the context handoff"
+    note "carries over through the compaction instead of asking you to /clear, then /desk-resume."
+    note "Keep §2 'Handoff at context %' below it. It applies to sessions started afterwards."
+    if PROMPT_ID=compaction confirm "Set compaction mode in ~/.claude/settings.json (backed up first)?"; then
+      backup_settings
+      if settings_env apply CLAUDE_AUTOCOMPACT_PCT_OVERRIDE "$AUTOCOMPACT_PCT"; then ok "set"; else warn "could not write ~/.claude/settings.json"; fi
+    else
+      note "not set: the handoff keeps asking for /clear. To set it later, re-run ./install.sh"
     fi
     ;;
 esac
@@ -799,7 +1093,7 @@ case "$rc" in
     note "possible), gh pr merge --admin, and git push with --force, -f, +refspec, --delete, -d or"
     note "--mirror. The push patterns are best-effort: git also takes -qf, --forc, --delet. Other rules are kept."
     note "It also drops allow rules an earlier setup granted that no row grants any more (unpinned gh pr merge)."
-    if confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
+    if PROMPT_ID=deny-rules confirm "Add the always-on deny rules to ~/.claude/settings.json (backed up first)?" 0 \
         "python3 \"$HARNESS\" --settings \"$SETTINGS\" baseline"; then
       if out="$(python3 "$HARNESS" --settings "$SETTINGS" baseline 2>&1)"; then
         ok "always-on deny rules applied, and any retired allow rules dropped (recorded in ~/.claude/desk/harness-rules.json)"
@@ -854,7 +1148,7 @@ if [ -n "$missing_plugins" ]; then
   plugin_cmds="claude plugin marketplace add anthropics/claude-plugins-official"
   case "$missing_plugins" in *@openai-codex*) plugin_cmds="$plugin_cmds; claude plugin marketplace add openai/codex-plugin-cc" ;; esac
   for p in $missing_plugins; do plugin_cmds="$plugin_cmds; claude plugin install $p --scope user"; done
-  if confirm "Install the missing plugins now, user scope?" 0 "$plugin_cmds"; then
+  if PROMPT_ID=plugins confirm "Install the missing plugins now, user scope?" 0 "$plugin_cmds"; then
     if ! out="$(claude plugin marketplace add anthropics/claude-plugins-official 2>&1)"; then
       warn "could not add the claude-plugins-official marketplace (fine if it is already added)"; show_err "$out"
     fi
@@ -908,7 +1202,7 @@ else
       note "replaces your user-level playwright server: $have_mcp"
       mcp_cmd="claude mcp remove --scope user playwright; $mcp_cmd"
     fi
-    if confirm "Register desk's Playwright MCP as your user-level playwright server?" 0 "$mcp_cmd"; then
+    if PROMPT_ID=playwright-mcp confirm "Register desk's Playwright MCP as your user-level playwright server?" 0 "$mcp_cmd"; then
       [ -z "$have_mcp" ] || claude mcp remove --scope user playwright >/dev/null 2>&1 || true
       if out="$(claude mcp add-json --scope user playwright "$want_mcp" 2>&1)"; then
         ok "registered the user-level playwright server; takes effect when Claude Code restarts"
@@ -921,7 +1215,7 @@ else
 fi
 if printf '%s' "$plugin_json" | jq -e '.[] | select(.id == "playwright@claude-plugins-official" and .enabled)' >/dev/null 2>&1; then
   note "the playwright plugin starts its own browser server beside desk's, on a profile that is not signed in"
-  if confirm "Disable the playwright plugin (desk's user-level server replaces it)?" 0 \
+  if PROMPT_ID=playwright-plugin-off confirm "Disable the playwright plugin (desk's user-level server replaces it)?" 0 \
       "claude plugin disable playwright@claude-plugins-official"; then
     if out="$(claude plugin disable playwright@claude-plugins-official 2>&1)"; then ok "disabled playwright@claude-plugins-official"
     else warn "could not disable the playwright plugin"; show_err "$out"; fi
@@ -947,7 +1241,7 @@ if out="$(python3 "$SRC/bin/skills-upstream" index 2>&1)"; then
       note "shrinks the listing budget to 0.3% of the context window (plugin skills cannot be set name-only),"
       note "and adds ~/.claude/rules/desk-skill-index.md pointing Claude at skill-index, whose area files hold"
       note "every full description. Entries you already set in skillOverrides are kept."
-      if confirm "List skills by name only in ~/.claude/settings.json (backed up first)?" 0 \
+      if PROMPT_ID=skill-listing confirm "List skills by name only in ~/.claude/settings.json (backed up first)?" 0 \
           "cp -p \"$SETTINGS\" \"$SETTINGS.bak-desk-$TS\"; python3 \"$SRC/bin/skills-upstream\" index --quiet --name-only"; then
         backup_settings
         if out="$(python3 "$SRC/bin/skills-upstream" index --quiet --name-only 2>&1)"; then ok "${out#skill-index: }"
@@ -987,7 +1281,7 @@ else
     note "merges a statusLine entry into ~/.claude/settings.json. Other settings are kept."
     sl_q="Install claude-statusline (settings.json backed up first)?"; sl_big=0
   fi
-  if confirm "$sl_q" "$sl_big" "$sl_apply"; then
+  if PROMPT_ID=statusline confirm "$sl_q" "$sl_big" "$sl_apply"; then
     backup_settings
     if out="$(python3 "$SRC/bin/skills-upstream" statusline install 2>&1)"; then
       ok "$out"; note "takes effect in the next Claude Code session"
@@ -1004,15 +1298,26 @@ section "Repo configs  -> ~/.config/desk/repos/<owner__name>/"
 
 mkdir -p "$CONFIG_ROOT/repos" && chmod 700 "$CONFIG_ROOT" "$CONFIG_ROOT/repos"
 configured=0
+SHADOWED=""
 for c in "$CONFIG_ROOT"/repos/*/config.md; do
   [ -f "$c" ] || continue
   configured=$((configured + 1))
   slug="$(basename "$(dirname "$c")")"
-  # Unset table values only, not the word TODO in the rules text.
-  # shellcheck disable=SC2016
-  todos="$(grep -c '^|.*`TODO`' "$c" 2>/dev/null || true)"
+  # Rows whose value is still `TODO`, read as every desk read reads a value (desk-env unanswered): a
+  # TODO in a note is not one, nor a row the template leaves `TODO` to follow the machine profile.
+  todos="$(node "$DESKDIR/bin/desk-env.mjs" unanswered "$c" 2>/dev/null || echo 0)"
   if [ "${todos:-0}" -gt 0 ]; then warn "$slug: $todos unanswered fields (run /desk-setup in that repo)"
   else ok "$slug"; fi
+  # A user-level skill (a vendored one this install links, say) with the name of a skill the repo
+  # ships itself can load in place of the repo's copy. Read-only; each pair goes in the summary.
+  root="$(DESK_CONFIG="$c" node "$SRC/desk/bin/desk-env.mjs" get repo-root 2>/dev/null || true)"
+  [ -n "$root" ] && [ -d "$root" ] || continue
+  pairs="$(bash "$SRC/skills/desk-setup/bin/user-skill-copies.sh" "$root" 2>/dev/null | grep '^  WARN  user-level ' | sed 's/^  WARN  user-level //' || true)"
+  [ -n "$pairs" ] || continue
+  n="$(printf '%s\n' "$pairs" | wc -l | tr -d ' ')"
+  warn "$slug: $n user-level skill path(s) shadow a skill this repo ships, so either copy can load (listed at the end)"
+  SHADOWED="$SHADOWED$(printf '%s\n' "$pairs" | sed "s|^|  $slug: |")
+"
 done
 [ "$configured" = 0 ] && note "no repo is configured yet: run /desk-setup inside each repo you want desk in"
 note "template /desk-setup writes from: ~/.agents/skills/desk-setup/references/desk-config.template.md"
@@ -1043,15 +1348,9 @@ fi
 # ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"
 
-# Last, once every file is in place: scripts are replaced by rename, so a merge driver or supervisor
-# agent already running keeps the code it started with until it is started again.
+# Last, once every file is in place: a merge driver or supervisor agent already running keeps the
+# release it started with until it is started again. The version was recorded as the release went live.
 if [ -f "$DESKDIR/bin/installed.mjs" ]; then
-  if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" record "$SRC" 2>&1)"; then
-    ok "installed version $out (~/.claude/desk/installed.json)"
-    wrote "version  ~/.claude/desk/installed.json"
-  else
-    warn "could not record the installed version"; show_err "$out"
-  fi
   if out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart 2>&1)"; then
     RUNNING="$out"
     printf '%s\n' "$out" | sed 's/^/  /'
@@ -1062,6 +1361,12 @@ else
   note "this checkout ships no desk/bin/installed.mjs; nothing restarted"
 fi
 
+# An --accept or --decline id no prompt has: said, as a warning, so a typo does not pass for an answer.
+for id in $(printf '%s' "$ACCEPT,$DECLINE" | tr ',' ' '); do
+  case " $PROMPT_IDS " in *" $id "*) continue ;; esac
+  case "$id" in skill-?*) continue ;; esac
+  warn "--accept/--decline: no prompt has the id \"$id\" (ids: $PROMPT_IDS skill-<name>)"
+done
 printf '\nDone. %s warning(s) above.\n' "$WARNINGS"
 if [ "$SKIPPED_N" -gt 0 ]; then
   echo "Skipped (no terminal): $SKIPPED_N prompt(s), nothing was changed for them. Each one and how to apply it:"
@@ -1071,6 +1376,11 @@ if [ -n "$WROTE" ]; then
   echo "Written or moved, because these paths are desk-owned (an edited copy is backed up"
   echo "under $BACKUP first):"
   printf '%s' "$WROTE"
+fi
+if [ -n "$SHADOWED" ]; then
+  echo "Shadowed: a user-level skill with the name of one a configured repo ships, so either can load."
+  echo "The repo's copy is the one its CI and teammates use; remove a user-level one by hand to run it:"
+  printf '%s' "$SHADOWED"
 fi
 if [ -n "$RUNNING" ]; then
   echo "Running autopilot (merge drivers and supervisor agents):"

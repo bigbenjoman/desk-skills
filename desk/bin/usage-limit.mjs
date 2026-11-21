@@ -66,10 +66,30 @@ export function usageLimit(text) {
   return { limits, unrecognised, last };
 }
 
-// The limit by name, as the report and desk-q print it: "the weekly usage limit".
+// A call the API refused outright, read from a stream-json log: the `result` that ends the session with
+// HTTP 401 or 403 (a login the API no longer takes, or a Cloudflare block page in front of it). It is
+// not a usage limit and does not lift at a reset time. Only a top-level result counts, as above.
+//   -> { status, why } | null, the last one
+const REFUSED = new Set([401, 403]);
+export function apiRefusal(text) {
+  let found = null;
+  for (const line of String(text ?? '').split('\n')) {
+    if (!line.includes('"api_error_status":40')) continue;
+    let ev = null;
+    try { ev = JSON.parse(line); } catch { continue; }
+    if (ev?.type !== 'result' || !REFUSED.has(ev.api_error_status)) continue;
+    const msg = String(ev.result ?? '').replace(/\s+/g, ' ').trim();
+    found = { status: ev.api_error_status, why: `the Claude API refused the call with HTTP ${ev.api_error_status}${msg ? ` (${msg.slice(0, 160)})` : ''}` };
+  }
+  return found;
+}
+
+// The limit's window by name ("weekly"), null when the type names none.
 const NAMES = { five_hour: '5-hour', seven_day: 'weekly' };
+export const limitWord = (type) => NAMES[type] ?? (type && type !== 'unknown' ? type.replace(/_/g, ' ') : null);
+// The limit by name, as the report and desk-q print it: "the weekly usage limit".
 export function limitName(type) {
-  const n = NAMES[type] ?? (type && type !== 'unknown' ? type.replace(/_/g, ' ') : null);
+  const n = limitWord(type);
   return n ? `the ${n} usage limit` : 'the usage limit';
 }
 

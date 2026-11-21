@@ -1,5 +1,6 @@
 // The usage reading desk-q's headers show, and the small check that keeps it fresh while no worker
-// runs. Worker logs carry a rate_limit_event after most API calls (usage-pace.mjs); with none running,
+// runs. A worker log carries a rate_limit_event at its session's start and seldom another
+// (usage-pace.mjs); with none running,
 // an open desk-q runs one Haiku call every PROBE_EVERY_MS whose event carries both windows, about 2 s
 // and 3.6k tokens. Its stream-json output is kept as <usage dir>/probe.log and read like a worker log.
 // Never billed to an API key: the call runs without ANTHROPIC_API_KEY, on the signed-in account.
@@ -14,7 +15,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { WINDOWS, WINDOW_LABELS, newestReading, stateDirs, usageDir, probeLog, windowUse } from './usage-pace.mjs';
 import { takeBorrowLock } from './borrow.mjs';
-import { resetText, usageLimit } from './usage-limit.mjs';
+import { apiRefusal, resetText, usageLimit } from './usage-limit.mjs';
 import { loginEnv } from './logins.mjs';
 import { claudeLogins, loginKey } from './claude-logins.mjs';
 import { codexUsageByLogin } from './codex-usage.mjs';
@@ -28,6 +29,10 @@ export { usageDir, probeLog };
 const forLogin = (login) => (login?.configDir ? `.${loginKey(login)}` : '');
 export const loginProbeLog = (dir = usageDir(), login = null) => (forLogin(login) ? join(dir, `probe${forLogin(login)}.log`) : probeLog(dir));
 const probeStamp = (dir, login) => join(dir, `probe${forLogin(login)}.at`);
+// When a probe last started on this login (ms), or null when none has.
+export const lastProbeAt = (dir = usageDir(), login = null) => {
+  try { const n = Number(readFileSync(probeStamp(dir, login), 'utf8')); return Number.isFinite(n) && n > 0 ? n : null; } catch { return null; }
+};
 
 // A login's newest reading of both windows, the default's with none named: its worker logs in every
 // repo and its last probe's output, the same sources a pass's pacing reads.
@@ -126,7 +131,9 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
 // One probe the caller waits for: has the usage limit lifted? A batch held on it asks once a pass,
 // whatever the limit's reset time says, since a switch to another subscription lifts it early. Its
 // output is kept as the login's probe log, so desk-q's reading is as fresh as the answer.
-//   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, why }
+// `refused` is the API turning the call away with HTTP 401 or 403 (usage-limit.mjs apiRefusal), which
+// no reset time lifts.
+//   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, refused: { status, why } | null, why }
 export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, login = null, timeoutMs = 120_000 } = {}) {
   const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env, login), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = r.stdout ?? '';
@@ -139,11 +146,13 @@ export function probeNow({ dir = usageDir(), claude = 'claude', env = process.en
   const limit = u.last?.kind === 'limit' && !u.last.resumed ? { type: u.last.type, resetsAt: u.last.resetsAt } : null;
   // Answered: a result that is not an error, and no rejection after the model last spoke.
   const answered = out.split('\n').some((l) => { try { const e = JSON.parse(l); return e?.type === 'result' && e.is_error === false; } catch { return false; } });
-  if (r.status === 0 && answered && !limit) return { ok: true };
-  const why = limit ? 'rejected at the usage limit'
+  const refused = apiRefusal(out);
+  if (r.status === 0 && answered && !limit && !refused) return { ok: true };
+  const why = refused ? refused.why
+    : limit ? 'rejected at the usage limit'
     : r.error ? r.error.message
     : `${claude} exited ${r.status ?? r.signal} with no answer${(r.stderr ?? '').trim() ? `: ${r.stderr.trim().split('\n').pop().slice(0, 200)}` : ''}`;
-  return { ok: false, limit, why };
+  return { ok: false, limit, refused, why };
 }
 
 // ---- CLI ---------------------------------------------------------------------------------------

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<!-- GitHub's React PR page with two review threads, cut to what the composer finder reads. Each
+     thread's reply box is the same kind of textbox as the new-comment composer (aria-label
+     "Markdown value", placeholder "Leave a comment", a useId for its id, a file input once focused),
+     and sits above it in the page. -->
+<html>
+<head><meta name="user-login" content="octocat"><title>Fix the widget by octocat · Pull Request #7 · acme/widgets</title></head>
+<body>
+<main>
+  <div class="timeline">
+    <div class="review-thread" data-composer="thread-1">
+      <p>src/widget.js line 12: should this be const?</p>
+      <textarea id="_r_9_" aria-label="Markdown value" placeholder="Leave a comment"></textarea>
+    </div>
+    <div class="review-thread" data-composer="thread-2">
+      <p>src/widget.js line 40: typo.</p>
+      <textarea id="_r_f_" aria-label="Markdown value" placeholder="Leave a comment"></textarea>
+    </div>
+  </div>
+  <div data-composer="new">
+    <div class="toolbar"><button type="button" aria-label="Attach files">+</button></div>
+    <textarea id="_r_24_" aria-label="Markdown value" placeholder="Leave a comment"></textarea>
+  </div>
+</main>
+<script>
+for (const box of document.querySelectorAll('[data-composer]')) {
+  box.querySelector('textarea').addEventListener('focus', () => {
+    if (box.querySelector('input[type=file]')) return;
+    const input = document.createElement('input');
+    input.type = 'file'; input.multiple = true; input.hidden = true;
+    box.appendChild(input);
+  });
+}
+</script>
+</body>
+</html>

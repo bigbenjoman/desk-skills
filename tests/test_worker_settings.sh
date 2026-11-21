@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
@@ -64,12 +65,16 @@ check "desk-env machine write denied, reads allowed"      'allows "Bash(desk-env
 check "desk-env machine set denied"                       'jq -e ".permissions.deny | index(\"Bash(desk-env machine set:*)\") and index(\"Bash(node $B/desk-env.mjs machine set:*)\")" "$T/ws.json" >/dev/null'
 check "desk-env costs write denied"                      'jq -e ".permissions.deny | index(\"Bash(desk-env costs write:*)\") and index(\"Bash(node $B/desk-env.mjs costs write:*)\")" "$T/ws.json" >/dev/null'
 check "desk-env logins set denied"                        'jq -e ".permissions.deny | index(\"Bash(desk-env logins set:*)\") and index(\"Bash(node $B/desk-env.mjs logins set:*)\")" "$T/ws.json" >/dev/null'
-check "desk-env logins remove denied"                     'jq -e ".permissions.deny | index(\"Bash(desk-env logins remove:*)\") and index(\"Bash(node $B/desk-env.mjs logins remove:*)\")" "$T/ws.json" >/dev/null'
+check "DS-618 AC10 desk-env logins default denied"        'jq -e ".permissions.deny | index(\"Bash(desk-env logins default:*)\") and index(\"Bash(node $B/desk-env.mjs logins default:*)\")" "$T/ws.json" >/dev/null'
+check "desk-env logins remove denied"                   'jq -e ".permissions.deny | index(\"Bash(desk-env logins remove:*)\") and index(\"Bash(node $B/desk-env.mjs logins remove:*)\")" "$T/ws.json" >/dev/null'
+check "DS-619 AC12 desk-env subscription set denied"     'jq -e ".permissions.deny | index(\"Bash(desk-env subscription set:*)\") and index(\"Bash(node $B/desk-env.mjs subscription set:*)\")" "$T/ws.json" >/dev/null'
 check "desk-design save, status and check allowed, not write" 'allows "Bash(node $B/desk-design.mjs save:*)" && allows "Bash(node $B/desk-design.mjs check:*)" && allows "Bash(node $B/desk-design.mjs status:*)" && ! allows "Bash(node $B/desk-design.mjs write:*)" && ! allows "Bash(node $B/desk-design.mjs:*)"'
+check "DS-593 handoff.mjs write allowed bare, for this ticket only, outside the node .. deny" 'allows "Bash($B/handoff.mjs write fix-thing *)" && ! allows "Bash(node $B/handoff.mjs write fix-thing *)" && ! jq -e ".permissions.allow[] | select(test(\"handoff.mjs write (?!fix-thing )\"))" "$T/ws.json" >/dev/null && ! jq -e ".permissions.deny[] | select(startswith(\"Bash($B/handoff.mjs\") or . == \"Bash(*..*)\")" "$T/ws.json" >/dev/null'
 check "desk-design render allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs render:*)" && ! allows "Bash(node $B/desk-design.mjs render:*)"'
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
 check "DS-676 stitch-boards allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/stitch-boards.mjs:*)" && ! allows "Bash(node $B/stitch-boards.mjs:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
+check "its review results folder in the state dir is writable, and no other ticket's" 'allows "Edit(/$T/state/reviews/fix-thing/**)" && ! allows "Edit(/$T/state/reviews/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `apps/web: pnpm build-storybook` |'
@@ -95,7 +100,14 @@ check "DS-398 AC3 each pre-push item allowed exactly as written" \
   '[ $rc -eq 0 ] && allows "Bash(pnpm format:check:*)" && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:*)" && ! allows "Bash(pnpm typecheck:*)"'
 check "a pre-push item naming typecheck takes the tsc lock, as pre-push.sh runs it" \
   '! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:*)" && allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm format:check:*)"'
-check "DS-398 AC2 a root Lint item also runs under nolock"  'allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && allows "Bash(pnpm lint:*)"'
+check "DS-855 AC3 a root Lint item runs under the tsc lock, never nolock or bare" \
+  'allows "Bash($B/with-lock.sh tsc --cwd . -- pnpm lint:*)" && allows "Bash($B/with-lock.sh tsc pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd . -- pnpm lint:*)" && ! allows "Bash(pnpm lint:*)" && ! allows "Bash(pnpm run lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `pnpm lint --max-warnings 0` |' '| Lint | `pnpm lint` |'
+check "DS-855 a root pre-push item extending a Lint item takes tsc and has no bare form" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc pnpm lint --max-warnings 0:*)" && ! allows "Bash(pnpm lint --max-warnings 0:*)" && ! allows "Bash(pnpm lint:*)"'
+PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Lint | `web: pnpm lint` |'
+check "DS-855 AC3 a Lint item in a directory runs under the tsc lock, never nolock" \
+  '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm lint:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm lint:*)"'
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Pre-push checks | `web: pnpm typecheck:portal` |' '| Typecheck | `web: pnpm typecheck` |'
 check "a filtered typecheck no row lists takes the tsc lock, never nolock" \
   '[ $rc -eq 0 ] && allows "Bash($B/with-lock.sh tsc --cwd web -- pnpm typecheck:portal:*)" && ! allows "Bash($B/with-lock.sh nolock --cwd web -- pnpm typecheck:portal:*)"'
@@ -253,13 +265,29 @@ check "AC10 the Jira token beside it is not"               '[ "$(readable "$CRED
 check "AC11 ~/.claude/agents can be listed and read"       '[ "$(readable "$HOME/.claude/agents/pr-expert.md")" = allow ] && ok "ls $HOME/.claude/agents"'
 check "DS-340 AC2 the installed desk templates can be listed and read" \
   '[ "$(readable "$DESK_HOME/templates/.githooks/pre-push")" = allow ] && [ "$(readable "$DESK_HOME/templates/scripts/desk/pre-push.sh")" = allow ] && ok "ls $DESK_HOME/templates/scripts/desk"'
-check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "./node_modules/.bin/eslint src" "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "AC12 ./node_modules/.bin/<tool> allowed"            'ok "node_modules/.bin/prettier --check ." "$W/node_modules/.bin/prisma generate"'
+check "DS-855 a lint binary runs only under the tsc lock"   'ok "$L tsc ./node_modules/.bin/eslint src" "$L tsc --cwd . -- node_modules/.bin/biome check" "$L tsc -- $W/node_modules/.bin/stylelint a.css" \
+      && no "./node_modules/.bin/eslint src" "node_modules/.bin/oxlint" "$W/node_modules/.bin/stylelint a.css" "$L nolock ./node_modules/.bin/eslint src" "$L tsc ./node_modules/.bin/eslint ../x"'
 check "AC12 suites and typechecks still need the lock"     'no "./node_modules/.bin/vitest run" "node_modules/.bin/tsc --noEmit" "$W/node_modules/.bin/jest" "./node_modules/.bin/playwright test" \
       "./node_modules/.bin/./vitest run" "node_modules/.bin//tsc" "node $W/node_modules/vitest/vitest.mjs run" "node $W/node_modules/.bin/vitest"'
 check "AC12 no migrate or seed through node_modules"       'no "./node_modules/.bin/prisma migrate reset --force" "./node_modules/.bin/prisma db push" "node_modules/.bin/drizzle-kit push" \
       "./node_modules/.bin/./prisma migrate reset" "node $W/node_modules/prisma/build/index.js migrate reset --force"'
 check "tsx scripts still run from the worktree"            'ok "node $W/node_modules/tsx/dist/cli.mjs scratch.ts" && no "node $W/node_modules/tsx/../vitest/vitest.mjs"'
 check "AC12 the same with .. refused"                      'no "./node_modules/.bin/../../x" "./node_modules/.bin/eslint ../x" "$W/node_modules/.bin/../../../bin/sh"'
+settings '`bash tests/run.sh`' '| Typecheck | `web: ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json` |' '| Lint | `web: node_modules/.bin/eslint -c ../eslint.config.js .` |'
+check "DS-855 the lint binaries .. deny leaves a configured directory item holding .. allowed" \
+  'ok "$L tsc --cwd web -- ./node_modules/.bin/tsc --noEmit --project ../tsconfig.json" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js ." && no "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc --cwd . -- node_modules/.bin/biome check ../x"'
+check "#1039 that item's .. does not open the lint binary's own form to any .. argument" \
+  'no "$L tsc --cwd web -- node_modules/.bin/eslint --fix ../../x" "$L tsc --cwd web node_modules/.bin/eslint ../x" "$L tsc --cwd web -- node_modules/.bin/eslint -c ../eslint.config.js . --fix ../x"'
+settings '`bash tests/run.sh`' '| Lint | `node_modules/.bin/eslint --ignore-path ../.gitignore .` |'
+check "#1039 a root Lint item holding .. runs, and the root lint binary still refuses any other .." \
+  'ok "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore ." "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore . --fix src/a.ts" "$L tsc ./node_modules/.bin/eslint src/a.ts" \
+      && no "$L tsc node_modules/.bin/eslint --fix ../other/x.ts" "$L tsc ./node_modules/.bin/eslint ../x" "$L tsc node_modules/.bin/eslint --ignore-path ../.gitignore . --fix ../other/x.ts"'
+settings '`apps/web: bash tests/run.sh`' '| Dev server | `packages/app: bash dev.sh` |'
+check "#1039 a lint binary runs under the tsc lock in each directory a §4 item names" \
+  'ok "$L tsc --cwd packages/app -- ./node_modules/.bin/eslint src/a.ts" "$L tsc --cwd $W/packages/app node_modules/.bin/eslint src/a.ts" "$L tsc --cwd apps/web -- ./node_modules/.bin/biome check x.ts" \
+      && no "$L nolock --cwd packages/app -- ./node_modules/.bin/eslint src/a.ts" "$L tsc --cwd packages/app -- ./node_modules/.bin/eslint ../x" "$L tsc --cwd packages/other -- ./node_modules/.bin/eslint a.ts"'
+settings '`bash tests/run.sh` `sub: bash tests/sub.sh`' '| Typecheck | `bash tests/tc.sh` |' "$(perm3 ask)"
 check "AC13 git check-ignore and range-diff allowed"       'ok "git check-ignore -v .claude/x.json" "git range-diff origin/main...HEAD"'
 # okc <command>: every piece of a `;` / `&&` / `||` / `|` compound allowed, as the harness splits one.
 okc(){ local c p; for c in "$@"; do while IFS= read -r p; do [ -z "$p" ] || ok "$p" || return 1; done < <(printf '%s\n' "$c" | perl -pe 's/\s*(;|&&|\|\||\|)\s*/\n/g'); done; }  # bash32: ok the |& is inside a perl regex, not a pipe
@@ -293,7 +321,7 @@ check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ]
 # rows3 <key>=<value> ... -> a §3 table holding just those rows
 rows3(){ local kv; printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
   for kv in "$@"; do printf '| `%s` | x | `ask` | `%s` |\n' "${kv%%=*}" "${kv#*=}"; done; }
-SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) |'
+SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) `search: 8108` |'
 : > "$T/repo/compose.yaml"; UP="docker compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps"
 denied_line(){ [[ "$out" == *"CONFIG_DENIED: $1 ($2)"* ]]; }
 
@@ -311,6 +339,7 @@ check "AC3 Storybook and Python capture under the browser lock" \
 check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
       "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
 check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
+check "an item written name: port is that service" '[[ "$out" != *"does not start with a compose service name"* ]] && ok "$UP search"'
 check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
       "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
 check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'

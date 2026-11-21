@@ -17,8 +17,11 @@
 //   - GitHub inserts an <img ...> tag into the textarea's VALUE, not a DOM node, and not
 //     markdown. Waiting for an <img> element times out while the upload succeeded.
 //   - The alt it writes DROPS the extension: before-desktop.png -> alt="before-desktop".
-//   - The file input is hidden (state:'attached', not 'visible') and IS multiple.
-//   - The form must be focused first or no POST to /upload/policies/assets ever fires.
+//   - The comment box is found by role and placeholder, the classic id only as a fallback
+//     (pr-composer.mjs): GitHub's React PR page has no textarea#new_comment_field.
+//   - The file input is hidden (state:'attached', not 'visible') and IS multiple; so is the add-files
+//     button's file chooser, which the React page uses in its place (pr-composer.mjs).
+//   - The box must be focused first or no POST to /upload/policies/assets ever fires.
 //   - Capture the URLs BEFORE clearing the box; there is no API to list these assets after.
 //   - Never delete a SingletonLock in the profile: it is very likely a peer's upload in flight.
 //
@@ -35,16 +38,27 @@
 //     in <profile>.github-session.json instead, which Claude's Playwright MCP loads too)
 //   7 throttled: a batch stalled, which is GitHub's rate limit, so the run stopped there; or an earlier
 //     stall's retry_after has not passed, so nothing was uploaded. The links uploaded so far are in the
-//     tags file and their cells are filled, and the line printed says when it may run again.
+//     tags file and their cells are filled, and the line printed says when it may run again. Also
+//     GitHub's PR page changed: signed in, but no comment composer (or no file input in it) was
+//     found, so nothing was uploaded; the line printed starts "GitHub's PR page changed".
+//   8 paced: --max <n> was given and more images were left than that, so it uploaded n and stopped;
+//     their cells are filled and the rest wait for the next run.
+//
+// pass.mjs runs it through the machine's one upload queue (upload-queue.mjs), which sets --max to
+// what the pace leaves.
 import { existsSync, mkdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { runUpload, shotIndex, UploadStop } from './upload-batches.mjs';
 import { logUpload, uploadLogFile } from './upload-log.mjs';
+import { findComposer, EXIT_PAGE_CHANGED, NO_COMPOSER, NO_FILE_INPUT } from './pr-composer.mjs';
 import { permission, permissionKey, browserProfile, ghRepo, DeskConfigError, psRows } from './desk-env.mjs';
 import { findPlaywright, importPlaywright, sessionFile, githubCookies, saveSession, loadSessionCookies, loginState } from './find-playwright.mjs';
 
-const [pr, dir] = process.argv.slice(2);
-if (!pr || !dir) { console.error('usage: upload-images.mjs <pr-number> <image-dir>'); process.exit(1); }
+const args = process.argv.slice(2);
+const maxAt = args.indexOf('--max');
+const max = maxAt < 0 ? null : Number(args[maxAt + 1]);
+const [pr, dir] = maxAt < 0 ? args : args.filter((_, i) => i !== maxAt && i !== maxAt + 1);
+if (!pr || !dir || (max != null && !(Number.isInteger(max) && max > 0))) { console.error('usage: upload-images.mjs <pr-number> <image-dir> [--max <images>]'); process.exit(1); }
 if (!existsSync(dir)) { console.error(`no such directory: ${dir}`); process.exit(1); }
 
 const perm = permission('pr-images');
@@ -114,15 +128,13 @@ async function openPage() {
   user = await page.evaluate(() => document.querySelector('meta[name="user-login"]')?.content || '');
   if (!user) throw new UploadStop(6, `the saved GitHub login has expired: GitHub no longer accepts ${saved}.\n[upload] sign in with: ${SIGNIN}`);
 
-  const ta = page.locator('textarea#new_comment_field');
-  await ta.waitFor({ state: 'attached', timeout: 30000 });
-  await ta.scrollIntoViewIfNeeded();
-  await ta.click();                       // the <file-attachment> element needs the form live
-
-  const input = page.locator('form:has(textarea#new_comment_field) input[type="file"]').first();
-  await input.waitFor({ state: 'attached', timeout: 30000 });
+  // Signed in with no composer is GitHub changing its page, not a flake: said once, with no trace.
+  const composer = await findComposer(page);
+  if (!composer) throw new UploadStop(EXIT_PAGE_CHANGED, NO_COMPOSER);
+  if (!composer.setFiles) throw new UploadStop(EXIT_PAGE_CHANGED, NO_FILE_INPUT);
+  const { textarea: ta, setFiles } = composer;
   return {
-    setFiles: (paths) => input.setInputFiles(paths),
+    setFiles,
     value: () => ta.inputValue(),
     clear: () => ta.fill(''),
   };
@@ -140,7 +152,7 @@ const writeBody = (body) => execFileSync('gh', ['pr', 'edit', pr, '--repo', REPO
 let result;
 try {
   result = await runUpload({
-    dir, readBody, writeBody, openPage, record,
+    dir, readBody, writeBody, openPage, record, max,
     log: (l) => console.log(`[upload] #${pr} ${l}`),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
   });

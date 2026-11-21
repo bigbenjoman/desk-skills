@@ -57,8 +57,11 @@ cross-vendor verification that did not happen.
 
 **Finders must stay read-only.** They inherit Edit and Write, and one will sometimes implement a fix
 mid-round, even in a file the PR did not touch, so the review attests a tree nobody pushed. Check
-`git status --porcelain` after every round; a dirty tree is an aborted round: save the stray diff,
-restore, re-run, and say in the review that a round was discarded.
+`desk-env tree-status --run <run>` after every round, as `/desk-review` does, `<run>` the id that
+round's `/desk-review` picked (the one in its `desk-review-results-<run>.json`); any other review
+command runs plain `desk-env tree-status`. A dirty tree is an aborted round: save the stray diff,
+restore, re-run, and say in the review that a round was discarded. It leaves out this ticket's own
+resume file and, with `--run`, that review's scratch files, so printing nothing is a clean round.
 
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
 finder can find something in. The branch has been read whole once by round 2, so from round 2 a
@@ -76,6 +79,12 @@ since round 2. After the third round there is no fourth without the user. From r
   section), or, when there are more than five and §3 `jira-create` is `yes`, into one follow-up
   ticket the body links instead (`desk-pr` §2). Nothing stops for them, whatever §3 `jira-create`
   says: without it they stay in the body.
+
+**With §4 Tracker (`desk-env get tracker`) `none`, a GitHub issue in this repo is the ticket.**
+Opening a follow-up issue is §3 `gh-issue-create`, and commenting on another issue is §3
+`gh-issue-comment`: at `yes`, print the exact text as it posts; at `ask`, print it and wait; at `no`,
+hand the text over. The issue this ticket works from still gets no comment, label or close: its PR
+closes it.
 
 The count belongs to one loop; a later loop, for reviewer feedback or after merging `<default>`,
 starts again at one.

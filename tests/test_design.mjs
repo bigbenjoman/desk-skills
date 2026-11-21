@@ -5,18 +5,18 @@
 // Claude Design link with no saved copy. Scratch git repos only.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { save, status, checkTicket, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, storyEntries, matchStories, compare, applyCrops, kindOfFiles } from '../desk/bin/desk-design.mjs';
+import { save, status, checkTicket, designFact, collect, parseBoards, references, blobIds, writeRecord, canonicalUrl, mergeSource, readme, renderPlan, screenNames, render, importExport, loads, propose, callsHome, unbound, storyEntries, matchStories, compare, applyCrops, kindOfFiles, uploadEstimate, estimateLines } from '../desk/bin/desk-design.mjs';
 import { findPlaywright, importPlaywright } from '../desk/bin/find-playwright.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const throws = (fn) => { try { fn(); return 'no error'; } catch (e) { return `${e.code}:${e.message.split('\n')[0]}`; } };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-design.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-design-'));
+const T = scratch('desk-design-');
 const put = (p, s) => { mkdirSync(dirname(p), { recursive: true }); writeFileSync(p, s); };
 const read = (p) => readFileSync(p, 'utf8');
 const json = (p) => JSON.parse(read(p));
@@ -109,6 +109,7 @@ t('DS-382 AC1 save: the board loads it by relative path', read(join(sfd, 'Kit.dc
 
 // DS-382 AC2: the design tool's host is claude.ai, or the artifact URL's host; nothing else is.
 t('DS-382 AC2 callsHome: claude.ai and its subdomains', [callsHome('https://claude.ai/_blob/x', null), callsHome('https://cdn.claude.ai/x.js', null)].join(' '), 'true true');
+t('render: an unfilled binding names no file', [unbound('http://127.0.0.1:5/project/%7B%7Blogo%7D%7D'), unbound('http://127.0.0.1:5/project/{{r.logo}}'), unbound('http://127.0.0.1:5/project/img/a.png'), unbound('%E0%A4%A')].join(' '), 'true true false false');
 t('DS-382 AC2 callsHome: the artifact host', callsHome('https://design.example.com/x', 'https://design.example.com/p/1'), true);
 t('DS-382 AC2 callsHome: the local server and other hosts are not', [callsHome('http://127.0.0.1:5000/a.css', URL1), callsHome('https://fonts.googleapis.com/css2', URL1), callsHome('https://notclaude.ai/x', URL1)].join(' '), 'false false false');
 
@@ -253,6 +254,33 @@ const snapped = checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, 
 t('check: a snapshotted link is advisory, naming the snapshot', `${snapped.map((f) => f.severity).join(' ')} ${snapped[0]?.message.includes(`snapshotted at ${join(st, 'designs/DS-70')}`)}`, 'advisory true');
 t('check: a feature batch reads the repo state\'s snapshot', checkTicket(issue(`h2. Design\n${URL1}`), { root: r5, dir: DIR, state: join(st, 'batches/DS-50') })[0].severity, 'advisory');
 t('check: another artifact is still blocking', checkTicket(issue('h2. Design\nhttps://claude.ai/design/p/other'), { root: r5, dir: DIR, state: st })[0].severity, 'blocking');
+const sev = (design) => checkTicket(issue(`h2. Design\n${design}\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' }).map((f) => f.severity).join(' ');
+const noBoard = checkTicket(issue(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`), { root: r5, dir: DIR, state: st + '-none' });
+t('DS-860 AC1: a link the ticket uses no board from is advisory, saving nothing', `${noBoard.map((f) => f.severity).join(' ')} ${noBoard[0]?.message.includes('uses no board from it, so nothing needs saving')}`, 'advisory true');
+t('DS-860 AC1: "this ticket uses no board" is advisory', sev(`${URL1}\nThis ticket uses no board from it.`), 'advisory');
+t('DS-860 AC1: the ticket key in place of "this ticket" is advisory', sev(`${URL1}\nThere is no board specific to DS-70.`), 'advisory');
+t('DS-860 AC1: another ticket\'s key is not this one', sev(`${URL1}\nThere is no board specific to DS-701.`), 'blocking');
+t('DS-860 AC2: a link naming a board for the ticket still blocks', sev(`Board "Order summary" on ${URL1}. No board for the empty state.`), 'blocking');
+t('DS-860 AC2: "no board for the empty state yet" beside a named board blocks', sev(`Board "Order summary" on ${URL1}. No board for the empty state yet.`), 'blocking');
+t('DS-860 AC2: "the empty state has no board" beside a named board blocks', sev(`Board "Order summary" on ${URL1}. The empty state has no board.`), 'blocking');
+t('DS-860 AC2: "no board for the error state in this ticket" blocks', sev(`Board "Order summary" on ${URL1}. No board for the error state in this ticket.`), 'blocking');
+t('DS-860 AC2: a no-board note on one link leaves another blocking', sev(`* Epic canvas: ${URL1}. No board for this ticket.\n* Board "Order summary": https://claude.ai/design/p/other`), 'advisory blocking');
+t('DS-860 AC2: a note beside a longer URL does not clear its prefix', sev(`No board for DS-70: https://claude.ai/design/p/other-v2\nBuild the Order summary board: https://claude.ai/design/p/other`), 'advisory blocking');
+t('DS-860 AC2: "no board for DS-70\'s empty state" blocks', sev(`Build the Order summary board on ${URL1}. No board for DS-70’s empty state.`), 'blocking');
+t('DS-860 AC1: "no board on this canvas for this ticket" is advisory', sev(`Epic canvas: ${URL1}. There is no board on this canvas for this ticket.`), 'advisory');
+// A note on a line linking two artifacts could be about either, wherever it sits, so it clears neither.
+for (const [where, line] of [
+  ['beside the first link', `[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)`],
+  ['between the links, about the second', `Build the Order summary board on [A](${URL1}); no board for this ticket on [B](https://claude.ai/design/p/other)`],
+  ['in the second link\'s Jira label', `[A|${URL1}]: implement the Order Summary board; [No board for this ticket|https://claude.ai/design/p/other]`],
+  ['in a label holding a semicolon', `[Build Order Summary|${URL1}] and [No board for this ticket; epic reference only|https://claude.ai/design/p/other]`],
+  ['in a label holding brackets', `Build Order Summary on [A](${URL1}) and see [Epic canvas [reference], no board for this ticket; background only](https://claude.ai/design/p/other)`],
+]) t(`DS-860 AC2: a note ${where} on a line linking two artifacts clears neither`, sev(line), 'blocking blocking');
+t('DS-860 AC2: a phrase never runs across a two-link line left out between two lines', sev(`See [canvas](${URL1}). No board for\n[the empty state](${URL1}) (see [reference](https://claude.ai/design/p/other)).\nThis ticket implements [Order Summary](${URL1}).`), 'blocking blocking');
+const fact2 = designFact(`h2. Design\n[A](${URL1}): no board on this canvas for this ticket; implement the Order Summary board on [B](https://claude.ai/design/p/other)\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
+t('DS-860: triage\'s design fact keeps both canvases a line links beside a no-board note', fact2.canvases.length, 2);
+const fact = designFact(`h2. Design\nThe epic's canvas: ${URL1}. No board for this ticket exists yet.\nh2. Out of scope`, { state: st + '-none', key: 'DS-70' });
+t('DS-860: triage\'s design fact leaves out a canvas the ticket uses no board from', fact.canvases.length, 0);
 
 // ---- check reads the base on origin, not a checkout's working tree ----
 // A main checkout behind origin/main: the canvas is merged on origin only, and another sits in the
@@ -484,6 +512,48 @@ t('breakpoints: unset is the default', bp(''), '390 768 1024 1280 1440');
 t('breakpoints: the row, ascending', bp('`1280` `390` `768`'), '390 768 1280');
 t('breakpoints: none is no breakpoints', bp('`none`'), '');
 
+// ---- estimate: the uploads a saved canvas's PR needs, and the time at the pace ----
+const boardsN = (n) => Array.from({ length: n }, (_, i) => ({ name: `Board ${i + 1}`, width: 1280 }));
+const eleven = { url: URL1, version: '7', tickets: [{ key: 'DS-90', boards: [] }, { key: 'DS-91', boards: ['Board 1', 'Board 2'] }], boards: boardsN(11) };
+const e11 = uploadEstimate(eleven, { key: 'DS-90', themeCount: 2 });
+t('AC1 estimate: 11 boards × 2 themes is 22 uploads', `${e11.boards} ${e11.themes} ${e11.uploads}`, '11 2 22');
+t('AC1 estimate: the time is the slower of 6 a minute and 300 an hour', Math.round(e11.minutes * 10) / 10, 4.4);
+t('AC1 estimate: the line states count and time', estimateLines(e11, { key: 'DS-90' }).join(' | '), 'uploads: 22 (11 boards × 2 themes), about 5 minutes at 6 a minute and 300 an hour');
+t('estimate: a ticket naming boards counts only those', uploadEstimate(eleven, { key: 'DS-91', themeCount: 2 }).uploads, 4);
+t('estimate: no themes counts one', uploadEstimate(eleven, { key: 'DS-90', themeCount: 0 }).uploads, 11);
+const e99 = uploadEstimate(eleven, { key: 'DS-99', themeCount: 2 });
+t('estimate: a ticket source.json does not list yet counts every board', `${e99.uploads} ${e99.unlisted}`, '22 true');
+t('estimate: an unlisted ticket gets a note line', estimateLines(e99, { key: 'DS-99' })[1], 'note: DS-99 is not among the tickets source.json lists yet, so every board is counted');
+t('estimate: a listed ticket gets no note line', estimateLines(e11, { key: 'DS-90' }).length, 1);
+const big = uploadEstimate({ ...eleven, boards: boardsN(151) }, { key: 'DS-90', themeCount: 2 });
+t('AC2 estimate: 302 uploads is over an hour', `${big.over} ${Math.round(big.minutes)}`, 'true 60');
+t('AC2 estimate: the flag suggests splitting by board', estimateLines(big, { key: 'DS-90' })[1], 'flag: over an hour to upload: split DS-90 by board, at most 150 boards per ticket');
+t('estimate: exactly 300 uploads is not over an hour', uploadEstimate({ ...eleven, boards: boardsN(150) }, { key: 'DS-90', themeCount: 2 }).over, false);
+const drawnDark = { ...eleven, boards: [...boardsN(11), ...boardsN(11).map((b) => ({ ...b, name: `${b.name} dark` }))] };
+t('estimate: a board drawn as another\'s dark theme stitches into it', `${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).boards} ${uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 2 }).uploads}`, '11 22');
+t('estimate: a drawn dark board is a second theme with §5 Themes unset', uploadEstimate(drawnDark, { key: 'DS-90', themeCount: 0 }).uploads, 22);
+t('estimate: a ticket naming a board and its dark board counts one board', uploadEstimate({ ...drawnDark, tickets: [{ key: 'DS-92', boards: ['Board 1', 'Board 1 dark'] }] }, { key: 'DS-92', themeCount: 0 }).uploads, 2);
+t('estimate: two boards with one title stitch as two', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
+t('estimate: a ticket naming a title two boards share counts both', uploadEstimate({ ...eleven, boards: [{ name: 'Checkout' }, { name: 'Checkout' }, { name: 'Basket' }], tickets: [{ key: 'DS-93', boards: ['Checkout'] }] }, { key: 'DS-93', themeCount: 2 }).uploads, 4);
+t('estimate: a ticket naming a title no board has counts it once', uploadEstimate({ ...eleven, tickets: [{ key: 'DS-94', boards: ['Board 1', 'Gone'] }] }, { key: 'DS-94', themeCount: 0 }).uploads, 2);
+t('estimate: a dark board matches its board whatever the case', uploadEstimate({ ...eleven, boards: [{ name: 'Order summary' }, { name: 'Order Summary dark' }] }, { key: 'DS-90', themeCount: 0 }).uploads, 2);
+t('estimate: a deck has no boards to stitch', estimateLines(uploadEstimate({ url: URL1, tickets: [], boards: [] }))[0], 'uploads: none: this canvas has no boards to stitch (a deck or a single page)');
+const th = (row) => {
+  const f = join(T, `th-${row.length}.md`);
+  put(f, `## 5. Conventions\n| Field | Value |\n|---|---|\n${row ? `| Themes | ${row} |\n` : ''}`);
+  const r = spawnSync('node', ['--input-type=module', '-e', `import { themes } from ${JSON.stringify(BIN)}; console.log(themes().length)`], { env: { ...process.env, DESK_CONFIG: f }, encoding: 'utf8' });
+  return (r.stdout || r.stderr).trim();
+};
+t('themes: unset is one look', th(''), '0');
+t('themes: the TODO template is one look', th('`TODO`'), '0');
+t('themes: the row', th('`light` `dark`'), '2');
+t('themes: none is one look', th('`none`'), '0');
+const est = join(T, 'est'); put(join(est, 'source.json'), JSON.stringify(eleven));
+const thCfg = join(T, 'th-cli.md'); put(thCfg, '## 5. Conventions\n| Field | Value |\n|---|---|\n| Themes | `light` `dark` |\n');
+const estCli = spawnSync('node', [BIN, 'estimate', est, '--key', 'DS-90'], { env: { ...process.env, DESK_CONFIG: thCfg }, encoding: 'utf8' });
+t('AC1 cli estimate: reads config §5 Themes', `${estCli.status} ${estCli.stdout.trim()}`, '0 uploads: 22 (11 boards × 2 themes), about 5 minutes at 6 a minute and 300 an hour');
+t('cli estimate: no saved canvas exits 2', spawnSync('node', [BIN, 'estimate', join(T, 'nowhere')], { env: { ...process.env, DESK_CONFIG: thCfg }, encoding: 'utf8' }).status, 2);
+
 // A re-save at a new version removes the old version's screens.
 const r7 = repo('r7');
 save(s1, { root: r7, dir: DIR, tickets: [{ key: 'DS-52', boards: [] }], url: URL1, version: '7' });
@@ -620,6 +690,11 @@ if (!pw.entry) {
   t('cli render: a missing asset exits 4', run('render', broken).status, 4);
   const blank = canvasAt('rx');
   put(join(blank, 'project/test-390.dc.html'), '<!doctype html><body></body>');
+  // A binding outside a <template> is fetched as its literal before the runtime fills it in: that
+  // 404 is not a missing file, so the board still renders.
+  const bound = canvasAt('rt');
+  put(join(bound, 'project/test-390.dc.html'), '<!doctype html><main style="height:600px;background:#234">Board <img src="{{logo}}" alt=""></main>');
+  t('render: an unfilled binding does not fail the board', await render(bound, { chromium, bps: [390] }).then(() => 'rendered', (e) => e.message), 'rendered');
   t('render: a blank board fails', await render(blank, { chromium, bps: [390] }).then(() => 'no error', (e) => e.message.includes('painted nothing')), true);
 
   // A v3 canvas: keyed boards sized w/h, the runtime saved as support.js, an image the board's script
@@ -710,6 +785,14 @@ else document.getElementById('storybook-root').innerHTML = '<main style="height:
   } finally {
     await deckBrowser.close();
   }
+}
+
+// An admit refused on a value a linked design frame shows is read by the session's design connector
+// and written into the ticket, then admitted again; only a frame no connector reads goes to the person.
+{
+  const admit = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-admit', 'SKILL.md'), 'utf8');
+  const step2 = admit.slice(admit.indexOf('## 2. Refused'), admit.indexOf('| `<why>` says |'));
+  t('desk-admit §2 reads a linked design frame through the design connector before asking, and writes it into the ticket', ['get_design_context', 'the Artifact tool', "ticket's Design section", 'run step 1 again', 'only when no connector'].every((x) => step2.includes(x)), true);
 }
 
 rmSync(T, { recursive: true, force: true });

@@ -3,16 +3,16 @@
 // DESK_LOCK_DIR, DESK_USAGE_DIR and subscriptions file, with fake claude and codex binaries the account
 // check (desk-env logins check) calls. A test signs a new folder in partway through the wait by writing
 // what the fake binary reads. Drawn at 104 columns under NO_COLOR.
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-q-usage-add-'));
+const T = scratch('desk-q-usage-add-');
 const H = join(T, 'home');
 mkdirSync(join(T, 'bin'));
 writeFileSync(join(T, 'bin', 'launchctl'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
@@ -45,7 +45,7 @@ mkdirSync(dirname(q), { recursive: true });
 writeFileSync(q, JSON.stringify({ version: 1, batch: 'solo', concurrency: 2, tickets: { 'S-1': { key: 'S-1', state: 'triaged' } } }));
 const subsText = () => (existsSync(env.DESK_SUBSCRIPTIONS) ? readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8') : '');
 // A file with only a Codex row: no Claude account is pinned, so the first add signs ~/.claude's account in too.
-writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `codex` | `codexmain` | `~/.codex` | `in rotation` |\n');
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `codex` | `codexmain` | `~/.codex` | `default` |\n');
 
 const Q = await import(join(BIN, 'desk-q.mjs'));
 const { callLogin } = await import(join(BIN, 'call-login.mjs'));
@@ -98,8 +98,8 @@ await A.press('6');
 let f = await A.until((x) => has(x, 'Press a to add a login.'));
 const offerAt = f.findIndex((l) => l.startsWith('  If you have'));
 t('with one login of each, a line offers a to add a login', squash(f.slice(offerAt, offerAt + 2)),
-  'If you have another Claude or Codex subscription, add it and desk spreads workers across both, so a batch keeps running when one reaches its limit. Press a to add a login.');
-t('and the keys offer a', f.at(-1).includes('a add an account'), true);
+  'If you have another Claude or Codex subscription, add it to make it the default or pin repos to it. Nothing moves to another subscription on its own. Press a to add a login.');
+t('and the keys offer a', f.at(-1).includes('a add ·'), true);
 
 // ---- AC6 (and AC5): a file with only Codex rows: the first add asks for ~/.claude's account first
 await A.press('a');
@@ -108,7 +108,7 @@ t('AC6 the panel is titled', has(f, '  ADD A CLAUDE ACCOUNT'), true);
 t('AC6 its first step signs ~/.claude\'s account in to a folder of its own', stepText(f, 1),
   '1 In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/login-1 claude, then type /login and sign in to me@example.test.');
 t('AC6 its second step is the new account', stepText(f, 2), '2 Then desk asks for the account you want to add, in a folder of its own.');
-t('AC6 the waiting row is that account, selected', waitingRow(f), row(1, 'me@example.test', '—', '○ standby', 'waiting for you to sign in…', null, '0'));
+t('AC6 the waiting row is that account, selected', waitingRow(f), row(1, 'me@example.test', '—', '○ unused', 'waiting for you to sign in…', null, '0'));
 t('AC6 the keys', f.at(-1), KEYS);
 t('AC6 desk makes no folder for a Claude login: its sign-in does', existsSync(L('login-1')), false);
 await A.press('y');
@@ -122,19 +122,19 @@ t('AC7 before the first folder signs in, a Claude call keeps the caller\'s envir
 account(join(L('login-1'), '.claude.json'), 'me@example.test', 'Ultra');
 f = await A.until((x) => folderOf(x) === 'login-2');
 t('AC8 the file has the Account column', /^\| Tool \| Name \| Folder \| Account \| Rule \|$/m.test(subsText()), true);
-t('AC8 with the first folder pinned to the current account, keeping ~/.claude\'s rule', pinRow('login-1', 'me@example.test', 'in rotation').test(subsText()), true);
+t('AC8 with the first folder pinned to the current account, the default as ~/.claude was', pinRow('login-1', 'me@example.test', 'default').test(subsText()), true);
 t('AC8 and ~/.claude in the Removed table', /## Removed[\s\S]*^\| `claude` \| `default` \| `~\/\.claude` \|$/m.test(subsText()), true);
 t('AC8 the panel moves on to the new account', `${stepText(f, 1)} | ${stepText(f, 2)}`,
   '1 In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/login-2 claude | 2 Type /login and sign in to the account you want to add.');
-t('AC8 its row reads new account', waitingRow(f), row(1, 'new account', '—', '○ standby', 'waiting for you to sign in…', null, '0'));
+t('AC8 its row reads new account', waitingRow(f), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in…', null, '0'));
 t('AC8 and the footer names the folder the account signs in through', has(f, 'me@example.test signs in for desk through ~/.claude-logins/login-1. esc stops adding the new account.'), true);
 
 // ---- AC9: the second folder signs in to a new account: it is pinned on standby
 account(join(L('login-2'), '.claude.json'), 'new@example.test', 'Pro');
 f = await A.until((x) => has(x, 'new@example.test is added'));
-t('AC9 the new account is pinned on standby', pinRow('login-2', 'new@example.test', 'standby').test(subsText()), true);
-t('AC9 its row shows on standby', rowOf(f, 'new@example.test')?.slice(0, 50), row(1, 'new@example.test', 'Pro', '○ standby', '', null, '').slice(0, 50));
-t('AC9 and the footer says it is added', has(f, 'new@example.test is added, on standby. Press space to start giving it workers.'), true);
+t('AC9 the new account is pinned on standby', pinRow('login-2', 'new@example.test', 'unused').test(subsText()), true);
+t('AC9 its row shows on standby', rowOf(f, 'new@example.test')?.slice(0, 50), row(1, 'new@example.test', 'Pro', '○ unused', '', null, '').slice(0, 50));
+t('AC9 and the footer says it is added', has(f, 'new@example.test is added, unused. Press d on it to make it the default.'), true);
 t('AC9 the wait is over', f.at(-1).includes('esc stop adding'), false);
 A.done();
 
@@ -142,15 +142,15 @@ A.done();
 const B = open();
 await sleep(20);
 await B.press('6');
-await B.until((x) => has(x, 'a add an account'));
+await B.until((x) => has(x, 'a add ·'));
 await B.press('a');
 f = B.frame();
-t('AC1 a new account row waits for its sign-in, selected', waitingRow(f), row(1, 'new account', '—', '○ standby', 'waiting for you to sign in…', null, '0'));
+t('AC1 a new account row waits for its sign-in, selected', waitingRow(f), row(1, 'new account', '—', '○ unused', 'waiting for you to sign in…', null, '0'));
 t('AC1 the panel is titled', has(f, '  ADD A CLAUDE ACCOUNT'), true);
 t('AC1 step 1 runs the next free folder', stepText(f, 1), '1 In another terminal, run CLAUDE_CONFIG_DIR=~/.claude-logins/login-3 claude');
 t('AC1 step 2', stepText(f, 2), '2 Type /login and sign in to the account you want to add.');
 t('AC1 and what desk does next', paraAfter(f, '  Desk adds'),
-  "Desk adds the account on standby as soon as it sees you're signed in. An account that's already listed isn't added twice: desk asks you to sign in to a different one.");
+  "Desk adds the account, unused, as soon as it sees you're signed in. An account that's already listed isn't added twice: desk asks you to sign in to a different one.");
 t('AC1 the keys', f.at(-1), KEYS);
 
 // ---- AC4: y copies the panel's command
@@ -160,8 +160,8 @@ t('AC4 y copies the sign-in command', B.copied.at(-1), 'CLAUDE_CONFIG_DIR=~/.cla
 // ---- AC2: the new folder signs in to an account desk doesn't have: it is pinned on standby
 account(join(L('login-3'), '.claude.json'), 'third@example.test', 'Max 5x');
 f = await B.until((x) => has(x, 'third@example.test is added'));
-t('AC2 the file gains the folder pinned on standby', pinRow('login-3', 'third@example.test', 'standby').test(subsText()), true);
-t('AC2 view 6 shows it as an account row', rowOf(f, 'third@example.test')?.slice(0, 50), row(1, 'third@example.test', 'Max 5x', '○ standby', '', null, '').slice(0, 50));
+t('AC2 the file gains the folder pinned on standby', pinRow('login-3', 'third@example.test', 'unused').test(subsText()), true);
+t('AC2 view 6 shows it as an account row', rowOf(f, 'third@example.test')?.slice(0, 50), row(1, 'third@example.test', 'Max 5x', '○ unused', '', null, '').slice(0, 50));
 
 // ---- AC3: a folder signed in to an account desk already has is not added, and the panel keeps waiting
 await B.press('a');
@@ -184,7 +184,7 @@ B.done();
 const E = open();
 await sleep(20);
 await E.press('6');
-await E.until((x) => has(x, 'a add an account'));
+await E.until((x) => has(x, 'a add ·'));
 for (let i = 0; i < 6 && !E.frame().find((l) => l.startsWith('›'))?.includes('codexmain'); i++) await E.press(DOWN);
 t('the Codex login is selected', E.frame().find((l) => l.startsWith('›'))?.slice(2, 11), 'codexmain');
 await E.press('a');
@@ -197,25 +197,25 @@ t('the label shows as it is typed', E.frame().at(-1).startsWith('Label for the n
 await E.press('\r');
 f = E.frame();
 const CODEX_NEW = join(H, '.codex-logins', 'login-2');
-t('then the row waits on standby under its label', rowOf(f, 'work codex'), row(1, 'work codex', '—', '○ standby', 'waiting for you to sign in: steps below', null, '—'));
+t('then the row waits on standby under its label', rowOf(f, 'work codex'), row(1, 'work codex', '—', '○ unused', 'waiting for you to sign in: steps below', null, '—'));
 t('with the Codex panel', has(f, '  Add another Codex account'), true);
 t('its third step says what desk shows once it is signed in', stepText(f, 3),
-  '3 Come back here. Within a minute, work codex shows its email and plan, or stays work codex where its sign-in names no email. It waits on standby until you press space to start giving it workers.');
+  '3 Come back here. Within a minute, work codex shows its email and plan, or stays work codex where its sign-in names no email. It starts unused: press d on it to make it the default.');
 t('and the Codex sign-in command for its folder', f.find((l) => l.trim().startsWith('CODEX_HOME='))?.trim(), 'CODEX_HOME=~/.codex-logins/login-2 codex login');
 t('the folder is made with its label in it', existsSync(join(CODEX_NEW, 'desk-label')) && readFileSync(join(CODEX_NEW, 'desk-label'), 'utf8'), 'work codex\n');
 
 // ---- the Codex folder signs in: its row shows its label, signed in, on standby
 writeFileSync(join(CODEX_NEW, 'auth.json'), '{}');
 f = await E.until((x) => has(x, 'work codex is added'));
-t('once signed in the row shows its label, still on standby', rowOf(f, 'work codex')?.slice(0, 50), row(1, 'work codex', '—', '○ standby', '', null, '').slice(0, 50));
-t('and the footer says it is added', has(f, 'work codex is added, on standby. Press space to start giving it workers.'), true);
+t('once signed in the row shows its label, still on standby', rowOf(f, 'work codex')?.slice(0, 50), row(1, 'work codex', '—', '○ unused', '', null, '').slice(0, 50));
+t('and the footer says it is added', has(f, 'work codex is added, unused. Press d on it to make it the default.'), true);
 E.done();
 
 // ---- esc on a Codex login takes away the folder desk made for it
 const C = open();
 await sleep(20);
 await C.press('6');
-await C.until((x) => has(x, 'a add an account'));
+await C.until((x) => has(x, 'a add ·'));
 for (let i = 0; i < 8 && !C.frame().find((l) => l.startsWith('›'))?.includes('codexmain'); i++) await C.press(DOWN);
 await C.press('a', ...'spare', '\r');
 const CODEX_3 = join(H, '.codex-logins', 'login-3');
@@ -233,14 +233,14 @@ const release = async () => { writes.at(-1).done({ code: 0, out: '', err: '' });
 const W = open(heldOpts);
 await sleep(20);
 await W.press('6');
-await W.until((x) => has(x, 'a add an account'));
+await W.until((x) => has(x, 'a add ·'));
 await W.press('a');
 const held = folderOf(W.frame());
 const BEGUN = L(held ?? 'missing');
 mkdirSync(BEGUN, { recursive: true });
 writeFileSync(join(BEGUN, 'begun'), '');
-await W.press('\x1b[A', ' ');
-t('a rule change on another row is saving', writes.map((w) => w.args[0]).join(), 'set');
+await W.press('\x1b[A', 'x');
+t('a removal on another row is saving', writes.map((w) => w.args[0]).join(), 'remove');
 await W.press(ESC);
 f = await W.until((x) => has(x, 'Still saving the last change.'));
 t('esc during that save starts no second write', writes.length, 1);
@@ -256,9 +256,9 @@ writes.length = 0;
 const V = open(heldOpts);
 await sleep(20);
 await V.press('6');
-await V.until((x) => has(x, 'a add an account'));
-await V.press('a', '\x1b[A', ' ');
-t('a rule change is saving as the folder signs in', writes.length, 1);
+await V.until((x) => has(x, 'a add ·'));
+await V.press('a', '\x1b[A', 'x');
+t('a removal is saving as the folder signs in', writes.length, 1);
 checkOut = JSON.stringify({ logins: [{ tool: 'claude', configDir: BEGUN, state: 'signed in', rule: null, email: 'held@example.test' }] });
 await sleep(150);
 f = V.frame();
@@ -266,7 +266,7 @@ t('the sign-in starts no second write during that save', writes.length, 1);
 t('and its one row keeps waiting', f.filter((l) => l.includes('waiting for you to sign in…')).length, 1);
 await release();
 await sleep(150);
-t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), `set claude ${held} standby`);
+t('once saved, the next check puts it on standby', writes.map((w) => w.args.join(' ')).at(-1), `set claude ${held} unused`);
 V.done();
 
 // ---- AC5 and AC10 with no subscriptions file: esc before the first sign-in writes nothing; after it,
@@ -276,7 +276,7 @@ rmSync(join(H, '.claude-logins'), { recursive: true, force: true });
 const N = open();
 await sleep(20);
 await N.press('6');
-await N.until((x) => has(x, 'a add an account'));
+await N.until((x) => has(x, 'a add ·'));
 await N.press('a');
 f = N.frame();
 t('AC5 with no file the first step signs ~/.claude\'s account in', stepText(f, 1),
@@ -292,7 +292,8 @@ account(join(L('login-1'), '.claude.json'), 'me@example.test', 'Ultra');
 f = await N.until((x) => folderOf(x) === 'login-2');
 await N.press(ESC);
 f = await N.until((x) => has(x, 'Cancelled: the new account is not added.'));
-t('AC10 esc on the second step keeps the first folder pinned', pinRow('login-1', 'me@example.test', 'in rotation').test(subsText()), true);t('AC10 and the file reads back with no errors', readSubscriptions(env.DESK_SUBSCRIPTIONS).errors.length, 0);
+t('AC10 esc on the second step keeps the first folder pinned', pinRow('login-1', 'me@example.test', 'default').test(subsText()), true);
+t('AC10 and the file reads back with no errors', readSubscriptions(env.DESK_SUBSCRIPTIONS).errors.length, 0);
 N.done();
 
 rmSync(T, { recursive: true, force: true });

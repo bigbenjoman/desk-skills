@@ -1,10 +1,10 @@
 // suite: migration renames (a base that renumbers a migration sends the child naming it to a worker)
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { childRenames, renumberings } from '../desk/bin/migration-renames.mjs';
 import { renamesFix, fixBrief, fixTask, triesMade, FIX_TRIES_MAX } from '../desk/bin/fix-tries.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -18,7 +18,7 @@ t('a migration moved to another directory is not', renumberings(`R100\t${V}/128_
 t('a new or changed file is not', renumberings(`A\t${V}/128_a.py\nM\t${V}/129_a.py`), []);
 
 // A real repo: main renumbers a migration after each child left it.
-const dir = mkdtempSync(join(tmpdir(), 'renames-'));
+const dir = scratch('renames-');
 const git = (args) => { try { return { ok: true, out: execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim() }; } catch { return { ok: false, out: '' }; } };
 const run = (...args) => { const r = git(args); if (!r.ok) throw new Error(`git ${args.join(' ')} failed`); return r.out; };
 const put = (path, text, msg) => { mkdirSync(join(dir, dirname(path)), { recursive: true }); writeFileSync(join(dir, path), text); run('add', '-A'); run('commit', '-q', '-m', msg); return run('rev-parse', 'HEAD'); };

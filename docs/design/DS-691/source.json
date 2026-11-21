@@ -1,0 +1,57 @@
+{
+  "url": "https://claude.ai/artifact/5EuXvEzpkQRVuQkfUickaV",
+  "version": "2026-11-16T18:02:15.776Z",
+  "fetched_at": "2026-11-16T18:02:43.886Z",
+  "from": "export",
+  "file": "desk-canvas-v6.html",
+  "sha256": "d1feb71b1451380ec8b82ccb14820c1230d84fdecef747fece9bfc74b01027da",
+  "kind": "page",
+  "dir": "DS-691",
+  "tickets": [
+    {
+      "key": "DS-691",
+      "boards": []
+    },
+    {
+      "key": "DS-702",
+      "boards": []
+    },
+    {
+      "key": "DS-703",
+      "boards": []
+    },
+    {
+      "key": "DS-704",
+      "boards": []
+    },
+    {
+      "key": "DS-706",
+      "boards": []
+    },
+    {
+      "key": "DS-707",
+      "boards": []
+    },
+    {
+      "key": "DS-708",
+      "boards": []
+    },
+    {
+      "key": "DS-743",
+      "boards": []
+    }
+  ],
+  "boards": [],
+  "files": [
+    "project/index.html"
+  ],
+  "home": "project",
+  "remote": [],
+  "screens": {
+    "version": "2026-11-16T18:02:15.776Z",
+    "rendered_at": "2026-11-16T18:02:59.889Z",
+    "breakpoints": [],
+    "widths": [],
+    "images": []
+  }
+}

@@ -4,19 +4,18 @@
 // the instruction files a fixture repo and home load at launch. Nothing reads this computer's
 // processes, worktrees, home or GitHub.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, realpathSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { keyMatches, prsForKey, ticketOf, parseStatus, isExtra, parsePs, memoryReport, ownerOf } from '../skills/desk-cleanup/bin/cleanup-scan.mjs'
 import { launchFiles, auditReport, sections, linesOf, targetFor } from '../skills/desk-cleanup/bin/instruction-audit.mjs'
+import { scratch } from './scratch.mjs';
 
 const SCAN = join(dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'desk-cleanup', 'bin', 'cleanup-scan.mjs')
 let fails = 0
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`) }
 
-const T = realpathSync(mkdtempSync(join(tmpdir(), 'desk-cleanup-')))
-process.on('exit', () => rmSync(T, { recursive: true, force: true }))
+const T = realpathSync(scratch('desk-cleanup-'))
 writeFileSync(join(T, 'gitconfig'), '[user]\n\temail = t@example.com\n\tname = t\n[init]\n\tdefaultBranch = main\n')
 // A stub watchman on PATH records its arguments, so the host's watchman is never touched.
 mkdirSync(join(T, 'bin')); writeFileSync(join(T, 'bin', 'watchman'), `#!/bin/sh\necho "$@" >> "${T}/watchman.log"\n`, { mode: 0o755 })

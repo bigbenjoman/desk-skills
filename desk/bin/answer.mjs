@@ -11,7 +11,7 @@
 import { writeFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { stateDir, binDir, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
+import { stateDir, runBin, queueFile, configValue, SAFE_ID } from './desk-env.mjs';
 import { isHeld, HELD_PREFIX, EXIT, crashShowsPerson, readQueue, refusedStep, neverStep, grantFor, workerRefusedStep, approvesStep } from './batch-state.mjs';
 import { NOT_NOW, putOffEntry, addPutOff, clearPutOff, notNowPath } from './not-now.mjs';
 import { useTicketBatch } from './batches.mjs';
@@ -21,7 +21,7 @@ import { recommendedAnswer } from './recoveries.mjs';
 import { saveAnswer } from './briefing.mjs';
 
 crashShowsPerson();
-const QUEUE = join(binDir(), 'queue.mjs');
+const QUEUE = join(runBin(), 'queue.mjs');
 
 const argv = process.argv.slice(2);
 // --taken, before the ticket, is the decider taking the option a worker's park recommended
@@ -31,12 +31,18 @@ const argv = process.argv.slice(2);
 // approves no step, so it never records a grant, and a park on a refused step is refused outright.
 const taken = argv[0] === '--taken';
 const [ticket, ...args] = taken ? argv.slice(1) : argv;
-// --approve says outright that the answer approves the step its park asks for (batch-state.mjs grantFor).
-const approveFlag = args[0] === '--approve';
-const rest = approveFlag ? args.slice(1) : args;
+// Leading flags, in any order. --approve says outright that the answer approves the step its park asks
+// for (batch-state.mjs grantFor). --all says the answer settles every open question, as the one item
+// that joins them all does (digest.mjs answer); without it an answer settles one.
+const rest = [...args];
+let approveFlag = false;
+let settleAll = false;
+while (rest[0] === '--approve' || rest[0] === '--all') {
+  if (rest.shift() === '--approve') approveFlag = true; else settleAll = true;
+}
 const given = rest.join(' ').trim();
 if (!ticket || !given) {
-  console.error('usage: answer.mjs <TICKET> [--approve] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
+  console.error('usage: answer.mjs <TICKET> [--approve] [--all] "<the answer>"\n       answer.mjs --taken <TICKET> \'{"question","options":[…],"chose","category"}\'');
   process.exit(EXIT.SHOW_PERSON);
 }
 const call = taken ? parseDecision(given) : null;
@@ -145,7 +151,7 @@ if (taken) {
 // A "not now" answer to a park puts its question off: it goes in the register with the inputs it
 // depends on, and is not asked again until they change (not-now.mjs). Any other answer to it ends an
 // earlier deferral, so the same question parked again is asked. Only a park is put off: a running
-// worker's question is not in the queue yet, and triage unknowns are cleared by any answer.
+// worker's question is not in the queue yet, and triage unknowns are counted down by any answer.
 try {
   const t = existsSync(queueFile()) ? readQueue(queueFile()).tickets?.[ticket] : null;
   const question = t?.state === 'parked' && t.park?.question && !isHeld(t) ? t.park.question : null;
@@ -212,25 +218,31 @@ try {
   console.error(`${ticket}: answer recorded in the briefing, but whether it approved a step no worker can run was not: ${e.message}`);
 }
 
-// A triaged ticket's questions are its triage unknowns: clearing the count is what makes it eligible
-// to spawn, and answering them is exactly what the user was asked to do. A parked ticket's count
-// clears too, but it is left parked, with its park intact, for the orchestrator to decide.
+// A triaged ticket's questions are its triage unknowns: a count reaching zero is what makes it eligible
+// to spawn. An answer settles one of them, or every one with --all, so a ticket answered one question
+// at a time does not start half answered. A parked ticket's count goes down too, but it is left parked,
+// with its park intact, for the orchestrator to decide.
 try {
   const Q = existsSync(queueFile()) ? readQueue(queueFile()) : { tickets: {} };
   if (Q.tickets?.[ticket]) {
     const st = Q.tickets[ticket].state;
+    const open = Math.max(0, Number(Q.tickets[ticket].open_questions) || 0);
+    const left = settleAll ? 0 : Math.max(0, open - 1);
+    const settle = () => execFileSync('node', [QUEUE, 'set', ticket, `open_questions=${left}`], { stdio: 'ignore' });
+    const stillOpen = left ? `; ${left} question(s) still open (answer each with answer.mjs ${ticket} "<answer>", or all at once with --all)` : '';
     if (isHeld(Q.tickets[ticket])) {
       // Held behind a Jira blocker: the answer settles its questions, and the hold stays, so it
       // still starts only once the blocker's PR has merged (release_chain, or the sanctioned release).
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-      console.log(`${ticket}: answered. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
+      settle();
+      console.log(`${ticket}: answered${stillOpen}. It is held — it releases when ${String(Q.tickets[ticket].held_by ?? '?').split('|').join(', ')} merge${String(Q.tickets[ticket].held_by ?? '').includes('|') ? '' : 's'}.`);
     } else if (st === 'triaged' || st === 'queued') {
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
-      console.log(`${ticket}: answered.`);
+      settle();
+      console.log(left ? `${ticket}: answered${stillOpen}. It does not start until they are answered.` : `${ticket}: answered.`);
     } else if (st === 'parked') {
       // The count is not the park: a parked ticket stays parked, but its questions are answered, so
-      // a re-laned ticket can be requeued (queue.mjs requeue refuses open questions).
-      execFileSync('node', [QUEUE, 'set', ticket, 'open_questions=0'], { stdio: 'ignore' });
+      // a re-laned ticket can be requeued once none is open (queue.mjs requeue refuses open questions).
+      settle();
+      if (left) console.log(`${ticket}: answered${stillOpen}.`);
       if (putOffAnswer) {
         console.log(`${ticket}: put off. It stays parked and is not asked again until its inputs change ` +
           '(or `digest.mjs ask-again` clears it): do not requeue it or do the parked step.');

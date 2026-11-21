@@ -13,7 +13,7 @@ Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change 
 RAM binds before CPU, and the 5-hour and 7-day usage limits
 are account-level, shared with the user's own sessions. Worker ports start **one above** config §3b
 "Preferred dev-server port" (`AUTOPILOT_PORT_FLOOR` overrides), skipping any port another ticket
-holds or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
+holds, a peer session claimed (`port-claims.mjs`, from its handshake), with the port lease kind on another session leases (`port-lease.mjs`), or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
 gets its own database; otherwise every §4 Database URL variable in its worktree is blanked, and a
 ticket that needs a database parks. Shared local services (§4 Local services: a search index, a cache) cannot be
 isolated, so workers park rather than rebuild them.
@@ -56,6 +56,20 @@ evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out
 guest figure can take the whole VM down and kill every agent mid-flight.
 An OOM leaves a worker's worktree, database and port behind.
 
+**Only `avail` lowers the count.** The pass report's `memory ceiling` line is the footprint budget,
+and on WSL its figure counts page cache; neither it nor `vmmem` is a reason to set a lower
+`concurrency`. The `workers:` line says "lowered on memory" only while `avail` is under the ladder's
+line; a count below the user's with `avail` above it reads "memory did not lower it", and goes back
+to the user's number.
+
+**The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
+machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
+the machine profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile), the pass
+holds new local workers, fix tries, base workers, handoffs to 4b and resumes of a worker or a requeued
+round last at Stage 4 or 4b, and its STALLED line names the queue depth. A resume at any other stage
+goes ahead. Where ps
+cannot be read, the pass starts workers as it would without the gate, and says the queue was not read.
+
 **A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
 record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
 number as `concurrency_user`, and the pass report's `workers:` line says whose the count is. While
@@ -80,6 +94,25 @@ profile, the lock held past two minutes), the batch starts up to its own number 
 off, and the line says why. Borrowed workers are not a reason to lower the count: the ladder leaves
 the batch's own number as it is.
 
+**Tickets that name one file share it up to a per-file budget**, config §3b "Per-file collision
+budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; serial: none`: up to
+three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
+once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
+bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
+records of the tickets running then, so a finished ticket holds nothing, and a ready ticket with any
+file at its budget waits, in queue order. The report's `held back by a collision:` line names each
+such file and the running tickets filling it. A row that does not read is 1 for every file, and the
+report says so.
+
+**A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
+ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
+conflicting file (the file, the ticket, the PR and the time) in `conflicts.jsonl` in the repo's
+state folder (`desk-env paths` prints `DESK_STATE`), which every batch shares. Three conflicts on a
+file within 7 days run it one place fewer than its configured budget, and each 7 days with none
+gives one back, never above the configured budget nor below 1. The report's `collisions:` lines
+name each lowered file and its conflicts in the last 7 days. A record that does not read lowers
+nothing: every file runs at its configured budget, and the report says the record was not read.
+
 **Run the watch yourself: do not hand it back to the user.** Two `Monitor`s for the life of the
 batch: the status watch (`node ~/.claude/desk/bin/queue.mjs watch`), which prints the table and the
 memory line (`vmmem=`, `avail=`) at start, then again only when a ticket's state or question
@@ -90,6 +123,20 @@ fires only on `avail` below the ladder's lowest band (2 GiB, or a lower band the
 never write a shell loop around `render` and `mem status` instead, which Claude Code prompts on every
 time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
 runaway process is a call to make from the monitor, not a park.
+
+**On Linux the watch also reads the signals that came before real harm**, beside `avail`, each said
+once until it clears:
+
+- `SWAP-GROWING`: swap used up 2 GiB or more within 10 minutes. Hold new spawns until it settles.
+- `OOM-KILL`: the kernel killed a process for memory since the watch started. Drop to the ladder's
+  lowest count (§3b "Spawn gate (available memory)" `drop to`), and read which process it was in
+  `dmesg` before raising again.
+- `TMPFS-HIGH`: `/tmp` is a tmpfs holding 4 GiB or more. Memory pressure pushes it to swap, which
+  looks like a leak and is not one: see what holds it before lowering anything.
+- `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
+  unwatched. Say so in the batch notes.
+
+Say which line moved the count when you lower it. On macOS none of these is read.
 
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has

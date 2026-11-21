@@ -124,21 +124,21 @@ export function stepFits(step, item) {
   return stepWords(step).some((w) => want.has(w));
 }
 
-// A job's steps in order, each by its `name:`, or null for a step with none.
-function stepNames(job) {
+// A job's steps in order, each as the mapping of its keys (`mapping`): an item's first line, its `- `
+// taken off, sits at the indent of the keys under it.
+export function jobSteps(job) {
   const block = job.keys.steps?.block ?? [];
   const at = block.find((l) => !l.scalar && !l.blank && /^-(\s|$)/.test(l.text))?.indent;
-  const names = [];
+  const items = [];
   for (const l of block) {
-    if (l.scalar || l.blank || at === undefined) continue;
-    const item = l.indent === at && /^-(\s|$)/.test(l.text);
-    if (item) names.push(null);
-    if (!item && l.indent !== at + 2) continue;
-    const kv = keyOf(l);
-    if (kv?.key === 'name' && names.length && kv.value) names[names.length - 1] = unquote(kv.value);
+    if (!l.scalar && !l.blank && l.indent === at && /^-(\s|$)/.test(l.text)) items.push([{ ...l, indent: at + 2, text: l.text.replace(/^-\s*/, '') }]);
+    else items.at(-1)?.push(l);
   }
-  return names;
+  return items.map(mapping);
 }
+
+// A job's steps in order, each by its `name:`, or null for a step with none.
+const stepNames = (job) => jobSteps(job).map((s) => (s.name?.value ? unquote(s.name.value) : null));
 
 // Each job in a repo's workflows, by the check name it reports under, with its steps (stepNames).
 export function workflowJobs(root) {

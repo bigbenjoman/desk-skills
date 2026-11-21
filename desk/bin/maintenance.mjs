@@ -31,6 +31,7 @@ import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
+import { bootTime, runsInCloud } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -49,11 +50,8 @@ const HOLDING = ['draining', 'updating', 'checking', 'reboot', 'rebooting'];
 
 export const maintDir = () => E.expandHome(process.env.DESK_MAINT_DIR ?? join(E.HOME, '.desk-autopilot', 'maintenance'));
 const now = () => (process.env.DESK_MAINT_NOW ? new Date(process.env.DESK_MAINT_NOW) : new Date());
-const bootMs = () => {
-  const v = process.env.DESK_BOOT_TIME;
-  if (v) return /^\d+$/.test(v) ? Number(v) * 1000 : Date.parse(v);
-  return Date.now() - uptime() * 1000;
-};
+// When this computer last started (pass/shared.mjs bootTime), read the way the pass reads it.
+const bootMs = () => bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
 const stamp = (d) => d.toISOString().replace(/\.\d+Z$/, 'Z');
 const short = (sha) => String(sha ?? '?').slice(0, 12);
 
@@ -104,8 +102,8 @@ export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).f
 const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
 
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so the
-// window neither waits for one nor stops it, in any repo.
-export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
+// window neither waits for one nor stops it, in any repo; a review try on a cloud ticket's PR runs here.
+export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 
 // A queue's workers running on this computer, as rows stopForWindow can stop: its running tickets, and
 // its base conflict fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket,
@@ -118,16 +116,19 @@ export function runningWorkers(q) {
 }
 
 // Running workers in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
-// the queues that cannot be read.
-function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
+// the queues that cannot be read. `rows(q)` picks a queue's rows to judge (runningWorkers by default),
+// and `label(t)` adds to each one's name. `selfView`, the calling pass's queue with its unwritten
+// changes, stands in for this repo's file, which can lag what the pass has already decided.
+function othersRunning(selfQueue, { self = false, selfView = null, where = () => true, rows = runningWorkers, label = () => '' } = {}) {
   const queues = otherQueues({ self: selfQueue });
-  if (self && selfQueue && existsSync(selfQueue)) {
+  if (self && selfView) queues.unshift({ slug: selfSlug(), q: selfView });
+  else if (self && selfQueue && existsSync(selfQueue)) {
     try { queues.unshift({ slug: selfSlug(), q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug: selfSlug(), error: e.message }); }
   }
   const running = []; const unreadable = [];
   for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of runningWorkers(q)) if (where(t)) running.push(`${slug} ${t.key}`);
+    for (const t of rows(q)) if (where(t)) running.push(`${slug} ${t.key}${label(t)}`);
   }
   return { running, unreadable };
 }
@@ -177,7 +178,7 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. -> {ok, old, new, commits} | {ok: false, why, old}
+// untracked files in its way block it. -> {ok, old, new, commits, restarted} | {ok: false, why, old}
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -193,7 +194,16 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, commits };
+  return { ok: true, old, new: head, commits, restarted: restartedDrivers(inst.out) };
+}
+
+// The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
+// install.sh prints each line twice (its section and its summary). One left running is not named.
+function restartedDrivers(out) {
+  const found = String(out ?? '').split('\n')
+    .map((l) => /^\s*merge driver for (.+?): restarted on the new code \(pid (\d+) -> (\d+)\)/.exec(l))
+    .filter(Boolean).map(([, who, from, to]) => `${who} (pid ${from} -> ${to})`);
+  return [...new Set(found)];
 }
 
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
@@ -203,7 +213,7 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
 // no supervisor loads until someone logs in. That one is `loginWait` as well, since the computer is
 // otherwise ready for a restart a person makes.
 export function rebootCheck({ selfQueue = null } = {}) {
-  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.binDir(), 'reboot-check.mjs')]);
+  const r = process.env.DESK_REBOOT_CHECK_CMD ? shell(process.env.DESK_REBOOT_CHECK_CMD) : run(process.execPath, [join(E.runBin(), 'reboot-check.mjs')]);
   const summary = r.out.split('\n').find((l) => l.startsWith('summary: ')) ?? null;
   const field = (k) => new RegExp(`\\b${k}=(\\S+)`).exec(summary ?? '')?.[1] ?? null;
   const blockers = [];
@@ -228,12 +238,13 @@ const restart = () => (process.env.DESK_RESTART_CMD
 
 // ---- auto-release ------------------------------------------------------------------------------
 // Between windows, a pass installs desk-skills main once origin/main has moved past the installed
-// commit and main's `tests` check passed on it, so merged work runs within minutes. It waits while
+// commit and main's `tests` check passed on it, so merged work runs within minutes. While the head's
+// check has not passed, it installs the newest commit between the two whose check has. It waits while
 // any repo has a worker at Stage 7 (opening its PR), and does nothing while a window is open. Its
 // state is release.json beside the window's: when origin was last fetched, the last reason recorded
 // for a commit, and the last commit whose check failed with the repo that pushes it. Tests stand in for
 // the check with DESK_RELEASE_CHECK_CMD (run with sh -c, the commit appended; it prints success,
-// pending or failure).
+// pending, cancelled or failure).
 export const RELEASE_CHECK = 'tests';
 export const FETCH_EVERY_MS = 5 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 60 * 1000;
@@ -242,7 +253,8 @@ const readRelease = (dir) => { try { return JSON.parse(readFileSync(releaseFile(
 const writeRelease = (dir, s) => { mkdirSync(dir, { recursive: true }); writeFileSync(releaseFile(dir), `${JSON.stringify(s, null, 2)}\n`); };
 
 // main's `tests` check on `sha`: {state: 'success' | 'pending' | 'failure', word} | {error}. A check
-// not started yet is pending; any conclusion but success is a failure.
+// not started yet is pending, and so is a cancelled one, which is read again on later passes; any
+// other conclusion but success is a failure.
 export function releaseCheck(dir, sha) {
   const jq = `[.check_runs[] | select(.name == "${RELEASE_CHECK}")] | sort_by(.started_at) | last | if . == null then "pending" elif .status != "completed" then "pending" else .conclusion end`;
   const r = process.env.DESK_RELEASE_CHECK_CMD
@@ -251,12 +263,28 @@ export function releaseCheck(dir, sha) {
   const word = lastLine(r.out).trim().toLowerCase();
   if (!r.ok || !word) return { error: said(r) };
   if (word === 'success') return { state: 'success', word };
-  if (['pending', 'queued', 'in_progress', 'waiting', 'requested'].includes(word)) return { state: 'pending', word };
+  if (['pending', 'queued', 'in_progress', 'waiting', 'requested', 'cancelled'].includes(word)) return { state: 'pending', word };
   return { state: 'failure', word };
+}
+
+// The newest commit on main's first-parent line after `base` and before `head` whose check passed.
+// -> {sha} | {sha: null} | {error, at}: a check it could not read, at `at`, stops the look.
+function newestPassed(git, src, base, head) {
+  const older = git('rev-list', '--first-parent', `${base}..${head}`).out.split('\n').filter(Boolean).slice(1);
+  for (const sha of older) {
+    const c = releaseCheck(src, sha);
+    if (c.error) return { error: c.error, at: sha };
+    if (c.state === 'success') return { sha };
+  }
+  return { sha: null };
 }
 
 // A worker at Stage 7, which may be pushing.
 const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
+// A ticket handed off to Stage 7 whose session has not started yet: it is triaged with its handoff
+// pending (pass.mjs), not running, and its next spawn would start on whatever bin is installed then.
+const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && !runsInCloud(t);
+const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? {}).filter((t) => !runningHere(t) && awaitingStage7(t))];
 
 // The notification for main's failed check, which release.json gives to the repo whose pass first saw
 // it fail. That repo returns it from every pass while origin/main is still at that commit, whatever
@@ -270,7 +298,7 @@ export function releasePush({ dir = maintDir(), src = sourceCheckout() } = {}) {
 }
 
 // One step of the auto-release. -> {lines}
-export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
+export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, selfView = null, src = sourceCheckout() } = {}) {
   const none = { lines: [] };
   if (!src || !existsSync(src)) return none;
   mkdirSync(dir, { recursive: true });
@@ -294,40 +322,66 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     const lines = [];
     const save = () => writeRelease(dir, s);
     // A reason is recorded, and said, once per commit.
-    const blocked = (why) => {
-      if (s.blocked?.sha === head && s.blocked.why === why) return { lines };
-      s.blocked = { sha: head, why };
+    const blocked = (why, sha = head) => {
+      if (s.blocked?.sha === sha && s.blocked.why === why) return { lines };
+      s.blocked = { sha, why };
       save();
-      record(dir, at, `release: ${short(head)} not installed: ${why}`);
-      lines.push(`release: desk-skills main ${short(head)} not installed: ${why}`);
+      record(dir, at, `release: ${short(sha)} not installed: ${why}`);
+      lines.push(`release: desk-skills main ${short(sha)} not installed: ${why}`);
       return { lines };
     };
     if (!git('merge-base', '--is-ancestor', base, head).ok) return blocked(`the installed commit ${short(base)} is not on origin/main, so it was not replaced; run /desk-update`);
 
     const c = releaseCheck(src, head);
     if (c.error) return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting, main's ${RELEASE_CHECK} check could not be read (${c.error})`] };
-    if (c.state === 'pending') return { lines: [`release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it`] };
-    if (c.state === 'failure') {
-      const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed: the installed version stays at ${short(base)}`;
-      lines.push(`release: ${text}`);
-      if (s.notified?.sha !== head) {
-        s.notified = { sha: head, by: selfSlug(), text };
-        save();
-        record(dir, at, `release: ${text}`);
+    // A head that has not passed leaves the newest commit before it that has, if any, to install.
+    let to = head;
+    let why = '';
+    if (c.state !== 'success') {
+      const failed = c.state === 'failure';
+      const p = newestPassed(git, src, base, head);
+      if (failed) {
+        const text = `desk-skills main's ${RELEASE_CHECK} check failed (${c.word}) on ${short(head)}, so it was not installed` +
+          (p.sha ? `; ${short(p.sha)}, the newest commit before it whose check passed, is installed in its place when nothing blocks it` : `: the installed version stays at ${short(base)}`);
+        lines.push(`release: ${text}`);
+        if (s.notified?.sha !== head) {
+          s.notified = { sha: head, by: selfSlug(), text };
+          save();
+          record(dir, at, `release: ${text}`);
+        }
       }
+      const waiting = `release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}; waiting for main's ${RELEASE_CHECK} check on it (${c.word})`;
+      if (p.error) {
+        lines.push(`${failed ? `release: desk-skills main ${short(head)} is ahead of the installed ${short(base)}` : waiting}; main's ${RELEASE_CHECK} check on the earlier ${short(p.at)} could not be read (${p.error}), so no earlier commit was installed`);
+        return { lines };
+      }
+      if (!p.sha) {
+        if (!failed) lines.push(`${waiting}, and no commit since the installed one passed it, so the installed version stays at ${short(base)}`);
+        return { lines };
+      }
+      to = p.sha;
+      why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
+    }
+
+    const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
+      label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
+    const pushing = [...o.running, ...o.unreadable];
+    if (pushing.length) {
+      lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')}`);
       return { lines };
     }
 
-    const o = othersRunning(selfQueue, { self: true, where: atStage7 });
-    const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
-    if (pushing.length) return { lines: [`release: desk-skills main ${short(head)} passed its ${RELEASE_CHECK} check; waiting to install it for ${pushing.join(', ')}`] };
-
-    const u = updateDesk(src, { to: head });
-    if (!u.ok) return blocked(u.why);
+    // The workers still running here pick the new bin up on their next call to it.
+    const live = othersRunning(selfQueue, { self: true, selfView }).running;
+    const u = updateDesk(src, { to });
+    if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed`);
-    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it`);
+    // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
+    const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
+    const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };
   } finally { lock.release(); }
 }
@@ -340,7 +394,7 @@ export async function maintenance(opts = {}) {
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
   const lines = [...m.lines];
-  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null })).lines);
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
   return { ...m, lines, push: releasePush({ dir }) };
 }
 
@@ -520,8 +574,8 @@ if (isMain) {
     return stopForWindow(t, {
       live,
       kill: (pid) => spawnSync('kill', [String(pid)]),
-      setQueue: (key, fields) => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
-      setBaseFix: () => { const r = run('node', [join(E.binDir(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setQueue: (key, fields) => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set', key, ...fields]); return { ok: r.ok, why: lastLine(r.out) }; },
+      setBaseFix: () => { const r = run('node', [join(E.runBin(), 'queue.mjs'), 'set-batch', `base_fix=${JSON.stringify({ ...q.base_fix, resume: 'maintenance' })}`]); return { ok: r.ok, why: lastLine(r.out) }; },
     });
   };
   console.log(JSON.stringify(await maintenance({ running, stop, selfQueue: qf })));

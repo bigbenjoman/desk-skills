@@ -3,17 +3,17 @@
 // A stub claude on PATH answers the version and account reads from files, and each -p call as the
 // $T/reply file says, recording its argv. A scratch desk home links the real desk/bin beside its own
 // installed.json. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-const T = mkdtempSync(join(tmpdir(), 'desk-pre-'));
+const T = scratch('desk-pre-');
 for (const d of ['home', 'state', 'stub', 'repo', 'repo2', 'deskhome']) mkdirSync(join(T, d), { recursive: true });
 cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });
 symlinkSync(join(root, 'desk', 'bin'), join(T, 'deskhome', 'bin'));
@@ -78,7 +78,10 @@ if [ "$1 $2" = "auth status" ]; then cat "${T}/account"; exit 0; fi
 printf '%s\\n' "\${FORCE_PROMPT_CACHING_5M-unset}" >> "${T}/cache"
 printf '%s' "$*" | tr '\\n' ' ' >> "${T}/calls"
 echo >> "${T}/calls"
-cat "${T}/reply"
+# While $T/write-w-in exists, the session really writes the W_IN file the prompt names.
+if [ -e "${T}/write-w-in" ]; then f=$(printf '%s' "$*" | grep -oE '[^ ]*/\\.preflight\\.tmp' | head -1); [ -n "$f" ] && echo x > "$f"; fi
+# $T/reply.first, while it exists, answers one call in place of $T/reply.
+if [ -e "${T}/reply.first" ]; then cat "${T}/reply.first"; rm -f "${T}/reply.first"; else cat "${T}/reply"; fi
 `);
 chmodSync(stub, 0o755);
 const KEY = 'fix-thing';
@@ -202,6 +205,34 @@ t('first and last pass on the same inputs agree', (preflight(), readFileSync(rec
 rmSync(join(T, 'cache'), { force: true });
 r = preflight({ ...off, FORCE_PROMPT_CACHING_5M: '1' });
 t('DS-649 AC4 the preflight runs with FORCE_PROMPT_CACHING_5M unset', [ran(r), readFileSync(join(T, 'cache'), 'utf8').trim().split('\n')], [RAN, ['unset']]);
+
+// A reply that ran no check, or missed only wanted-OK checks, is retried once; a boundary miss never is.
+const ALL_BLOCKED = GOOD.replace(/=OK/g, '=BLOCKED');
+const fresh = (first, extra = {}) => { rmSync(record, { force: true }); say('reply.first', first); return preflight(extra); };
+r = fresh(result(ALL_BLOCKED, { num_turns: 1 }));
+t('#731 a reply with no tool turn is retried', r.calls.length, 2);
+t('#731 the retry is at default effort', [/--effort low( |$)/.test(r.calls[0]), /--effort/.test(r.calls[1] ?? '')], [true, false]);
+t('#731 and its good answer passes', [r.status, r.passed, /FAIL/.test(r.out)], [0, true, false]);
+t('#731 the cost line adds both calls', /^\[preflight\] cost=0\.2 turns=4$/m.test(r.out), true);
+t('#731 the retry says why', /^\[preflight\] retry at default effort: the session ran no tool \(turns=1\)$/m.test(r.out), true);
+r = fresh(result(''));
+t('#731 an empty reply is retried and passes', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result(''), { AUTOPILOT_MODEL: 'opus' });
+t('#731 with a worker model, an empty reply is retried, not read as a rejected model', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result('I will not', { num_turns: 1 }), { AUTOPILOT_MODEL: 'opus' });
+t('#731 with a worker model, a reply with no tool turn is retried', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result(GOOD.replace('AGENTS=OK', 'AGENTS=BLOCKED')));
+t('#731 a false BLOCKED on a wanted-OK check is retried and passes', [r.calls.length, r.status, r.passed], [2, 0, true]);
+r = fresh(result(GOOD.replace('DENY=BLOCKED', 'DENY=OK')));
+t('#731 a boundary failure is not retried', [r.calls.length, r.status, r.passed], [1, 1, false]);
+say('reply.first', result(ALL_BLOCKED, { num_turns: 1 })); say('reply', result(ALL_BLOCKED, { num_turns: 1 })); rmSync(record, { force: true });
+r = preflight();
+t('#731 a second reply with no tool turn fails, once retried', [r.calls.length, r.status, /!! the session ran no tool \(turns=1\) on the retry either/.test(r.out)], [2, 1, true]);
+say('reply', result(GOOD));
+say('write-w-in', '');
+r = fresh(result(GOOD.replace('W_IN=OK', 'W_IN=BLOCKED')));
+t('#731 W_IN reads OK from the file in the worktree, whatever the reply says', [r.calls.length, r.status, existsSync(join(T, 'repo', '.preflight.tmp'))], [1, 0, false]);
+rmSync(join(T, 'write-w-in'));
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);

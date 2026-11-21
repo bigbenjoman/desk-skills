@@ -19,9 +19,20 @@ behind it, or merges a feature that does not hang together.
 3. **Decided.** No open question, "TBD", or "pending sign-off" anywhere. Each decision is dated and
    names its owner. A `Precondition:` line under Verification (the template's input someone else
    supplies) is not an open question.
-4. **Order.** The planned Blocks links form no cycle and match the order the epic states.
+4. **Order.** The planned Blocks links form no cycle and match the order the epic states. Each link
+   is one of two kinds, and the verdict names which: **start-after**, where a child reads or calls
+   what another child adds, so it cannot be built first; or **merge-after**, where the blocker is a
+   step only the person takes, so the child is built and reviewed meanwhile and merges once the step
+   is Done. Autopilot reads both from the one Blocks link, telling them apart by the blocker's label.
 5. **Hidden dependencies.** Wherever one child calls, reads or renders something another child adds
-   (an endpoint, a table, a component, a copy key), there is a Blocks link between them.
+   (an endpoint, a table, a component, a copy key), there is a Blocks link between them: a
+   start-after link. Every blocker that is a step only the person takes carries the §4 label that
+   says what it holds (`desk-env list person-step-labels`, `desk-env list person-input-labels`), and
+   the verdict names the label per step: a Person-input label where the step makes something the
+   build reads (a fixture, a recorded response, a key), which holds the child's build; a Person-step
+   label for a sign-off, walkthrough, go-live or account step, which holds only its merge. A step
+   with neither label holds the build as an ordinary blocker. Where both rows are `none`, say so
+   and leave the step unlabelled.
 6. **No duplicate build.** No two children create the same new thing.
 7. **Size.** Every child is M or smaller, and mergeable once its blockers have merged, leaving the
    base green.

@@ -50,14 +50,14 @@ for r in zendesk studia-web; do
 | Field | Value |
 |---|---|
 | Tracker | \`jira\` |
+| Jira site | \`acme.atlassian.net\` |
 | Ticket key pattern | \`[A-Z]+-[0-9]+\` |
 | Local database | \`none\` |
 EOF
 done
 
-# A DESK_HOME whose bin holds the real scripts beside a stub intake.mjs, which logs where and how it
-# ran and admits, or refuses, as $T/intake.mode says.
-for f in "$B"/*; do [ "${f##*/}" = intake.mjs ] || ln -s "$f" "$T/desk/bin/${f##*/}"; done
+# A DESK_HOME whose bin holds the real scripts (link_bin, after the stub) beside a stub intake.mjs,
+# which logs where and how it ran and admits, or refuses, as $T/intake.mode says.
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 const e = process.env;
@@ -73,6 +73,8 @@ if (mode === 'ok') {
   process.exitCode = 11;
 }
 EOF
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 cd "$T/zendesk" || exit 1
 
@@ -119,6 +121,20 @@ echo already > "$T/intake.mode"
 seed SV-3994 SV-3995
 check "AC2: a child the other repo already holds is said to be there, with no question" \
   '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: SV-3994 is already in batch web-1 (triaged)" && ! printf "%s\n" "$out" | grep -q "NOT ADMITTED"'
+# Queued in that repo's own queue on the same Jira site, it is still handed there, not refused; a ticket
+# that runs here but is queued there is refused, naming that repo's batch.
+WEBQ="$T/desk/repos/acme__studia-web/queue.json"; mkdir -p "${WEBQ%/*}"
+DESK_QUEUE="$WEBQ" node "$B/queue.mjs" init "w$RANDOM" >/dev/null
+DESK_QUEUE="$WEBQ" node "$B/queue.mjs" add SV-3994 Task A >/dev/null
+DESK_QUEUE="$WEBQ" node "$B/queue.mjs" add SV-3997 Task A >/dev/null
+seed SV-3994 SV-3995
+check "a child queued already in the repo its Repository names is handed there, not refused" \
+  '[ $rc -eq 0 ] && [ "$(qg SV-3994 "")" = null ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: SV-3994 is already in batch web-1 (triaged)"'
+rec SV-3997 '' '[]'
+plan SV-3997
+check "a ticket that runs here but is queued in the other repo is refused, naming that repo's batch" \
+  '[ $rc -ne 0 ] && printf "%s\n" "$out" | grep -qF "SV-3997 is already queued in acme/studia-web'"'"'s standing batch (queued)"'
+rm -f "$WEBQ"
 
 # ---- AC1/AC3: an epic's child already in this queue (epic-plan.mjs startEpic) is taken out at seeding ----
 echo ok > "$T/intake.mode"
@@ -150,7 +166,7 @@ echo refuse > "$T/intake.mode"
 seed SV-3994 SV-3995
 check "AC6: this queue still leaves it out, and the blocked child is still held" '[ "$(qg SV-3994 "")" = null ] && [ "$(qg SV-3995 .held_outside)" = SV-3994 ]'
 check "AC6: the plan names the failure and the command to admit it there, and shows the person" \
-  '[ $rc -eq 11 ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: NOT ADMITTED (not admitted SV-3994: the queue is locked). Admit it there: cd $T/studia-web && node $T/desk/bin/intake.mjs admit SV-3994 --by plan-batch"'
+  '[ $rc -eq 11 ] && printf "%s\n" "$out" | grep -qF "  SV-3994 → acme/studia-web: NOT ADMITTED (not admitted SV-3994: the queue is locked). Admit it there: cd $T/studia-web && DESK_ADMIT_FROM=acme__zendesk node $T/desk/bin/intake.mjs admit SV-3994 --by plan-batch"'
 rm -f "$DESK_QUEUE" "$T/intake.log"; node "$B/queue.mjs" init "t$RANDOM" >/dev/null
 node "$B/queue.mjs" add SV-3994 Task A >/dev/null; node "$B/queue.mjs" park SV-3994 "held behind epic SV-3983" >/dev/null
 node "$B/queue.mjs" add SV-3995 Task A >/dev/null; node "$B/queue.mjs" park SV-3995 "held behind epic SV-3983" >/dev/null

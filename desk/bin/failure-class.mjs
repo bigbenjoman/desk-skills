@@ -75,27 +75,46 @@ export function runsState(runs) {
 }
 
 // A PR's red checks a worker would fix, against its base. A check red on the default branch at the
-// PR's exact merge base too is base red; one with no completed run there has its base state unknown
-// and goes on to its fix as before. A base red hold ({ head, merge_base, checks, cleared }, kept on
-// the ticket as `base_red`) is read again only for its own head: a held check clears once the job's
-// latest completed run on the default branch passes, and stays cleared at that head.
-// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name) -> 'fail' | 'pass' | null }
-// -> { red, unknown, mine (the checks a fix try takes), record (the hold to keep, or null) }
+// PR's exact merge base too is base red, and so is one whose latest completed run on the default
+// branch at or since that merge base fails (`latest`: the base went red after the PR branched). One
+// whose latest state on the base cannot be read has its base state unknown and goes on to its fix as
+// before. A base
+// red hold ({ head, merge_base, checks, cleared, and `latest`, the held checks of the second kind,
+// where there are any }, kept on the ticket as `base_red`) is read again only for its own head: a
+// held check clears once the job's latest completed run on the default branch passes, and stays
+// cleared at that head.
+// read: { atMergeBase(name) -> 'fail' | 'pass' | null, mergeBase() -> sha | null, latestOnBase(name, { held }) -> 'fail' | 'pass' | null
+//         (its newest completed run at or since the merge base; null unread or with none; `held` for
+//         a check already held, which may read further back) }
+// -> { red, latest (those of red that are not red at the merge base), unknown, mine (the checks a fix
+//      try takes), record (the hold to keep, or null) }
 export function baseSplit(failing, head, held, read) {
   const at = held?.head === head ? held : null;
   const cleared = [...(at?.cleared ?? [])];
-  const red = [], unknown = [], mine = [];
+  const red = [], latest = [], unknown = [], mine = [];
   for (const f of failing) {
     if (cleared.includes(f.name)) { mine.push(f); continue; }
     if (at?.checks?.includes(f.name)) {
-      if (read.latestOnBase(f.name) === 'pass') { cleared.push(f.name); mine.push(f); } else red.push(f);
+      if (read.latestOnBase(f.name, { held: true }) === 'pass') { cleared.push(f.name); mine.push(f); } else { red.push(f); if (at.latest?.includes(f.name)) latest.push(f); }
       continue;
     }
     const state = read.atMergeBase(f.name);
-    if (state === 'fail') red.push(f);
-    else { if (state == null) unknown.push(f); mine.push(f); }
+    if (state === 'fail') { red.push(f); continue; }
+    const now = read.latestOnBase(f.name);
+    if (now === 'fail') { red.push(f); latest.push(f); continue; }
+    if (now == null) unknown.push(f);
+    mine.push(f);
   }
   const checks = [...new Set([...(at?.checks ?? []).filter((x) => !cleared.includes(x)), ...red.map((f) => f.name)])];
-  const record = checks.length || cleared.length ? { class: 'base red', head, merge_base: at?.merge_base ?? read.mergeBase(), checks, cleared } : null;
-  return { red, unknown, mine, record };
+  const late = checks.filter((x) => latest.some((f) => f.name === x) || at?.latest?.includes(x));
+  const record = checks.length || cleared.length ? { class: 'base red', head, merge_base: at?.merge_base ?? read.mergeBase(), checks, cleared, ...(late.length ? { latest: late } : {}) } : null;
+  return { red, latest, unknown, mine, record };
+}
+
+// The base red record a fix call leaves on its ticket (`c.base_red`, null to clear): it keeps the pass its
+// hold began at (`since`, `at` for one new), so the person's base red item is aged from there, and one
+// after a cleared hold (no checks left) begins anew. `held`: the call holds the PR on it, with no fix try.
+export function keptHold(was, c, at) {
+  if (!c.base_red) return c.base_red ?? null;
+  return { ...c.base_red, since: (was?.checks?.length ? was.since : null) ?? at, held: c.call === 'held' };
 }

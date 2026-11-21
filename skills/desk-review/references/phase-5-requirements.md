@@ -62,6 +62,12 @@ code_claim: yes | no
 settled_by: code | person
 ```
 
+**A criterion about every instance of something** ("every page", "an avatar wherever a person
+shows", "all the buttons") gets one gap naming **every site the diff misses that you can find**, each
+as `file:line`, never a sample: search the reviewed tree for the thing itself (`git grep` at `<TIP>`)
+and say in the gap how you searched. A sample leaves the next round to find the rest, and each fix
+try is spent finding sites rather than closing them.
+
 **Settled calls amend the criteria.** Bea's prompt carries, beside the ticket, every call already
 taken on it: each line of the PR body's `### Decisions taken` section (`desk-pr`), and each entry of
 the triage record's `decided` list (`$DESK_STATE/triage/<KEY>.json`, where one exists). She measures
@@ -71,9 +77,9 @@ keeping a later-merged ticket's behaviour (below): any other that leaves a crite
 amends nothing, and the gap is the worker's to close.
 
 `settled_by` is `person` only when no change the ticket allows can close the gap, so all that is
-left is the person accepting it on the PR or amending the criterion: a criterion that can pass only
-on a deployed build, say, or a value only the person holds. Doubt is `code`, and so is each of these,
-whatever the criterion's wording:
+left is the person accepting it on the PR or amending the criterion: a value only the person holds,
+say, or a high-risk criterion that can pass only on a deployed build (*A criterion only a live system
+can check*, below). Doubt is `code`, and so is each of these, whatever the criterion's wording:
 
 - a gap a worker could close by changing code, or by an engineering call of its own;
 - a gap whose own `gap:` text names the code change that closes it;
@@ -102,10 +108,55 @@ in the terminal report tagged `UNVERIFIED CODE CLAIM`, for the author to judge, 
 the verdict's `gaps` count. It is not sent to Phase 4 either: that refuter judges against code, not
 tickets, and would reject it on procedure.
 
+### A criterion only a live system can check
+
+A criterion that can pass only once the PR has merged, because what checks it exists only live (a
+production run, a call on the shared staging system, a deployed build, playback on a device, a third
+party's live service), is **not a gap**: it is a follow item for after the merge. Bea posts it as one
+list item holding the literal tag `POST-MERGE`, under neither gaps heading:
+
+```
+POST-MERGE
+ticket: <KEY>
+criterion: <quoted>
+needs: production | staging | deployed | device | third-party
+step: <one line: what the person runs or looks at after the merge, and where>
+```
+
+She **refuses the tag**, and the criterion stays a `REQUIREMENT GAP` measured as above, when:
+
+- anything before the merge can check it: a unit or integration test, a local run, a recorded
+  fixture, a preview deployment the repo has. A behaviour the code decides alone is tested, whatever
+  the criterion says about where it shows up;
+- the diff does not yet do what the criterion asks, so a live check would only find it unmet: the
+  tag defers the check, never the work;
+- the criterion is **high-risk**: the ticket's criterion text or its Decisions section calls it
+  high-risk, or the criterion names production data or money (a migration of live records, a charge,
+  a payout, a price). It keeps its pre-merge park: a `settled_by: person` gap posted as `PERSON'S
+  CALL`, which the person accepts on the PR (next) before the merge.
+
+The reviewer (not Bea) puts each tagged criterion in the results file's `post_merge` list, not in
+`gaps`:
+
+```json
+"post_merge": [ { "gap": "AC7", "needs": "production", "step": "fill in the switch date at the production relay run" } ]
+```
+
+verdict.mjs refuses an entry missing any of the three, a `needs` outside that list, a criterion
+listed twice, or one also in `accepted`. It prints `<!-- desk-review:post-merge v=1 gaps=<n> items=<json> -->`
+after the accepted line, and the heading names the count. Like the accepted line it never decides
+clean, so a verdict whose only open criteria are post-merge reads `gaps=0` to every gate copy and
+the PR is not held for them. `node verdict.mjs --post-merge <results>` prints the `### After the
+merge` section, naming each criterion, what it needs and its step: it goes in the review body under
+the report. Once the PR merges, the autopilot pass reads the line from the PR's last review and keeps
+each criterion as a follow-on step (`desk/bin/pass.mjs`), which `desk-needs-you` lists to the person
+as the ticket's follow item. Where the worker already declared follow-on steps of its own (any but
+kept link steps and an earlier PR's criteria still unrun), those stand and no criterion is added: the two word one check differently. A tagged criterion stays in `post_merge` on every later round.
+
 ### A gap the person accepted
 
-A gap only the person can close (a criterion that can pass only after the merge, a manual check they
-took in another form) is **accepted** when a PR comment or review by §1 GitHub handle names the gap's
+A gap only the person can close (a high-risk criterion only a live system can check, a manual check
+they took in another form) is **accepted** when a PR comment or review by §1 GitHub handle names the gap's
 criterion and accepts it. Nobody else's counts, nor a note on the ticket alone. Before counting
 `gaps`, the reviewer (not Bea) reads the PR's comments and reviews for one:
 

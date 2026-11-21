@@ -20,6 +20,8 @@ const files = ['SKILL.md', ...stageFiles, 'design-canvas.md'];
 const before = readFileSync(join(root, 'tests/fixtures/desk-ticket-before-split.md'), 'utf8');
 // Round 2 reads the fix range and carries P2s, so the round-3 wording of these was rewritten.
 const REWRITTEN = [
+  ['#746', 'Read the `CONFIG` file it prints, before anything else.', 1], // read through desk-env show: the rows, not the prose or the §3c ledger
+  ['#748', "when the ticket's Design section says anything other than `No UI`", 1], // the planned change decides; the section is a hint
   ['DS-368', 'The third round reads only the fix range, the commits since round 2', 1],
   ['DS-368', '"Round 3 found only P2s, so I\'ll ask whether to fix them"', 1],
   ['DS-368', 'The branch has been read whole twice by round 3', 1],
@@ -41,6 +43,8 @@ const REWRITTEN = [
     'Assuming the §3b dev-server port is yours',
   ].map((s) => ['DS-405', s, 1]),
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
+  ['DS-912', 'the Testing-bullet standard and the before/after image table. Ends with', 1], // desk-pr also owns the preview-build lease
+  ['DS-888', '`git status --porcelain` after every round; a dirty tree is an aborted round', 1], // the round-end check runs desk-env tree-status
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

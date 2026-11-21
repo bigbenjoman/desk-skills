@@ -24,7 +24,7 @@ import { declarations, ownedSpecs, specFilesAt, runSpecs } from './spine-check.m
 import { runItem } from './baseline.mjs';
 import { takesFiles } from './test-scope.mjs';
 
-const BIN = E.binDir();
+const BIN = E.runBin();
 const started = new Date().toISOString();
 const failures = [];
 // The base's head as pass.mjs read it when it started this run, until a sync succeeds here. pass.mjs
