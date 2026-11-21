@@ -62,6 +62,18 @@ export const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind
 export const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 
 // A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
+// Why PR `p` ({ pr, branch, author }) is not ticket `t`'s own, or null when it is: a PR on a branch
+// other than the one its worker made, or one opened by an account other than desk's (`logins`, the §1
+// GitHub handle and its review account, comma-joined, as E.verdictLogins gives them). A field not read
+// is not held against it.
+export function notOwnPr(t, p, logins) {
+  const at = p?.branch, mine = t?.branch;
+  if (at && mine && at !== mine) return `PR #${p.pr} is on branch ${at}, not ${t.key}'s branch ${mine}`;
+  const ours = String(logins ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const who = String(p?.author ?? '').toLowerCase();
+  if (who && ours.length && !ours.includes(who)) return `PR #${p.pr} was opened by ${p.author}, not by ${ours.join(' or ')}`;
+  return null;
+}
 export const mergeOid = (v) => (/^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null);
 
 // The queue's subscription_off value to write, or null when it stands as `was`: the repo's row pinned

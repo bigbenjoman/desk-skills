@@ -36,7 +36,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null },
+  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -94,10 +94,25 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const as = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])));
   const done = as.find((a) => a.type === 'done');
   t('AC3 a DONE worker is recorded done on the PR it names', j(done), j({ type: 'done', key: 'D', pr: '12', summary: 'pr=12 jira=Done', line: 'pr=12 jira=Done', sets: [] }));
-  t('AC3 after recording its exited head, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","done","settle-links","park-links"]');
+  t('AC3 after recording its exited head and reading whose its PR is, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","pr-owner","done","settle-links","park-links"]');
   t('DS-193 AC1 a finished worker with no screenshot records none', j(sets(as)), j([`log_bytes=${logOf('D', DONE, [said(DONE), RESULT]).size}`, 'idle_passes=0', 'images_uploaded=none']));
   const parkedLinks = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])), { 'settle-links': [{ why: 'no grant', link: null }] });
   t('links a DONE worker asked for that were not made go to park-links', j(parkedLinks.at(-1)), j({ type: 'park-links', key: 'D', needs: [{ why: 'no grant', link: null }], pr: '12' }));
+}
+
+// A DONE marker naming a PR that is not the worker's own: on another branch, or opened by another
+// person (their epic roll-up PR, say). It is never taken as the ticket's result: the ticket parks.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=77 jira=Done';
+  const log = () => logOf('D', DONE, [said(DONE), RESULT]);
+  const ownerOf = (branch, author) => (a) => (a.pr === '77' ? { pr: a.pr, branch, author } : null);
+  const theirs = advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('epic/E', 'alice') });
+  t('a DONE naming a PR on another branch is not recorded done', j(types(theirs).filter((x) => ['done', 'park'].includes(x))), '["park"]');
+  t('it parks, naming the PR, its branch and the ticket\'s, and that no try goes to it', /^its worker reported PR #77 as its result, but PR #77 is on branch epic\/E, not D's branch fix\/D: .*no fix or review try goes to #77/.test(theirs.find((a) => a.type === 'park')?.question ?? ''), true);
+  t('the report says so', lines(theirs, 'parked').some((l) => l.startsWith('D: its worker reported PR #77, which is not its own')), true);
+  t('nor is one on its own branch that another account opened', types(advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('fix/D', 'alice') })).includes('done'), false);
+  t('its own PR is recorded done as before', types(advance({ ...snap(ticket('D'), log()), logins: 'me,me-bot' }, { 'pr-owner': ownerOf('fix/D', 'Me-Bot') })).includes('done'), true);
+  t('a PR whose owner could not be read is recorded done, the fix tries checking it again', types(advance({ ...snap(ticket('D'), log()), logins: 'me' })).includes('done'), true);
 }
 
 // The cases tests/test_pass_workers.sh runs end to end, decided here.

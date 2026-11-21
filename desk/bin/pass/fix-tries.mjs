@@ -41,7 +41,7 @@
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
 import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outageChecks } from '../fix-tries.mjs';
-import { reviewerGated, set, say } from './shared.mjs';
+import { reviewerGated, set, say, notOwnPr } from './shared.mjs';
 import { externalReview } from '../review-threads.mjs';
 
 const out = (line) => ({ type: 'out', line });
@@ -56,7 +56,12 @@ export function* decideFixTries(s) {
     yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs`);
   }
   const snap = outage.size ? { ...s, outage } : s;
-  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, snap);
+  for (const { t, s: p } of s.undrafted) {
+    // Another person's PR, or one on a branch the worker did not make, gets no try pushed to it.
+    const foreign = notOwnPr(t, p, s.logins);
+    if (foreign) { yield out(`fix tries: none for PR #${p.pr} (${t.key}): ${foreign}, so desk sends it no fix or review try`); continue; }
+    yield* fixTry(t, p, snap);
+  }
 }
 
 // How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".

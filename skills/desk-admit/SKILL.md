@@ -156,6 +156,7 @@ below as `(Recommended)`, with its reason as the description:
 | `blocked by <B>, which failed in the batch` | Requeue `<B>` (`queue.mjs requeue <B>`), or drop it if it will not be done | Run step 1 again for it |
 | `an epic, and its feature batch <B> is already running` | Admit the epic's children instead: they join `<B>` | Run step 1 for the children |
 | `an epic, and its feature batch was not started: …` | Settle what follows the colon (the line names the push or fix), as the rows here say for it; nothing was left behind | Run step 1 again for it, or plan it in a session: `/desk-autopilot <EPIC>` |
+| `already in progress by <login> in #<n>` | Leave it to them: another person has a PR for it open. Ask them, or the user, before taking it over, and never push to their branch | Admit nothing for it |
 | `is in batch <B>` or `is in the standing batch` | Leave it where it is: a ticket is in one batch at most. If it belongs elsewhere, move it from `/desk-needs-you` once it is parked or stopped (`move "<batch>"`) | Admit nothing for it |
 | `is already queued in <repo>'s standing batch` or `in batch <B> of <repo>` | Leave it there: a ticket is queued in one repo at most. If it belongs in this repo instead, drop it there first (`queue.mjs drop <TICKET>` in that repo's checkout) | Run step 1 again for it once it is dropped there |
 | `is a child of epic <E>, but not admitted into its feature batch: …` | Settle what follows the colon, as the row above for it says | Run step 1 again for it |

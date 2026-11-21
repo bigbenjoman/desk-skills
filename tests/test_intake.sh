@@ -489,6 +489,26 @@ rec H-2 A '"unknowns":["which tier?"]'; rec H-3 C
 out=$(admit H-2 H-3); rc=$?
 check "admit: a ticket failing a check is refused to the person with why, exit 11" '[ $rc -eq 11 ] && grep -q "^not admitted H-2: open question(s): which tier?$" <<< "$out" && grep -q "^not admitted H-3: lane C: needs a plan$" <<< "$out"'
 check "admit: a refused ticket is not queued or handed to the digest" '[ "$(qget tickets.H-2)" = undefined ] && [ "$(handed H-2)" = none ]'
+
+# Another person's PR for a ticket: an open one refuses it, naming the PR and its author; one only merged
+# reads as done. desk's own PRs, and a merged PR that only mentions it in its body, do not count.
+pr_json(){ printf '{"number":%s,"state":"%s","title":"%s","headRefName":"%s","body":"%s","author":{"login":"%s"},"baseRefName":"main"}' "$@"; }
+printf '[%s,%s,%s,%s,%s]\n' "$(pr_json 41 OPEN "feat: O-1 thing" feat/O-1 "" alice)" "$(pr_json 42 OPEN "Epic roll-up" epic/E "Children: O-2, O-9" alice)" \
+  "$(pr_json 43 MERGED "fix: O-3 done" fix/O-3 "" bob)" "$(pr_json 44 OPEN "fix: O-4 mine" fix/O-4 "" me)" "$(pr_json 45 MERGED "chore: tidy" chore/x "follows O-5" bob)" > "$T/prs.json"
+rec O-1 A; rec O-2 A; rec O-3 A; rec O-4 A; rec O-5 A; n=$(count "$T/triage.calls")
+out=$(DESK_GITHUB_HANDLE=me admit O-1 O-2); rc=$?
+check "admit: a ticket another person has an open PR for is refused, naming the PR and its author" '[ $rc -eq 11 ] && grep -qx "not admitted O-1: already in progress by alice in #41" <<< "$out"'
+check "admit: so is one an open PR of theirs names in its body (an epic roll-up)" 'grep -qx "not admitted O-2: already in progress by alice in #42" <<< "$out"'
+check "admit: neither is triaged or queued" '[ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.O-1)" = undefined ] && [ "$(qget tickets.O-2)" = undefined ]'
+out=$(DESK_GITHUB_HANDLE=me admit O-3); rc=$?
+check "admit: one another person's merged PR names reads as done, not admitted" '[ $rc -eq 0 ] && grep -qx "O-3 is already done by bob in #43 (merged): nothing triaged or admitted" <<< "$out" && [ "$(qget tickets.O-3)" = undefined ]'
+out=$(DESK_GITHUB_HANDLE=me admit O-4 O-5)
+check "admit: desk's own PR, or another person's merged PR only mentioning it, is no refusal" '! grep -q "already in progress\|already done by" <<< "$out" && [ "$(qget tickets.O-4.state)" = triaged ] && [ "$(qget tickets.O-5.state)" = triaged ]'
+config yes; search O-9; rec O-9 A; n=$(count "$T/triage.calls")
+out=$(DESK_GITHUB_HANDLE=me intake)
+config yes '`none`'
+check "intake: a ticket another person has an open PR for is handed to the digest with it, not triaged" 'grep -q "intake: handed O-9 to the digest: already in progress by alice in #42" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.O-9)" = undefined ]'
+rm -f "$T/prs.json"
 echo 'triage stopped at the usage limit' > "$T/recs/U-2.limit"
 cp "$T/recs/U-1.limit" "$T/recs/U-3.limit"
 out=$(admit U-3); rc=$?
