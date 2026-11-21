@@ -345,13 +345,32 @@ export function declaredRows(text) {
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
+// A config file's parse, by path, kept while its inode, size and modification time are unchanged:
+// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept.
+const parsedFiles = new Map();
+const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
+
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+// The result is shared between callers: read it, never change it.
 function parseConfigFile(path) {
+  let st = null;
+  if (path) try { st = statSync(path, { bigint: true }); } catch { /* missing: parsed below as absent */ }
+  if (!st) { parsedFiles.delete(path); return parseConfigText(path, null); }
+  const stamp = fileStamp(st);
+  const hit = parsedFiles.get(path);
+  if (hit?.stamp === stamp) return hit.parsed;
+  const parsed = parseConfigText(path, readFileSync(path, 'utf8'));
+  if (parsedFiles.size > 64) parsedFiles.clear();
+  parsedFiles.set(path, { stamp, parsed });
+  return parsed;
+}
+
+function parseConfigText(path, text) {
   // `rows`: every declared row, in order, for `drift`.
   // `tables`: the cells of every row of a table id's `###` table (TABLE_IDS), by section and heading.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [], tables: {} };
+  const parsed = { path, exists: text != null, sections: {}, rows: [], tables: {} };
   if (!parsed.exists) return parsed;
-  const table = tableLines(readFileSync(path, 'utf8'));
+  const table = tableLines(text);
   for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
   for (const { section, sub, header, cells, label, declared } of table.rows) {
     if (TABLE_IDS.has(`${section}/${sub}`)) { (parsed.tables[`${section}/${sub}`] ??= []).push(cells); continue; }
