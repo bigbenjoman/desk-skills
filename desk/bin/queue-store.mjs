@@ -68,6 +68,9 @@ export const everyTicket = (q) => ({ ...archivedOf(q), ...(q?.tickets ?? {}) });
 // Whether `key` is archived and not live in queue `q`.
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 
+// Whether ticket `t`'s own PR (result.pr) was last read closed unmerged.
+export const prClosed = (t) => t?.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
+
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
@@ -79,7 +82,7 @@ export function archivable(q, key) {
   if (q.base || q.epic || q.feature === true) return false;
   const t = q.tickets[key];
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
-  const closed = Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
+  const closed = prClosed(t);
   if (!t.merged_at && !closed) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.

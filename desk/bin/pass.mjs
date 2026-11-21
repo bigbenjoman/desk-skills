@@ -96,6 +96,7 @@ import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { leaseCli } from './leases.mjs';
+import { isArchived, prClosed } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1712,19 +1713,19 @@ const linkLines = [];
 // ---- red base --------------------------------------------------------------
 // The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
 // one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
-// allows. A repair ticket not yet merged is the one, and so is one that merged in this red spell, live or
-// archived: none is admitted beside it, nor a second once it merged with the base still red. One that
-// merged in an earlier spell is done with: dropped where the queue still holds it (a batch with a base
-// archives nothing), and the key admitted again.
+// allows. Its key is the spell's own (desk-env baseRedKey), so an earlier spell's repair is another
+// ticket, left as it is with any steps it still owes. A row under this key, live or archived, is this
+// spell's repair: none is admitted beside it while it is unfinished, nor a second once it merged with
+// the base still red. One archived with its PR closed unmerged is done with, and the key admitted again.
 const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
 let baseRedRepair = null;
 if (BASE_RED) {
   const key = BASE_RED.repair_key;
-  const tickets = queue().tickets;
-  const had = tickets[key] ?? null;
-  const merged = had?.merged_at ?? null;
-  if (had && !merged) baseRedRepair = { key, state: had.state };
-  else if (merged && Date.parse(merged) >= Date.parse(BASE_RED.since)) baseRedRepair = { key, state: `merged at ${merged} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
+  const qB = queue();
+  const was = qB.tickets[key] ?? null;
+  const had = was && !(isArchived(qB, key) && !was.merged_at && prClosed(was)) ? was : null;
+  if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
+  else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
@@ -1732,11 +1733,10 @@ if (BASE_RED) {
     mkdirSync(join(STATE, 'triage'), { recursive: true });
     writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
     writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
-    // An earlier red spell's repair left its log under the same key, whose AUTOPILOT_DONE would keep
-    // this one from spawning: moved aside, as a requeue does.
+    // A repair closed unmerged left its log under the same key, whose AUTOPILOT_DONE would keep this one
+    // from spawning: moved aside, as a requeue does.
     E.rotateRound(key);
-    const dropped = had && Object.hasOwn(tickets, key) ? qTry(['drop', key]) : { ok: true };
-    const r = dropped.ok ? qTry(['admit', key, '--by', 'base-red']) : dropped;
+    const r = qTry(['admit', key, '--by', 'base-red']);
     baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
   }
 }

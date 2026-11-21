@@ -12,7 +12,8 @@
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
 // `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by`, newest first, and `since`
-// when this red spell was first read.
+// when this red spell was first read. `repair_key` is this spell's own repair ticket (desk-env baseRedKey),
+// so no two spells share one.
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -127,7 +128,11 @@ export const repairTriage = (r) => ({
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
 export function nextRecord(was, s, { branch, merges, at }) {
   if (s.state !== 'red') return null;
-  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: E.baseRedKey(branch), since: was?.branch === branch ? was.since ?? at : at, at };
+  // The spell's repair key is kept from the record before, so a spell first read under another form of
+  // the key keeps the one its repair ticket was admitted under.
+  const same = was?.branch === branch;
+  const since = same ? was.since ?? at : at;
+  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: (same && was.repair_key) || E.baseRedKey(branch, since), since, at };
 }
 
 function gh(args) {

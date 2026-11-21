@@ -1230,8 +1230,19 @@ export function applyBatchBase() {
 // The id a batch base's conflict fix worker runs under: its base worktree's directory name
 // (base-sync.mjs baseWorktreePath), so its log, settings and ticket file sit beside the tickets'.
 export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-]/g, '-')}`;
-// The id of the ticket that repairs a red base (base-red.mjs): the branch the batch merges into.
-export const baseRedKey = (branch) => `base-red-${String(branch).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+// The id of the ticket that repairs a red base (base-red.mjs): the branch the batch merges into, and,
+// given `since`, the red spell it repairs (when that spell was first read, to the second, UTC), so each
+// spell's repair is a ticket of its own and an earlier one's row, steps and worktree are left as they are.
+export const baseRedKey = (branch, since = null) => {
+  const k = `base-red-${String(branch).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+  const t = Date.parse(since ?? '');
+  return Number.isFinite(t) ? `${k}-${new Date(t).toISOString().replace(/\D/g, '').slice(0, 14)}` : k;
+};
+// Whether `k` is a repair key baseRedKey gives for `branch`, any spell's.
+const isBaseRedKey = (k, branch) => {
+  const b = baseRedKey(branch);
+  return k === b || (k.startsWith(`${b}-`) && /^\d{14}$/.test(k.slice(b.length + 1)));
+};
 // Whether a sync of the batch base may push it: §3 batch-base-push, unset meaning `ask`, which is one
 // approval per batch passed to every pass (and every base conflict fix worker) as
 // AUTOPILOT_BASE_PUSH_APPROVED=1. The pass, the base gate and the worker's settings all read it here.
@@ -1370,7 +1381,7 @@ export function ticketKind(key) {
     // driver reads it (defaultBranch, so an exported DESK_DEFAULT_BRANCH counts).
     let d = null;
     try { d = defaultBranch(); } catch { /* no usable base */ }
-    if ([b, d].some((x) => x && k === baseRedKey(x))) return { ok: true, kind: 'base-red' };
+    if ([b, d].some((x) => x && isBaseRedKey(k, x))) return { ok: true, kind: 'base-red' };
   }
   // A merged ticket's blind audit (levers-audit.mjs), worked under `audit.<its key>`.
   if (k.startsWith('audit.')) {
