@@ -302,16 +302,15 @@ export class NoRepoConfigError extends DeskConfigError {}
 // second column) because §2's Notes and §3's Recommended columns also carry backticks, and taking
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
-let cache = null;
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
 const { splitRow } = M;
 
+// This repo's config, through parseConfigFile's cache, so an edit by hand or by another process
+// is read on the next call.
 function parseConfig() {
-  if (cache) return cache;
-  cache = parseConfigFile(configPathOrNull());
-  return cache;
+  return parseConfigFile(configPathOrNull());
 }
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
@@ -1902,7 +1901,6 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
   return { section: sec, label: t.label, line };
 }
 
@@ -1920,7 +1918,6 @@ function setRowValue(config, section, row, value) {
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
   return true;
 }
 

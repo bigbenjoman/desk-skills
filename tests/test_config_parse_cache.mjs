@@ -70,6 +70,19 @@ writeConfig(late, 3900);
 t('AC4 a config created afterwards is read on the next call', E.repoConfigValue(late, 'dev-port'), '3900');
 t('AC4 and its permission rows with it', E.repoPermission(late, 'ci-rerun'), 'yes');
 
+// AC2 and AC4 for this repo's own config, read by configValue rather than by slug.
+const own = join(T, 'own', 'config.md');
+process.env.DESK_CONFIG = own;
+t('AC4 own config: missing reads unset', E.configValue('dev-port'), null);
+mkdirSync(dirname(own), { recursive: true });
+writeFileSync(own, body(3500));
+t('AC4 own config: created afterwards is read on the next call', E.configValue('dev-port'), '3500');
+writeFileSync(own, body(3600));
+const after = new Date(Date.now() + 10000);
+utimesSync(own, after, after);
+t('AC2 own config: an edit is read on the next call', E.configValue('dev-port'), '3600');
+delete process.env.DESK_CONFIG;
+
 fs.readFileSync = realRead;
 syncBuiltinESMExports();
 rmSync(T, { recursive: true, force: true });
