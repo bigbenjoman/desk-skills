@@ -138,6 +138,10 @@ How to turn what you find into rows:
   task ids (`P1-M14-FIX-1`), bug numbers (`BUG-119-5`). Propose a regex per family, one span each,
   with the count of branches or titles each matched and two examples; the user confirms or writes
   `none`. Such ids are then accepted as tickets whose text comes from a ticket file, never Jira.
+- **Other names.** Ask whether the code of another repo now lives in this one (a repo moved into a
+  monorepo, or a renamed repo whose old name tickets still carry), and offer each such name for §0
+  Other names, one span each, or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is
+  one of them is then planned and built here rather than asked about as no repo on this computer.
 - **Workflow states.** From the project's statuses, propose In-progress, Review and Done states; the
   user confirms. `none` for Review is fine.
 - **Required fields.** Propose them from `desk-jira meta`, then ask which fields the team expects on

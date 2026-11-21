@@ -504,11 +504,19 @@ export function configuredRepos(root = deskConfigRoot()) {
     .map((r) => ({ ...r, ghRepo: repoConfigValue(r.slug, 'gh-repo', root) ?? r.slug.replace('__', '/') }));
 }
 
+// A repo's §0 Other names: [] when unset, `none` or unreadable. This repo's own where `slug` is null.
+function otherNames(slug, root = deskConfigRoot()) {
+  try { return [].concat((slug == null ? configValues('other-names') : repoConfigValues(slug, 'other-names', root)) ?? []).filter((v) => v && !isNone(v)); }
+  catch { return []; }
+}
+
 // Where a ticket's Jira Repository field (ticket-facts.mjs `repository`) sends it, matched against each
-// configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside:
-// null when the field is empty or names this repo; {repository, slug, ghRepo, root} for one other
-// configured repo (root its §2 Primary repo root, or null); {repository, unknown: true, slugs} where
-// no configured repo has that name, or several do.
+// configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside, and
+// failing that against each repo's §0 Other names: null when the field is empty or names this repo;
+// {repository, slug, ghRepo, root, otherName} for one other configured repo (root its §2 Primary repo
+// root, or null; otherName true where one of its Other names matched); {repository, unknown: true,
+// slugs} where no configured repo has that name, or several do. A GitHub repo's own name wins over
+// another repo's Other names.
 export function repoPlacement(repository, root = deskConfigRoot()) {
   const want = String(repository ?? '').trim().toLowerCase();
   if (!want) return null;
@@ -521,10 +529,18 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
   try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
   const repos = configuredRepos(root);
   if (names(self.ownerRepo) || names(own) || repos.some((r) => r.slug === self.slug && names(r.ghRepo))) return null;
-  const hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
+  let hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
+  let otherName = false;
+  if (!hits.length) {
+    const selfHit = [...otherNames(null), ...(self.slug ? otherNames(self.slug, root) : [])].some(names);
+    hits = repos.filter((r) => r.slug !== self.slug && otherNames(r.slug, root).some(names));
+    if (selfHit && !hits.length) return null;
+    if (selfHit) hits = [{ slug: self.slug ?? own ?? 'this repo' }, ...hits];
+    otherName = true;
+  }
   if (hits.length !== 1) return { repository, unknown: true, slugs: hits.map((r) => r.slug) };
   const dir = String(repoConfigValue(hits[0].slug, 'repo-root', root) ?? '').trim();
-  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null };
+  return { repository, slug: hits[0].slug, ghRepo: hits[0].ghRepo, root: dir && !isNone(dir) ? expandHome(dir) : null, otherName };
 }
 
 // Where a triage record puts a ticket's code when that is wholly another repo, or null to build it
@@ -561,8 +577,8 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
   let own = null;
   try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
   const repos = configuredRepos(root);
-  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
-  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
+  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop(), ...(slug ? otherNames(slug, root) : [])].filter(Boolean);
+  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : []), ...otherNames(null)];
   const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${escapeRe(n)}(?![\\w-])`, 'i').test(text));
   for (const d of calls) {
     const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(escapeRe).join('|')})(?![\\w-])`, 'gi');

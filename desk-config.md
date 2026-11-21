@@ -78,6 +78,7 @@ ticketed. Nothing else waives a check, and nothing ever merges past a required o
 | Slug | `TODO` (`owner__name`; the folder this file lives in) |
 | Default branch | `TODO` (e.g. `main`) |
 | One-line description | `TODO` (what the product is; used to brief subagents) |
+| Other names | `TODO` (other repo names this repo's code answers to, one span each, e.g. a repo since moved into this monorepo; or `none`. A ticket whose Jira Repository, or files-in-scope prefix, is one of them runs here) |
 
 ## 1. Who you are in this repo
 
