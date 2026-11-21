@@ -1,5 +1,5 @@
 // The ticket ledger: every change to a ticket or a batch as one typed event, in one append-only log per
-// repo, <repo state>/ledger/events.jsonl, from which any ticket's state and any batch's queue.json shape
+// repo, <repo>/ledger/events.jsonl beside the standing queue (~/.claude/desk/repos/<slug>), from which any ticket's state and any batch's queue.json shape
 // is rebuilt.
 //
 // Each line is an envelope {v, seq, id, at, batch, key, type, by, data}. seq is assigned under the
