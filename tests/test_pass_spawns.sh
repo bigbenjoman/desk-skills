@@ -1254,6 +1254,27 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
   'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
 
+# ---- DS-575: admitted tickets naming one file start in queue order within its budget, and none is asked
+# about. RK-182, RK-147 and RK-181 all name desk/bin/desk-q.mjs (budget 1), queued in that order, not
+# key order; admission recorded each one's collides_with. RK-90 and RK-91 share no file with anything.
+fbq rk '1'
+fbt RK-182 triaged desk/bin/desk-q.mjs; fbt RK-147 triaged desk/bin/desk-q.mjs; fbt RK-181 triaged desk/bin/desk-q.mjs src/a.ts
+q set RK-147 collides_with=RK-182; q set RK-181 'collides_with=["RK-182","RK-147"]'
+fbt RK-90 triaged src/solo.ts; fbt RK-91 triaged src/other.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-575 AC1 of three naming one file with a budget of 1, only the first in queue order starts and the others wait, held by it" \
+  'spawned RK-182 && ! spawned RK-147 && ! spawned RK-181 && [ "$(field RK-147 state)" = "\"triaged\"" ] && [ "$(field RK-181 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "RK-147 (desk/bin/desk-q.mjs has 1 running of its 1: RK-182), RK-181 (desk/bin/desk-q.mjs has 1 running of its 1: RK-182)"'
+check "DS-575 AC2 two tickets with no file in common both start in the same pass" 'spawned RK-90 && spawned RK-91'
+check "DS-575 AC3 overlapping tickets wait with no question: none parked, none with an open question, no order asked" \
+  '[ "$(jq -c "[.tickets[] | select(.key | startswith(\"RK-\")) | select(.state == \"parked\" or (.open_questions // 0) > 0 or .held_by != null)] | length" "$DESK_QUEUE")" = 0 ] && ! echo "$out" | grep -qF "which comes first" && [ -z "$(ls "$DESK_AUTOPILOT_STATE/parks" 2>/dev/null)" ]'
+q set RK-182 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-575 AC1 AC3 once the running one stops, the next in queue order starts and the last still waits" \
+  'spawned RK-147 && ! spawned RK-181 && echo "$out" | grep "^held back by a collision:" | grep -qF "RK-181 (desk/bin/desk-q.mjs has 1 running of its 1: RK-147)"'
+q set RK-147 state=done; : > "$T/fb-spawns"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-575 AC1 the last starts once the second stops" 'spawned RK-181'
+
 # ---- DS-756: each merge-time conflict is recorded per file in the repo's conflicts.jsonl, and a file
 # with 3 in 7 days runs one place fewer. $T/cf is a real clone: fix/CF-1 and main both change b.txt and
 # the first line of big.ts (1,200 lines, so 3 places unlowered). The fake gh answers PRs from $T/fx.
