@@ -79,6 +79,7 @@ const REWRITTEN = [
   ['DS-584', 'She reads the ticket and the diff, not their output.', 1], // and the calls already taken on it
   ['DS-834', 'with two exceptions**, both for claims', 1], // a finder also traces a server-set value
   ['DS-833', 'different counts (above). `--paginate` is not optional', 1], // the landed check allows the accepted re-verdict
+  ['DS-845', '"refuted_by": "codex", "deferred": false } ] }', 1], // the results example shows both refuter vendors
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

@@ -273,7 +273,18 @@ want('refuses a finding from a dead seat', base({ seats: [seat('correctness'), s
 want('refuses a finding with no result', base({ findings: [f({ result: undefined })] }), 'result must be one of')
 want('refuses a refuted finding with no refuter', base({ findings: [f({ refuted_by: undefined })] }), 'refuted_by must be')
 want('#763 refuses an agent as the refuter, naming the vendor it wants', base({ findings: [f({ refuted_by: 'ada-devils-advocate' })] }), 'refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("ada-devils-advocate")')
-want('refuses an UNREFUTED finding naming a refuter', base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
+// DS-845: the skill's results-file example is one verdict.mjs accepts, and shows refuted_by as the
+// refuter's vendor for both seats: a Claude seat's finding refuted by codex, a codex seat's by claude.
+{
+  const doc = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf8')
+  const example = JSON.parse(doc.match(/desk-review-results-<run>\.json`[\s\S]*?```json\n([\s\S]*?)```/)[1].replace('<full reviewed SHA>', SHA))
+  t('DS-845 AC2 the skill\'s results example is accepted', refused(example), 'accepted')
+  t('DS-845 AC2 the example refutes each seat\'s finding by the other vendor',
+    example.findings.map((x) => `${x.seat}:${x.refuted_by}`).join(), 'correctness:codex,codex:claude')
+  t('DS-845 AC1 the field description names the vendor, not an agent',
+    /`refuted_by`: `claude` or `codex`, not an agent;\s+absent when `UNREFUTED`/.test(doc), true)
+}
+want('refuses an UNREFUTED finding naming a refuter',base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
 want('refuses P3', base({ findings: [f({ severity: 'P3' })] }), 'severity must be')
 want('refuses a finding listed twice', base({ findings: [f(), f()] }), 'listed twice')
 want('refuses a DUPLICATE naming nothing', base({ findings: [f({ result: 'DUPLICATE' })] }), 'names the finding it duplicates')
