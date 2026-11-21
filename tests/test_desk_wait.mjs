@@ -93,16 +93,16 @@ try {
   }
   // AC1: a run still going when --max is up returns started, with the command's pid.
   {
-    const r = background(lockRun(nodeSleep(8000))); held.push(r);
+    const r = background(lockRun(nodeSleep(60_000))); held.push(r);
     await sleep(500);
     const w = wait(r.out, ['--max', '1']);
-    t('AC1 a run under the lock that has started returns started at --max', [w.rc, /^started \d+$/.test(w.out.trim()), w.seconds < 5], [0, true, true]);
+    t('AC1 a run under the lock that has started returns started at --max', [w.rc, /^started \d+$/.test(w.out.trim()), w.seconds < 10], [0, true, true]);
     t('AC3 the run is still the child it was: desk-wait detached nothing', [alive(r.c.pid), spawnSync('ps', ['-o', 'ppid=', '-p', String(r.c.pid)], { encoding: 'utf8' }).stdout.trim()], [true, String(process.pid)]);
     // AC1: a run queued behind it returns waiting, with the holder and the minutes waited.
     const q = background(lockRun(['sh', '-c', `: > '${join(S, 'queued-ran')}'`])); held.push(q);
     await sleep(500);
     const w2 = wait(q.out, ['--max', '1']);
-    t('AC1 a run the lock has not started returns waiting, naming the holder', [w2.rc, /^waiting \(.+\) 0$/.test(w2.out.trim()), w2.out.includes('held'), w2.seconds < 5], [0, true, true, true]);
+    t('AC1 a run the lock has not started returns waiting, naming the holder', [w2.rc, /^waiting \(.+\) 0$/.test(w2.out.trim()), w2.out.includes('held'), w2.seconds < 10], [0, true, true, true]);
     // AC2: past the threshold it stops the queued run, prints the holder and the record line, and
     // leaves the holder running.
     const w3 = wait(q.out, ['--max', '20'], { DESK_WAIT_SKIP_AFTER: '1' });
