@@ -1441,9 +1441,10 @@ rec PU-9 A; search PU-9; gate PU-9 release '^PU-9$'
 intake > "$T/intake9.out" & ipid=$!
 for _ in $(seq 1 120); do grep -q "^start PU-9 " "$T/triage.events" 2>/dev/null && break; sleep 0.25; done
 (DESK_PUSH_WAIT_MS=60000 push PU-9 > "$T/push9.out"; echo $? > "$T/push9.rc") & ppid=$!
-sleep 1; release PU-9; wait "$ipid" "$ppid"; ungate; out=$(cat "$T/push9.out")
+for _ in $(seq 1 120); do grep -q "^intake: PU-9 waits for another intake to end" "$T/push9.out" 2>/dev/null && break; sleep 0.25; done
+release PU-9; wait "$ipid" "$ppid"; ungate; out=$(cat "$T/push9.out")
 check "push AC9: a push and an intake reaching one ticket triage and admit it once" \
-  '[ "$(grep -cx PU-9 "$T/triage.calls")" = 1 ] && [ "$(qget tickets.PU-9.admitted_by)" = intake ] && [ "$(cat "$T/push9.rc")" = 0 ] && grep -q "^intake: PU-9 is already in batch b1 (triaged): nothing changed$" <<< "$out"'
+  'grep -q "^intake: PU-9 waits for another intake to end (pid [0-9]*)$" <<< "$out" && [ "$(grep -cx PU-9 "$T/triage.calls")" = 1 ] && [ "$(qget tickets.PU-9.admitted_by)" = intake ] && [ "$(cat "$T/push9.rc")" = 0 ] && grep -q "^intake: PU-9 is already in batch b1 (triaged): nothing changed$" <<< "$out"'
 SUP="$S/../skills/desk-autopilot/references/supervisor.md"
 check "push AC10: the autopilot skill names push as the contract: the command, its exits and what a producer does first" \
   'grep -q "^#### Raising a ticket from an event: push$" "$SUP" && grep -q "intake.mjs push <KEY>" "$SUP" && grep -q "^| 10 | " "$SUP" && grep -q "^| 11 | " "$SUP" && grep -q "lint-clean" "$SUP" && grep -q "Raising a ticket from an event: push" "$S/../skills/desk-autopilot/SKILL.md"'

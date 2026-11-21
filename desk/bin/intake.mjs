@@ -78,7 +78,7 @@ import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
-import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl } from './run-by.mjs';
+import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs } from './run-by.mjs';
 import { FAILED, normaliseRollup, latestPerCheck } from './gate.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
@@ -95,7 +95,7 @@ export const TRIAGE_TRIES = 3;
 // Triages /desk-admit runs at once when config §3b "Triage concurrency" does not say.
 export const TRIAGE_DEFAULT = 1;
 // How long a push waits for another intake to finish: as long as the supervisor lets one run.
-export const PUSH_WAIT_MS = Number(process.env.DESK_PUSH_WAIT_MS) || 30 * 60 * 1000;
+const PUSH_WAIT_MS = Number(process.env.DESK_PUSH_WAIT_MS) || 30 * 60 * 1000;
 const LOCK_POLL_MS = 500;
 // Whether a line of an admit's output only reports how the run went, so a refusal's reason is not in it.
 export const isProgress = (line) => /^(triage|waiting|summary): /.test(line);
@@ -316,11 +316,13 @@ export function runIntake({ state = E.stateDir(), force = false, now = new Date(
 
 // One intake at a time, by hand or not: two would triage, and admit, the same ticket twice. Taken
 // exclusively (dir-lock.mjs tryLockFile), so of two intakes starting together only one runs. With
-// `waitMs`, a held lock is waited for that long before giving up.
-async function withLock(state, fn, { waitMs = 0 } = {}) {
+// `waitMs`, a held lock is waited for that long before giving up, `onWait(holder pid)` called once
+// as the wait starts.
+async function withLock(state, fn, { waitMs = 0, onWait } = {}) {
   const lockFile = join(state, 'intake.lock');
   const until = Date.now() + waitMs;
   let got = tryLockFile(lockFile);
+  if (got !== true && waitMs > 0) onWait?.(got);
   while (got !== true && Date.now() < until) {
     // eslint-disable-next-line no-await-in-loop
     await new Promise((res) => { setTimeout(res, LOCK_POLL_MS); });
@@ -578,12 +580,7 @@ async function intake({ state, query, reg, now }) {
   }
   // One page: a full one may hide matches past it, so every report says so rather than none.
   if (found.length >= SEARCH_MAX) lines.push(`intake: the search returned its limit of ${SEARCH_MAX} tickets: matches past them are not seen while these still match, so narrow the query`);
-  const hand = (key, text) => {
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'handed', text };
-    writeIntake(state, reg);
-    handed.push(key);
-    lines.push(`intake: handed ${key} to the digest: ${text}`);
-  };
+  const hand = handTo({ state, reg, now, handed, lines });
   // A ticket another batch holds is that batch's: never triaged, admitted or handed on here. One skipped
   // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
   // another batch's queue cannot be read, waits for the next intake and is said to.
@@ -653,6 +650,14 @@ async function intake({ state, query, reg, now }) {
   }
   return done({ started });
 }
+
+// Hands a ticket to the digest, its register entry written and the line said: -> (key, text).
+const handTo = ({ state, reg, now, handed, lines }) => (key, text) => {
+  reg.tickets[key] = { at: now.toISOString(), outcome: 'handed', text };
+  writeIntake(state, reg);
+  handed.push(key);
+  lines.push(`intake: handed ${key} to the digest: ${text}`);
+};
 
 // A ticket whose triage left no record: tried again by the next intake, or handed to the digest once it
 // has failed TRIAGE_TRIES intakes in a row. -> 'handed' or 'retry'. The caller writes the register.
@@ -1007,7 +1012,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
 // EXIT.NOTHING_YET (10) when nothing is admitted yet and pushing again later may (a triage failure under
 // TRIAGE_TRIES, an intake that held the lock past PUSH_WAIT_MS, a queue that cannot be read); and
 // EXIT.SHOW_PERSON (11) when it is not admitted until the person acts, saying why.
-export async function pushTicket(key, { state = E.stateDir(), now = new Date(), waitMs = PUSH_WAIT_MS, wake = wakeSupervisor } = {}) {
+export async function pushTicket(key, { state = E.stateDir(), now = new Date() } = {}) {
   const kind = E.ticketKind(key);
   if (!kind.ok || kind.kind !== 'tracker') {
     const pattern = E.configValue('ticket-pattern');
@@ -1016,11 +1021,13 @@ export async function pushTicket(key, { state = E.stateDir(), now = new Date(), 
   const perm = E.permission('autopilot-workers');
   if (perm !== 'yes') return { code: EXIT.SHOW_PERSON, lines: [`intake: push admits nothing: it needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${perm}")`] };
   mkdirSync(state, { recursive: true });
-  const r = await withLock(state, () => pushOne(key, { state, now }), { waitMs });
+  // Said on stderr as it waits, since the result prints only once the push ends.
+  const onWait = (pid) => process.stderr.write(`intake: ${key} waits for another intake to end (pid ${pid ?? '?'})\n`);
+  const r = await withLock(state, () => pushOne(key, { state, now }), { waitMs: PUSH_WAIT_MS, onWait });
   if (r.ran === false) return { code: EXIT.NOTHING_YET, lines: [...r.lines, `intake: ${key} not admitted yet: push it again once that intake ends`] };
   if (r.admitted) {
     noteForTick(state, r.lines);
-    r.lines.push(wake());
+    r.lines.push(wakeSupervisor());
   }
   return r;
 }
@@ -1046,12 +1053,7 @@ async function pushOne(key, { state, now }) {
 
   const handed = [];
   const admitted = [];
-  const hand = (k, text) => {
-    reg.tickets[k] = { at: now.toISOString(), outcome: 'handed', text };
-    writeIntake(state, reg);
-    handed.push(k);
-    lines.push(`intake: handed ${k} to the digest: ${text}`);
-  };
+  const hand = handTo({ state, reg, now, handed, lines });
   const { rec, why } = triage(key, state);
   if (!rec) {
     const t = triageFailed({ key, why, reg, now, lines, handed });
@@ -1079,9 +1081,8 @@ export function takePushed(state) {
 
 // Starts a supervisor tick now rather than at its next interval: the repo's agent where it is loaded
 // (launchctl kickstart, or the systemd service started), so the tick runs as every other does; else
-// supervisor.mjs tick from the repo root. -> the line saying which. DESK_SUPERVISOR_MJS stands in for
-// the script in tests, as run-by.mjs reads it.
-export function wakeSupervisor() {
+// supervisor.mjs tick from the repo root. -> the line saying which.
+function wakeSupervisor() {
   let slug;
   try { slug = E.repoSlug(); } catch { slug = null; }
   if (slug && backend() === 'launchd' && supervisorLoaded(slug)) {
@@ -1093,9 +1094,8 @@ export function wakeSupervisor() {
   }
   let cwd = process.cwd();
   try { const root = E.repoRoot(); if (existsSync(root)) cwd = root; } catch { /* from here */ }
-  const script = process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
   try {
-    const child = spawn(process.execPath, [script, 'tick'], { cwd, env: process.env, detached: true, stdio: 'ignore' });
+    const child = spawn(process.execPath, [supervisorMjs(), 'tick'], { cwd, env: process.env, detached: true, stdio: 'ignore' });
     child.unref();
     return 'intake: started a supervisor tick now (supervisor.mjs tick)';
   } catch (e) {
