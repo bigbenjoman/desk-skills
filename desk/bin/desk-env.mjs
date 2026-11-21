@@ -2027,7 +2027,7 @@ export const KNOWN_UNTRACKED = Object.freeze([
 ]);
 // The scratch files one desk-review run writes at the worktree root, `<run>` that run's id and `<seat>`
 // a role; `tree-status --run <run>` leaves out the ones carrying that id.
-const REVIEW_SCRATCH =Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
+const REVIEW_SCRATCH = Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) => (/^<[A-Za-z]+>$/.test(p) ? fill(p) : escapeRe(p))).join('')}$`);
