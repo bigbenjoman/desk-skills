@@ -504,12 +504,6 @@ export function configuredRepos(root = deskConfigRoot()) {
     .map((r) => ({ ...r, ghRepo: repoConfigValue(r.slug, 'gh-repo', root) ?? r.slug.replace('__', '/') }));
 }
 
-// A repo's §0 Other names: [] when unset, `none` or unreadable. This repo's own where `slug` is null.
-function otherNames(slug, root = deskConfigRoot()) {
-  try { return [].concat((slug == null ? configValues('other-names') : repoConfigValues(slug, 'other-names', root)) ?? []).filter((v) => v && !isNone(v)); }
-  catch { return []; }
-}
-
 // Where a ticket's Jira Repository field (ticket-facts.mjs `repository`) sends it, matched against each
 // configured repo's GitHub repo by its name, or whole where the field is `owner/name`, case aside, and
 // failing that against each repo's §0 Other names: null when the field is empty or names this repo;
@@ -532,8 +526,8 @@ export function repoPlacement(repository, root = deskConfigRoot()) {
   let hits = repos.filter((r) => r.slug !== self.slug && names(r.ghRepo));
   let otherName = false;
   if (!hits.length) {
-    const selfHit = [...otherNames(null), ...(self.slug ? otherNames(self.slug, root) : [])].some(names);
-    hits = repos.filter((r) => r.slug !== self.slug && otherNames(r.slug, root).some(names));
+    const selfHit = [...labelsRow('other-names'), ...(self.slug ? labelsRow('other-names', self.slug, root) : [])].some(names);
+    hits = repos.filter((r) => r.slug !== self.slug && labelsRow('other-names', r.slug, root).some(names));
     if (selfHit && !hits.length) return null;
     if (selfHit) hits = [{ slug: self.slug ?? own ?? 'this repo' }, ...hits];
     otherName = true;
@@ -577,8 +571,8 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
   let own = null;
   try { own = configValue('gh-repo'); } catch { /* no config here: the remote decides */ }
   const repos = configuredRepos(root);
-  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop(), ...(slug ? otherNames(slug, root) : [])].filter(Boolean);
-  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : []), ...otherNames(null)];
+  const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
+  const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
   const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${escapeRe(n)}(?![\\w-])`, 'i').test(text));
   for (const d of calls) {
     const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(escapeRe).join('|')})(?![\\w-])`, 'gi');
@@ -716,10 +710,10 @@ export function configValues(id) {
   return configValuesIn(parseConfig(), id);
 }
 
-// A labels row's items, lowercased: [] when the row is unset or `none`, and with no config. Read from
-// this repo's config, or from repo `slug`'s where one is given.
-function labelsRow(id, slug = null) {
-  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
+// A list row's items, lowercased: [] when the row is unset or `none`, and with no config. Read from
+// this repo's config, or from repo `slug`'s (under `root`) where one is given.
+function labelsRow(id, slug = null, root = deskConfigRoot()) {
+  try { return [].concat((slug == null ? configValues(id) : repoConfigValues(slug, id, root)) ?? []).filter((v) => v && !isNone(v)).map((v) => String(v).trim().toLowerCase()); }
   catch { return []; }
 }
 // §4 Person-step labels: the labels marking a ticket as a step only the person takes, which holds the
