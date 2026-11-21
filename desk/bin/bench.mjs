@@ -61,7 +61,7 @@ import * as Q from './bench-quota.mjs';
 import { loadPlans, SCORED } from './bench-report.mjs';
 import { endpointArms, providersPath } from './bench-endpoint.mjs';
 import { seededRandom } from './seeded-random.mjs';
-import { tallyChecks } from './bench-checks.mjs';
+import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
@@ -298,8 +298,8 @@ function saveDiff(wt, baseline, file) {
 export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
   const checks = task.added_checks?.checks ?? [];
   const added = (r) => (!checks.length ? r : { ...r, added_checks: r.status === 'failed'
-    ? { passed: null, of: checks.length, why: 'the hidden tests did not finish' }
-    : tallyChecks(checks, readFileSync(join(dir, 'test-output.log'), 'utf8')) });
+    ? { passed: null, of: checks.length, why: UNFINISHED }
+    : tallyChecks(task.added_checks, readFileSync(join(dir, 'test-output.log'), 'utf8')) });
   for (const f of task.hidden_tests.files) {
     mkdirSync(dirname(join(wt, f)), { recursive: true });
     cpSync(join(task.hidden_tests.dir, f), join(wt, f), { force: true });

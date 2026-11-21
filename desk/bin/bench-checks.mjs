@@ -60,6 +60,14 @@ function callEnd(lines, row, col) {
   return row + 1;
 }
 
+// The last line (1-based) of the shell command starting on `lines[row]`: it runs on while a line
+// ends in a backslash.
+function shellEnd(lines, row) {
+  let r = row;
+  while (r + 1 < lines.length && /\\$/.test(lines[r])) r++;
+  return r + 1;
+}
+
 // tests/run.sh's label for a suite: its first `# suite: ` or `// suite: ` line in the first ten,
 // else its file name.
 export function suiteLabel(text, file) {
@@ -95,7 +103,7 @@ export function findChecks({ diff, defs, texts }) {
     lines.forEach((line, row) => {
       for (const m of line.matchAll(call)) {
         const col = m.index + m[1].length + m[2].length;
-        const end = line[col] === '(' ? callEnd(lines, row, col) : row + 1;
+        const end = line[col] === '(' ? callEnd(lines, row, col) : shellEnd(lines, row);
         if (!at.some((n) => n >= row + 1 && n <= end)) continue;
         const p = namePattern(m[3], m[4]);
         if (!p || seen.has(`${suite}\n${p.pattern}`)) continue;
@@ -107,16 +115,17 @@ export function findChecks({ diff, defs, texts }) {
   return checks.length ? { checks } : { checks, why: 'no check the PR added or changed in its hidden tests calls a check helper with a quoted name' };
 }
 
+// Why a run's checks are not measured when its hidden tests stopped part way.
+export const UNFINISHED = 'the hidden tests did not finish';
+
 // tests/run.sh's trailers, and bench.mjs's `$ <command>` line, each printed after a blank line.
 const TRAILER = /^(\$ |all passed: |FAILURES above|failed suites:|flaked:|over budget:)/;
-// A suite that stopped part way: tests/run.sh's own bash error words, or node's uncaught error.
-const CRASH = /too many arguments|unbound variable|bad substitution|syntax error|^\s+at .+:\d+:\d+\)?$|^node:internal\/|^Uncaught /;
 
-// A run's test-output.log -> Map of suite label -> { fails: [text], crashed }. A suite crashed when
-// it failed (a non-zero exit, or no checks ran) naming no check, or with a crash line beside its FAIL
-// lines: either way it did not run all its checks. Headings and trailers count only after a blank
-// line, as tests/run.sh prints them, so a suite's own output cannot open or close a section. A
-// retried suite's first run is skipped: its retry is what counted.
+// A run's test-output.log -> Map of suite label -> { ok, fails: [text], failed }: its passing checks
+// (tests/run.sh's `ok: <n>`), its FAIL lines, and whether it failed (a non-zero exit, or no checks
+// ran). Headings and trailers count only after a blank line, as tests/run.sh prints them, so a suite's
+// own output cannot open or close a section. A retried suite's first run is skipped: its retry is
+// what counted.
 export function suiteSections(log) {
   const out = new Map();
   let cur = null, skipping = false, prev = '';
@@ -124,33 +133,47 @@ export function suiteSections(log) {
     const after = prev === '';
     prev = line;
     const head = after && /^== (.*)$/.exec(line);
-    if (head) { cur = { fails: [], why: false, crash: false }; out.set(head[1], cur); skipping = false; continue; }
+    if (head) { cur = { ok: 0, fails: [], failed: false }; out.set(head[1], cur); skipping = false; continue; }
     if (!cur) continue;
     if (after && TRAILER.test(line)) { cur = null; continue; }
     if (line === '-- first run') { skipping = true; continue; }
     if (line === '-- retry') { skipping = false; continue; }
     if (skipping) continue;
-    if (/^FAIL /.test(line)) cur.fails.push(line.replace(/^FAIL +/, ''));
-    else if (/^(exit [1-9]\d*|no checks ran)$/.test(line)) cur.why = true;
-    else if (CRASH.test(line)) cur.crash = true;
+    const ok = /^ok: (\d+)$/.exec(line);
+    if (ok) cur.ok = Number(ok[1]);
+    else if (/^FAIL /.test(line)) cur.fails.push(line.replace(/^FAIL +/, ''));
+    else if (/^(exit [1-9]\d*|no checks ran)$/.test(line)) cur.failed = true;
   }
-  for (const s of out.values()) { s.crashed = s.why && (s.crash || !s.fails.length); delete s.why; delete s.crash; }
   return out;
 }
 
-// How many of `checks` the run whose output is `log` passed. -> { passed, of } | { passed: null, of, why }
-// Not measured, never 0, when a check's suite crashed or is not in the output.
-export function tallyChecks(checks, log) {
+// The checks each suite ran in a run where all of them passed (bench-build's run at the merge
+// commit): suite label -> count.
+export function suiteCounts(log) {
+  return Object.fromEntries([...suiteSections(log)].map(([label, s]) => [label, s.ok]));
+}
+
+// How many of `added.checks` the run whose output is `log` passed. -> { passed, of } | { passed: null,
+// of, why }. Not measured, never 0, when a check's suite is missing, or ran fewer checks than
+// `added.suites` (suiteCounts) says it has, so stopped part way, or, with no count for it, failed
+// naming no check.
+export function tallyChecks(added, log) {
+  const { checks, suites = {} } = added;
   const sections = suiteSections(log);
   const unread = (why) => ({ passed: null, of: checks.length, why });
   if (!sections.size) return unread('the test output has no tests/run.sh suite headings to read checks from');
+  for (const label of new Set(checks.map((c) => c.suite))) {
+    const s = sections.get(label);
+    if (!s) return unread(`the test output has no section for suite ${label}`);
+    const ran = s.ok + s.fails.length;
+    if (Object.hasOwn(suites, label) ? ran < suites[label] : s.failed && !s.fails.length) {
+      return unread(`${UNFINISHED}: suite ${label} ran ${ran} of its ${suites[label] ?? 'checks'}`);
+    }
+  }
   let passed = 0;
   for (const c of checks) {
-    const s = sections.get(c.suite);
-    if (!s) return unread(`the test output has no section for suite ${c.suite}`);
-    if (s.crashed) return unread(`the hidden tests did not finish: suite ${c.suite} crashed`);
     const re = new RegExp(`^${c.pattern}(?::|$)`);
-    if (!s.fails.some((f) => re.test(f))) passed += 1;
+    if (!sections.get(c.suite).fails.some((f) => re.test(f))) passed += 1;
   }
   return { passed, of: checks.length };
 }

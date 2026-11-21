@@ -26,7 +26,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
 import { GO, OWN_USE, armVendor } from './bench-quota.mjs';
-import { tallyChecks } from './bench-checks.mjs';
+import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
@@ -107,14 +107,16 @@ export function loadAddedChecks(file) {
 }
 
 // One run's added-or-changed checks. -> { passed, of } | { state: 'old' | 'unmatched' | 'failed' }
-//   old: the task records no added checks; unmatched: it names none, or the run's output names none.
+//   old: the task records no added checks; unmatched: it names none, or the run's output names none;
+//   failed: the hidden tests did not finish (the run failed, or a check's suite crashed).
 export function runChecks(added, status, result, dir) {
   if (!Array.isArray(added?.checks)) return { state: 'old' };
   if (!added.checks.length) return { state: 'unmatched' };
   if (!SCORED.has(status)) return { state: 'failed' };
   const log = dir ? join(dir, 'test-output.log') : null;
-  const r = result?.added_checks ?? (log && existsSync(log) ? tallyChecks(added.checks, readFileSync(log, 'utf8')) : {});
-  return typeof r.passed === 'number' ? { passed: r.passed, of: r.of } : { state: 'unmatched' };
+  const r = result?.added_checks ?? (log && existsSync(log) ? tallyChecks(added, readFileSync(log, 'utf8')) : {});
+  if (typeof r.passed === 'number') return { passed: r.passed, of: r.of };
+  return { state: String(r.why ?? '').startsWith(UNFINISHED) ? 'failed' : 'unmatched' };
 }
 
 // run.json with each run's result.json beside its entry, and the run's added-or-changed checks from
@@ -330,7 +332,7 @@ export function checksCell({ checks: c }) {
   if (c.of) parts.push(`${c.passed} of ${c.of} (${Math.round((100 * c.passed) / c.of)}%) over ${c.tasks} task(s)`);
   if (c.old) parts.push(`${NOT_AVAILABLE} for ${c.old} task(s): the task set records no added checks for them; refreeze it with bench-build.mjs --rewrite`);
   if (c.unmatched) parts.push(`not measured for ${c.unmatched} task(s): no check line could be matched`);
-  if (c.failed) parts.push(`not measured for ${c.failed} failed run(s)`);
+  if (c.failed) parts.push(`not measured for ${c.failed} run(s) whose hidden tests did not finish`);
   return parts.join('; ') || 'not measured';
 }
 

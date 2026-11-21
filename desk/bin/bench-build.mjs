@@ -24,7 +24,7 @@ import { FILE_SAFE } from './skill-eval.mjs';
 import { deskEnv, makeCheckout, readRepo, score, testRuns } from './bench.mjs';
 import { keyRegex, SIZE_LINE } from './ticket-lint.mjs';
 import { SIZES } from './desk-q-eta.mjs';
-import { findChecks } from './bench-checks.mjs';
+import { findChecks, suiteCounts } from './bench-checks.mjs';
 
 const USAGE = 'usage: bench-build.mjs --set <file.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout <seconds>]';
 const SHA = /^[0-9a-f]{40}$/;
@@ -233,6 +233,8 @@ function freeze(want, setDir, opts, repos) {
       ? `the hidden tests cannot run at the merge commit: ${atMerge.why}`
       : `the hidden tests fail at the merge commit (a missing service or credential reads the same): ${atMerge.why}`);
   }
+  // How many checks each hidden suite runs when all pass: a run's suite that ran fewer stopped part way.
+  task.added_checks.suites = suiteCounts(readFileSync(join(taskDir, 'validate', 'merge', 'test-output.log'), 'utf8'));
   const atBase = validateAt(repo, abs, base, join(taskDir, 'validate', 'base'), opts.timeout);
   if (atBase.status === 'accepted') fail('the hidden tests already pass at the base commit, so they cannot tell a right answer from a wrong one');
   if (atBase.status === 'failed') fail(`the hidden tests cannot run at the base commit: ${atBase.why}`);

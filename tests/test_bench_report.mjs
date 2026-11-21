@@ -200,14 +200,16 @@ t('DS-547 the report runs', r.status, 0);
 const prText = readFileSync(join(pr.out, 'report.md'), 'utf8');
 const prRow = prText.split('\n').find((l) => l.startsWith('| Checks the PR added or changed, passed |'))?.split(' | ').slice(2).map((c) => c.replace(/ \|$/, ''));
 t('DS-547 AC4 each arm\'s added-checks pass rate, a failed run not measured and an old task not available', prRow?.join(' / '),
-  `5 of 6 (83%) over 2 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}; not measured for 1 failed run(s) / 8 of 9 (89%) over 3 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}`);
+  `5 of 6 (83%) over 2 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}; not measured for 1 run(s) whose hidden tests did not finish / 8 of 9 (89%) over 3 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}`);
 t('DS-547 AC4 it sits beside tasks accepted', /\| Tasks accepted, of tasks run \|.*\n\| Checks the PR added or changed, passed \|/.test(prText), true);
 t('DS-547 AC2 a run passing two of three shows it in the task table', prText.includes('| k1 | accepted (3 of 3 added checks) | rejected (2 of 3 added checks) |'), true);
 t('DS-547 an older run is counted from its test output', prText.includes('| k2 | rejected (2 of 3 added checks) |'), true);
 t('DS-547 AC3 a timed-out run is not measured, never 0', prText.includes('| k3 | failed | accepted (3 of 3 added checks) |'), true);
 t('DS-547 AC3 a failed run is not measured even with its figure recorded', runChecks(three, 'failed', { added_checks: added(0) }, null).state, 'failed');
-t('DS-547 an arm with only failed runs is not measured, never 0', checksCell({ checks: { passed: 0, of: 0, tasks: 0, old: 0, unmatched: 0, failed: 2 } }), 'not measured for 2 failed run(s)');
+t('DS-547 an arm with only failed runs is not measured, never 0', checksCell({ checks: { passed: 0, of: 0, tasks: 0, old: 0, unmatched: 0, failed: 2 } }), 'not measured for 2 run(s) whose hidden tests did not finish');
 t('DS-547 a task whose checks could not be matched is not measured', runChecks({ checks: [], why: 'x' }, 'accepted', null, null).state, 'unmatched');
+t('DS-547 AC3 a rejected run whose check suite crashed reads as not finished, not unmatched',
+  runChecks(three, 'rejected', { added_checks: { passed: null, of: 3, why: 'the hidden tests did not finish: suite widgets crashed' } }, null).state, 'failed');
 
 t('no --tasks refuses', /--tasks is required/.test(run().stderr), true);
 t('no run.json refuses, naming it', /cannot read the bench run/.test(run('--tasks', join(dir, 'nowhere', 'tasks.json')).stderr), true);
