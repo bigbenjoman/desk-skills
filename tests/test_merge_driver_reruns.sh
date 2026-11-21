@@ -226,19 +226,22 @@ LD="$T/leases"
 hold(){ DESK_LEASE_DIR="$LD" DESK_MACHINE="$1" node "$B/leases.mjs" acquire preview-build acme --ttl 1200 --no-owner --label "$2" >/dev/null 2>&1; }
 leases(){ DESK_LEASE_DIR="$LD" node "$B/leases.mjs" list --json 2>/dev/null | jq -r '"\(.label) \(.owner)"' | paste -sd',' -; }
 SHA912=e912000000000000000000000000000000000000; SHA913=e913000000000000000000000000000000000000; SHA914=e914000000000000000000000000000000000000
+SHA915=e915000000000000000000000000000000000000
 cat > "$T/prs.json" <<EOF
 { "1912": { "head": "fix/T-912", "base": "main", "sha": "$SHA912", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["Vercel Preview", "FAILURE", 9912]] },
   "1913": { "head": "fix/T-913", "base": "main", "sha": "$SHA913", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["build", "FAILURE", 9913]] },
-  "1914": { "head": "fix/T-914", "base": "main", "sha": "$SHA914", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["deploy-preview", "FAILURE", 9914]] } }
+  "1914": { "head": "fix/T-914", "base": "main", "sha": "$SHA914", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["deploy-preview", "FAILURE", 9914]] },
+  "1915": { "head": "fix/T-915", "base": "main", "sha": "$SHA915", "state": "open", "draft": false, "checks": [["test", "SUCCESS", 9090], ["Vercel", "FAILURE"], ["build", "FAILURE", 9915]] } }
 EOF
 q init merge-preview
-for k in T-912 T-913 T-914; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
+for k in T-912 T-913 T-914 T-915; do q add "$k" Bug A; q set "$k" "branch=fix/$k" state=done "result.pr=1${k#T-}"; done
 : > "$T/merges.log"; : > "$T/gh.log"
 pvloop(){ out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$1" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$2" 2>&1); rc=$?; }
 hold "$T/machine-one.md" "acme/site#7"
-pvloop "$T/machine-one.md" "T-912 T-913"
+pvloop "$T/machine-one.md" "T-912 T-913 T-915"
 check "DS-912 AC3: with the team's one unit held, a preview check is not rerun, and the log says it waits on the preview build" '! grep -q "run rerun 9912" "$T/gh.log" && echo "$out" | grep -qF "#1912 red + completed, but waits on the preview build for acme before rerunning: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/reruns-1912-$SHA912" ] && [ ! -e "$SD/cooldown-1912" ]'
 check "DS-912 AC3: a red check that is no preview is rerun as before" 'grep -q "run rerun 9913 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/site#7 null" ]'
+check "DS-912 AC3: a red Vercel status with no run is not rerun, so the build beside it reruns without the lease" 'grep -q "run rerun 9915 --repo acme/widgets --failed" "$T/gh.log" && ! echo "$out" | grep -q "#1915 .*waits on the preview build"'
 rm -rf "$LD"
 pvloop "$T/machine-one.md" "T-912"
 check "DS-912 AC3: once a unit is free the rerun takes it, labelled with the PR, and runs" 'grep -q "run rerun 9912 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1912 null" ]'

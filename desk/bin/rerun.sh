@@ -16,7 +16,8 @@ RERUNS_MAX=2; RERUN_COOLDOWN=720
 reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
 RERUN_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# A rerun of a preview check starts a preview build. Where PREVIEW_TEAM (§4 Vercel's team) is set, it
+# A rerun of a preview check starts a preview build (`names`: the checks with a run, which a rerun
+# reruns; a deploy service's own status has none). Where PREVIEW_TEAM (§4 Vercel's team) is set, it
 # first takes a unit of that team's preview-build lease, labelled with the PR, or waits for a later
 # loop while every unit is held. A lease the broker cannot give (an unreadable store) is logged and the
 # rerun goes ahead without one. -> 0 to rerun, 1 to wait.
@@ -62,7 +63,7 @@ $names
 EOF_NAMES
   cd_file="$SD/cooldown-$1"; now=$(date +%s); last=$(cat "$cd_file" 2>/dev/null || echo 0)
   if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
-  preview_lease "$1" "$names" || return
+  preview_lease "$1" "$(printf '%s' "$g" | jq -r '.gate.failing[] | select(.runId != null) | .name')" || return
   # gate.full reruns every job of each run, so a job that reads other jobs' results reads the new ones.
   full=$(printf '%s' "$g" | jq -r '.gate.full // false')
   for rid in $ids; do

@@ -413,6 +413,8 @@ export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <se
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
 <owner>: --pid <pid>, --owner claude (the nearest Claude Code session above the caller), or --no-owner
 (preview-build only: it lapses when its TTL passes). By default the owner is the calling process.
+An ownerless acquire whose --label a live ownerless lease of that pool holds renews that lease, so one
+PR's builds hold one unit; a renew with no --label keeps the lease's label.
 A live owner that does not renew loses its lease at twice its TTL, except a slot's.
 Each kind is off, shadow or on from the machine profile's lease-kinds row (desk-env machine set lease-kinds=port=on); unnamed kinds are ${DEFAULT_LEASE_MODE}.
 force-release and reset are for a person clearing a stuck lease or an unreadable store.`;
