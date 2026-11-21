@@ -3831,7 +3831,7 @@ const drafts = [];
 const undrafted = [];
 const reopens = [];
 // GitHub is asked once a pass per PR: a PR recorded on two tickets is read for each from this.
-const prReads = {};
+const prStatusReads = {};
 runSteps({
   name: 'PR status',
   snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, archived: archivedOf(qNow), repo: GH_REPO }),
@@ -3844,8 +3844,8 @@ runSteps({
       if (a.fixTries) { t.fix_tries = a.fixTries; q('set', a.key, `fix_tries=${JSON.stringify(a.fixTries)}`); }
     },
     'read-pr': (a) => {
-      const s = prReads[a.pr] ?? readPrStatus(a.pr);
-      if (s) prReads[a.pr] = s;
+      const s = prStatusReads[a.pr] ?? readPrStatus(a.pr);
+      if (s) prStatusReads[a.pr] = s;
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
     },
     'pr-status': (a) => q('set', a.key, `pr_status=${JSON.stringify(a.status)}`),

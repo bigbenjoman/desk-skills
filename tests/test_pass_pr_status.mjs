@@ -122,7 +122,9 @@ const lists = (acts) => acts.at(-1);
 {
   const tickets = [done('I', 19), { key: 'J', state: 'running' }, done('K', 19)];
   const acts = run(snap(tickets), { 19: status(19, 'OPEN', { reopen: { tests: 'main' } }) });
-  t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
+  // GitHub is asked once (pass.mjs's read-pr handler keeps the read); each ticket keeps the status.
+  t('DS-796 one PR two tickets share is read for each, and each keeps its status', j(ofType(acts, 'pr-status').map((a) => a.key)), j(['I', 'K']));
+  t('DS-796 only the first acts on it', j(lists(acts).undrafted.map(({ t: x }) => x.key)), j(['I']));
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
 }
