@@ -1259,14 +1259,14 @@ check "DS-755 AC10 a row split over two code spans is 1 for every file, and the 
 # key order; admission recorded each one's collides_with. RK-90 and RK-91 share no file with anything.
 fbq rk '1'
 fbt RK-182 triaged desk/bin/desk-q.mjs; fbt RK-147 triaged desk/bin/desk-q.mjs; fbt RK-181 triaged desk/bin/desk-q.mjs src/a.ts
-q set RK-147 collides_with=RK-182; q set RK-181 'collides_with=["RK-182","RK-147"]'
+q set RK-147 collides_with=RK-182; q set RK-181 'collides_with=RK-182|RK-147'
 fbt RK-90 triaged src/solo.ts; fbt RK-91 triaged src/other.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-575 AC1 of three naming one file with a budget of 1, only the first in queue order starts and the others wait, held by it" \
   'spawned RK-182 && ! spawned RK-147 && ! spawned RK-181 && [ "$(field RK-147 state)" = "\"triaged\"" ] && [ "$(field RK-181 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "RK-147 (desk/bin/desk-q.mjs has 1 running of its 1: RK-182), RK-181 (desk/bin/desk-q.mjs has 1 running of its 1: RK-182)"'
 check "DS-575 AC2 two tickets with no file in common both start in the same pass" 'spawned RK-90 && spawned RK-91'
 check "DS-575 AC3 overlapping tickets wait with no question: none parked, none with an open question, no order asked" \
-  '[ "$(jq -c "[.tickets[] | select(.key | startswith(\"RK-\")) | select(.state == \"parked\" or (.open_questions // 0) > 0 or .held_by != null)] | length" "$DESK_QUEUE")" = 0 ] && ! echo "$out" | grep -qF "which comes first" && [ -z "$(ls "$DESK_AUTOPILOT_STATE/parks" 2>/dev/null)" ]'
+  '[ "$(jq -c "[.tickets | to_entries[] | select(.key | startswith(\"RK-\")) | .value | select(.state == \"parked\" or (.open_questions // 0) > 0 or .held_by != null)] | length" "$DESK_QUEUE")" = 0 ] && ! echo "$out" | grep -qF "which comes first" && [ -z "$(ls "$DESK_AUTOPILOT_STATE/parks" 2>/dev/null)" ]'
 q set RK-182 state=done; : > "$T/fb-spawns"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-575 AC1 AC3 once the running one stops, the next in queue order starts and the last still waits" \
