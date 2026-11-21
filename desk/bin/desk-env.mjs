@@ -105,7 +105,8 @@
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
-//                                             its primary-checkout directory holds (NOENV); exit 1 if any
+//                                             its primary-checkout directory holds (NOENV), and a Test sign-in
+//                                             user for an app it runs (NOSIGNIN); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -1809,7 +1810,8 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
 // it, each with the value to add: a Dev server item where its package.json has a dev script, and the
 // `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
-// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
+// gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
 export function appSetupGaps(parsed, root, dir) {
   const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
@@ -1826,14 +1828,24 @@ export function appSetupGaps(parsed, root, dir) {
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
   }
+  // An app with a Dev server item, or one just proposed, needs a user to sign in as. Unlike the rows
+  // above, an unset Test sign-in row is a gap here: only the person can name the user.
+  const runs = gaps.some((g) => g.row === 'Dev server') || (dev && !isNone(dev) && (devServed(dev).has(app) || (p?.name && devServed(dev).has(p.name))));
+  const signin = configValuesIn(parsed, 'test-signin');
+  if (runs && !(signin && isNone(signin)) && !(signin ?? []).some((x) => parseCommandItem(x).dir === app)) {
+    gaps.push({ row: 'Test sign-in', dir: app, value: [`${app === '.' ? '' : `${app}: `}${SIGNIN_PLACEHOLDER}`] });
+  }
   return gaps;
 }
+const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
-    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+    : g.row === 'Env files'
+      ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
+      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
