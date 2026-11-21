@@ -643,20 +643,17 @@ export function personGapsCall(review, opts = {}) {
 
 // The person's call on a PR's review gaps (desk-needs-you), as the fix it sends back: not one of the
 // FIX_TRIES_MAX tries, which are the pass's own. `ready` is a PR out of draft, which its worker leaves
-// out of draft. `accepted` is whether the call accepts a gap (acceptsGap), which alone earns the
-// accepted re-verdict at the unchanged head and the push-nothing rule's exception for it.
-export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer, accepted: acceptsGap(answer) });
-// A person's call accepts a gap where it says accept (accepts, accepted), not negated: desk-review
-// counts a gap accepted from the person's PR comment naming it and accepting it, and the call is
-// posted on the PR as that comment.
-export const acceptsGap = (answer) => /(?<!(?:\bnot|\bnever|\bno|n['’]t)\s+)\baccept(?:s|ed|ing)?\b/i.test(String(answer ?? ''));
+// out of draft.
+export const gapsFix = ({ pr, head, ready, answer }) => ({ kind: 'gaps', pr, head: head ?? null, ready: ready === true, what: 'review gaps: your call', answer });
 
 // The rule a reviewed fix worker's task states for a push of nothing, and its one exception, which only
-// a gaps call that accepts a gap carries (fixTaskText). desk-review's post phase and the worker
-// contract's Stage 4 show the same text, generated from these (tests/prose_facts.mjs `push-nothing`).
+// a gaps call carries (fixTaskText). Whether the call accepts a gap is the worker's reading of the
+// person's free text, as desk-review's is of the same comment on the PR, so every gaps call carries it.
+// desk-review's post phase and the worker contract's Stage 4 show the same text, generated from these
+// (tests/prose_facts.mjs `push-nothing`).
 export const PUSH_NOTHING = 'If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one.';
 export const PUSH_NOTHING_ACCEPTED = "The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.";
-export const pushNothing = (accepted = false) => (accepted ? `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}` : PUSH_NOTHING);
+export const pushNothing = (excepted) => (excepted ? `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}` : PUSH_NOTHING);
 
 // The person's instruction on an open PR (desk-needs-you `resume`), as the fix it sends back: like a
 // gaps call, not one of the pass's tries; numbered as the last of the tries made, for the views that
@@ -1077,8 +1074,7 @@ export function fixBrief(t, review = null) {
       ...String(f.answer ?? '').split('\n').map((l) => `> ${l}`), '', 'Carry out that call on each gap, and nothing else.', '',
       // A gap accepted changes no code, so only a verdict that records it settles it: without one the
       // verdict at the head still counts it open, and the PR goes back to the person.
-      ...(!f.accepted ? []
-        : ownReview(review)
+      ...(ownReview(review)
         ? [`A gap the person accepted is settled by the review's verdict, not by code: ${reviewStep(review, 'the head')}, so its verdict records the accepted gap, even when nothing else changes.`, '']
         : acceptedReverdict(f, t.key))].join('\n');
   }
@@ -1290,7 +1286,7 @@ function fixTaskText(t, review = null) {
   // A worker that pushed nothing left the head the last review read, so another review there changes nothing.
   // The one exception is a gaps call that accepts a gap: its accepted re-verdict at the unchanged head,
   // which only desk-review's verdict defines (pushNothing, in desk-review's own words).
-  const excepted = gaps && f.accepted === true && !ownReview(review);
+  const excepted = gaps && !ownReview(review);
   const after = reviewed ? `${afterReview}. ${pushNothing(excepted)}${excepted ? ' The "A gap the call accepts" section of your briefing says how.' : ''}` : '.';
   // A conflict try's DONE line is the reason a PR stuck after its last try gives (stillInConflict).
   const said = f.kind === 'conflict' && f.check ? ' said=<one line: what you renumbered, or what still fails the check and why>'

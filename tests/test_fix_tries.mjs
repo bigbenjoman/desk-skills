@@ -1,6 +1,6 @@
 // suite: fix tries (a red or conflicted ready PR goes back to a worker, twice)
 import { readFileSync } from 'node:fs';
-import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, acceptsGap, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
+import { fixCall, outageChecks, OUTAGE_PRS, gateTry, fixBrief, fixTask, fixStartStage, parseOperatorChecks, reviewFindings, reviewFix, reviewGaps, reviewTry, verdictTry, draftChecksFix, draftGateTry, conflictFix, syncFix, captureTry, failedSteps, stuckWhy, personReviewFix, personGapsCall, personGapsIn, gapsFix, feedbackFix, resolvable, feedbackReply, externalTry, driverReviewTry, syncSaid, recommendedOf, pushNothing, PUSH_NOTHING, PUSH_NOTHING_ACCEPTED, FIX_TRIES_MAX, REVIEW_TRIES_CEILING } from '../desk/bin/fix-tries.mjs';
 import { externalPassed } from '../desk/bin/gate.mjs';
 import { askCategoryIn } from '../desk/bin/decisions.mjs';
 import { undraftCall, undraftComment, movedByBase, buildCall } from '../desk/bin/undraft.mjs';
@@ -390,18 +390,14 @@ t('DS-833 AC4 the round is the one whose verdict is the newest posted at the hea
 t('DS-833 AC1 the re-verdict is confirmed by the count rising by one, not by a single marker', briefAc.includes("confirm it landed by Phase 7's count before and after, one higher, not by finding exactly one marker"), true);
 t('DS-833 AC4 with no results file for the head it parks, naming it, and never re-counts', briefAc.includes('With no results file for that head, post nothing: park (AUTOPILOT_PARK) naming the file you looked for') && briefAc.includes('Never count a verdict by hand'), true);
 t('DS-833 AC5 a call that changes code is reviewed as a new round', briefAc.includes('Where the call changes code, push it and review the new head as a new round') && taskAc.includes('then review the new head with desk-review'), true);
-t('DS-889 AC1 a gaps call that accepts a gap carries the accepted flag', `${acceptCall.fix.accepted} ${readyCall.fix.accepted}`, 'true true');
-t('DS-889 AC1 its task states the push-nothing rule with the accepted-gap exception, in the words desk-review\'s post phase shows', taskAc.includes(`. ${pushNothing(true)} The "A gap the call accepts" section of your briefing says how. Open no new PR`), true);
+t('DS-889 AC1 a gaps call\'s task states the push-nothing rule with the accepted-gap exception, in the words desk-review\'s post phase shows', taskAc.includes(`. ${pushNothing(true)} The "A gap the call accepts" section of your briefing says how. Open no new PR`), true);
 t('DS-889 the exception is the push-nothing rule followed by desk-review\'s one exception', pushNothing(true), `${PUSH_NOTHING} ${PUSH_NOTHING_ACCEPTED}`);
-const rejectCall = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: false, answer: 'do not accept AC3: add the VAT column' }) });
-const rejectTask = fixTask(rejectCall);
-t('DS-889 AC2 a gaps call that accepts no gap has no accepted flag, and states the push-nothing rule as before, without the exception or the re-verdict section',
-  `${rejectCall.fix.accepted} ${rejectTask.includes(`. ${PUSH_NOTHING} Open no new PR`)} ${rejectTask.includes(PUSH_NOTHING_ACCEPTED)} ${fixBrief(rejectCall).includes('A gap the call accepts')}`, 'false true false false');
-const oldRecord = tk({ fix: { kind: 'gaps', pr: 702, head: HEAD, ready: false, answer: 'accept AC3' } });
-t('DS-889 a gaps fix with no accepted flag renders no exception', fixTask(oldRecord).includes(PUSH_NOTHING_ACCEPTED), false);
-t('DS-889 acceptsGap reads an acceptance, and not a negated one',
-  JSON.stringify(['accept it', 'Accepted: I checked AC3 on staging', 'AC2 is fine, I accept the gap', "don't accept AC1, accept AC2", 'do not accept it', "I don't accept that", 'not accepted, add it', 'never accept a gap', 'add the column', null].map(acceptsGap)),
-  JSON.stringify([true, true, true, true, false, false, false, false, false, false]));
+// Whether a call accepts a gap is the worker's reading of the person's words, as desk-review's is of the
+// same comment, so a call that accepts in other words, and a record queued before this text, keep both.
+const otherWords = tk({ fix: gapsFix({ pr: 702, head: HEAD, ready: false, answer: 'AC3 is fine as it is, I checked it on staging' }) });
+const oldRecord = tk({ fix: { kind: 'gaps', pr: 702, head: HEAD, ready: false, answer: 'AC3 is fine as it is' } });
+t('DS-889 AC1 a gaps call that accepts a gap without the word accept, or queued before, keeps the exception and the re-verdict section',
+  [otherWords, oldRecord].map((x) => `${fixTask(x).includes(pushNothing(true))} ${fixBrief(x).includes('A gap the call accepts, with no code change')}`).join(' '), 'true true true true');
 const reviewTaskText = fixTask(tk({ fix: { try: 1, of: 2, kind: 'review', pr: 702, head: HEAD, ready: false, findings: [{ sev: 'P1', text: 'src/a.ts:1 dup' }] } }));
 t('DS-889 AC2 a review fix states the push-nothing rule as today, without the exception', `${reviewTaskText.includes(`. ${PUSH_NOTHING} Open no new PR`)} ${reviewTaskText.includes(PUSH_NOTHING_ACCEPTED)}`, 'true false');
 const instructionTask = fixTask(tk({ fix: { kind: 'instruction', pr: 702, head: HEAD, ready: false, answer: 'accept it as it is' } }));
