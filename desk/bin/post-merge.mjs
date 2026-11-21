@@ -11,6 +11,7 @@ import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
+import { promotionPr } from './batch-state.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -37,22 +38,35 @@ export function readPostMerge(state) {
 // revert of a revert puts the change back, so it reverts nothing.
 export function revertedPr(subject) {
   const m = /^Revert "(.*)"/.exec(String(subject ?? ''));
-  if (!m || m[1].startsWith('Revert "')) return null;
-  const n = /\(#(\d+)\)\s*$/.exec(m[1]) ?? /^Merge pull request #(\d+)\b/.exec(m[1]);
-  return n ? Number(n[1]) : null;
+  return m ? landedPr(m[1]) : null;
 }
 
 // Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
-// within a pass of its merge): [{ticket, pr, merged_at, sha}], sha the merge commit the pass read
-// from the PR (pr_status.merge_commit), or null.
+// within a pass of its merge): [{ticket, pr, merged_at, own, base, promotion}]. `own` is the merge
+// commit the pass read from the PR (pr_status.merge_commit) or null, `base` the branch it merged into,
+// and `promotion` the promotion PR that took a batch child on (batch-state promotionPr) or null.
 export function mergedTickets(queue) {
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = mergedPr(t);
-    const sha = /^[0-9a-f]{40}$/.test(String(t.pr_status?.merge_commit ?? '')) ? t.pr_status.merge_commit : null;
-    if (pr) out.push({ ticket, pr, merged_at: t.merged_at, sha });
+    const own = SHA40.test(String(t.pr_status?.merge_commit ?? '')) ? t.pr_status.merge_commit : null;
+    if (pr) out.push({ ticket, pr, merged_at: t.merged_at, own, base: t.pr_status?.base ?? null, promotion: promotionPr(queue, t) });
   }
   return out;
+}
+const SHA40 = /^[0-9a-f]{40}$/;
+
+// The commit that put merge `m`'s code on the default branch, among `commits` (the default branch's,
+// since the watch began), and when it landed: its own merge commit, else its promotion PR's, else the
+// commit whose subject lands either PR. -> { sha, at } or null.
+function landing(m, commits) {
+  const on = (sha) => (sha && commits.some((c) => c.sha === sha) ? sha : null);
+  const by = (pr) => (pr == null ? null : commits.find((c) => landedPr(c.subject) === Number(pr))?.sha ?? null);
+  const p = m.promotion;
+  const own = on(m.own) ?? by(m.pr);
+  if (own) return { sha: own, at: m.merged_at };
+  const promoted = on(p?.merge_commit) ?? by(p?.pr);
+  return promoted ? { sha: promoted, at: p.merged_at } : null;
 }
 
 // The PR a default-branch commit subject lands, or null: `<title> (#N)` (a squash merge) or
@@ -73,8 +87,9 @@ export const mergedPr = (t) => {
 const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}` : r.kind === 'red_main' ? `${r.ticket}|red_main|${r.run?.id}` : null);
 
 // The records a scan finds. `commits` are [{sha, at, subject}] from the default branch; `runs` are
-// [{id, name, url, conclusion, created_at, sha}], each on the merge commit `sha` it was read for, or
-// null when none could be read.
+// [{id, name, url, conclusion, created_at, sha}], each on the commit `sha` it was read for, or null
+// when none could be read. A merge's `sha` and `landed_at` are where and when its code reached the
+// default branch: a run on that commit failing within RED_HOURS of then is the merge's.
 export function findRecords({ merges, commits, runs, at }) {
   const byPr = new Map(merges.map((m) => [m.pr, m]));
   const found = [];
@@ -87,7 +102,7 @@ export function findRecords({ merges, commits, runs, at }) {
   for (const r of runs ?? []) {
     if (!FAILED.has(r.conclusion)) continue;
     for (const m of merges.filter((x) => x.sha && x.sha === r.sha)) {
-      const gap = Date.parse(r.created_at) - Date.parse(m.merged_at);
+      const gap = Date.parse(r.created_at) - Date.parse(m.landed_at ?? m.merged_at);
       if (gap > 0 && gap <= RED_HOURS * 3_600_000) {
         found.push({ kind: 'red_main', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, run: { id: r.id, name: r.name, url: r.url, created_at: r.created_at }, at });
       }
@@ -107,10 +122,12 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
 }
 
 // One scan, if one is due: `log(sinceIso)` gives the default branch's commits since then and
-// `runs(sha)` the default branch's runs on one merge commit, each throwing when it cannot read all of
-// them. A merge with no merge commit recorded is found in the log by its PR number.
+// `runs(sha)` the default branch's runs on one commit, each throwing when it cannot read all of them.
+// Each merge's runs are read on the commit that put its code there (landing). A batch child merged into
+// another branch (`branch` names the default) whose promotion has not merged is not there yet: it has
+// no runs to read.
 // -> {ran, written: [records], line}
-export function postMergeScan({ state, queue, log, runs, now = Date.now() }) {
+export function postMergeScan({ state, queue, log, runs, branch = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
@@ -123,9 +140,11 @@ export function postMergeScan({ state, queue, log, runs, now = Date.now() }) {
     const since = new Date(Math.min(...merges.map((m) => Date.parse(m.merged_at))) - 3_600_000).toISOString();
     let logged = true;
     try { commits = log(since); } catch (e) { logged = false; why.push(`default-branch log not read: ${firstLine(e)}`); }
-    for (const m of merges) m.sha ??= commits.find((c) => landedPr(c.subject) === m.pr)?.sha ?? null;
     const unread = [];
     for (const m of merges) {
+      if (branch && m.base && m.base !== branch && !m.promotion) continue;
+      const l = logged ? landing(m, commits) : null;
+      m.sha = l?.sha ?? null; m.landed_at = l?.at ?? null;
       if (!m.sha) { unread.push(`#${m.pr}: no merge commit${logged ? ' on the default branch' : ' (the log was not read)'}`); continue; }
       try { (runList ??= []).push(...runs(m.sha).map((r) => ({ ...r, sha: m.sha }))); } catch (e) { unread.push(`#${m.pr} at ${m.sha.slice(0, 12)}: ${firstLine(e)}`); }
     }
@@ -166,7 +185,7 @@ export function ghRuns(repo, branch, sha, gh = (args) => execFileSync('gh', args
 export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
-      state, queue,
+      state, queue, branch,
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);

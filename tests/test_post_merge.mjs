@@ -24,8 +24,9 @@ const mergedD = NOW - 15 * 24 * H;
 const shaD = commit('feat: D (#4)', mergedD);
 const shaC = commit('Merge pull request #3 from o/c', NOW - 80 * H);
 const shaA = commit('feat: A (#1)', mergedA);
-const SHA_B = 'b'.repeat(40);
 const revertA = commit('Revert "feat: A (#1)" (#9)', NOW - 2 * 24 * H);
+const SHA_B = commit('Merge pull request #2 from o/b', NOW - 40 * H);
+const shaP = commit('Merge pull request #50 from o/epic', NOW - 20 * H);
 const revertD = commit('Revert "feat: D (#4)"', NOW - H);
 
 const queue = { tickets: {
@@ -100,6 +101,25 @@ const state11 = join(tmp, 'state11');
 postMergeScan({ state: state11, queue, log, runs: (sha) => { if (sha === shaC) throw new Error('gh: HTTP 502'); return runs(sha); }, now: NOW });
 t('one merge\'s runs not read is said with its PR and commit', readPostMerge(state11).find((r) => r.kind === 'scan')?.why, `default-branch runs not read: #3 at ${shaC.slice(0, 12)}: gh: HTTP 502`);
 
+// A batch child merged into its epic branch: its own merge commit is not on the default branch, so its runs
+// are read on the promotion PR's merge commit, from when that merged.
+const EPIC = 'e'.repeat(40);
+const child = (promotion) => ({ promotion, tickets: { 'T-K': { merged_at: iso(NOW - 30 * H), pr_status: { pr: 7, base: 'epic', merge_commit: EPIC } } } });
+const atP = { [shaP]: [{ id: 701, name: 'CI', url: 'https://example.com/r/701', conclusion: 'failure', created_at: iso(NOW - 19 * H) }] };
+const asked13 = [];
+const r13 = postMergeScan({ state: join(tmp, 'state13'), queue: child({ pr: 50, merged_at: iso(NOW - 20 * H), merge_commit: shaP }), log, runs: (sha) => { asked13.push(sha); return atP[sha] ?? []; }, branch: 'main', now: NOW });
+t('a promoted batch child\'s runs are read on the promotion\'s merge commit, not its own', asked13.join(), shaP);
+t('and a failure there within a day of the promotion is the child\'s', r13.written.map((r) => `${r.ticket} ${r.run.id}`).join(), 'T-K 701');
+const asked14 = [];
+postMergeScan({ state: join(tmp, 'state14'), queue: child({ pr: 50, merged_at: iso(NOW - 20 * H) }), log, runs: (sha) => { asked14.push(sha); return []; }, branch: 'main', now: NOW });
+t('with no promotion merge commit recorded, it is found in the log by the promotion PR', asked14.join(), shaP);
+const state15 = join(tmp, 'state15');
+const r15 = postMergeScan({ state: state15, queue: child(undefined), log, runs: () => { throw new Error('read'); }, branch: 'main', now: NOW });
+t('a batch child not promoted yet is not on the default branch: nothing read, the scan complete', `${r15.written.length} ${readPostMerge(state15).find((r) => r.kind === 'scan')?.complete}`, '0 true');
+const state16 = join(tmp, 'state16');
+postMergeScan({ state: state16, queue: { tickets: { 'T-M': { merged_at: iso(NOW - 10 * H), pr_status: { pr: 8, base: 'main', merge_commit: EPIC } } } }, log, runs: () => [], branch: 'main', now: NOW });
+t('a recorded merge commit that is not on the default branch is not read as one: the scan says so', readPostMerge(state16).find((r) => r.kind === 'scan')?.why, 'default-branch runs not read: #8: no merge commit on the default branch');
+
 // A busy default branch: 1,200 runs in the window, two of them on the watched merge's commit. The API is
 // asked for that commit's runs only, so the watch reads them whole and records the failure.
 const busy = Array.from({ length: 1200 }, (_, i) => ({ id: 5000 + i, name: 'CI', html_url: `https://example.com/r/${5000 + i}`, conclusion: 'failure', created_at: iso(NOW - 30 * H + i * 1000), head_sha: i % 600 === 7 ? SHA_B : 'f'.repeat(40), head_branch: 'main' }));
@@ -111,10 +131,9 @@ const api = (args) => {
   const per = Number(u.searchParams.get('per_page'));
   return JSON.stringify({ total_count: hit.length, workflow_runs: hit.slice(0, per) });
 };
-t('the branch has more than 1000 runs', busy.length > 1000, true);
 const state12 = join(tmp, 'state12');
 const r12 = postMergeScan({ state: state12, queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs: (sha) => ghRuns('o/r', 'main', sha, api), now: NOW });
-t('the watched merge\'s failed runs are recorded', r12.written.map((r) => r.run.id).join(), '5007,5607');
+t('with 1,200 runs on the branch, the watched merge\'s failed runs are recorded', r12.written.map((r) => r.run.id).join(), '5007,5607');
 t('and the scan is complete', readPostMerge(state12).find((r) => r.kind === 'scan')?.complete, true);
 t('the pass line names them', r12.line, 'post-merge watch: T-B red main in run 5007, T-B red main in run 5607');
 t('one API call, for that commit on the default branch', calls.join('|'), `api repos/o/r/actions/runs?head_sha=${SHA_B}&branch=main&per_page=100`);
