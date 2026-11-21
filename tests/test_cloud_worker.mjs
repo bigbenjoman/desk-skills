@@ -47,6 +47,8 @@ const prompt = cloudPrompt({ key: 'K-1', repo: 'acme/widgets', base: 'main', bra
 t('AC2 the prompt carries the ticket text', prompt.includes('AC1: it works'), true);
 t('AC2 and the branch to push and the PR to open', prompt.includes('branch named exactly `feat/K-1-x`, cut from `main`') && prompt.includes('with K-1 in its title'), true);
 t('AC2 and the repo\'s test command', prompt.includes('Run `bash tests/run.sh` before you push'), true);
+t('before it pushes, it reads where each server-set value its change branches on is set, and names a source it cannot read as a premise',
+  ['read where that value is set', 'every value it can set', 'as a premise'].every((x) => prompt.includes(x)) && prompt.indexOf('read where that value is set') < prompt.indexOf('and push it to origin'), true);
 
 // ---- the start (AC2, AC4) ---------------------------------------------------
 const started = parseCloudStart(fixture('created.txt'));
