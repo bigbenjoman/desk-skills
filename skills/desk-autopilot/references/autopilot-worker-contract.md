@@ -93,7 +93,9 @@ log that one. Where every option breaks one, park before the PR, quoting it.
 
 **Check a step before asking if it was done**, and after a park print
 `AUTOPILOT_PARK_INPUTS: {…}` (flat; lists ok), plus `AUTOPILOT_PARK_CLEARS_WHEN: <condition>`
-where a script can read what clears it: `desk-autopilot` *Ask or take* says how.
+where a script can read what clears it: write it as `desk-autopilot` *Ask or take*'s table of forms
+shows, and run `clears-when.mjs --check` on it first.
+
 
 When the call parks, or `desk-ticket` says stop and wait for anything else:
 

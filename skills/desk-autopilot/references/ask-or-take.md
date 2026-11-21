@@ -74,6 +74,27 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   question giving it another relative path, or more than one place, is refused, saying so), and
   where the question asks the person to make or save it, the park is still put to them while each
   pass checks for the file.
+  The forms, each beside a line written in it. `<path> exists` with no `file` reads as a file only
+  for an absolute or `$DESK_STATE` path, or a file name with an extension; write `file <path> exists`
+  otherwise.
+
+  | Form | Example |
+  |---|---|
+  | `pr <n> merged` | `pr 812 merged` |
+  | `pr <n> ready` | `pr 812 ready` |
+  | `ticket <KEY> done` | `ticket ABC-41 done` |
+  | `variable <NAME> set` | `variable DEPLOY_TOKEN set` |
+  | `run <id> completed` | `run 18842117 completed` |
+  | `git push origin <branch> succeeds` | `git push origin fix/ABC-42-totals succeeds` |
+  | `base contains <branch>` | `base contains main` |
+  | `pr <n> reviewed by <login> at head` | `pr 812 reviewed by octocat at head` |
+  | `file <path> exists` | `file docs/exports/ABC-42.csv exists` |
+  | `ticket <KEY> in <repo> batch` | `ticket ABC-43 in acme/web batch` |
+  | `check "<name>" on pr <n> passes` | `check "e2e" on pr 812 passes` |
+  | `commit <sha> on <branch>` | `commit 4f2a9c1 on main` |
+  | `gh pr view <n> [--repo <owner/name>] reports MERGED` | `gh pr view 812 --repo acme/web reports MERGED` |
+  | `none` | `none` |
+
   **A worker runs
   `node ~/.claude/desk/bin/clears-when.mjs --check "<condition>"` on its line before it ends**:
   it prints what the line reads as, or exits 1 listing the forms, so rewrite it in one of them. A line
