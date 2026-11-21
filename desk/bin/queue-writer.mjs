@@ -98,7 +98,8 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //   apply(args)  one queue.mjs command, in memory: { ok, out } | { ok: false, why } | { direct: true }
 //                for one it does not apply here (any other command, the batch base, a claim, or a
 //                ticket not live in this queue), which the caller runs as queue.mjs
-//   apply(['set', key, …], { when })  that set, only while `when(ticket)` holds, now and when written;
+//   apply(['set', key, …], { when })  that set, only while `when(ticket, queue)` holds, now and when
+//                written, `queue` being this writer's copy as it then stands (live tickets only);
 //                { ok: true, skipped: true } when it does not hold now
 //   flush({ archive })  writes every change applied since the last flush, under the queue lock, and
 //                with `archive` (a pass's last write, once it has handled every ticket) moves done
@@ -158,14 +159,16 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     return { ok: true, out };
   }
 
-  // A `set` made only while `when(ticket)` holds: now, and again under the lock when it is written. A
-  // ticket it no longer holds for, or not live in this queue, is left as it is: { ok, skipped: true }.
+  // A `set` made only while `when(ticket, queue)` holds: now, and again under the lock when it is
+  // written. A ticket it no longer holds for, or not live in this queue, is left as it is: { ok,
+  // skipped: true }. Under the lock the sets are checked in the order they were applied, each against
+  // the queue as those before it left it, so one that depends on an earlier one taken back is too.
   function applyIf(args, when) {
     const [cmd, key, ...pairs] = args;
     if (cmd !== 'set') throw new Error(`a condition applies only to set, not ${cmd}`);
     rebase();
     const t = Object.hasOwn(mine.tickets ?? {}, key) ? mine.tickets[key] : null;
-    if (!t || !when(t)) return { ok: true, skipped: true, out: `${key}: not written, it changed since it was read` };
+    if (!t || !when(t, mine)) return { ok: true, skipped: true, out: `${key}: not written, it changed since it was read` };
     try { applySet(t, pairs); } catch (e) { return { ok: false, why: e.message }; }
     ops.push(args);
     guards.push({ key, fields: pairs.map((p) => p.split('=')[0].split('.')[0]), when });
@@ -178,7 +181,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
     const undone = [];
     for (const g of guards) {
       const t = Object.hasOwn(mine.tickets ?? {}, g.key) ? mine.tickets[g.key] : null;
-      if (!t || g.when(t)) continue;
+      if (!t || g.when(t, mine)) continue;
       const disk = base.tickets?.[g.key] ?? {};
       for (const f of g.fields) { if (Object.hasOwn(disk, f)) t[f] = structuredClone(disk[f]); else delete t[f]; }
       undone.push(g);

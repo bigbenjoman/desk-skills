@@ -920,6 +920,97 @@ check "DS-570 AC2 a merge needs-you or a hand-ship recorded gains the steps its 
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-570 and once they are follow-on steps, no pass reads those PRs or adds them again" \
   '! grep -qE "pr view (70[4-8]|710) " "$T/gh-calls" && [ "$(field PM-4 follow_on.length)" = 2 ] && [ "$(field PM-5 follow_on.length)" = 1 ] && [ "$(field PM-6 follow_on.length)" = 1 ] && [ "$(field PM-7 follow_on.length)" = 1 ]'
+# DS-796: one PR recorded on two tickets, by the pass's shippedElsewhere on PM-15 (queued first) and by
+# the merge driver's shipped_pr on PM-16. Both get its status from one read, so neither owes it for good.
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+writeFileSync('$T/pm-715.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/715'));
+writeFileSync('$T/pm-716.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/716'));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 715 "*) cat "$T/pm-715.json" ;;
+  "pr view 716 "*) cat "$T/pm-716.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+q add PM-15; q set PM-15 state=done result.pr=715
+q add PM-16; q set PM-16 state=done result.pr=715 shipped_pr=715 merged_at=2026-11-10T09:00:00Z
+# PR 716's criteria were already taken by PM-19 (its follow item since run): PM-18, recorded on it later
+# with a lower key, takes none.
+q add PM-18; q set PM-18 state=done result.pr=716 shipped_pr=716 merged_at=2026-11-10T09:00:00Z
+q add PM-19; q set PM-19 state=done result.pr=716 merged_at=2026-11-10T09:00:00Z post_merge_read=716
+unmade(){ node --input-type=module -e "import { readFileSync } from 'node:fs'; import { postMergeUnmade } from '$B/harvest.mjs'; console.log(postMergeUnmade(JSON.parse(readFileSync('$DESK_QUEUE', 'utf8')).tickets['$1']))"; }
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 a PR recorded on two tickets is read once, and each keeps its status, so the merge driver's owes its review no longer" \
+  '[ "$(grep -c "pr view 715 " "$T/gh-calls")" = 1 ] && [ "$(field PM-15 pr_status.pr)" = 715 ] && [ "$(field PM-16 pr_status.pr)" = 715 ] && [ "$(field PM-16 post_merge_read)" = 715 ] && [ "$(unmade PM-16)" = false ] && [ "$(unmade PM-15)" = false ]'
+check "DS-796 and its review's post-merge criteria go to one of the two tickets, so the person is not asked for each twice" \
+  '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ] && [ "$(field PM-16 post_merge_by)" = "\"PM-15\"" ] && [ "$(field PM-15 post_merge_by)" = null ]'
+check "DS-796 a ticket recorded on a PR whose criteria another ticket already took takes none, whatever its key" \
+  '[ "$(field PM-18 follow_on)" = null ] && [ "$(field PM-18 post_merge_read)" = 716 ] && [ "$(field PM-18 post_merge_by)" = "\"PM-19\"" ] && [ "$(unmade PM-18)" = false ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 nor on a later pass" '[ "$(field PM-15 follow_on.length)" = 2 ] && [ "$(field PM-16 follow_on)" = null ]'
+# PR 717 is also recorded on PM-20, archived and never given its criteria (a requeued ticket re-shipped
+# on it): an archived ticket is never written, so the live PM-21 takes them, whatever the keys.
+# PR 718's lower key PM-22 keeps a merged status naming no criteria (needs-you's done), so the pass skips
+# it, and PM-23, which reads the PR, writes PM-22's share before stamping itself.
+# PR 719's lower key PM-24 was recorded done on another repo's PR #719 (needs-you's elsewhereDone), and
+# PR 720's lower key PM-26 is archived on it and readmitted, queued: neither takes the criteria.
+node --input-type=module -e "
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+for (const n of [717, 718, 719, 720, 721]) writeFileSync('$T/pm-' + n + '.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('/pull/702', '/pull/' + n));
+// PR 722 as GitHub names it after the repo was renamed: the remote still says acme/widgets.
+writeFileSync('$T/pm-722.json', readFileSync('$T/pm-702.json', 'utf8').replaceAll('acme/widgets/pull/702', 'acme/renamed/pull/722'));
+const f = '${DESK_QUEUE%.json}.archive.json';
+const a = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : { tickets: {} };
+const gone = (key, pr) => ({ key, type: 'Task', lane: 'A', state: 'done', park: null, result: { pr }, merged_at: '2026-11-10T09:00:00Z',
+  pr_status: { pr, state: 'MERGED', merged_at: '2026-11-10T09:00:00Z', checks: [] }, archived_at: '2026-11-10T10:00:00Z' });
+a.tickets['PM-20'] = gone('PM-20', 717);
+a.tickets['PM-26'] = gone('PM-26', 720);
+writeFileSync(f, JSON.stringify(a));
+"
+cat > "$T/stub/gh" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/gh-calls"
+case "\$*" in
+  "pr view 717 "*) cat "$T/pm-717.json" ;;
+  "pr view 718 "*) cat "$T/pm-718.json" ;;
+  "pr view 719 "*) cat "$T/pm-719.json" ;;
+  "pr view 720 "*) cat "$T/pm-720.json" ;;
+  "pr view 721 "*) cat "$T/pm-721.json" ;;
+  "pr view 722 "*) cat "$T/pm-722.json" ;;
+  "pr list "*) echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+# PR 721's PM-29, reached first, keeps criteria from before the last review; its owner PM-28 has no status.
+q add PM-29; q set PM-29 state=done result.pr=721 merged_at=2026-11-10T09:00:00Z \
+  'pr_status={"pr":721,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","url":"https://github.com/acme/widgets/pull/721","checks":[],"post_merge":[{"step":"a criterion the last review dropped"}]}'
+q add PM-28; q set PM-28 state=done result.pr=721 merged_at=2026-11-10T09:00:00Z
+q add PM-30; q set PM-30 state=done result.pr=722
+q add PM-21; q set PM-21 state=done result.pr=717 merged_at=2026-11-10T09:00:00Z
+q add PM-22; q set PM-22 state=done result.pr=718 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":718,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","merge_commit":"c","checks":[]}'
+q add PM-23; q set PM-23 state=done result.pr=718 shipped_pr=718 merged_at=2026-11-10T09:00:00Z
+q add PM-24; q set PM-24 state=done result.pr=719 merged_at=2026-11-10T09:00:00Z 'pr_status={"pr":719,"state":"MERGED","merged_at":"2026-11-10T09:00:00Z","url":"https://github.com/acme/elsewhere/pull/719"}'
+q add PM-25; q set PM-25 state=done result.pr=719 merged_at=2026-11-10T09:00:00Z
+q add PM-26; q set PM-26 state=queued result.pr=720
+q add PM-27; q set PM-27 state=done result.pr=720 merged_at=2026-11-10T09:00:00Z
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 an archived ticket on the PR that never took its criteria is not their owner: the live ticket takes them" \
+  '[ "$(field PM-21 follow_on.length)" = 2 ] && [ "$(field PM-21 post_merge_by)" = null ] && [ "$(field PM-21 post_merge_read)" = 717 ] && [ "$(field PM-20 follow_on)" = null ]'
+check "DS-796 a ticket done on a PR of the same number in another repo is not their owner either: the ticket on this repo takes them" \
+  '[ "$(field PM-25 follow_on.length)" = 2 ] && [ "$(field PM-25 post_merge_by)" = null ] && [ "$(field PM-24 follow_on)" = null ] && [ "$(field PM-24 post_merge_read)" = null ]'
+check "DS-796 a shared PR gives its owner the criteria of a read this pass, not those another ticket kept from before the last review" \
+  '[ "$(field PM-28 follow_on | jq -c "[.[].step]")" = "[\"fill in the switch date at the production relay run\",\"place a test call on staging\"]" ] && [ "$(field PM-29 post_merge_by)" = "\"PM-28\"" ] && [ "$(field PM-29 follow_on)" = null ] && [ "$(grep -c "pr view 721 " "$T/gh-calls")" = 1 ]'
+check "DS-796 a PR GitHub names under the renamed repo still gives its ticket the criteria" \
+  '[ "$(field PM-30 follow_on.length)" = 2 ] && [ "$(field PM-30 post_merge_read)" = 722 ]'
+check "DS-796 nor is a readmitted ticket, by its archived entry: the done ticket takes them and the queued one is left alone" \
+  '[ "$(field PM-27 follow_on.length)" = 2 ] && [ "$(field PM-27 post_merge_by)" = null ] && [ "$(field PM-26 follow_on)" = null ] && [ "$(field PM-26 post_merge_read)" = null ] && [ "$(field PM-26 state)" = "\"queued\"" ]'
+check "DS-796 an owner the pass does not read for itself is given its criteria by the ticket that reads the PR, before that one names it" \
+  '[ "$(field PM-22 follow_on.length)" = 2 ] && [ "$(field PM-22 post_merge_read)" = 718 ] && [ "$(field PM-23 follow_on)" = null ] && [ "$(field PM-23 post_merge_by)" = "\"PM-22\"" ] && [ "$(grep -c "merge recorded: PM-22 (PR #718): 2 criteria" <<<"$out")" = 1 ]'
 
 # Pass metrics: MX-2 collides with the running MX-1 on src/a.ts, and MX-3 is eligible while the memory
 # gate holds every spawn.

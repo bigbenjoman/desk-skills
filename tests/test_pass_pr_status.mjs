@@ -122,7 +122,13 @@ const lists = (acts) => acts.at(-1);
 {
   const tickets = [done('I', 19), { key: 'J', state: 'running' }, done('K', 19)];
   const acts = run(snap(tickets), { 19: status(19, 'OPEN', { reopen: { tests: 'main' } }) });
-  t('one PR two tickets share is read once', ofType(acts, 'read-pr').length, 1);
+  // GitHub is asked once (pass.mjs's read-pr handler keeps the read); each ticket keeps the status.
+  t('DS-796 one PR two tickets share is read for each, and each keeps its status', j(ofType(acts, 'pr-status').map((a) => a.key)), j(['I', 'K']));
+  t('DS-796 only the first acts on it', j(lists(acts).undrafted.map(({ t: x }) => x.key)), j(['I']));
+  // The second ticket on the PR owes a reopen that failed: the PR's one reopen is that ticket's.
+  const owing = run(snap([done('I2', 22), done('K2', 22, { reopening: 22 })]), { 22: status(22, 'CLOSED') });
+  t('DS-796 a shared PR\'s owed reopen goes to the ticket that owes it, not the first reached', j(lists(owing).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['K2', true]]));
+  t('DS-796 and the PR counts as open while it is owed', lists(owing).prStates[22], 'OPEN');
   t('an open PR whose base now runs its untriggered checks is in the reopens', j(lists(acts).reopens.map(({ t: x, owed }) => [x.key, owed])), j([['I', false]]));
   t('a read that fails keeps nothing for that PR', j(run(snap([done('L', 20)]), {}).filter((a) => a.type !== 'read-pr').map((a) => a.type)), j(['prune-builds', 'lists']));
 }

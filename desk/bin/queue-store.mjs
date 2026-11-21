@@ -77,6 +77,8 @@ export function archivable(q, key) {
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
   const closed = Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
   if (!t.merged_at && !closed) return false;
+  // A closed PR the pass still owes a reopen (its retry was refused): the next pass retries it.
+  if (closed && t.reopening != null && String(t.reopening) === String(t.result.pr)) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;

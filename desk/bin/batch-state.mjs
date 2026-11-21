@@ -604,7 +604,7 @@ function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
     const pt = q.tickets?.[p];
     if (!pt) { if (!outside.includes(p)) parks = null; }
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
-    else if (pt.state === 'done') { if (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED') parks = null; }
+    else if (pt.state === 'done') { if (!pt.merged_at && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
     else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
@@ -696,6 +696,12 @@ export const epicBatch = (q) => q?.feature !== true && !!q?.epic && !!q?.base;
 export const epicChildren = (q) => Object.values(q.tickets ?? {}).filter((t) => !String(t.held_by ?? '').split('|').includes(q.epic));
 // A child is through once done and merged into the base, or done with no PR (nothing to merge).
 export const childDone = (t) => t.state === 'done' && (!!t.merged_at || t.result?.pr == null);
+// A blocker is through, so nothing held behind it waits on it: done, with its merge recorded (merged_at)
+// or its PR merged. `prState(n)` is the PR's state where the caller read it from GitHub, and null counts
+// as not merged; without it, the last pass's pr_status is read and a PR it has not read counts as
+// merged. Done with no PR and no merge is not through: whether its dependants start is the person's.
+export const blockerThrough = (t, prState = null) => t?.state === 'done' && (!!t.merged_at
+  || (t.result?.pr != null && (prState ? prState(t.result.pr) === 'MERGED' : !['OPEN', 'CLOSED'].includes(prStatusOf(t)?.state))));
 // The blockers among `keys` to hold ticket `key` behind, less `key` itself and those in `tickets`
 // already merged or through (childDone), which nothing would release. -> { holds, cycles: those in
 // `behind` (heldBehindOf), already waiting behind `key`, so not held, outside: the holds in no batch }.
