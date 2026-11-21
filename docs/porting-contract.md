@@ -29,7 +29,9 @@ Then Read the `CONFIG` file. `EXISTS=no` means stop and offer `/desk-setup`. Cit
 `§3 <key>` for permissions and `§<n> <Row name>` for everything else (`§4 Ticket key pattern`).
 `desk-env` is `~/.claude/desk/bin/desk-env.mjs`, linked onto PATH by `install.sh`. Scripts use
 `desk-env get <id>` / `desk-env perm <key>` (ids in `CONFIG_ROWS`, keys in `PERMISSION_KEYS`) or,
-from shell, `desk_cfg` / `desk_perm` / `desk_load_paths` in `desk-env.sh`.
+from shell, `desk_cfg` / `desk_perm` / `desk_load_paths` in `desk-env.sh`. `desk-env get --json <id>...`
+(or `--section <n>`) prints the same rows as one JSON object, each with whether it is set, where its
+value came from, the schema's default and any item that does not fit the row's type (exit 4).
 
 ## What replaced what
 
