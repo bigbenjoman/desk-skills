@@ -110,8 +110,6 @@ test('DS-850 each red spell has its own repair key, kept for the spell', () => {
   const one = nextRecord(null, red, { branch: 'main', merges: [], at: '2026-11-21T16:35:31.781Z' });
   assert.equal(one.repair_key, 'base-red-main-20261121163531');
   assert.equal(nextRecord(one, red, { branch: 'main', merges: [], at: '2026-11-21T17:00:00.000Z' }).repair_key, 'base-red-main-20261121163531');
-  // A spell first read under the key's older form keeps it, so its repair ticket still merges through the hold.
-  assert.equal(nextRecord({ ...one, repair_key: 'base-red-main' }, red, { branch: 'main', merges: [], at: '2026-11-21T17:00:00.000Z' }).repair_key, 'base-red-main');
   const two = nextRecord(null, red, { branch: 'main', merges: [], at: '2026-11-22T09:00:00.000Z' });
   assert.notEqual(two.repair_key, one.repair_key);
 });

@@ -128,11 +128,8 @@ export const repairTriage = (r) => ({
 // The record to keep for state `s` read now, carrying `since` from the one before while it is red.
 export function nextRecord(was, s, { branch, merges, at }) {
   if (s.state !== 'red') return null;
-  // The spell's repair key is kept from the record before, so a spell first read under another form of
-  // the key keeps the one its repair ticket was admitted under.
-  const same = was?.branch === branch;
-  const since = same ? was.since ?? at : at;
-  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: (same && was.repair_key) || E.baseRedKey(branch, since), since, at };
+  const since = was?.branch === branch ? was.since ?? at : at;
+  return { branch, sha: s.sha, checks: s.checks, merges, repair_key: E.baseRedKey(branch, since), since, at };
 }
 
 function gh(args) {
