@@ -134,14 +134,22 @@ its own feature batch, on its own branch.
 
 ## 2. Refused (exit 11)
 
-Each `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
+**First, settle a design question yourself.** An `open question(s): …` whose question is a value a
+design frame the ticket links shows (a colour, a gradient's stops, a size, a spacing) is not the
+user's while this session can read that frame: read it through the design connector this session
+has (the Figma MCP's `get_design_context` for a Figma frame, the Artifact tool for a Claude Design
+canvas), write the values into the ticket's Design section (`desk-jira`, under §3 `jira-edit`; with
+no tracker, the ticket file), and run step 1 again for it. It goes to the user only when no connector
+here can read the frame, saying which you tried.
+
+Each other `not admitted <TICKET>: <why>` line, and an `admits nothing: <why>` line, goes to the user in
 one `AskUserQuestion` round (at most four questions; header the ticket key). Put the first option
 below as `(Recommended)`, with its reason as the description:
 
 | `<why>` says | Recommended | Then |
 |---|---|---|
 | `lane C` or `lane D` | Work it in its own session: `/desk-ticket <TICKET>` (a worker would only park on it) | Leave it out of the batch |
-| `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`) | Run step 1 again for it |
+| `open question(s): …` | Answer each one now; record the answers on the ticket (`desk-jira`). One a linked design frame answers was read above | Run step 1 again for it |
 | `lint (blocking): …` | Fix the ticket as the finding says (`desk-jira`) | Run step 1 again for it |
 | `design not snapshotted: <URL>…` | Snapshot it as step 0 says, or, where it will not read, import its HTML export (step 0) | Run step 1 again for it |
 | `size L` or `XL` | Split it into tickets of size M or less (`desk-jira`) | Admit the new tickets |
