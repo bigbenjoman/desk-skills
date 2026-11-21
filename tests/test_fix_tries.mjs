@@ -302,7 +302,7 @@ t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr
 const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
 const BROAD2 = '- AC2: "an avatar wherever a person shows" — src/card.tsx:9 and src/menu.tsx:3 show a name with no avatar';
 const widened = [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }];
-const wideOpts = (o = {}) => ({ judgement: 'yes', files: () => ['src/avatar.tsx', 'src/list.tsx', 'src/card.tsx'], scope: ['src/avatar.tsx'], title: 'Show the avatar on the people list', ...o });
+const wideOpts = (o = {}) => ({ judgement: 'yes', outside: () => ['src/list.tsx', 'src/card.tsx'], title: () => 'Show the avatar on the people list', ...o });
 const wideFix = (body, done = widened, o = {}) => reviewFix(tk({ fix_tries: done }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body }, wideOpts(o));
 const round2 = wideFix(personBody(1, BROAD2));
 t('a round-2 gap that is only new sites of an AC try 1 worked, on a change past triage\'s files, spends no try 2', round2?.call, 'stuck');
@@ -312,9 +312,11 @@ t('the question is the person\'s gap needs-you answers through', JSON.stringify(
 t('a first round on the same AC gets its try', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, BROAD2) }, wideOpts())?.call, 'requeue');
 t('a gap on an AC no earlier try named gets its try', wideFix(personBody(1, '- AC3: "export includes VAT" — no VAT column'))?.call, 'requeue');
 t('a round with a new AC beside the widened one gets its try', wideFix(gapBody('p0=0 p1=0 p2=0', 2, ['### Requirement gaps', BROAD2, '- AC3: "export includes VAT" — no VAT column']), widened, {})?.call, 'requeue');
-t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BROAD2), widened, { files: () => ['src/avatar.tsx'] })?.call, 'requeue');
-t('PR files that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { files: () => null })?.call, 'requeue');
-t('no triage scope leaves the try', wideFix(personBody(1, BROAD2), widened, { scope: null })?.call, 'requeue');
+t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BROAD2), widened, { outside: () => [] })?.call, 'requeue');
+t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
+t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
+const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
 t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
 t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
 t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);

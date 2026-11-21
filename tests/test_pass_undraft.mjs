@@ -74,13 +74,13 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   const asked = [];
   const wide = (files) => undraftSnap([{ t: tried, s: status() }], {
     cfg: { ...undraftSnap([]).cfg, judgement: 'yes' },
-    reads: { ...undraftSnap([]).reads, prFiles: (n, head) => { asked.push(`${n}@${head === HEAD}`); return files; }, scope: (key) => ({ files: key === 'A' ? ['src/avatar.tsx'] : null, title: 'Show the avatar on the people list' }) },
+    reads: { ...undraftSnap([]).reads, outside: (n, head, key) => { asked.push(`${n}@${head === HEAD}@${key}`); return files; }, title: (key) => (key === 'A' ? 'Show the avatar on the people list' : null) },
   });
   const run = (files) => drive(decideUndraft, wide(files), { 'pr-view': view([gapReview]) }).actions.find((a) => a.type === 'apply-fix')?.fix;
-  const past = run(['src/avatar.tsx', 'src/card.tsx']);
+  const past = run(['src/card.tsx']);
   t('a widening round past triage\'s files is the person\'s scope question, not a fix try', j([past?.call, /^review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title \("Show the avatar on the people list"\)/.test(past?.why ?? '')]), j(['stuck', true]));
-  t('the PR\'s files are read for that PR at its head', asked[0], '701@true');
-  t('a change inside triage\'s files is not asked the scope question', run(['src/avatar.tsx'])?.why?.startsWith('review gaps only you can settle'), false);
+  t('the out-of-scope files are read for that PR at its head and ticket', asked[0], '701@true@A');
+  t('a change inside triage\'s files is not asked the scope question', run([])?.why?.startsWith('review gaps only you can settle'), false);
 }
 
 // #831: the draft path reads §4 Known flaky checks as the merge driver does, from the error_notes the pass

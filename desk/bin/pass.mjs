@@ -4097,7 +4097,7 @@ runSteps({
         return { behind: x.behind, reopen: again ? {} : x.reopen };
       },
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
-      prFiles, scope: triageScope,
+      outside: scopeOutside, title: triageTitle,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
@@ -4347,10 +4347,16 @@ function humanSeen(n) {
 // The reads fix-tries.mjs's calls make for ready PR s of ticket t, each run only when a call makes it:
 // fixCall's ctx, the head against the base (baseMerge, and moves() read afresh for the verdict try), a
 // review's inline comments, and the verdict at the head.
-// What a review fix try weighs a widening round against (fix-tries.mjs widening): the files triage
-// planned for the ticket and its title, from its triage record; {} where it cannot be read.
-function triageScope(key) {
-  try { const r = readTriage(STATE, key); return { files: Array.isArray(r?.files_in_scope) ? r.files_in_scope : null, title: r?.summary ?? null }; } catch { return {}; }
+// What a review fix try weighs a widening round against (fix-tries.mjs widening): PR n's files at head
+// that its triaged scope does not cover, as the out-of-scope report reads them (null when either
+// cannot be read), and the ticket's title from its triage record.
+function scopeOutside(n, head, key) {
+  const scope = triagedScope(STATE, key);
+  const files = scope?.length ? prFiles(n, head) : null;
+  return files ? outOfScope(files, scope, incidental) : null;
+}
+function triageTitle(key) {
+  try { return readTriage(STATE, key)?.summary ?? null; } catch { return null; }
 }
 function fixReads(t, s, dirty, dirtyFiles) {
   const n = s.pr;
@@ -4369,8 +4375,8 @@ function fixReads(t, s, dirty, dirtyFiles) {
     ctx,
     baseMerge,
     moves: () => baseMoves(t, s.head),
-    prFiles: () => prFiles(n, s.head),
-    scope: () => triageScope(t.key),
+    outside: () => scopeOutside(n, s.head, t.key),
+    title: () => triageTitle(t.key),
     comments: (id) => {
       const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);

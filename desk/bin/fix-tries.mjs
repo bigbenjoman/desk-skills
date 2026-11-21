@@ -585,7 +585,7 @@ export function reviewFix(t, review, opts = {}) {
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
   // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
   const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
-  if (wide) return { call: 'stuck', why: `${PERSON_GAPS}${scopeQuestion(wide, opts.title)}` };
+  if (wide) return { call: 'stuck', why: `${PERSON_GAPS}${[scopeQuestion(wide, typeof opts.title === 'function' ? opts.title() : opts.title), ...personGaps].join('; ')}` };
   const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
   if (survived.length) return { call: 'stuck', why: `${after} — ${SURVIVED}${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
@@ -598,21 +598,18 @@ const sitesIn = (text) => [...String(text).matchAll(new RegExp(AT.source, 'g'))]
 // A round whose open gaps are all new sites of criteria an earlier try's gaps already named (each gap
 // naming its criterion and file:line sites, none of them an earlier gap's), on a change that already
 // touches files triage did not list: a broad criterion ("every X") that each round widens, so another
-// try only finds the next sites. -> { acs, outside } or null. opts.files() gives the PR's files (null
-// unread) and opts.scope triage's files_in_scope.
+// try only finds the next sites. -> { acs, outside } or null. opts.outside() gives the PR's files
+// outside triage's scope as scope-report.mjs outOfScope reads it (null when either cannot be read).
 function widening(done, gaps, opts) {
-  if (!gaps.length || typeof opts.files !== 'function' || !Array.isArray(opts.scope) || !opts.scope.length) return null;
+  if (!gaps.length || typeof opts.outside !== 'function') return null;
   const earlier = (done ?? []).filter(isReviewTry).flatMap((x) => x.gaps ?? []);
   const worked = new Set(earlier.map(gapAc).filter(Boolean));
   const seen = new Set(earlier.flatMap(sitesIn));
   const fresh = (g) => { const at = sitesIn(g); return at.length > 0 && at.every((x) => !seen.has(x)); };
   if (gaps.some((g) => !worked.has(gapAc(g)) || !fresh(g))) return null;
   const acs = [...new Set(gaps.map(gapAc))];
-  const files = opts.files();
-  if (!Array.isArray(files)) return null;
-  const scope = new Set(opts.scope);
-  const outside = files.filter((f) => !scope.has(f));
-  return outside.length ? { acs, outside } : null;
+  const outside = opts.outside();
+  return Array.isArray(outside) && outside.length ? { acs, outside } : null;
 }
 // The one scope question a widening round puts to the person, with the recommended default.
 function scopeQuestion({ acs, outside }, title) {

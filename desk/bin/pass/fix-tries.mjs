@@ -148,8 +148,7 @@ function* heldTry(t, p, s) {
 // The review fix a ready PR's review at its head that is not clean gets (reviewFix), marked ready.
 function findingsFix(t, p, s, fb, reads) {
   const comments = () => reads.comments(fb.review.id);
-  const tri = reads.scope?.() ?? {};
-  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, files: reads.prFiles, scope: tri.files, title: tri.title });
+  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, outside: reads.outside, title: reads.title });
   return rf?.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
 }
 
