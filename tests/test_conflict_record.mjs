@@ -60,7 +60,7 @@ t('by file, ticket PRs only', JSON.stringify([...conflictTimes(read.entries)].ma
 // DS-940: base syncs (ticket base-<branch>, no PR) lower no file's places; ticket PRs still do.
 const mixed = join(dir, 'mixed.jsonl');
 const iso = (ms) => new Date(ms).toISOString();
-const places = (entries, f, configured) => configured - loweredBy(conflictTimes(entries).get(f) ?? [], configured, NOW);
+const places = (entries, f, configured) => k(conflictTimes(entries).get(f) ?? [], configured);
 [1, 2, 3, 4, 5].forEach((d) => recordConflicts(mixed, { files: ['src/big.ts'], ticket: 'base-feat-x', head: 'b1', source: `m${d}`, at: iso(ago(d)) }));
 const onlyBase = readConflicts(mixed).entries;
 t('DS-940 AC1 a file with only base-sync entries keeps its configured places', places(onlyBase, 'src/big.ts', 3), 3);
