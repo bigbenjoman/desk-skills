@@ -183,6 +183,20 @@ export function lockWaiters({ procs, holders }) {
   return procs.filter((p) => lockRole(p, { procs, holders }) === 'wait').length;
 }
 
+// How many of the runs waiting on or holding the test lock work inside one of `dirs` (a repo's main
+// checkout and worktrees directory), as {waiting, held}: `held` from lockHolderRuns. Null when ps or the
+// processes' working directories cannot be read, so whose the queue is is unknown.
+export function lockRunsIn(dirs, { procs, holders, cwds, held = [] }) {
+  if (!procs || !cwds) return null;
+  const ins = dirs.filter(Boolean).map(insideOf);
+  const inside = (cwd) => !!cwd && ins.some((f) => f(cwd));
+  const cwdOf = (pid) => cwds.find((c) => c.pid === pid)?.cwd ?? null;
+  return {
+    waiting: procs.filter((p) => lockRole(p, { procs, holders }) === 'wait' && inside(cwdOf(p.pid))).length,
+    held: held.filter((r) => inside(r.cwd)).length,
+  };
+}
+
 // ps's elapsed time, [[dd-]hh:]mm:ss, in whole seconds; null when it does not read as one.
 export function etimeSeconds(etime) {
   const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(etime ?? '').trim());
@@ -228,13 +242,17 @@ export function holdersText(runs) {
 
 // Whether the test lock's queue is deep enough to hold new work: `waiting` runs at or over `slots` x
 // `factor`. `waiting` null is a queue not read, which holds nothing. `held` (lockHolderRuns) names who
-// holds the lock, so a batch held behind it shows what it waits on.
-export function lockQueue({ waiting, slots, factor, held = [] }) {
+// holds the lock, so a batch held behind it shows what it waits on. `mine` (lockRunsIn) is the reading
+// repo's own share: a deep queue `holds` that repo only while one of its runs waits on or holds the
+// lock, so another repo's queue never stalls it. `mine` null (unread) or left out holds on depth alone.
+export function lockQueue({ waiting, slots, factor, held = [], mine }) {
   const at = slots * factor;
-  if (waiting == null) return { deep: false, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
+  if (waiting == null) return { deep: false, holds: false, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
   const deep = waiting >= at;
+  const holds = deep && (mine == null || mine.waiting + mine.held > 0);
+  const own = mine === undefined ? '' : mine === null ? ", whose runs they are unknown (working directories could not be read)" : `, ${mine.waiting} of them this repo's`;
   const by = held.length ? `; held by ${holdersText(held)}` : '';
-  return { deep, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${by}` };
+  return { deep, holds, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${own}${by}` };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.

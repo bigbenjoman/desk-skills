@@ -61,7 +61,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
+import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockRunsIn, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
@@ -1819,17 +1819,20 @@ const lowMemory = MIN_AVAIL_GB > 0 && availGB < MIN_AVAIL_GB;
 const CONC = batchConcurrency(fresh, E.concurrencyLimits(), { avail: availGB, start: MIN_AVAIL_GB });
 const concurrency = CONC.n;
 // Test lock gate: while the machine-wide queue on the test lock is test-lock-slots x
-// test-lock-queue-factor runs deep (machine profile; 1 and 2 without one), no new local worker starts
-// and none resumes into a stage that runs suites, since each would only join the queue. Every other
-// resume goes ahead. AUTOPILOT_LOCK_QUEUE=off skips the read, as the test runner does: its passes must
+// test-lock-queue-factor runs deep (machine profile; 1 and 2 without one) and one of this repo's own runs
+// (main checkout or worktrees) waits on or holds the lock, no new local worker starts and none resumes
+// into a stage that runs suites, since each would only join the queue. A repo with nothing on the lock
+// is not held by another repo's queue. Every other resume goes ahead. AUTOPILOT_LOCK_QUEUE=off skips the read, as the test runner does: its passes must
 // not be held by this machine's real queue.
 const SUITE_STAGES = ['4', '4b'];
 const LOCK_QUEUE = process.env.AUTOPILOT_LOCK_QUEUE === 'off' ? null : (() => {
   const whole = (v, d) => (/^\d+$/.test(String(v ?? '').trim()) && Number(v) >= 1 ? Number(v) : d);
   const holders = lockHolders(E.lockDir());
+  const held = lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) });
   return lockQueue({
     waiting: lockWaiters({ procs: processList(), holders }),
-    held: lockHolderRuns({ procs: processList(), holders, cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(E.lockDir()) }),
+    held,
+    mine: lockRunsIn([MAIN, WORKTREES], { procs: processList(), holders, cwds: processCwds(), held }),
     slots: E.testLockSlots(),
     factor: whole(E.machineValue('test-lock-queue-factor'), 2),
   });
@@ -1842,7 +1845,7 @@ const resumedStage = (t) => (t.fix && !t.fix.finished ? null : roundStage(t.last
 // at Stage 4 or 4b, a handoff to 4b, or a requeue resuming its last round there (resumeRound, which
 // resumes only in a kept worktree).
 const lockQueueHolds = (r) => {
-  if (!LOCK_QUEUE?.deep || runsInCloud(r)) return false;
+  if (!LOCK_QUEUE?.holds || runsInCloud(r)) return false;
   if (toResume(r)) return SUITE_STAGES.includes(roundStage(r.stage));
   if (toHandoff(r)) return SUITE_STAGES.includes(String(r.handoff_stage));
   const round = existsSync(join(WORKTREES, r.key)) ? resumedStage(r) : null;
@@ -2026,7 +2029,7 @@ const promoPr = featureOn ? readPromotionPr(fresh) : null;
 const promoRed = promotionRed(fresh, promoPr);
 const baseWorkerHeld = held === PACE_HELD ? null : held;
 // The holds on a base worker that come before the slot count; baseFixRoom adds the budgets.
-const baseWorkerMay = !baseWorkerHeld && !lowMemory && !LOCK_QUEUE?.deep && running.length < concurrency;
+const baseWorkerMay = !baseWorkerHeld && !lowMemory && !LOCK_QUEUE?.holds && running.length < concurrency;
 // A draft epic PR's review try is a worker with no ticket to spawn, so it claims its one slot as a due
 // gate conflict fix does, but only when this pass could start it: a claim it cannot use would keep the
 // slot from a sibling batch every pass. Only a clean review not yet acted on is counted wrongly, for
@@ -2150,7 +2153,7 @@ let gateConflict = null;
 const baseFixRoom = baseWorkerMay && MACHINE.room > 0 && REPO.room > 0 && !repoUnlocked;
 // Why no base worker may start this pass, the first of the holds baseFixRoom tests.
 const noBaseFixRoom = () => baseWorkerHeld ?? (lowMemory ? `memory: ${availGB.toFixed(1)}G available, under the ${MIN_AVAIL_GB}G spawn gate`
-  : LOCK_QUEUE?.deep ? LOCK_QUEUE.line
+  : LOCK_QUEUE?.holds ? LOCK_QUEUE.line
   : running.length >= concurrency ? `the batch's ${running.length} running worker(s) fill its number of ${concurrency}`
   : MACHINE.room <= 0 ? MACHINE.line
   : repoUnlocked ? repoLine

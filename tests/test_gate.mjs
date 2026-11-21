@@ -369,10 +369,37 @@ rmSync(gtmp, { recursive: true, force: true });
   t('one waiting for the light lock is waiting on its lock', at([{ pid: 110, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh light -- bash tests/run.sh' }], [{ pid: 110, cwd: wt }]), 'lock');
   t('and a light holder its holder file names is its suite', suiteWait(wt, { procs: [{ pid: 120, ppid: 1, args: 'bash tests/run.sh' }], cwds: [{ pid: 120, cwd: wt }], holders: new Set([120]) }), 'suite');
   t('DS-662 AC1 a queue at slots x factor is deep, naming its depth', JSON.stringify(lockQueue({ waiting: 4, slots: 2, factor: 2 })),
-    JSON.stringify({ deep: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
+    JSON.stringify({ deep: true, holds: true, unread: false, waiting: 4, at: 4, line: 'test lock queue: 4 run(s) waiting on its 2 slot(s), at or over the hold at 2 x 2 = 4' }));
   t('DS-662 AC3 a queue below it holds nothing', lockQueue({ waiting: 3, slots: 2, factor: 2 }).deep, false);
   const unread = lockQueue({ waiting: null, slots: 1, factor: 2 });
   t('DS-662 AC5 a queue not read holds nothing and says so', `${unread.deep} ${unread.unread} ${unread.line}`, 'false true test lock queue: not read (ps could not be read), so workers start as they would without it');
+}
+// DS-958: a deep queue holds a repo only by its own runs on the lock, so another repo's queue never stalls it.
+{
+  const { lockRunsIn, lockQueue } = await import('../desk/bin/suite-wait.mjs');
+  const procs = [
+    { pid: 11, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- pnpm test' }, // repo A's holder
+    { pid: 21, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- pnpm test' }, // repo A's waiters
+    { pid: 22, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' },
+    { pid: 31, ppid: 1, args: 'bash /h/.claude/desk/bin/with-lock.sh test --cwd . -- bash tests/run.sh' }, // repo B's waiter
+  ];
+  const holders = new Set([11]);
+  const cwds = [{ pid: 11, cwd: '/u/a-wt/A-1' }, { pid: 21, cwd: '/u/a-wt/A-2' }, { pid: 22, cwd: '/u/a' }, { pid: 31, cwd: '/u/b-wt/B-1/src' }];
+  const held = [{ pid: 11, cwd: '/u/a-wt/A-1', args: procs[0].args, seconds: 60 }];
+  const A = ['/u/a', '/u/a-wt'], B = ['/u/b', '/u/b-wt'], C = ['/u/c', '/u/c-wt'];
+  const at = (dirs, ps = procs) => lockRunsIn(dirs, { procs: ps, holders, cwds, held });
+  t('a repo\'s own runs are those in its main checkout or worktrees', JSON.stringify([at(A), at(B), at(C)]),
+    JSON.stringify([{ waiting: 2, held: 1 }, { waiting: 1, held: 0 }, { waiting: 0, held: 0 }]));
+  t('whose runs they are is unknown when working directories cannot be read', lockRunsIn(A, { procs, holders, cwds: null, held }), null);
+  const q = (mine) => lockQueue({ waiting: 3, slots: 1, factor: 2, mine });
+  t('DS-958 DoD1 a deep queue with none of this repo\'s runs on the lock holds nothing', `${q(at(C)).deep} ${q(at(C)).holds}`, 'true false');
+  t('DS-958 DoD2 the repo whose runs fill the queue is held', q(at(A)).holds, true);
+  t('DS-958 DoD3 a repo with one run waiting is held', q(at(B)).holds, true);
+  t('a repo only holding the lock is held', q({ waiting: 0, held: 1 }).holds, true);
+  t('DS-958 DoD4 the held line names how many of the waiters are the repo\'s own', q(at(B)).line,
+    "test lock queue: 3 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2, 1 of them this repo's");
+  t('an unread share holds on depth alone, and says so', `${q(null).holds} ${q(null).line.includes('whose runs they are unknown')}`, 'true true');
+  t('a queue under the hold holds nobody', lockQueue({ waiting: 1, slots: 1, factor: 2, mine: at(A) }).holds, false);
 }
 // Who holds the test lock is named, whatever the repo, so a batch held behind it shows what it waits on.
 {
