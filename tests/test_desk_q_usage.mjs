@@ -239,7 +239,7 @@ t('AC13 each bar\'s used colour is 3:1 or more as a graphic: on the window, the 
   `${used.sort().join()} ${used.filter((k) => [windowBg, selected, grey('38;5;239')].some((b) => contrast(fg(k), b) < 3)).join()}`, '38;5;108,38;5;180,38;5;210 ');
 // DS-277 AC3: with truecolor the bars are One Dark's 24-bit colours, as clear as the 256-colour ones.
 process.env.COLORTERM = 'truecolor';
-const QT = await import(`${pathToFileURL(join(BIN, 'desk-q.mjs')).href}?truecolor`);
+const QT = await import(`${pathToFileURL(join(BIN, 'desk-q-model.mjs')).href}?truecolor`);
 delete process.env.COLORTERM;
 const usedT = [...new Set([0.17, 0.6, 0.88].flatMap((u) => QT.usageLine({ reading: { five_hour: win(u), seven_day: win(u), at: FIXED - 6 * MIN }, running: 0, held: false }, { now: FIXED, solid: true })
   .segs.filter(([s]) => /^█+$/.test(s)).map(([, k]) => k)))].filter((k) => k !== '38;5;239');
