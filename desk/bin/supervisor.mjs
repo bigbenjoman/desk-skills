@@ -407,8 +407,8 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). An idle batch's stored keys never change, and would silence a repeat of any other: so a
-// refused config row, which can come back, counts only when sent this tick.
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other. A refused
+// config row is recorded for the whole repo instead (configRefused).
 const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
@@ -585,11 +585,25 @@ function batchInterval(intake) {
 // holds, so a row left as it is is not pushed again. An error that is not fatal never blocks: drift
 // reports it. A check that cannot run is logged and blocks nothing. -> whether the pass is held back.
 // A tick that runs no pass still reaps an ended or overdue decider and watches the merge driver, as an
-// idle tick does. Only the rows refused now stay recorded as pushed, so a row fixed while another still
-// blocks is pushed again if it comes back, and a clean check forgets them all.
+// idle tick does. The config is the repo's, so the rows pushed are recorded once for the repo, in
+// <repo state>/config-pushed.json, not in any batch's state: a batch idle when a row was pushed finds it
+// recorded when it wakes. Every check that runs reconciles it: only the rows refused now stay
+// recorded, so a row fixed while another still blocks is pushed again if it comes back, and a clean
+// check forgets them all.
 const CONFIG_CHECK_MS = 60 * 1000;
 const CONFIG_KEY = 'config-invalid:';
-const forgetRows = (s, keep = new Set()) => { s.notified = s.notified.filter((k) => !k.startsWith(CONFIG_KEY) || keep.has(k)); };
+const configPushedFile = (state) => join(E.repoStateOf(state), 'config-pushed.json');
+function readConfigPushed(state) {
+  try { const k = JSON.parse(readFileSync(configPushedFile(state), 'utf8')).keys; return Array.isArray(k) ? k : []; } catch { return []; }
+}
+function writeConfigPushed(state, keys) {
+  const had = readConfigPushed(state);
+  if (had.length === keys.length && keys.every((k) => had.includes(k))) return;
+  mkdirSync(E.repoStateOf(state), { recursive: true });
+  writeFileSync(configPushedFile(state), `${JSON.stringify({ keys }, null, 2)}\n`);
+}
+// Config keys an earlier version kept in a batch's own notified list: nothing reads them now.
+const forgetRows = (s) => { s.notified = s.notified.filter((k) => !k.startsWith(CONFIG_KEY)); };
 function configRefused(state, s, log, intake) {
   if (String(process.env.DESK_CONFIG_PREFLIGHT ?? '').trim().toLowerCase() === 'off') {
     log([`== ${stamp()} config check: off (DESK_CONFIG_PREFLIGHT=off), so the pass runs whatever the config holds`]);
@@ -607,11 +621,13 @@ function configRefused(state, s, log, intake) {
     return false;
   }
   const refused = Object.values(rows).flatMap((row) => row.errors.filter((e) => e.fatal).map((e) => E.invalidLine({ ...row, ...e })));
-  if (!refused.length) { forgetRows(s); return false; }
+  forgetRows(s);
+  if (!refused.length) { writeConfigPushed(state, []); return false; }
   const pushes = [...new Set(refused)].map((line) => ({ key: `${CONFIG_KEY}${line}`, text: `config check: no pass runs until this row is fixed: ${line}` }));
-  forgetRows(s, new Set(pushes.map((p) => p.key)));
-  const { sent, line } = pushFresh(state, s, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
-  if (sent) s.notified = [...new Set([...s.notified, ...pushes.map((p) => p.key)])];
+  const keys = new Set(pushes.map((p) => p.key));
+  const recorded = readConfigPushed(state).filter((k) => keys.has(k));
+  const { sent, line } = pushFresh(state, { notified: recorded }, pushes, (ps) => (ps.length === 1 ? 'this row' : `these ${ps.length} rows`), 'tick');
+  writeConfigPushed(state, sent ? [...keys] : recorded);
   const reaped = reapDecider(state, s);
   const driver = watchDriver(state, s, driverHolder(state));
   writeState(state, s);

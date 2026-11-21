@@ -639,6 +639,16 @@ out=$(mtick)
 check "DS-309 AC7: a batch not handed over is not driven, and its own log says so" '! grep -q "^Y-1 " "$T/pass.batches" && [ "$(count "$T/pass.batches")" = 2 ] && grep -q "batch Y-1 is not handed over" "$YS/supervisor.log"'
 out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
 check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1: handed over$" <<< "$out" && grep -q "^X-1: batch X-1: handed over$" <<< "$out" && grep -q "^Y-1: batch Y-1: not handed over" <<< "$out"'
+# DS-872: a refused config row is recorded for the repo, so Y-1, not run when it was pushed, does not
+# push the same unchanged row again when it next runs.
+SECTION4="$EVIDENCE_BAD"; config yes yes; notified=$(count "$T/notify.calls"); : > "$T/pass.batches"
+out=$(mtick)
+check "DS-872: a refused row is pushed once across the batches that tick" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ ! -s "$T/pass.batches" ] && grep -q "config check: no pass run" "$XS/supervisor.log"'
+bq "$YQ" Y-1 true "$XRUN"
+out=$(mtick)
+check "DS-872: a batch not run when the row was pushed does not push it again when it runs" '[ "$(count "$T/notify.calls")" = $((notified + 1)) ] && [ ! -s "$T/pass.batches" ] && grep -q "^notification: not sent, the last one already named this row$" "$YS/supervisor.log"'
+SECTION4=""; config yes yes; bq "$YQ" Y-1 false "$XRUN"; out=$(mtick)
+check "DS-872: a clean check forgets the repo's record of pushed rows" 'grep -q "\"keys\": \[\]" "$SS/config-pushed.json"'
 
 # ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
 # xq <tickets json>: X-1 on feat/x, handed over, its promotion PR #9.
