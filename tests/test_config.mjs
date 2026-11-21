@@ -706,7 +706,18 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const nowhere = scratch('desk-norepo-870-');
   r = node({ ...bare, HOME: nowhere, DESK_CONFIG_ROOT: join(nowhere, 'cfg'), DESK_MACHINE: join(nowhere, 'none.md') }, ['get', '--json', 'tracker'], nowhere);
   t('DS-870 AC7 outside any configured repo it exits 3, printing nothing', `${r.status} ${r.stdout === ''}`, '3 true');
+  r = node({ ...bare, HOME: nowhere, DESK_CONFIG_ROOT: join(nowhere, 'cfg'), DESK_MACHINE: join(nowhere, 'none.md') }, ['get', '--json', '--where', 'tracker'], nowhere);
+  let wj = null; try { wj = JSON.parse(r.stdout); } catch { /* not JSON */ }
+  t('DS-933 --where outside any repo still prints where, with no rows, and exits 3', JSON.stringify([r.status, wj?.where?.slug, wj?.where?.exists, wj?.rows]), '[3,"",false,{}]');
   rmSync(nowhere, { recursive: true, force: true });
+  {
+    const env = jenv(c);
+    const w = Object.fromEntries(node(env, ['where']).stdout.trim().split('\n').map((l) => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1).replace(/^'|'$/g, '')]; }));
+    const g = getJson(env, '--where', 'tracker');
+    t('DS-933 --where gives what where prints, beside the rows', JSON.stringify([g.code, g.json?.where, g.json?.rows?.tracker?.value]),
+      JSON.stringify([0, { slug: w.SLUG, gh_repo: w.GH_REPO, config: w.CONFIG, creds: w.CREDS, exists: w.EXISTS === 'yes' }, 'jira']));
+    t('DS-933 without --where there is no where', 'where' in (getJson(env, 'tracker').json ?? { where: 1 }), false);
+  }
   writeFileSync(c, `${P4}| Local services | \`TODO\` |\n| Append-only paths | \`TODO\` |\n`);
   r = getJson(jenv(c), 'local-services', 'append-only-paths');
   const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);

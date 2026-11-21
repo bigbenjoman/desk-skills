@@ -70,15 +70,23 @@ fallback_slug() {
   printf 'local__%s-%s' "$(lower "$(basename "$root")")" "${hash:0:8}"
 }
 
-# Which repo, and where its config and credentials live: desk-env.mjs `where` is the single source
-# of truth. Its output is parsed, never eval'd.
-SLUG="" CONFIG_PATH="" REPO_DIR=""
+# Which repo, where its config and credentials live, and every config row read below, from one
+# desk-env.mjs run: `get --json --where`, whose `where` is what `desk-env where` prints. Parsed with jq,
+# never eval'd. CONFIG_JSON stays empty where that run gave no `where`, and each read then runs node.
+CONFIG_ROW_IDS=(tracker jira-site jira-project jira-priority jira-size-field jira-required-fields jira-priority-user-only jira-assign-self)
+SLUG="" CONFIG_PATH="" REPO_DIR="" CONFIG_JSON=""
 if [[ -r "$DESK_ENV_MJS" ]] && command -v node >/dev/null 2>&1; then
-  sq="'"; esc="'\\''"   # desk-env quotes as '...' with each ' written '\''
-  while IFS= read -r line; do
-    k="${line%%=*}"; v="${line#*=}"; v="${v#$sq}"; v="${v%$sq}"; v=${v//"$esc"/$sq}
-    case "$k" in SLUG) SLUG="$v" ;; CONFIG) CONFIG_PATH="$v" ;; CREDS) REPO_DIR="$v" ;; esac
-  done < <(node "$DESK_ENV_MJS" where 2>/dev/null || true)
+  CONFIG_JSON=$({ node "$DESK_ENV_MJS" get --json --where "${CONFIG_ROW_IDS[@]}" 2>/dev/null || true; } | jq -c 'select(.where | type == "object")' 2>/dev/null || true)
+  if [[ -n "$CONFIG_JSON" ]]; then
+    { IFS= read -r -d '' SLUG; IFS= read -r -d '' CONFIG_PATH; IFS= read -r -d '' REPO_DIR; } \
+      < <(jq -j '.where | (.slug, "\u0000", .config, "\u0000", .creds, "\u0000")' <<<"$CONFIG_JSON") || true
+  else
+    sq="'"; esc="'\\''"   # desk-env quotes as '...' with each ' written '\''
+    while IFS= read -r line; do
+      k="${line%%=*}"; v="${line#*=}"; v="${v#$sq}"; v="${v%$sq}"; v=${v//"$esc"/$sq}
+      case "$k" in SLUG) SLUG="$v" ;; CONFIG) CONFIG_PATH="$v" ;; CREDS) REPO_DIR="$v" ;; esac
+    done < <(node "$DESK_ENV_MJS" where 2>/dev/null || true)
+  fi
 else
   SLUG=$(fallback_slug)
   if [[ -n "$SLUG" ]]; then
@@ -88,26 +96,17 @@ else
 fi
 [[ -n "$SLUG" ]] || REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/(no repo)"
 
-# Config rows are read through desk-env.sh beside desk-env.mjs, where there is one: desk_load_config
-# takes every value in one node run, and desk_cfg and desk_perm answer from it. Without it each read
-# runs desk-env.mjs, as desk_cfg does for a value its snapshot lacks.
-DESK_SH="$(dirname "$DESK_ENV_MJS")/desk-env.sh"
-HAVE_DESK_SH=""
-if [[ -n "$SLUG" && -r "$DESK_ENV_MJS" && -r "$DESK_SH" ]] && command -v node >/dev/null 2>&1; then
-  # shellcheck source=../desk/bin/desk-env.sh
-  . "$DESK_SH" && desk_load_config && HAVE_DESK_SH=1
-fi
-# One row of this repo's config, or empty. desk-env.mjs reads it (and resolves the repo itself, by
-# the same rules as `where`), so there is one parser. Without desk-env there is no config to read.
+# One row of this repo's config, or empty: its value from CONFIG_JSON, so there is one parser.
+# Without desk-env there is no config to read.
 cfg() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
-  if [[ -n "$HAVE_DESK_SH" ]]; then desk_cfg "$1" 2>/dev/null || true; return 0; fi
+  if [[ -n "$CONFIG_JSON" ]]; then jq -r --arg id "$1" '.rows[$id].value // empty' <<<"$CONFIG_JSON"; return 0; fi
   node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
 }
 # A §3 row as yes|ask|no|never|stop; empty without desk-env, which reads as not granted.
 cfg_perm() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
-  if [[ -n "$HAVE_DESK_SH" ]]; then desk_perm "$1" 2>/dev/null || true; return 0; fi
+  if [[ -n "$CONFIG_JSON" ]]; then cfg "$1"; return 0; fi
   node "$DESK_ENV_MJS" perm "$1" 2>/dev/null || true
 }
 # First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.
@@ -299,13 +298,28 @@ print_links() {
 # A list row of this repo's config, as a JSON array of its items; `none` and unset are [].
 cfg_list() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '[]'; return 0; }
+  if [[ -n "$CONFIG_JSON" ]]; then
+    jq -c --arg id "$1" '.rows[$id].items // [] | map(select(length > 0 and (ascii_downcase != "none")))' <<<"$CONFIG_JSON"
+    return 0
+  fi
   { node "$DESK_ENV_MJS" list "$1" 2>/dev/null || true; } | jq -Rsc 'split("\n") | map(select(length > 0 and (ascii_downcase != "none")))'
 }
 
-# config §4 Required fields for an issue type, as JSON (desk-env.mjs requiredFields); unset is no rules.
+# config §4 Required fields for an issue type, as JSON; unset is no rules. From CONFIG_JSON's items by
+# config-schema.mjs requiredFieldsIn's rules: `<Type>[, <Type>…]: <field>[, <field>…]`, a type matched
+# case-blind, each field once in first-seen order, and an item with no type or no field malformed.
 cfg_required() {
   local none='{"need":[],"malformed":[]}'
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || { printf '%s' "$none"; return 0; }
+  if [[ -n "$CONFIG_JSON" ]]; then
+    cfg_list jira-required-fields | jq -c --arg t "$1" '($t | ascii_downcase | gsub("^\\s+|\\s+$"; "")) as $want
+      | { need: (reduce (.[] | capture("^(?<types>[^:\n]+):(?<fields>[^\n]+)$")
+                   | select(.types | split(",") | map(gsub("^\\s+|\\s+$"; "") | ascii_downcase) | index($want))
+                   | .fields | [splits("[,\\s]+")] | .[] | select(length > 0)) as $f
+                 ([]; if index([$f]) then . else . + [$f] end)),
+          malformed: map(select(test("^[^:\n]+:[^\n]*\\S") | not)) }'
+    return 0
+  fi
   node "$DESK_ENV_MJS" required-fields "$1" 2>/dev/null || printf '%s' "$none"
 }
 

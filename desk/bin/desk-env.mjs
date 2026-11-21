@@ -25,11 +25,13 @@
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
-//   node desk-env.mjs get --json [--section <n>] [<id>...]
+//   node desk-env.mjs get --json [--where] [--section <n>] [<id>...]
 //                                             print the named rows (config or permission ids), or every row
 //                                             of a section, as one JSON object (readRow): exit 4 after
 //                                             printing where a row has a type error, 2 for an unknown id or
-//                                             section (§3c included), 3 with no repo config
+//                                             section (§3c included), 3 with no repo config. --where adds
+//                                             what `where` prints, and with no config still prints that,
+//                                             with no rows, before exiting 3
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
@@ -2025,16 +2027,25 @@ function valueRow(id) {
 
 // `get --json`: the rows of the named ids and sections, in that order, each once. A bad request
 // throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
+// With --where it also gives what `where` prints, as `where: { slug, gh_repo, config, creds, exists }`,
+// and with no config it returns that with no rows (`noConfig` set, exit 3) rather than throwing, so a
+// caller learns the repo and its rows in one run.
 class GetJsonUsage extends Error {}
 const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+function whereJson() {
+  const r = currentRepo(); const p = configPathOrNull();
+  return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
+}
 function getJson(args) {
   const ids = [], sections = [];
+  let where = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') continue;
+    if (args[i] === '--where') { where = true; continue; }
     if (args[i] === '--section') { sections.push(String(args[++i] ?? '').replace(/^§/, '').toLowerCase()); continue; }
     ids.push(args[i]);
   }
-  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--section <n>] [<id>...]');
+  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
   for (const s of sections) {
     if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
     if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
@@ -2042,10 +2053,13 @@ function getJson(args) {
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
-  if (!parsed.exists) throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
+  if (!parsed.exists) {
+    if (where) return { where: whereJson(), config: null, rows: {}, noConfig: true };
+    throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
+  }
   const want = [...new Set([...ids, ...ROWS.filter((e) => sections.includes(e.section)).map((e) => e.id)])];
   const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
-  return { config: parsed.path, rows };
+  return { ...(where ? { where: whereJson() } : {}), config: parsed.path, rows };
 }
 
 // What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
@@ -2149,9 +2163,11 @@ if (isMain) {
         if (!args.includes('--json')) { printRead(cmd, args[0]); break; }
         let out;
         try { out = getJson(args); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
-        console.log(JSON.stringify(out, null, 2));
+        const { noConfig, ...shown } = out;
+        console.log(JSON.stringify(shown, null, 2));
         // exitCode, not exit: a pipe on macOS is written asynchronously, and exit would cut the JSON short.
-        if (Object.values(out.rows).some((r) => r.errors.length)) process.exitCode = 4;
+        if (noConfig) process.exitCode = 3;
+        else if (Object.values(out.rows).some((r) => r.errors.length)) process.exitCode = 4;
         break;
       }
       case 'review-cmd': {
