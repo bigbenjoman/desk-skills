@@ -1060,11 +1060,11 @@ function promotionItems(r) {
 // the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
 // desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
 // each hold clears once its check passes there, and the item goes with the last.
-// A base the merge driver holds on (base-red.mjs) is the batch's, reported by the pass once and repaired
-// by its own ticket, so it is not one of the person's items.
+// A check the merge driver holds the base on (base-red.mjs) is the batch's, reported by the pass once and
+// repaired by its own ticket, so it is not one of the person's items; a PR held on another check still is.
 const BASE_RED = 'base-red:';
 function baseRedItems(r) {
-  if (r.stateDir && liveBaseRed(r.stateDir)) return [];
+  const driver = new Set((r.stateDir ? liveBaseRed(r.stateDir)?.checks ?? [] : []).map((c) => c.name));
   const tickets = Object.values(r.q?.tickets ?? {});
   // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
   // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
@@ -1073,7 +1073,7 @@ function baseRedItems(r) {
     const b = t.base_red, st = prStatusOf(t);
     if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
     // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
-    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && !driver.has(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
   };
   const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
   if (!held.length) return [];

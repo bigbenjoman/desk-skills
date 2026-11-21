@@ -224,6 +224,12 @@ q set base-red-main session_id=live-1
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
   '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
+# The repair merged in an earlier red spell and is still in the live queue (a batch with a base archives
+# nothing): the base red again is a new spell, so the key is admitted again and started.
+q set base-red-main state=done result.pr=900 merged_at="$(isoago 7200)"
+out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
+check "DS-850 AC3 a repair merged in an earlier red spell does not stop the next spell's repair" \
+  '[ "$(field base-red-main state)" = "\"running\"" ] && [ "$(field base-red-main merged_at)" = null ] && echo "$out" | grep -q "base-red-main port="'
 rm -f "$T/state-fb/base-red.json"; q set base-red-main state=done; q drop base-red-main
 out=$(DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC6 once the driver reads main green, the pass drops the line" '! echo "$out" | grep -q "^RED BASE:" && echo "$out" | grep -q "FB-4: BASE RED"'
