@@ -39,7 +39,11 @@ commit (never a rebase, so running workers' bases stay valid) and pushes it, and
 many commits came in. A park recorded as `base contains <§0 Default branch>` is checked after that
 sync, so the pass that syncs the base requeues it (and lifts any not-now on it); one whose sync could
 not run stays parked, its line under `clears-when:` saying why. A push refused as non-fast-forward (the merge
-driver just merged into the base) is fetched, merged again and retried once. Pushing is config §3
+driver just merged into the base) is fetched, merged again and retried once. A base missing on
+origin whose last known head is already in §0 Default branch (a promotion PR from it merged, and
+delete-branch-on-merge removed it) is pushed back at §0 Default branch's head, and the report says
+so; one whose last known head is not in §0 Default branch is never recreated, and holds every spawn
+with that head named. A missing base holds spawns in any mode until it is back. Pushing is config §3
 `batch-base-push`: unset or `ask` is one approval per batch, so ask it at Stage 3 and run passes with
 `AUTOPILOT_BASE_PUSH_APPROVED=1`. A sync that cannot run pushes nothing and goes under `WAITING ON
 YOU` with its reason: a conflict (its files listed; resolve it in the base worktree and push with

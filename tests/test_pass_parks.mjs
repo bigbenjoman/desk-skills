@@ -275,6 +275,15 @@ const dates = (s) => drive(decideDateHolds, s, {}, false);
   drive(decideOutsideHolds, { ...snap(48), defaultBranch: 'feat/DS-700-other', repoDefault: 'main' }, { unpromoted: (a) => { into.push(a.into); return base; } });
   t('DS-811 in a named batch its promotion PR is read into the repo default branch, which needs-you promotes into, not the batch base', j(into), '["main"]');
   t('DS-811 a dry run says it and writes nothing', j([sets(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base })), lines(drive(decideOutsideHolds, { ...snap(48), dry: true }, { unpromoted: base }), 'epic-line')[0]?.startsWith('outside hold (dry run): DS-705')]), '[[],true]');
+  // DS-947: its branch's promotion PR into the default branch has merged, and the batch base has not synced it yet.
+  const promoted = { ...base, pr: 871, state: 'merged' };
+  const named = { ...snap(48), defaultBranch: 'feat/DS-691-desk-app', repoDefault: 'main' };
+  const waits = drive(decideOutsideHolds, named, { landed: false, unpromoted: promoted });
+  t('DS-947 AC1 a merged promotion raises nothing: the hold stays, waiting for the base to sync', j([sets(waits), lines(waits, 'epic-line')]), j([[stamp], []]));
+  const raisedBefore = drive(decideOutsideHolds, { ...named, tickets: byKey(recorded) }, { landed: false, unpromoted: promoted });
+  t('DS-947 AC1 and a promote item raised before it merged is dropped, the ticket still held', j([sets(raisedBefore), lines(raisedBefore, 'epic-line')]), j([['unpromoted=null', stamp], []]));
+  const synced = drive(decideOutsideHolds, named, { landed: true, unpromoted: () => { throw new Error('asked'); } });
+  t('DS-947 AC2 once the base holds it the hold lifts', j(sets(synced)), j(['state=triaged', 'park=null', 'held_by=null', 'held_outside=null', 'outside_read=null']));
 }
 
 // ---- merge holds ----

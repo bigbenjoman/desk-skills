@@ -95,7 +95,8 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
-//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
+//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), set rows
+//                                             whose value does not fit the schema's type (INVALID), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
@@ -301,17 +302,23 @@ export class NoRepoConfigError extends DeskConfigError {}
 // second column) because §2's Notes and §3's Recommended columns also carry backticks, and taking
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
-let cache = null;
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
 const { splitRow } = M;
 
+// This repo's config, through parseConfigFile's cache, so an edit by hand or by another process
+// is read on the next call. A desk-env command run from the shell pins the first parse it reads for
+// the rest of the run (pinConfig), so every row one command prints comes from one version of the
+// file; only a write of the config in that run drops the pin.
+let pinned = false, snapshot = null;
 function parseConfig() {
-  if (cache) return cache;
-  cache = parseConfigFile(configPathOrNull());
-  return cache;
+  if (snapshot) return snapshot;
+  const parsed = parseConfigFile(configPathOrNull());
+  if (pinned) snapshot = parsed;
+  return parsed;
 }
+const pinConfig = () => { pinned = true; };
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
 // header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
@@ -344,13 +351,32 @@ export function declaredRows(text) {
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
+// A config file's parse, by path, kept while its inode, size and modification time are unchanged:
+// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept.
+const parsedFiles = new Map();
+const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
+
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+// The result is shared between callers: read it, never change it.
 function parseConfigFile(path) {
+  let st = null;
+  if (path) try { st = statSync(path, { bigint: true }); } catch { /* missing: parsed below as absent */ }
+  if (!st) { parsedFiles.delete(path); return parseConfigText(path, null); }
+  const stamp = fileStamp(st);
+  const hit = parsedFiles.get(path);
+  if (hit?.stamp === stamp) return hit.parsed;
+  const parsed = parseConfigText(path, readFileSync(path, 'utf8'));
+  if (parsedFiles.size > 64) parsedFiles.clear();
+  parsedFiles.set(path, { stamp, parsed });
+  return parsed;
+}
+
+function parseConfigText(path, text) {
   // `rows`: every declared row, in order, for `drift`.
   // `tables`: the cells of every row of a table id's `###` table (TABLE_IDS), by section and heading.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [], tables: {} };
+  const parsed = { path, exists: text != null, sections: {}, rows: [], tables: {} };
   if (!parsed.exists) return parsed;
-  const table = tableLines(readFileSync(path, 'utf8'));
+  const table = tableLines(text);
   for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
   for (const { section, sub, header, cells, label, declared } of table.rows) {
     if (TABLE_IDS.has(`${section}/${sub}`)) { (parsed.tables[`${section}/${sub}`] ??= []).push(cells); continue; }
@@ -1667,6 +1693,12 @@ export const STALLING_ROWS = Object.freeze({
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
 // -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
+// A row's items for drift's own checks, or null where configValuesIn refuses the row (`none` beside
+// other items): invalidRows names that row INVALID, so drift reports it and goes on to the next repo.
+function driftValues(parsed, id) {
+  try { return configValuesIn(parsed, id); } catch (e) { if (e instanceof DeskConfigError) return null; throw e; }
+}
+
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1686,7 +1718,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // Command items a worker's settings cannot allow: every worker is refused them.
   const unlisted = [];
   for (const id of [...WORKER_COMMAND_IDS, 'worker-measure-cmds']) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const why = commandItemProblem(parseCommandItem(item).cmd);
@@ -1694,7 +1726,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
     }
   }
   // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
-  const services = configValuesIn(parsed, 'local-services');
+  const services = driftValues(parsed, 'local-services');
   if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
     for (const item of services) {
       if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
@@ -1703,8 +1735,37 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
+
+// Every set row of the config file whose items do not fit the type the schema declares for it, as the
+// file has it (no machine fallback or override): -> [{ section, label, item, error, fatal }].
+export function invalidRows(parsed) {
+  const out = [];
+  for (const e of ROWS) {
+    let items;
+    if (e.kind === 'perm') {
+      const raw = parsed.sections['3']?.byKey[norm(e.label)]?.value;
+      items = unset(raw) ? null : [raw];
+    } else if (e.kind === 'table') {
+      items = tableItemsIn(parsed, e.id);
+    } else {
+      const row = parsed.sections[e.section]?.byName[norm(e.label)];
+      items = !row || unset(row.value) ? null : row.items.filter((x) => !unset(x));
+    }
+    if (!items?.length) continue;
+    for (const { item, error, fatal } of checkRow(e, items).errors) out.push({ section: e.section, label: e.label, item, error, fatal });
+  }
+  return out;
+}
+
+// An INVALID line: the row, then the reader's own words where they already name the row, else the item.
+const invalidLine = ({ section, label, item, error }) => {
+  const own = error.replace(/^desk(-env)?: /, '');
+  const head = `config §${section} "${label}" `;
+  if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;
+  return `INVALID  §${section} ${label}${item != null && !own.includes(item) ? ` item "${item}"` : ''}: ${own}`;
+};
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
 // server has no item for: a worker on a ticket there is refused that app's dev server. A Dev server
@@ -1712,13 +1773,13 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 // is never a gap: its `dev` script runs the workspace, not a second app.
 // -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
 export function devServerGaps(parsed, root) {
-  const dev = configValuesIn(parsed, 'dev-cmd');
+  const dev = driftValues(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
   const served = devServed(dev);
   const pkg = (dir) => readPackage(root, dir);
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const { dir } = parseCommandItem(item);
@@ -1786,9 +1847,10 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
+    ...invalid.map(invalidLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
@@ -1846,7 +1908,7 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
+  snapshot = null;
   return { section: sec, label: t.label, line };
 }
 
@@ -1864,7 +1926,7 @@ function setRowValue(config, section, row, value) {
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
+  snapshot = null;
   return true;
 }
 
@@ -2129,6 +2191,7 @@ if (isMain) {
     process.exit(4);
   }
   if (!DESK_ENV_COMMANDS.includes(cmd)) { console.error(deskEnvUsage()); process.exit(2); }
+  pinConfig();
   try {
     switch (cmd) {
       case 'where': {
@@ -2526,7 +2589,7 @@ if (isMain) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
           const root = configRepoRoot(parsed, { cwd: !slug });
-          const premerge = configValuesIn(parsed, 'pre-merge-steps');
+          const premerge = driftValues(parsed, 'pre-merge-steps');
           const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;

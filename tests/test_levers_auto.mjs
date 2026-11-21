@@ -79,6 +79,8 @@ const byHand = (slug, lever, to, at) => append(slug, { kind: 'override', lever, 
 t('no state recorded: every trialled lever is on trial, whatever its layer',
   Object.fromEntries(Object.entries(leverStatesIn([])).map(([n, s]) => [n, s.state])),
   Object.fromEntries(Object.keys(REGISTRY).map((n) => [n, REGISTRY[n].trialled ? 'trial' : 'off'])));
+t('a trial recorded for a lever the registry does not trial (the ledger) reads as off (DS-893)',
+  leverStatesIn([{ id: 'x1', at: '2026-11-01T00:00:00Z', kind: 'override', lever: 'ledger', to: 'trial', actor: 'ben', reason_code: 'ben_override', reason: 'try it' }]).ledger.state, 'off');
 
 // ---- AC1: blocks of four per size keep each arm at exactly two ----------------------------------
 {

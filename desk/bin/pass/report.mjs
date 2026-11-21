@@ -47,6 +47,8 @@ export function decideDrift(s) {
 //   report                 the pass's report lists
 //   baseLines, maintLines, dateLines, linkLines, epicLines   each phase's own lines, in that order
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
+//   budgetUnread           why each of this repo's other batches' queues did not read, so its running
+//                          tickets were not counted toward the per-file budget
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
 //   portLeaseLines         what the port leases and claims did this pass: unreadable, a stale holder or claim dropped
@@ -64,6 +66,7 @@ export function decideReportOpening(s) {
   if (s.incidentalBad) acts.push(out(`scope: ${s.incidentalBad} — read as the default (lockfiles)`));
   if (s.appendOnlyBad) acts.push(out(`collisions: ${s.appendOnlyBad} — read as none, so a shared append-only file still collides`));
   if (s.fileBudgetBad) acts.push(out(`collisions: ${s.fileBudgetBad} — read as 1 for every file, so no two tickets naming one file run at once`));
+  for (const why of s.budgetUnread ?? []) acts.push(out(`collisions: ${why} — that batch's running tickets were not counted toward the per-file budget`));
   if (s.conflictRecordBad) acts.push(out(`collisions: the conflict record was not read (${s.conflictRecordBad}), so every file runs at its configured budget`));
   for (const c of s.conflicts) {
     if (c.now < c.configured) acts.push(out(`collisions: ${c.file} runs ${c.now} of its configured ${c.configured}, after ${c.recent} merge-time conflict(s) in the last 7 days`));
@@ -128,7 +131,9 @@ export function* decidePutOffRefresh(s) {
 //                           read clean, and the clash last logged: logged once for that pair of rows,
 //                           since workers run /desk-review in its place until /desk-setup settles it
 //   blocked                 blockedOf the pass's rows
-//   heldBack                [{ key, holds: [{ file, by, k }] }] the triaged tickets a running one's file holds
+//   heldBack                [{ key, holds: [{ file, by, elsewhere, k }] }] the triaged tickets a running one's
+//                           file holds: `by` this batch's running keys, `elsewhere` [{ key, label }] those
+//                           running in the repo's other batches, each with its batch's label
 //   resumeRows              the pass's triaged rows as the held phase read them, each
 //                           { key, resume, resume_why, toResume, rebootWait }
 //   askedAgain              [{ key, question, now }] the put-off parks decidePutOffRefresh asked again,
@@ -154,7 +159,10 @@ export function decideReportLines(s) {
   if (waiting.length) acts.push(out(`WAITING ON YOU:\n  ${waiting.join('\n  ')}`));
 
   if (s.blocked.length) acts.push(out(`BLOCKED ON ANSWERS: ${s.blocked.map((b) => `${b.key} (${b.open_questions})`).join(', ')}\n  answer with: node ${s.answerBin} <TICKET> "<answer>"`));
-  const budgetText = (h) => `${h.file} has ${h.by.length} running of its ${h.k}: ${h.by.join(', ')}`;
+  const budgetText = (h) => {
+    const names = [...h.by, ...(h.elsewhere ?? []).map((o) => `${o.key} in ${o.label}`)];
+    return `${h.file} has ${names.length} running of its ${h.k}: ${names.join(', ')}`;
+  };
   if (s.heldBack.length) acts.push(out(`held back by a collision: ${s.heldBack.map((x) => `${x.key} (${x.holds.map(budgetText).join('; ')})`).join(', ')}`));
   const resumeWaits = s.resumeRows.filter((r) => r.toResume && !(r.resume === 'reboot' && r.rebootWait));
   if (resumeWaits.length) acts.push(out(`waiting to resume (killed; resumed ahead of new tickets when a slot frees): ${resumeWaits.map((r) => `${r.key} (${r.resume_why})`).join(', ')}`));

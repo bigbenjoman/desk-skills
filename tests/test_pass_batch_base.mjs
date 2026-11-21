@@ -146,7 +146,12 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('and says so', lines(sup)[0], 'base sync: feat/x is 3 commit(s) behind main and config §3 batch-base-push is "ask", so it was not synced: asked once for the batch in /desk-needs-you (its base-push item) — spawning carries on from the base as it stands (feat/x is 3 commit(s) behind main, within the 20 it may lag)');
   t('once', batchWrites(sync(snap({ base_push_ask: { since: 'x' } }, { push: ask, passBy: 'supervisor' }), { sync: { ok: false, reason: 'permission', merged: 3 } })).length, 0);
   t('a session pass says how to approve it', waiting(sync(snap({}, { push: ask }), { sync: { ok: false, reason: 'permission', merged: 3 } }))[0].includes(': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1 — '), true);
-  t('the ask is settled once the base syncs', j(batchWrites(sync(snap({ base_push_ask: { since: 'x' } })))), j(['base_push_ask=null']));
+  const gone = { ok: false, reason: 'permission', merged: 0, recreate: { last: 'a'.repeat(40), at: 'b'.repeat(40) } };
+  t('a gone base asks to recreate it', j(batchWrites(sync(snap({}, { push: ask, passBy: 'supervisor' }), { sync: gone }))),
+    j([`base_push_ask=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', base: 'feat/x', source: 'main', recreate: true })}`]));
+  t('and an ask raised while it was behind is turned into one, keeping its age', j(batchWrites(sync(snap({ base_push_ask: { since: 'x' } }, { push: ask, passBy: 'supervisor' }), { sync: gone }))),
+    j([`base_push_ask=${JSON.stringify({ since: 'x', base: 'feat/x', source: 'main', recreate: true })}`]));
+  t('the ask is settled once the base syncs',j(batchWrites(sync(snap({ base_push_ask: { since: 'x' } })))), j(['base_push_ask=null']));
 }
 
 // A base fix try's worker.

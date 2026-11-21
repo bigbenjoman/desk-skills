@@ -1,5 +1,5 @@
 // The ticket ledger: every change to a ticket or a batch as one typed event, in one append-only log per
-// repo, <repo state>/ledger/events.jsonl, from which any ticket's state and any batch's queue.json shape
+// repo, <repo>/ledger/events.jsonl beside the standing queue (~/.claude/desk/repos/<slug>), from which any ticket's state and any batch's queue.json shape
 // is rebuilt.
 //
 // Each line is an envelope {v, seq, id, at, batch, key, type, by, data}. seq is assigned under the
@@ -17,7 +17,7 @@ import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { lock, unlock } from './dir-lock.mjs';
-import { STATES, FINISHED } from './queue-writer.mjs';
+import { STATES, FINISHED } from './queue-states.mjs';
 import { batchFields, keys as keysOf, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
@@ -126,7 +126,7 @@ export function invalid(ev) {
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
-const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields).filter(([f]) => !PROJECTION_ONLY.includes(f)));
+export const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
 // Lays queue.json fields onto ticket `t`: the fields with a typed home (state, park, held_by, result.pr,
 // merge) go there too, so a typed event and a field set agree on one value.
@@ -148,11 +148,12 @@ export function legality(state, ev) {
 }
 
 // Applies one envelope to `state` in place. An illegal transition is applied all the same: in shadow
-// mode the queue write it records has already happened.
+// mode the queue write it records has already happened. Every batch an event names gets an entry in
+// `state.batches`, so a batch with none has never been written to the log.
 function apply(state, ev) {
   const d = ev.data ?? {};
+  const b = (state.batches[ev.batch ?? ''] ??= {});
   if (EVENTS[ev.type].scope === 'batch') {
-    const b = (state.batches[ev.batch ?? ''] ??= {});
     if (ev.type === 'base_red') b.base_red = { ...d };
     else if (ev.type === 'base_green') delete b.base_red;
     else if (ev.type === 'platform_outage') b.platform_outage = { ...d };
