@@ -367,10 +367,14 @@ $CHECKS"
   [ "$attempt" -eq 2 ] && [ -n "$WHY" ] && echo "  !! the session $WHY on the retry either, so no check ran: its lines above are not a permissions verdict" >&2
 
   # §3b Worker models' finder and text models (from pass.mjs; empty when unset) never run in this
-  # call, so each is asked for one word on its own: a value the CLI rejects fails here, naming it.
+  # call. A value the CLI lists for this login (model-list.mjs: no prompt, so no model turn) passes as
+  # it is; any other is asked for one word on its own, and a value the CLI rejects fails here, naming it.
+  LISTED=""; LISTED_READ=0
   for extra in "finder:${AUTOPILOT_FINDER_MODEL:-}" "text:${AUTOPILOT_TEXT_MODEL:-}"; do
     key="${extra%%:*}"; val="${extra#*:}"
     [ -n "$val" ] || continue
+    if [ "$LISTED_READ" = 0 ]; then LISTED="$(desk_timeout 60 node "$BIN/model-list.mjs" < /dev/null 2>/dev/null || true)"; LISTED_READ=1; fi
+    if printf '%s\n' "$LISTED" | grep -qxF -- "$val"; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"; continue; fi
     GOT=$(desk_timeout 120 claude -p "Reply with exactly one word: MODEL_OK" --setting-sources "" --strict-mcp-config \
       ${NO_TOOL_ARGS[@]+"${NO_TOOL_ARGS[@]}"} --model "$val" ${PRE_EFFORT_ARGS[@]+"${PRE_EFFORT_ARGS[@]}"} --max-budget-usd 1 --output-format text 2>&1 < /dev/null | tr -d '\r') || true
     if printf '%s\n' "$GOT" | grep -q MODEL_OK; then printf '  %-6s %-8s ok\n' "$(printf '%s' "$key" | tr 'a-z' 'A-Z')" "$val"
