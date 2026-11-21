@@ -1,4 +1,5 @@
 // suite: batch (start, discard and archive a feature batch)
+// budget: 45 DS-943 (every check runs batch.mjs or plan-batch.mjs against a real repo and bare origin; 34-36 s on CI)
 // batch.mjs against a scratch repo with a bare origin, a throwaway HOME and DESK_HOME: start refuses a
 // second batch, a second live feature batch and a bad base; discard removes an unstarted batch and
 // deletes its branch only when main has all of it; the archive check moves a done-with batch under

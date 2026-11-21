@@ -66,11 +66,7 @@ ln -s "$(cd "${TMPDIR:-/tmp}" && pwd -P)" "$OUT/tmp" || exit 1
 export TMPDIR="$OUT/tmp"
 # The run's template repos (tests/lib/repo_template.sh): built once, shared by every suite in it. Not
 # a DESK_* name: suites see no DESK_* variable but the ones suite_env.sh keeps (test_run_env.sh).
-export REPO_TPL_ROOT="$OUT/tpl"
-# One compile cache for every node the run starts: suites start the same desk/bin scripts thousands of
-# times, and each start otherwise compiles them again (a Node 22.1 feature; older nodes ignore it).
-export NODE_COMPILE_CACHE="$OUT/node-cache"
-pids=""
+export REPO_TPL_ROOT="$OUT/tpl"pids=""
 # A stopped run stops its suites first: each job passes the TERM on to its suite and waits for it, and
 # this waits for every job, so a lock held around run.sh is not released while a suite still runs.
 stop_jobs() { for p in $pids; do kill "$p" 2>/dev/null; done; wait; rm -rf "$OUT"; }

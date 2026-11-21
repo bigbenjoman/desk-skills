@@ -1,4 +1,5 @@
 // suite: bench arm 3 (implementation on Codex Sol at medium and high, Opus at medium and Sonnet)
+// budget: 55 DS-943 (seven whole bench runs over four or five arms, each a checkout and hidden tests; 31-42 s on CI)
 // covers: desk/bin/bench-arm3.mjs desk/bin/codex-exec.mjs desk/bin/bench-credits.mjs desk/bin/overage-watch.mjs
 // Stub claude and codex binaries on PATH, a scratch repo, config and Codex login. The stub codex logs
 // its arguments, whether it had any stdin and its working folder, writes a session log in the shape
