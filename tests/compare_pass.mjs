@@ -8,11 +8,15 @@
 //     status, stdout and stderr as they arrived, the queue at $DESK_QUEUE and the archive beside it,
 //     and how many lines the suite had printed to $PASS_CMP_SUITE_LOG when the run started.
 //
-//   node compare_pass.mjs diff <base records> <head records> <base tree> <head tree>
+//   node compare_pass.mjs diff <base records> <head records> <tree>...
 //     Lists, per suite and run, every queue field and output line that differs once ids and paths
-//     that change between runs are normalized and times are matched across the trees; and every run
-//     that only one tree recorded, or that crashed on only one, as not compared. Exit 0 when nothing
-//     differs, 1 on a difference, 2 when anything was not compared.
+//     that change between runs (each <tree> the runs saw included) are normalized and times are
+//     matched across the trees; and every run that only one tree recorded, or that crashed on only
+//     one, as not compared. Exit 0 when nothing differs, 1 on a difference, 2 when anything was not
+//     compared.
+//
+//   node compare_pass.mjs clean <records>
+//     Exit 0 when no pass in one tree's records crashed, 1 when one did.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { constants } from 'node:os';
@@ -354,8 +358,8 @@ function lineDiff(a, b, eq = (x, y) => x === y) {
   return { base: base.concat(a.slice(i)), head: head.concat(b.slice(j)), matched };
 }
 
-function diff([baseDir, headDir, baseRoot, headRoot]) {
-  const norm = normalizer([baseRoot, headRoot]);
+function diff([baseDir, headDir, ...roots]) {
+  const norm = normalizer(roots);
   const suites = [...new Set([...readdirSync(baseDir), ...readdirSync(headDir)])]
     .filter((s) => !s.endsWith('.log')).sort();
   let differ = 0, notCompared = 0, compared = 0;
@@ -415,6 +419,14 @@ function diff([baseDir, headDir, baseRoot, headRoot]) {
   process.exitCode = notCompared ? 2 : differ ? 1 : 0;
 }
 
+// Exit 0 when no pass in a tree's records crashed, 1 when one did.
+function clean([dir]) {
+  const bad = readdirSync(dir).filter((s) => !s.endsWith('.log'))
+    .some((s) => [...runs(join(dir, s)).values()].some(crashed));
+  process.exitCode = bad ? 1 : 0;
+}
+
 if (mode === 'record') record(args);
 else if (mode === 'diff') diff(args);
-else { console.error('usage: compare_pass.mjs record <node args...> | diff <base records> <head records> <base tree> <head tree>'); process.exitCode = 2; }
+else if (mode === 'clean') clean(args);
+else { console.error('usage: compare_pass.mjs record <node args...> | diff <base records> <head records> <tree>... | clean <records>'); process.exitCode = 2; }

@@ -3,8 +3,9 @@
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
 # it; one whose pass crashes is not compared; one that moved a shell case into a unit suite still runs
-# the base's case. Then the real pass suite against itself lists nothing: all of it, or on a pull
-# request only test_pass_other_repo.sh. Scratch dirs only.
+# the base's case; a base commit's recording is cached and reused only while nothing it depends on
+# changed. Then the real pass suite against itself lists nothing: all of it on a main push or the
+# nightly run, otherwise only test_pass_other_repo.sh. Scratch dirs only.
 # covers: tests/test_pass*.sh
 # budget: 60 (main 1500) DS-942 a pull request's smoke replay ran 28 CPU s, a main push's full one 1004
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -12,6 +13,8 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+# compare_pass.sh caches a base commit's recording here, never in the real cache.
+export XDG_CACHE_HOME="$T/cache"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 cmp(){ out=$(bash "$S/compare_pass.sh" "$@" 2>/dev/null); rc=$?; }
@@ -251,22 +254,79 @@ check "DS-763 base and head given as commits compare those commits" '[ $rc = 1 ]
 cmp --suite test_nope.sh "$T/base" "$T/same"
 check "DS-763 a suite the base lacks is refused" '[ $rc = 2 ]'
 
+# The base's recording cached by commit, in a repo whose base has two suites. ccmp keeps stderr, which
+# names each suite as it replays on each tree.
+CD="$T/cache/desk-skills/compare-pass"; rm -rf "$CD"
+git init -q -b main "$T/crepo"; cp -R "$T/base/." "$T/crepo/"; cp "$T/crepo/tests/test_pass.sh" "$T/crepo/tests/test_pass_b.sh"
+commit(){ git -C "$T/crepo" add -A; git -C "$T/crepo" -c user.name=t -c user.email=t@example.com commit -qm "$1"; }
+commit base; cp "$T/field/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; commit head
+cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/crepo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$T/crepo/desk/bin/"
+ccmp(){ out=$(bash "$T/crepo/tests/compare_pass.sh" "$@" 2>"$T/err"); rc=$?; }
+replayed(){ grep -q " on the base$" "$T/err"; }
+entries(){ find "$CD" -name '*.tar' 2>/dev/null | wc -l | tr -d ' '; }
+ccmp HEAD~1 HEAD; first=$out; firstrc=$rc
+check "DS-963 a base commit's first comparison replays it and caches its recording" '[ $rc = 1 ] && replayed && [ "$(entries)" = 1 ]'
+ccmp HEAD~1 HEAD
+check "DS-963 AC1 a cached base is not replayed, the head is, and the result is the uncached one" '! replayed && grep -q " on the head$" "$T/err" && [ $rc = "$firstrc" ] && [ "$out" = "$first" ] && [ "$(entries)" = 1 ]'
+PASS_CMP_CACHE=0 ccmp HEAD~1 HEAD
+check "DS-963 AC7 with the cache off both trees are replayed" 'replayed && [ "$out" = "$first" ]'
+ccmp HEAD HEAD
+check "DS-963 AC2 another base commit is replayed" 'replayed && [ "$(entries)" = 2 ]'
+ccmp --suite test_pass.sh HEAD~1 HEAD
+check "DS-963 AC2 another set of suites replays the base" 'replayed && [ "$(entries)" = 3 ]'
+mkdir -p "$T/fake"
+for tool in node git; do
+  printf '#!/bin/sh\n[ "$1" = --version ] && { echo "%s version 0.0.0"; exit 0; }\nexec %s "$@"\n' "$tool" "$(command -v $tool)" > "$T/fake/$tool"; chmod +x "$T/fake/$tool"
+  PATH="$T/fake:$PATH" ccmp HEAD~1 HEAD
+  check "DS-963 AC2 another $tool version replays the base" 'replayed && [ "$out" = "$first" ]'
+  rm "$T/fake/$tool"
+done
+for f in compare_pass.sh compare_pass.mjs suite_env.sh; do
+  cp "$T/crepo/tests/$f" "$T/$f.orig"; echo '' >> "$T/crepo/tests/$f"
+  ccmp HEAD~1 HEAD
+  check "DS-963 AC3 a changed $f replays the base" 'replayed && [ "$out" = "$first" ]'
+  cp "$T/$f.orig" "$T/crepo/tests/$f"
+done
+touch "$T/mark"; ccmp "$T/base" "$T/same"; ccmp "$T/base" "$T/same"
+check "DS-963 AC4 a base given as a directory is replayed every time and never cached" 'replayed && [ $rc = 0 ] && ! find "$CD" -newer "$T/mark" -name "*.tar" | grep -q .'
+# A base whose pass crashes, and one whose suite is stopped by a signal, as Ctrl-C stops one.
+cp "$T/crash/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; commit crash
+ccmp HEAD HEAD~1; ccmp HEAD HEAD~1
+check "DS-963 AC5 a base replay in which a pass crashed is not cached" '[ $rc = 2 ] && replayed'
+cp "$T/field/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; echo 'kill -TERM $$' >> "$T/crepo/tests/test_pass.sh"; commit stopped
+ccmp HEAD HEAD~2; ccmp HEAD HEAD~2
+check "DS-963 AC5 a base replay that was stopped is not cached" 'replayed'
+rm -rf "$CD"; mkdir -p "$CD"
+for i in 1 2 3 4 5; do touch -t "20200101000$i" "$CD/old$i.tar"; done
+ccmp HEAD~3 HEAD~2
+check "DS-963 AC8 a sixth entry removes the oldest, keeping 5" '[ "$(entries)" = 5 ] && [ ! -e "$CD/old1.tar" ] && [ -e "$CD/old2.tar" ]'
+ccmp HEAD~3 HEAD~2
+check "DS-963 AC8 the entry just written is the one kept" '! replayed'
+
 # A pass stopped by a signal: the recorder in its place ends with the same status, and records it.
 echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/stopped.mjs"
 PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pass.mjs" record "$T/stopped.mjs"; rc=$?
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
-# The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
-# push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
-if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
-  out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>/dev/null); rc=$?
-  check "DS-920 AC1 on a pull request, test_pass_other_repo.sh against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [1-9][0-9]* pass run\(s\) compared, 0 differ, 0 not compared$"'
-  echo "SKIP DS-763 AC4 the whole pass shell suite against the same tree: this run is a pull request, so only test_pass_other_repo.sh was replayed (main pushes and local runs replay them all)"
+# The whole replay takes 9 to 17 minutes, so it runs only on a main push and the nightly run
+# (a push, schedule or workflow_dispatch event in GitHub Actions), or where PASS_CMP_FULL=1 opts in.
+# A pull request and a local run replay one small suite instead. The trees are directories, so the
+# replay never touches the cache.
+full=
+if [ "${PASS_CMP_FULL:-}" = 1 ]; then full=1
+elif [ -n "${GITHUB_ACTIONS:-}" ]; then case "${GITHUB_EVENT_NAME:-}" in push|schedule|workflow_dispatch) full=1 ;; esac; fi
+touch "$T/mark"
+if [ -z "$full" ]; then
+  out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>"$T/err"); rc=$?
+  check "DS-920 AC1 on a pull request or a local run, test_pass_other_repo.sh against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [1-9][0-9]* pass run\(s\) compared, 0 differ, 0 not compared$"'
+  if [ -n "${GITHUB_ACTIONS:-}" ]; then why="this run is a pull request"; else why="this is a local run"; fi
+  echo "SKIP DS-763 AC4 the whole pass shell suite against the same tree: $why, so only test_pass_other_repo.sh was replayed (main pushes and the nightly run replay them all; PASS_CMP_FULL=1 opts a run in)"
 else
-  out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>/dev/null); rc=$?
+  out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>"$T/err"); rc=$?
   check "DS-763 AC4 the whole pass shell suite against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [0-9]{3,} pass run\(s\) compared, 0 differ, 0 not compared$"'
 fi
+check "DS-963 AC6 the same-tree replay replays the base and caches nothing" 'replayed && ! find "$CD" -newer "$T/mark" -name "*.tar" | grep -q .'
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" = 0 ]
