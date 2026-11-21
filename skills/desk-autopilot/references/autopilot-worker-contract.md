@@ -117,6 +117,8 @@ When the call parks, or `desk-ticket` says stop and wait for anything else:
 
 **A park asking for a file** names the absolute path of `$DESK_STATE/fixtures/<TICKET>/` to save it in.
 
+**Ask in plain words**, two short sentences at most, then `Not reached: …` (`desk-autopilot` *Ask or take*).
+
 **Name every step you did not reach, not just the one that failed.** A park lists the whole
 remaining tail (PR, review comment, Jira comment, Jira transition) because the orchestrator has
 no way to infer which were still ahead of you; otherwise it opens the PR and leaves the ticket

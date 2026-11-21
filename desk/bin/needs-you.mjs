@@ -114,7 +114,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -127,6 +127,7 @@ import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
+import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -139,9 +140,13 @@ const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.quest
 // A park in lane C, or a canvas-less lane D, is offered to an interactive desk-ticket session. A stopped
 // worker's park is the one it wrote to its park file: it exited with no marker, so the queue holds none.
 const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t.key) ?? '');
-const SESSION_WHY = 'lane C/D: a worker would only park on it';
+// A park's need as the person reads it: plain words, without the steps its worker did not reach, which
+// stay in the raw park.question the classifiers read and in the worker log (park-words.mjs).
+const parkNeed = (q) => one(parkWords(q));
+// Each action's reason is plain words too: no lane letters, grant ids or queue verbs.
+const SESSION_WHY = "it needs a plan or design agreed with you first, which a worker can't do, so it needs you";
 // Why a session park is one: a step no worker is ever allowed, or its lane.
-const sessionWhy = (q) => { const s = neverStep(q); return s ? `a worker is never allowed ${s}, so a requeue would only park it again` : SESSION_WHY; };
+const sessionWhy = (q) => { const s = neverStep(q); return s ? `a worker can't ${s === '.claude/ write' ? 'write under .claude/' : `run ${s} commands`}, so it needs you` : SESSION_WHY; };
 // Once the person has done a lane C or D park's step, resume hands it back to a worker that starts at
 // self-review (queue.mjs handback). Offered only where that worker has somewhere to start, the
 // worktree and branch the queue records, and never on a step no worker is allowed: a worker parked
@@ -151,7 +156,7 @@ const handBack = (r, t) => (t.worktree && t.branch && !neverStep(parkText(r, t))
 // Every parked or session item can be dropped out of its batch (queue.mjs drop, which removes its clean
 // worktree). Where its park says it has no worker work, drop comes first as the recommendation and the
 // item's own first action keeps its reason as a note; otherwise drop is offered just before not-now.
-const DROP_WHY = 'its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is';
+const DROP_WHY = 'its worker says nothing is left for a worker to do, so sending it back would only stop it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is';
 const DROP_NOTE = 'drop takes it out of the batch and removes its worktree, refused while that holds unpushed work; Jira is left as it is';
 function withDrop(r, t, actions) {
   if (noWorkerWork(parkText(r, t))) {
@@ -161,7 +166,7 @@ function withDrop(r, t, actions) {
   const at = actions.findIndex(([a]) => a === 'not-now');
   return at < 0 ? [...actions, ['drop', null, DROP_NOTE]] : [...actions.slice(0, at), ['drop', null, DROP_NOTE], ...actions.slice(at)];
 }
-const PERSON_RESUME_NOTE = 'once the step is done, resume "<what you did>" reads its PR on GitHub and requeues it only if a commit, review or passing check landed since the park';
+const PERSON_RESUME_NOTE = 'once the step is done, resume "<what you did>" reads its PR on GitHub and sends it back to a worker only if a commit, review or passing check landed since the park';
 // What changed on a PR (`v`, read with commits, reviews and statusCheckRollup) since its ticket parked
 // (park.since): a commit, a review, or a check finished since that is not failing (a red one gone green).
 // Read from GitHub's own times, since no PR state is recorded when a ticket parks. -> { changed, shows },
@@ -184,7 +189,7 @@ export function prSincePark(t, v) {
 const SESSION_DONE = ['done', null, 'if you finished the ticket yourself, done reads its PR and records it done once the PR has merged, or where it has none'];
 // A step the person approved that its park says no worker can run (park.session_step, answer.mjs):
 // they run it in a session, and done sends the ticket back to a worker with it recorded done.
-const STEP_WHY = 'no worker can run the step you approved, so a requeue would only park it again: run it in an interactive session';
+const STEP_WHY = "a worker can't run the step you approved, so it needs you: run it in an interactive session";
 const STEP_DONE = ['done', null, 'once you have run the step, done sends the ticket back to a worker with it recorded as done'];
 const STEP_ANSWER = ['answer', null, 'if you did not mean to approve running it, answer again: an answer approving no step makes it an ordinary park you can resume'];
 const digestList = (r) => [{ slug: r.slug, batch: r.batch ?? null, state: r.stateDir, queue: r.queuePath }];
@@ -778,8 +783,8 @@ function unsetItem(g) {
   const keys = g.parked.map((p) => p.t.key);
   const n = keys.length;
   return { kind: 'config', repoLevel: true, parked: g.parked,
-    need: `§3 ${g.key} is not set in ${g.r.repo}'s config, so desk reads it as no, and ${n === 1 ? 'a ticket' : `${n} tickets`} parked on it (${andList(keys)}). Answer it once with /desk-update in ${rootOf(g.r)}, which asks every row the config lacks; then say done, and ${n === 1 ? 'it is' : 'each is'} requeued`,
-    actions: [['done', `once the row is set, done requeues ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it`], ['not-now']] };
+    need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) parked because ${g.r.repo}'s desk config does not say whether workers may ${GRANT_WORDS[g.key] ?? 'take the step they need'}, so they can't. Answer it once with /desk-update in ${rootOf(g.r)}, then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
+    actions: [['done', `once you have answered it, done sends ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it back to a worker`], ['not-now']] };
 }
 // A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
 // from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
@@ -1557,16 +1562,19 @@ function itemOf(r, x, reads = null, finds = reads) {
   const wb = worktreeBusy(t);
   // Requeued off a park and held here: the park says why its worker stopped, and the ticket is queued
   // already, so a resume only records what the next worker should know.
-  if (busyPark(t)) return { kind: 'worktree', need: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
+  // A reworded need is put off by its raw text (putOffKey), so a change of wording brings back nothing.
+  if (busyPark(t)) return { kind: 'worktree', need: parkNeed(busyPark(t).question), rawNeed: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   // A stopped or outside-held ticket whose PR merged in another repo, where it was built, is done.
   const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t, finds) : null;
   const shipped = (item) => (elsewhere ? { ...item, elsewhere, actions: shippedFirst(item.actions, elsewhere) } : item);
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${parkNeed(parkText(r, t))}`, rawNeed: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
   if (x.k === 'failed') {
     // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
-    const actions = [['requeue', 'its worker gave up; a requeue lets the next pass start it again'], ['not-now']];
-    return shipped({ kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
+    const actions = [['requeue', 'its worker gave up; requeue sends it back for a new worker to start again'], ['not-now']];
+    // With no reason of its own recorded, its need is its park in plain words, not the raw question.
+    const said = String(t.failed?.why ?? '').trim() ? '' : parkNeed(parkText(r, t));
+    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), rawNeed: said ? `worker stopped: ${one(parkText(r, t))}` : needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
@@ -1597,7 +1605,7 @@ function itemOf(r, x, reads = null, finds = reads) {
       : { kind: 'held', need: h.text, actions: [['done', 'only you can do this step; say done once you have'], ['not-now']] };
   }
   if (t.state === 'parked' && !isHeld(t)) {
-    const need = one(t.park?.question) || 'parked, with no question recorded';
+    const need = parkNeed(t.park?.question) || 'parked, with no question recorded';
     // What its worktree holds that origin does not, as the last pass read it.
     // A gated write's exact text (park.approve) is printed whole under the question by listText; the
     // note points the session there, since it asks from this one line.
@@ -1609,8 +1617,8 @@ function itemOf(r, x, reads = null, finds = reads) {
     if (sp === 'specs') return { kind: 'spine', need, note, actions: [['reject', 'its acceptance specs failed the spec check, so it goes back with what to fix'], ['not-now']] };
     if (t.park?.session_step) return { kind: 'session', need: `you approved a step no worker can run: ${one(t.park.session_step.step)}`, note, actions: withDrop(r, t, [['open', STEP_WHY], STEP_DONE, STEP_ANSWER, ['not-now']]) };
     if (sessionPark(parkText(r, t))) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
-    if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', `lane ${t.lane ?? 'C or D'}: only an interactive desk-ticket session takes it on`], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
-    if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
+    if (needsSession(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', SESSION_WHY], ...handBack(r, t), SESSION_DONE, ['not-now']]) };
+    if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', "it needs splitting or its ticket links fixing, which a worker can't do, so it needs you"], SESSION_DONE, ['not-now']]) };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
     const offer = taken.filter((d) => d.ticket === t.key && !d.lever && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
@@ -1618,10 +1626,10 @@ function itemOf(r, x, reads = null, finds = reads) {
     // A step only the person or another account takes: nothing a worker does moves it, so no action is
     // the recommendation, and resume reads its PR on GitHub before it requeues (record).
     const step = personOnlyStep(parkText(r, t));
-    if (step) return { kind: 'parked', personOnly: step, need: `a step only you or another account takes: ${step}${one(parkText(r, t)) === step ? '' : ` (${need})`}`, note,
+    if (step) return { kind: 'parked', personOnly: step, need: `a step only you or another account takes: ${plainTerms(step)}${one(parkText(r, t)) === step ? '' : ` (${need})`}`, note,
       actions: [['resume', null, PERSON_RESUME_NOTE], ['drop', null, DROP_NOTE], ['not-now'], ...moveAction(r), ...offer] };
     // No bare answer: it would leave the ticket parked, and desk-q still counting it.
-    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', `lane ${laneOf(t, triageOf(r, t.key))}: a worker finishes it once it has your answer`], ['not-now']]), ...moveAction(r), ...offer] };
+    return { kind: 'parked', need, note, actions: [...withDrop(r, t, [['resume', 'a worker finishes it once it has your answer'], ['not-now']]), ...moveAction(r), ...offer] };
   }
   // Its questions as the digest page words them, so a put-off entry keys to the same text.
   const need = one(openQuestions({ ...digestList(r)[0], triage: (k) => triageOf(r, k) }).find((q) => q.ticket === t.key && q.kind === 'triage')?.text) || `${t.open_questions} triage question(s) open`;
@@ -1645,7 +1653,7 @@ function putOffKey(r, t, item) {
   if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
-  else inputs.need = item.need;
+  else inputs.need = item.rawNeed ?? item.need;
   if (item.approval) inputs.approvals = (t.pr_status?.approvals ?? []).join(', ') || 'none';
   // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
   if (item.kind === 'worktree' && item.note) inputs.hold = item.note;
@@ -2239,7 +2247,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
     case 'drop': { const q = queueCmd(r, ['drop', ticket]); return q.ok ? say(true, `${q.out} (queue.mjs drop); Jira is left as it is.`) : say(false, `drop refused: ${q.out}`); }
     case 'open': {
       const root = repoConfigValue(r.slug, 'repo-root');
-      return say(true, `not requeued (${x.t.park?.session_step ? 'a step you approved that no worker can run' : neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'lane C or D'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
+      return say(true, `not requeued (${x.t.park?.session_step ? 'a step you approved that no worker can run' : neverStep(parkText(r, x.t)) ? 'a step no worker is allowed' : 'it needs a plan or design agreed with you first'}). Open an interactive session${root ? ` in ${root}` : ` in ${r.name}`} and run /desk-ticket ${ticket}.`);
     }
     // Admission runs its own checks on each blocker, so it is the person's /desk-admit, not made here.
     case 'admit': {
