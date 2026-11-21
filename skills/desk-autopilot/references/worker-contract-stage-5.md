@@ -120,11 +120,26 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
 
   **An app you cannot run for screenshots is checked whole, and parks once.** Before any park on it,
   run `desk-env drift --app <its directory>`: it prints every §4 row the app lacks, `NODEV` (Dev
-  server) and `NOENV` (Env files), each with the value to add, or `no setup gaps`. Never park on the
+  server), `NOENV` (Env files) and `NOSIGNIN` (Test sign-in), each with the value to add, or `no setup gaps`. Never park on the
   first row you meet and leave the next for a requeue: each round costs the person an answer.
 
-  **No §4 Dev server item for the app you changed?** (`desk-env cmds dev-cmd` has no line whose
-  directory holds the screen.) Its dev command is refused, so capture from the PR's preview instead:
+  **Read a row of several items whole.** `desk-env cmds dev-cmd`, `desk-env list env-files` and
+  `desk-env cmds test-signin` print every app's item; `desk-env get` prints only a row's first, so it
+  never tells you an app is missing from a row. An app `drift --app` does not name for a row has that
+  row: a park never says it is missing.
+
+  **A Dev server item and a Test sign-in item for the app?** Capture from your own dev server on your
+  port, signed in as that user, by `desk-pr`'s `screenshot-surfaces.md` "Signed in with a sign-in
+  token", whether or not the PR has a preview: never park for a preview you cannot sign in to. Its
+  script refuses an env file whose key is not a development instance's: that is a park naming the
+  env file and the reason (`AUTOPILOT_PARK: screenshots for <dir>: <env file> holds a CLERK_SECRET_KEY
+  that is not a development instance's (sk_test_), so I will not sign in with it`), never a reason to
+  find another key.
+
+  **No §4 Dev server item for the app you changed, or a page behind sign-in and no §4 Test sign-in
+  item for it?** (`desk-env cmds dev-cmd`, or `desk-env cmds test-signin`, has no line whose
+  directory holds the screen.) Its dev command is refused, or it has no user to sign in as, so
+  capture from the PR's preview instead:
   open the draft PR first, then read the preview's URL from the host's bot comment
   (`gh pr view <n> --json comments`) or the branch's deployment (`desk-gh read
   repos/<repo>/deployments -X GET -f ref=<branch>`, then its statuses' `environment_url`). Use it
@@ -135,12 +150,15 @@ you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease 
   no preview you can sign in to, park once naming every row `drift --app` printed, and only those,
   each with its value, with the rest of the tail (core section 1): `AUTOPILOT_PARK: screenshots for
   <dir>: the PR has no preview I can sign in to, and its setup lacks <each row, e.g. §4 Dev server
-  "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local">: add them (/desk-setup;
+  "apps/portal: pnpm run dev"; §4 Env files "apps/portal/.env.local"; §4 Test sign-in "apps/portal:
+  <email of an existing development user who holds the app's grant>">: add them (/desk-setup;
   desk-env drift --app <dir> checks it) and requeue me, or capture them yourself`, then
-  `AUTOPILOT_PARK_INPUTS: {"config:dev-cmd": "<what desk-env get dev-cmd prints>", "config:env-files":
-  "<what desk-env get env-files prints>"}` (`get`, never `list`: the pass re-reads each input
-  with `get`, so a `list` value reads as changed on every pass). An app whose dev server runs but fails for want of its env
-  files parks the same way, naming the Env files row alone.
+  `AUTOPILOT_PARK_INPUTS` with one `"config:<row id>": "<what desk-env get <row id> prints>"` for
+  each row it names (`dev-cmd`, `env-files`, `test-signin`), and no other row (`get`, never `list`:
+  the pass re-reads each input with `get`, so a `list` value reads as changed on every pass; an
+  input is only what clears the park, never how you judge which rows the app lacks). An app whose
+  dev server runs but fails for want of its env files parks the same way, naming the Env files row
+  alone.
 - **Opening the PR as a DRAFT.** `gh pr create --repo <repo> --draft --base <default> --head
   <your branch> --body-file <file> --title "<title>"`, in that order: the allow rule matches only a
   command beginning `gh pr create --draft` or `gh pr create --repo <repo> --draft`, and `--repo`
