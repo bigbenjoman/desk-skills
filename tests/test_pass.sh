@@ -4620,8 +4620,10 @@ rm -f "$XWS/XT-1.json"
 printf '{"tickets": not json\n' > "$XBQ/queue.json"
 fbq xbd '1'; fbt XD-1 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
-# The repo's worker cap still counts an unreadable queue at the cap, so nothing starts this pass on
-# that account; the per-file budget does not hold the ticket, and says that batch was not checked.
+# AC4 as the person reworded it on PR #725: "Given another batch's queue that cannot be read, when
+# the pass runs, then the per-file budget does not hold the ticket, and the report says that batch
+# was not checked." DS-308's repo worker cap still counts an unreadable queue at the cap (borrow.mjs
+# repoBudget, unchanged), so nothing starts this pass on that account.
 check "DS-664 AC4 another batch's queue that does not read holds no ticket on the per-file budget, and the report says that batch was not checked" \
   '! echo "$out" | grep "^held back by a collision:" | grep -qF "XD-1" && echo "$out" | grep -qF "collisions: $XBQ/queue.json is not valid JSON (" && echo "$out" | grep -qF "that batch'"'"'s running tickets were not counted toward the per-file budget" && echo "$out" | grep -qF "batch XB-1 unreadable ("'
 xb running
