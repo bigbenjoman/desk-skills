@@ -55,10 +55,11 @@ export function mergedPrs(repo, since) {
 
 // The records with a merged PR naming their key -> [{ key, named, changed }], `changed` the union of
 // those PRs' files. A key is matched as the pass matches it (keyPattern): DS-69 is not DS-697 or DS-69-2.
+// The match ignores case, since some repos name branches in lower case (aa-244-x for AA-244).
 export function joinTickets(records, prs) {
   const out = [];
   for (const [key, named] of records) {
-    const re = new RegExp(keyPattern(key));
+    const re = new RegExp(keyPattern(key), 'i');
     const mine = prs.filter((p) => re.test(p.headRefName ?? ''));
     if (mine.length) out.push({ key, named, changed: [...new Set(mine.flatMap((p) => p.files).map(norm))] });
   }

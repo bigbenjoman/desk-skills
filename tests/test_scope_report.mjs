@@ -90,6 +90,9 @@ const joined = joinTickets(new Map([['T-1', ['a.js']], ['T-12', ['c.js']], ['T-2
 ]);
 t('join: a key is matched whole (not T-12 nor T-1-2), by head branch only, its PRs\' files unioned, and an unmerged key dropped',
   S(joined), '[{"key":"T-1","named":["a.js"],"changed":["a.js","d.js","e.js"]},{"key":"T-12","named":["c.js"],"changed":["c.js"]}]');
+t('join: a lower-case branch names its key, and still not a longer one', S(joinTickets(new Map([['AA-24', ['x.js']], ['AA-244', ['y.js']]]), [
+  { headRefName: 'aa-244-robin-records', files: ['y.js'] },
+])), '[{"key":"AA-244","named":["y.js"],"changed":["y.js"]}]');
 
 const m = measure([
   { key: 'A-1', named: ['hot.js', 'lib/', 'cold.js'], changed: ['hot.js', 'lib/x.js', 'other.js'] },
