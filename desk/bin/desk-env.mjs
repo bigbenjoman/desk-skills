@@ -566,7 +566,33 @@ function writeWithBackup(path, text) {
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
+  if (id === 'suite-weight') return suiteWeightIn(parseConfig(), configRepoRoot(parseConfig())).value;
   return configValueIn(parseConfig(), id);
+}
+
+// The main checkout a config's repo settings live in: its §2 Primary repo root, else the cwd's checkout.
+const configRepoRoot = (parsed) => {
+  const row = configValueIn(parsed, 'repo-root');
+  return row ? expandHome(row) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
+};
+
+// §4 Suite weight describes the repo's suites, so the repo's committed settings carry it, as
+// env.DESK_SUITE_WEIGHT in <root>/.claude/settings.json. -> { value, file } or null when unset.
+export function committedSuiteWeight(root) {
+  if (!root) return null;
+  const file = join(root, '.claude', 'settings.json');
+  let v;
+  try { v = JSON.parse(readFileSync(file, 'utf8'))?.env?.DESK_SUITE_WEIGHT; }
+  catch { return null; } // missing or unreadable: no committed value
+  return typeof v === 'string' && v.trim() ? { value: v.trim().toLowerCase(), file } : null;
+}
+
+// The committed value wins over the config's row; with neither, `heavy`.
+// -> { value, committed: {value, file} | null, row: the config's value | null }
+export function suiteWeightIn(parsed, root) {
+  const committed = committedSuiteWeight(root);
+  const row = repoValueIn(parsed, 'suite-weight')?.trim().toLowerCase() ?? null;
+  return { value: committed?.value ?? row ?? 'heavy', committed, row };
 }
 
 function configValueIn(parsed, id) {
@@ -1711,7 +1737,7 @@ export function localServiceName(item) {
   return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
 }
 
-// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, dontAsk: file | null }
+// -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1745,7 +1771,10 @@ export function configDrift({ config, template = templatePath(), root = null, ho
       if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
     }
   }
-  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], dontAsk: mode === 'dontAsk' ? file : null };
+  // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
+  const w = suiteWeightIn(parsed, root);
+  const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
+  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
@@ -1828,12 +1857,13 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
+    ...(weight ? [`WEIGHT   §4 Suite weight is ${weight.row} in the config but ${weight.committed} in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${weight.file}), which win: set the row to ${weight.committed} or remove it`] : []),
     ...jobKeyed.map(jobKeyedLine),
     ...(dontAsk ? [`DONTASK  ${dontAsk}: ${DONTASK_WARNING}`] : []),
   ];

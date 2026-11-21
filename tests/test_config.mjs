@@ -210,6 +210,32 @@ t('AC5 and exits 1', d.code, 1);
 writeFileSync(join(repoDir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }));
 t('another defaultMode is not drift', drift(conf()).out, 'no drift');
 
+// §4 Suite weight comes from the repo's committed settings (env.DESK_SUITE_WEIGHT in
+// .claude/settings.json) over the config's row, and drift names a row that disagrees.
+const settings = join(repoDir, '.claude', 'settings.json');
+const weight = (body) => {
+  const c = join(T, 'weight.md');
+  writeFileSync(c, body);
+  try { return execFileSync('node', [BIN, 'get', 'suite-weight'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim(); }
+  catch (e) { return `exit ${e.status}`; }
+};
+const wrow = (v) => `${conf()}| Suite weight | \`${v}\` |\n`;
+writeFileSync(settings, JSON.stringify({ env: { DESK_SUITE_WEIGHT: 'light' } }));
+t('DS-939 AC1 the committed value reads where the config has no row', weight(conf()), 'light');
+t('DS-939 AC1 and wins over a row that disagrees', weight(wrow('heavy')), 'light');
+d = drift(wrow('heavy'));
+t('DS-939 AC2 a row that disagrees is one drift line naming both values', d.out,
+  `WEIGHT   §4 Suite weight is heavy in the config but light in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${settings}), which win: set the row to light or remove it`);
+t('DS-939 AC2 and exits 1', d.code, 1);
+t('DS-939 AC3 a row that agrees is not drift', drift(wrow('light')).out, 'no drift');
+t('DS-939 AC3 and no row is not drift', drift(conf()).out, 'no drift');
+writeFileSync(settings, JSON.stringify({ env: { OTHER: 'x' } }));
+t('DS-939 AC4 settings without the key read the row', weight(wrow('light')), 'light');
+rmSync(settings);
+t('DS-939 AC4 with nothing committed the row reads', weight(wrow('light')), 'light');
+t('DS-939 AC4 and with no row either, heavy', weight(conf()), 'heavy');
+t('DS-939 AC4 nothing committed is not drift', drift(wrow('heavy')).out, 'no drift');
+
 // A §4 command item a worker's settings can never allow is a blocking line naming its row.
 const compound = `bash -c 'bash tests/run.sh $(node tests/scope_sections.mjs --json)'`;
 d = drift(`${conf()}| Related tests | \`${compound}\` |\n| Lint | \`pnpm lint\` \`rm -rf dist\` |\n`);
