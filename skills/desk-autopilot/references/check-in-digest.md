@@ -69,10 +69,13 @@ newest 7-day reading from the `rate_limit_event` lines in every repo's worker lo
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,
 read from the event's `resetsAt`. While utilisation is more than §3b "Usage pacing headroom
 (points)" (unset: 5; `off` turns it off) above pace, new spawns hold under `STALLED` and running
-workers carry on; it releases by itself as the week goes on. The report always carries one `usage:`
-line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
-or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
-`off` holds every spawn, naming the row, as a malformed budget does.
+workers carry on; it releases by itself as the week goes on. It reads the login this repo's new
+workers start on. The report always carries one `usage:` line: `usage: 7-day 40%, pace 50%`,
+`… + 5: holding spawns`, `usage: no recent data for login <name>` (no reading, or the newest one's
+window has reset; with none at all the pass probes that login once, and a failed probe says why), or
+`pacing off`. After three passes in a row with no reading, a `health:` line says pacing holds nothing
+for that login. A row that reads as neither a number nor `off` holds every spawn, naming the row, as
+a malformed budget does.
 
 **The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
 window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the

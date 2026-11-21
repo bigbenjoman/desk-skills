@@ -1756,10 +1756,12 @@ const loginReading = (login, recent) => newestReading({ files: [loginProbeLog(us
 // blind: at most once per PROBE_EVERY_MS on that login, so a probe whose output carries no reading
 // is not repeated every pass. A probe that succeeds leaves a reading that lasts the recent window.
 const PACE_LOGIN = REPO_LOGIN ?? OWN_LOGIN;
+const PACE_NAME = PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default';
 const paceReading = () => loginReading(PACE_LOGIN);
 let READING = paceReading();
 let PACE = usagePace({ usage: READING.seven_day });
 let paceProbe = '';
+let paceProbeFailed = null;
 const lastProbe = lastProbeAt(usageDir(), PACE_LOGIN);
 // A plan whose newest event names no 7-day window (READING.none) has nothing a probe could read.
 const noReading = !READING.seven_day && !READING.none?.includes('seven_day') && !PACE.bad && !/pacing off/.test(PACE.line)
@@ -1770,10 +1772,31 @@ if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, 
     READING = paceReading();
     PACE = usagePace({ usage: READING.seven_day });
     paceProbe = '; read by a probe call just now';
-  } else paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
+  } else {
+    paceProbeFailed = p.why;
+    paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
+  }
 }
-// "No recent data" names the login it read, so a reading kept under another login is not mistaken for none.
-if (/^usage: no recent data/.test(PACE.line)) PACE = { ...PACE, line: PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_LOGIN.configDir ? PACE_LOGIN.name : 'default'}`) };
+// "No recent data" names the login it read, so a reading kept under another login is not mistaken for
+// none, and why a probe for one failed: with no reading nothing holds, so no stall line would say it.
+const PACE_BLIND_NOW = /^usage: no recent data/.test(PACE.line);
+if (PACE_BLIND_NOW) {
+  const failed = paceProbeFailed ? `; pacing has no reading for it, as the probe call for one failed (${paceProbeFailed})` : '';
+  PACE = { ...PACE, line: `${PACE.line.replace(/^usage: no recent data/, `usage: no recent data for login ${PACE_NAME}`)}${failed}` };
+}
+// Passes in a row pacing has had no reading for its login (the pass record's pace_blind, with the last
+// probe failure): from PACE_BLIND_PASSES on, the health section says the guard is blind. A plan with no
+// 7-day window is not counted, as there is nothing to read.
+const PACE_BLIND_PASSES = 3;
+const PACE_BLIND = (() => {
+  if (!PACE_BLIND_NOW || READING.none?.includes('seven_day')) return null;
+  const was = queue().pass?.pace_blind;
+  const same = was?.login === PACE_NAME;
+  return { login: PACE_NAME, n: same ? (Number(was.n) || 0) + 1 : 1, why: paceProbeFailed ?? (same ? was.why ?? null : null) };
+})();
+const paceBlindLine = PACE_BLIND && PACE_BLIND.n >= PACE_BLIND_PASSES
+  ? `health: pacing has had no 7-day usage reading for login ${PACE_NAME} for ${PACE_BLIND.n} passes in a row, so it holds no spawn whatever that login has used${PACE_BLIND.why ? `; the last probe call for one failed (${PACE_BLIND.why})` : ''}`
+  : null;
 // A ticket keeps the tier it last ran on (a requeue after a park keeps the model; queue.mjs requeue
 // raises it after a failure), and otherwise takes one from its triage record's lane and size.
 const tierFor = (t) => {
@@ -5009,7 +5032,7 @@ let tableAt = -1;
 runPhase({
   name: 'verdict lines',
   snapshot: () => {
-    const footer = [HEALTH.line, PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
+    const footer = [HEALTH.line, ...(paceBlindLine ? [paceBlindLine] : []), PACE.line, `memory: vmmem=${E.usedGiB().toFixed(1)}G avail=${availGB.toFixed(1)}G`, CEILING.line, CONC.line, machineLine];
     if (repoLine) footer.push(repoLine);
     if (BORROW.bad) footer.push(`borrowing: ${BORROW.bad}`);
     if (borrowLine) footer.push(borrowLine);
@@ -5068,7 +5091,7 @@ const late = recordPass((prev) => {
   // time later than the previous pass's start would count again a merge that pass already recorded.
   const merged = merges.length > 0 || (Array.isArray(prev.merged_tickets) && mergedEnd.some((k) => !prev.merged_tickets.includes(k)));
   const moved = report.spawned.length > 0 || merged || released;
-  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, ...collisionRec };
+  return { held: heldWhy, errors: 0, error: null, progress_at: moved ? PASS_AT : prev.progress_at ?? null, held_tickets: heldEnd, merged_tickets: mergedEnd, undraft_errors: undraftErrors, pace_blind: PACE_BLIND, ...collisionRec };
 });
 lines[tableAt] = sh('node', [join(BIN, 'queue.mjs'), 'render'], { tolerant: true });
 // The last write's refusals, and fields another writer had changed, are the person's too.
