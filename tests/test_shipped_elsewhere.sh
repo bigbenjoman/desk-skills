@@ -214,10 +214,33 @@ check "DS-796 a MERGED status's own merge time counts when a capped search leave
 check "DS-796 a later own PR kept as merged_pr covers what merged before it, not only merged_at" \
   'spawned DS-390 && [ "$(field DS-390 result.pr)" = null ] && [ "$(field DS-390 state)" != "\"done\"" ]'
 
+# DS-391: its first PR merged (merged_at), its second round's own #361 merged after it and was kept as
+# merged_pr, and its third round's #362 is still open (result.pr) when it is requeued: #361 is its own.
+# DS-392: needs-you recorded it done on o/other's PR #363 (result.pr, with that repo's url), then it was
+# requeued, and this repo's own #363, merged from its branch since, shipped it. DS-393 is the same with
+# nothing merged here: it spawns, and its spawn keeps no merged_pr.
+for k in DS-389 DS-390; do q set "$k" state=done; done
+queued DS-391 fix/DS-391-own merged_at=2026-10-31T10:50:00.500Z merged_pr=361 result.pr=362
+queued DS-392 fix/DS-392-own merged_at=2026-10-31T10:53:00Z result.pr=363 \
+  'pr_status={"pr":363,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/363"}'
+queued DS-393 fix/DS-393-own merged_at=2026-10-31T10:53:00Z result.pr=365 \
+  'pr_status={"pr":365,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/365"}'
+jira DS-393 "In Progress" indeterminate
+node -e 'const f = process.argv[1], fs = require("fs"); const a = JSON.parse(fs.readFileSync(f, "utf8"));
+  a.push({ number: 361, headRefName: "fix/DS-391-two", mergedAt: "2026-10-31T10:52:00Z" }, { number: 363, headRefName: "fix/DS-392-own", mergedAt: "2026-10-31T10:54:00Z" });
+  fs.writeFileSync(f, JSON.stringify(a))' "$T/merged.json"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 an open result.pr does not hide its own merged merged_pr: not shipped outside its worker" \
+  'spawned DS-391 && [ "$(field DS-391 state)" != "\"done\"" ] && ! grep -q "DS-391: PR #361" <<< "$out"'
+check "DS-796 a result.pr from another repo is not this repo's PR of the same number: #363 here shipped it" \
+  '[ "$(got DS-392 .state)" = done ] && [ "$(got DS-392 .result.pr)" = 363 ] && ! spawned DS-392'
+check "DS-796 a spawn keeps no merged_pr for another repo's PR" \
+  'spawned DS-393 && [ "$(field DS-393 merged_pr)" = null ]'
+
 # A failed GitHub read spawns as before.
 q add DS-380 Bug A; q set DS-380 state=triaged branch=fix/DS-380-x added_at=2026-10-31T10:00:00Z
 printf '#!/bin/sh\necho "gh: HTTP 502" >&2; exit 1\n' > "$T/stub/gh"
-for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388 DS-389 DS-390; do q set "$k" state=done; done
+for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388 DS-389 DS-390 DS-391 DS-393; do q set "$k" state=done; done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-404 a merged-PR search that fails spawns as before" '[ "$(field DS-380 state)" = "\"running\"" ] && spawned DS-380'
 

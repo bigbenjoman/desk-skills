@@ -1142,47 +1142,52 @@ function ownMergedPr(t) {
 // merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
 // behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
 // nothing. A read that fails is null, and the ticket spawns as it would have.
+// Its own PRs are every one it records (result.pr and merged_pr both: an open result.pr does not hide
+// a merged merged_pr), and none of them is news. A recorded PR that its PR status names with another
+// repo's url (needs-you's elsewhereDone) is that repo's, not this repo's PR of the same number.
+const hereUrl = (url) => !url || String(url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
+const foreignPr = (t, n) => n != null && t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n) && !hereUrl(t.pr_status.url);
 // The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
-const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${t.result.pr}`] : []);
+const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null && !foreignPr(t, t.result.pr) ? [`merged_pr=${t.result.pr}`] : []);
 const statusPr = (t) => {
   const s = t.merged_at ? t.pr_status : null;
-  if (s?.pr == null) return null;
-  const here = !s.url || String(s.url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
-  return here ? { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) } : null;
+  if (s?.pr == null || !hereUrl(s.url)) return null;
+  return { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) };
 };
 function shippedElsewhere(t) {
   const status = statusPr(t);
-  let mine = t.result?.pr ?? t.merged_pr ?? null;
+  const recorded = [t.result?.pr, t.merged_pr].filter((n) => n != null);
+  const mine = new Set(recorded.filter((n) => !foreignPr(t, n)).map(Number));
   try {
-    const since = Math.max(...[Date.parse(t.added_at), mine != null ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
+    const since = Math.max(...[Date.parse(t.added_at), mine.size ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
     // 1000 is the most a GitHub search returns.
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
     const list = Array.isArray(prs) ? prs : [];
     const at = Date.parse(t.merged_at);
-    if (mine == null && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine = status.pr;
-    let own = mine != null || status?.later ? at : NaN;
+    if (!mine.size && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine.add(status.pr);
     // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
-    // cleared it. Its own PR, however recorded, may have merged after merged_at (which keeps only the first
-    // merge): it is not news, and neither is anything merged by then. Its merge time is the status's for
-    // that PR, else the search's (a capped search may leave that PR out).
-    if (mine == null && status?.merged) mine = status.pr;
-    if (mine != null) {
-      const fromStatus = status?.merged && status.pr === Number(mine) ? status.mergedAt : NaN;
-      const m = Number.isNaN(fromStatus) ? Date.parse(list.find((p) => Number(p?.number) === Number(mine))?.mergedAt) : fromStatus;
-      own = Number.isNaN(m) ? at : Math.max(at, m);
+    // cleared it. Its own PRs, however recorded, may have merged after merged_at (which keeps only the first
+    // merge): they are not news, and neither is anything merged by the last of them. Each one's merge time
+    // is the status's for that PR, else the search's (a capped search may leave that PR out).
+    if (status?.merged) mine.add(status.pr);
+    let own = mine.size || status?.later ? at : NaN;
+    for (const n of mine) {
+      const fromStatus = status?.merged && status.pr === n ? status.mergedAt : NaN;
+      const m = Number.isNaN(fromStatus) ? Date.parse(list.find((p) => Number(p?.number) === n)?.mergedAt) : fromStatus;
+      if (!Number.isNaN(m)) own = Math.max(own, m);
     }
     const re = new RegExp(keyPattern(t.key));
     const hit = list
       .filter((p) => Number.isFinite(Number(p?.number)) && re.test(String(p.headRefName ?? '')) && Number(p.number) !== Number(t.merged_tail)
-        && (since === -Infinity || Date.parse(p.mergedAt) >= since)
-        && (Number.isNaN(own) || (Date.parse(p.mergedAt) > own && Number(p.number) !== Number(mine))))
+        && (since === -Infinity || Date.parse(p.mergedAt) >= since) && !mine.has(Number(p.number))
+        && (Number.isNaN(own) || Date.parse(p.mergedAt) > own))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
     if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
   } catch { /* unread: spawn as before */ }
   // A PR status unconfirmed because the read failed still means a PR of its own: never "done with no PR".
-  if (mine != null || status != null || t.draft_pr != null) return null;
+  if (recorded.length || status != null || t.draft_pr != null) return null;
   const k = E.ticketKind(t.key);
   if (!k.ok || k.kind !== 'tracker') return null;
   try {
