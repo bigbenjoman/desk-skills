@@ -8,11 +8,11 @@
 // the check must name the bad one and pass the good one. Then the real skills and agents tree, against
 // the baseline, in-process and under two seconds.
 import childProcess from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 // AC12 first: nothing below may start a process until the real tree has been checked in-process.
 const SPAWNERS = ['spawn', 'spawnSync', 'exec', 'execSync', 'execFile', 'execFileSync', 'fork'];
@@ -121,14 +121,13 @@ t('DS-886 AC8 regenerating every region in the skills and agents changes no file
 t('DS-886 AC8 each registered region is used in the tree', Object.keys(REGIONS).filter((n) => !treeFiles.some((p) => regions(readFileSync(p, 'utf8')).found.some((r) => r.name === n))).join(', '), '');
 const factsCli = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_facts.mjs'), ...args], { cwd: R, encoding: 'utf8' });
 t('DS-886 AC8 the regenerate command in check mode passes the real tree', factsCli().status, 0);
-const tmp = mkdtempSync(join(tmpdir(), 'prose-facts-'));
+const tmp = scratch('prose-facts-');
 const edited = readFileSync(join(F, 'region-edited.md'), 'utf8');
 writeFileSync(join(tmp, 'a.md'), edited);
 const before = factsCli(join(tmp, 'a.md'));
 const written = factsCli('--write', join(tmp, 'a.md'));
 t('DS-886 the command names the region, then --write restores it and touches nothing around it',
   [before.status, written.status, readFileSync(join(tmp, 'a.md'), 'utf8') === edited.replace('`claude`, `codex` or `gemini`', '`claude` or `codex`')].join(' '), '1 0 true');
-rmSync(tmp, { recursive: true, force: true });
 
 // ---- DS-889: the push-nothing rule is fix-tries' text ----------------------------------------------
 const { pushNothing } = await import('../desk/bin/fix-tries.mjs');
@@ -154,7 +153,6 @@ const tj = (name, got, want) => t(name, JSON.stringify(got), JSON.stringify(want
 tj('DS-884 AC4 every baseline entry still matches a finding in the real tree', g.stale.map(staleReport), []);
 
 // ---- DS-884 AC3 / AC4: lines inserted above a baselined reference, and the reference fixed --------
-const { scratch } = await import('./scratch.mjs');
 const T = scratch('desk-prose-check-');
 const doc = join(T, 'skills/desk-x/SKILL.md');
 mkdirSync(dirname(doc), { recursive: true });
