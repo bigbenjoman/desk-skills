@@ -317,6 +317,9 @@ check "DS-872: a row fixed while another still blocked is pushed again when it c
 SECTION4='| In-progress state | `none` `(no tracker)` |'; config yes yes
 out=$(tick)
 check "DS-872: a value row holding \`none\` beside a note never blocks: the pass runs, nothing is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'
+SECTION4='| Package manager | `none` `pnpm` |'; config yes yes
+out=$(tick)
+check "DS-872: a value row a worker reads as a list (Package manager) holding \`none\` beside an item blocks and is pushed" '[ "$(count "$T/pass.calls")" = $((calls + 4)) ] && [ "$(count "$T/notify.calls")" = $((notified + 5)) ] && tail -1 "$T/notify.calls" | grep -qF "§4 Package manager"'
 SECTION4=$'| Done state | `Done` |\n\n## 3b. Tuning\n| Field | Value |\n|---|---|\n| Per-file collision budget | `none` `2` |'; config yes yes
 out=$(tick)
 check "DS-872: a collision budget mixing \`none\`, which the pass reads past, never blocks" '[ "$(count "$T/pass.calls")" = $((calls + 5)) ] && [ "$(count "$T/notify.calls")" = $((notified + 4)) ]'

@@ -407,10 +407,9 @@ const sentThisTick = new Set();
 // Whether another batch has sent `key`: the repo's own pushes reach every batch, and go out once. Any
 // key sent this tick counts. From another batch's stored list only a key that names what it is about
 // counts, since it never comes back: the check-in digest (its slot) and main's failed release (its
-// commit). A refused config row (its value) counts too: a batch keeps that key only while its own
-// check still refuses the row (configRefused), and an idle batch, which runs no check, holds none. An
-// idle batch's stored keys never change, and would silence a repeat of any other.
-const ONCE_EVER = ['digest:', 'release-failed-', 'config-invalid:'];
+// commit). An idle batch's stored keys never change, and would silence a repeat of any other: so a
+// refused config row, which can come back, counts only when sent this tick.
+const ONCE_EVER = ['digest:', 'release-failed-'];
 const sentElsewhere = (state, key) => sentThisTick.has(key)
   || (ONCE_EVER.some((p) => key.startsWith(p)) && tickStates.some((d) => d !== state && readState(d).notified.includes(key)));
 
