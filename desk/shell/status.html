@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+<title>Desk</title>
+<style>
+:root{
+  --font-sans:"Geist","Inter",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --radius:6px;
+  --background:#ffffff; --foreground:#09090b; --card:#ffffff;
+  --muted:#f4f4f5; --muted-fg:#6b6b73; --border:#e4e4e7;
+  --secondary:#f4f4f5; --secondary-fg:#18181b; --fail:#b91c1c;
+  --sh-md:0 4px 12px -2px rgba(9,9,11,.10),0 2px 4px -2px rgba(9,9,11,.06);
+}
+@media (prefers-color-scheme: dark){:root{
+  --background:#09090b; --foreground:#fafafa; --card:#0e0e10;
+  --muted:#1d1d21; --muted-fg:#a1a1aa; --border:#27272a;
+  --secondary:#27272a; --secondary-fg:#fafafa; --fail:#f87171;
+  --sh-md:0 4px 14px -2px rgba(0,0,0,.5);
+}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--background);color:var(--foreground);font-family:var(--font-sans);display:flex;align-items:center;justify-content:center;padding:40px;-webkit-font-smoothing:antialiased}
+.card{width:520px;padding:24px;display:flex;flex-direction:column;gap:14px;background:var(--card);border:1px solid var(--border);border-radius:calc(var(--radius) + 2px);box-shadow:var(--sh-md)}
+.row{display:flex;align-items:center;gap:10px}
+h2{margin:0;font-size:18px;font-weight:600;letter-spacing:-.015em}
+p{margin:0;font-size:14px;line-height:22px}
+.muted{color:var(--muted-fg);font-size:13px}
+.code{display:flex;align-items:center;gap:8px;background:var(--muted);border:1px solid var(--border);border-radius:var(--radius);padding:8px 8px 8px 12px}
+.code code{flex:1;font-family:var(--font-mono);font-size:12.5px;user-select:all;overflow-wrap:anywhere}
+button{font:inherit;font-size:13px;font-weight:500;height:28px;padding:0 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--secondary);color:var(--secondary-fg);cursor:default}
+button:focus-visible{outline:2px solid var(--muted-fg);outline-offset:2px}
+.status{border-top:1px solid var(--border);padding-top:14px}
+.status span{flex:1;font-variant-numeric:tabular-nums}
+.icon{width:20px;height:20px;color:var(--fail);flex:none}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main class="card" id="unreachable" hidden>
+  <div class="row">
+    <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 2h13a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-5"/><path d="M10 10 2.5 2.5C2 2 2 2.5 2 5v3a2 2 0 0 0 2 2h6z"/><path d="M22 17v-1a2 2 0 0 0-2-2h-1"/><path d="M4 14a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h16.5l1-.5.5.5-8-8H4z"/><path d="M6 18h.01"/><path d="m2 2 20 20"/></svg>
+    <h2>Desk can't reach its local server</h2>
+  </div>
+  <p>The desk-ui server on 127.0.0.1:4823 isn't answering. Your queues are safe: workers and the supervisor keep running without it.</p>
+  <div class="code"><code>launchctl kickstart -k gui/$(id -u)/com.desk-skills.ui</code><button type="button" data-copy>Copy</button></div>
+  <div class="row status" role="status"><span class="muted" id="countdown"></span><button type="button" id="retry">Try now</button></div>
+</main>
+<main class="card" id="signed-out" hidden>
+  <h2>This window isn't signed in to Desk</h2>
+  <p>Re-run install.sh in Terminal. It writes Desk's sign-in again, and this window signs in by itself.</p>
+  <div class="code"><code id="install-cmd">./install.sh</code><button type="button" data-copy>Copy</button></div>
+</main>
+<script src="status.js"></script>
+</body>
+</html>

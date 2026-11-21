@@ -69,11 +69,14 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
+  // Names this run of the server on every response, so Desk.app can tell a restart (which signed
+  // everyone out) from the same server refusing it again. It grants nothing.
+  const boot = randomBytes(8).toString('hex');
   let rev = 0, lastBody = null;
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
     const text = type.startsWith('application/json') ? JSON.stringify(body) : String(body);
-    res.writeHead(status, { ...BASE_HEADERS, 'Content-Type': type, 'Content-Length': Buffer.byteLength(text), ...extra });
+    res.writeHead(status, { ...BASE_HEADERS, 'X-Desk-Boot': boot, 'Content-Type': type, 'Content-Length': Buffer.byteLength(text), ...extra });
     res.end(text);
   };
   const refuse = (res, status, code, message) => send(res, status, { error: { code, message } });
