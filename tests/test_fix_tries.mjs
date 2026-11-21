@@ -298,6 +298,30 @@ const stuckBeside = gapFix(`${p1Body}\n\n### Requirement gaps\n${PERSON_GAP}`, 1
 const sentBack = personReviewFix(tk(), { pr: 702, head: HEAD, why: stuckBeside?.why });
 t('DS-513 AC3 a try the person sends for the finding is not aimed at the person\'s gap', `${stuckBeside?.why.includes(PERSON_GAP.slice(2))} ${sentBack?.findings.length} ${sentBack?.findings.some((x) => x.text.includes('PERSON'))}`, 'true 1 false');
 t('DS-513 without autopilot-judgement yes nothing changes', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: onlyPerson }), null);
+// ---- a round whose gaps only widen a broad criterion an earlier try worked, past triage's files, asks the scope
+const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+const BROAD2 = '- AC2: "an avatar wherever a person shows" — src/card.tsx:9 and src/menu.tsx:3 show a name with no avatar';
+const widened = [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }];
+const wideOpts = (o = {}) => ({ judgement: 'yes', outside: () => ['src/list.tsx', 'src/card.tsx'], title: () => 'Show the avatar on the people list', ...o });
+const wideFix = (body, done = widened, o = {}) => reviewFix(tk({ fix_tries: done }), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body }, wideOpts(o));
+const round2 = wideFix(personBody(1, BROAD2));
+t('a round-2 gap that is only new sites of an AC try 1 worked, on a change past triage\'s files, spends no try 2', round2?.call, 'stuck');
+t('it puts one scope question to the person, the title\'s scope recommended and the rest a follow-up',
+  round2?.why, `review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title ("Show the avatar on the people list"): this round's gaps are all new sites of it, after an earlier try already worked it, and the change touches 2 file(s) triage did not list (src/list.tsx, src/card.tsx). Fix only what the title names and file the rest as a follow-up? (recommended)`);
+t('the question is the person\'s gap needs-you answers through', JSON.stringify(personGapsIn(round2?.why).map((x) => x.startsWith("PERSON'S CALL: AC2 reads wider"))), '[true]');
+t('a first round on the same AC gets its try', reviewFix(tk(), { pr: 702, head: HEAD, verdict: { gaps: '1' }, body: personBody(1, BROAD2) }, wideOpts())?.call, 'requeue');
+t('a gap on an AC no earlier try named gets its try', wideFix(personBody(1, '- AC3: "export includes VAT" — no VAT column'))?.call, 'requeue');
+t('a round with a new AC beside the widened one gets its try', wideFix(gapBody('p0=0 p1=0 p2=0', 2, ['### Requirement gaps', BROAD2, '- AC3: "export includes VAT" — no VAT column']), widened, {})?.call, 'requeue');
+t('a change still inside triage\'s files gets its try', wideFix(personBody(1, BROAD2), widened, { outside: () => [] })?.call, 'requeue');
+t('PR files or a triage scope that could not be read leave the try', wideFix(personBody(1, BROAD2), widened, { outside: () => null })?.call, 'requeue');
+t('a pass that reads no scope leaves the try', wideFix(personBody(1, BROAD2), widened, { outside: undefined })?.call, 'requeue');
+const withPerson = reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { gaps: '2' }, body: personBody(2, BROAD2, PERSON_GAP) }, wideOpts());
+t('a person\'s gap beside the widened one goes to the person with the scope question', JSON.stringify(personGapsIn(withPerson?.why).map((x) => [x.startsWith("PERSON'S CALL: AC2 reads wider"), x.endsWith(PERSON_GAP.slice(2))])), '[[true,true]]');
+t('a P1 beside the widened gap gets its try', reviewFix(tk({ fix_tries: widened }), { pr: 702, head: HEAD, verdict: { p0: '0', p1: '1', gaps: '1' }, body: `${p1Body}\n\n### Requirement gaps\n${BROAD2}` }, wideOpts())?.call, 'requeue');
+t('the same gap still open after its try is a survivor, as before', wideFix(personBody(1, `- ${BROAD1}`))?.why.startsWith('review not clean after 1 fix try'), true);
+t('one repeating the earlier gap\'s words at a new site is a new site, not a survivor', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/card.tsx:9')}`))?.why.startsWith("review gaps only you can settle: PERSON'S CALL: AC2"), true);
+t('one naming an earlier site beside new ones is still open there, so it is not only widening', wideFix(personBody(1, `- ${BROAD1.replace('src/list.tsx:4', 'src/list.tsx:4 and src/card.tsx:9')}`))?.call, 'requeue');
+t('one naming no site is not read as new sites', wideFix(personBody(1, '- AC2: "an avatar wherever a person shows" — the settings page shows a name with none'))?.call, 'requeue');
 const gapsCall = (body, verdict, opts = { judgement: 'yes' }) => personGapsCall({ verdict, body }, opts);
 t('DS-513 a ready PR with only the person\'s gaps is stuck on them, its reason readable', JSON.stringify(personGapsIn(gapsCall(onlyPerson, { gaps: '1' })?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
 t('DS-513 AC3 a review stuck reason gives up the person\'s gap it carries', JSON.stringify(personGapsIn(stuckBeside?.why)), JSON.stringify([PERSON_GAP.slice(2)]));
