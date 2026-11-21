@@ -186,9 +186,11 @@ def main():
     save_blocked(session, blocked | {t[0] for t in fresh})
     print(json.dumps({"decision": "block", "reason": (
         f"desk autopilot: a background task you started is still running: {named(fresh)}. "
-        "claude -p kills it the moment your turn ends, so its work would never finish. Wait for it "
-        "in one call, `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540` with the Bash "
-        "timeout at 600000, calling again until it prints done, then end your turn. Output file: "
+        "claude -p kills it the moment your turn ends, so its work would never finish. A suite, "
+        "typecheck or lint: wait for it in one call, `~/.claude/desk/bin/desk-wait.mjs <its output "
+        "file> --max 540` with the Bash timeout at 600000, calling again until it prints done, then "
+        "end your turn. Anything that never ends on its own (a dev server, a watcher): stop it with "
+        "TaskStop. Output file: "
         + ", ".join(f for _, _, f in fresh) + ".")}))
 
 

@@ -70,7 +70,7 @@ export function bashCalls(text) {
 }
 
 // The calls a worker spends waiting on its own suite or the test lock, so a report can count them per
-// session (DS-705): `desk-wait` (desk-wait.mjs, any path before it), `ps` or `tail` (a Bash call that
+// session: `desk-wait` (desk-wait.mjs, any path before it), `ps` or `tail` (a Bash call that
 // starts with one), or `TaskStop` (the tool, or the KillShell and KillBash it replaced). In order, once
 // per tool_use id, as [{ line, session, kind }]; a call refused still counts, since it cost a turn.
 const WAIT_CALL = /(?:^|[\s/;&|])desk-wait\.mjs(?:\s|$)/;

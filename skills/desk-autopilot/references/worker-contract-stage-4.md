@@ -37,7 +37,7 @@ feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, 
 output that you ran unlocked**.
 
 **A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Give each
-run the Bash `timeout` 600000. One it moves to the background, wait on in one call, never a `ps`,
+run the Bash `timeout` 600000. One it backgrounds, wait on in one call, never a `ps`,
 `tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same
 `timeout`. Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its
 last 30 lines. At 20 minutes waiting it stops the run and prints the line to record: commit all your
@@ -50,7 +50,7 @@ The typecheck takes the same lock, so typecheck and tests never overlap. Screens
 queue behind a suite. **Never end your turn with a suite running in the background**: `claude -p`
 kills it when the turn ends. A Stop hook blocks your first attempt to, naming the task; a second
 attempt ends the turn and your log records the rule as broken. A suite your tool timeout moved to the
-background is still yours: wait for it with `desk-wait.mjs`, above.
+background is still yours: wait for it with `desk-wait.mjs`, above; stop a server with `TaskStop`.
 
 **Before any heavy stage, read the right number:**
 

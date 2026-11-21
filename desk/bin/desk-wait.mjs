@@ -5,10 +5,12 @@
 //
 //   desk-wait.mjs <task output file | pid> [--max <seconds>]
 //
-// The run is named by the output file the Bash tool printed ("Output is being written to: <file>"),
-// resolved to the processes holding it open (lsof, else /proc, as hooks/desk-worker-stop.py reads it),
-// or by a pid. It is the same run while those processes are: a pid counts only while its start time is
-// the one it had when the wait began. It blocks up to --max seconds (540, at most 570) and prints one of
+// The run is named by the output file the Bash tool printed ("Output is being written to: <file>",
+// a `tasks/<id>.output`), resolved to the processes holding it open (lsof, else /proc, as
+// hooks/desk-worker-stop.py reads it), or by a pid. Either must belong to this session: a descendant of
+// the nearest `claude` process above this script, else of its parent. It is the same run while those
+// processes are: a pid counts only while its start time is the one it had when the wait began. It
+// blocks up to --max seconds (540, at most 570) and prints one of
 //
 //   done <rc>                 the run has ended; then the output's last 30 lines. <rc> is `?`: a run
 //                             that is not this script's child leaves it no exit status, so read it in
@@ -16,20 +18,21 @@
 //   started <pid>             the command is running (it holds its lock slot, or takes none); call again
 //   waiting (<holder>) <min>  with-lock.sh has not started it for <min> minutes; call again
 //
-// At 20 minutes waiting (DS-587's threshold) it stops the queued run itself, its with-lock.sh and that
-// wrapper's flock, sleep or lease child and nothing else, and prints after the waiting line the line
-// the worker records:
+// At 20 minutes waiting on the test or light lock it stops the queued run itself, its with-lock.sh and
+// that wrapper's flock, sleep or lease child and nothing else, and prints after the waiting line the
+// line the worker records:
 //
 //   not run locally: test lock busy (<holder>); CI's required tests cover it
 //
+// A run queued on the browser lock is never stopped: CI does not cover a screenshot.
 // It never detaches or re-parents anything: the run stays a child of the worker's session, so the
 // session ending kills it as before and no lock slot outlives the worker.
 // Exits 0 with one of those, 2 on a usage error or a run it cannot read.
 import { existsSync, readFileSync, readdirSync, readlinkSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { psRows } from './desk-env.mjs';
-import { etimeSeconds, holdersText, lockHolderRuns, lockHolderStamps, lockHolders, processCwds } from './suite-wait.mjs';
+import { lockDir, psRows } from './desk-env.mjs';
+import { etimeSeconds, holdersNow, holdersText, wrapperOf } from './suite-wait.mjs';
 
 export const MAX_DEFAULT = 540;
 export const MAX_CEILING = 570;
@@ -37,12 +40,17 @@ export const SKIP_AFTER = 20 * 60;
 export const TAIL_LINES = 30;
 export const recordLine = (holder) => `not run locally: test lock busy (${holder}); CI's required tests cover it`;
 
-// with-lock.sh itself, by its first words (suite-wait.mjs's WRAPPER, any lock that queues).
-const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc|light|browser)(?:\s|$)/;
+// with-lock.sh itself, on a lock a run may be skipped on, and on the browser lock, which it never is.
+const WRAPPER = wrapperOf('test|tsc|light');
+const BROWSER = wrapperOf('browser');
+const LIGHT = wrapperOf('light');
 // What with-lock.sh runs while it waits for a slot, besides itself: the lock, the pause between rounds,
 // the lease broker and config reads, and the file and git steps it takes on the way.
 const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|lsof)(?:\s|$)/;
 const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env)\.mjs(?:\s|$)/;
+// A Bash tool background task's output file.
+const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;
+const CLAUDE = /(?:^|[\s/])claude(?:\s|$)|claude-code\//;
 
 // Whether a process is part of a wait for the lock rather than the command it runs: with-lock.sh, the
 // shell the Bash tool started it from (whose command line names it), or one of its helpers.
@@ -59,25 +67,24 @@ export function treeOf(pids, procs) {
 }
 
 // Where the run stands, from its processes ([{pid, ppid, etime, args}]): 'done' with none left;
-// 'started' with the topmost one that is not a waiter (the command); else 'waiting' with how long its
-// oldest with-lock.sh has waited (seconds) and the wrappers to stop.
+// 'waiting' while a with-lock.sh wrapper and its helpers are all there is, timed from the oldest
+// wrapper, with the wrappers to stop and whether it waits on the light or the browser lock; else
+// 'started' with the topmost process that is not a waiter (the command), or the topmost of all where
+// only the shell is left between steps.
 export function standing(run) {
   if (!run.length) return { state: 'done' };
-  const pids = new Set(run.map((p) => p.pid));
+  const top = (ps) => ps.find((p) => !ps.some((q) => q.pid === p.ppid)) ?? ps[0];
   const cmd = run.filter((p) => !isWaiter(p.args));
-  if (cmd.length) {
-    const top = cmd.find((p) => !cmd.some((q) => q.pid === p.ppid)) ?? cmd[0];
-    return { state: 'started', pid: top.pid };
-  }
-  const wrappers = run.filter((p) => WRAPPER.test(p.args));
-  const seconds = Math.max(0, ...run.filter((p) => /with-lock\.sh/.test(p.args)).map((p) => etimeSeconds(p.etime) ?? 0));
-  const light = wrappers.some((p) => /with-lock\.sh\s+light(?:\s|$)/.test(p.args));
-  return { state: 'waiting', seconds, wrappers: wrappers.map((p) => p.pid), pids: [...pids], light };
+  if (cmd.length) return { state: 'started', pid: top(cmd).pid };
+  const wrappers = run.filter((p) => WRAPPER.test(p.args) || BROWSER.test(p.args));
+  if (!wrappers.length) return { state: 'started', pid: top(run).pid };
+  const seconds = Math.max(0, ...wrappers.map((p) => etimeSeconds(p.etime) ?? 0));
+  return { state: 'waiting', seconds, wrappers: wrappers.map((p) => p.pid), light: wrappers.some((p) => LIGHT.test(p.args)), browser: wrappers.some((p) => BROWSER.test(p.args)) };
 }
 
 // The pids holding a file open: lsof, else /proc. Null when neither can be read.
 export function fileHolders(path) {
-  const r = spawnSync('lsof', ['-t', '--', path], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = spawnSync('lsof', ['-w', '-t', '--', path], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   if (!r.error) {
     const pids = (r.stdout ?? '').split(/\s+/).filter((p) => /^\d+$/.test(p)).map(Number);
     // lsof exits 1 both for "no process" and for an error; an error writes to stderr.
@@ -91,27 +98,29 @@ export function fileHolders(path) {
   } catch { return null; }
 }
 
-// This script and its ancestors (the shell the Bash tool started, the session): never part of the run.
+// This script and its ancestors (the shell the Bash tool started, the session), nearest first.
 function ancestors(procs) {
-  const out = new Set();
-  for (let pid = process.pid; pid && !out.has(pid);) {
-    out.add(pid);
+  const out = [];
+  for (let pid = process.pid; pid && !out.includes(pid);) {
+    out.push(pid);
     pid = procs.find((p) => p.pid === pid)?.ppid;
   }
   return out;
 }
 
+// The session's processes: the nearest `claude` above this script and all below it, else its parent's.
+export function sessionTree(procs, chain = ancestors(procs)) {
+  const root = chain.slice(1).find((pid) => CLAUDE.test(procs.find((p) => p.pid === pid)?.args ?? '')) ?? chain[1];
+  return root ? treeOf([root], procs) : new Set();
+}
+
 const startOf = (p, now) => now - (etimeSeconds(p.etime) ?? 0) * 1000;
 
-// Who holds the lock the run waits on, as with-lock.sh names them: the test lock's holders, or the light
-// lock's where the run waits on that (a repo whose §4 Suite weight is light).
-function holderNow(light) {
-  const dir = process.env.DESK_LOCK_DIR || '/tmp';
-  const locks = light ? 'light' : 'test';
+// Who holds the lock the run waits on, as with-lock.sh names them.
+function holderNow(w) {
+  if (w.browser) return 'browser lock';
   try {
-    const procs = psRows('pid=,ppid=,args=');
-    const ages = new Map(psRows('pid=,etime=').map((p) => [p.pid, etimeSeconds(p.etime)]));
-    const runs = lockHolderRuns({ procs, holders: lockHolders(dir, { locks }), cwds: processCwds(), ages, stamps: lockHolderStamps(dir, { locks }), locks });
+    const runs = holdersNow(lockDir(), w.light ? 'light' : 'test');
     return runs.length ? holdersText(runs) : 'holder unknown';
   } catch { return 'holder unknown'; }
 }
@@ -138,16 +147,22 @@ export function parseArgs(argv) {
 export function main(argv = process.argv.slice(2), { out = console.log, err = console.error } = {}) {
   const a = parseArgs(argv);
   if (a.error) { err(`desk-wait: ${a.error}`); return 2; }
-  if (a.file && !existsSync(a.file)) { err(`desk-wait: no such output file: ${a.file}`); return 2; }
+  if (a.file) {
+    let real = null;
+    try { real = realpathSync(a.file); } catch { /* missing */ }
+    if (!real || !existsSync(real)) { err(`desk-wait: no such output file: ${a.file}`); return 2; }
+    if (!TASK_OUTPUT.test(real)) { err(`desk-wait: not a background task's output file (…/tasks/<id>.output): ${a.file}`); return 2; }
+    a.file = real;
+  }
   const poll = Number(process.env.DESK_WAIT_POLL_MS) || 2000;
   const skipAfter = Number(process.env.DESK_WAIT_SKIP_AFTER) || SKIP_AFTER;
   const deadline = Date.now() + a.max * 1000;
   let started = null; // a pid's start (ms), so a reused pid is not the run
-  let last = null;
-  for (;;) {
+  // The run as it stands now, from a fresh read of the process table; null when ps cannot be read.
+  const read = () => {
     let procs;
     // A zombie (state Z) has exited and only waits for its parent to reap it: it is not the run.
-    try { procs = psRows('pid=,ppid=,stat=,etime=,args=').filter((p) => !/^Z/.test(p.stat)); } catch (e) { err(`desk-wait: ${e.message}`); return 2; }
+    try { procs = psRows('pid=,ppid=,stat=,etime=,args=').filter((p) => !/^Z/.test(p.stat)); } catch (e) { err(`desk-wait: ${e.message}`); return null; }
     const now = Date.now();
     let roots;
     if (a.pid != null) {
@@ -156,30 +171,47 @@ export function main(argv = process.argv.slice(2), { out = console.log, err = co
       roots = me && Math.abs(startOf(me, now) - started) <= 2000 ? [a.pid] : [];
     } else {
       roots = fileHolders(a.file);
-      if (roots == null) { err('desk-wait: neither lsof nor /proc can say which processes hold the output file'); return 2; }
+      if (roots == null) { err('desk-wait: neither lsof nor /proc can say which processes hold the output file'); return null; }
     }
-    const mine = ancestors(procs);
-    const tree = treeOf(roots.filter((p) => !mine.has(p)), procs);
-    last = standing(procs.filter((p) => tree.has(p.pid) && !mine.has(p.pid)));
+    const chain = ancestors(procs);
+    const session = sessionTree(procs, chain);
+    const run = treeOf(roots.filter((p) => session.has(p) && !chain.includes(p)), procs);
+    if (a.pid != null && roots.length && !session.has(a.pid)) return { foreign: true };
+    return { procs, state: standing(procs.filter((p) => run.has(p.pid) && !chain.includes(p.pid))) };
+  };
+  let last = null;
+  for (;;) {
+    const now = read();
+    if (!now) return 2;
+    if (now.foreign) { err(`desk-wait: pid ${a.pid} is not a process of this session`); return 2; }
+    last = now.state;
     if (last.state === 'done') {
       out('done ?');
       if (a.file) { const t = tail(a.file); if (t) out(t); }
       return 0;
     }
-    if (last.state === 'waiting' && last.seconds >= skipAfter) {
-      const holder = holderNow(last.light);
-      const stop = treeOf(last.wrappers, procs);
-      for (const pid of stop) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
-      out(`waiting (${holder}) ${Math.floor(last.seconds / 60)}`);
-      out(recordLine(holder));
-      out(`stopped the queued run (pid ${[...stop].join(', ') || 'none'}): it never started, so nothing it ran is lost`);
-      return 0;
+    if (last.state === 'waiting' && !last.browser && last.seconds >= skipAfter) {
+      const holder = holderNow(last);
+      // The holder lookup takes a moment, in which the lock may have started the run: read it again,
+      // and stop it only while it still waits, on the same wrappers.
+      const again = read();
+      if (!again) return 2;
+      const s = again.state;
+      if (s.state === 'waiting' && s.wrappers.join() === last.wrappers.join()) {
+        const stop = treeOf(s.wrappers, again.procs);
+        for (const pid of stop) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
+        out(`waiting (${holder}) ${Math.floor(s.seconds / 60)}`);
+        out(recordLine(holder));
+        out(`stopped the queued run (pid ${[...stop].join(', ')}): it never started, so nothing it ran is lost`);
+        return 0;
+      }
+      continue;
     }
     if (Date.now() + poll > deadline) break;
     sleep(poll);
   }
   if (last.state === 'started') out(`started ${last.pid}`);
-  else out(`waiting (${holderNow(last.light)}) ${Math.floor(last.seconds / 60)}`);
+  else out(`waiting (${holderNow(last)}) ${Math.floor(last.seconds / 60)}`);
   return 0;
 }
 

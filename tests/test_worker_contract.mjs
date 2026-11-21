@@ -134,14 +134,14 @@ t('DS-587 AC2 it logs one engineering decision naming the suites and the lock ho
   lockRule.includes('print one `engineering` `AUTOPILOT_DECISION` naming them and the holder'), true);
 t('DS-587 AC3 it commits its work before carrying on', /commit all your work, record each suite/.test(lockRule), true);
 t('DS-587 AC4 a run that started is not skipped: its failures are fixed', lockRule.includes('A started run is yours: fix what fails.'), true);
-// DS-705: desk-wait.mjs, one blocking call, decides started, waiting and done and finds the holder
-// (tests/test_desk_wait.mjs), so the contract no longer walks the worker through ps and the lock files.
 t('DS-705 AC1 a backgrounded run is waited on in one desk-wait call inside the Bash timeout, never a ps, tail or TaskStop loop',
   lockRule.includes('Give each run the Bash `timeout` 600000.') && lockRule.includes('never a `ps`, `tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same `timeout`.') && !lockRule.includes('`TaskStop` it'), true);
 t('DS-705 AC1 it names the three answers and calls again on the two that are not done',
   lockRule.includes('Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its last 30 lines.'), true);
 t('DS-705 a run the tool timeout moved to the background is waited on with desk-wait, not stopped and rerun',
-  stage4.includes('background is still yours: wait for it with `desk-wait.mjs`, above.') && !stage4.includes('stop it with `TaskStop` and run it again'), true);
+  stage4.includes('background is still yours: wait for it with `desk-wait.mjs`, above;') && !stage4.includes('stop it with `TaskStop` and run it again'), true);
+t('DS-705 a server, which never ends, is still stopped with TaskStop',
+  stage4.includes('above; stop a server with `TaskStop`.'), true);
 t('DS-587 the typecheck and lint follow the same rule', lockRule.includes('A typecheck or lint does the same.'), true);
 t('DS-587 AC5 the refused with-lock.sh rule is unchanged',
   stage4.includes('If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your output that you ran unlocked**.'), true);

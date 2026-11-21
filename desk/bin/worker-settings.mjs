@@ -410,8 +410,9 @@ if (mode === 'triage') {
     // Its own handoff briefing, written as JSON from flags, for this ticket only. Run bare, since
     // `node *..*` below refuses a criterion or a git range holding `..`.
     ...BIN_FORMS.map((b) => `Bash(${b}/handoff.mjs write ${T} *)`),
-    // desk-wait: one blocking call on its own background run (DS-705). It reads the process table and
-    // stops nothing but that run's with-lock.sh, and only while it still waits for its slot.
+    // desk-wait: one blocking call on its own background run. It reads the process table, takes only a
+    // task output file or a pid of this session, and stops nothing but that run's with-lock.sh, and
+    // only while it still waits for its slot.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/desk-wait.mjs:*)`, `Bash(node ${b}/desk-wait.mjs:*)`]),
     // Whether its AUTOPILOT_PARK_CLEARS_WHEN line reads as a form a pass checks: reads and writes nothing.
     ...BIN_FORMS.flatMap((b) => [`Bash(${b}/clears-when.mjs --check:*)`, `Bash(node ${b}/clears-when.mjs --check:*)`]),

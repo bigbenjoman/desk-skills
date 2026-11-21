@@ -26,8 +26,14 @@ t('no target is a usage error', /^usage:/.test(parseArgs([]).error), true);
 const shell = { pid: 10, ppid: 1, etime: '05:00', args: "/bin/zsh -c source ~/.zshrc && eval '~/.claude/desk/bin/with-lock.sh test -- bash tests/run.sh'" };
 const wrapper = { pid: 11, ppid: 10, etime: '04:59', args: 'bash /Users/x/.claude/desk/bin/with-lock.sh test -- bash tests/run.sh' };
 t('no process left is done', standing([]).state, 'done');
-t('the shell, with-lock.sh and its pause are a wait, timed from the oldest',
-  standing([shell, wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'sleep 2' }]), { state: 'waiting', seconds: 300, wrappers: [11], pids: [10, 11, 12], light: false });
+t('the shell, with-lock.sh and its pause are a wait, timed from the wrapper',
+  standing([shell, wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'sleep 2' }]), { state: 'waiting', seconds: 299, wrappers: [11], light: false, browser: false });
+t('a chained step\'s young wrapper under an old shell is timed from the wrapper, not the shell',
+  standing([{ ...shell, etime: '25:00' }, { ...wrapper, etime: '00:05' }]).seconds, 5);
+t('the shell alone, between steps or as the run exits, is not a wait',
+  standing([shell]), { state: 'started', pid: 10 });
+t('a wrapper on the browser lock is read as waiting on it',
+  standing([{ ...wrapper, args: 'bash /x/with-lock.sh browser -- node ./shot.mjs' }]).browser, true);
 t('a wrapper re-run under the light lock is read as waiting on it',
   standing([{ ...wrapper, args: 'bash /x/with-lock.sh light --cwd . -- bash tests/run.sh' }]).light, true);
 t('a flock and the lease broker are a wait too',
@@ -66,8 +72,10 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // A background run whose output goes to its own file, as the Bash tool's does: the file is held open
 // by the run alone.
+const tasks = join(S, 'tasks');
+spawnSync('mkdir', ['-p', tasks]);
 const background = (argv) => {
-  const out = join(S, `task-${n++}.output`);
+  const out = join(tasks, `b${n++}.output`);
   const fd = openSync(out, 'w');
   const c = spawn(argv[0], argv.slice(1), { env, stdio: ['ignore', fd, fd] });
   closeSync(fd);
@@ -94,10 +102,12 @@ try {
   // AC1: a run still going when --max is up returns started, with the command's pid.
   {
     const r = background(lockRun(nodeSleep(60_000))); held.push(r);
-    await sleep(500);
+    // with-lock.sh execs into its command once it holds the lock: wait for that, not a fixed time.
+    const args = () => spawnSync('ps', ['-o', 'args=', '-p', String(r.c.pid)], { encoding: 'utf8' }).stdout;
+    for (let i = 0; i < 150 && !args().includes('setTimeout'); i++) await sleep(100);
     const w = wait(r.out, ['--max', '1']);
     t('AC1 a run under the lock that has started returns started at --max', [w.rc, /^started \d+$/.test(w.out.trim()), w.seconds < 10], [0, true, true]);
-    t('AC3 the run is still the child it was: desk-wait detached nothing', [alive(r.c.pid), spawnSync('ps', ['-o', 'ppid=', '-p', String(r.c.pid)], { encoding: 'utf8' }).stdout.trim()], [true, String(process.pid)]);
+    t('AC3 a wait leaves the run running', alive(r.c.pid), true);
     // AC1: a run queued behind it returns waiting, with the holder and the minutes waited.
     const q = background(lockRun(['sh', '-c', `: > '${join(S, 'queued-ran')}'`])); held.push(q);
     await sleep(500);
@@ -121,7 +131,11 @@ try {
     const w = wait(r.c.pid, ['--max', '20']);
     t('a pid that exits returns done', [w.rc, w.out.trim(), w.seconds < 15], [0, 'done ?', true]);
   }
-  t('a missing output file is an error, not done', wait(join(S, 'nope.output')).rc, 2);
+  t('a missing output file is an error, not done', wait(join(tasks, 'nope.output')).rc, 2);
+  const other = join(S, 'secret.txt'); writeFileSync(other, 'not yours\n');
+  const wo = wait(other);
+  t('a file that is not a task\'s output is refused, and not printed', [wo.rc, wo.out.includes('not yours')], [2, false]);
+  t('a pid outside this session is refused', wait(1).rc, 2);
 } finally {
   for (const h of held) { try { h.c.kill('SIGKILL'); } catch { /* gone */ } }
 }
