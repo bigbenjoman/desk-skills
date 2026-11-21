@@ -387,6 +387,16 @@ out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
 
+# ---- DS-836: an idle batch recording a PR no ticket owns rechecks on the timer, so a pass drops it ---
+printf '{"version":1,"batch":"b836","supervised":true,"approved":{},"ticketless_prs":[{"pr":10,"title":"t","branch":"fix/x","since":null}],"tickets":%s}\n' "$DONE" > "$DESK_QUEUE"
+: > "$T/pass.calls"
+out=$(tick); out=$(tick)
+check "DS-836 AC2 an idle batch recording a ticketless PR runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ] && grep -q "or a PR no ticket owns still recorded" "$LOG"'
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
+check "DS-836 AC2 once the interval has passed, it runs a pass, which reads the PR merged or closed" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' "$DONE" b836b
+
 # ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
 verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
 queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"wait for the run","clears_when":{"kind":"run-completed","run":44719886024}}}}' b9

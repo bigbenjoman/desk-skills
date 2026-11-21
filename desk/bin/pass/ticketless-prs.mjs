@@ -13,7 +13,7 @@
 //   base      the batch's base branch
 //   recorded  the queue's `ticketless_prs`, or null
 //   dry       a dry run
-import { keyPattern } from '../batch-state.mjs';
+import { prNames } from '../recoveries.mjs';
 
 // The line desk-pr opens every PR body it writes with: what tells a desk session's PR from one a person
 // opened under the same handle.
@@ -22,11 +22,10 @@ export const DESK_PR_FENCE = '<!-- desk-pr: body -->';
 // The key of the ticket that owns `pr`: its recorded branch is the PR's head, its PR is this one, or the
 // PR's title or head names its key. Null when none does.
 export function ownerOf(pr, tickets) {
-  const named = `${pr.title ?? ''} ${pr.headRefName ?? ''}`;
   const n = Number(pr.number);
   return tickets.find((t) => (t.branch && t.branch === pr.headRefName)
     || [t.result?.pr, t.draft_pr].some((x) => x != null && Number(x) === n)
-    || new RegExp(keyPattern(t.key)).test(named))?.key ?? null;
+    || prNames(t.key)(pr))?.key ?? null;
 }
 
 // The PRs of `s` that a desk session opened into the base and no ticket owns, as the queue records
