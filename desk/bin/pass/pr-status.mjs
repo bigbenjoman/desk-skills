@@ -39,6 +39,7 @@
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
 import { LINK_STEP } from './shared.mjs';
+import { owesReopen } from '../queue-store.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
@@ -104,7 +105,7 @@ export function* decidePrStatus(s) {
     if (n == null) continue;
     let st = null;
     // A PR this pass's reopen closed and could not reopen is read again until it reopens.
-    const owed = t.reopening != null && String(t.reopening) === String(n);
+    const owed = owesReopen(t);
     if (t.pr_status?.pr === n && PR_FINAL.includes(t.pr_status.state) && !(owed && t.pr_status.state === 'CLOSED')) {
       prStates[n] = t.pr_status.state;
       if (t.pr_status.state !== 'MERGED' || (t.merged_at && !postMergeOwed(t, n) && !commitOwed(t))) continue;

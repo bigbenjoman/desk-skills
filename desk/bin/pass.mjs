@@ -1243,9 +1243,16 @@ const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // number (an older row) is judged by the PR status as it stands.
 const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((x) => x != null)
   .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : recordedPr(t, x)));
+// Kept by repo and number, so another repo's PR of the same number (needs-you's elsewhereDone) never
+// replaces this repo's own: a PR with no url, or this repo's, is this repo's. A kept bare number stays
+// bare, not given the url of a PR status that may now name another repo's PR of its number.
 const keepMergedPr = (t) => {
   if (!t.merged_at || t.result?.pr == null) return [];
-  const kept = new Map([...mergedPrs(t), recordedPr(t, t.result.pr)].map((x) => [x.pr, x]));
+  const here = hereRepo();
+  const keyOf = (x) => `${foreign(x, here) ? repoOfPr(x.url) : ''}#${x.pr}`;
+  const was = [].concat(t.merged_pr ?? []).filter((x) => x != null)
+    .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
+  const kept = new Map([...was, recordedPr(t, t.result.pr)].map((x) => [keyOf(x), x]));
   return [`merged_pr=${JSON.stringify([...kept.values()].map((x) => (x.url ? x : x.pr)))}`];
 };
 const statusPr = (t, here) => {

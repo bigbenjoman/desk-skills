@@ -229,6 +229,15 @@ queued DS-392 fix/DS-392-own merged_at=2026-10-31T10:53:00Z result.pr=363 \
 queued DS-393 fix/DS-393-own merged_at=2026-10-31T10:53:00Z result.pr=365 \
   'pr_status={"pr":365,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/365"}'
 jira DS-393 "In Progress" indeterminate
+# DS-395 kept this repo's own #372, then needs-you recorded it done on o/other's #372: its spawn keeps
+# both, keyed by repo and number. DS-396 is the same with its own #373 kept as a bare number.
+queued DS-395 fix/DS-395-own merged_at=2026-10-31T10:53:00Z result.pr=372 \
+  'merged_pr=[{"pr":372,"url":"https://github.com/acme/widgets/pull/372"}]' \
+  'pr_status={"pr":372,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/372"}'
+jira DS-395 "In Progress" indeterminate
+queued DS-396 fix/DS-396-own merged_at=2026-10-31T10:53:00Z result.pr=373 merged_pr=373 \
+  'pr_status={"pr":373,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/373"}'
+jira DS-396 "In Progress" indeterminate
 queued DS-394 fix/DS-394-own merged_at=2026-10-31T10:56:00.500Z result.pr=366 \
   'pr_status={"pr":366,"state":"MERGED","merged_at":"2026-10-31T10:56:00Z","url":"https://github.com/acme/renamed/pull/366"}'
 addmerged(){ node -e 'const f = process.argv[1], fs = require("fs"); const a = JSON.parse(fs.readFileSync(f, "utf8"));
@@ -248,6 +257,10 @@ check "DS-796 a repo renamed since its PR status was read: its own merged PR is 
   'spawned DS-394 && [ "$(field DS-394 state)" != "\"done\"" ] && ! grep -q "DS-394: PR #366" <<< "$out"'
 check "DS-796 another repo's PR with nothing merged here spawns, and its spawn keeps it with that repo's url" \
   'spawned DS-393 && [ "$(field DS-393 merged_pr)" = "[{\"pr\":365,\"url\":\"https://github.com/o/other/pull/365\"}]" ]'
+check "DS-796 another repo's PR of the same number does not replace this repo's kept own PR" \
+  'spawned DS-395 && [ "$(field DS-395 merged_pr)" = "[{\"pr\":372,\"url\":\"https://github.com/acme/widgets/pull/372\"},{\"pr\":372,\"url\":\"https://github.com/o/other/pull/372\"}]" ]'
+check "DS-796 nor a kept bare own number, which stays bare" \
+  'spawned DS-396 && [ "$(field DS-396 merged_pr)" = "[373,{\"pr\":373,\"url\":\"https://github.com/o/other/pull/373\"}]" ]'
 
 # DS-391's worker parks and is requeued: it still has #361 kept, so it spawns again. DS-393's worker
 # finishes on this repo's #370, whose status replaces the other repo's, and it is requeued. This repo's

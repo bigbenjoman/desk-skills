@@ -162,6 +162,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     Q: tk('Q', { state: 'done', result: { pr: 7 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 7, state: 'MERGED', post_merge: [{ step: 'x' }] }, post_merge_read: 7 }),
     // Closed, and the pass still owes it a reopen whose retry was refused.
     R: tk('R', { state: 'done', result: { pr: 8 }, pr_status: { pr: 8, state: 'CLOSED' }, reopening: 8 }),
+    // A requeued ticket with an earlier round's merge whose new PR's reopen failed: its status still reads OPEN.
+    S: tk('S', { state: 'done', result: { pr: 9 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 9, state: 'OPEN' }, reopening: 9 }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -178,7 +180,9 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC6 the write says which moved', r.archived.join(','), 'M,X,Q');
   t('DS-785 a merged ticket whose post-merge criteria the pass has not made steps yet stays live; one it has is archived', `${'P' in q.tickets} ${'Q' in q.tickets}`, 'true false');
   t('AC7 a done ticket whose PR is open stays live', 'O' in q.tickets, true);
-  t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);  t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
+  t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);
+  t('DS-796 an owed reopen keeps the ticket live whatever its stored state, an earlier merge included', 'S' in q.tickets, true);
+  t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
   t('a merged ticket another ticket is held behind stays live', 'H' in q.tickets, true);
 
   // AC8: an archived ticket is still found by key, as done.
