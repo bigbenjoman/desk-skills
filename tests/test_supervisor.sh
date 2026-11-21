@@ -257,8 +257,8 @@ check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
 # old <file>: an exit file written before any round now starts. No gap between rounds here but where set.
 old(){ printf '{}\n' > "$EX/$1"; touch -t 202001010000 "$EX/$1"; }
 export DESK_WAKE_GAP_MS=0
-WAKE="$T/state/supervisor.wake"
-rm -f "$WAKE"
+WAKE="$T/state/supervisor.wake"; COUNTED="$T/state/supervisor.counted"
+rm -f "$WAKE" "$COUNTED"
 before=$(count "$T/pass.calls")
 old A.1.json; printf '{}\n' > "$EX/.A.9.tmp"
 out=$(tick)
@@ -268,7 +268,7 @@ rm -f "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
 # Ten exits over a second, from inside a pass that takes no time: the gap folds them into one round.
-rm -f "$WAKE"; old A.10.json; touch "$T/exit.burst"
+rm -f "$WAKE" "$COUNTED"; old A.10.json; touch "$T/exit.burst"
 out=$(DESK_WAKE_GAP_MS=3000 tick)
 check "DS-695 AC2: ten exits in a burst run at most two passes, and every file goes" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
 check "DS-695: a pass an exit adds within the interval counts no quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- " --woken")" = 1 ]'
@@ -286,7 +286,7 @@ old A.11.json; ( sleep 2; rm -f "$EX/A.11.json" ) &
 out=$(tick); wait
 check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
 # An interval after the last counted pass, a pass counts whatever woke it: an exit file never stops it.
-old A.12.json; printf '{"counted":"2020-01-01T00:00:00.000Z"}\n' > "$WAKE"
+old A.12.json; printf '2020-01-01T00:00:00.000Z\n' > "$COUNTED"
 out=$(tick)
 check "DS-695: once an interval has passed, the pass counts a quiet pass though an exit woke it" '[ "$(count "$T/pass.calls")" = $((before + 5)) ] && [ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
 before=$((before + 4))
@@ -305,7 +305,7 @@ old A.5.json; chmod 555 "$EX"
 out=$(tick); out=$(tick)
 chmod 755 "$EX"
 check "DS-695 AC3: an exits folder that cannot be written to still gets a pass every tick, one round each" '[ "$(count "$T/pass.calls")" = $((before + 6)) ] && [ -e "$EX/A.5.json" ]'
-rm -f "$EX/A.5.json" "$T/state/supervisor.wake"
+rm -f "$EX/A.5.json" "$WAKE" "$COUNTED"
 unset DESK_WAKE_GAP_MS
 
 # ---- AC6 and AC7: one notification per new push, and nothing else pushed ---------------------
@@ -661,22 +661,22 @@ check "DS-695: the round an exit adds passes every batch, the standing one inclu
 # Each batch counts its own quiet pass, decided as its pass starts. One batch skipped for its pass lock
 # leaves the round unconsumed, but X-1, which passed, has counted: the next woken round counts it no
 # second time, while the standing batch, which passed nothing, counts.
-rm -f "$SS/supervisor.wake"
+rm -f "$SS/supervisor.wake" "$SS/supervisor.counted" "$XS/supervisor.counted"
 sleep 30 & HOLDER=$!
 printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$SS/supervisor.lock"
 printf '{}\n' > "$SS/exits/A.6.json"; touch -t 202001010000 "$SS/exits/A.6.json"; : > "$T/pass.woken"
 out=$(DESK_WAKE_GAP_MS=0 mtick)
-check "DS-695: a round with one batch skipped for its lock still counts the batch that passed" '[ "$(cat "$T/pass.woken")" = "X-1 false" ] && [ -e "$SS/exits/A.6.json" ]'
+check "DS-695: a round with one batch skipped for its lock still counts the batch that passed" '[ "$(cat "$T/pass.woken")" = "X-1 false" ] && [ -e "$SS/exits/A.6.json" ] && [ -s "$XS/supervisor.counted" ] && [ ! -e "$SS/supervisor.counted" ]'
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$SS/supervisor.lock"; : > "$T/pass.woken"
 out=$(DESK_WAKE_GAP_MS=0 mtick)
 check "DS-695: the next woken round counts the skipped batch and not again the one that passed" '[ "$(grep -c "^- false$" "$T/pass.woken")" = 1 ] && [ "$(grep -c "^X-1 true$" "$T/pass.woken")" = 1 ] && [ -z "$(ls -A "$SS/exits")" ]'
 # A batch whose quiet pass is due counts it though another batch in the same round is not due: the
 # standing batch counted just now, X-1 an interval ago.
-jq -c '.counted |= with_entries(.value = (if (.key | endswith("/batches/X-1")) then "2020-01-01T00:00:00.000Z" else (now | todate) end))' "$SS/supervisor.wake" > "$T/wake.new" && mv "$T/wake.new" "$SS/supervisor.wake"
+date -u +%Y-%m-%dT%H:%M:%SZ > "$SS/supervisor.counted"; printf '2020-01-01T00:00:00.000Z\n' > "$XS/supervisor.counted"
 printf '{}\n' > "$SS/exits/A.7.json"; touch -t 202001010000 "$SS/exits/A.7.json"; : > "$T/pass.woken"
 out=$(DESK_WAKE_GAP_MS=0 mtick)
 check "DS-695: each batch's count is decided by its own last counted pass" '[ "$(head -1 "$T/pass.woken")" = "- true" ] && [ "$(sed -n 2p "$T/pass.woken")" = "X-1 false" ]'
-rm -f "$SS/supervisor.wake"
+rm -f "$SS/supervisor.wake" "$SS/supervisor.counted" "$XS/supervisor.counted"
 
 # ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
 # xq <tickets json>: X-1 on feat/x, handed over, its promotion PR #9.

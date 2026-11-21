@@ -463,16 +463,20 @@ function exitFiles(dir) {
     try { return [{ file: join(dir, n), at: statSync(join(dir, n)).mtimeMs }]; } catch { return []; }
   });
 }
-// <repo state>/supervisor.wake, { consumed, round, counted }: when a tick last deleted exit files, last
-// started a round, and, per batch state folder, last started a pass that counted a quiet pass.
-// Unreadable reads as never.
+// <repo state>/supervisor.wake, { consumed, round }: when a tick last deleted exit files and last started
+// a round. Unreadable reads as never.
 const readWake = () => { try { return JSON.parse(readFileSync(wakeFile(), 'utf8')) ?? {}; } catch { return {}; } };
 const wakeAt = (k) => Date.parse(readWake()[k] ?? '') || 0;
-const writeWake = (w) => { try { writeFileSync(wakeFile(), `${JSON.stringify(w)}\n`); } catch { /* the next tick runs as if never */ } };
-const noteWake = (k, ms) => writeWake({ ...readWake(), [k]: new Date(ms).toISOString() });
-const countedMap = (w) => (w.counted && typeof w.counted === 'object' ? w.counted : {});
-const countedAt = (state) => Date.parse(countedMap(readWake())[state] ?? '') || 0;
-const noteCounted = (state, ms) => { const w = readWake(); writeWake({ ...w, counted: { ...countedMap(w), [state]: new Date(ms).toISOString() } }); };
+const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify({ ...readWake(), [k]: new Date(ms).toISOString() })}\n`); } catch { /* the next tick runs as if never */ } };
+// <batch state>/supervisor.counted: when the batch's last pass that counted a quiet pass started. Its own
+// file, read and replaced only under the batch's supervisor.lock, so two ticks passing different batches
+// at once never write over each other's. Unreadable reads as never.
+const countedFile = (state) => join(state, 'supervisor.counted');
+const countedAt = (state) => { try { return Date.parse(readFileSync(countedFile(state), 'utf8').trim()) || 0; } catch { return 0; } };
+function noteCounted(state, ms) {
+  const tmp = `${countedFile(state)}.${process.pid}.tmp`;
+  try { writeFileSync(tmp, `${new Date(ms).toISOString()}\n`); renameSync(tmp, countedFile(state)); } catch { rmSync(tmp, { force: true }); }
+}
 // Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
 // runs nothing. A file that cannot be deleted stays and wakes nothing again.
 function consumeExits(files) {
