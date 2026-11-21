@@ -198,8 +198,10 @@ r = preflight(off);
 t('AC4 lever off: a matching record is not skipped on', ran(r), RAN);
 t('AC4 lever off: no --effort', r.calls.some((c) => c.includes('--effort')), false);
 t('AC4 lever off: nothing is recorded', [r.passed, existsSync(record)], [true, false]);
-const noEffortFinder = preflight({ ...off, AUTOPILOT_FINDER_MODEL: 'opus' });
-t('AC4 lever off: the finder check has no --effort', [noEffortFinder.calls.length, noEffortFinder.calls.some((c) => c.includes('--effort'))], [2, false]);
+// haiku is not in the stub's list, so the one-word probe runs and its own call is checked.
+const noEffortFinder = preflight({ ...off, AUTOPILOT_FINDER_MODEL: 'haiku' });
+t('AC4 lever off: the finder check has no --effort',
+  [noEffortFinder.calls.length, noEffortFinder.calls.filter((c) => c.includes('MODEL_OK')).length, noEffortFinder.calls.some((c) => c.includes('--effort'))], [3, 1, false]);
 const finder = preflight({ AUTOPILOT_FINDER_MODEL: 'opus' });
 t('DS-696 AC1 a finder model the CLI lists is read from its list: no model turn is spent on it',
   [finder.passed, finder.calls.length, /--input-format stream-json/.test(finder.calls[1] ?? ''), finder.calls.some((c) => c.includes('MODEL_OK'))], [true, 2, true, false]);
