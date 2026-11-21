@@ -1,6 +1,6 @@
 // suite: queue ledger commands (with the ledger lever on, every queue.mjs command that writes the queue appends what it changed, naming itself)
 // budget: 60 DS-893
-// AC3 of DS-893 for the writing commands test_queue_ledger.mjs does not run: each run as a process
+// The writing commands test_queue_ledger.mjs does not run: each run as a process
 // against its own fixture queue whose ledger sits beside it, with the lever on, a stub gh on PATH for
 // those that read GitHub. Each case checks the command succeeded, the events it appended, and that
 // every one names `queue.mjs <command>` as the writer.
@@ -16,7 +16,9 @@ for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) del
 const SLUG = 'acme__widgets';
 const ON = join(T, 'config-on.md');
 writeFileSync(ON, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n'
-  + '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n');
+  + '## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n\n'
+  // No tracker, so a slug such as adopt's is a usable key.
+  + '## 4. Project\n| Field | Value |\n|---|---|\n| Tracker | `none` |\n');
 const HOME = join(T, 'home');
 const STATE = join(T, 'state');
 const REPO = join(T, 'repo');
@@ -102,7 +104,7 @@ const run = (q0, args, { file, env = {} } = {}) => {
   const worker = spawn('bash', ['-c', 'sleep 300 & wait', 'x', 'claude', '-p', 'x', '--session-id', 's-ST-1'], { detached: true, stdio: 'ignore' });
   const { r, evs, said } = run({ tickets: { 'ST-1': tk('ST-1', { state: 'running', session_id: 's-ST-1', branch: 'fix/ST-1', worktree: wt, stage: '4/9' }) } }, ['stop', 'ST-1']);
   try { process.kill(-worker.pid, 'SIGKILL'); } catch { /* ended by stop */ }
-  t('AC3 stop: parked, then the fields it cleared', `${r.status} ${said} ${evs[0]?.data.kind ?? ''}`.trim(), '0 parked ST-1, legacy_set ST-1 / queue.mjs stop');
+  t('AC3 stop: parked on its question, then the fields it cleared', `${r.status} ${said} ${evs[0]?.data.kind}`, '0 parked ST-1, legacy_set ST-1 / queue.mjs stop question');
 }
 
 // handback: a lane C park whose session step the person did goes back to a worker at Stage 4b.
@@ -117,7 +119,7 @@ const run = (q0, args, { file, env = {} } = {}) => {
 {
   pr(61, { state: 'OPEN', isDraft: true, headRefName: 'fix/FN-1', baseRefName: 'main' });
   const { r, evs, said } = run({ tickets: { 'FN-1': tk('FN-1', { state: 'parked', park: { question: 'push the branch', since: 'x' }, branch: 'fix/FN-1' }) } }, ['finish', 'FN-1', '--pr', '61']);
-  t('AC3 finish: done on its PR', `${r.status} ${said} ${evs[0]?.data.pr ?? evs[0]?.data.fields?.result?.pr}`, '0 done FN-1, legacy_set FN-1 / queue.mjs finish 61');
+  t('AC3 finish: done on its PR', `${r.status} ${said} ${evs[0]?.data.pr ?? evs[0]?.data.fields?.result?.pr}`, '0 finished FN-1, legacy_set FN-1 / queue.mjs finish 61');
 }
 
 // step-done: the person ran the step no worker can, and the ticket goes back to a worker.
@@ -133,10 +135,11 @@ const run = (q0, args, { file, env = {} } = {}) => {
   t('AC3 follow-ran: the step settled', `${r.status} ${said} ${evs[0]?.data.fields?.follow_on_done}`, '0 legacy_set FR-1 / queue.mjs follow-ran 2026-11-21T10:00:00.000Z');
 }
 
-// approve: a feature spine whose specs passed is approved and done.
+// approve: a feature spine whose specs passed is approved and done. This config grants neither the
+// undraft nor the merge, so it exits 11 (for the person to do both) after its write.
 {
   const { r, evs, said } = run({ tickets: { 'SP-1': tk('SP-1', { state: 'parked', park: { question: 'spine awaiting approval: its specs passed', since: 'x' }, spine_check: { ok: true }, result: { pr: 70 } }) } }, ['approve', 'SP-1']);
-  t('AC3 approve: done, then approved', `${r.status} ${said} ${evs.at(-1)?.data.fields?.approved}`, '0 done SP-1, legacy_set SP-1 / queue.mjs approve true');
+  t('AC3 approve: finished, then approved', `${r.status} ${said} ${evs.at(-1)?.data.fields?.approved}`, '11 finished SP-1, legacy_set SP-1 / queue.mjs approve true');
 }
 
 // reject: a spine's specs sent back: requeued for a new worker.
@@ -170,9 +173,12 @@ const run = (q0, args, { file, env = {} } = {}) => {
   write(join(repoDir, 'queue.json'), { version: 1, batch: 'standing-1', supervised: true, tickets: { 'S-1': tk('S-1', { state: 'running' }) } });
   write(named, { version: 1, batch: 'E-2', base: 'feat/e-2', supervised: true, tickets: { 'X-1': tk('X-1'), 'X-2': tk('X-2') } });
   triage('X-1', {}, namedState);
-  const env = { DESK_HOME, DESK_REPO_OVERRIDE: 'acme/widgets', DESK_MACHINE: join(T, 'none.md'), DESK_AUTOPILOT_STATE: namedState, DESK_REPO_DIR: '', DESK_REPO_ROOT: '' };
+  // The repo's slug from the override, its batches under this DESK_HOME; the repo root stays, for the
+  // worktrees folder transfer looks in.
+  const env = { ...ENV, DESK_QUEUE: named, DESK_HOME, DESK_REPO_OVERRIDE: 'acme/widgets', DESK_MACHINE: join(T, 'none.md'), DESK_AUTOPILOT_STATE: namedState };
+  delete env.DESK_REPO_DIR;
   const at = readLog(repoDir).events.length;
-  const r = spawnSync(process.execPath, [join(B, 'queue.mjs'), 'transfer', 'X-1', 'standing'], { encoding: 'utf8', env: { ...ENV, DESK_QUEUE: named, ...env } });
+  const r = spawnSync(process.execPath, [join(B, 'queue.mjs'), 'transfer', 'X-1', 'standing'], { encoding: 'utf8', env });
   if (r.status !== 0) console.log(`     queue.mjs transfer exited ${r.status}: ${r.stdout}${r.stderr}`);
   const evs = readLog(repoDir).events.slice(at).filter((e) => e.type !== 'seeded');
   const moved = evs.find((e) => e.type === 'moved');
