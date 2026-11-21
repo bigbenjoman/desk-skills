@@ -1620,4 +1620,21 @@ jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
 check "DS-843 AC4 and its JSON error names no spawned ticket" \
   'echo "$jout" | jq -e ".status == \"error\" and (has(\"spawned\") | not)" >/dev/null'
 
+# ---- DS-893: with the ledger lever on, a pass's spawn (its state=running write, made as queue.mjs)
+# appends a spawned event naming the pass; with the ledger's lock held past its wait, the queue is still
+# written and the pass's report names the missed append. The queue sits in a folder of its own, so the
+# log beside it is this case's alone.
+export DESK_QUEUE="$T/lg/queue.json" DESK_AUTOPILOT_STATE="$T/state-lg"; mkdir -p "$T/lg" "$T/state-lg/logs"
+{ cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `ledger` |\n'; } > "$T/config-lg.md"
+q init lg; q set-batch concurrency=2
+q add LG-1; q set LG-1 state=triaged lane=A branch=fix/LG-1
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1)
+check "DS-893 AC2 with the ledger lever on, a pass's spawn is a spawned event naming the pass" \
+  '[ "$(field LG-1 state)" = "\"running\"" ] && [ "$(jq -sc "[.[] | select(.key == \"LG-1\" and .type == \"spawned\") | .by.proc]" "$T/lg/ledger/events.jsonl")" = "[\"pass\"]" ]'
+q add LG-2; q set LG-2 state=triaged lane=A branch=fix/LG-2
+mkdir "$T/lg/ledger/.lock"; echo $$ > "$T/lg/ledger/.lock/pid"
+out=$(DESK_CONFIG="$T/config-lg.md" node "$B/pass.mjs" 2>&1); rm -rf "$T/lg/ledger/.lock"
+check "DS-893 AC10 the ledger locked past its wait: the spawn is still recorded, and the report names the missed append" \
+  '[ "$(field LG-2 state)" = "\"running\"" ] && echo "$out" | grep -q "ledger: 1 missed append" && ! jq -e "select(.key == \"LG-2\" and .type == \"spawned\")" "$T/lg/ledger/events.jsonl" >/dev/null'
+
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

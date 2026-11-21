@@ -11,7 +11,7 @@
 // comes back as one missed append for the writer to report.
 import { basename, dirname } from 'node:path';
 import { BATCHES_DIR, leverOn } from './desk-env.mjs';
-import { append, fold, invalid, diffQueues, PROJECTION_ONLY, PARK_KINDS } from './ticket-ledger.mjs';
+import { append, fold, invalid, diffQueues, withoutProjectionOnly, PARK_KINDS, TRANSITIONS } from './ticket-ledger.mjs';
 
 // What the log calls the standing batch, as `queue.mjs transfer <TICKET> standing` does.
 export const STANDING = 'standing';
@@ -39,12 +39,10 @@ const count = (v) => {
   const n = typeof v === 'string' && v.trim() !== '' ? Number(v) : v;
   return Number.isInteger(n) && n >= 0 ? n : null;
 };
-const withoutProjectionOnly = (t) => Object.fromEntries(Object.entries(t ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
-// The typed event for ticket `now` reaching its state from `was` (undefined for a ticket new here):
-// the event whose transition leaves that state. Its data comes from the fields the write left.
-function stateEvent(was, now, at) {
-  const from = was?.state ?? null;
+// The typed event for ticket `now` reaching its state from state `from` (null for none): the event
+// whose transition leaves that state. Its data comes from the fields the write left.
+function stateEvent(from, now, at) {
   switch (now.state) {
     case 'queued': return from == null || from === 'done' ? { type: 'admitted', data: {} } : { type: 'requeued', data: {} };
     case 'triaged': return { type: 'triaged', data: { questions: Array.isArray(now.questions) ? now.questions : [] } };
@@ -57,6 +55,28 @@ function stateEvent(was, now, at) {
     case 'failed': return { type: 'failed', data: { subtype: text(now.failed?.subtype) ?? 'unknown' } };
     default: return null;
   }
+}
+
+// The typed events for ticket `now` reaching its state from `was` (undefined for a ticket new here), in
+// order. A ticket new to the queue is admitted first, which also brings back one the log holds as
+// archived; one taken from a park or a failure back to triage is requeued first. Each must be a legal
+// transition from the state the one before it left (ticket-ledger.mjs TRANSITIONS), or there are none
+// and the state is recorded with the other fields: the pass also sets states no typed event reaches,
+// such as a running ticket back to triaged.
+function stateEvents(was, now, at) {
+  const start = was?.state ?? null;
+  const steps = [];
+  if (was === undefined && now.state !== 'queued') steps.push({ type: 'admitted', data: {} });
+  else if (['parked', 'failed'].includes(start) && now.state === 'triaged') steps.push({ type: 'requeued', data: {} });
+  const last = stateEvent(steps.length ? 'queued' : start, now, at);
+  if (!last) return [];
+  steps.push(last);
+  let from = start;
+  for (const s of steps) {
+    if (!TRANSITIONS[s.type].from.includes(from)) return [];
+    from = TRANSITIONS[s.type].to;
+  }
+  return steps;
 }
 
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
@@ -87,8 +107,11 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
       if (was === undefined && now.moved_from && typeof now.moved_from === 'object') {
         ev(key, 'moved', { from: text(now.moved_from.batch) ?? STANDING, to: batch });
       } else if (own(fields, 'state')) {
-        const typed = stateEvent(was, now, at);
-        if (typed && !invalid({ ...typed, batch, key })) { ev(key, typed.type, typed.data); delete fields.state; }
+        const typed = stateEvents(was, now, at);
+        if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
+          for (const e of typed) ev(key, e.type, e.data);
+          delete fields.state;
+        }
       }
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
     }
@@ -107,7 +130,7 @@ export const seedEvents = (q, batch, skip = new Set(), at = new Date().toISOStri
 // not the one `file` holds: a whole queue moved here from another batch (move-batch), each of whose
 // tickets gets a moved event naming both. -> { appended } or, when the append failed,
 // { appended: 0, missed: 1, why }. Never throws.
-export function recordWrite(file, before, after, { by, archived = {}, from = null, waitMs } = {}) {
+export function recordWrite(file, before, after, { by, archived = {}, from = null } = {}) {
   try {
     const { repoDir, batch } = ledgerTarget(file);
     const state = fold(repoDir);
@@ -122,12 +145,16 @@ export function recordWrite(file, before, after, { by, archived = {}, from = nul
     }
     events.push(...queueEvents(before, after, { batch, archived, elsewhere, at }));
     if (!events.length) return { appended: 0 };
-    append(repoDir, events, { by, ...(waitMs ? { waitMs } : {}) });
+    append(repoDir, events, { by });
     return { appended: events.length };
   } catch (e) {
     return { appended: 0, missed: 1, why: String(e?.message ?? e).split('\n')[0] };
   }
 }
 
-// The line a writer prints for a missed append, or null when there was none.
-export const missedLine = (r, file) => (r?.missed ? `ledger: 1 missed append for ${file}: ${r.why}. queue.json was written` : null);
+// The line a writer prints for a missed append, or null when there was none. It starts MISSED_PREFIX.
+export const MISSED_PREFIX = 'ledger: 1 missed append';
+export const missedLine = (r, file) => (r?.missed ? `${MISSED_PREFIX} for ${file}: ${r.why}. queue.json was written` : null);
+// The environment variable naming the writer of a queue.mjs command run for another process, such as
+// the pass: unset, the command names itself.
+export const LEDGER_BY_ENV = 'DESK_LEDGER_BY';

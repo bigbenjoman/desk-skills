@@ -126,7 +126,7 @@ export function invalid(ev) {
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
-const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields).filter(([f]) => !PROJECTION_ONLY.includes(f)));
+export const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields ?? {}).filter(([f]) => !PROJECTION_ONLY.includes(f)));
 
 // Lays queue.json fields onto ticket `t`: the fields with a typed home (state, park, held_by, result.pr,
 // merge) go there too, so a typed event and a field set agree on one value.

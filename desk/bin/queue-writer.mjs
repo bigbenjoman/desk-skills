@@ -92,8 +92,8 @@ export function applySetBatch(q, pairs, setBase) {
 // wait into forever or nothing.
 export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) : 10_000;
 
-// The writer for queue `file`, read now. `waitMs` is how long a flush waits for the queue lock, and
-// `by` the writer the ticket ledger names for its writes.
+// The writer for queue `file`, read now. `waitMs` is how long a flush waits for the queue lock. The
+// ticket ledger names the pass as the writer of its writes.
 //   view()       the queue as it stands: the file now, with this writer's changes not yet written on top
 //   apply(args)  one queue.mjs command, in memory: { ok, out } | { ok: false, why } | { direct: true }
 //                for one it does not apply here (any other command, the batch base, a claim, or a
@@ -107,7 +107,7 @@ export const LOCK_WAIT_MS = Number(process.env.DESK_QUEUE_LOCK_WAIT_MS) > 0 ? Nu
 //                `skipped` naming the tickets whose conditional set no longer held, `ledgerMissed` why
 //                the ledger lever's append for the write was missed (else null), or, when the lock
 //                is not taken within its wait, { ok: false, why, lost } with nothing written
-export function queueWriter(file, { waitMs = LOCK_WAIT_MS, by = 'pass' } = {}) {
+export function queueWriter(file, { waitMs = LOCK_WAIT_MS } = {}) {
   // The file's text as last read or written, so an unchanged file costs one read and no parse.
   let baseText = readFileSync(file, 'utf8');
   let base = JSON.parse(baseText);
@@ -208,7 +208,7 @@ export function queueWriter(file, { waitMs = LOCK_WAIT_MS, by = 'pass' } = {}) {
       if (archive) { try { archived = archiveDone(file, out); } catch (e) { archiveError = e.message; } }
       out.version = versionOf(base);
       let ledger = null;
-      const version = writeQueueFile(file, out, { by, archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });
+      const version = writeQueueFile(file, out, { by: 'pass', archived: Object.fromEntries(archived.map((k) => [k, live[k]])), onLedger: (l) => { ledger = l; } });
       const r = { ok: true, wrote: true, version, conflicts: kept, skipped: skipped.map((s) => s.key), archived, archiveError, ops, ledgerMissed: ledger?.missed ? ledger.why : null };
       base = out; baseText = readFileSync(file, 'utf8'); mine = structuredClone(out); ops = []; conflicts = []; guards = [];
       return r;

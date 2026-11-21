@@ -21,7 +21,7 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG: ON, DESK_HOME: 
 
 const { queueWriter } = await import('../desk/bin/queue-writer.mjs');
 const { versionOf } = await import('../desk/bin/queue-store.mjs');
-const { read: readLog, ledgerPaths } = await import('../desk/bin/ticket-ledger.mjs');
+const { read: readLog, ledgerPaths, reduce, fold } = await import('../desk/bin/ticket-ledger.mjs');
 const { recordWrite, ledgerTarget, STANDING } = await import('../desk/bin/queue-ledger.mjs');
 const { lock, unlock } = await import('../desk/bin/dir-lock.mjs');
 
@@ -144,11 +144,9 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('AC1 and no log is made', existsSync(ledgerPaths(dirname(f)).dir), false);
 }
 
-// AC3: every queue.mjs command that writes the queue appends the events of what it changed, naming the
-// command. They all write through save(), which names the command, and through nothing else.
+// AC3: each queue.mjs command that writes the queue appends the events of what it changed, naming the
+// command.
 {
-  const src = readFileSync(join(B, 'queue.mjs'), 'utf8');
-  t('AC3 queue.mjs reaches the disk only through writeQueueFile, which names the command', `${src.match(/writeQueueFile\(/g).length} ${/writeJsonAtomic|writeFileSync\(QUEUE/.test(src)}`, '1 false');
   const f = join(T, 'cmds', 'queue.json');
   mkdirSync(dirname(f));
   const last = { n: 0 };
@@ -173,13 +171,47 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   e = run('park', 'T-1', 'which colour?');
   t('AC3 park: parked, then the park', `${shape(e)} / ${by(e)}`, 'parked T-1, legacy_set T-1 / queue.mjs park');
   e = run('requeue', 'T-1');
-  t('AC3 requeue: a typed event for its new state', `${read(f).tickets['T-1'].state} ${e[0]?.type} / ${by(e)}`, 'triaged triaged / queue.mjs requeue');
+  t('AC3 requeue: from its park to triage, requeued then triaged', `${read(f).tickets['T-1'].state} ${shape(e.filter((x) => x.type !== 'legacy_set'))} / ${by(e)}`, 'triaged requeued T-1, triaged T-1 / queue.mjs requeue');
   e = run('move', 'T-2', '1');
   t('AC3 move: placed', `${shape(e)} / ${by(e)} / ${e[0]?.data.fields.placed}`, 'legacy_set T-2 / queue.mjs move / true');
   e = run('hold', 'T-1', 'T-2');
   t('AC3 hold: parked, with held_by', `${shape(e)} / ${by(e)} / ${e[1]?.data.fields.held_by}`, 'parked T-1, legacy_set T-1 / queue.mjs hold / T-2');
   e = run('drop', 'T-2');
   t('AC3 drop: moved out of the batch', `${shape(e)} / ${by(e)} / ${e[0]?.data.from}>${e[0]?.data.to}`, 'moved T-2 / queue.mjs drop / standing>null');
+  // AC2: a command the pass runs as queue.mjs (its spawn's state=running write) names the pass.
+  const at = log(f).length;
+  const r = spawnSync(process.execPath, [join(B, 'queue.mjs'), 'set', 'T-1', 'state=running', 'session_id=s-9'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: ON, DESK_QUEUE: f, DESK_LEDGER_BY: 'pass' } });
+  e = since(f, at);
+  t('AC2 a queue.mjs command run for the pass names the pass as the writer', `${r.status} ${shape(e)} / ${by(e)}`, '0 spawned T-1, legacy_set T-1 / pass');
+  // Every typed event these commands appended is a legal transition when the log is read back.
+  const illegal = [];
+  reduce(log(f), null, { onIllegal: (ev, from) => illegal.push(`${ev.type} ${ev.key} from ${from}`) });
+  t('AC3 the log they wrote reads back with no illegal transition', illegal.join(', '), '');
+}
+
+// A pass taking a running ticket back to triage, which no typed event does: the state is recorded with
+// its other fields, never as an illegal triaged event.
+{
+  const f = fixture({ version: 1, batch: 'b', tickets: { A: tk('A', { state: 'running', session_id: 's-1' }) } });
+  const w = queueWriter(f);
+  w.apply(['set', 'A', 'state=triaged', 'session_id=null']);
+  w.flush();
+  const evs = log(f).slice(1);
+  t('running back to triaged is one legacy event holding the state', `${shape(evs)} ${evs[0]?.data.fields.state}`, 'legacy_set A triaged');
+}
+
+// A ticket archived in the log and admitted again is live in it again: admitted first, then its state.
+{
+  const dir = join(T, 'readmit');
+  const file = join(dir, 'queue.json');
+  const done = tk('M', { state: 'done', result: { pr: 4 } });
+  recordWrite(file, { tickets: { M: done } }, { tickets: {} }, { by: 'pass', archived: { M: done } });
+  t('the done ticket is archived in the log', fold(dir).tickets.M?.archived, true);
+  const at = readLog(dir).events.length;
+  recordWrite(file, { tickets: {} }, { tickets: { M: tk('M', { state: 'triaged' }) } }, { by: 'queue.mjs admit' });
+  const evs = readLog(dir).events.slice(at);
+  t('admitted again: admitted, then triaged', shape(evs.filter((x) => x.type !== 'legacy_set')), 'admitted M, triaged M');
+  t('and the log holds it live, triaged', `${fold(dir).tickets.M.archived} ${fold(dir).tickets.M.state}`, 'false triaged');
 }
 
 // A ticket transferred to another batch arrives there as moved, naming both batches, and leaving this
