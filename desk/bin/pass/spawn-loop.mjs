@@ -42,7 +42,8 @@
 //   db-down {why}        the local database's health check is marked failing
 // The verdict, last:
 //   skip {key, stop?}                         nothing more for it; `stop` ends the loop
-//   record-done {key, how, pr, mergedAt, line} record it done, shipped outside its worker
+//   record-done {key, how, pr, mergedAt, line, dropStatus?} record it done, shipped outside its worker;
+//                                             dropStatus: its PR status is another repo's PR of that number
 //   park {key, line}                          park it
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
@@ -62,7 +63,7 @@ export function* decideSpawn(s) {
   const shipped = s.rerun ? null : yield { type: 'shipped', key };
   if (shipped) {
     const how = shipped.pr != null ? `PR #${shipped.pr} merged from ${shipped.branch}` : 'done in Jira with no PR';
-    return yield { type: 'record-done', key, how, pr: shipped.pr ?? null, mergedAt: shipped.mergedAt ?? null,
+    return yield { type: 'record-done', key, how, pr: shipped.pr ?? null, mergedAt: shipped.mergedAt ?? null, ...(shipped.dropStatus ? { dropStatus: true } : {}),
       line: `${key}: ${how}, outside its worker: recorded done, no worker spawned` };
   }
   // Its code wholly in another repo by its triage record: handed over without taking a slot. Whether it

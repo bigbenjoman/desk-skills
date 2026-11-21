@@ -71,7 +71,7 @@ import { archivedOf } from './queue-store.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
-import { decidePrStatus, followState, onThisPr, tookPostMerge } from './pass/pr-status.mjs';
+import { decidePrStatus, followState, onThisPr, tookPostMerge, repoOfPr } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
@@ -1227,29 +1227,41 @@ function ownMergedPr(t) {
 // merged_at whose PR never merged by then explains nothing. A merge time with no PR of the ticket's own
 // behind it is the merge of a PR built outside its worker, which is the one to find, so it excludes
 // nothing. A read that fails is null, and the ticket spawns as it would have.
-// Its own PRs are every one it records (result.pr and merged_pr both: an open result.pr does not hide
-// a merged merged_pr), and none of them is news. A recorded PR that its PR status names with another
-// repo's url (needs-you's elsewhereDone) is that repo's, not this repo's PR of the same number.
-const hereUrl = (url) => !url || String(url).toLowerCase().startsWith(`https://github.com/${GH_REPO}/pull/`.toLowerCase());
-const foreignPr = (t, n) => n != null && t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n) && !hereUrl(t.pr_status.url);
-// The pairs a spawn writes beside result=null: the PR whose merge merged_at records, kept as merged_pr.
-const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null && !foreignPr(t, t.result.pr) ? [`merged_pr=${t.result.pr}`] : []);
-const statusPr = (t) => {
+// Its own PRs are every one it records (result.pr and every merged_pr: an open result.pr does not hide
+// a merged one), and none of them is news. A recorded PR that its PR status names with another repo's
+// url (needs-you's elsewhereDone) is that repo's, not this repo's PR of the same number. This repo is
+// judged by the url GitHub gives its PRs (pass/pr-status.mjs repoOfPr), not the remote's spelling,
+// which a rename leaves behind: the search's own urls, else that spelling where it found nothing.
+const hereRepo = () => repoOfPr(`https://github.com/${GH_REPO}/pull/`);
+const foreignPr = (t, n, here) => n != null && t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n)
+  && !!t.pr_status.url && repoOfPr(t.pr_status.url) !== here;
+// The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
+// kept as merged_pr, so a spawn never forgets one. Whose repo each is in is judged when it is read.
+const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((n) => n != null).map(Number);
+const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${JSON.stringify([...new Set([...mergedPrs(t), Number(t.result.pr)])])}`] : []);
+const statusPr = (t, here) => {
   const s = t.merged_at ? t.pr_status : null;
-  if (s?.pr == null || !hereUrl(s.url)) return null;
+  if (s?.pr == null || (s.url && repoOfPr(s.url) !== here)) return null;
   return { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) };
 };
 function shippedElsewhere(t) {
-  const status = statusPr(t);
-  const recorded = [t.result?.pr, t.merged_pr].filter((n) => n != null);
-  const mine = new Set(recorded.filter((n) => !foreignPr(t, n)).map(Number));
+  let here = hereRepo();
+  let status = statusPr(t, here);
+  const recorded = [t.result?.pr, ...mergedPrs(t)].filter((n) => n != null);
+  let mine = new Set(recorded.filter((n) => !foreignPr(t, n, here)).map(Number));
   try {
     const since = Math.max(...[Date.parse(t.added_at), mine.size ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
     // 1000 is the most a GitHub search returns.
     const prs = cached(`merged:${search}`, () => JSON.parse(readOrThrow(`gh pr list --search ${search}`, 'gh',
-      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt'])));
+      ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt,url'])));
     const list = Array.isArray(prs) ? prs : [];
+    const seen = list.find((p) => p?.url)?.url;
+    if (seen) {
+      here = repoOfPr(seen);
+      status = statusPr(t, here);
+      mine = new Set(recorded.filter((n) => !foreignPr(t, n, here)).map(Number));
+    }
     const at = Date.parse(t.merged_at);
     if (!mine.size && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine.add(status.pr);
     // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
@@ -1269,7 +1281,9 @@ function shippedElsewhere(t) {
         && (since === -Infinity || Date.parse(p.mergedAt) >= since) && !mine.has(Number(p.number))
         && (Number.isNaN(own) || Date.parse(p.mergedAt) > own))
       .sort((a, b) => Date.parse(b.mergedAt) - Date.parse(a.mergedAt))[0];
-    if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null };
+    // A PR status naming another repo's PR of the hit's number is not this PR's: it is dropped, or the
+    // done write would mark it merged and the PR status step would never read this repo's PR.
+    if (hit) return { pr: Number(hit.number), branch: hit.headRefName, mergedAt: hit.mergedAt ?? null, dropStatus: foreignPr(t, hit.number, here) };
   } catch { /* unread: spawn as before */ }
   // A PR status unconfirmed because the read failed still means a PR of its own: never "done with no PR".
   if (recorded.length || status != null || t.draft_pr != null) return null;
@@ -3269,7 +3283,7 @@ const SPAWN_HANDLERS = {
   skip: () => {},
   'record-done': (a, s) => {
     const before = report.failed.length;
-    if (!DRY) q(...shippedSet(s.t, a.how, a.pr, a.mergedAt));
+    if (!DRY) q(...(a.dropStatus ? [...shippedSet({ ...s.t, pr_status: null }, a.how, a.pr, a.mergedAt), 'pr_status=null'] : shippedSet(s.t, a.how, a.pr, a.mergedAt)));
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {

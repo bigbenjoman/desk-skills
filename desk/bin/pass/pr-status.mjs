@@ -56,7 +56,7 @@ export const tookPostMerge = (o, n) => !!o && String(o.post_merge_read ?? '') ==
 // Ticket o is done on PR n of the repo PR url `url` names: one needs-you recorded done on another
 // repo's PR of the same number (elsewhereDone) keeps that PR's url, and is not. Judged against the url
 // GitHub gave the PR, not the remote's spelling of the repo, which a rename leaves behind.
-const repoOfPr = (url) => String(url ?? '').toLowerCase().split('/pull/')[0];
+export const repoOfPr = (url) => String(url ?? '').toLowerCase().split('/pull/')[0];
 export const onThisPr = (o, n, url) => !!o && o.state === 'done' && o.result?.pr != null && String(o.result.pr) === String(n)
   && (!o.pr_status?.url || repoOfPr(o.pr_status.url) === repoOfPr(url));
 
@@ -122,8 +122,15 @@ export function* decidePrStatus(s) {
       if (!again) {
         if (st.state === 'OPEN' && st.isDraft === true) drafts.push({ t, s: st });
         if (st.state === 'OPEN' && st.isDraft === false) undrafted.push({ t, s: st });
-        if ((st.state === 'OPEN' && Object.keys(st.reopen ?? {}).length && st.base_head) || (owed && st.state === 'CLOSED')) reopens.push({ t, s: st, owed });
-        else if (owed && !s.dry) yield { type: 'set', key: t.key, fields: ['reopening=null'] };
+      }
+      // One reopen per PR, and the ticket that owes one (its reopen failed) is the one it goes to,
+      // whichever of the PR's tickets the loop reached first.
+      if (!again || owed) {
+        const at = reopens.findIndex((r) => String(r.t.result?.pr) === String(n));
+        if ((st.state === 'OPEN' && Object.keys(st.reopen ?? {}).length && st.base_head) || (owed && st.state === 'CLOSED')) {
+          if (at < 0) reopens.push({ t, s: st, owed });
+          else if (owed && !reopens[at].owed) reopens[at] = { t, s: st, owed };
+        } else if (owed && !s.dry) yield { type: 'set', key: t.key, fields: ['reopening=null'] };
       }
     }
     // merged_at on the ticket and its eta-history line (queue.mjs merged keeps the first merge time and
