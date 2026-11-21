@@ -67,6 +67,8 @@ cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-spawn"; echo "[spawn] ticket=\$1"; fi
 EOF
 q --batch X-1 init x1; q --batch X-1 add X-9; q --batch X-1 set X-9 state=triaged
+# X-11's worktree is left from a setup that did not finish: setup-worktree.sh completes it, install included.
+mkdir -p "$T/wt/X-11"; : > "$T/wt/X-11/.desk-setup-incomplete"; q --batch X-1 add X-11; q --batch X-1 set X-11 state=triaged
 out=$(node "$B/pass.mjs" --batch X-1 2>&1)
 x1field(){ DESK_QUEUE="$X1Q" field "$@"; }
 want="DESK_STATE='$X1S'
@@ -76,7 +78,11 @@ check "DS-303 AC3 the worktree setup it starts acts on X-1" '[ "$(cat "$T/x1-set
 check "DS-303 AC3 the worker it starts acts on X-1" '[ "$(cat "$T/x1-spawn" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the pass keeps its own state in X-1's folder" '[ -d "$X1S/logs" ]'
 check "DS-698 AC1 the pass's metrics line carries each setup step's duration for the ticket it spawned" \
-  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup == [{\"key\":\"X-9\",\"kept\":false,\"steps\":{\"config\":1,\"checkout\":2,\"install\":41}}]" >/dev/null'
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-9\")) == [{\"key\":\"X-9\",\"kept\":false,\"steps\":{\"config\":1,\"checkout\":2,\"install\":41}}]" >/dev/null'
+check "DS-698 a worktree resumed from an unfinished setup is timed as a new one, not a kept one" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup | map(select(.key == \"X-11\")) | .[0].kept == false" >/dev/null'
+# X-11 was only here to be timed: its running worker would hold one of the repo's worker slots from every test below.
+q --batch X-1 set X-11 state=done session_id=null
 
 # ---- DS-124: cloud workers
 # A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, run through script

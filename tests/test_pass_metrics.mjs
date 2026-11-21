@@ -1,7 +1,7 @@
 // suite: pass metrics (one line per pass, the collision warning over a series of lines)
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES, parseSetupSteps, setupMedians, setupMediansText } from '../desk/bin/pass-metrics.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES, parseSetupSteps, setupMedians, setupMediansText, repoStates } from '../desk/bin/pass-metrics.mjs';
 import { checkin } from '../desk/bin/digest.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -69,6 +69,15 @@ t('DS-698 medians are over new worktrees only, kept ones counted apart', JSON.st
 t('DS-698 the median per step', JSON.stringify(med.steps), '{"checkout":{"median":3,"max":4,"n":3},"install":{"median":70,"max":90,"n":3}}');
 t('DS-698 the median total', med.total, 73);
 t('DS-698 the report names the repo, the span and each step', setupMediansText('setup__medians', med).split('\n')[0], 'setup__medians: 3 new worktree setups, 2026-11-20 to 2026-11-21, median total 73s (1 kept, not counted)');
+// A batch pass logs under <slug>/batches/<name>/: the repo's medians read its standing and named batches together.
+const ar = join(root, 'ar');
+appendMetrics(join(ar, 'acme__w'), { at: '2026-11-21T09:00:00.000Z', setup: [{ key: 'B-1', kept: false, steps: { install: 10 } }] });
+appendMetrics(join(ar, 'acme__w', 'batches', 'B-9'), { at: '2026-11-20T09:00:00.000Z', setup: [{ key: 'B-2', kept: false, steps: { install: 30 } }] });
+mkdirSync(join(ar, 'empty__repo'), { recursive: true });
+const rs = repoStates(ar);
+t('DS-698 each repo lists its standing and named batches, and a repo with no metrics is left out', JSON.stringify(rs.map((r) => [r.slug, r.states.length])), '[["acme__w",2]]');
+const am = setupMedians(rs[0].states);
+t('DS-698 a repo\'s medians cover its named batches, spanning all of them', JSON.stringify([am.new, am.steps.install.median, am.from.slice(0, 10), am.to.slice(0, 10)]), '[2,20,"2026-11-20","2026-11-21"]');
 t('DS-698 a repo with no setups says so', setupMediansText('x', setupMedians(join(root, 'state', 'none'))), 'x: no new worktree setups recorded');
 
 const bad = join(root, 'bad');

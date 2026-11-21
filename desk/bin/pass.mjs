@@ -3340,6 +3340,9 @@ function setUpWorktree(t) {
   // Read before setup-worktree.sh, which makes a worktree that is not there: a round left in one the
   // requeue removed for a fresh branch is not resumed.
   const kept = existsSync(wt);
+  // A kept dir still holding setup-worktree.sh's incomplete marker gets the full setup, install
+  // included, so its step times count as a new worktree's (DS-698).
+  const reused = kept && !existsSync(join(wt, '.desk-setup-incomplete'));
   // A queued branch no worker could push (a convention placeholder left in at triage) is replaced
   // from the key and summary before setup-worktree.sh cuts it.
   let renamed = '';
@@ -3371,7 +3374,7 @@ function setUpWorktree(t) {
   }
   const ok = setUp(setupRun);
   const steps = ok ? parseSetupSteps(setupRun.out) : null;
-  if (steps) setupTimes.push({ key: t.key, kept, steps });
+  if (steps) setupTimes.push({ key: t.key, kept: reused, steps });
   return { wt, kept, renamed, ok, exitOk: setupRun.ok, out: setupRun.out, retried };
 }
 // The decision is pass/spawn-loop.mjs decideSpawn, run for each candidate in turn: its snapshot is the
