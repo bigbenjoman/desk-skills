@@ -23,19 +23,22 @@ import { isEpic } from './desk-q-eta.mjs';
 
 // The text with every line inside a {code}/{noformat} block or a ``` fence blanked, so nothing in
 // code reads as prose and line numbers still match the source. Each block's line numbers are pushed
-// onto `blocks`, one array per block. A tag inside {{monospace}} (a code span holding the word code
-// or noformat) is text, not a macro: read as one, it opened a block nothing closed.
-const MACRO_OPEN = /(?<!\{)\{(?:code|noformat)(?::[^}]*)?\}(?!\})/i;
-const MACRO_CLOSE = /(?<!\{)\{(?:code|noformat)\}(?!\})/i;
+// onto `blocks`, one array per block. A tag inside a whole {{monospace}} span (a code span holding
+// the word code or noformat) is text, not a macro: read as one, it opened a block nothing closed.
+// Only whole spans are masked, so a tag touching a lone brace of code ({code}}{code}) still counts.
+const MONOSPACE = /\{\{[^{}\n]*\}\}/g;
+const MACRO_OPEN = /\{(?:code|noformat)(?::[^}]*)?\}/i;
+const MACRO_CLOSE = /\{(?:code|noformat)\}/i;
 function blankCode(text, blocks = []) {
   let fence = null; let macro = false;
   return String(text ?? '').split(/\r?\n/).map((l, i) => {
-    if (macro) { blocks.at(-1).push(i + 1); if (MACRO_CLOSE.test(l)) macro = false; return ''; }
+    const t = l.replace(MONOSPACE, (s) => ' '.repeat(s.length));
+    if (macro) { blocks.at(-1).push(i + 1); if (MACRO_CLOSE.test(t)) macro = false; return ''; }
     if (fence) { blocks.at(-1).push(i + 1); if (l.trim().startsWith(fence)) fence = null; return ''; }
     const f = /^\s*(`{3,}|~{3,})/.exec(l);
     if (f) { fence = f[1]; blocks.push([i + 1]); return ''; }
-    const m = MACRO_OPEN.exec(l);
-    if (m) { blocks.push([i + 1]); if (!MACRO_CLOSE.test(l.slice(m.index + m[0].length))) macro = true; return ''; }
+    const m = MACRO_OPEN.exec(t);
+    if (m) { blocks.push([i + 1]); if (!MACRO_CLOSE.test(t.slice(m.index + m[0].length))) macro = true; return ''; }
     return l;
   });
 }
