@@ -156,7 +156,12 @@ import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
-import { PERMISSION_KEYS, CONFIG_ROWS, norm } from './config-schema.mjs';
+import {
+  PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
+  permValues, permValue, requiredFieldsIn, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, parseLevers,
+  EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
+  fileBudget as fileBudgetOf,
+} from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -263,8 +268,13 @@ const configPathHint = () =>
 // are matched by display name. Either way the match is EXACT (case, backticks and spacing aside):
 // a near-miss must read as unset, never borrow a neighbouring row's value.
 export { PERMISSION_KEYS, CONFIG_ROWS };
+// The row grammars live in the schema as its types; each is re-exported here under its own name.
+export {
+  DeskConfigError, isNone, parseCommandItem, localServiceName, permValues, parseBudget, EXTRA_MODELS, parseWorkerModels,
+  parseWorkerLocation, LEVERS, parseLevers, EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS,
+  CODEX_DEFAULTS, parseCodexReview,
+};
 
-export class DeskConfigError extends Error {}
 // No config file resolves (outside a repo, or setup never ran): nothing was read, so nothing may be
 // read as a value. The CLI exits 3 on it, as for any lookup it cannot resolve.
 export class NoRepoConfigError extends DeskConfigError {}
@@ -344,7 +354,7 @@ function parseConfigFile(path) {
 // How many rows of a config file are unanswered: the value (first span of the value column, as every
 // read takes it) is `TODO`. A TODO in a note, or in another column, is not one. The rows the template
 // keeps `TODO` on purpose to follow the machine profile are not counted (MACHINE_FALLBACK_ROWS).
-export const MACHINE_FALLBACK_ROWS = ['autopilot worker concurrency', 'memory ceiling for parallel work (gb)', 'test worker cap under the test lock'];
+export const MACHINE_FALLBACK_ROWS = ROWS.filter((e) => e.machine).map((e) => norm(e.label));
 export function unansweredRows(path) {
   if (!path || !existsSync(path)) return 0;
   return tableLines(readFileSync(path, 'utf8')).rows
@@ -416,11 +426,6 @@ const expandSlug = (v) => (typeof v === 'string' && v.includes('<slug>') && curr
 // profile they read as unset exactly as before. The memory ceiling is the exception: the profile's
 // is a hard limit across every repo, so a repo row may set it lower, never higher (machineLimited).
 export const machineProfilePath = () => expandHome(process.env.DESK_MACHINE ?? join(deskConfigRoot(), 'machine.md'));
-const MACHINE_FALLBACK = Object.freeze({
-  concurrency: 'autopilot-concurrency',
-  'memory-ceiling': 'memory-ceiling-gb',
-  'test-cap': 'test-cap',
-});
 let machineCache;
 export function machineProfile() {
   if (machineCache === undefined) machineCache = M.readProfile(machineProfilePath());
@@ -661,12 +666,7 @@ export function personInputLabels(slug = null) { return labelsRow('person-input-
 export function requiredFields(type) {
   let rules = [];
   try { rules = [].concat(configValues('jira-required-fields') ?? []).filter((r) => r && !isNone(r)); } catch { /* no config: no rules */ }
-  const want = type == null ? null : String(type).trim().toLowerCase();
-  const need = rules.flatMap((rule) => {
-    const m = /^([^:]+):(.+)$/.exec(rule);
-    return m && (want == null || m[1].split(',').some((t) => t.trim().toLowerCase() === want)) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
-  });
-  return { need: [...new Set(need)], malformed: rules.filter((r) => !/^[^:]+:.*\S/.test(r)) };
+  return requiredFieldsIn(rules, type);
 }
 
 // A table id's rows as `<first cell>: <second cell>`, or the first cell alone when the second is
@@ -691,7 +691,7 @@ function configValuesIn(parsed, id) {
   const items = e.items.filter((x) => !unset(x)).map(expandSlug);
   // `none` beside other items is a note written in backticks: every span is an item, so the note
   // would be read as a command or check. Refuse rather than guess which one was meant.
-  if (items.length > 1 && items.some((x) => isNone(x))) {
+  if (mixesNone(items)) {
     throw new DeskConfigError(
       `desk: config §${section} "${row}" mixes \`none\` with other items (${items.join(' | ')}) in ${parsed.path || configPathHint()}. ` +
         '`none` must stand alone: move the note out of backticks, e.g. `none` (the note in plain text). Refusing to guess.',
@@ -721,7 +721,6 @@ export function previewSlotArgs(label, wait) {
   return team && ['acquire', 'preview-build', team, '--ttl', String(PREVIEW_TTL_S), '--wait', String(wait), '--no-owner', '--label', label];
 }
 
-export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 // §4 Command prefix, '' with the row unset or `none`.
 export function commandPrefix() {
   const pre = configValue('command-prefix');
@@ -768,16 +767,6 @@ export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
 // The linters a worker runs as a node_modules binary, only under `with-lock.sh tsc`: worker-settings.mjs
 // allows them there, and slot-lease.mjs gives each run a `lint` slot.
 export const LINT_BINS = Object.freeze(['eslint', 'biome', 'oxlint', 'stylelint']);
-
-// A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
-// -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
-export function parseCommandItem(item) {
-  const m = /^([A-Za-z0-9._][A-Za-z0-9._/-]*):\s+(\S.*)$/.exec(String(item).trim());
-  if (m && !m[1].split('/').includes('..')) {
-    return { dir: m[1].replace(/\/+$/, ''), cmd: m[2] };
-  }
-  return { dir: '.', cmd: String(item).trim() };
-}
 
 // The §4 command rows a worker may run (migrate and seed only against a per-ticket database). Its
 // settings allow each item as the exact configured command, so an item must be one plain command.
@@ -832,12 +821,6 @@ const rowMissing = (parsed, id) => parsed.exists && !parsed.sections?.['3']?.byK
 export const permissionMissing = (id) => rowMissing(parseConfig(), id);
 // Another repo's, by slug; false with no config.
 export const repoPermissionUnset = (slug, id, root = deskConfigRoot()) => rowMissing(parseConfigFile(join(root, 'repos', slug, 'config.md')), id);
-// The §3 values a row takes beyond yes, ask and no: branch-delete's merged deletes a local branch only
-// once its PR merged and the base holds all it has (merged-branch.mjs).
-const EXTRA_VALUES = { 'branch-delete': ['merged'] };
-export const permValues = (key) => ['yes', ...(EXTRA_VALUES[key] ?? []), 'ask', 'no'];
-// A §3 value: one of permValues, or never or stop; anything else is a no.
-const permValue = (key, v) => new RegExp(`^(${[...permValues(key), 'never', 'stop'].join('|')})\\b`, 'i').exec(v.trim())?.[1].toLowerCase() ?? 'no';
 // Whether <base> already holds all <head> has: merging head into base changes base's tree in nothing.
 // A squash or rebase merge leaves no ancestry, so this is the test that it landed. `git` is
 // (...args) -> {ok, out}.
@@ -896,131 +879,27 @@ export function mergeGrant(q = readQueueOrNull(), perm = permission) {
   return { by: null, why: `${asked}${a === false ? ', and merging was declined for this batch at Stage 3' : ' with no batch approval'}` };
 }
 
-// A spend guard is a number of USD or explicitly off. Anything else ("25 USD", "0", "lots") is
-// refused rather than read as off: a typo must never silently remove a cap.
-//   -> { off: true } | { usd: <number> }, or throws DeskConfigError
-export function parseBudget(raw, label) {
-  const v = String(raw ?? '').trim().toLowerCase();
-  if (/^(none|off|no|no cap)$/.test(v)) return { off: true };
-  if (/^\d+(\.\d+)?$/.test(v) && Number(v) > 0) return { usd: Number(v) };
-  throw new DeskConfigError(`desk: ${label} is "${raw}" — want a positive number of USD, or none/off/no cap. Refusing to guess.`);
-}
+// The §3b spend guards, each read by parseBudget (config-schema.mjs).
 export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
 export const BATCH_BUDGET_LABEL = 'the batch budget';
 export const batchBudgetRaw = () => resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' });
 export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABEL);
 
-// Config §3b "Worker models": `default` (no --model, the session default) or
-// `standard=<model> high=<model>`, each a `claude --model` alias or full name. Either may be followed
-// by `finder=<model>` (self-review finders) and `text=<model>` (the Stage 7 handoff session); unset,
-// nothing overrides those. The finder model goes to the Agent tool's model override, which
-// takes an alias (`sonnet`, `haiku`), not a full model name. Anything else is refused rather than read
-// as default, so a typo never silently runs every worker on one model.
-//   -> { off: true } | { standard, high }, plus finder and text where set, or throws DeskConfigError
-const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:[\]-]*$/;
-const ALIAS = /^[a-z]+$/;
-export const EXTRA_MODELS = ['finder', 'text'];
-export function parseWorkerModels(raw) {
-  const words = String(raw ?? '').trim().split(/\s+/);
-  const off = /^default$/i.test(words[0]);
-  const pairs = words.slice(off ? 1 : 0).map((p) => p.split('='));
-  const keys = pairs.map((p) => p[0]);
-  const want = off ? [] : ['high', 'standard'];
-  const bad = (why) => new DeskConfigError(`desk: config §3b "Worker models" is "${raw}" — ${why}want \`default\`, or \`standard=<model> high=<model>\`, either followed by \`finder=<alias>\` and \`text=<model>\` if set. Refusing to guess.`);
-  const unknown = keys.filter((k, i) => pairs[i].length === 2 && !['high', 'standard', ...EXTRA_MODELS].includes(k));
-  if (unknown.length) throw bad(`unknown key ${unknown.map((k) => `\`${k}\``).join(', ')}; `);
-  const ok = pairs.every((p) => p.length === 2 && MODEL_NAME.test(p[1])) && new Set(keys).size === keys.length
-    && keys.filter((k) => !EXTRA_MODELS.includes(k)).sort().join() === want.join();
-  if (!ok) throw bad('');
-  const m = Object.fromEntries(pairs);
-  if (m.finder && !ALIAS.test(m.finder)) throw bad(`the finder model \`${m.finder}\` is not an alias the Agent tool takes (\`sonnet\`, \`haiku\`); `);
-  return { ...(off ? { off: true } : { standard: m.standard, high: m.high }),
-    ...Object.fromEntries(EXTRA_MODELS.filter((k) => m[k]).map((k) => [k, m[k]])) };
-}
+// §3b Worker models, Worker location and Phase 0 levers, each read by its grammar in config-schema.mjs.
 export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
-
-// Config §3b "Worker location": `local` (also when the row is unset) or `cloud`, where plan-batch
-// sends each ticket that needs nothing on this computer to a cloud session (cloud-worker.mjs). Anything
-// else is refused rather than read as local.
-//   -> 'local' | 'cloud', or throws DeskConfigError
-export function parseWorkerLocation(raw) {
-  const v = String(raw ?? '').trim().toLowerCase();
-  if (v === 'local' || v === 'cloud') return v;
-  throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
-}
 export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
-
-// Config §3b "Phase 0 levers": the Phase 0 changes switched on, one name per backtick span (a span may
-// hold several, split on commas and spaces). No row, an unset row or `none` is every lever off, and so
-// is no config at all: off is the side that changes nothing. A name desk does not know is kept in
-// `unknown`, for the caller to name, and is never on.
-//   -> { on: [lever], unknown: [name] }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
-export function parseLevers(items) {
-  const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
-  return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
-}
 export function levers() {
   try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
 }
 export const leverOn = (name, l = levers()) => l.on.includes(name);
 
-// Config §3b "Worker effort": `<start>=<effort>` pairs, read only with the effort lever on. A start is
-// the stage a session starts at, `task` (a fix or review try) or `resume`. A value or start desk does
-// not know is refused, naming it, whichever session is starting.
-//   -> { <start>: <effort> }, or throws DeskConfigError
-export const EFFORTS = Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']);
-export const RESUME_STAGES = Object.freeze(['3', '4', '4b', '5', '6', '7', '8', '9']);
-export const EFFORT_STARTS = Object.freeze(['0', ...RESUME_STAGES, 'task', 'resume']);
+// §3b Worker effort is read by parseWorkerEffort (config-schema.mjs), only with the effort lever on.
 export const DEFAULT_EFFORT = 'medium';
 export const NO_EFFORT = 'default';
-export function parseWorkerEffort(items) {
-  const row = (items ?? []).join(' ').trim();
-  const bad = (why) => new DeskConfigError(`desk: config §3b "Worker effort" is "${row}" — ${why}want \`none\`, or \`<start>=<effort>\` pairs: a start of ${EFFORT_STARTS.join(', ')}, and an effort of ${EFFORTS.join(', ')}. Refusing to guess.`);
-  const out = {};
-  for (const pair of row.split(/[\s,]+/).filter((p) => p && !isNone(p))) {
-    const [start, effort, ...rest] = pair.split('=');
-    if (effort === undefined || rest.length) throw bad(`\`${pair}\` is not a pair; `);
-    if (!EFFORT_STARTS.includes(start)) throw bad(`unknown start \`${start}\`; `);
-    if (!EFFORTS.includes(effort)) throw bad(`unknown effort \`${effort}\`; `);
-    if (out[start]) throw bad(`start \`${start}\` is named twice; `);
-    out[start] = effort;
-  }
-  return out;
-}
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
 
-// Config §3b "Codex review": `<role>=<model>:<effort>` pairs for the codex finder and refuter, and
-// `timeout=<seconds>` for every call, read by desk-codex.mjs with the codex lever on. A role or value
-// the row leaves out keeps its default; one desk does not know is refused, naming it.
-//   -> { finder: { model, effort }, refuter: { model, effort }, timeout }, or throws DeskConfigError
-export const CODEX_ROLES = Object.freeze(['finder', 'refuter']);
-export const CODEX_EFFORTS = Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']);
-export const CODEX_DEFAULTS = Object.freeze({ finder: { model: 'gpt-6.1-sol', effort: 'medium' }, refuter: { model: 'gpt-6.1-sol', effort: 'low' }, timeout: 600 });
-export function parseCodexReview(items) {
-  const row = (items ?? []).join(' ').trim();
-  const bad = (why) => new DeskConfigError(`desk: config §3b "Codex review" is "${row}" — ${why}want \`none\`, or \`finder=<model>:<effort> refuter=<model>:<effort> timeout=<seconds>\` with an effort of ${CODEX_EFFORTS.join(', ')}. Refusing to guess.`);
-  const out = { finder: { ...CODEX_DEFAULTS.finder }, refuter: { ...CODEX_DEFAULTS.refuter }, timeout: CODEX_DEFAULTS.timeout };
-  const seen = new Set();
-  for (const pair of row.split(/[\s,]+/).filter((p) => p && !isNone(p))) {
-    const [key, value, ...rest] = pair.split('=');
-    if (value === undefined || rest.length) throw bad(`\`${pair}\` is not a pair; `);
-    if (seen.has(key)) throw bad(`\`${key}\` is named twice; `);
-    seen.add(key);
-    if (key === 'timeout') {
-      if (!/^[1-9]\d*$/.test(value)) throw bad(`timeout \`${value}\` is not a whole number of seconds; `);
-      out.timeout = Number(value);
-      continue;
-    }
-    if (!CODEX_ROLES.includes(key)) throw bad(`unknown role \`${key}\`; `);
-    const [model, effort, ...more] = value.split(':');
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(model ?? '') || more.length) throw bad(`\`${value}\` is not <model>:<effort>; `);
-    if (!CODEX_EFFORTS.includes(effort)) throw bad(`unknown effort \`${effort ?? ''}\`; `);
-    out[key] = { model, effort };
-  }
-  return out;
-}
+// §3b Codex review, read by parseCodexReview (config-schema.mjs) with the codex lever on.
 export function codexReview() {
   try { return parseCodexReview(configValues('codex-models')); } catch (e) { if (e instanceof NoRepoConfigError) return parseCodexReview(null); throw e; }
 }
@@ -1344,45 +1223,19 @@ export function proposePort(cap, claims, { from = 3000, step = 100 } = {}) {
   return null;
 }
 
-// §3b "Spawn gate (available memory)", e.g. `start work > 8 GiB · hold 4–8 · drop to 1 below 4`:
-// start = spawn only above this, hold = below it run at most one worker, dropTo = that one.
-// Unset reads as the template's recommended values. AUTOPILOT_MIN_AVAIL_GB overrides start (0 = off).
-// `row` is this repo's by default; desk-q passes another repo's (repoConfigValue).
+// §3b "Spawn gate (available memory)", read by spawnGateOf (config-schema.mjs): { start, hold, dropTo }.
+// AUTOPILOT_MIN_AVAIL_GB overrides start (0 = off). `row` is this repo's by default; desk-q passes
+// another repo's (repoConfigValue).
 export function spawnGate(row = configValue('spawn-gate')) {
-  const v = row ?? '';
-  const num = (re) => { const m = re.exec(v); return m ? Number(m[1]) : null; };
-  const start = num(/start[^0-9]*(\d+(?:\.\d+)?)/i) ?? num(/(\d+(?:\.\d+)?)/) ?? 8;
-  const hold = num(/below\s*(\d+(?:\.\d+)?)/i) ?? num(/hold\s*(\d+(?:\.\d+)?)/i) ?? Math.min(4, start);
-  const dropTo = num(/(?:drop to|drop)\s*(\d+)/i) ?? num(/(\d+)\s*below/i) ?? 1;
+  const gate = spawnGateOf(row);
   const env = process.env.AUTOPILOT_MIN_AVAIL_GB;
-  return { start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : start, hold, dropTo };
+  return { ...gate, start: env != null && env !== '' && Number.isFinite(Number(env)) ? Number(env) : gate.start };
 }
 
-// §3b "Per-file collision budget": how many running tickets may name one file before a ticket naming
-// it waits. `<big> over <lines> lines, else <small>` gives a file longer than <lines> on the batch base
-// <big> places and any other <small>; a bare `<k>` gives every file k. `; serial: <glob>, ...` (or
-// `none`) keeps the files it names at 1. Unset is `3 over 1000 lines, else 1; serial: none`. A row
-// that does not read is 1 for every file, with `bad` saying so: a typo never loosens the guard. The
-// row is one code span: a cell of more than one is read whole and does not read, since its first span
-// alone would drop the serial list without a word.
-//   -> { big, lines, small, serial: [glob], bad: string | null }
-const FILE_BUDGET_DEFAULT = { big: 3, lines: 1000, small: 1, serial: [] };
-// configValues refuses a cell mixing `none` with other spans: more than one span all the same.
+// §3b "Per-file collision budget", read by its grammar in config-schema.mjs, from this repo's row by
+// default. configValues refuses a cell mixing `none` with other spans: more than one span all the same.
 const fileBudgetSpans = () => { try { return configValues('file-budget'); } catch { return [null, null]; } };
-export function fileBudget(row = fileBudgetSpans()) {
-  if (row == null) return { ...FILE_BUDGET_DEFAULT, bad: null };
-  const spans = [].concat(row);
-  const v = spans.length === 1 ? String(spans[0]).trim() : '';
-  const m = /^(?:(\d+)\s+over\s+(\d+)\s+lines?\s*,\s*else\s+(\d+)|(\d+))\s*(?:;\s*serial\s*:\s*(.*))?$/i.exec(v);
-  const serial = m?.[5] == null || isNone(m[5].trim()) ? [] : m[5].split(',').map((s) => s.trim());
-  const big = Number(m?.[1] ?? m?.[4]);
-  const small = Number(m?.[3] ?? m?.[4]);
-  if (!m || !(big >= 1) || !(small >= 1) || serial.some((g) => !g || /\s/.test(g))) {
-    const read = spans.length === 1 ? `reads "${v}"` : 'holds more than one code span';
-    return { big: 1, lines: 0, small: 1, serial: [], bad: `config §3b "${CONFIG_ROWS['file-budget'].row}" ${read}, not one \`<k> over <n> lines, else <k>; serial: <globs>\`` };
-  }
-  return { big, lines: m[2] == null ? 0 : Number(m[2]), small, serial, bad: null };
-}
+export const fileBudget = (row = fileBudgetSpans()) => fileBudgetOf(row);
 
 // ---- ticket ids ------------------------------------------------------------------------------
 // A ticket id names files and directories, so it is checked for shape before anything else, then
@@ -1732,13 +1585,6 @@ export const STALLING_ROWS = Object.freeze({
 });
 // Unprotected, nothing on GitHub stops a red merge, so these stay recommended at `ask` (desk-setup §2).
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
-
-// The compose service a §4 Local services item starts with, ending at whitespace or a colon (`search
-// :8108`, `search: 8108`, `search`), or null. worker-settings allow-lists a worker starting it by this
-// name, and drift names an item it cannot read.
-export function localServiceName(item) {
-  return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
-}
 
 // -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
