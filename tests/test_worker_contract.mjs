@@ -107,7 +107,7 @@ t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the rev
 t('DS-368 AC1 from round 2 a round reads only the fix range since the previous round',
   stage4.includes('from round 2 a round reads **only the fix range**, the commits since the previous round\'s reviewed SHA') && stage4.includes('from round 2, the previous round\'s reviewed SHA'), true);
 t('DS-368 AC1 only round 1 fixes a P2', stage4.includes('- **P0, P1 or P2 on round 1**: fix it'), true);
-t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('it exists only from round 2, only for a P2'), true);
+t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('only a P2 is carried, from round 2 or when split'), true);
 t('DS-368 AC3 a round-2 P0 or P1 is fixed and round 3 runs on the fix range', stage4.includes('- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2\'s reviewed SHA.'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 
@@ -153,6 +153,18 @@ t('DS-855 a lint binary in node_modules runs under the tsc lock, not bare',
 t('DS-855 AC2 batch-notes-header names lint with suites and typechecks on the one lock',
   notes.includes('serialises suites, typechecks *and* lints on one lock') && notes.includes('run every §4 Lint item through `with-lock.sh tsc`**, at the root as well as in a directory, and a targeted run'), true);
 t('DS-587 AC5 batch-notes-header keeps its refused with-lock.sh rule', notes.includes('**If `with-lock.sh` is itself refused, say so explicitly** ("ran unlocked") and drop to the lower cap.'), true);
+
+// DS-839: a park is the park file and the marker, with no step that messages the orchestrator, and a
+// gated write's exact text goes in the park file's approve.
+{
+  const steps = core.split('When the call parks, or `desk-ticket` says stop and wait for anything else:')[1]?.split('**A park asking for a file**')[0] ?? '';
+  t('DS-839 AC5 the park steps write the park file and end the turn', steps.includes('**Write the park file**') && steps.includes('**End your turn.**'), true);
+  t('DS-839 AC5 and no step messages the orchestrator', /SendMessage|ListAgents|notify_when_idle/.test(steps), false);
+  t('DS-839 AC5 no contract file tells a worker to message the orchestrator', files.some((f) => /SendMessage` the orchestrator|notify_when_idle/.test(read(f))), false);
+  t('DS-839 AC1 the park file carries the approve object with kind, target and the exact body',
+    steps.includes('`"approve": {"kind": "jira-comment", "target": "<ticket, or PR number>", "body": "<the exact text>"}`'), true);
+  t('DS-839 AC1 Stage 8 puts a comment it may not post in the park file\'s approve', read('worker-contract-stage-8.md').replace(/\s+/g, ' ').includes('write the park file with the same body as its `approve`'), true);
+}
 
 // AC4: each heading of the contract before the split is in exactly one of the new files.
 const before = readFileSync(join(root, 'tests/fixtures/worker-contract-before-split.md'), 'utf8');
@@ -200,6 +212,13 @@ const REWRITTEN = [
   ['DS-587', 'A parallel test runner (Jest, Vitest and most others) sizes itself', 1],
   ['DS-587', 'For an item at the root (`<DIR>` `.`), `with-lock.sh test <CMD> …` works as well.', 1],
   ['DS-587', 'A brief spike is fine: sustained time up there is what hurts.', 1],
+  // a park is its park file, with a gated write's exact text as `approve`, and never a message
+  ['DS-839', '1. **Print the question**', 1],
+  ['DS-839', '`SendMessage` the orchestrator with `notify_when_idle: true`', 1],
+  ['DS-839', '3. If you are re-invoked, read the answer file', 1],
+  ['DS-839', '4. Otherwise **end your turn**.', 1],
+  ['DS-839', 'target, fields, the exact body), then `AUTOPILOT_PARK`.', 1],
+  ['DS-839', 'record, `{"question": "<one line>"}`) and', 1],
   // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
   ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
   ['#775', 'read-only to you apart from your park and image files', 1],

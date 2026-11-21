@@ -239,7 +239,7 @@ const lintPush = lintOn("on:\n  push:\n    branches: ['feature/**']\n  pull_requ
 t('DS-412 a push trigger on one child\'s branch does not excuse another child', Object.keys(baseUntriggered(['lint'], FEAT, { branches: ['feature/a', 'fix/b'], atBase: lintPush, atDefault: lintPush })).join(), 'lint');
 
 // Briefing answers survive a requeue: answer.mjs appends below the sibling-notes block.
-const brief = ['Orchestrator session name: x', '', 'These questions were put to the user before you started.', '',
+const brief = ['Answer file to wait on: x', '', 'These questions were put to the user before you started.', '',
   `${ANSWER_HEAD} (2026-10-09T04:40Z)`, '', 'credits from the homepage list', '',
   `${SIBLING_HEAD} in this batch have found`, '', '## MEMORY', 'cap tests', '',
   `${ANSWER_HEAD} (2026-10-09T05:30Z)`, '', 'BINDING FIX ROUND: + VAT beside each price', ''].join('\n');

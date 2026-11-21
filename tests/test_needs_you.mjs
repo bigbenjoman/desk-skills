@@ -1097,8 +1097,10 @@ t('DS-497 AC1 a ticket requeued off its park and held by its worktree is one ite
 t('DS-497 AC1 a parked ticket with unpushed commits keeps its park\'s item, with them as its note',
   `${yList.filter((l) => l.startsWith('ypsilon Y-2 ')).length} ${yItems()['Y-2'].kind} ${yLine('Y-2').includes(`${refused} Its worktree /w/Y-2 has 1 commit(s) not on origin.`)} ${yItems()['Y-2'].actions[0][0]}`, '1 parked true resume');
 t('a park with nothing unpushed has no note', yItems()['Y-4'].note, undefined);
-t('#775 a park awaiting approval of a write carries its exact text, whole, on its one line',
-  yLine('Y-5').includes('post the comment below on ABC-9? Awaiting approval, its exact text (jira-comment on ABC-9, as JSON): "Line one.\\n\\"Quoted\\" line two."'), true);
+t('#775 a park awaiting approval of a write carries its exact text, whole, under its line',
+  yList.slice(yList.indexOf(yLine('Y-5')) + 2, yList.indexOf(yLine('Y-5')) + 4).join('\n'), 'Line one.\n"Quoted" line two.');
+t('#775 and its one line, which the session asks from, points to that text',
+  yLine('Y-5').includes('post the comment below on ABC-9? Its exact text awaiting approval follows this line: show it verbatim before you ask.'), true);
 t('DS-497 AC2 a park older than the last worker to start says nothing of the worktree hold', `${yItems()['Y-3'].need} ${yItems()['Y-3'].actions.map(([a]) => a).join()}`,
   `worktree in use: ${heldWhy} · commit, push or discard it done,not-now`);
 t('DS-497 AC1 desk-q leads the row and the ticket page with the reason', `${/Y-1 +◆ needs you +git push was refused/.test(strip(repoScreen(yr())))} ${strip(ticketScreen(yr(), 'Y-1')).includes('Its last worker parked: git push was refused')}`, 'true true');
@@ -3379,6 +3381,23 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#911 a later stall, after a pass that ran, brings it back', stalled('stall911').length, 1);
   beatAt('stall911', 0);
   t('#911 the next pass drops it', stalled('stall911').length, 0);
+}
+
+// ---- DS-839: a park on a write awaiting approval shows its exact text under the question.
+{
+  const body = 'Fixed in PR #12: the park file carries the text.\n\n* AC1 met\n(AP-1/desk-ticket)';
+  const question = 'JIRA COMMENT on AP-1 awaiting approval. Not reached: the Jira comment';
+  put('approve839', { port: 4839, beat: 1, supervised: true, tickets: {
+    'AP-1': { state: 'parked', lane: 'A', park: { question, since: minsAgo(5), approve: { kind: 'jira-comment', target: 'AP-1', body } } },
+    'AP-2': { state: 'parked', lane: 'A', park: { question: 'which colour?', since: minsAgo(5) } },
+  } });
+  const list = N.listText(N.collect({ word: 'approve839' })).split('\n');
+  const at = list.findIndex((l) => l.startsWith('approve839 AP-1 '));
+  t('DS-839 AC2 the question comes first, then the kind and target', list[at + 1], '--- AP-1 awaiting approval: jira-comment on AP-1, the exact text ---');
+  t('DS-839 AC2 then the body, verbatim', list.slice(at + 2, at + 2 + body.split('\n').length).join('\n'), body);
+  t('DS-839 AC2 and an end line', list[at + 2 + body.split('\n').length], '--- end of AP-1\'s text awaiting approval ---');
+  const other = list.findIndex((l) => l.startsWith('approve839 AP-2 '));
+  t('DS-839 a park with nothing to approve has no block under it', /awaiting approval/.test(list[other + 1] ?? ''), false);
 }
 
 // ---- DS-925: an open ci-main-red issue assigned to the person is one item, read through gh on listing

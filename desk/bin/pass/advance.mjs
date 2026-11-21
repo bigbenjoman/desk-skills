@@ -45,6 +45,7 @@
 //   clears-when {key}              -> the park's clears-when
 //   register {key, question, cond} -> the park against the "not now" register: {inputs, status, entry, line}
 //   recommends {key, question}     -> the call the park recommends, or null
+//   approval {key, question}       -> the write the park awaits approval for: {approve, missing} (batch-state.mjs parkApproval)
 //   keep-links {key, needs, pr}    keep links not made as follow-on steps
 //   decisions {key, pr}            log the calls the worker took
 //   refuse-lease {key, question}   -> true where the park went back to a worker, told to name its lease
@@ -54,7 +55,7 @@
 //   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
-import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
+import { LIVE_READ, needsSession, unnamedForcePush, approvalText } from '../batch-state.mjs';
 import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
@@ -290,9 +291,6 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
-    // The exact text a gated write waits on, which the worker keeps in its park file (approve), is kept
-    // with the park, so it is relayed from there rather than dug out of the log.
-    yield { type: 'park-approve', key: t.key, question };
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
@@ -303,17 +301,24 @@ export function* decideAdvance(s) {
     const cleared = read ? { kind: LIVE_READ, ...read } : yield { type: 'clears-when', key: t.key, question };
     const reg = yield { type: 'register', key: t.key, question, cond: cleared };
     const recommends = yield { type: 'recommends', key: t.key, question };
+    // The write it waits for the person to approve, verbatim from its park file, or what that file lacks.
+    // The report carries the whole text, so Stage 6c relays it from there rather than the log.
+    const approval = yield { type: 'approval', key: t.key, question };
+    const approve = approval?.approve ?? null;
+    const awaiting = approve ? ` — awaiting approval, ${approvalText(approve)}`
+      : approval?.missing ? ` — incomplete: ${approval.missing}` : '';
     // A merge question keeps the park's words as its follow-on too, so a merge by hand still lists them.
     yield set(t.key, `park.inputs=${JSON.stringify(reg.inputs)}`, `park.clears_when=${JSON.stringify(cleared)}`,
-      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
+      ...(recommends ? [`park.recommends=${JSON.stringify(recommends)}`] : []), ...(approve ? [`park.approve=${JSON.stringify(approve)}`] : []),
+      ...(merging?.call === 'ask' ? [parkFollowOn(park, t.follow_on)] : []));
     yield { type: 'keep-links', key: t.key, needs: linkNeeds.map((n) => n.why), pr: t.result?.pr };
     // Before the requeue, which moves this round's log aside.
     yield { type: 'decisions', key: t.key, pr: null };
     if (!wedged && !read && !needsSession({ ...t, park: { question } }) && unnamedForcePush({ question, inputs: reg.inputs }, t.branch)
       && (yield { type: 'refuse-lease', key: t.key, question })) return;
     if (read) yield say(t.key, 'clears', `${t.key}: parked only on §4 Live reads ${read.reads.join(', ')} at ${read.head.slice(0, 9)}: each runs from the pass's clean checkout of origin/${s.read.branch} (${s.read.checkout}), never the ticket's worktree; requeued once they finish. The park: ${question}`);
-    else if (reg.status === 'put_off') yield say(t.key, 'putOff', `${t.key}: ${question} (put off on ${reg.entry.at.slice(0, 10)})`);
-    else yield say(t.key, 'parked', `${t.key}: ${asked}${reg.status === 'changed' ? ` — ${reg.line}` : ''}`);
+    else if (reg.status === 'put_off') yield say(t.key, 'putOff', `${t.key}: ${question} (put off on ${reg.entry.at.slice(0, 10)})${awaiting}`);
+    else yield say(t.key, 'parked', `${t.key}: ${asked}${reg.status === 'changed' ? ` — ${reg.line}` : ''}${awaiting}`);
   } else if (handoff) yield { type: 'handoff', key: t.key, said: handoff, imgs: logImgDir, stopped };
   else if (done) {
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;

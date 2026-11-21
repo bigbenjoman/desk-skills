@@ -55,7 +55,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   your own arguments after it, or through with-lock.sh with `--cwd .`. An item with a directory has no bare form (you cannot `cd`), so it
   runs as `~/.claude/desk/bin/with-lock.sh <lock> --cwd <DIR> -- <CMD> [args]`, where `<lock>` is
   `test` for §4 Unit tests and Integration tests, `tsc` for §4 Typecheck and §4 Lint (never bare, even at the root), `browser` for §4 E2E
-  tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (build, codegen, dev server), which only changes
+  tests and §4 Storybook (`desk-env cmds storybook-cmd`; not bare either), and `nolock` for everything else (build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
   a ticket that needs a regeneration parks naming the command. Each row's items come from
   `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
@@ -96,7 +96,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   below, also runs as `node ~/.claude/desk/bin/push-retry.mjs [--more] <its flag> origin <branch>`,
   which is how you push (Stage 5 file, §4). `git config`, `git -c …`, `git -C` with
   any path but your own worktree's, aliases and `git stash` are refused; `git -C <your worktree>`
-  (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
+  (or its real path) takes the read and local-write subcommands (`add`, `commit`,
   `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your
   worktree. prettier, tsx and `prisma generate` run as `./node_modules/.bin/<tool>`; eslint,
   biome, oxlint, stylelint so under `with-lock.sh tsc`; never `..`. Suites, typechecks and
@@ -146,7 +146,7 @@ Your settings are an **allow-list**: anything not named here is refused.
 - `curl` is denied: drive a page with Playwright rather than probing it over HTTP
 - Scratch scripts go at the worktree root and get `git clean`ed; `/tmp` is readable, not writable
 - **Files outside your worktree**: you may write only `$DESK_STATE/parks/<TICKET>.json` (your park
-  record, `{"question": "<one line>"}`) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
+  record, `{"question": …, "approve": …}`, core section 1) and `$DESK_STATE/images/<TICKET>/**` (your screenshots).
   Everything else in the state directory (answers, briefings, the queue, locks, other workers'
   files, your own settings) is read-only to you
 - **And your handoff briefing**, `$DESK_STATE/handoffs/<TICKET>.json`, written when you hand off

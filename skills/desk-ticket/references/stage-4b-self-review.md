@@ -79,6 +79,9 @@ since round 2. After the third round there is no fourth without the user. From r
   section), or, when there are more than five and §3 `jira-create` is `yes`, into one follow-up
   ticket the body links instead (`desk-pr` §2). Nothing stops for them, whatever §3 `jira-create`
   says: without it they stay in the body.
+- **A P2 split to a filed follow-up ticket** (under autopilot, `desk-autopilot`'s `ask-or-take.md`)
+  is carried from round 1 too, the follow-up's key in its `follow_up`, and it stays in every later
+  round's results, carried, so the last round's section still names it.
 
 **With §4 Tracker (`desk-env get tracker`) `none`, a GitHub issue in this repo is the ticket.**
 Opening a follow-up issue is §3 `gh-issue-create`, and commenting on another issue is §3
@@ -111,7 +114,7 @@ domains   : <what the knowledge check or the repo's instructions named, or "none
 P0 (n)      <file:line — one line each>
 P1 (n)
 P2 (n)
-CARRIED (n)   <file:line — the P2s round 2 or 3 carried to the PR body or follow-up ticket>
+CARRIED (n)   <file:line — the P2s carried to the PR body or a follow-up ticket>
 REQ GAPS (n)  <TICKET — the criterion>
 caveats   : <any check the run could not perform, or "none">
 outcome   : <per finding: fixed in <sha> · declined, and why · escalated, and which
@@ -141,7 +144,7 @@ verdict. Both change how much the verdict is worth, so both go in the slot.
 
 - Starting a fourth review round without the user
 - A round 2 or 3 that reads `origin/<default>...HEAD` rather than the fix range since the round before
-- Carrying a P0 or P1, or a P2 on round 1
+- Carrying a P0 or P1, or a P2 on round 1 that names no filed follow-up ticket in `follow_up`
 - Treating the local review command not resolving in this tree as a reason to skip it rather than to rebase
 - Dispatching finders in a worktree without having run §4 Project subagents sync (`desk-env cmds agents-sync`): they are all
   `general-purpose` and the report will not say so
