@@ -39,6 +39,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC1 one write holds every change', [q.tickets.A.lane, q.tickets.B.park.question, q.tickets.C.stage, q.concurrency].join(' '), 'B why? 2/9 2');
   t('AC1 and is one version higher', `${r.version} ${q.version}`, '5 5');
   t('AC1 a flush with nothing new writes nothing', w.flush().wrote, false);
+  t('with the ledger lever off, no ticket ledger is written', existsSync(join(dirname(f), 'ledger')), false);
   t('AC1 a refused value writes nothing and says why', w.apply(['set', 'A', 'state=bogus']).why, 'bad state "bogus" (want: queued|triaged|running|parked|done|failed)');
 }
 

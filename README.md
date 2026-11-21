@@ -901,6 +901,12 @@ the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` t
 A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
 checks that should be OK, is run once more at default effort; a boundary failure is never retried.
 
+With the `ledger` lever on (config §3b Phase 0 levers), every queue write also appends what it
+changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.jsonl`, naming its
+writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
+batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
+first and read by everything; a missed append is reported by the writer and never fails the write.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash
