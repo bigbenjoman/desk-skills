@@ -256,18 +256,21 @@ echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/s
 PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pass.mjs" record "$T/stopped.mjs"; rc=$?
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
-# Two suites on each tree, each noting in one file when it starts and when it ends, and waiting up to 3 s
-# for all four to start: side by side every one starts before the first ends; one after the other each
-# ends before the next starts. Only a base whose tests/pass_setup.sh mints SID_SUFFIX runs side by side.
-mkdir -p "$T/order/desk/bin" "$T/order/tests" "$T/order-old/desk/bin"; echo 'SID_SUFFIX=x' > "$T/order/tests/pass_setup.sh"
+# Two suites on each tree, each noting in one file when it starts and when it ends, waiting up to 3 s
+# for all four to start, then running one pass: side by side every one starts before the first ends;
+# one after the other each ends before the next starts. Only a base whose tests/pass_setup.sh mints
+# SID_SUFFIX runs side by side.
+mkdir -p "$T/order/desk/bin" "$T/order/tests"; echo 'SID_SUFFIX=x' > "$T/order/tests/pass_setup.sh"
+echo "console.log('ran');" > "$T/order/desk/bin/pass.mjs"
 for s in test_pass.sh test_pass_b.sh; do cat > "$T/order/tests/$s" <<'EOF'
 #!/usr/bin/env bash
 echo start >> "$CMP_ORDER"
 for _ in $(seq 30); do [ "$(grep -c start "$CMP_ORDER")" -ge 4 ] && break; sleep 0.1; done
-echo end >> "$CMP_ORDER"; echo "ok   noted"
+node desk/bin/pass.mjs >/dev/null; echo "ok   ran"
+echo end >> "$CMP_ORDER"
 EOF
 done
-cp -R "$T/order/tests" "$T/order-old/"; rm "$T/order-old/tests/pass_setup.sh"
+cp -R "$T/order" "$T/order-old"; rm "$T/order-old/tests/pass_setup.sh"
 order(){ CMP_ORDER="$T/$1.order" PASS_CMP_SERIAL=$2 bash "$S/compare_pass.sh" "$3" "$3" >/dev/null 2>&1; rc=$?; out=$(tr '\n' ' ' < "$T/$1.order"); }
 order side '' "$T/order"
 check "DS-960 AC2 with no suite option, every suite of both trees starts before the first one ends" '[ $rc = 0 ] && [ "$out" = "start start start start end end end end " ]'

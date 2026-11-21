@@ -1036,12 +1036,13 @@ echo "half-written" > "$T/wt/S-1/widget.txt"
 (cd / && exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id "old-S-1-$SID_SUFFIX") &
 sw=$!
 perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id "old-S-1-other$SID_SUFFIX" &
-ow=$!; sleep 0.5
+ow=$!
+alive(){ /bin/ps -o stat= -p "$1" 2>/dev/null | grep -qv '^Z'; }
+for _ in $(seq 50); do /bin/ps -o args= -p "$sw" "$ow" | grep -c -- "--session-id old-S-1-" | grep -qx 2 && break; sleep 0.1; done
 node "$B/queue.mjs" stop S-1 >/dev/null 2>&1; stoprc=$?
-wait "$sw" 2>/dev/null
-check "DS-960 AC5 queue.mjs stop ends a real worker started outside the suite's dirs, found by its session id across the machine" '[ $stoprc = 0 ] && ! kill -0 "$sw" 2>/dev/null'
-check "DS-960 AC1 another suite's worker for a ticket of the same key is still running" 'kill -0 "$ow" 2>/dev/null'
-kill -TERM -- "-$ow" 2>/dev/null; wait "$ow" 2>/dev/null
+check "DS-960 AC5 queue.mjs stop ends a real worker started outside the suite's dirs, found by its session id across the machine" '[ $stoprc = 0 ] && ! alive "$sw"'
+check "DS-960 AC1 another suite's worker for a ticket of the same key is still running" 'alive "$ow"'
+kill -TERM -- "-$sw" "-$ow" 2>/dev/null; wait "$sw" "$ow" 2>/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-742 AC2 a stopped ticket gets no worker from the next pass" '! spawned_for S-1 && [ "$(field S-1 state)" = "\"parked\"" ] && [ "$(field S-1 held_by)" = null ] && echo "$out" | grep -q "S-1: STOPPED — its worker was stopped by queue.mjs stop"'
 check "DS-742 a stopped ticket is not released on the date label or outside blocker an earlier release left" '[ "$(field S-1 held_outside)" = null ] && ! echo "$out" | grep -qE "(date|outside) hold: S-1"'

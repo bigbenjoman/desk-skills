@@ -19,6 +19,8 @@ export AUTOPILOT_LOCK_QUEUE=off
 # Every real stand-in worker's session id ends in this, unique to the run: queue.mjs stop finds a worker
 # by its session id across the whole machine, so two suites running at once never end each other's.
 SID_SUFFIX=$(printf %s "${T##*/}" | tr -cd 'A-Za-z0-9')
+# The run's own lock dir, so its passes neither take nor read the machine's locks in /tmp.
+export DESK_LOCK_DIR="$T/lockdir"; mkdir -p "$DESK_LOCK_DIR"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 

@@ -80,8 +80,15 @@ mkdir -p "$W/rec/base" "$W/rec/head"
 if [ "${PASS_CMP_SERIAL:-}" = 1 ] || ! grep -q '^SID_SUFFIX=' "$W/base/tests/pass_setup.sh" 2>/dev/null; then
   for t in base head; do for s in "${suites[@]}"; do run "$t" "$s"; done; done
 else
-  for t in base head; do for s in "${suites[@]}"; do run "$t" "$s" & done; done
+  # Stopped, it ends each suite it started and everything under it before the scratch dir goes: a
+  # suite started with & ignores SIGINT.
+  tree_kill(){ local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p { print $1 }'); do tree_kill "$c"; done
+    kill -TERM "$1" 2>/dev/null; }
+  pids=()
+  trap 'trap "" INT TERM; for p in ${pids[@]+"${pids[@]}"}; do tree_kill "$p"; done; wait; exit 130' INT TERM
+  for t in base head; do for s in "${suites[@]}"; do run "$t" "$s" & pids+=($!); done; done
   wait
+  trap - INT TERM
 fi
 "$NODE" "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"; rc=$?
 if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
