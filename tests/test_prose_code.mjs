@@ -95,7 +95,7 @@ t('DS-886 AC1 the results file\'s refuted_by is a generated region naming every 
 const holds = readFileSync(join(R, 'skills/desk-autopilot/references/order-and-holds.md'), 'utf8');
 t('DS-886 AC3 the order-and-holds ordering rule is a region equal to plan-batch\'s sentences', regionIn(holds, 'spawn-order'), `${SPAWN_ORDER_RULE}\n${KEEP_ORDER_RULE}`);
 const outside = regions(holds).found.reduceRight((s, r) => s.slice(0, r.from) + s.slice(r.to), holds);
-t('DS-886 AC3 and holds no other ordering rule', ['gate the most', 'fewest planned', 'keep-order'].filter((p) => outside.includes(p)).join(', '), '');
+t('DS-886 AC3 and holds no other ordering rule', ['blockers first', 'gate the most', 'fewest planned', 'keep-order'].filter((p) => outside.includes(p)).join(', '), '');
 t('DS-886 regions that are what the code says pass, and a marker in a fenced block is no region', lines('regions.md'), '');
 const gemini = { 'refuted-by': { vendors: [...VENDORS, 'gemini'] } };
 const stale = check([join(F, 'regions.md')], { values: gemini });

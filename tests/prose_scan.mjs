@@ -38,8 +38,9 @@ export const DEFAULT_PATHS = ['skills', 'agents'];
 const SPAN = new RegExp(CODE_SPAN.source.replace('[^\\n]', '[\\s\\S]'), 'g');
 if (SPAN.source === CODE_SPAN.source) throw new Error('prose_scan: CODE_SPAN no longer keeps a span to one line with [^\\n]; update SPAN');
 const CONTRACT = /^\s*<!--\s*contract:\s*([\w.-]+)\s*-->\s*$/;
-const FACTS_OPEN = /<!--\s*facts:\s*([\w.-]+)\s*-->/;
-const FACTS_CLOSE = /<!--\s*\/facts(?::\s*[\w.-]+)?\s*-->/;
+// A generated region's markers (tests/prose_facts.mjs reads regions with the same two).
+export const FACTS_OPEN = /<!--\s*facts:\s*([\w.-]+)\s*-->/;
+export const FACTS_CLOSE = /<!--\s*\/facts(?::\s*([\w.-]+))?\s*-->/;
 const STATE_ROOT = /(\$\{?DESK_STATE\}?|<state>|<DESK_STATE>|(?:~|\$HOME|\$\{HOME\})\/\.desk-autopilot\/<slug>)\/([^\s`'"),;|&]+)/g;
 const STATE = /(?<![\w.-])state=([A-Za-z][\w-]*)|"state":\s*"([^"]*)"/g;
 const SECTION_KEY = /(?<![\w<])§(\d+[a-z]?)\s+([a-z][a-z0-9]*(?:-[a-z0-9]+)+)/g;

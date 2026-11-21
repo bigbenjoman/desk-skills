@@ -67,7 +67,7 @@ A ticket parked for its lane (C, D), its size (L, XL) or its design is planned l
 blockers go in `held_by` (and `held_outside`) **beside its park**, and the plan reads `HELD (blocked
 by … , and parked: <its park>)`. The park wins and it is **never in `--deps`**, so a release can never
 send one to a headless worker; `queue.mjs hold`, `admit` and `transfer` keep that park beside the hold. `plan-batch` seeds the queue
-blockers first, and its `--deps` already carries the merge chain for tickets that share files (*Order
+in spawn order (above), and its `--deps` already carries the merge chain for tickets that share files (*Order
 the batch by blast radius*): pass it to the merge driver as it stands.
 
 **A batch planned before those parks kept their blockers** has them with `held_by` empty. `queue.mjs

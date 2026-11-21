@@ -16,7 +16,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markdownFiles, FENCE, closesFence } from './command_shapes.mjs';
-import { DEFAULT_PATHS } from './prose_scan.mjs';
+import { DEFAULT_PATHS, FACTS_OPEN, FACTS_CLOSE } from './prose_scan.mjs';
 import { VENDORS } from '../skills/desk-review/bin/verdict.mjs';
 import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } from '../desk/bin/spawn-order.mjs';
 
@@ -38,7 +38,8 @@ export const REGIONS = {
   },
 };
 
-const MARKER = /<!--\s*(\/?)facts(?::\s*([\w.-]+))?\s*-->/g;
+// The scanner's own two markers, so the two never disagree on what a region is: [, open name, close name].
+const MARKER = new RegExp(`${FACTS_OPEN.source}|${FACTS_CLOSE.source}`, 'g');
 
 // The regions in one file's text: { found: [{ name, line, from, to }], problems: [{ line, name, message }] }
 // where text.slice(from, to) is the region's body between its markers.
@@ -56,9 +57,9 @@ export function regions(text) {
   for (const m of text.matchAll(MARKER)) {
     const line = lineAt(m.index);
     if (fenced.has(line)) continue;
-    const [, close, name] = m;
-    if (!close) {
-      if (!name) continue;
+    const [, opens, closes] = m;
+    const name = opens ?? closes;
+    if (opens) {
       if (open) problems.push({ line: open.line, name: open.name, message: `the generated region ${open.name} has no closing <!-- /facts --> before the next region opens` });
       open = { name, line, from: m.index + m[0].length };
     } else if (!open) {
@@ -73,8 +74,8 @@ export function regions(text) {
   return { found, problems };
 }
 
-// The text a known region should hold; `values` overrides a region's values, as a test of a changed
-// source does.
+// The text a known region should hold; `values` overrides a region's values, as the prose check's
+// test of a changed source does.
 const rendered = (name, values = {}) => REGIONS[name].render(values[name] ?? REGIONS[name].from());
 const bodyOf = (text, r) => text.slice(r.from, r.to).trim();
 
@@ -94,12 +95,12 @@ export function regionProblems(text, { values } = {}) {
 
 // The text with every known region rewritten to what the code says, its surrounding whitespace kept,
 // and the names of the regions that changed.
-export function regenerate(text, { values } = {}) {
+export function regenerate(text) {
   let out = '', at = 0;
   const changed = [];
   for (const r of regions(text).found) {
     if (!Object.hasOwn(REGIONS, r.name)) continue;
-    const body = text.slice(r.from, r.to), want = rendered(r.name, values);
+    const body = text.slice(r.from, r.to), want = rendered(r.name);
     if (body.trim() === want) continue;
     const [lead] = body.match(/^\s*/), [trail] = body.match(/\s*$/);
     out += text.slice(at, r.from) + (body.trim() ? lead : '') + want + (body.trim() ? trail : '');
