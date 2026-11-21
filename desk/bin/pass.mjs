@@ -38,7 +38,7 @@ import * as BL from './baseline.mjs';
 import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
-import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
+import { probeShared, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
 import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
@@ -400,10 +400,12 @@ const onRepoLogin = (login) => sameLogin(REPO_LOGIN, login);
 }
 const PROBES = new Map();
 // At most one probe a login a pass, made when something on that login is held on the limit, or when
-// pacing has no reading for it (at most once per PROBE_EVERY_MS).
+// pacing has no reading for it (at most once per PROBE_EVERY_MS). It joins the machine-wide probe lock
+// and the login's start stamp (usage-probe.mjs probeShared): a probe of the login another pass or
+// desk-q started under a minute ago is waited for and judged on, not repeated.
 const probeOnce = (login = OWN_LOGIN) => {
   const k = loginKey(login);
-  if (!PROBES.has(k)) PROBES.set(k, probeNow({ login }));
+  if (!PROBES.has(k)) PROBES.set(k, probeShared({ login }));
   return PROBES.get(k);
 };
 const lifted = (l, login) => (l.resetsAt != null && Date.now() >= l.resetsAt * 1000) || probeOnce(login).ok;
@@ -1762,7 +1764,7 @@ if (noReading || (PACE.hold && !PACE.bad && probeDue({ running: running.length, 
   if (p.ok) {
     READING = paceReading();
     PACE = usagePace({ usage: READING.seven_day });
-    paceProbe = '; read by a probe call just now';
+    paceProbe = p.shared ? '; read by a probe another pass or desk-q started just now' : '; read by a probe call just now';
   } else {
     paceProbeFailed = p.why;
     paceProbe = `; the probe call for a new reading failed (${p.why}), so the last reading stands`;
