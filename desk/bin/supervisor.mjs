@@ -85,7 +85,7 @@ import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
-import { tryLockFile, unlockFile } from './dir-lock.mjs';
+import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
 import { intakeQuery, prOpen, handedByIntake, takePushed } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
@@ -473,10 +473,7 @@ const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify(
 // at once never write over each other's. Unreadable reads as never.
 const countedFile = (state) => join(state, 'supervisor.counted');
 const countedAt = (state) => { try { return Date.parse(readFileSync(countedFile(state), 'utf8').trim()) || 0; } catch { return 0; } };
-function noteCounted(state, ms) {
-  const tmp = `${countedFile(state)}.${process.pid}.tmp`;
-  try { writeFileSync(tmp, `${new Date(ms).toISOString()}\n`); renameSync(tmp, countedFile(state)); } catch { rmSync(tmp, { force: true }); }
-}
+const noteCounted = (state, ms) => { try { writeTextAtomic(countedFile(state), `${new Date(ms).toISOString()}\n`); } catch { /* the next pass counts as if never */ } };
 // Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
 // runs nothing. A file that cannot be deleted stays and wakes nothing again.
 function consumeExits(files) {
