@@ -332,6 +332,35 @@ check "AC7 off: the worker's check is the full check" '[ $rc -eq 1 ] && [[ "$out
 fresh nobase-on yes -; printf '## 4. Tools\n| Field | Value |\n|---|---|\n| Typecheck | `sh tc.sh` |\n| Baseline checks | `on` |\n' >> "$C/config.md"; pass
 check "AC7 no base: nothing is recorded"              '[ ! -e "$C/state/baseline.json" ] && [[ "$out" == *"spawned: T-1"* ]] && ! grep -q "## Baseline checks" "$C/state/briefings/T-1.md"'
 
+# DS-964: a base deleted on origin. gone <case> [perm]: a base worktree from a first pass that synced
+# main in, then main takes everything on feat/x and origin deletes it (GitHub's delete-branch-on-merge),
+# and T-1 is ready again.
+gone(){
+  fresh "$1" "${2:-yes}"; pass
+  git -C "$C/repo" fetch -q origin; git -C "$C/repo" merge -q --ff-only origin/feat/x; git -C "$C/repo" push -q origin main
+  git -C "$C/origin.git" branch -q -D feat/x; node "$B/queue.mjs" set T-1 state=triaged >/dev/null
+}
+spawned(){ [[ "$out" == *"spawned: T-1"* ]]; }
+gone gonemerged; pass
+check "DS-964 AC1 a merged, deleted base is recreated on origin at main's head" '[ "$(origin_tip)" = "$(git -C "$C/origin.git" rev-parse main)" ]'
+check "DS-964 AC1 the pass says it was recreated, and why" \
+  '[[ "$out" == *"base sync: feat/x is missing on origin, and its last known head "*" is in main (merged, then deleted), so it was recreated at main'"'"'s head "*" and pushed"* ]]'
+check "DS-964 AC1 and the ready ticket spawns" 'spawned'
+# Unmerged: the base gets a commit of its own a pass fetches, then origin loses it with main never taking it.
+fresh goneunmerged; pass; own_commit; pass; tip=$(origin_tip)
+git -C "$C/origin.git" branch -q -D feat/x; node "$B/queue.mjs" set T-1 state=triaged >/dev/null; pass
+check "DS-964 AC2 a deleted base whose last head is not in main is not recreated" '! git -C "$C/origin.git" rev-parse -q --verify refs/heads/feat/x >/dev/null'
+check "DS-964 AC2 the pass names the missing branch and its unmerged head" \
+  '[[ "$out" == *"feat/x is missing on origin, and its last known head ${tip:0:12} is not in main, so it was not recreated"* ]]'
+check "DS-964 AC2 and spawns stay held, outside feature mode too" '! spawned'
+# The push grant: without it, or on a dry run, the base is not recreated and spawns stay held.
+gone gonedenied no; pass
+check "DS-964 batch-base-push no: a merged, deleted base is not recreated, and says why" \
+  '! git -C "$C/origin.git" rev-parse -q --verify refs/heads/feat/x >/dev/null && [[ "$out" == *"(merged, then deleted), and config §3 batch-base-push is \"no\", so it was not recreated at main'"'"'s head"* ]] && ! spawned'
+gone gonedry; out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
+check "DS-964 a dry run says it would recreate the base, and pushes nothing" \
+  '! git -C "$C/origin.git" rev-parse -q --verify refs/heads/feat/x >/dev/null && [[ "$out" == *"base sync (dry run): feat/x is missing on origin"*"would recreate it at main'"'"'s head"* ]]'
+
 # A dry run probes and pushes nothing.
 fresh dry; tip=$(origin_tip); out=$(AUTOPILOT_DRY_RUN=1 node "$B/pass.mjs" 2>&1)
 check "a dry run pushes nothing and says what it would merge" '[ "$(origin_tip)" = "$tip" ] && [[ "$out" == *"would merge 2 commit(s)"* ]]'
