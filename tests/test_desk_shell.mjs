@@ -378,10 +378,6 @@ t('a notification shows its title and body', [await f.ipc['desk:notify'](from(wi
 t('a notification with no title, or from another page, shows nothing', [await f.ipc['desk:notify'](from(win), { body: 'x' }), await f.ipc['desk:notify'](from(win, 'file:///x'), { title: 'x' }), f.notes.length], [false, false, 1]);
 t('a long notification is cut short', (await f.ipc['desk:notify'](from(win), { title: 'x'.repeat(500), body: 'y'.repeat(5000) }), [f.notes.at(-1).title.length, f.notes.at(-1).body.length]), [120, 500]);
 
-// Deep links go to the server's page, as a route in it.
-t('a deep link is sent to the page as its route', [shell.deepLink('/inbox/desk-skills/DS-1/parked'), win.sent.at(-1)], [true, ['desk:deep-link', '/inbox/desk-skills/DS-1/parked']]);
-t('a deep link that is not a route in the app is dropped', ['https://evil.example/', '//evil.example/', '/\\evil.example', 'inbox', 7].map((r) => shell.deepLink(r)), [false, false, false, false, false]);
-
 // The Jira sites come from each configured repo's config, through desk-env.
 const cfgRoot = join(T, 'jira-config');
 for (const [slug, site] of [['acme__a', 'acme.atlassian.net'], ['acme__b', 'https://Other.Example.com/'], ['acme__c', 'none']]) {

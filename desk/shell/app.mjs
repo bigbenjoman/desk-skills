@@ -268,13 +268,7 @@ export function createShell(electron, {
     connect();
     return win;
   }
-  // A route in the server's app (`/inbox/...`) handed to the page's onDeepLink listener.
-  function deepLink(route) {
-    if (!win || view !== 'app' || typeof route !== 'string' || !/^\/(?![/\\])/.test(route)) return false;
-    win.webContents.send('desk:deep-link', route);
-    return true;
-  }
-  return { open, connect, deepLink, get view() { return view; } };
+  return { open, connect, get view() { return view; } };
 }
 
 // One copy only: a second launch hands over to the first, whose window comes to the front.
