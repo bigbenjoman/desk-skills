@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       # The prose baseline only shrinks. On every pull request, whatever suites its change reaches.
       - name: The prose baseline does not grow
         if: github.event_name == 'pull_request'
@@ -80,6 +80,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Shell scripts under bash 3.2
         env:
           SHELLS: ${{ needs.plan.outputs.shells }}
@@ -108,7 +111,7 @@ jobs:
           fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -167,6 +170,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Fetch the shard results
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -215,7 +221,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Fetch the shard results
         uses: actions/download-artifact@v4
         with:

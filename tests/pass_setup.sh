@@ -120,9 +120,12 @@ result_event(){ node -e 'console.log(JSON.stringify({ type: "result", is_error: 
 NODE=$(command -v node)
 # The 5-hour usage limit's rejection, recorded from a real worker, with its reset moved to suit each case.
 limit_event(){ node -e 'const e = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); e.rate_limit_info.resetsAt = Number(process.argv[2]); if (process.argv[3]) e.rate_limit_info.rateLimitType = process.argv[3]; console.log(JSON.stringify(e))' "$S/fixtures/usage-limit-five-hour.json" "$1" "${2:-}"; }
+# shellcheck source=age_probes.sh
+. "$S/age_probes.sh"
 # The registry stub also answers the probe call (claude -p): what the probe says is $T/probe.out.
-# probe_says limited <resetsAt> [type] | ok
-probe_says(){ if [ "$1" = ok ]; then { say "ok"; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
+# probe_says limited <resetsAt> [type] | ok, with the probes before it aged past the minute a pass
+# shares another's probe for.
+probe_says(){ age_probes; if [ "$1" = ok ]; then { say "ok"; echo '{"type":"result","subtype":"success","is_error":false,"result":"ok"}'; } > "$T/probe.out"
   else { limit_event "$2" "${3:-}"; echo '{"type":"result","subtype":"success","is_error":true,"api_error_status":429,"api_error":"usage_limit_reached","result":"usage limit reached"}'; } > "$T/probe.out"; fi; }
 stub_claude(){ printf '#!/bin/sh\nif [ "$1" = -p ]; then echo "$*" >> "%s/probes"; cat "%s/probe.out"; exit 0; fi\necho %s\n' "$T" "$T" "'$1'" > "$T/stub/claude"; }
 # hfile <TICKET> <stage> <verification line> [review line]: the handoff briefing a worker writes, with

@@ -602,7 +602,8 @@ EOF_STALE
 }
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
-# with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
+# with WAIVED set to its check names, quoted and comma-joined, then any listed tests it waives in
+# brackets. Otherwise says why and returns 1.
 # Only reruns GitHub accepted count, and the last must have had its cooldown to report.
 WAIVED=""
 waivable(){
@@ -636,15 +637,20 @@ $checks
 EOF_WAIVE
   last=$(cat "$SD/cooldown-$1" 2>/dev/null || echo 0)
   if [ $(( $(date +%s) - last )) -lt "$RERUN_COOLDOWN" ]; then log "#$1 $short is a known flaky check: waiting out the last rerun's cooldown before reading it as still red"; return 1; fi
-  WAIVED="$short"
+  # A check listed by its tests names the tests it is waived for, so the log and the ticket say which.
+  WAIVED="$short$(printf '%s' "$w" | jq -r '(.tests // []) | if length > 0 then " (test" + (if length > 1 then "s " else " " end) + (map("\"\(.file) > \(.title)\"") | join(", ")) + ")" else "" end')"
 }
 
 # flaky_ticket <n> <sha> <gate json> <key> <waived checks>: once a waived PR has merged, the ticket that
 # gets the flake fixed. Filed once per PR and head; the body stays in <state>/merge-driver for whoever
 # files it by hand.
 flaky_ticket(){
-  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline=""
+  local body="$SD/flaky-$1-$2.md" summary="Flaky check $5 waived to merge PR #$1" out size=() sizeline="" by_hand
   [ -f "$SD/flaky-filed-$1-$2" ] && return 0
+  # Jira refuses a summary over 255 characters, which a long test name or several reach; the body names them all.
+  summary=$(jq -rn --arg s "$summary" '$s | if length > 255 then .[0:252] + "..." else . end')
+  # The command to file it by hand, quoted so it pastes as written: the summary holds quotes and a `>`.
+  by_hand="desk-jira create Bug $(printf '%q' "$summary") $(printf '%q' "$body")"
   # desk-jira's lint wants a size: the §4 Size field where there is one, else the body's first line.
   if [ -n "$SIZE_FIELD" ] && [ "$SIZE_FIELD" != none ]; then size=("$SIZE_FIELD=S"); else sizeline="Size: S"; fi
   printf '%s' "$3" | jq -r --arg repo "$REPO" --arg n "$1" --arg sha "$2" --arg key "$4" --arg size "$sizeline" '
@@ -654,6 +660,7 @@ flaky_ticket(){
     "The merge driver merged [PR #\($n)](https://github.com/\($repo)/pull/\($n)) (\($key)) at head `\($sha)` past a red check named in config §4 Known flaky checks. It was still red after two reruns and the PR touched none of the paths the row gives for it. This ticket is the cost of that waiver: make the check pass reliably, so nothing is merged past it again.",
     "",
     "- Check: \(.waiver.checks | map("`\(.)`") | join(", "))",
+    ((.waiver.tests // [])[] | "- Test: `\(.file) > \(.title)` in `\(.check)`"),
     "- PR: https://github.com/\($repo)/pull/\($n)",
     "- Head SHA: `\($sha)`",
     "- Failing run: \(if (.waiver.runs | length) > 0 then (.waiver.runs | map(run) | join(", ")) else "(no run id reported)" end)",
@@ -673,12 +680,12 @@ flaky_ticket(){
     log "#$1 WAIVED: no tracker (§4 Tracker is ${TRACKER:-unset}), so no ticket filed — the flake's details are in $body"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if [ "$JIRA_CREATE_PERM" != yes ]; then
-    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: desk-jira create Bug \"$summary\" $body"; touch "$SD/flaky-filed-$1-$2"; return 0
+    log "#$1 WAIVED: ticket not filed, config §3 jira-create is $JIRA_CREATE_PERM — ask, then: $by_hand"; touch "$SD/flaky-filed-$1-$2"; return 0
   fi
   if out=$(desk-jira create Bug "$summary" "$body" ${size[@]+"${size[@]}"} 2>&1); then
     touch "$SD/flaky-filed-$1-$2"; log "#$1 WAIVED: filed $(printf '%s' "$out" | grep -m1 '^created' | sed 's/^created //')"
   else
-    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: desk-jira create Bug \"$summary\" $body"
+    log "#$1 WAIVED: the ticket was not filed ($(printf '%s' "$out" | tail -1)) — file it by hand: $by_hand"
     touch "$SD/flaky-filed-$1-$2"
   fi
 }

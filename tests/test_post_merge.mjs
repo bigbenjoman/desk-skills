@@ -2,7 +2,7 @@
 import { rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { postMergeScan, postMergeDue, readPostMerge, revertedPr, gitLog, postMergePath } from '../desk/bin/post-merge.mjs';
+import { postMergeScan, postMergeDue, readPostMerge, revertedPr, landedPr, gitLog, ghRuns, postMergePath } from '../desk/bin/post-merge.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -21,32 +21,42 @@ let n = 0;
 const commit = (subject, when) => { writeFileSync(join(repo, 'f'), String(n++)); git(['add', 'f']); git(['commit', '-q', '-m', subject], when); return git(['rev-parse', 'HEAD']).trim(); };
 const mergedA = NOW - 3 * 24 * H;
 const mergedD = NOW - 15 * 24 * H;
-commit('feat: D (#4)', mergedD);
-commit('feat: A (#1)', mergedA);
+const shaD = commit('feat: D (#4)', mergedD);
+const shaC = commit('Merge pull request #3 from o/c', NOW - 80 * H);
+const shaA = commit('feat: A (#1)', mergedA);
 const revertA = commit('Revert "feat: A (#1)" (#9)', NOW - 2 * 24 * H);
+const SHA_B = commit('Merge pull request #2 from o/b', NOW - 40 * H);
+const shaP = commit('Merge pull request #50 from o/epic', NOW - 20 * H);
 const revertD = commit('Revert "feat: D (#4)"', NOW - H);
 
 const queue = { tickets: {
   'T-A': { merged_at: iso(mergedA), result: { pr: 1 } },
-  'T-B': { merged_at: iso(NOW - 40 * H), pr_status: { pr: 2 } },
+  'T-B': { merged_at: iso(NOW - 40 * H), pr_status: { pr: 2, merge_commit: SHA_B } },
   'T-C': { merged_at: iso(NOW - 80 * H), result: { pr: 3 } },
   'T-D': { merged_at: iso(mergedD), result: { pr: 4 } },
   'T-E': { result: { pr: 5 } },
 } };
-const runs = [
-  { id: 101, name: 'CI', url: 'https://example.com/r/101', conclusion: 'failure', created_at: iso(NOW - 30 * H) },   // T-B +10h
-  { id: 102, name: 'CI', url: 'https://example.com/r/102', conclusion: 'success', created_at: iso(NOW - 35 * H) },   // T-B +5h, green
-  { id: 103, name: 'CI', url: 'https://example.com/r/103', conclusion: 'failure', created_at: iso(NOW - 50 * H) },   // T-C +30h
-];
+// Each merge commit's runs: `runs(sha)` as the scan asks for them.
+const runsAt = {
+  [SHA_B]: [
+    { id: 101, name: 'CI', url: 'https://example.com/r/101', conclusion: 'failure', created_at: iso(NOW - 30 * H) },   // T-B +10h
+    { id: 102, name: 'CI', url: 'https://example.com/r/102', conclusion: 'success', created_at: iso(NOW - 35 * H) },   // T-B +5h, green
+  ],
+  [shaC]: [{ id: 103, name: 'CI', url: 'https://example.com/r/103', conclusion: 'failure', created_at: iso(NOW - 50 * H) }],   // T-C +30h
+};
+const runs = (sha) => runsAt[sha] ?? [];
 const log = (since) => gitLog(repo, 'main', since);
 
 t('subject: a squash revert names its PR', revertedPr('Revert "feat: A (#1)" (#9)'), 1);
 t('subject: a merge-commit revert names its PR', revertedPr('Revert "Merge pull request #12 from o/b"'), 12);
 t('subject: a revert of a revert reverts nothing', revertedPr('Revert "Revert "feat: A (#1)""'), null);
 t('subject: an ordinary commit reverts nothing', revertedPr('feat: A (#1)'), null);
+t('subject: a squash merge lands its PR', landedPr('feat: A (#1)'), 1);
+t('subject: a merge commit lands its PR', landedPr('Merge pull request #12 from o/b'), 12);
+t('subject: a revert lands no PR', landedPr('Revert "feat: A (#1)" (#9)'), null);
 
 const state = join(tmp, 'state');
-const r1 = postMergeScan({ state, queue, log, runs: () => runs, now: NOW });
+const r1 = postMergeScan({ state, queue, log, runs, now: NOW });
 const recs = readPostMerge(state);
 const of = (ticket, kind) => recs.filter((r) => r.ticket === ticket && r.kind === kind);
 t('AC1 ticket A gets one revert record', of('T-A', 'revert').length, 1);
@@ -60,10 +70,10 @@ t('a ticket with no merge time is not watched', recs.filter((r) => r.ticket === 
 t('the scan is recorded complete', recs.filter((r) => r.kind === 'scan').map((r) => r.complete).join(), 'true');
 t('the pass line names what was recorded', /T-A reverted by .*T-B red main in run 101/.test(r1.line), true);
 
-const again = postMergeScan({ state, queue, log, runs: () => runs, now: NOW + H });
+const again = postMergeScan({ state, queue, log, runs, now: NOW + H });
 t('a scan within a day of the last does not run', again.ran, false);
 const before = readFileSync(postMergePath(state), 'utf8');
-const r2 = postMergeScan({ state, queue, log, runs: () => runs, now: NOW + 25 * H });
+const r2 = postMergeScan({ state, queue, log, runs, now: NOW + 25 * H });
 t('AC5 the next day\'s scan writes no second record', r2.written.length, 0);
 t('AC5 only its scan line is added', readFileSync(postMergePath(state), 'utf8').slice(before.length).trim().split('\n').map((l) => JSON.parse(l).kind).join(), 'scan');
 
@@ -72,13 +82,86 @@ const r6 = postMergeScan({ state: state6, queue, log, runs: () => { throw new Er
 const recs6 = readPostMerge(state6);
 t('AC6 an unreadable run list writes no red_main record', recs6.filter((r) => r.kind === 'red_main').length, 0);
 t('AC6 and records the scan as incomplete', recs6.find((r) => r.kind === 'scan')?.complete, false);
-t('AC6 saying why', /runs not read: gh: HTTP 502/.test(recs6.find((r) => r.kind === 'scan')?.why), true);
+t('AC6 saying why', /runs not read: #\d+ at [0-9a-f]{12}: gh: HTTP 502/.test(recs6.find((r) => r.kind === 'scan')?.why), true);
 t('AC6 the revert is still recorded from the log', recs6.filter((r) => r.kind === 'revert').length, 1);
 t('AC6 the pass line says the scan was incomplete', /scan incomplete/.test(r6.line), true);
 
-let asked = null;
-postMergeScan({ state: join(tmp, 'state7'), queue, log, runs: (since) => { asked = since; return []; }, now: NOW });
-t('the runs are read from the earliest watched merge', asked, iso(mergedD));
+let asked = null; const shas = [];
+postMergeScan({ state: join(tmp, 'state7'), queue, log: (since) => { asked = since; return log(since); }, runs: (sha) => { shas.push(sha); return []; }, now: NOW });
+t('the log is read from an hour before the earliest watched merge', asked, iso(mergedD - H));
+t('each watched merge\'s runs are read on its merge commit: recorded, or found in the log by its PR', shas.sort().join(), [SHA_B, shaA, shaC, shaD].sort().join());
+
+// A merge whose merge commit is neither recorded nor on the default branch: its runs are not read, and the scan says so.
+const state10 = join(tmp, 'state10');
+const lost = { tickets: { ...queue.tickets, 'T-F': { merged_at: iso(NOW - 10 * H), result: { pr: 6 } } } };
+const r10 = postMergeScan({ state: state10, queue: lost, log, runs, now: NOW });
+t('a merge with no merge commit found leaves the scan incomplete, naming its PR', readPostMerge(state10).find((r) => r.kind === 'scan')?.why, 'default-branch runs not read: #6: no merge commit on the default branch');
+t('the other merges\' runs are still read', r10.written.filter((r) => r.kind === 'red_main').map((r) => r.ticket).join(), 'T-B');
+const state11 = join(tmp, 'state11');
+postMergeScan({ state: state11, queue, log, runs: (sha) => { if (sha === shaC) throw new Error('gh: HTTP 502'); return runs(sha); }, now: NOW });
+t('one merge\'s runs not read is said with its PR and commit', readPostMerge(state11).find((r) => r.kind === 'scan')?.why, `default-branch runs not read: #3 at ${shaC.slice(0, 12)}: gh: HTTP 502`);
+
+// A batch child merged into its epic branch: its own merge commit is not on the default branch, so its runs
+// are read on the promotion PR's merge commit, from when that merged.
+const EPIC = 'e'.repeat(40);
+const child = (promotion) => ({ promotion, tickets: { 'T-K': { merged_at: iso(NOW - 30 * H), pr_status: { pr: 7, base: 'epic', merge_commit: EPIC } } } });
+const atP = { [shaP]: [{ id: 701, name: 'CI', url: 'https://example.com/r/701', conclusion: 'failure', created_at: iso(NOW - 19 * H) }] };
+const asked13 = [];
+const r13 = postMergeScan({ state: join(tmp, 'state13'), queue: child({ pr: 50, merged_at: iso(NOW - 20 * H), merge_commit: shaP }), log, runs: (sha) => { asked13.push(sha); return atP[sha] ?? []; }, branch: 'main', now: NOW });
+t('a promoted batch child\'s runs are read on the promotion\'s merge commit, not its own', asked13.join(), shaP);
+t('and a failure there within a day of the promotion is the child\'s', r13.written.map((r) => `${r.ticket} ${r.run.id}`).join(), 'T-K 701');
+const asked14 = [];
+postMergeScan({ state: join(tmp, 'state14'), queue: child({ pr: 50, merged_at: iso(NOW - 20 * H) }), log, runs: (sha) => { asked14.push(sha); return []; }, branch: 'main', now: NOW });
+t('with no promotion merge commit recorded, it is found in the log by the promotion PR', asked14.join(), shaP);
+const state15 = join(tmp, 'state15');
+const r15 = postMergeScan({ state: state15, queue: child(undefined), log, runs: () => { throw new Error('read'); }, branch: 'main', now: NOW });
+t('a batch child not promoted yet is not on the default branch: nothing read, the scan complete', `${r15.written.length} ${readPostMerge(state15).find((r) => r.kind === 'scan')?.complete}`, '0 true');
+const state16 = join(tmp, 'state16');
+postMergeScan({ state: state16, queue: { tickets: { 'T-M': { merged_at: iso(NOW - 10 * H), pr_status: { pr: 8, base: 'main', merge_commit: EPIC } } } }, log, runs: () => [], branch: 'main', now: NOW });
+t('a recorded merge commit that is not on the default branch is not read as one: the scan says so', readPostMerge(state16).find((r) => r.kind === 'scan')?.why, 'default-branch runs not read: #8: no merge commit on the default branch');
+
+// A merge-commit promotion: main reaches the child's own epic-branch commit through the merge, but the
+// child's code landed on main with the promotion's merge commit, so that is where its runs are read.
+const repo2 = join(tmp, 'repo2');
+const g2 = (args, when) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-C', repo2, ...args],
+  { encoding: 'utf8', env: { ...process.env, ...(when ? { GIT_AUTHOR_DATE: `@${when / 1000} +0000`, GIT_COMMITTER_DATE: `@${when / 1000} +0000` } : {}) } });
+execFileSync('git', ['init', '-q', '-b', 'main', repo2]);
+const c2 = (subject, when) => { writeFileSync(join(repo2, 'f'), String(n++)); g2(['add', 'f']); g2(['commit', '-q', '-m', subject], when); return g2(['rev-parse', 'HEAD']).trim(); };
+c2('base', NOW - 40 * H);
+g2(['checkout', '-q', '-b', 'epic']);
+const kOwn = c2('feat: K (#7)', NOW - 30 * H);
+c2('Revert "feat: Z (#3)"', NOW - 29 * H);
+g2(['checkout', '-q', 'main']);
+g2(['merge', '-q', '--no-ff', '-m', 'Merge pull request #50 from o/epic', 'epic'], NOW - 20 * H);
+const kPromo = g2(['rev-parse', 'HEAD']).trim();
+const log2 = (since) => gitLog(repo2, 'main', since);
+t('the log reaches the child\'s own commit, not marked as main\'s own', log2(iso(NOW - 41 * H)).find((c) => c.sha === kOwn)?.first, false);
+const asked17 = [];
+postMergeScan({ state: join(tmp, 'state17'), queue: { promotion: { pr: 50, merged_at: iso(NOW - 20 * H), merge_commit: kPromo }, tickets: { 'T-K': { merged_at: iso(NOW - 30 * H), pr_status: { pr: 7, base: 'epic', merge_commit: kOwn } } } }, log: log2, runs: (sha) => { asked17.push(sha); return []; }, branch: 'main', now: NOW });
+t('so the runs are read on the promotion\'s merge commit', asked17.join(), kPromo);
+const r18 = postMergeScan({ state: join(tmp, 'state18'), queue: { tickets: { 'T-Z': { merged_at: iso(NOW - 35 * H), result: { pr: 3 } } } }, log: log2, runs: () => [], now: NOW });
+t('a revert inside a merged branch is still read', r18.written.filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-Z');
+
+// A busy default branch: 1,200 runs in the window, two of them on the watched merge's commit. The API is
+// asked for that commit's runs only, so the watch reads them whole and records the failure.
+const busy = Array.from({ length: 1200 }, (_, i) => ({ id: 5000 + i, name: 'CI', html_url: `https://example.com/r/${5000 + i}`, conclusion: 'failure', created_at: iso(NOW - 30 * H + i * 1000), head_sha: i % 600 === 7 ? SHA_B : 'f'.repeat(40), head_branch: 'main' }));
+const calls = [];
+const api = (args) => {
+  calls.push(args.join(' '));
+  const u = new URL(`https://api.github.com/${args[1]}`);
+  const hit = busy.filter((r) => r.head_sha === u.searchParams.get('head_sha') && r.head_branch === u.searchParams.get('branch'));
+  const per = Number(u.searchParams.get('per_page'));
+  return JSON.stringify({ total_count: hit.length, workflow_runs: hit.slice(0, per) });
+};
+const state12 = join(tmp, 'state12');
+const r12 = postMergeScan({ state: state12, queue: { tickets: { 'T-B': queue.tickets['T-B'] } }, log, runs: (sha) => ghRuns('o/r', 'main', sha, api), now: NOW });
+t('with 1,200 runs on the branch, the watched merge\'s failed runs are recorded', r12.written.map((r) => r.run.id).join(), '5007,5607');
+t('and the scan is complete', readPostMerge(state12).find((r) => r.kind === 'scan')?.complete, true);
+t('the pass line names them', r12.line, 'post-merge watch: T-B red main in run 5007, T-B red main in run 5607');
+t('one API call, for that commit on the default branch', calls.join('|'), `api repos/o/r/actions/runs?head_sha=${SHA_B}&branch=main&per_page=100`);
+const many = (args) => JSON.stringify({ total_count: 150, workflow_runs: busy.slice(0, 100) });
+let threw = null; try { ghRuns('o/r', 'main', SHA_B, many); } catch (e) { threw = e.message; }
+t('a commit with more runs than one page throws rather than read as complete', threw, `150 runs on ${SHA_B.slice(0, 12)}, more than one page read`);
 
 // The supervisor runs a pass on an idle batch when a scan falls due, so the watch outlives the batch's last pass.
 t('a scan is due with no scan yet and a merge watched', postMergeDue({ state: join(tmp, 'state8'), queue, now: NOW }), true);

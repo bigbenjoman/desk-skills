@@ -255,7 +255,9 @@ export PATH="$T/stub:/usr/bin:/bin:/usr/sbin:/sbin" DESK_CONFIG="$T/config.md" D
 mkdir -p "$T/locks"
 cd "$T/repo" || exit 1
 q(){ node "$B/queue.mjs" "$@" >/dev/null 2>&1; }
-pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
+# shellcheck source=age_probes.sh
+. "$S/age_probes.sh"
+pass(){ age_probes; out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 # shellcheck source=jq_at.sh
 . "$S/jq_at.sh"
 # A ticket the pass moved to the archive beside the queue (queue-store.mjs) is found as a queue read finds it.

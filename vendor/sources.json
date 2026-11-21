@@ -148,12 +148,12 @@
         "path": "skills/context7-mcp"
       },
       "pin": {
-        "commit": "7fe6e09cf",
-        "date": "2026-11-17"
+        "commit": "32dccfd68",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Single-file skill. Same blob is mirrored under plugins/{claude,codex,cursor,copilot}/context7/skills/context7-mcp at the same commit; canonical path is skills/context7-mcp. 2 newer commits; current HEAD blob 90542d4e differs.",
-      "tree_sha256": "7ece9068c82c6aae1facc8ff525066ee6102b3d8b56e174b00efafa2dd6f0c33"
+      "tree_sha256": "d632eb9a32361cd3df6a2ebdf7a902439ace7991a68b26ba185ca0a07bda0345"
     },
     "database-migration": {
       "source": {
@@ -176,12 +176,12 @@
         "path": "skills/directory-submissions"
       },
       "pin": {
-        "commit": "310ebb96a",
-        "date": "2026-11-11"
+        "commit": "ca400d998",
+        "date": "2026-11-20"
       },
       "license": "MIT",
       "notes": "Whole folder tree-identical (2b12b936); current upstream HEAD version (metadata.version 2.0.0). Installed 2026-09-27.",
-      "tree_sha256": "4b00d6598e8c9e226c0b7c9b67c06dfa27b62a21d6453459297972a24815de31"
+      "tree_sha256": "f0d34a2e13c3e6650d52ad330166f1a73f4432f6c4abadf496689777b07310e9"
     },
     "error-handling-patterns": {
       "source": {
@@ -834,12 +834,12 @@
         "path": "skills/web-design-guidelines/"
       },
       "pin": {
-        "commit": "ba4693888",
-        "date": "2026-01-16"
+        "commit": "53b6e3ddf",
+        "date": "2026-10-29"
       },
       "license": null,
       "notes": "Installed via `npx skills` 2026-02-04. Tree == lock hash 3116f3e; unchanged at upstream HEAD. Repo has no LICENSE file (GitHub reports none). The SKILL.md fetches its guideline text from a URL at runtime, so content can change without a repo commit.",
-      "tree_sha256": "f3bc47f890f42a44db1007ab390709ec368e4b8c089baee6b0007182236ac474"
+      "tree_sha256": "fcbcb524bfd79565d5140f0e6e29d36a88359b408551f1d27240b6c9cdb5b130"
     },
     "clerk": {
       "source": {

@@ -981,9 +981,9 @@ shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers
 `desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
 a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
 CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
-shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
-Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
-the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+shards (the `macOS` workflow, not a required check). Every run, pull requests included, uses
+Node 24, the version desk runs on. The `macOS` workflow's nightly run only runs the suite when no
+macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
 cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
 owner, and `/desk-needs-you` lists it for them.
 

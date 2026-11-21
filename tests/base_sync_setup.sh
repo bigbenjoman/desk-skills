@@ -102,7 +102,9 @@ conflict(){
   git -C "$C/repo" switch -q main; echo ours > a.txt; git -C "$C/repo" commit -q -am main-side; git -C "$C/repo" push -q origin main
   git -C "$C/repo" branch -q -D side
 }
-pass(){ out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
+# shellcheck source=age_probes.sh
+. "$S/age_probes.sh"
+pass(){ age_probes; out=$(node "$B/pass.mjs" 2>&1); rc=$?; }
 origin_has_main(){ git -C "$C/origin.git" merge-base --is-ancestor main feat/x; }
 origin_tip(){ git -C "$C/origin.git" rev-parse feat/x; }
 BWT='$C/wt/base-feat-x'

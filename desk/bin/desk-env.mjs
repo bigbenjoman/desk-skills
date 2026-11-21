@@ -25,11 +25,13 @@
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
-//   node desk-env.mjs get --json [--section <n>] [<id>...]
+//   node desk-env.mjs get --json [--where] [--section <n>] [<id>...]
 //                                             print the named rows (config or permission ids), or every row
 //                                             of a section, as one JSON object (readRow): exit 4 after
 //                                             printing where a row has a type error, 2 for an unknown id or
-//                                             section (§3c included), 3 with no repo config
+//                                             section (§3c included), 3 with no repo config. --where adds
+//                                             what `where` prints, and with no config still prints that,
+//                                             with no rows, before exiting 3
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
@@ -93,7 +95,8 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
-//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
+//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), set rows
+//                                             whose value does not fit the schema's type (INVALID), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
@@ -171,7 +174,7 @@ import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
-  permValues, permValue, requiredFieldsIn, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
+  permValues, permValue, requiredFieldsIn, requiredFieldsByType, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
   fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS,
 } from './config-schema.mjs';
@@ -691,9 +694,10 @@ export function personInputLabels(slug = null) { return labelsRow('person-input-
 // malformed: [item that is not `<Type>[, <Type>…]: <field>[, <field>…]`]}. No config reads as no rules. The
 // one reader of this row's grammar.
 export function requiredFields(type) {
-  let rules = [];
-  try { rules = [].concat(configValues('jira-required-fields') ?? []).filter((r) => r && !isNone(r)); } catch { /* no config: no rules */ }
-  return requiredFieldsIn(rules, type);
+  return requiredFieldsIn(requiredFieldRules(), type);
+}
+function requiredFieldRules() {
+  try { return [].concat(configValues('jira-required-fields') ?? []).filter((r) => r && !isNone(r)); } catch { return []; /* no config: no rules */ }
 }
 
 // A table id's rows as `<first cell>: <second cell>`, or the first cell alone when the second is
@@ -1664,6 +1668,12 @@ export const STALLING_ROWS = Object.freeze({
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
 // -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
+// A row's items for drift's own checks, or null where configValuesIn refuses the row (`none` beside
+// other items): invalidRows names that row INVALID, so drift reports it and goes on to the next repo.
+function driftValues(parsed, id) {
+  try { return configValuesIn(parsed, id); } catch (e) { if (e instanceof DeskConfigError) return null; throw e; }
+}
+
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1683,7 +1693,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // Command items a worker's settings cannot allow: every worker is refused them.
   const unlisted = [];
   for (const id of [...WORKER_COMMAND_IDS, 'worker-measure-cmds']) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const why = commandItemProblem(parseCommandItem(item).cmd);
@@ -1691,7 +1701,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
     }
   }
   // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
-  const services = configValuesIn(parsed, 'local-services');
+  const services = driftValues(parsed, 'local-services');
   if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
     for (const item of services) {
       if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
@@ -1700,8 +1710,37 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
+
+// Every set row of the config file whose items do not fit the type the schema declares for it, as the
+// file has it (no machine fallback or override): -> [{ section, label, item, error, fatal }].
+export function invalidRows(parsed) {
+  const out = [];
+  for (const e of ROWS) {
+    let items;
+    if (e.kind === 'perm') {
+      const raw = parsed.sections['3']?.byKey[norm(e.label)]?.value;
+      items = unset(raw) ? null : [raw];
+    } else if (e.kind === 'table') {
+      items = tableItemsIn(parsed, e.id);
+    } else {
+      const row = parsed.sections[e.section]?.byName[norm(e.label)];
+      items = !row || unset(row.value) ? null : row.items.filter((x) => !unset(x));
+    }
+    if (!items?.length) continue;
+    for (const { item, error, fatal } of checkRow(e, items).errors) out.push({ section: e.section, label: e.label, item, error, fatal });
+  }
+  return out;
+}
+
+// An INVALID line: the row, then the reader's own words where they already name the row, else the item.
+const invalidLine = ({ section, label, item, error }) => {
+  const own = error.replace(/^desk(-env)?: /, '');
+  const head = `config §${section} "${label}" `;
+  if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;
+  return `INVALID  §${section} ${label}${item != null && !own.includes(item) ? ` item "${item}"` : ''}: ${own}`;
+};
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
 // server has no item for: a worker on a ticket there is refused that app's dev server. A Dev server
@@ -1709,13 +1748,13 @@ export function configDrift({ config, template = templatePath(), root = null, ho
 // is never a gap: its `dev` script runs the workspace, not a second app.
 // -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
 export function devServerGaps(parsed, root) {
-  const dev = configValuesIn(parsed, 'dev-cmd');
+  const dev = driftValues(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
   const served = devServed(dev);
   const pkg = (dir) => readPackage(root, dir);
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const { dir } = parseCommandItem(item);
@@ -1783,9 +1822,10 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
+    ...invalid.map(invalidLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),
@@ -2025,16 +2065,26 @@ function valueRow(id) {
 
 // `get --json`: the rows of the named ids and sections, in that order, each once. A bad request
 // throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
+// With --where it also gives what `where` prints, as `where: { slug, gh_repo, config, creds, exists }`,
+// and with no config it returns that with no rows (`noConfig` set, exit 3) rather than throwing, so a
+// caller learns the repo and its rows in one run. Asked for jira-required-fields as well, it adds
+// `required_fields`, what `required-fields` prints for every type the rules name (requiredFieldsByType).
 class GetJsonUsage extends Error {}
 const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+function whereJson() {
+  const r = currentRepo(); const p = configPathOrNull();
+  return { slug: r.slug ?? '', gh_repo: r.ownerRepo ?? '', config: p ?? '', creds: repoConfigDir() ?? '', exists: !!(p && existsSync(p)) };
+}
 function getJson(args) {
   const ids = [], sections = [];
+  let where = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') continue;
+    if (args[i] === '--where') { where = true; continue; }
     if (args[i] === '--section') { sections.push(String(args[++i] ?? '').replace(/^§/, '').toLowerCase()); continue; }
     ids.push(args[i]);
   }
-  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--section <n>] [<id>...]');
+  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--where] [--section <n>] [<id>...]');
   for (const s of sections) {
     if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
     if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
@@ -2042,10 +2092,14 @@ function getJson(args) {
   const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
   if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
-  if (!parsed.exists) throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
+  if (!parsed.exists) {
+    if (where) return { where: whereJson(), config: null, rows: {}, noConfig: true };
+    throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
+  }
   const want = [...new Set([...ids, ...ROWS.filter((e) => sections.includes(e.section)).map((e) => e.id)])];
   const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
-  return { config: parsed.path, rows };
+  return { ...(where ? { where: whereJson() } : {}), config: parsed.path, rows,
+    ...(where && want.includes('jira-required-fields') ? { required_fields: requiredFieldsByType(requiredFieldRules()) } : {}) };
 }
 
 // What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
@@ -2115,14 +2169,14 @@ if (isMain) {
   try {
     switch (cmd) {
       case 'where': {
-        const r = currentRepo(); const p = configPathOrNull();
-        const q = (v) => `'${String(v ?? '').replace(/'/g, `'\\''`)}'`;
-        console.log(`SLUG=${q(r.slug)}`);
-        console.log(`GH_REPO=${q(r.ownerRepo)}`);
-        console.log(`CONFIG=${q(p)}`);
-        console.log(`CREDS=${q(repoConfigDir())}`);
-        console.log(`EXISTS=${p && existsSync(p) ? 'yes' : 'no'}`);
-        if (!r.slug) process.exit(3);
+        const w = whereJson();
+        const q = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+        console.log(`SLUG=${q(w.slug)}`);
+        console.log(`GH_REPO=${q(w.gh_repo)}`);
+        console.log(`CONFIG=${q(w.config)}`);
+        console.log(`CREDS=${q(w.creds)}`);
+        console.log(`EXISTS=${w.exists ? 'yes' : 'no'}`);
+        if (!w.slug) process.exit(3);
         break;
       }
       case 'show': {
@@ -2149,9 +2203,11 @@ if (isMain) {
         if (!args.includes('--json')) { printRead(cmd, args[0]); break; }
         let out;
         try { out = getJson(args); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
-        console.log(JSON.stringify(out, null, 2));
+        const { noConfig, ...shown } = out;
+        console.log(JSON.stringify(shown, null, 2));
         // exitCode, not exit: a pipe on macOS is written asynchronously, and exit would cut the JSON short.
-        if (Object.values(out.rows).some((r) => r.errors.length)) process.exitCode = 4;
+        if (noConfig) process.exitCode = 3;
+        else if (Object.values(out.rows).some((r) => r.errors.length)) process.exitCode = 4;
         break;
       }
       case 'review-cmd': {
@@ -2507,7 +2563,7 @@ if (isMain) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
           const root = configRepoRoot(parsed, { cwd: !slug });
-          const premerge = configValuesIn(parsed, 'pre-merge-steps');
+          const premerge = driftValues(parsed, 'pre-merge-steps');
           const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;

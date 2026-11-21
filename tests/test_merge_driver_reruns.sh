@@ -112,12 +112,40 @@ for p in "121:$SHA21" "122:$SHA22" "123:$SHA23" "124:$SHA24"; do for f in reruns
 : > "$T/merges.log"
 tloop(){ out=$(DESK_CONFIG="$T/config-test.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21 T-22 T-23 T-24" 2>&1); rc=$?; }
 tloop
-check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -q "#121 green but for WAIVED \"Integration\" at b11111111"'
-check "#831: a listed test beside a failure in another test of that check is not waived" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (AssertionError: expected 3 to be 4)"'
+check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -qF "#121 green but for WAIVED \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") at b11111111"'
+check "#831: a listed test beside a failure in another test of that check is not waived, naming that test" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (tests/orders.test.ts > totals an order: AssertionError: expected 3 to be 4)"'
 check "#831: a PR changing the listed test'\''s file is not waived" 'echo "$out" | grep -qF "#123 the waiver for \"Integration\" does not apply: the diff touches tests/orders.test.ts (tests/orders.test.ts, for \"Integration\")"'
 check "#831: a check whose failures name no test is never waived" 'echo "$out" | grep -qF "#124 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list, or its failures name no test"'
 tloop
 check "#831: the waived PR merges pinned to its head, and only it" '[ "$(merged)" = 121 ] && grep -qx "121 main $SHA21" "$T/merges.log"'
+check "DS-820 AC1: the WAIVED log names the check and the test" 'echo "$out" | grep -qF "#121 WAIVED \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") at b11111111"'
+check "DS-820 AC7: the waiver ticket names the test" 'grep -qF "create Bug Flaky check \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") waived to merge PR #121 " "$T/jira.log" && grep -qF -- "- Test: \`tests/orders.test.ts > retries a timed-out order\` in \`Integration\`" "$T/jira-body.md"'
+
+# A long listed test name: the summary is cut to Jira's 255 characters (the body keeps the name whole),
+# and when Jira refuses the ticket, the command to file it by hand pastes as written, `>` and quotes too.
+LONGNAME="retries a timed-out order$(printf ' and then retries it again%.0s' 1 2 3 4 5 6 7 8)"
+sed '/^| Known flaky checks /d' "$T/config-flaky.md" > "$T/config-long.md"
+echo "| Known flaky checks | \`Integration: tests/orders.test.ts > $LONGNAME\` |" >> "$T/config-long.md"
+SHA25=b555555555555555555555555555555555555555
+jq --arg sha "$SHA25" '."121".state = "open" | ."121".sha = $sha | ."121".checks[1][2] = 9125' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+jq --arg t "tests/orders.test.ts > $LONGNAME" '."9125" = [.["9121"][0] | .title = $t]' "$T/annotations.json" > "$T/annotations.tmp" && mv "$T/annotations.tmp" "$T/annotations.json"
+for f in reruns reruns-ok; do printf 'Integration\nIntegration\n' > "$SD/$f-121-$SHA25"; done
+cat > "$T/stub/desk-jira" <<EOF
+#!/usr/bin/env bash
+echo "error: Jira refused the ticket"; exit 1
+EOF
+mkdir -p "$T/paste" "$T/paste-stub"
+cat > "$T/paste-stub/desk-jira" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$#" "\$3" "\$4" > "$T/paste.args"
+EOF
+chmod +x "$T/stub/desk-jira" "$T/paste-stub/desk-jira"
+for _ in 1 2; do out=$(DESK_CONFIG="$T/config-long.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21" 2>&1); rc=$?; done
+by_hand=$(printf '%s\n' "$out" | grep -o 'file it by hand: desk-jira create .*' | head -1); by_hand=${by_hand#file it by hand: }
+(cd "$T/paste" && PATH="$T/paste-stub:$PATH" && eval "$by_hand")
+check "DS-820: a refused waiver ticket logs a command to file it by hand" '[ -n "$by_hand" ] && echo "$out" | grep -qF "#121 WAIVED: the ticket was not filed (error: Jira refused the ticket)"'
+check "DS-820: that command pastes as one summary and the body, with no stray file" '[ "$(sed -n 1p "$T/paste.args")" = 4 ] && [ "$(sed -n 3p "$T/paste.args")" = "$SD/flaky-121-$SHA25.md" ] && [ -z "$(ls -A "$T/paste")" ]'
+check "DS-820: a summary past 255 characters is cut to 255, and the body names the whole test" 's=$(sed -n 2p "$T/paste.args"); [ ${#s} -eq 255 ] && case "$s" in "Flaky check \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order"*...) true;; *) false;; esac && grep -qF -- "- Test: \`tests/orders.test.ts > $LONGNAME\` in \`Integration\`" "$SD/flaky-121-$SHA25.md"'
 
 # ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
 : > "$FAKE_SLEEPS"; touch "$T/gh.signedout"

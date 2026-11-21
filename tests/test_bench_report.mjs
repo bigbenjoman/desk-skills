@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSyn
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, NO_BASELINE, NOT_SCORED, NOT_PRICED, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
+import { parseBaseline, loadBaseline, loadRun, renderReport, loadPlans, planFor, armValue, runChecks, checksCell, NO_BASELINE, NOT_SCORED, NOT_PRICED, NOT_AVAILABLE, WEEKLY_POINTS, MONTH_HOURS } from '../desk/bin/bench-report.mjs';
 import { report as phase0, figureLines, totalOf } from '../desk/bin/phase0-report.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -179,6 +179,37 @@ t('AC5 and the report says why', c.includes('No comparison between arms: they di
 t('AC5 each arm still stands beside the baseline', c.includes('### a') && c.includes('| Figure | Phase 0 baseline | a |') && c.includes('| Figure | Phase 0 baseline | b |'), true);
 const sameSkip = benchOut('same-skip', { s1: { a: { status: 'accepted', tokens: tok(1, 1, 1, 1) }, b: { status: 'failed', tokens: null } }, s2: { a: 'not run', b: 'not run' } });
 t('arms that ran the same tasks are compared, a failed run included', renderReport({ out: 'x', run: loadRun(sameSkip.out), joined: null, baseline: { ok: false, why: 'x', path: 'p' } }).compared, true);
+
+// DS-547: each arm's pass rate on the checks each task's PR added or changed, beside accepted.
+const OLD_SET = 'the task set records no added checks for them; refreeze it with bench-build.mjs --rewrite';
+t('DS-547 AC5 a set frozen before added checks reads not available, not a failure',
+  row('Checks the PR added or changed, passed').slice(1).join(' / '), `${NOT_AVAILABLE} for 4 task(s): ${OLD_SET} / ${NOT_AVAILABLE} for 4 task(s): ${OLD_SET}`);
+const added = (passed) => ({ passed, of: 3 });
+const pr = benchOut('checks', {
+  k1: { a: { status: 'accepted', added_checks: added(3) }, b: { status: 'rejected', added_checks: added(2) } },
+  k2: { a: { status: 'rejected' }, b: { status: 'accepted', added_checks: added(3) } },
+  k3: { a: { status: 'failed', why: 'the hidden tests did not finish', added_checks: { passed: null, of: 3, why: 'the hidden tests did not finish' } }, b: { status: 'accepted', added_checks: added(3) } },
+  k4: { a: { status: 'accepted' }, b: { status: 'accepted' } },
+});
+const three = { checks: ['one', 'two', 'three'].map((n) => ({ file: 'tests/test_w.mjs', suite: 'widgets', name: n, pattern: n })) };
+writeFileSync(pr.set, JSON.stringify({ tasks: ['k1', 'k2', 'k3', 'k4'].map((id) => ({ id, prompt: id, ...(id === 'k4' ? {} : { added_checks: three }) })) }));
+// k2's a run predates the figure: its result.json has none, so it is read off its test output.
+writeFileSync(join(pr.out, 'runs', 'k2.a.k', 'test-output.log'), "$ bash tests/run.sh 'tests/test_w.mjs'\n\n== widgets\nok: 2\nexit 1\nFAIL two: 1 (want 2)\n\nFAILURES above (2 checks passed)\n\nexit 1\n");
+r = run('--tasks', pr.set);
+t('DS-547 the report runs', r.status, 0);
+const prText = readFileSync(join(pr.out, 'report.md'), 'utf8');
+const prRow = prText.split('\n').find((l) => l.startsWith('| Checks the PR added or changed, passed |'))?.split(' | ').slice(2).map((c) => c.replace(/ \|$/, ''));
+t('DS-547 AC4 each arm\'s added-checks pass rate, a failed run not measured and an old task not available', prRow?.join(' / '),
+  `5 of 6 (83%) over 2 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}; not measured for 1 run(s) whose hidden tests did not finish / 8 of 9 (89%) over 3 task(s); ${NOT_AVAILABLE} for 1 task(s): ${OLD_SET}`);
+t('DS-547 AC4 it sits beside tasks accepted', /\| Tasks accepted, of tasks run \|.*\n\| Checks the PR added or changed, passed \|/.test(prText), true);
+t('DS-547 AC2 a run passing two of three shows it in the task table', prText.includes('| k1 | accepted (3 of 3 added checks) | rejected (2 of 3 added checks) |'), true);
+t('DS-547 an older run is counted from its test output', prText.includes('| k2 | rejected (2 of 3 added checks) |'), true);
+t('DS-547 AC3 a timed-out run is not measured, never 0', prText.includes('| k3 | failed | accepted (3 of 3 added checks) |'), true);
+t('DS-547 AC3 a failed run is not measured even with its figure recorded', runChecks(three, 'failed', { added_checks: added(0) }, null).state, 'failed');
+t('DS-547 an arm with only failed runs is not measured, never 0', checksCell({ checks: { passed: 0, of: 0, tasks: 0, old: 0, unmatched: 0, failed: 2 } }), 'not measured for 2 run(s) whose hidden tests did not finish');
+t('DS-547 a task whose checks could not be matched is not measured', runChecks({ checks: [], why: 'x' }, 'accepted', null, null).state, 'unmatched');
+t('DS-547 AC3 a rejected run whose check suite crashed reads as not finished, not unmatched',
+  runChecks(three, 'rejected', { added_checks: { passed: null, of: 3, why: 'the hidden tests did not finish: suite widgets crashed' } }, null).state, 'failed');
 
 t('no --tasks refuses', /--tasks is required/.test(run().stderr), true);
 t('no run.json refuses, naming it', /cannot read the bench run/.test(run('--tasks', join(dir, 'nowhere', 'tasks.json')).stderr), true);
