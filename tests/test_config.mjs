@@ -621,9 +621,14 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     + 'worker-dependency-install worker-screenshots worker-local-services worker-web-read worker-workflow-dispatch db-per-ticket '
     + 'db-clone-staging staging-write local-reindex tests-shared-db worktree-remove branch-delete server-stop skills-edit vercel-env '
     + 'slack-draft slack-send merge-bypass others-prs product-calls legal-content').split(' ');
+  // Rows the schema gained after it replaced those literals, each named with its ticket, so a row
+  // lost or renamed still fails while a deliberate addition is recorded here.
+  const ADDED_ROWS = [
+    'test-signin|4|Test sign-in', // DS-804
+  ];
   const sorted = (a) => [...a].sort().join('\n');
   const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
-  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held', sorted(rowsNow), sorted(BEFORE_ROWS));
+  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held, and the ones added since', sorted(rowsNow), sorted([...BEFORE_ROWS, ...ADDED_ROWS]));
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
   t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
