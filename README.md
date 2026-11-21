@@ -982,10 +982,20 @@ cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assi
 owner, and `/desk-needs-you` lists it for them.
 
 The Linux suites run in parallel `shard` jobs (`SHARDS` in `tests/plan_shards.mjs`, six), which it balances by each
-suite's recorded duration in `tests/suite_durations.json` (a suite with none is planned at the median).
+suite's duration on main's latest push run (its `suite-durations` artifact), or, when none can be
+fetched, the committed `tests/suite_durations.json`, and it says which. Each shard runs three suites
+at once, so it plans six times three lanes; a suite with no duration is planned at the 75th percentile.
 The one check named `tests` passes only when every shard and the bash 3.2 check did, and names each
-failed shard's suites. To refresh the durations from a green run on main:
+failed shard's suites. To refresh the committed durations from a green run on main:
 `gh run view <run id> --log | node tests/plan_shards.mjs --record`.
+
+Every suite has a CPU-second budget in CI: 30 for a `.mjs` suite and 150 for any other, or the N of a
+`# budget: N <ticket>` line (`//` in `.mjs`) in its first ten lines, which `test_lint.sh` requires to
+name a ticket and caps at 600. A suite over its budget prints a `::warning::`; on a pull request it
+fails the run from the date `BUDGETS_FAIL_FROM` in `tests/run.sh` gives. A push to main never fails on
+a budget: its `record` job opens or comments one issue labelled `ci-slow` for the suites over budget,
+and one labelled `ci-flaky` for those that failed and passed their retry, each assigned to the repo's
+owner. Neither is `ci-main-red`.
 
 ## Using autopilot
 
