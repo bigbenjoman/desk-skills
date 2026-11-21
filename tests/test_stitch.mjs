@@ -2,7 +2,7 @@
 // stitch-boards.mjs on fixture captures: names read as role, screen, width and theme; one image per
 // board and theme with a row per width; a missing capture drawn as "no capture"; an image over the
 // limit split by width; the same captures giving the same bytes. The browser checks use desk's own
-// Playwright and are skipped where it is not installed.
+// Playwright and are skipped where it is not installed, unless DESK_REQUIRE_PLAYWRIGHT=1.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
@@ -112,11 +112,13 @@ t('cli: no captures exits 2 without Playwright too', noPw(join(T, 'empty')).stat
 t('cli: captures and no Playwright exits 6', noPw(g1).status, 6);
 
 // ---- in a real browser ---------------------------------------------------------------------------
-// Skipped where desk's Playwright is not installed, CI's Linux runner included, until DS-681 installs
-// it there and makes this skip a failure in CI.
+// Skipped where desk's Playwright is not installed; a failure instead under DESK_REQUIRE_PLAYWRIGHT=1
+// (CI, which installs it).
 const pw = findPlaywright();
 if (!pw.entry) {
-  console.log(`SKIP stitch in a browser: no desk Playwright (tried ${pw.tried.join(', ')}); CI runs these once DS-681 lands`);
+  const why = `no desk Playwright (tried ${pw.tried.join(', ')})`;
+  if (process.env.DESK_REQUIRE_PLAYWRIGHT === '1') t('stitch in a browser: DESK_REQUIRE_PLAYWRIGHT=1 needs desk Playwright', why, 'installed');
+  else console.log(`SKIP stitch in a browser: ${why}`);
 } else {
   const { chromium } = await importPlaywright(pw);
 
