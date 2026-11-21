@@ -81,7 +81,29 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
   t('DS-808 a later pass with the same refusal writes nothing', batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 4 }), { behind: 61, sync: refused })).length, 0);
   t('DS-808 one that changed keeps when it began', JSON.parse(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 5 }), { behind: 61, sync: refused }))[0].slice('base_sync_stuck='.length)).since, 'x');
   t('DS-808 within the lag it records nothing', batchWrites(sync(snap({}, { frozen: 4 }), { sync: refused })).length, 0);
-  t('DS-808 nor does a refusal that is not a push', batchWrites(sync(snap({}, { frozen: 4 }), { behind: 61, sync: { ok: false, reason: 'error', why: 'x' } })).length, 0);
+  // A sync that could not fetch the base is recorded too, with no push command.
+  const noBase = { ok: false, reason: 'error', why: "could not fetch feat/x and main from origin: fatal: couldn't find remote ref refs/heads/feat/x" };
+  const lost = { base: 'feat/x', source: 'main', behind: null, frozen: 2, why: noBase.why, path: WT };
+  t('DS-965 AC1 a feature batch whose base is gone from origin records it for needs-you', j(batchWrites(sync(snap({ feature: true }, { frozen: 2 }), { behind: null, sync: noBase }))),
+    j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...lost })}`]));
+  t('DS-965 AC1 so does one past the lag', JSON.parse(batchWrites(sync(snap({}, { frozen: 4 }), { behind: 61, sync: noBase }))[0].slice('base_sync_stuck='.length)).why, noBase.why);
+  t('DS-965 AC2 the record is cleared once the base syncs', j(batchWrites(sync(snap({ feature: true, base_sync_stuck: { since: 'x', ...lost } })))), j(['base_sync_stuck=null']));
+  t('DS-965 AC3 a fetch failure within the lag records nothing', batchWrites(sync(snap({}, { frozen: 4 }), { sync: noBase })).length, 0);
+  const unmerged = { ok: false, reason: 'missing', last: HEAD, why: 'feat/x is missing on origin, and its last known head aaaaaaaaaaaa is not in main, so it was not recreated: push that commit back to feat/x on origin, or end the batch' };
+  t('DS-965 AC1 a base missing on origin and not merged holds every spawn, so it is recorded with no command',
+    j(batchWrites(sync(snap({}, { frozen: 2 }), { behind: null, sync: unmerged }))),
+    j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...lost, why: unmerged.why })}`]));
+  const noWt = { ok: false, path: WT, why: "could not fetch feat/x from origin: fatal: couldn't find remote ref refs/heads/feat/x" };
+  t('DS-965 AC1 a base worktree that could not be made, its base gone from origin, is recorded with no command',
+    j(batchWrites(sync(snap({ feature: true }, { frozen: 2 }), { behind: null, worktree: noWt }))),
+    j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...lost, why: noWt.why })}`]));
+  t('DS-965 AC3 one within the lag records nothing', batchWrites(sync(snap({}, { frozen: 2 }), { worktree: noWt })).length, 0);
+  const notGranted = sync(snap({}, { frozen: 2, push: { perm: 'no', key: 'batch-base-push', ok: false } }), { behind: null, sync: { ok: false, reason: 'permission', merged: 0, recreate: { last: HEAD, at: SRC } } });
+  t('DS-965 AC1 a merged-and-deleted base whose push back is not granted is recorded with no command',
+    JSON.parse(batchWrites(notGranted)[0].slice('base_sync_stuck='.length)).why,
+    'feat/x is missing on origin, and its last known head aaaaaaaaaaaa is in main (merged, then deleted), and config §3 batch-base-push is "no", so it was not recreated at main\'s head cccccccccccc');
+  t('DS-965 and one asked for in needs-you as the base-push item is not recorded twice',
+    batchWrites(sync(snap({}, { frozen: 2, passBy: 'supervisor', push: { perm: 'ask', key: 'batch-base-push', ok: false } }), { behind: null, sync: { ok: false, reason: 'permission', merged: 0, recreate: { last: HEAD, at: SRC } } })).some((w) => w.startsWith('base_sync_stuck=')), false);
   t('DS-808 the record is cleared once the base syncs', j(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } })))), j(['base_sync_stuck=null']));
   t('DS-808 a dry run writes nothing', batchWrites(sync(snap({}, { frozen: 4, dry: true }), { behind: 61, sync: refused })).length, 0);
   const made = sync(snap(), { worktree: { ok: true, path: WT, made: true, env: { copied: ['.env'], missing: ['apps/web/.env'] } } });

@@ -2072,6 +2072,17 @@ t('DS-808 AC4 desk-q counts it', N.needsCount(loadRepos().find((r) => r.name ===
 t('DS-808 done records nothing, and says the next pass reads the base again', N.record({ word: 'rho808', ticket: 'base-sync', action: 'done' }).line.includes('the next pass reads the base again'), true);
 put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
 t('DS-808 with no stuck sync recorded there is no item', N.collect({ word: 'rho808' }).items.length, 0);
+// ---- A base sync that could not fetch the base, while that holds every spawn, is the same item,
+// naming the failure and what clears it rather than a push command.
+const stuck965 = { since: minsAgo(20), base: 'feat/x', source: 'main', behind: null, frozen: 1, why: "could not fetch feat/x and main from origin: fatal: couldn't find remote ref refs/heads/feat/x", path: '/wt/base-feat-x' };
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x', base_sync_stuck: stuck965 }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bs965 = N.collect({ word: 'rho808' }).items;
+t('DS-965 AC1 one base-sync item for the batch', bs965.map((i) => `${i.t.key} ${i.kind}`).join(), 'base-sync base-sync');
+t('DS-965 AC1 it names the base, the fetch failure and what clears it', bs965[0]?.need,
+  "the base sync of feat/x failed, so 1 ticket ready to spawn is frozen until feat/x takes main: could not fetch feat/x and main from origin: fatal: couldn't find remote ref refs/heads/feat/x. It clears once a pass syncs feat/x: fix what stopped it (a base missing on origin is restored or recreated there)");
+t('DS-965 AC1 the list prints it', here('list', 'rho808').out.split('\n').some((l) => l.startsWith('rho808 base-sync base-sync')), true);
+put('rho808', { port: 3832, beat: 1, supervised: true, batch: { base: 'feat/x' }, tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+t('DS-965 AC2 once a pass clears the record the item is gone', N.collect({ word: 'rho808' }).items.length, 0);
 
 // ---- DS-416: a child PR whose required check only the default branch's workflow runs on the base is
 // no item of its own under ask: the base-push item says syncing the base starts its CI.

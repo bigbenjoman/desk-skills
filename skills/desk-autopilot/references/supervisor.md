@@ -29,10 +29,10 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
   `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
   `approved.base_push`;
-- where a base sync merged but its push was refused while the base lags too far for anything to
-  spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as the
-  batch's `base-sync` item, naming the frozen tickets and the command that pushes the base, and the
-  next pass that finds the base current clears it;
+- where a base sync fails (its push refused, the base not fetched or not recreated) while that holds
+  every spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as
+  the batch's `base-sync` item, naming the frozen tickets, the failure and, for a refused push, the
+  command that pushes the base, and the next pass that finds the base current clears it;
 - appends the report to `<state>/supervisor.log`;
 - sends one desktop notification, titled with the repo, for the pass's `push` entries the last
   notification did not carry (the check-in digest, a production-broken park), or for a pass that
