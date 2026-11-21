@@ -24,6 +24,6 @@ if (state === 'unreachable') {
   setInterval(() => { if (left > 0) { left -= 1; draw(); } }, 1000);
   document.getElementById('retry').addEventListener('click', () => {
     left = 0; draw();
-    window.desk?.retryNow();
+    window.desk?.startServer();
   });
 }

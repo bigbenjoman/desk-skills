@@ -1,19 +1,25 @@
 // Desk.app's main process, with Electron passed in so the tests drive it with stubs. It opens one
 // window on the desk-ui server and signs it in itself: it reads the token file, posts it to
 // /api/auth/exchange, and keeps the session cookie only in the window's own session store. The
-// per-load token goes to the page through the preload, never a cookie the page can read.
+// per-load token is added to the window's requests to the server here, so the page never holds it.
 // A refusal signs in again once; a refusal straight after that shows the not-signed-in card until the
 // token file changes or the server restarts. A server that does not answer shows the unreachable card
 // and is tried again every few seconds.
+// The window is sandboxed with no Node, never leaves the server, opens no other window, and the page
+// can ask only for the preload's badge, notify, openExternal, onDeepLink and startServer.
 import { request } from 'node:http';
+import { execFile } from 'node:child_process';
 import { readFileSync, watchFile } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 export const ORIGIN = 'http://127.0.0.1:4823';
 export const PARTITION = 'persist:desk';
 export const RETRY_MS = 5000;
+export const UI_JOB = 'com.desk-skills.ui';
 const COOKIE = 'desk_ui';
+const LOAD_HEADER = 'X-Desk-Load';
 
 // Where the server keeps its files. install.sh writes the config root and desk home it installed the
 // server with into the bundle (desk-paths.json), because Finder and the Dock start Desk.app without
@@ -93,15 +99,44 @@ export function serverBoot(origin, timeoutMs = 1000) {
   });
 }
 
+// A Jira site row (`acme.atlassian.net`, or with a scheme) -> its host, or null for none.
+export function siteHost(site) {
+  const s = String(site ?? '').trim();
+  if (!s || /^none$/i.test(s)) return null;
+  try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(s) ? s : `https://${s}`).host || null; } catch { return null; }
+}
+// The Jira site of every configured repo, read by the desk-env the server was installed with.
+export async function jiraSites(paths = deskPaths(), envFile = join(paths.deskHome, 'bin', 'desk-env.mjs')) {
+  try {
+    const env = await import(pathToFileURL(envFile).href);
+    return env.configuredRepos(paths.configRoot).map((r) => siteHost(env.repoConfigValue(r.slug, 'jira-site', paths.configRoot))).filter(Boolean);
+  } catch { return []; }
+}
+// The URL the page may open in the Mac's browser: https on github.com or a configured Jira site, with
+// no credentials in it. Anything else is null.
+export async function externalUrl(raw, sites = async () => []) {
+  if (typeof raw !== 'string') return null;
+  let u;
+  try { u = new URL(raw); } catch { return null; }
+  if (u.protocol !== 'https:' || u.username || u.password) return null;
+  if (u.host === 'github.com') return u.href;
+  return (await sites()).includes(u.host) ? u.href : null;
+}
+// Starts the desk-ui server's launchd job if it is not running; a running one is left alone.
+export const startJob = () => new Promise((resolve) => {
+  execFile('launchctl', ['kickstart', `gui/${process.getuid()}/${UI_JOB}`], { timeout: 5000 }, () => resolve());
+});
+const text = (s, max) => (typeof s === 'string' && s.trim() ? s.trim().slice(0, max) : null);
+
 const quiet = (p) => { Promise.resolve(p).catch(() => {}); }; // a load another one replaced; did-fail-load reports real failures
 
 export function createShell(electron, {
   origin = ORIGIN, preload, page, paths = deskPaths(), token = () => readToken(tokenFile(paths)), signIn = exchange,
-  install = () => checkout(paths), probe = serverBoot,
+  install = () => checkout(paths), probe = serverBoot, jira = () => jiraSites(paths), kick = startJob,
   watch = (fn) => watchFile(tokenFile(paths), { interval: 2000 }, (cur, prev) => { if (cur.mtimeMs !== prev.mtimeMs) fn(); }),
   retryMs = RETRY_MS, setTimer = setTimeout, clearTimer = clearTimeout,
 } = {}) {
-  const { BrowserWindow, session, ipcMain } = electron;
+  const { BrowserWindow, session, ipcMain, app, Notification } = electron;
   const ses = session.fromPartition(PARTITION);
   let win = null, view = null, load = null, timer = null, attempt = 0;
   let refusedToken = null; // the token the server refused at sign-in: not tried again until it changes
@@ -110,8 +145,45 @@ export function createShell(electron, {
   let fresh = false;       // signed in, and nothing from the server has succeeded since
 
   const fromServer = (url) => { try { return new URL(url).origin === origin; } catch { return false; } };
-  ipcMain.handle('desk:load-token', (e) => (fromServer(e.senderFrame?.url) ? load : null));
-  ipcMain.handle('desk:retry', () => { if (view === 'unreachable') connect(); });
+  const ours = (e) => !!win && e?.sender === win.webContents;
+  const fromPage = (e) => ours(e) && fromServer(e.senderFrame?.url);
+  ipcMain.handle('desk:badge', (e, n) => {
+    if (!fromPage(e) || !Number.isSafeInteger(n) || n < 0) return false;
+    app?.dock?.setBadge(n ? String(n) : '');
+    return true;
+  });
+  ipcMain.handle('desk:notify', (e, note) => {
+    const title = text(note?.title, 120);
+    if (!fromPage(e) || !title || !Notification?.isSupported?.()) return false;
+    new Notification({ title, body: text(note?.body, 500) ?? '' }).show();
+    return true;
+  });
+  ipcMain.handle('desk:open-external', async (e, url) => {
+    const to = fromPage(e) ? await externalUrl(url, jira) : null;
+    if (!to) return false;
+    await electron.shell.openExternal(to);
+    return true;
+  });
+  // The unreachable card's Try now: start the server's job if it is down, and connect at once.
+  ipcMain.handle('desk:start-server', async (e) => {
+    if (!ours(e) || view !== 'unreachable') return false;
+    await kick();
+    connect();
+    return true;
+  });
+
+  // The per-load token goes on the window's own requests to the server while it shows the server's page.
+  // A frame already gone throws on .url, and counts as not the server's.
+  const frameOk = (d) => { try { return !d.frame || fromServer(d.frame.url); } catch { return false; } };
+  ses.webRequest.onBeforeSendHeaders({ urls: [`${origin}/*`] }, (d, done) => {
+    const requestHeaders = Object.fromEntries(Object.entries(d.requestHeaders ?? {}).filter(([k]) => k.toLowerCase() !== LOAD_HEADER.toLowerCase()));
+    if (load && view === 'app' && win && d.webContentsId === win.webContents.id && frameOk(d)) requestHeaders[LOAD_HEADER] = load;
+    done({ requestHeaders });
+  });
+  // No camera, microphone, location or web notifications: only the cards' Copy buttons' clipboard write.
+  const allowed = (perm) => perm === 'clipboard-sanitized-write';
+  ses.setPermissionRequestHandler((_wc, perm, cb) => cb(allowed(perm)));
+  ses.setPermissionCheckHandler((_wc, perm) => allowed(perm));
 
   function show(state, extra = {}) {
     view = state;
@@ -183,15 +255,26 @@ export function createShell(electron, {
     if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); return win; }
     win = new BrowserWindow({
       width: 1280, height: 820, minWidth: 900, minHeight: 600, title: 'Desk', backgroundColor: '#09090b',
-      webPreferences: { partition: PARTITION, preload, contextIsolation: true, nodeIntegration: false, sandbox: true },
+      webPreferences: { partition: PARTITION, preload, contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false },
     });
+    // The page never leaves the server and opens no window; GitHub and Jira go through openExternal.
+    const stay = (e, url) => { if (!fromServer(e?.url ?? url)) e.preventDefault(); };
+    win.webContents.on('will-navigate', stay);
+    win.webContents.on('will-redirect', stay);
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     // -3 is a load that another navigation replaced, not a failure.
     win.webContents.on('did-fail-load', (_e, code, _desc, url, isMain) => { if (isMain && code !== -3 && fromServer(url)) unreachable(); });
     win.on('closed', () => { win = null; view = null; clearTimer(timer); timer = null; });
     connect();
     return win;
   }
-  return { open, connect, get view() { return view; } };
+  // A route in the server's app (`/inbox/...`) handed to the page's onDeepLink listener.
+  function deepLink(route) {
+    if (!win || view !== 'app' || typeof route !== 'string' || !/^\/(?![/\\])/.test(route)) return false;
+    win.webContents.send('desk:deep-link', route);
+    return true;
+  }
+  return { open, connect, deepLink, get view() { return view; } };
 }
 
 // One copy only: a second launch hands over to the first, whose window comes to the front.
