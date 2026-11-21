@@ -84,8 +84,10 @@ else
   # suite started with & ignores SIGINT.
   tree_kill(){ local c; for c in $(ps -A -o pid= -o ppid= | awk -v p="$1" '$2 == p { print $1 }'); do tree_kill "$c"; done
     kill -TERM "$1" 2>/dev/null; }
+  stop_suites(){ local p; trap "" INT TERM
+    for p in ${pids[@]+"${pids[@]}"}; do tree_kill "$p"; done; wait; exit 130; }
   pids=()
-  trap 'trap "" INT TERM; for p in ${pids[@]+"${pids[@]}"}; do tree_kill "$p"; done; wait; exit 130' INT TERM
+  trap stop_suites INT TERM
   for t in base head; do for s in "${suites[@]}"; do run "$t" "$s" & pids+=($!); done; done
   wait
   trap - INT TERM
