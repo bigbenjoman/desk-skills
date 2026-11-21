@@ -82,7 +82,7 @@
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
 // `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
 // PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
-// `base-sync` is a batch's: its base sync failed (could not push, or could not fetch the base) while that
+// `base-sync` is a batch's: its base sync failed (could not push, fetch or recreate the base) while that
 // holds every spawn, so every ticket ready to spawn is frozen; listed first, naming the failure and, for a
 // refused push, the command that pushes it (done records nothing; the next pass clears it once the base is current).
 // `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped

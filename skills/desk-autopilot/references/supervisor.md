@@ -29,7 +29,7 @@ batch and the log's tail. Each tick, for a batch handed over at Stage 4:
   records `base_push_ask` on the queue rather than listing it as waiting, so no decider takes it:
   `/desk-needs-you` asks it once as the batch's `base-push` item, and its `approve` sets
   `approved.base_push`;
-- where a base sync fails (its push refused, or the base could not be fetched) while that holds
+- where a base sync fails (its push refused, the base not fetched or not recreated) while that holds
   every spawn, the pass records `base_sync_stuck` on the queue: `/desk-needs-you` lists it first as
   the batch's `base-sync` item, naming the frozen tickets, the failure and, for a refused push, the
   command that pushes the base, and the next pass that finds the base current clears it;
