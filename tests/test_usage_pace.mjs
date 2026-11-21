@@ -237,7 +237,7 @@ w = world();
 log(w.state, 'R-1', [event(0.9, soon(3.5))], 7 * HOUR);
 out = await w.run();
 t('pass AC3: it spawns as usual', w.ticket('Y-1'), 'running');
-t('pass AC3: it reports no recent data, naming the login it read', /^usage: no recent data for login default$/m.test(out), true);
+t('pass AC3: it reports no recent data, naming the login it read', /^usage: no recent data for login default; pacing has no reading for it, as the probe call for one failed \(claude exited 0 with no answer\)$/m.test(out), true);
 
 // AC4: pacing off, usage well ahead of pace.
 w = world({ pacing: 'off' });
@@ -296,6 +296,26 @@ t('pass AC7: it reports no recent data', /^usage: no recent data for login defau
   log(w.state, 'R-1', [both(win(0.1, 4 * HOUR), null)]);
   out = await w.run();
   t('#772 a plan with no 7-day window is not probed', `${stamp()} ${w.ticket('Y-1')}`, 'false running');
+}
+
+// DS-842: the repo pinned to the second login, with no reading for it. The probe of that login fails
+// (the stub claude gives no answer): the usage line says so and why, and from the third pass in a row
+// the health section says pacing has no reading for that login.
+{
+  w = world({ pacing: '5', sub: { file: join(T, 'subscriptions-772.md'), email: 'repo@example.com' } });
+  const blind = /^health: pacing has had no 7-day usage reading for login login-2 for (\d+) passes in a row, so it holds no spawn whatever that login has used; the last probe call for one failed \(claude exited 0 with no answer\)$/m;
+  out = await w.run();
+  t('DS-842 AC3 a failed probe: the usage line names the login, says pacing has no reading and why', /^usage: no recent data for login login-2; pacing has no reading for it, as the probe call for one failed \(claude exited 0 with no answer\)$/m.test(out), true);
+  t('DS-842 AC5 one pass with no reading is not told in the health section', blind.test(out), false);
+  out = await w.run();
+  t('DS-842 AC5 nor two', blind.test(out), false);
+  out = await w.run();
+  t('DS-842 AC5 the third in a row is, naming the login and the last probe\'s failure', out.match(blind)?.[1], '3');
+  log(w.state, 'R-1', [event(0.4, soon(3.5))]);
+  mkdirSync(join(w.state, 'workers'), { recursive: true });
+  writeFileSync(join(w.state, 'workers', 'R-1.login.json'), JSON.stringify({ config_dir: join(env.HOME, '.claude-logins', 'login-2') }));
+  out = await w.run();
+  t('DS-842 AC5 a reading for the login ends it', `${blind.test(out)} ${/^usage: 7-day 40%, pace 50%$/m.test(out)}`, 'false true');
 }
 
 console.log(fails ? `${fails} FAILED` : 'all usage pace checks passed');
