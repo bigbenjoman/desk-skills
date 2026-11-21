@@ -110,6 +110,14 @@ const delimiters = (line) => {
   }).filter(Boolean);
 };
 
+// A line opening a fenced block: [1] the fence run, [2] the language. A block closes at a line of the
+// same fence character, at least as long, and nothing else.
+export const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+-]*)/;
+export const closesFence = (raw, fence) => {
+  const t = raw.trim();
+  return t.startsWith(fence[0].repeat(fence.length)) && t.replace(/[`~]/g, '') === '';
+};
+
 // Every logical command in one markdown file's shell blocks, in order: {line, text, first} with line
 // 1-based, text the command joined over its continuation lines and first its first line. One still
 // inside a quote or `$(` when its block closes is marked `unterminated`.
@@ -122,12 +130,12 @@ export function shellCommands(text) {
   };
   for (let n = 0; n < lines.length; n++) {
     const raw = lines[n];
-    const open = raw.match(/^\s*(`{3,}|~{3,})\s*([\w+-]*)/);
+    const open = raw.match(FENCE);
     if (!fence) {
       if (open) { fence = open[1]; lang = open[2].toLowerCase(); pending = []; cmd = null; }
       continue;
     }
-    if (raw.trim().startsWith(fence[0].repeat(fence.length)) && raw.trim().replace(/[`~]/g, '') === '') {
+    if (closesFence(raw, fence)) {
       if (cmd?.quoted) { out.push({ line: cmd.line, text: cmd.text, first: cmd.first, unterminated: true }); cmd = null; }
       flush(); fence = null; continue;
     }

@@ -27,18 +27,16 @@
 import { readFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { split, shellCommands, markdownFiles, PLACEHOLDER } from './command_shapes.mjs';
-import { CONFIG_ROWS } from '../desk/bin/desk-env.mjs';
+import { split, shellCommands, markdownFiles, PLACEHOLDER, FENCE, closesFence } from './command_shapes.mjs';
+import { CONFIG_ROWS, CODE_SPAN_WRAPPING as SPAN } from '../desk/bin/desk-env.mjs';
+import { AUTOPILOT_NAME as AUTOPILOT } from '../desk/bin/prose-facts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_PATHS = ['skills', 'agents'];
 
-const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+-]*)/;
 const CONTRACT = /^\s*<!--\s*contract:\s*([\w.-]+)\s*-->\s*$/;
 const FACTS_OPEN = /<!--\s*facts:\s*([\w.-]+)\s*-->/;
 const FACTS_CLOSE = /<!--\s*\/facts(?::\s*[\w.-]+)?\s*-->/;
-const SPAN = /(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
-const AUTOPILOT = /(?<![A-Za-z0-9_])AUTOPILOT_[A-Z0-9_]*[A-Z0-9]/g;
 const STATE_ROOT = /(\$\{?DESK_STATE\}?|<state>|<DESK_STATE>|(?:~|\$HOME|\$\{HOME\})\/\.desk-autopilot\/<slug>)\/([^\s`'"),;|&]+)/g;
 const STATE = /(?<![\w.-])state=([A-Za-z][\w-]*)|"state":\s*"([^"]*)"/g;
 const SECTION_KEY = /(?<![\w<])§(\d+[a-z]?)\s+([a-z][a-z0-9]*(?:-[a-z0-9]+)+)/g;
@@ -147,15 +145,15 @@ export function scan(text) {
     const joined = para.map((p) => p.text).join('\n');
     for (const m of joined.matchAll(SPAN)) {
       const at = joined.slice(0, m.index).split('\n').length - 1;
-      add(para[at].n, para[at].facts ? 'facts' : 'span', refs(m[2].replace(/\n/g, ' ')));
+      const inner = m[0].slice(m[1].length, -m[1].length);
+      add(para[at].n, para[at].facts ? 'facts' : 'span', refs(inner.replace(/\n/g, ' ')));
     }
     para = [];
   };
   for (let n = 0; n < lines.length; n++) {
     const raw = lines[n];
     if (fence) {
-      const t = raw.trim();
-      if (t.startsWith(fence[0].repeat(fence.length)) && t.replace(/[`~]/g, '') === '') { fence = null; json = null; continue; }
+      if (closesFence(raw, fence)) { fence = null; json = null; continue; }
       if (json) add(n + 1, 'json', refs(raw).filter((r) => r.kind === 'autopilot' || r.kind === 'state' || r.kind === 'state-path'));
       continue;
     }

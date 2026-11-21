@@ -586,6 +586,8 @@ function stripTrailingNote(cell) {
 // exactly N on its line, so ```` ```x ```` is one span; a run never closed is text. evidence.mjs reads
 // a PR body's spans by it too.
 export const CODE_SPAN = /(?<!`)(`+)(?!`)[^\n]*?(?<!`)\1(?!`)/g;
+// The same span read across a paragraph's lines, where one may wrap onto the next (tests/prose_scan.mjs).
+export const CODE_SPAN_WRAPPING = new RegExp(CODE_SPAN.source.replace('[^\\n]', '[\\s\\S]'), 'g');
 
 // Which characters sit inside a code span.
 function codeSpanMask(s) {
