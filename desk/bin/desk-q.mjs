@@ -1206,6 +1206,8 @@ const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.bl
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
 // A link's text, underlined in the terminal's own colour.
 const UNDERLINE = '4';
+// An amber note: its text, then its fix in bold where there is one.
+function warnNote(tag, text, fix) { return { tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] }; }
 // A PR number's cyan, and its checks: passed green, failed red.
 const PR_SGR = STATE_SGR.merging, GOOD = HUE.green, FAIL = HUE.red;
 // A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
@@ -1283,7 +1285,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
   const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
-  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
+  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => warnNote(`▲ ${tagOf(r)}`, `${lead(r)}${stoppedNote(r, now)}. `, `${resumeLine(r)}.`)), w, width);
   return { list, per, notes, items, head, stopped, manyBatches: !!slug && list.length > 1 };
 }
 
@@ -1652,7 +1654,7 @@ function budgetNotes(costs, cache, period) {
   if (budget == null || !Number.isFinite(budget)) return [];
   const spent = actionsCharged({ cache, costs, period });
   if (spent == null || Math.round(spent * 100) < Math.round(budget * 100)) return [];
-  return [{ tag: '▲ budget', sgr: WARN, text: [[`GitHub Actions budget used up: ${usd(spent)} of ${usd(budget)}.`, null]] }];
+  return [warnNote('▲ budget', `GitHub Actions budget used up: ${usd(spent)} of ${usd(budget)}.`)];
 }
 
 // Home's notes on this month's costs: the Actions budget used up, and the use AWS credits are
@@ -1664,8 +1666,8 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
   if (!c) return { notes: [] };
   const covered = c.names.filter((x) => x.credits > 0).map((x) => x.name);
   return {
-    notes: [...budgetNotes(costs, fc, c.period), ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN,
-      text: [[`AWS credits are covering ${usd(c.credits)} of use for ${andList(covered)}. It becomes a charge when they run out.`, null]] }] : [])],
+    notes: [...budgetNotes(costs, fc, c.period), ...(c.credits > 0 ? [warnNote('▲ credits',
+      `AWS credits are covering ${usd(c.credits)} of use for ${andList(covered)}. It becomes a charge when they run out.`)] : [])],
   };
 }
 
@@ -1696,7 +1698,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const includes = old ? [['  ', null], [`includes ${old}`, GREY]] : [];
   const notes = [
     ...budgetNotes(costs, fc, c.period),
-    ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`, null]] }] : []),
+    ...(c.credits > 0 ? [warnNote('▲ credits', `AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`)] : []),
     ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
@@ -1765,8 +1767,8 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   const charged = segLine([['charged ', GREY], [money(x.total), BOLD], [` to ${name} in ${monthText(c.period)}`, GREY]]);
   // The budget note on a name GitHub bills; it is the account's budget, not the name's.
   const notes = [...(mine.some((e) => e.supplier === 'github') ? budgetNotes(costs, fc, c.period) : []),
-    ...(x.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
-      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`, null]] }] : [])];
+    ...(x.credits > 0 ? [warnNote('▲ credits', `AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
+      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : [])];
   return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
 }
@@ -1864,9 +1866,9 @@ function awsParts(lines, mine) {
     ...named.map((l) => segLine([...lead(l), [rpad(usd(l.used), uw), WARN], [rpad(neg(l.credits), kw), null], [rpad(usd(l.charged), aw), null]])),
     segLine([[`  ${pad('total', ww + nw)}`, GREY], [rpad(usd(sum('used') / 100), uw), WARN], [rpad(neg(sum('credits') / 100), kw), BOLD], [rpad(usd(sum('charged') / 100), aw), BOLD]]));
   const [used, credits] = [usd(sum('used') / 100), usd(sum('credits') / 100)];
-  const notes = [{ tag: '▲ credits', sgr: WARN, text: [[sum('credits') >= sum('used')
+  const notes = [warnNote('▲ credits', sum('credits') >= sum('used')
     ? `Credits cover all ${used} of this month's use so far. It becomes a charge when they run out.`
-    : `Credits covered ${credits} of ${used} of this month's use so far. The rest was charged.`, null]] }];
+    : `Credits covered ${credits} of ${used} of this month's use so far. The rest was charged.`)];
   const saved = mine.filter((e) => e.credit?.usd != null);
   notes.push(...(saved.length ? saved.map((e) => ({ tag: '◌ balance', sgr: GREY, text: [[`Credit left was ${usd(e.credit.usd)} on ${ymdText(e.credit.entered)}, ending ${ymdText(e.credit.ends)}.`, null]] }))
     : [{ tag: '◌ balance', sgr: GREY, text: [["Credit left is unknown: AWS doesn't report it. Add the balance and end date in desk-setup.", null]] }]));
@@ -2603,13 +2605,36 @@ function quietNotes(shown) {
   }));
 }
 
+// Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
+// each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
+// several repos have it, one note naming them all, on the first one's batch.
+const OLD_CODE = [
+  ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
+  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
+  ['driver', 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.',
+    (repos) => `the merge drivers of ${repos} run old desk code. Each moves to the installed code when it next waits between loops.`, null],
+];
+function oldCodeNotes(shown) {
+  const at = new Map();
+  for (const [kind, one, many, fix] of OLD_CODE) {
+    const first = new Map();
+    for (const r of shown) if (r.stall?.oldCode?.[kind] && !first.has(r.slug)) first.set(r.slug, r);
+    const rs = [...first.values()];
+    if (!rs.length) continue;
+    const note = rs.length === 1 ? warnNote(`▲ ${rs[0].repo}`, one, fix) : warnNote('▲ desk code', many(andList(rs.map((r) => r.repo))), fix);
+    at.set(rs[0], [...(at.get(rs[0]) ?? []), note]);
+  }
+  return at;
+}
+
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note. With `allOut`,
-// Home's note on the Claude default's limit stands for the batch's hold on it.
-function stallNotes(r, quiet, allOut = false) {
+// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
+// oldCodeNotes's, which batch carries the old desk code notes. With `allOut`, Home's note on the
+// Claude default's limit stands for the batch's hold on it.
+function stallNotes(r, quiet, old, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
-  const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
+  const note = (text, fix) => warnNote(tag, text, fix);
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
@@ -2621,9 +2646,7 @@ function stallNotes(r, quiet, allOut = false) {
     const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
     out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
   }
-  if (s.oldCode?.supervisor) out.push(note('the supervisor runs old desk code. ', 'Run ./install.sh in desk-skills.'));
-  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
-  if (s.oldCode?.driver) out.push(note('the merge driver runs old desk code. It moves to the installed code when it next waits between loops.'));
+  out.push(...(old.get(r) ?? []));
   return out;
 }
 
@@ -2657,7 +2680,7 @@ function wrapSegs(segs, w) {
 function handOverNote(r) {
   const text = r.live ? 'set to the supervisor, but a session runs this batch. Its next batch hands over.'
     : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor at Stage 4.`;
-  return { tag: `▲ ${r.repo}`, sgr: WARN, text: [[text, null]] };
+  return warnNote(`▲ ${r.repo}`, text);
 }
 
 const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
@@ -2739,13 +2762,13 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable);
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const out = claude?.limit ? claude : null;
-  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
+    ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
-  if (pause) notes.unshift({ tag: '▲ uploads', sgr: WARN, text: [[uploadPauseText(pause), null]] });
+  if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -2755,7 +2778,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      notes.push({ tag: '▲ ports', sgr: WARN, text: [[`${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, null]] });
+      notes.push(warnNote('▲ ports', `${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`));
     }
   }
   notes.push(...cost.notes);
