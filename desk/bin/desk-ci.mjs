@@ -272,7 +272,12 @@ const computedInclude = (lines) => {
   if (mi < 0) return false;
   const kv = keyOf(lines[mi]);
   if (kv.value) {
-    const text = lines[mi].text;
+    // A flow mapping may run on over the lines after it: read it through to its closing brace.
+    let text = lines[mi].text;
+    for (const l of lines.slice(mi + 1)) {
+      if (nesting(text).braces <= 0) break;
+      if (!l.blank && !l.scalar) text += ` ${l.text}`;
+    }
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
       .some((m) => isFlowAxis(text, m.index) && computedFlow(text.slice(m.index + m[0].length)));
   }
@@ -282,6 +287,8 @@ const computedInclude = (lines) => {
     if (l.indent !== axisIndent || /^-\s/.test(l.text) || keyOf(l)?.key !== 'include') return false;
     const idx = mi + 1 + j;
     const { value } = keyOf(l);
+    // A block scalar (`|` or `>`) is one string: computed when its text holds an expression.
+    if (/^[|>][-+0-9]*$/.test(value)) return blockAfter(lines, idx).some((b) => b.scalar && b.text.includes('${{'));
     if (value) return computedFlow(flowValue(value, lines.slice(idx + 1)));
     const items = blockAfter(lines, idx).filter((b) => !b.blank && !b.scalar);
     const itemIndent = items[0]?.indent;
@@ -291,12 +298,13 @@ const computedInclude = (lines) => {
 
 // The values matrix.<key> can take, or null when the matrix is computed and cannot be read here. A
 // key directly under `matrix:` lists its values; one in an include or exclude entry is one value.
-function matrixValues(job, key) {
+// `includes: false` leaves a computed include unread, as it was before AWS runner labels existed.
+function matrixValues(job, key, { includes = true } = {}) {
   const strat = job.keys.strategy;
   if (!strat) return null;
   const vals = [];
   const lines = strat.block;
-  if (computedInclude(lines)) return null;
+  if (includes && computedInclude(lines)) return null;
   let found = false;
   const flow = new RegExp(`[{,]\\s*${key}\\s*:\\s*(\\[[^\\]]*\\]|[^,}]+)`, 'g');
   const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
@@ -506,7 +514,7 @@ function canResolveSelfHosted(job, awsLabels) {
       .replace(/'[^']*'\s*[!=]=\s*[\w.[\]-]+/g, '');
     for (const m of e.matchAll(/'([^']*)'/g)) cands.push(...tokens(m[1]));
     for (const m of e.replace(/'[^']*'/g, '').matchAll(/\b(matrix|inputs|vars|env|needs|steps|github|jobs)\.([\w-]+)/g)) {
-      const vals = m[1] === 'matrix' ? matrixValues(job, m[2]) : null;
+      const vals = m[1] === 'matrix' ? matrixValues(job, m[2], { includes: false }) : null;
       if (vals) cands.push(...vals.flat().flatMap(tokens)); else unknown = true;
     }
     return ' ';

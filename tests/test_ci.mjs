@@ -324,6 +324,12 @@ t('a quoted computed include is reported', linted(computedInc(`'${fromNeeds}'`),
 t('a quoted computed include item in a flow list is reported', linted(computedInc(`["${fromNeeds}"]`), VPA), 'm@9 m@13');
 t('a quoted computed include item in a block list is reported', linted(computedInc(`\n          - "${fromNeeds}"`), VPA), 'm@10 m@14');
 t('a computed include on the line after its key is reported', linted(computedInc(`\n          ${fromNeeds}`), VPA), 'm@10 m@14');
+t('a computed include written as a block scalar is reported', linted(computedInc(`>-\n          ${fromNeeds}`), VPA), 'm@10 m@14');
+t('a computed include in a flow matrix over several lines is reported',
+  linted(inlineMatrix(`{\n        include: "${fromNeeds}",\n        label: [voicepa-linux-arm64]\n      }`), VPA), 'm@10 m@14');
+const hostedInc = computedInc(fromNeeds).replace('[voicepa-linux-arm64]', '[ubuntu-latest]');
+t('AC9 with nothing declared, a computed include is read as before', linted(hostedInc), '');
+t('with labels declared, a computed include beside a hosted axis is reported', linted(hostedInc, VPA), 'm@9 m@13');
 t('a computed include in an inline matrix is reported',
   linted(inlineMatrix(`{ label: [voicepa-linux-arm64], include: "${fromNeeds}" }`), VPA), 'm@7 m@11');
 t('an include field inside an inline axis value is not the matrix\'s',
