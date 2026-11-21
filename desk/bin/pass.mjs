@@ -4177,6 +4177,14 @@ const UNDRAFT_HANDLERS = {
   rebuilt: (a) => rerunBuilt(a.t, a.pr, a.head, a.c, a.rec),
   evidence: (a) => startEvidence(a.t, a.pr, a.head, a.c, a.rec),
   ready: (a) => shOut('gh', ['pr', 'ready', String(a.pr), '--repo', GH_REPO]),
+  // The update is a new head, so a new preview build: it takes the branch's preview-build unit first.
+  'update-branch': (a) => {
+    const slot = a.branch ? previewSlot(a.t, a.branch) : {};
+    if (slot.wait) return { wait: slot.wait };
+    const r = shOut('gh', ['pr', 'update-branch', String(a.pr), '--repo', GH_REPO]);
+    if (r.ok) keepSlot(slot, a.pr); else freeSlot(slot);
+    return r;
+  },
   comment: (a) => shOut('gh', ['pr', 'comment', String(a.pr), '--repo', GH_REPO, '--body', a.body]),
   'record-carry': (a) => recordCarry(STATE, a.t.key, { head: a.head, from: a.from, reviews: a.reviews, handle: conflictHandle }),
   carried: (a) => { try { mkdirSync(DRIVER_DIR, { recursive: true }); writeFileSync(join(DRIVER_DIR, `carried-${a.pr}-${a.head}`), ''); } catch { /* the driver says it once more */ } },
@@ -4201,6 +4209,7 @@ runSteps({
     drafts: [...drafts], spine: qNow.spine, dry: DRY, at: PASS_AT, repo: GH_REPO, base: DEFAULT_BRANCH,
     cfg: {
       perm: E.permission('pr-ready'), permKey: E.permissionKey('pr-ready'), approved: qNow.approved?.undraft === true, rerun: E.permission('ci-rerun'),
+      updateBranch: E.permission('pr-update-branch'),
       localReview: E.configValue('local-review'), clean: E.configValue('clean-verdict'), judgement: E.permission('autopilot-judgement'),
       conflictUnreviewed: E.permission('pr-conflict-unreviewed'), conflictReviewed: E.permission('pr-conflict-reviewed'),
       handle: conflictHandle,

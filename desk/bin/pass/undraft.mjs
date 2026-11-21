@@ -29,13 +29,15 @@
 //   upload {key, t, pr, dir}           put dir's screenshots in the PR's body
 //   rerun-draft {key, t, pr, head, c}  re-run a draft's cancelled or timed-out runs (rerun.sh)
 //   cancel|build|rebuilt|evidence {key, t, pr, head, c, rec}   -> the undraft record after it
+//   update-branch {key, t, pr, branch} -> { ok, out } (gh pr update-branch, under the preview-build
+//                                      slot), or { wait } naming why it waits for a later pass
 //   ready {key, pr}                    -> { ok, out } (gh pr ready)
 //   comment {key, pr, body}            -> { ok, out } (gh pr comment)
 //   carried {key, pr, head}            record that the carry was said at this head
 //   note {line}                        a batch-notes line
 //   undraft-error {line}               a gh pr ready that failed, for the pass record
 //   evidence-failures {items}          settle the drafts whose evidence run failed, together
-import { undraftCall, undraftComment, personHold } from '../undraft.mjs';
+import { undraftCall, undraftComment, personHold, repairSaid } from '../undraft.mjs';
 import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
 import { dragCells } from '../evidence.mjs';
@@ -48,14 +50,14 @@ const cap = (s) => `${s[0].toUpperCase()}${s.slice(1)}`;
 
 // The undraft calls that act on a draft: undraft it, re-run or build its checks, or send it to a review
 // or fix worker. A person's hold stops every one of them, so each is checked against the PR's events.
-const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture', 'upload'];
+const UNDRAFT_ACTS =['ready', 'findings', 'checks', 'review', 'conflict', 'sync', 'rerun', 'repair', 'cancel', 'build', 'rebuilt', 'evidence', 'evidence-failed', 'capture', 'upload'];
 
 // The queue write that keeps a draft's undraft record `rec` on ticket t, or null when the record already
 // says it (its `at` aside) or on a dry run.
 export function undraftWrite(t, rec, { dry, at: now }) {
   const was = t.undraft ?? {};
   // unknown_since too, so a record from before it was kept gains one on its first pass with no answer.
-  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr', 'unknown_since'].some((k) => (was[k] ?? null) !== (rec[k] ?? null))) return null;
+  if (dry || !['call', 'why', 'action', 'sha', 'carried_from', 'pr', 'unknown_since', 'unknown_repair'].some((k) => JSON.stringify(was[k] ?? null) !== JSON.stringify(rec[k] ?? null))) return null;
   // at: when this call began on this PR, kept while both stay the same, so a person's step is aged from
   // when it became theirs, not from each pass that rewords it.
   const at = was.call === rec.call && (was.pr ?? null) === (rec.pr ?? null) ? was.at ?? now : now;
@@ -134,7 +136,7 @@ export function* decideRenames(snap) {
 //   spine         the batch's spine key (a spine's draft is not undrafted here)
 //   dry, at       a dry run; the pass's time, for the undraft record
 //   repo, base    §0 GitHub repo; the default branch
-//   cfg           undraftCall's configuration values: perm, permKey, approved, rerun, localReview,
+//   cfg           undraftCall's configuration values: perm, permKey, approved, rerun, updateBranch, localReview,
 //                 clean, judgement, conflictUnreviewed, conflictReviewed, handle, required, advisory,
 //                 stateChecks, builds, evidence, upload
 //   gates         { required, advisory } (gateLists), for the protected-files try
@@ -187,7 +189,7 @@ export function* decideUndraft(snap) {
       hold = ev.hold;
     }
     let rec = hold ? { call: 'held', why: hold.why, action: hold.action, sha: head ?? null, carried_from: null, pr: n }
-      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}) };
+      : { call: c.call, why: c.why ?? null, action: c.action ?? null, sha: head ?? null, carried_from: c.carried ?? null, pr: n, ...(c.unknown_since ? { unknown_since: c.unknown_since } : {}), ...(c.unknown_repair ? { unknown_repair: c.unknown_repair } : {}) };
     // Red only on a verdict state check while the reviewer check fails: no review or checks fix worker,
     // as out of draft. A review at the head with findings is not held: the hold is for a review that is
     // missing or stale, and those findings are the fix worker's whatever the reviewer check says.
@@ -248,6 +250,21 @@ export function* decideUndraft(snap) {
     else if (c.call === 'upload') {
       yield out(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`);
       yield { type: 'upload', key: t.key, t, pr: String(n), dir: c.dir };
+    }
+    else if (c.call === 'repair' && snap.dry) yield out(`undraft (dry run): would update PR #${n} (${t.key})'s branch from its base: ${c.why}`);
+    else if (c.call === 'repair') {
+      // One repair per spell with no answer: refused, it is the person's at once; a wait on the
+      // preview build records nothing, so the next pass tries it.
+      const r = yield { type: 'update-branch', key: t.key, t, pr: n, branch: v.headRefName ?? t.branch ?? null };
+      if (r.wait) {
+        yield out(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.stuck}; its branch update ${r.wait}`);
+        rec = { ...rec, call: 'wait', why: `${c.stuck}; its branch update ${r.wait}`, action: null };
+      } else {
+        const tried = { at: snap.at, head: head ?? null, ok: !!r.ok, ...(r.ok ? {} : { out: lastLine(r.out) }) };
+        rec = r.ok ? { ...rec, call: 'wait', why: `${c.why}: requested`, action: null, unknown_repair: tried }
+          : { ...rec, call: 'person', why: `${c.stuck}; ${repairSaid(tried)}`, action: c.action, unknown_repair: tried };
+        yield r.ok ? out(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}: requested`) : waiting(`${t.key}: DRAFT — PR #${n} stays draft: ${rec.why}. ${cap(rec.action)}`);
+      }
     }
     else if (c.call === 'rerun' && snap.dry) yield out(`undraft (dry run): would re-run run(s) ${c.runs.join(', ')} on PR #${n} (${t.key}): ${c.why}`);
     else if (c.call === 'rerun') yield { type: 'rerun-draft', key: t.key, t, pr: n, head, c };

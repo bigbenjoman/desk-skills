@@ -334,7 +334,11 @@ forever) and **no preview build starts without its team's preview-build lease** 
   ticket's draft PR (`undraft.mjs`, whoever runs the pass, the supervisor included), with its checks
   green too (a red §4 State check other than `desk-review verdict` does not hold it: its reviewer
   reads only ready PRs, and the driver holds the ready PR until it is green), then runs `gh pr ready` and writes that `batch-notes.md` line itself. One whose checks
-  are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass; any other draft it may not undraft is under WAITING ON
+  are still running, or whose mergeability GitHub has not worked out yet, waits for a later pass. A wedged
+  merge ref leaves a PR with no mergeability answer for good, so a draft or ready PR with none for 30 minutes
+  (`DESK_UNKNOWN_SECS`) has its branch updated once with `gh pr update-branch` where §3
+  `pr-update-branch` is `yes`, and with still no answer 30 minutes after that, or with no update
+  permitted, it is the person's, named with how long and what was tried. Any other draft it may not undraft is under WAITING ON
   YOU as `DRAFT`, with the reason and what to do. Either way it is recorded on the
   ticket as `undraft`; a feature spine is left to `queue.mjs approve`. **A draft the person put back
   to draft is theirs to hold**: one the pass undrafted before, or whose PR events hold a
