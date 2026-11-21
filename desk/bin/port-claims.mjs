@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Dev-server ports a peer session that runs no autopilot batch claimed, machine-wide, in ~/.desk-autopilot/port-claims.jsonl
-// (DESK_PORT_CLAIMS names another file): one JSON line per claim or release. The orchestrator records
+// (DESK_PORT_CLAIMS names another file): one JSON line per claim, release or lapse. The orchestrator records
 // what a peer's handshake said it holds, and every pass skips those ports when it gives a worker one,
 // whether or not the peer's server is up at that moment. Another batch's ports are never recorded here:
 // every pass already skips its workers' ports, and its published range is the one its own pass uses.
@@ -24,22 +24,59 @@ export const CLAIM_HOURS = 12;
 export const MAX_PORTS = 200;
 export const claimsPath = () => E.expandHome(process.env.DESK_PORT_CLAIMS ?? join(E.HOME, '.desk-autopilot', 'port-claims.jsonl'));
 
-const events = (path) => (existsSync(path)
-  ? readFileSync(path, 'utf8').split('\n').filter(Boolean).flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
-  : []);
+// The file read: each claimer's last event, the count of lines that do not parse, `missing` when there
+// is no file (no claims, not an error), and `error`, why the file could not be read at all. A `lapse`
+// event ends only the claim it names (`of`, that claim's `at`), so a pass dropping a lapsed claim never
+// ends a claim its peer renewed in between.
+function readFile(path) {
+  const last = new Map();
+  if (!existsSync(path)) return { last, torn: 0, missing: true, error: null };
+  let text;
+  try { text = readFileSync(path, 'utf8'); } catch (e) { return { last, torn: 0, missing: false, error: e.code ?? e.message }; }
+  let torn = 0;
+  for (const l of text.split('\n').filter((s) => s.trim())) {
+    let e;
+    try { e = JSON.parse(l); } catch { torn += 1; continue; }
+    if (!e?.by) continue;
+    if (e.event === 'lapse' && last.get(e.by)?.at !== e.of) continue;
+    last.set(e.by, e);
+  }
+  return { last, torn, missing: false, error: null };
+}
+const isClaim = (e) => e.event === 'claim'
+  && Number.isInteger(e.from) && Number.isInteger(e.to) && e.from > 0 && e.to >= e.from && e.to - e.from < MAX_PORTS;
+const isActive = (e, now) => isClaim(e) && Date.parse(e.until) > now;
 
 // The claims in force at `now`: each claimer's last event, when it is a claim not yet lapsed.
 export function activeClaims(now = Date.now(), path = claimsPath()) {
-  const last = new Map();
-  for (const e of events(path)) if (e?.by) last.set(e.by, e);
-  return [...last.values()].filter((e) => e.event === 'claim' && Date.parse(e.until) > now
-    && Number.isInteger(e.from) && Number.isInteger(e.to) && e.from > 0 && e.to >= e.from && e.to - e.from < MAX_PORTS);
+  return [...readFile(path).last.values()].filter((e) => isActive(e, now));
 }
-// Every port a claim in force holds.
-export function claimedPorts(now = Date.now(), path = claimsPath()) {
+const portsOf = (claims) => {
   const ports = new Set();
-  for (const c of activeClaims(now, path)) for (let p = c.from; p <= c.to; p += 1) ports.add(p);
+  for (const c of claims) for (let p = c.from; p <= c.to; p += 1) ports.add(p);
   return ports;
+};
+const rangeOf = (c) => (c.from === c.to ? String(c.from) : `${c.from}-${c.to}`);
+
+// What a pass reads before it gives a worker a port: `ports`, every port a claim in force holds, and
+// `lines` for its report. A claim that lapsed unrenewed is taken as its peer's session gone: with
+// `drop` it is recorded as lapsed, so the next pass does not report it again, and the line says it
+// was dropped. A file that is missing, cannot be read, or has lines that do not parse, is named, and
+// the pass picks from what it could read.
+export function passClaims({ now = Date.now(), path = claimsPath(), drop = true } = {}) {
+  const { last, torn, missing, error } = readFile(path);
+  if (missing) return { ports: new Set(), lines: [`ports: there is no port claims file ${path}, so no peer has claimed a port`] };
+  if (error) return { ports: new Set(), lines: [`ports: the port claims file ${path} cannot be read (${error}), so no peer's claimed ports were skipped`] };
+  const lines = torn ? [`ports: ${torn} line(s) of the port claims file ${path} do not parse and were skipped: a claim on one of them is not honoured until it is fixed or removed`] : [];
+  for (const c of last.values()) {
+    if (!isClaim(c) || isActive(c, now)) continue;
+    let kept = '';
+    if (drop) {
+      try { append({ at: new Date(now).toISOString(), by: c.by, event: 'lapse', of: c.at }, path); } catch (e) { kept = `, though recording that failed (${e.code ?? e.message}), so the next pass says so again`; }
+    }
+    lines.push(`ports: dropped ${c.by}'s claim on ${rangeOf(c)}, which lapsed unrenewed at ${c.until}, so its session is taken as gone${kept}`);
+  }
+  return { ports: portsOf([...last.values()].filter((e) => isActive(e, now))), lines };
 }
 
 // `3001` or `3001-3004` as { from, to }, or an error naming what is wrong.
@@ -61,7 +98,7 @@ export function claim({ from, to, by, hours = CLAIM_HOURS, now = Date.now(), pat
 export function release({ by, now = Date.now(), path = claimsPath() }) {
   append({ at: new Date(now).toISOString(), by, event: 'release' }, path);
 }
-export const claimLine = (c) => `${c.from === c.to ? c.from : `${c.from}-${c.to}`}  by ${c.by}  until ${c.until}`;
+export const claimLine = (c) => `${rangeOf(c)}  by ${c.by}  until ${c.until}`;
 
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
@@ -74,6 +111,8 @@ if (isMain) {
   const usage = 'usage: port-claims.mjs claim <port | from-to> --by <who> [--hours <n>] | release --by <who> | list';
   const die = (m) => { console.error(`port-claims: ${m}`); process.exit(EXIT.SHOW_PERSON); };
   if (cmd === 'list') {
+    const { error } = readFile(claimsPath());
+    if (error) die(`the port claims file ${claimsPath()} cannot be read (${error})`);
     const live = activeClaims();
     if (!live.length) console.log('no ports claimed');
     for (const c of live) console.log(claimLine(c));
