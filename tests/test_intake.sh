@@ -1427,12 +1427,13 @@ for _ in $(seq 1 120); do grep -A1 "intake: admitted PU-1 by push" "$T/state/sup
 for _ in $(seq 1 40); do [ -e "$T/state/supervisor.lock" ] || break; sleep 0.25; done
 check "push AC2: a supervisor tick starts at once, and its pass report lists the ticket" 'grep -q "started a supervisor tick now" <<< "$out" && grep -A1 "intake: admitted PU-1 by push into batch b1" "$T/state/supervisor.log" | grep -q "^no change this pass$" && [ ! -e "$T/state/intake.pushed" ]'
 n=$(count "$T/triage.calls")
-rec PC-1 C; rec PL-1 A '"lint":[{"severity":"blocking","rule":"ac","message":"no acceptance criteria"}]'; rec PQ-1 A '"unknowns":["which plan tier?"]'; rec PX-1 A '"size":"XL"'
-for k in PC-1 PL-1 PQ-1 PX-1; do out=$(push "$k"); eval "rc_${k//-/_}=$?"; eval "out_${k//-/_}=\$out"; done
+# PB-1, not PL-1: DS-506's case above admitted PL-1, so the register already holds it.
+rec PC-1 C; rec PB-1 A '"lint":[{"severity":"blocking","rule":"ac","message":"no acceptance criteria"}]'; rec PQ-1 A '"unknowns":["which plan tier?"]'; rec PX-1 A '"size":"XL"'
+for k in PC-1 PB-1 PQ-1 PX-1; do out=$(push "$k"); eval "rc_${k//-/_}=$?"; eval "out_${k//-/_}=\$out"; done
 check "push AC3: a lane C ticket is not admitted, is handed to the digest as intake hands it, and push exits 11 with the reason" \
   '[ "$rc_PC_1" -eq 11 ] && [ "$(qget tickets.PC-1)" = undefined ] && [ "$(handed PC-1)" = "handed: lane C: needs a plan" ] && grep -q "handed PC-1 to the digest: lane C: needs a plan" <<< "$out_PC_1"'
 check "push AC3: so are a blocking lint finding, open questions and size XL" \
-  '[ "$rc_PL_1$rc_PQ_1$rc_PX_1" = 111111 ] && [ "$(handed PL-1)" = "handed: lint (blocking): no acceptance criteria" ] && [ "$(handed PQ-1)" = "handed: open question(s): which plan tier?" ] && [ "$(handed PX-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
+  '[ "$rc_PB_1$rc_PQ_1$rc_PX_1" = 111111 ] && [ "$(handed PB-1)" ="handed: lint (blocking): no acceptance criteria" ] && [ "$(handed PQ-1)" = "handed: open question(s): which plan tier?" ] && [ "$(handed PX-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
 check "push AC3: no tick is started for a ticket not admitted" '[ "$(count "$T/wake.calls")" = 0 ]'
 n=$(count "$T/triage.calls")
 out=$(push PU-1); rc=$?
@@ -1447,6 +1448,8 @@ out=$(push PU-6); rc=$?
 check "push AC6: so does a batch on a base" '[ $rc -eq 11 ] && grep -q "^intake: admits nothing while batch b0 runs on base feat/x" <<< "$out" && [ "$(qget tickets.PU-6)" = undefined ]'
 rm -f "$DESK_QUEUE"
 rec PU-5 A; out=$(push PU-5); rc=$?
+# The tick push starts is a detached process: its line in wake.calls may land after push returns.
+for _ in $(seq 1 80); do [ "$(count "$T/wake.calls")" = 1 ] && break; sleep 0.25; done
 check "push AC5: with no live batch, a standing batch is started for it as intake starts one" \
   '[ $rc -eq 0 ] && [[ "$(qget batch)" == standing-* ]] && [ "$(qget supervised)" = true ] && [ "$(qget tickets.PU-5.state)" = triaged ] && grep -q "^intake: started standing batch standing-.*, handed to the supervisor$" <<< "$out" && [ "$(count "$T/wake.calls")" = 1 ]'
 running_batch
