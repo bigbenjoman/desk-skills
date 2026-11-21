@@ -15,9 +15,19 @@
 // SameSite=Strict session cookie and a per-load token; every other /api route needs both, the
 // per-load token in the X-Desk-Load header. Sessions live in memory, so a restart signs everyone out.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
+//
+// Writes: every POST below runs one of desk's own commands, from WRITES, through execFile with no
+// shell and an argv built here; the server never writes desk's files itself. Writes for one repo run
+// one at a time, in the order they arrived; another repo's do not wait. Each command's exit maps to
+// the status (0 200, 10 202, 11 409, anything else 500), and the body is { exit, stdout, stderr }.
+// Every command run is appended to ~/.desk-autopilot/ui/audit.jsonl with its free text redacted.
+//   POST /api/repos/<repo>/tickets/<KEY>/record {action, text?}   needs-you.mjs record <repo> <KEY> <action> [text]
+//   POST /api/repos/<repo>/tickets/<KEY>/answer {text, approve?}  answer.mjs <KEY> [--approve] <text>
+// DESK_UI_TEST_BIN names the folder those commands run from, read only under a test HOME.
 import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -65,10 +75,42 @@ function cookiesOf(req) {
 }
 const readToken = () => { try { return readFileSync(tokenFile(), 'utf8').trim() || null; } catch { return null; } };
 
+// ---- writes ----------------------------------------------------------------------------------
+
+const KEY = /^[A-Z][A-Z0-9]+-\d+$/;
+const VERB = /^[a-z][a-z-]*$/;
+// Taken with an argument of their own that this route does not send: their own routes add them.
+const NOT_HERE = new Set(['override', 'move']);
+// answer.mjs reads a leading argument equal to one of these as its flag, so such text is refused.
+const ANSWER_FLAGS = new Set(['--approve', '--all', '--taken']);
+const MAX_TEXT = 2000;
+const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
+const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs' };
+const STATUS = { 0: 200, 10: 202, 11: 409 };
+const binDir = () => (testHome() && process.env.DESK_UI_TEST_BIN) || HERE;
+const auditFile = () => join(logDir(), 'audit.jsonl');
+
+// One of WRITES, through no shell: { exit, stdout, stderr }, exit null when it did not exit with a code.
+function runWrite(name, args, { cwd, env }) {
+  return new Promise((resolve) => {
+    execFile(process.execPath, [join(binDir(), WRITES[name]), ...args],
+      { cwd, env, shell: false, timeout: WRITE_TIMEOUT_MS, maxBuffer: 1 << 20, encoding: 'utf8' },
+      (err, stdout, stderr) => resolve({ exit: err ? (Number.isInteger(err.code) ? err.code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
+  });
+}
+
+function audit(route, argv, exit) {
+  try {
+    mkdirSync(logDir(), { recursive: true });
+    appendFileSync(auditFile(), `${JSON.stringify({ at: new Date().toISOString(), route, argv, exit })}\n`, { mode: 0o600 });
+  } catch (e) { console.error(`desk-ui: audit: ${e.message}`); }
+}
+
 function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
+  const lanes = new Map(); // repo slug -> the end of its last queued write
   let rev = 0, lastBody = null;
 
   const send = (res, status, body, type = 'application/json; charset=utf-8', extra = {}) => {
@@ -115,6 +157,77 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
     });
   }
 
+  // `job` runs once every earlier write for the same repo has finished, however it ended.
+  function inLane(slug, job) {
+    const run = (lanes.get(slug) ?? Promise.resolve()).then(job);
+    const end = run.then(() => {}, () => {});
+    lanes.set(slug, end);
+    end.then(() => { if (lanes.get(slug) === end) lanes.delete(slug); });
+    return run;
+  }
+
+  async function loadAll() {
+    const Q = await import('./desk-q.mjs');
+    E.forgetReads();
+    return { Q, all: Q.loadRepos(Date.now()) };
+  }
+
+  // What a write runs, from desk's state read in its turn: { args, shown, at } or { refuse }.
+  async function planRecord(all, repo, key, { action, text }) {
+    const N = await import('./needs-you.mjs');
+    const items = N.listItems({ settle: false, repos: all }).items.filter((i) => i.repo === repo && i.ticket === key);
+    const offered = [...new Set(items.flatMap((i) => i.actions.map((a) => a.action)))];
+    if (!offered.includes(action)) return { refuse: [400, 'action', `${repo} ${key} does not offer ${action}${offered.length ? ` (it offers ${offered.join(', ')})` : ': nothing there needs you'}.`] };
+    const free = text === undefined ? [] : [text];
+    return { args: ['record', repo, key, action, ...free], shown: ['record', repo, key, action, ...free.map(() => '<redacted>')],
+      at: { env: E.otherRepoEnv() } };
+  }
+  function planAnswer(Q, batches, repo, key, { text, approve }) {
+    const r = batches.find((b) => b.q?.tickets?.[key]);
+    if (!r) return { refuse: [400, 'ticket', `${key} is in no batch of ${repo}.`] };
+    const t = r.q.tickets[key];
+    if (approve && !(t.state === 'parked' && t.park?.approve)) return { refuse: [400, 'approve', `${repo} ${key} has no write awaiting approval.`] };
+    let at;
+    try { at = Q.checkoutOf(r, 'answer it'); } catch (e) { return { refuse: [409, 'checkout', e.message] }; }
+    const flag = approve ? ['--approve'] : [];
+    return { args: [key, ...flag, text], shown: [key, ...flag, '<redacted>'],
+      at: { cwd: at.cwd, env: { ...at.env, DESK_AUTOPILOT_STATE: r.stateDir, DESK_QUEUE: r.queuePath } } };
+  }
+
+  async function write(req, res, path, kind, repoPart, keyPart) {
+    if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) return refuse(res, 415, 'content_type', 'JSON only.');
+    let body, repo, key;
+    try { body = JSON.parse(await readBody(req)); repo = decodeURIComponent(repoPart); key = decodeURIComponent(keyPart); }
+    catch { return refuse(res, 400, 'body', 'Send the request as JSON.'); }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return refuse(res, 400, 'body', 'Send the request as a JSON object.');
+    if (!KEY.test(key)) return refuse(res, 400, 'ticket', 'That is not a ticket key.');
+    const { text } = body;
+    if (text !== undefined && (typeof text !== 'string' || text.length > MAX_TEXT)) return refuse(res, 400, 'text', `The text must be a string of at most ${MAX_TEXT} characters.`);
+    if (kind === 'record' && (typeof body.action !== 'string' || !VERB.test(body.action) || NOT_HERE.has(body.action))) return refuse(res, 400, 'action', 'That action is not one this route records.');
+    if (kind === 'answer') {
+      if (typeof text !== 'string' || !text.trim()) return refuse(res, 400, 'text', 'An answer needs its text.');
+      if (ANSWER_FLAGS.has(text)) return refuse(res, 400, 'text', 'That text reads as one of answer.mjs\'s flags.');
+      if (body.approve !== undefined && typeof body.approve !== 'boolean') return refuse(res, 400, 'approve', 'approve is true or false.');
+    }
+    let done;
+    try {
+      const first = await loadAll();
+      const slug = first.all.find((r) => r.repo === repo)?.slug;
+      if (!slug) return refuse(res, 400, 'repo', 'That is not a configured repo.');
+      done = await inLane(slug, async () => {
+        // Read again in its turn: a write ahead of this one may have changed what the ticket offers.
+        const { Q, all } = await loadAll();
+        const plan = kind === 'record' ? await planRecord(all, repo, key, body) : planAnswer(Q, all.filter((r) => r.repo === repo), repo, key, body);
+        if (plan.refuse) return plan;
+        const ran = await runWrite(kind, plan.args, plan.at);
+        audit(path, [WRITES[kind], ...plan.shown], ran.exit);
+        return { ran };
+      });
+    } catch (e) { console.error(`desk-ui: ${kind}: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
+    if (done.refuse) return refuse(res, ...done.refuse);
+    return send(res, STATUS[done.ran.exit] ?? 500, done.ran);
+  }
+
   async function handle(req, res) {
     const path = String(req.url ?? '/').split('?')[0];
     const method = req.method ?? 'GET';
@@ -139,6 +252,8 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
     const s = session(req);
     if (path.startsWith('/api/')) {
       if (!s || !same(String(req.headers[LOAD_HEADER] ?? ''), s.load)) return refuse(res, 401, 'unauthorized', 'Not signed in.');
+      const w = path.match(/^\/api\/repos\/([^/]+)\/tickets\/([^/]+)\/(record|answer)$/);
+      if (w) return method === 'POST' ? write(req, res, path, w[3], w[1], w[2]) : refuse(res, 405, 'method', 'POST only.');
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
       if (path === '/api/snapshot') {
         try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
