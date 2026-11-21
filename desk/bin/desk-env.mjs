@@ -2489,7 +2489,21 @@ if (isMain) {
           console.log(`${tool} ${name}: removed; ${r.login.folder} and its sign-in are left as they are`);
           break;
         }
-        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name>`);
+        if (sub === 'pin' && rest.length === 2 && rest[0] === 'claude') {
+          const r = L.pinLogin(subs, { tool: 'claude', name: rest[1], check: () => L.checkLogins(subs) });
+          console.log(writeWithBackup(path, r.text));
+          console.log(`claude ${r.login.name}: pinned to ${r.login.account}, ${L.ruleWord(r.login)}`);
+          break;
+        }
+        if (sub === 'migrate' && rest.length === 0) {
+          if (!L.needsPinMigration(subs)) { console.log('nothing to migrate'); break; }
+          const r = L.migratePins(subs, () => L.checkLogins(subs));
+          if (r.text === null) { console.log('nothing to migrate'); break; }
+          console.log(writeWithBackup(path, r.text));
+          if (r.hint) console.log(`add ${r.hint} with a in view 6`);
+          break;
+        }
+        console.error(`usage: desk-env.mjs logins list|check [--json] | default <claude|codex> <name|account> | set <claude|codex> <name> <${Object.keys(L.SET_WORDS).join('|')}> | remove <claude|codex> <name> | pin claude <name> | migrate`);
         process.exit(2);
         break;
       }

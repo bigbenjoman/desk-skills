@@ -55,8 +55,8 @@ import { claudeLogins, inUse, loginKey, loginOf, probeLogins, workerLoginDir, wo
 import { holdOn } from './call-login.mjs';
 import { codexReading } from './codex-login.mjs';
 import { codexLogins } from './codex-usage.mjs';
-import { claudeAccount, claudeJsonPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins, nextLoginFolder, readSubscriptions,
-  repoSubscription, signInParts, toolDefault } from './logins.mjs';
+import { claudeAccount, claudeJsonPath, codexAccount, codexAuthPath, defaultLogin, defaultOf, dropNewFolder, login as makeLogin, loginLabelOf, makeLabelledFolder, migrateLogins,
+  multiAccount, needsPinMigration, nextLoginFolder, readSubscriptions, repoSubscription, signInParts, toolDefault } from './logins.mjs';
 import { limitName, limitWord } from './usage-limit.mjs';
 import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, prevMonth, actionsCharged, awsByName, vercelLabel } from './cost-cache.mjs';
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
@@ -911,12 +911,16 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // reading fresh. With more, the default and each login a repo is pinned to, desk-q's own among them,
 // while no worker runs on it, judged on that login's own probe reading. A subscription no repo runs on
 // is never probed, desk-q's own included; with no rule, as one login no file names, desk-q's own is.
+// With accounts pinned, ~/.claude is the person's own Claude Code and is never probed.
 //   -> [{ login }]
+// True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
+const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
+const pinnedOwn = (own) => !!own && !own.configDir && pinnedFile();
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
   const probed = probedBy();
-  const probeOwn = !own || own.rule == null || (inUse(own) && probed(own));
+  const probeOwn = !pinnedOwn(own) && (!own || own.rule == null || (inUse(own) && probed(own)));
   if (!own || !others.length) return probeOwn && probeDue({ running: machineRunning(repos), reading: readUsage({ login: own, now }), now }) ? [{ login: own }] : [];
   return [...(probeOwn ? [own] : []), ...others.filter(probed)].filter((login) => probeDue({ running: runningOn(repos, login), reading: readLoginUsage({ login, now }), now })).map((login) => ({ login }));
 }
@@ -2105,28 +2109,30 @@ const defaultOutNote = (s, now) => ({ tag: '▲ usage', sgr: WARN, text: default
 // ---- Usage -------------------------------------------------------------------------------------
 // View 6: every Claude and Codex login on this computer, a table per tool, each login with its plan, its
 // rule, both windows and the workers on it. A Claude login's plan and email are what its .claude.json
-// records; a Codex login's plan is what its newest reading logs, and its name is its label. Sign-in is
+// records; a Codex login's are its auth.json id_token's, never the plan its session log names, and with
+// no email its name is its label. Sign-in is
 // the account check's (`desk-env logins check`), which the screen runs in the background: `checked` maps
 // `<tool> <folder>` to each login it lists, and a found folder it leaves out is signed out. Until a check
 // has run, every login reads as signed in.
 const U_NAME = 25, U_PLAN = 9, U_USE = 14, U_5H = 21, U_7D = 25, U_WORKERS = 7;
 const UNUSED_CELL = ['○ unused', GREY];
-// A Claude login's .claude.json, read again only when it changes: the default's ~/.claude.json is large.
+// A login's account: a Claude login's .claude.json (the default's ~/.claude.json is large) or a Codex
+// login's auth.json id_token payload, each read again only when the file changes.
 const accounts = new Map();
 function accountOf(l) {
-  if (l.tool !== 'claude') return { email: null, plan: null };
-  const path = claudeJsonPath(l);
+  const codex = l.tool === 'codex';
+  const path = codex ? codexAuthPath(l) : claudeJsonPath(l);
   let m = null;
   try { m = statSync(path).mtimeMs; } catch { /* no file: nothing recorded */ }
   const had = accounts.get(path);
   if (had && had.m === m) return had.a;
-  const a = m == null ? { email: null, plan: null } : claudeAccount(l);
+  const a = m == null ? { email: null, plan: null } : codex ? codexAccount(l) : claudeAccount(l);
   accounts.set(path, { m, a });
   return a;
 }
-// What the view calls a login: a Claude login's email where its folder records one, a Codex login's
-// label where it was given one, else its name.
-const loginLabel = (l) => (l.tool === 'codex' ? loginLabelOf(l) : accountOf(l).email) ?? l.name;
+// What the view calls a login: a Claude login's pinned account, else the email its folder records, else
+// a Codex login's label where it was given one, else its name.
+const loginLabel = (l) => (l.tool === 'claude' ? l.account : null) ?? accountOf(l).email ?? (l.tool === 'codex' ? loginLabelOf(l) : null) ?? l.name;
 // What a repo's subscription row is called: the login it names, else the email it names; null with no row.
 const subLabel = (s) => (s ? (s.login ? loginLabel(s.login) : s.email) : null);
 const checkKey =(tool, configDir) => `${tool} ${configDir ?? defaultLogin(tool).dir}`;
@@ -2156,16 +2162,24 @@ const repoName = (repos, slug) => repos.find((r) => r.slug === slug)?.name ?? St
 // { at, type } while the login is at its limit (a batch here holds on it, or its Codex reading is at
 // one); `workers` is null for Codex, whose calls desk does not count per login; `check` is the account
 // check's entry, null with none; `use` is { def, pinned: [repo name] }, `def` the tool's default login.
+// A Claude row's `multi` is true while the file pins accounts: a found folder the check left out is then
+// not set up, never just signed out.
 function usageTable(repos, now, checked = null) {
   const dirs = stateDirs({ self: usageDir() });
-  const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? (l.source === 'found' ? { state: 'signed out' } : null));
+  const multi = pinnedFile();
+  const missing = (l) => (l.source !== 'found' ? null : multi && l.tool === 'claude' ? { state: 'not set up', why: 'signed out' } : { state: 'signed out' });
+  const checkOf = (l) => (!checked ? null : checked.get(checkKey(l.tool, l.configDir)) ?? missing(l));
   let uses = { defaults: {}, pinned: [], following: [], bySlug: new Map() };
   try { uses = loginUses(); } catch { /* an unreadable file: every login unused */ }
   const useOf = (l) => ({ def: uses.defaults[l.tool] ?? null, isDefault: uses.defaults[l.tool]?.dir === l.dir,
     pinned: l.tool === 'claude' ? uses.pinned.filter((s) => s.login.dir === l.dir).map((s) => repoName(repos, s.slug)) : [] });
-  const claude = claudeLogins().map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
-    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l) }));
-  const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: x.reading.plan, reading: x.claude,
+  // With accounts pinned every account has a row, its folder there or not: a pinned account whose folder
+  // is gone shows as not signed in, with the command that signs it in (and makes the folder).
+  const listed = claudeLogins();
+  const gone = multi ? readSubscriptions(subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.account && !listed.some((o) => o.dir === l.dir)) : [];
+  const claude = [...listed, ...gone].map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
+    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi }));
+  const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: accountOf(x.login).plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
   for (const list of [claude, codex]) if (list.length === 1) list[0].use = { ...list[0].use, def: list[0].login, isDefault: true };
@@ -2240,17 +2254,31 @@ function useCell(x) {
   const n = x.use?.pinned.length ?? 0;
   return n ? [`● ${n} repo${n === 1 ? '' : 's'}`, HUE.blue] : UNUSED_CELL;
 }
-// A signed-out or refused login has one cell across both windows, saying desk won't use it.
-const unusable = (x) => (x.check?.state === 'signed out' ? '◆ signed out: desk won\'t use it'
-  : x.check?.state === 'duplicate' ? `◆ the same account as ${x.check.duplicateOf}: desk won't use it` : null);
+// The login a second folder on one account repeats (the check's `sameAs`), or null: a not set up folder
+// for another reason is not one.
+const sameAccountAs = (check) => (check?.state === 'not set up' ? check.sameAs ?? null : null);
+// A login desk won't use has one cell across both windows, saying why: with accounts pinned, not signed
+// in or on another account (which it names); without, signed out; either way, not set up.
+function unusable(x) {
+  const s = x.check?.state;
+  if (s === 'signed out') return x.multi ? '◆ not signed in: desk won\'t use it' : '◆ signed out: desk won\'t use it';
+  if (s === 'wrong account') return `◆ on ${x.check.liveEmail}: desk won't use it`;
+  return s === 'not set up' ? '◆ not set up: desk won\'t use it' : null;
+}
+// The command that makes a row desk won't use usable again, signing its folder in, or null.
+const fixCommand = (x) => (x?.login && unusable(x) ? signInParts(x.login).shell : null);
+// A row's name: with accounts pinned a not set up folder has no account, so its folder's name.
+const rowLabel = (x) => (x.multi && x.check?.state === 'not set up' ? x.login.name : loginLabel(x.login));
 function loginRow(x, now, solid) {
   const no = unusable(x);
   const windows = no ? fitCell([[no, YOU]], U_5H + U_7D)
     : [...fitCell(x.login.rule === 'off' ? [['not used', GREY]] : windowCell(x, 'five_hour', now, solid), U_5H), ...fitCell(windowCell(x, 'seven_day', now, solid), U_7D)];
   const workers = x.workers == null ? ['—', GREY] : [String(x.workers), x.workers ? null : GREY];
-  const segs = [['  ', null], ...fitCell([[cut(loginLabel(x.login), U_NAME - 1), null]], U_NAME), ...fitCell([[x.plan ?? '—', no || !x.plan ? GREY : null]], U_PLAN),
+  // With accounts pinned, a row desk won't use shows no plan: its folder's may be another account's.
+  const plan = no && x.multi ? null : x.plan;
+  const segs = [['  ', null], ...fitCell([[cut(rowLabel(x), U_NAME - 1), null]], U_NAME), ...fitCell([[cut(plan ?? '—', U_PLAN - 1), no || !plan ? GREY : null]], U_PLAN),
     ...fitCell([useCell(x)], U_USE), ...windows, ...fitCell([workers], U_WORKERS, true)];
-  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use };
+  return { id: `login ${checkKey(x.tool, x.login.configDir)}`, segs: segs.filter(([s]) => s), line: segText(segs), login: x.login, check: x.check, use: x.use, fix: fixCommand(x) };
 }
 const tableHead = (name) => bold(`  ${pad(name, U_NAME)}${pad('PLAN', U_PLAN)}${pad('USE', U_USE)}${pad('5H', U_5H)}${pad('7D', U_7D)}${rpad('WORKERS', U_WORKERS)}`);
 
@@ -2316,57 +2344,79 @@ function dropdownRows(d) {
 // The grey line under the repo table, saying how to change a repo's subscription.
 const repoHint = () => segLine([['  Select a repo and press ', GREY], ['enter', BOLD], [', or click its subscription, to change which one it runs on.', GREY]]);
 
-// The line under the tabs: the Claude default at its limit, and when its workers start again; else a
-// login that is signed out, which desk can't use; else with one login per tool, that every worker runs
-// on it; else the Claude default, which every repo not pinned runs on.
+// The line under the tabs: the Claude default at its limit, and when its workers start again; else an
+// account whose sign-in was switched to another, or a login that is signed out, which desk can't use;
+// else with one login per tool, that every worker runs on it; else the Claude default, which every repo
+// not pinned runs on.
 function usageHeadline(t, now) {
   const def = t.claude.find((x) => x.use?.isDefault);
   const l = def?.limit;
   if (l) return segLine(defaultLimitSegs(loginLabel(def.login), l, now));
+  const wrong = t.claude.find((x) => x.check?.state === 'wrong account');
+  if (wrong) return segLine([[loginLabel(wrong.login), BOLD], ["'s sign-in was switched to another account, so desk has stopped using it.", GREY]]);
   const out = [...t.claude, ...t.codex].find((x) => x.check?.state === 'signed out');
   if (out) return segLine([[loginLabel(out.login), BOLD], [" isn't signed in yet, so desk can't use it.", GREY]]);
   if (!def || (t.claude.length <= 1 && t.codex.length <= 1)) return segLine([['Every worker runs on the one login desk knows here. A batch waits when that login is at its limit.', GREY]]);
   return segLine([['Workers run on ', GREY], [loginLabel(def.login), BOLD], [", this computer's default, unless their repo is pinned.", GREY]]);
 }
 
-// A login being added: { tool, login, label }, its folder not signed in yet. It is one row, unused and
-// waiting, until the account check finds its folder signed in.
-const isAdding = (adding, x) => adding && x.login.tool === adding.tool && x.login.dir === adding.login.dir;
+// A login being added: { tool, login, label, first, taken }, its folder not signed in yet. It is one row,
+// unused and waiting, until the account check finds its folder signed in. On a computer with no pins, a
+// Claude add first signs the current account in to a folder of its own: `first` is { email, next }, the
+// account and the new account's folder after it. `taken` is the pinned account the folder was signed in
+// to instead of a new one.
+const isAdding = (adding, x) => adding && x.login.tool === adding.tool && [adding.login.dir, adding.first?.next.dir].includes(x.login.dir);
 // What desk-q calls a login being added: a Codex one by the label typed for it, a Claude one as the new
 // account, never by its folder's name, which reads as an account in the column of emails.
 const addingName = (a) => a.label ?? 'the new account';
 function addingRow(a) {
-  const segs = [['  ', null], ...fitCell([[cut(a.label ?? 'new account', U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([UNUSED_CELL], U_USE),
-    ...fitCell([['waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[a.tool === 'claude' ? '0' : '—', GREY]], U_WORKERS, true)];
+  const claude = a.tool === 'claude';
+  const name = claude ? a.first?.email ?? 'new account' : a.label ?? a.login.name;
+  const segs = [['  ', null], ...fitCell([[cut(name, U_NAME - 1), null]], U_NAME), ...fitCell([['—', GREY]], U_PLAN), ...fitCell([UNUSED_CELL], U_USE),
+    ...fitCell([[claude ? 'waiting for you to sign in…' : 'waiting for you to sign in: steps below', GREY]], U_5H + U_7D), ...fitCell([[claude ? '0' : '—', GREY]], U_WORKERS, true)];
   return { id: 'adding', segs: segs.filter(([s]) => s), line: segText(segs) };
 }
 // Lines of coloured runs wrapped to `w`, the first after `lead` and the rest under it.
 const leadLines = (lead, segs, w) => wrapSegs(segs, Math.max(20, w - lead.length)).map((l, i) => segLine([[i ? ' '.repeat(lead.length) : lead, null], ...l]));
-// How to sign the login being added in, in place of the key and notes while desk-q waits.
-function addPanel(a, t, w) {
+// A numbered step, its runs wrapped under the text after the number.
+const stepLines = (n, segs, w) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
+// How to sign the Claude account being added in, in place of the key and notes while desk-q waits.
+function addAccountPanel(a, w) {
   const { shell, then } = signInParts(a.login);
-  const claude = a.tool === 'claude';
-  const tool = claude ? 'Claude' : 'Codex';
-  const step = (n, segs) => leadLines('     ', segs, w).map((l, i) => (i ? l : segLine([['  ', null], [n, BOLD], ['  ', null], ...l.segs.slice(1)])));
+  const steps = a.first
+    ? [...stepLines('1', [['In another terminal, run ', null], [shell, HUE.cyan], [', then type ', null], [then, HUE.cyan], [` and sign in to ${a.first.email}.`, null]], w),
+      ...stepLines('2', [['Then desk asks for the account you want to add, in a folder of its own.', null]], w)]
+    : [{ ...segLine([['  ', null], ['1', BOLD], ['  In another terminal, run ', null], [shell, HUE.cyan]]), whole: true },
+      ...stepLines('2', [['Type ', null], [then, HUE.cyan], [' and sign in to the account you want to add.', null]], w)];
   return [
-    bold(`  Add another ${tool} account`),
-    ...leadLines('  ', [[`Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with ${claude ? "Claude Code's" : "Codex's"} own login, in a folder of its own.`, GREY]], w),
+    bold('  ADD A CLAUDE ACCOUNT'),
     '',
-    ...step('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]]),
+    ...steps,
+    '',
+    ...leadLines('  ', [["Desk adds the account, unused, as soon as it sees you're signed in. An account that's already listed isn't added twice: desk asks you to sign in to a different one.", GREY]], w),
+    ...(a.taken ? ['', ...leadLines('  ', [[`That's ${a.taken}, which desk already has. Sign this folder in to a different account, or press esc.`, null]], w)] : []),
+  ];
+}
+// How to sign the Codex login being added in.
+function addPanel(a, w) {
+  const { shell } = signInParts(a.login);
+  return [
+    bold('  Add another Codex account'),
+    ...leadLines('  ', [["Workers are shared across your accounts, so a batch keeps running when one reaches its limit. desk never sees your password: you sign in with Codex's own login, in a folder of its own.", GREY]], w),
+    '',
+    ...stepLines('1', [['Open a new terminal tab and paste this (press ', null], ['y', BOLD], [' to copy it):', null]], w),
     { ...segLine([['       ', null], [shell, HUE.cyan]]), whole: true },
-    ...step('2', claude ? [['In that window, type ', null], [then, HUE.cyan], [' and sign in with an account not listed above.', null]]
-      : [['Sign in with an account not listed above.', null]]),
-    ...step('3', [[claude ? 'Come back here. Within a minute, "new account" changes to its email and plan.'
-      : `Come back here. Within a minute, ${a.label} shows as signed in.`, null], [' It starts unused: press ', null], ['d', BOLD], [' on it to make it the default.', null]]),
-    ...(claude && t.codex.length ? ['', ...leadLines('  ', [['To add a Codex account, select the CODEX table and press ', GREY], ['a', BOLD], ['. It asks for a name first.', GREY]], w)] : []),
+    ...stepLines('2', [['Sign in with an account not listed above.', null]], w),
+    ...stepLines('3', [[`Come back here. Within a minute, ${a.label} shows its email and plan, or stays ${a.label} where its sign-in names no email.`, null], [' It starts unused: press ', null], ['d', BOLD], [' on it to make it the default.', null]], w),
   ];
 }
 
 // -> { head, rows, foot, following }: the line under the tabs; each tool's table, a heading row and a row
-// per login; then with one login per tool an offer to add one, a note per signed-out login and for logins
-// with no reading, and when they were read. While a login is being added (`adding`), its row waits,
-// unused, and the foot says how to sign it in. `following` names the repos on the Claude default.
-function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null, drop = null } = {}) {
+// per login; then with one login per tool an offer to add one, with accounts pinned the account lines, a
+// note per login desk won't use and for logins with no reading, and when they were read. While a login is
+// being added (`adding`), its row waits, unused, and the foot says how to sign it in. `following` names
+// the repos on the Claude default. `selected` is the selected row's id.
+function usageParts(repos, { now = Date.now(), width = null, checked = null, adding = null, drop = null, selected = null } = {}) {
   const u = usageTable(repos, now, checked);
   const t = { claude: u.claude.filter((x) => !isAdding(adding, x)), codex: u.codex.filter((x) => !isAdding(adding, x)) };
   const solid = solidBars(width);
@@ -2389,16 +2439,13 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
     ? [repoUseHead(), ...u.repos.flatMap((r) => (r === x ? [row(r), ...dropdownRows(d)] : [row(r)])), ...under] : [];
   const rows = [claudeRows, repoRows, codexRows].filter((b) => b.length).flatMap((b, i) => [...(i ? [{ line: '' }] : []), ...b]);
   const following = u.following;
-  if (adding) return { head: [usageHeadline(t, now), ''], rows, foot: ['', ...addPanel(adding, t, w)], following };
+  const head = [...leadLines('', usageHeadline(t, now).segs, w), ''];
+  if (adding) return { head, rows, foot: ['', ...(adding.tool === 'claude' ? addAccountPanel(adding, w) : addPanel(adding, w))], following };
   const all = [...t.claude, ...t.codex];
   const key = t.claude.length <= 1 && t.codex.length <= 1
     ? leadLines('  ', [['If you have another Claude or Codex subscription, add it to make it the default or pin repos to it. Nothing moves to another subscription on its own. Press ', null], ['a', BOLD], [' to add a login.', null]], w)
     : [];
-  const notes = all.filter((x) => x.check?.state === 'signed out').map((x) => {
-    const p = signInParts(x.login);
-    return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], [p.shell, HUE.cyan],
-      ...(p.then ? [[', then ', null], [p.then, HUE.cyan]] : [])] };
-  });
+  const notes = all.map(fixNote).filter(Boolean);
   const unread = t.claude.filter((x) => inUse(x.login) && !unusable(x) && x.reading?.at == null);
   if (unread.length) {
     const probed = probedBy();
@@ -2408,8 +2455,49 @@ function usageParts(repos, { now = Date.now(), width = null, checked = null, add
   }
   const read = all.map((x) => x.reading?.at).filter((a) => a != null);
   const readLine = dim(read.length ? `  Read at ${resetText(Math.max(...read), now)} from worker logs.` : '  No login has a reading yet.');
-  const blocks = [key, notes.length ? noteLines(notes, 14, w) : [], [readLine]].filter((b) => b.length);
-  return { head: [usageHeadline(t, now), ''], rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
+  const tagW = Math.max(14, ...notes.map((n) => n.tag.length + 1));
+  const blocks = [key, accountLines(t, rows, selected, w), notes.length ? noteLines(notes, tagW, w) : [], [readLine]].filter((b) => b.length);
+  return { head, rows, foot: blocks.flatMap((b) => ['', ...b]), following, drop: d };
+}
+
+// With accounts pinned, the lines under the key: that desk's sign-ins are its own, the selected
+// Claude row's folder, and ~/.claude's account when no row is pinned to it, which a adds.
+function accountLines(t, rows, selected, w) {
+  if (!t.claude.some((x) => x.multi)) return [];
+  const x = rows.find((r) => r.id != null && r.id === selected) ?? rows.find((r) => r.id != null);
+  const own = accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null;
+  const unpinned = own && !t.claude.some((c) => c.login.account === own) ? own : null;
+  return [...leadLines('  ', [['Desk keeps its own sign-ins, so switching account in your own Claude Code changes nothing here.', GREY]], w),
+    ...(x?.login?.tool === 'claude' && x.login.account ? leadLines('  ', [[`${x.login.account} signs in for desk through ${x.login.folder}.`, GREY]], w) : []),
+    ...(unpinned ? leadLines('  ', [[`${unpinned} isn't one of desk's accounts yet. Press `, GREY], ['a', BOLD], [' to add it.', GREY]], w) : [])];
+}
+
+// The note for a row desk won't use: what is wrong and the command that puts it right, which y copies.
+// Without accounts pinned, a signed-out login's note is the one it always was.
+function fixNote(x) {
+  const s = x.check?.state;
+  if (!unusable(x)) return null;
+  const p = signInParts(x.login);
+  const cmd = [p.shell, HUE.cyan];
+  const login = p.then ? [p.then, HUE.cyan] : null;
+  const press = [['Press ', null], ['y', BOLD], [' to copy the command', null]];
+  if (s === 'signed out' && !x.multi) {
+    return { tag: '◆ sign in', sgr: YOU, text: [[`${loginLabel(x.login)} is signed out. Sign it back in, in another terminal: `, null], cmd,
+      ...(login ? [[', then ', null], login] : [])] };
+  }
+  const email = loginLabel(x.login);
+  const then = (to) => (login ? [[', then type ', null], login, [` and sign in to ${to}. `, null]] : [[`, and sign in to ${to}. `, null]]);
+  if (s === 'signed out') {
+    return { tag: '◆ sign in', sgr: YOU, text: [[`${email} isn't signed in for desk yet. In another terminal, run `, null], cmd, ...then(email), ...press, ['.', null]] };
+  }
+  if (s === 'wrong account') {
+    return { tag: '◆ wrong account', sgr: YOU, text: [[`Desk's sign-in for ${email} is now on ${x.check.liveEmail}, so desk counts that account once and has stopped using this one. To switch it back, run `, null],
+      cmd, [' in another terminal', null], ...then(email), ...press, ['.', null]] };
+  }
+  const name = x.login.name;
+  const first = x.check.sameAs && x.check.account ? `${name} is pinned to the same account as ${x.check.sameAs}.` : `${name} isn't one of desk's accounts.`;
+  return { tag: '◆ not set up', sgr: YOU, text: [[`${first} To add it, run `, null], cmd, [' in another terminal', null],
+    ...(login ? [[', type ', null], login, [', and', null]] : [[' and', null]]), [' sign in to an account desk doesn\'t have. ', null], ...press, [', or ', null], ['x', BOLD], [' to remove it.', null]] };
 }
 
 // The red bands, one for each reason no pass can run: a batch handed to a supervisor that is not
@@ -3765,7 +3853,7 @@ export function interactive({
   // Usage's account check: `checked` the last one's logins by checkKey, at `checkedAt`; `checking` while
   // one runs. `saving` while a rule change or removal runs; `undo`, what u puts back.
   let checked = null, checkedAt = null, checking = false, saving = false, undo = null;
-  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` ({ tool, login, label })
+  // Adding a login: `typed`, a Codex login's label as it is typed, then `adding` (as isAdding describes)
   // until the check finds it signed in or esc stops it, the check rerun by `addTimer`.
   let typed = null, adding = null, addTimer = null;
   // A repo's subscription dropdown, open: { slug, at }, `at` the option ↑↓ is on (null: the ✓ one).
@@ -3819,13 +3907,13 @@ export function interactive({
     keepTab();
     if (tab === 'usage' && hasTabs()) {
       if (!checking && (checkedAt == null || now - checkedAt >= CHECK_EVERY_MS)) checkLogins();
-      const s = usageParts(repos, { now, width: w, checked, adding, drop });
-      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy the command · esc cancel adding · : command · q quit` };
+      const s = usageParts(repos, { now, width: w, checked, adding, drop, selected: selId });
+      if (adding) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · y copy command · esc stop adding · : command · q quit` };
       // The digits pick while it is open, so only ←→ change view.
       if (s.drop) return { badge: '', ...s, keys: `↑↓ choose · ←→ view · ${pickKeys(s.drop)} pick · enter save · esc close · q quit` };
       const x = s.rows.find((row) => row.id != null && row.id === selId) ?? s.rows.find((row) => row.id != null);
       if (x?.repo) return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · enter change subscription · a add${undo ? ' · u undo' : ''} · ${cmdKeys}` };
-      const copy = x?.check?.state === 'signed out' ? ' · y copy the sign-in command' : '';
+      const copy = x?.fix ? ' · y copy command' : '';
       return { badge: '', ...s, keys: `↑↓ select · ${VIEW_KEYS} · ${s.rows.length ? 'd make default · ' : ''}a add${s.rows.length ? ` · x remove${copy}` : ''}${undo ? ' · u undo' : ''} · ${cmdKeys}` };
     }
     // The Claude usage line is pinned above the keys, not in the header: every repo shown on home,
@@ -4007,20 +4095,48 @@ export function interactive({
       checkedAt = clock();
       try { checked = new Map(JSON.parse(r.out).logins.map((l) => [checkKey(l.tool, l.configDir), l])); } catch { checked = null; }
       if (!done && adding) addChecked();
+      if (!done) settleAccounts();
       if (!done && usageTab()) draw();
+    });
+  }
+  // After a check, an old file is migrated to account pins, and then each signed-in folder no account is
+  // pinned to yet is pinned, unused, as desk-env logins migrate and pin do. Each is tried once a
+  // session, so one that fails is not retried on every check; the check after it shows the result. A
+  // session that has added a login migrates nothing: the folder it added is the add flow's.
+  const tried = new Set();
+  function settleAccounts() {
+    if (saving || !checked) return;
+    let subs;
+    try { subs = readSubscriptions(subscriptionsPath()); } catch { return; }
+    if (subs.errors.length) return;
+    const pin = [...checked.values()].find((l) => l.tool === 'claude' && l.pinnable && !tried.has(`pin ${l.name}`));
+    const args = needsPinMigration(subs) ? (tried.has('migrate') ? null : ['migrate']) : pin ? ['pin', 'claude', pin.name] : null;
+    if (!args) return;
+    tried.add(args[0] === 'migrate' ? 'migrate' : `pin ${pin.name}`);
+    saving = true;
+    loginsWith(args, () => {
+      saving = false;
+      lastLogins = null;
+      if (!done && !checking) checkLogins();
     });
   }
 
   // ---- adding a login ----
   // The next folder for a login of `tool`, its row waiting on standby and the check rerun until it is
   // signed in. A Codex login's folder is made now, holding its label; a Claude one is made by its sign-in.
+  // With no Claude account pinned and ~/.claude signed in, the first folder is for ~/.claude's account
+  // and the next one for the new account.
   function startAdding(tool, name = null) {
     const subs = readSubscriptions(subscriptionsPath());
-    const f = nextLoginFolder(tool, subs, (tool === 'claude' ? claudeLogins() : codexLogins()).length);
+    const email = tool === 'claude' && !multiAccount(subs) ? accountOf(defaultLogin('claude')).email?.toLowerCase() ?? null : null;
+    const f = nextLoginFolder(tool, subs, email ? 0 : (tool === 'claude' ? claudeLogins() : codexLogins()).length);
     if (tool === 'codex') {
       try { makeLabelledFolder(f.dir, name); } catch (e) { msg = `Could not make the new login's folder ${f.dir}: ${describeCrash(e)}`; return; }
     }
-    adding = { tool, login: makeLogin({ tool, name: f.name, folder: f.dir, rule: 'standby', source: 'found' }), label: name };
+    const folder = (x) => makeLogin({ tool, name: x.name, folder: x.dir, rule: 'standby', source: 'found' });
+    adding = { tool, login: folder(f), label: name };
+    if (email) adding.first = { email, next: folder(nextLoginFolder(tool, { ...subs, logins: [...subs.logins, adding.login] }, 0)) };
+    tried.add('migrate');
     selId = 'adding';
     msg = `esc cancels adding ${addingName(adding)}.`;
     clearInterval(addTimer);
@@ -4028,17 +4144,21 @@ export function interactive({
     if (!checking) checkLogins();
   }
   const stopAdding = () => { clearInterval(addTimer); addTimer = null; adding = null; };
-  // The check found the folder being added: signed in, it stays on standby (a computer with no
-  // subscriptions file gets the rule written, so it has one); signed in to an account already listed,
-  // it is refused. Anything else waits for the next check, as does a save while another is running.
+  // The check found the folder being added. The first add's folder for the current account is pinned to
+  // whatever it signed in to. Otherwise, signed in, it stays unused (settleAccounts pins a new
+  // Claude folder first; a computer with no subscriptions file gets the rule written, so it has one);
+  // signed in to an account already listed, it keeps waiting and the panel says so. Anything else waits
+  // for the next check, as does a save while another is running.
   function addChecked() {
     const a = adding;
     const c = checked?.get(checkKey(a.tool, a.login.configDir));
-    if (c?.state === 'duplicate') {
-      stopAdding();
-      selId = `login ${checkKey(a.tool, a.login.configDir)}`;
-      msg = `That account is already listed as ${c.duplicateOf}, so desk won't use it twice. x removes it.`;
-    } else if (c?.state === 'signed in') {
+    if (a.first) {
+      if (!saving && c?.liveEmail && ['signed in', 'not set up'].includes(c.state)) pinFirst(a, c.liveEmail.toLowerCase());
+      return;
+    }
+    const taken = sameAccountAs(c) ? c.liveEmail?.toLowerCase() ?? null : null;
+    if (taken !== (a.taken ?? null)) adding = { ...a, taken };
+    if (c?.state === 'signed in') {
       if (c.rule !== 'standby' && saving) return;
       stopAdding();
       selId = `login ${checkKey(a.tool, a.login.configDir)}`;
@@ -4046,6 +4166,24 @@ export function interactive({
       if (c.rule === 'standby') msg = said;
       else saveLogin(['set', a.tool, a.login.name, 'unused'], said, null);
     }
+  }
+  // The current account's folder is signed in: pinning it starts multi-account mode, ~/.claude going to
+  // the Removed table, and the folder takes over as the default where ~/.claude was it (logins.mjs
+  // pinLogin). Then the add waits for the new account.
+  function pinFirst(a, email) {
+    saving = true;
+    msg = 'Saving…';
+    const fail = (r) => { saving = false; stopAdding(); msg = notSaved(r); if (!done) draw(); };
+    const next = () => {
+      saving = false;
+      lastLogins = null;
+      adding = { tool: a.tool, login: a.first.next, label: null };
+      selId = 'adding';
+      msg = `${email} signs in for desk through ${a.login.folder}. esc stops adding the new account.`;
+      if (!done && !checking) checkLogins();
+      if (!done) draw();
+    };
+    loginsWith(['pin', 'claude', a.login.name], (r) => (r.code !== 0 ? fail(r) : next()));
   }
   // esc while waiting: the row goes, and so does the folder desk made for it while it holds only its
   // label. A folder the sign-in began is removed from the rules instead, so it is not found again.
@@ -4064,7 +4202,7 @@ export function interactive({
     if (saving) { msg = 'Still saving the last change.'; return; }
     if (x?.login?.tool !== 'codex') return startAdding('claude');
     typed = '';
-    msg = "Type the name desk-q lists the new Codex login under, such as its account's email.";
+    msg = 'Type a label for the new Codex login. desk-q lists it by its email once it is signed in, or by this label where it has none.';
   }
   function labelKey(str, key) {
     if (key.name === 'return' || key.name === 'enter') {
@@ -4079,6 +4217,7 @@ export function interactive({
     else if (str && !key.ctrl && !key.meta && str.length === 1 && str >= ' ' && typed.length < LABEL_MAX) typed += str;
     return frame();
   }
+  const notSaved = (r) => `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^(logins|desk-env subscription set): /, '') ?? `desk-env exited ${r.code}`}`;
   // A login made the default, given a rule or removed, then the footer says what changed (`said`,
   // `\n` between its lines) and u puts back `then`: { args, said }, the desk-env logins command that
   // undoes it and what the footer says once it has.
@@ -4089,7 +4228,7 @@ export function interactive({
     run(args, (r) => {
       saving = false;
       if (r.code === 0) { undo = then; msg = said; }
-      else msg = `Not saved: ${(r.err || r.out).trim().split('\n').filter(Boolean).at(-1)?.replace(/^(logins|desk-env subscription set): /, '') ?? `desk-env exited ${r.code}`}`;
+      else msg = notSaved(r);
       if (!done) draw();
     });
   }
@@ -4169,7 +4308,7 @@ export function interactive({
     if (!x?.login) return;
     const l = x.login, label = loginLabel(l);
     if (k === 'y') {
-      if (x.check?.state !== 'signed out') { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
+      if (!x.fix) { msg = `${label} is signed in, so there is no sign-in command to copy.`; return; }
       const { shell, then } = signInParts(l);
       try { copier(shell); msg = `Copied the sign-in command: ${shell}. Run it in another terminal${then ? `, then ${then}` : ''}.`; }
       catch (e) { msg = `Could not copy the sign-in command (${describeCrash(e)}). Run it in another terminal: ${shell}`; }

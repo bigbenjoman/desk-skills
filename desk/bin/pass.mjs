@@ -2464,6 +2464,12 @@ function repoLogin() {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) is signed out, so nothing new starts for this repo; it never falls back to another. Sign it in, in another terminal: ${signInCommand(login)}`);
     return null;
   }
+  // A folder pinned to an account (DS-528) is used only while it is signed in to that account.
+  const live = REPO_CHECK.state === 'signed in' ? REPO_CHECK.email?.toLowerCase() ?? null : null;
+  if (login.account && live && live !== login.account) {
+    noLogin(`this repo's subscription ${login.account} (login ${login.name}, ${login.folder}) is signed in to ${live} instead, so nothing new starts for this repo; it never falls back to another. Sign it back in to ${login.account}, in another terminal: ${signInCommand(login)}`);
+    return null;
+  }
   const refused = refusedOf(login);
   if (refused) {
     noLogin(`this repo's subscription${email ? ` ${email}` : ''} (login ${login.name}, ${login.folder}) failed its health check, ${refused}, so nothing new starts for this repo; it never falls back to another`);

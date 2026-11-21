@@ -5,7 +5,8 @@
 // `rate_limit_reached_type`. Which slot holds which window changes with the plan, so a window is read
 // by its length, never by its slot: 300 minutes is the 5-hour window, 10,080 the weekly one. The logs
 // name no account, so a reading is the login's whose folder it was read from. Nothing here reads
-// auth.json or any token.
+// auth.json; logins.mjs codexAccount reads only the id_token's payload (email and plan), never the
+// access or refresh token.
 import { closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import * as zlib from 'node:zlib';
