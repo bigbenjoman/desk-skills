@@ -38,7 +38,7 @@ const undraftSnap = (drafts, fields = {}) => ({
 });
 
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the action).
-const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' } };
+const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' }, 'update-branch': { ok: true, out: '' } };
 const RECS = ['cancel', 'build', 'rebuilt', 'evidence'];
 const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'record-carry', 'note', 'undraft-error', 'evidence-failures'];
 function drive(decide, s, answers = {}) {
@@ -55,7 +55,7 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
 const waits = (as) => as.filter((a) => a.type === 'report' && a.list === 'waiting').map((a) => a.line);
 const sets = (as) => as.filter((a) => a.type === 'set').flatMap((a) => a.fields);
 // What acts on a draft: undraft it, re-run, cancel or build its checks, start a run, or send a worker.
-const ACTS = new Set(['ready', 'comment', 'rerun-draft', 'cancel', 'build', 'rebuilt', 'evidence', 'apply-fix', 'upload']);
+const ACTS = new Set(['ready', 'comment', 'rerun-draft', 'cancel', 'build', 'rebuilt', 'evidence', 'apply-fix', 'upload', 'update-branch']);
 const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
 
 // A clean, green draft leaves draft, with its comment, and its record reads ready.
@@ -169,6 +169,30 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   const rec = { call: 'ready', why: null, action: null, sha: HEAD, carried_from: null, pr: 701 };
   t('a record that already says it is not written again', undraftWrite(ticket('A', { undraft: { ...rec, at: 'x' } }), rec, { dry: false, at: AT }), null);
   t('nor on a dry run', undraftWrite(ticket('A'), rec, { dry: true, at: AT }), null);
+}
+
+// DS-856: a draft with no mergeability answer past the limit has its branch updated once, where §3
+// pr-update-branch is yes, and the try is recorded; refused, it is the person's at once, naming why.
+{
+  const since = new Date(Date.parse(AT) - 45 * 60000).toISOString();
+  const t0 = ticket('A', { undraft: { call: 'wait', why: 'GitHub has not yet worked out whether it conflicts with its base (UNKNOWN)', action: null, sha: HEAD, carried_from: null, pr: 701, unknown_since: since } });
+  const snap = (updateBranch) => undraftSnap([{ t: t0, s: status() }], { cfg: { ...undraftSnap([]).cfg, updateBranch } });
+  const unknown = { 'pr-view': view([review(marker(ALL_ZERO))], { mergeable: 'UNKNOWN', mergeStateStatus: 'UNKNOWN' }) };
+  const rec = (as) => JSON.parse(sets(as).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}');
+  const ok = drive(decideUndraft, snap('yes'), unknown).actions;
+  const upd = ok.find((a) => a.type === 'update-branch');
+  t('DS-856 AC1 past the limit the pass updates the branch of that PR once', `${upd?.pr} ${upd?.branch}`, '701 task/A');
+  t('DS-856 AC1 and logs which PR and why', lines(ok).at(-1), `undraft: PR #701 (A) stays draft for now: GitHub has not worked out whether it conflicts with its base (UNKNOWN) at ${HEAD.slice(0, 12)} for 45 minutes: its merge ref looks wedged, and GitHub starts no run for that head, so its branch is updated from its base once (gh pr update-branch) for a fresh merge ref: requested`);
+  t('DS-856 AC1 the try is recorded with the spell\'s start, so it is not made again', `${rec(ok).call} ${rec(ok).unknown_since} ${j(rec(ok).unknown_repair)}`, `wait ${since} ${j({ at: AT, head: HEAD, ok: true })}`);
+  const no = drive(decideUndraft, snap('ask'), unknown).actions;
+  t('DS-856 AC5 with §3 pr-update-branch not yes, nothing is updated', acts(no).includes('update-branch'), false);
+  t('DS-856 AC5 and it waits on the person, saying no repair was permitted', /no repair was permitted, as config §3 pr-update-branch is "ask"/.test(waits(no)[0] ?? ''), true);
+  const refused = drive(decideUndraft, snap('yes'), { ...unknown, 'update-branch': { ok: false, out: 'HTTP 422\nno new commits on the base branch' } }).actions;
+  t('DS-856 a refused update is the person\'s at once, naming the refusal', `${rec(refused).call} ${/was refused: no new commits on the base branch$/.test(rec(refused).why)} ${rec(refused).unknown_repair?.ok}`, 'person true false');
+  const slot = drive(decideUndraft, snap('yes'), { ...unknown, 'update-branch': { wait: 'waits on the preview build for o/r: held' } }).actions;
+  t('DS-856 one waiting on the preview build records no try, so the next pass makes it', `${rec(slot).call} ${rec(slot).unknown_repair}`, 'wait undefined');
+  const dry = drive(decideUndraft, { ...snap('yes'), dry: true }, unknown).actions;
+  t('DS-856 a dry run only says it would update the branch', `${acts(dry).length} ${/^undraft \(dry run\): would update PR #701 \(A\)'s branch/.test(lines(dry).at(-1))}`, '0 true');
 }
 
 // The migration renames: a draft a person holds keeps its place; one renamed goes to its worker.
