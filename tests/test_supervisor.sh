@@ -54,11 +54,11 @@ cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
-import { appendFileSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import * as E from './desk-env.mjs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
 // exit.during: a worker exits while this pass runs, once.
-if (existsSync('$T/exit.during')) { rmSync('$T/exit.during'); writeFileSync('$T/state/exits/B.2.json', '{}\\n'); }
+if (existsSync('$T/exit.during')) { rmSync('$T/exit.during'); mkdirSync(E.exitsDir(), { recursive: true }); writeFileSync(\`\${E.exitsDir()}/B.2.json\`, '{}\\n'); }
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 let base;
 try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
@@ -246,15 +246,32 @@ done
 check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
 
 # ---- DS-695: a worker's exit file wakes a tick, which consumes it -----------------------------------
-# old <file>: an exit file written before any round now starts.
+# old <file>: an exit file written before any round now starts. No gap between rounds here but where set.
 old(){ printf '{}\n' > "$EX/$1"; touch -t 202001010000 "$EX/$1"; }
+export DESK_WAKE_GAP_MS=0
 before=$(count "$T/pass.calls")
 old A.1.json; printf '{}\n' > "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC1: a tick runs a pass and deletes the exit file it saw, not one still being written" '[ "$(count "$T/pass.calls")" = $((before + 1)) ] && [ ! -e "$EX/A.1.json" ] && [ -e "$EX/.A.9.tmp" ]'
+check "DS-695: a pass an exit woke is told so, and counts no quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- " --woken")" = 1 ]'
 rm -f "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
+# Ten exits within a second, while a pass that takes no time runs: the gap folds them into one round.
+old A.10.json
+( for i in 1 2 3 4 5 6 7 8 9 10; do printf '{}\n' > "$EX/A.b$i.json"; sleep 0.1; done ) & BURST=$!
+out=$(DESK_WAKE_GAP_MS=3000 tick); wait "$BURST"
+check "DS-695 AC2: ten exits in a burst run at most two passes, and every file goes" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
+rm -f "$T/state/supervisor.wake"
+# A tick holding the repo's tick lock: one woken meanwhile waits for it, then runs only for what it left.
+HOLDER=$(sh -c 'sleep 2 >/dev/null 2>&1 & echo $!')
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
+old A.11.json; ( sleep 1; rm -f "$EX/A.11.json" ) &
+out=$(tick); wait
+check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
+out=$(tick)
+check "DS-695: a tick the interval started is not told it was woken" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
+before=$((before + 3))
 old A.3.json; touch "$T/exit.during"
 out=$(tick)
 check "DS-695 AC2: an exit landing while the pass runs gets one more round, no more, and both files go" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
@@ -271,6 +288,7 @@ out=$(tick); out=$(tick)
 chmod 755 "$EX"
 check "DS-695 AC3: an exits folder that cannot be written to still gets a pass every tick, one round each" '[ "$(count "$T/pass.calls")" = $((before + 6)) ] && [ -e "$EX/A.5.json" ]'
 rm -f "$EX/A.5.json" "$T/state/supervisor.wake"
+unset DESK_WAKE_GAP_MS
 
 # ---- AC6 and AC7: one notification per new push, and nothing else pushed ---------------------
 check "no notification while nothing needs the person" '[ "$(count "$T/notify.calls")" = 0 ]'
@@ -598,6 +616,12 @@ out=$(mtick)
 check "DS-309 AC7: a batch not handed over is not driven, and its own log says so" '! grep -q "^Y-1 " "$T/pass.batches" && [ "$(count "$T/pass.batches")" = 2 ] && grep -q "batch Y-1 is not handed over" "$YS/supervisor.log"'
 out=$(unset DESK_QUEUE DESK_AUTOPILOT_STATE; sup status)
 check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1: handed over$" <<< "$out" && grep -q "^X-1: batch X-1: handed over$" <<< "$out" && grep -q "^Y-1: batch Y-1: not handed over" <<< "$out"'
+# An exit landing during the standing batch's pass: the round it adds runs every batch again, though
+# the round before it ended inside the last batch it entered.
+: > "$T/pass.batches"; mkdir -p "$SS/exits"; printf '{}\n' > "$SS/exits/A.1.json"; touch -t 202001010000 "$SS/exits/A.1.json"; touch "$T/exit.during"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: the round an exit adds passes every batch, the standing one included" '[ "$(grep -c "^- " "$T/pass.batches")" = 2 ] && [ "$(grep -c "^X-1 " "$T/pass.batches")" = 2 ] && [ -z "$(ls -A "$SS/exits")" ]'
+rm -f "$SS/supervisor.wake"
 
 # ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
 # xq <tickets json>: X-1 on feat/x, handed over, its promotion PR #9.

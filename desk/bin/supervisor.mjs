@@ -109,8 +109,13 @@ const WAKE_THROTTLE_S = 20;
 const WAKE_QUIET_MS = 60 * 1000;
 // Exits that land while a tick's passes run get another round of passes, up to this many in all.
 const WAKE_ROUNDS = 3;
-const exitsDir = () => join(E.repoStateOf(E.stateDir()), 'exits');
-const wakeFile = () => join(E.repoStateOf(E.stateDir()), 'supervisor.wake');
+// A round starts at least this long after the one before it, on either backend, so the exits of one
+// burst fold into one more round however short a pass is (the tests shorten it).
+const WAKE_GAP_MS = Number(process.env.DESK_WAKE_GAP_MS) >= 0 && process.env.DESK_WAKE_GAP_MS ? Number(process.env.DESK_WAKE_GAP_MS) : WAKE_THROTTLE_S * 1000;
+const exitsDir = E.exitsDir;
+const repoFile = (name) => join(E.repoStateOf(E.stateDir()), name);
+const wakeFile = () => repoFile('supervisor.wake');
+const sleep = (ms) => { if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
 const die = (msg, code = 1) => { console.error(`supervisor: ${msg}`); process.exit(code); };
 const label = supervisorLabel;
@@ -434,7 +439,7 @@ function enterBatch(name) {
 
 // -> [{ name, queue, state }]: the one batch named explicitly, else every batch the repo holds, the
 // standing first.
-const tickBatches = () => (batchPinned() ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
+const tickBatches = (named = batchPinned()) => (named ? [{ name: E.batchName(), queue: E.queueFile(), state: E.stateDir() }] : listBatches());
 
 // The exit files workers left in `dir`, as [{ file, at }] with `at` their mtime. A dot-named file is one
 // still being written, before its rename.
@@ -454,26 +459,57 @@ function consumeExits(files) {
 }
 const lastConsumed = () => { try { return Date.parse(readFileSync(wakeFile(), 'utf8').trim()) || 0; } catch { return 0; } };
 
+// The repo's tick lock: one tick at a time runs rounds for exits. -> whether this process holds it.
+const TICK_LOCK_WAIT_MS = 30 * 60 * 1000;
+const tickLock = () => repoFile('supervisor.tick.lock');
+function takeTickLock(wait) {
+  const until = Date.now() + TICK_LOCK_WAIT_MS;
+  for (;;) {
+    let got;
+    try { got = tryLockFile(tickLock()); } catch { return false; }
+    if (got === true) return true;
+    if (!wait || Date.now() > until) return false;
+    sleep(1000);
+  }
+}
+// Whether this round's passes were woken by an exit, not the interval: pass.mjs --woken counts no quiet
+// pass for them, so a busy batch's exits never bring a quiet worker's wedge limit sooner.
+let wokenRound = false;
+
 // One tick: a round of every batch, and another while workers exited after the last round started and
 // before it ended, so their exits are not left for the next interval. A round whose pass was skipped for
-// a lock consumes nothing: the run holding it sees the exits when its own round ends.
+// a lock consumes nothing: the run holding it sees the exits when its own round ends. A tick woken by an
+// exit while another tick runs rounds waits for it, then runs only for exits that one left.
 function interval() {
   const exits = exitsDir();
-  if (!exitFiles(exits).length && Date.now() - lastConsumed() < WAKE_QUIET_MS) return;
-  for (let round = 1; ; round += 1) {
-    const start = Date.now();
-    if (!intervalRound()) return;
-    const left = exitFiles(exits);
-    consumeExits(left.filter((f) => f.at < start));
-    if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
+  const woken = exitFiles(exits).length > 0;
+  if (!woken && Date.now() - lastConsumed() < WAKE_QUIET_MS) return;
+  // An interval's tick that finds the lock held runs as it always has; it takes the lock when free, so a
+  // woken tick waits for its round.
+  const held = takeTickLock(woken);
+  if (woken && !held) return;
+  try {
+    if (woken && !exitFiles(exits).length) return;
+    // Pinned once: a round enters each batch in turn, which would read as a pin to the next round.
+    const named = batchPinned();
+    for (let round = 1; ; round += 1) {
+      const start = Date.now();
+      wokenRound = round > 1 || exitFiles(exits).length > 0;
+      if (!intervalRound(named)) return;
+      const left = exitFiles(exits);
+      consumeExits(left.filter((f) => f.at < start));
+      if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
+      sleep(start + WAKE_GAP_MS - Date.now());
+    }
+  } finally {
+    if (held) unlockFile(tickLock());
   }
 }
 
 // -> false when a batch's pass was skipped because another run held its lock.
-function intervalRound() {
+function intervalRound(named) {
   let ran = true;
-  const named = batchPinned();
-  const batches = tickBatches();
+  const batches = tickBatches(named);
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
@@ -721,7 +757,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // The pass reads its time from it, so a read it records is at most the interval before the pass the
   // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
   env.DESK_PASS_AT = startedAt;
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : [])], {
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(wokenRound ? ['--woken'] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;

@@ -149,7 +149,8 @@ export function* decideBaseSync(s) {
     const usage = !said ? usageLimit(text) : null;
     const atLimit = usage?.last?.kind === 'limit' && !usage.last.resumed ? usage.last : null;
     const paused = pausedOn(atLimit, s.now);
-    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + 1;
+    // A pass a worker's exit woke counts no quiet pass, as for a ticket's worker (advance.mjs).
+    const idle = wroteSince(raw, bf.log_bytes ?? 0) || paused ? 0 : (bf.idle_passes ?? 0) + (s.woken ? 0 : 1);
     const sidLive = reg.read && reg.liveSids.has(bf.running);
     const exited = reg.read && !sidLive && !(recent && !endedNormally(text));
     // A headless worker ends its session at the limit rather than waiting for it to lift. As a ticket's

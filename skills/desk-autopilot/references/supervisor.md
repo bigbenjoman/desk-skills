@@ -12,8 +12,9 @@ the loop, so a batch keeps moving while no session is open and after a reboot. `
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
 `.service`, `.timer` and `.path` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
 and every 3 minutes (`--interval <s>` to change it), and within seconds of a worker exiting: the exit
-file a worker leaves in the repo's state folder wakes a tick (at most one per 20 seconds on macOS),
-which deletes the exit files its passes saw. On Linux, ticks stop at logout unless lingering is
+file a worker leaves in the repo's state folder wakes a tick, which deletes the exit files its passes
+saw. Exits landing while it runs get one more round, at least 20 seconds after the last, so a burst of
+exits runs at most two passes, and a pass an exit woke counts no quiet pass toward stopping a worker. On Linux, ticks stop at logout unless lingering is
 on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
 and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
 Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
