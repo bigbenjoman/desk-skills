@@ -88,16 +88,17 @@ const MAX_TEXT = 2000;
 // Room for any text MAX_TEXT allows: one UTF-16 unit is at most 6 bytes of JSON (a \u escape).
 const MAX_WRITE_BODY = 6 * MAX_TEXT + 1024;
 const WRITE_TIMEOUT_MS = 5 * 60 * 1000;
+const READ_TIMEOUT_MS = 60 * 1000;
 const WRITES = { record: 'needs-you.mjs', answer: 'answer.mjs' };
 const STATUS = { 0: 200, 10: 202, 11: 409 };
 const binDir = () => (testHome() && process.env.DESK_UI_TEST_BIN) || HERE;
 const auditFile = () => join(logDir(), 'audit.jsonl');
 
-// One of WRITES, through no shell: { exit, stdout, stderr }, exit null when it did not exit with a code.
-function runWrite(name, args, { cwd, env }) {
+// A desk command at `file`, through no shell: { exit, stdout, stderr }, exit null when it did not exit with a code.
+function run(file, args, { cwd, env }, timeout = WRITE_TIMEOUT_MS) {
   return new Promise((resolve) => {
-    execFile(process.execPath, [join(binDir(), WRITES[name]), ...args],
-      { cwd, env, shell: false, timeout: WRITE_TIMEOUT_MS, maxBuffer: 1 << 20, encoding: 'utf8' },
+    execFile(process.execPath, [file, ...args],
+      { cwd, env, shell: false, timeout, maxBuffer: 1 << 20, encoding: 'utf8' },
       (err, stdout, stderr) => resolve({ exit: err ? (Number.isInteger(err.code) ? err.code : null) : 0, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') }));
   });
 }
@@ -176,16 +177,20 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   }
 
   // What a write runs, from desk's state read in its turn: { args, shown, at } or { refuse }.
-  // `batches` are the one repo's. Its items are listed with no GitHub reads (reads: null): an item's
-  // actions do not depend on them, and a synchronous gh call here would stall every other repo's write.
-  async function planRecord(batches, repo, key, { action, text }) {
-    const N = await import('./needs-you.mjs');
-    const items = N.listItems({ settle: false, repos: batches, reads: null }).items.filter((i) => i.ticket === key);
+  // The item's actions are needs-you's own list (--no-settle writes nothing), run as a child so its
+  // GitHub reads stall no other repo's write. The record names the batch whose item offers the action,
+  // so needs-you records it there and not against an archived copy elsewhere.
+  async function planRecord(repo, key, { action, text }) {
+    const at = { env: E.otherRepoEnv() };
+    const listed = await run(join(HERE, 'needs-you.mjs'), ['list', '--json', '--no-settle', repo], at, READ_TIMEOUT_MS);
+    let items;
+    try { items = JSON.parse(listed.stdout).items.filter((i) => i.ticket === key); } catch { items = null; }
+    if (listed.exit !== 0 || !items) throw new Error(`needs-you list ${repo} exited ${listed.exit}: ${listed.stderr.trim().slice(0, 300)}`);
     const offered = [...new Set(items.flatMap((i) => i.actions.map((a) => a.action)))];
-    if (!offered.includes(action)) return { refuse: [400, 'action', `${repo} ${key} does not offer ${action}${offered.length ? ` (it offers ${offered.join(', ')})` : ': nothing there needs you'}.`] };
+    const item = items.find((i) => i.actions.some((a) => a.action === action));
+    if (!item) return { refuse: [400, 'action', `${repo} ${key} does not offer ${action}${offered.length ? ` (it offers ${offered.join(', ')})` : ': nothing there needs you'}.`] };
     const free = text === undefined ? [] : [text];
-    return { args: ['record', repo, key, action, ...free], shown: ['record', repo, key, action, ...free.map(() => '<redacted>')],
-      at: { env: E.otherRepoEnv() } };
+    return { args: ['record', item.batch, key, action, ...free], shown: ['record', item.batch, key, action, ...free.map(() => '<redacted>')], at };
   }
   // The batch holding the ticket is batches.mjs's batchHolding, which prefers a live copy to an archived one.
   async function planAnswer(Q, batches, slug, repo, key, { text, approve }) {
@@ -195,7 +200,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
     const r = held && batches.find((b) => b.queuePath === held.queue);
     if (!r?.q) return { refuse: [400, 'ticket', `${key} is in no batch of ${repo}.`] };
     const t = r.q.tickets[key];
-    // What answer.mjs answers: a parked ticket's question or a triage question still open (desk-q's `needs`).
+    // What answer.mjs answers: a parked ticket's question or a triage question still open.
     if (!(t.state === 'parked' || (t.open_questions ?? 0) > 0)) return { refuse: [400, 'answer', `${repo} ${key} has no question to answer.`] };
     if (approve && !(t.state === 'parked' && t.park?.approve)) return { refuse: [400, 'approve', `${repo} ${key} has no write awaiting approval.`] };
     let at;
@@ -230,9 +235,9 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
         const batches = all.filter((r) => r.slug === slug);
         // needs-you names a repo by its name, the standing batch's.
         const repo = (batches.find((r) => r.batch == null) ?? batches[0]).repo;
-        const plan = kind === 'record' ? await planRecord(batches, repo, key, body) : await planAnswer(Q, batches, slug, repo, key, body);
+        const plan = kind === 'record' ? await planRecord(repo, key, body) : await planAnswer(Q, batches, slug, repo, key, body);
         if (plan.refuse) return plan;
-        const ran = await runWrite(kind, plan.args, plan.at);
+        const ran = await run(join(binDir(), WRITES[kind]), plan.args, plan.at);
         audit(path, [WRITES[kind], ...plan.shown], ran.exit);
         return { ran };
       });

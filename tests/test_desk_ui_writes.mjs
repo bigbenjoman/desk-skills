@@ -228,6 +228,8 @@ ctl({});
 const r11c = await answer('desk-skills', 'DS-7', { text: 'approved', approve: true });
 t('AC11 a ticket live in a named batch is approved there, not as its archived copy in the standing batch',
   [r11c.status, last()?.argv, realpathSync(last()?.queue ?? T)], [200, ['DS-7', '--approve', 'approved'], realpathSync(E1_QUEUE)]);
+const r11d = await record('desk-skills', 'DS-7', { action: 'resume', text: 'go on' });
+t('a record for a ticket live in a named batch names that batch to needs-you', [r11d.status, last()?.argv.slice(0, 4)], [200, ['record', 'desk-skills:E-1', 'DS-7', 'resume']]);
 
 // ---- any text the length limit allows gets an HTTP answer, however many bytes it takes
 const wide = '漢'.repeat(2000);
