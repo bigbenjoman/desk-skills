@@ -454,7 +454,7 @@ export const TYPES = Object.freeze({
   command: matching('a command', () => true, parseCommandItem),
   'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
-    (s) => ({ types: s.split(':')[0].split(',').map((t) => t.trim()), fields: requiredFieldsIn([s], null).need })),
+    (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
   lever: { parse(item) { const r = parseLevers([item]); return r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(r.on); } },
   budget: refusing((s) => parseBudget(s, 'the budget')),
   'worker-models': refusing(parseWorkerModels),
