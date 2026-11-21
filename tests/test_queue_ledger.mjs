@@ -212,6 +212,23 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   const evs = readLog(dir).events.slice(at);
   t('admitted again: admitted, then triaged', shape(evs.filter((x) => x.type !== 'legacy_set')), 'admitted M, triaged M');
   t('and the log holds it live, triaged', `${fold(dir).tickets.M.archived} ${fold(dir).tickets.M.state}`, 'false triaged');
+  // Archived again, then joining the queue done (an adopted PR): admitted, the state with the fields.
+  recordWrite(file, { tickets: { M: tk('M', { state: 'triaged' }) } }, { tickets: {} }, { by: 'pass', archived: { M: done } });
+  const at2 = readLog(dir).events.length;
+  recordWrite(file, { tickets: {} }, { tickets: { M: done } }, { by: 'queue.mjs adopt' });
+  t('joining done: admitted, then the done state as a field', `${shape(readLog(dir).events.slice(at2))} ${fold(dir).tickets.M.archived} ${fold(dir).tickets.M.state}`, 'admitted M, legacy_set M false done');
+}
+
+// A parked ticket set back to triage with its park kept: requeued, triaged, and the park laid back,
+// so the log holds the park queue.json kept.
+{
+  const dir = join(T, 'keep-park');
+  const file = join(dir, 'queue.json');
+  const parked = tk('P', { state: 'parked', park: { question: 'which colour?', since: 'x' } });
+  recordWrite(file, { tickets: { P: parked } }, { tickets: { P: parked } }, { by: 'pass' });
+  const at = readLog(dir).events.length;
+  recordWrite(file, { tickets: { P: parked } }, { tickets: { P: { ...parked, state: 'triaged' } } }, { by: 'queue.mjs set' });
+  t('requeued, triaged, then the park it kept', `${shape(readLog(dir).events.slice(at))} ${fold(dir).tickets.P.park?.question} ${fold(dir).tickets.P.state}`, 'requeued P, triaged P, legacy_set P which colour? triaged');
 }
 
 // A ticket transferred to another batch arrives there as moved, naming both batches, and leaving this

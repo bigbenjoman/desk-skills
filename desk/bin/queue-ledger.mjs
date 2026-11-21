@@ -58,26 +58,30 @@ function stateEvent(from, now, at) {
 }
 
 // The typed events for ticket `now` reaching its state from `was` (undefined for a ticket new here), in
-// order. A ticket new to the queue is admitted first, which also brings back one the log holds as
-// archived; one taken from a park or a failure back to triage is requeued first. Each must be a legal
-// transition from the state the one before it left (ticket-ledger.mjs TRANSITIONS), or there are none
-// and the state is recorded with the other fields: the pass also sets states no typed event reaches,
-// such as a running ticket back to triaged.
+// order: { events, reached }. A ticket new to the queue is admitted first, which also brings back one
+// the log holds as archived; one taken from a park or a failure back to triage is requeued first. Each
+// must be a legal transition from the state the one before it left (ticket-ledger.mjs TRANSITIONS), so
+// the events stop at the first that is not, and `reached` says whether they end at the ticket's state;
+// when they do not, the state is recorded with the other fields: the pass also sets states no typed
+// event reaches, such as a running ticket back to triaged, and a ticket can join the queue done.
 function stateEvents(was, now, at) {
   const start = was?.state ?? null;
   const steps = [];
   if (was === undefined && now.state !== 'queued') steps.push({ type: 'admitted', data: {} });
   else if (['parked', 'failed'].includes(start) && now.state === 'triaged') steps.push({ type: 'requeued', data: {} });
   const last = stateEvent(steps.length ? 'queued' : start, now, at);
-  if (!last) return [];
-  steps.push(last);
+  if (last) steps.push(last);
+  const events = [];
   let from = start;
   for (const s of steps) {
-    if (!TRANSITIONS[s.type].from.includes(from)) return [];
+    if (!TRANSITIONS[s.type].from.includes(from)) break;
+    events.push(s);
     from = TRANSITIONS[s.type].to;
   }
-  return steps;
+  return { events, reached: !!last && events.length === steps.length };
 }
+// The typed events whose replay clears a ticket's park (ticket-ledger.mjs apply).
+const CLEARS_PARK = ['admitted', 'requeued', 'spawned', 'finished', 'unparked'];
 
 // The events queue `before` (the file as it stood, or null) becoming queue `after` records in `batch`.
 // `archived` holds each ticket this write moved to the archive, as it was archived. `elsewhere(key)`
@@ -107,10 +111,12 @@ export function queueEvents(before, after, { batch, archived = {}, elsewhere = (
       if (was === undefined && now.moved_from && typeof now.moved_from === 'object') {
         ev(key, 'moved', { from: text(now.moved_from.batch) ?? STANDING, to: batch });
       } else if (own(fields, 'state')) {
-        const typed = stateEvents(was, now, at);
+        const { events: typed, reached } = stateEvents(was, now, at);
         if (typed.length && typed.every((e) => !invalid({ ...e, batch, key }))) {
           for (const e of typed) ev(key, e.type, e.data);
-          delete fields.state;
+          if (reached) delete fields.state;
+          // A park the queue keeps is laid back over one an event's replay cleared.
+          if (now.park != null && typed.some((e) => CLEARS_PARK.includes(e.type))) fields.park = now.park;
         }
       }
       if (Object.keys(fields).length) ev(key, 'legacy_set', { fields });
