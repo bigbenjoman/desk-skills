@@ -91,7 +91,7 @@ cat > "$T/stub/gh" <<EOF
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
-const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations(?:\?per_page=100)?$/.exec(a[1] ?? '');
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (job) { try { process.stdout.write(fs.readFileSync('$T/fx/notes-' + job[1] + '.json', 'utf8')); } catch { process.exit(1); } }
@@ -791,7 +791,7 @@ cat > "$T/stub/gh" <<EOF
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
-const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations(?:\?per_page=100)?$/.exec(a[1] ?? '');
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') { /* accepted */ }

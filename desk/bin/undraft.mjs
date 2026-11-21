@@ -814,6 +814,10 @@ export function undraftCall(t, pr, cfg) {
   const stateRed = gate.failing.filter((f) => stateNames.has(f.name)).map((f) => f.name);
   // Red on state checks alone: the gate passes once they are set aside as advisory, with nothing else
   // missing or failing. Kept in the list, a green one still counts as the gate's one success.
+  // Red only on checks the merge driver waives (§4 Known flaky checks, cfg.waived): no fix worker, and the
+  // draft goes on as a green one does, for the driver to rerun them and waive them as it would out of draft.
+  const waived = red && codeRed.length > 0 && !stateRed.length && !codeRed.some((f) => (cfg.required ?? []).includes(f.name))
+    && !!cfg.waived?.([...new Set(codeRed.map((f) => f.name))]);
   const stateOnly = stateRed.length > 0 && evaluateGate(pr.checks ?? [],
     { required: (cfg.required ?? []).filter((c) => !stateNames.has(c)), advisory: [...(cfg.advisory ?? []), ...stateNames] }).state === 'pass';
   // No run exists to re-run: the workflow's trigger has to take the base, a change to the repo.
@@ -821,7 +825,7 @@ export function undraftCall(t, pr, cfg) {
     return person(`its checks are not green: ${gate.reasons.join('; ')}`,
       `add ${pr.base} (or a pattern such as feat/**) to the pull_request branches of the workflow that runs ${gate.untriggered.map((c) => `"${c}"`).join(', ')}, a change to the repo; once #${n}'s branch has it, its next push runs the check (re-running cannot, as no run exists)`);
   }
-  if (red && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
+  if (red && !waived && (codeRed.length || !gate.failing.length || (!stateOnly && !stateRed.includes(VERDICT_CHECK)))) {
     const spent = cfg.rerun === 'yes' && gate.failing.some((f) => (cfg.reruns?.(f.name) ?? 0) >= RERUNS_MAX) ? `, still after ${RERUNS_MAX} reruns at this head` : '';
     // Red only on code checks §4 Required checks does not name: the gate passes once §4 Advisory checks names them.
     const optional = codeRed.length === gate.failing.length && evaluateGate(pr.checks ?? [],
@@ -855,6 +859,7 @@ export function undraftCall(t, pr, cfg) {
   if (cfg.perm === 'ask' && cfg.approved) {
     return withCarried({ call: 'ready', why: null, verdict: read, note: `- [${t.key}] undrafted #${n} at ${pr.head}: §3 ${cfg.permKey} is ask, batch approval given at Stage 3` });
   }
-  const state = red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
+  const state = waived ? `clean, red only on §4 Known flaky checks the merge driver waives (${[...new Set(codeRed.map((f) => f.name))].join(', ')})`
+    : red ? `clean, red only on §4 State checks (${stateRed.join(', ')})` : 'clean and green';
   return withCarried(person(`it is ${state}, and config §3 ${cfg.permKey} is "${cfg.perm}"${cfg.perm === 'ask' ? ' with no batch approval' : ''}`, `undraft #${n}`));
 }

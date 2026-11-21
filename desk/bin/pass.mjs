@@ -48,7 +48,7 @@ import { parseClearsWhen, checkCond, condPath, queuedIn, recorded, RESTATE_MS, U
 import { transientPush, unreachedPush } from './push-retry.mjs';
 import { claimHours, transcriptOf, claimWorktree, uncommitted, claimQuestion } from './claims.mjs';
 import { maintenance, stopForWindow, runningWorkers, drainLimit, DRAIN_ROW } from './maintenance.mjs';
-import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
+import { normaliseRollup, latestPerCheck, evaluateGate, parseFlaky, flakyWaiver, notesIn, parseStateChecks, stateFailing, PR_FILES_JQ, untriggeredChecks, staleTriggers, readWorkflows, failureLines, failureNotes, jobAnnotations, runnerFault, FAILED, globToRegExp } from './gate.mjs';
 import { buildCall, buildPark, mergePark, reviewCarries, reviewScope, movedByBase, humanReviewed, personHold, REDRAFT_JQ, UPLOAD_TRIES, crashOf, latestReview, postMergeSteps } from './undraft.mjs';
 import { buildRecord, startBuild, markReran, anyRunning, prepareTree, pruneTrees } from './check-build.mjs';
 import { parseLiveReads, liveReadPark, readRecord, readsRunning, startRead, prepareCheckout, saveFixture, copyFixtures, MAX_BYTES } from './live-read.mjs';
@@ -2857,7 +2857,7 @@ const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
 // sends a review worker for one reading the verdict).
 const stateRow = parseStateChecks(E.configValues('state-checks'));
-// §4 Known flaky checks, for the fix tries.
+// §4 Known flaky checks, for the fix tries and the draft path (waivedAt).
 const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 const spawnedBefore = report.spawned.length;
 if (baseFix) await spawnBaseFix(baseFix);
@@ -3696,6 +3696,14 @@ const prFiles = (n, head) => cached(`pr-files:${n}:${head}`, () => {
   const o = sh('gh', ['api', '--paginate', `repos/${GH_REPO}/pulls/${n}/files?per_page=100`, '--jq', PR_FILES_JQ], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   return o ? o.split('\n').filter(Boolean) : null;
 });
+// Whether the merge driver waives these red checks of PR n at head, read as it reads them: every name in
+// §4 Known flaky checks, the PR touching none of their paths, and a check listed by its tests failing in
+// only those (the error_notes withErrors kept). For a ready PR's fix tries and a draft's undraft.
+function waivedAt(n, head, checks, names) {
+  if (flakyRow.errors.length || !names.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
+  const files = prFiles(n, head);
+  return !!files && flakyWaiver(checks, { ...gateLists(), flaky: flakyRow.flaky, files, notes: notesIn(checks) })?.applies === true;
+}
 // What desk-q reads of a PR without a network call, beyond GitHub's own: the reruns the merge driver
 // tried per check at this head and when it last reran one (its reruns-<n>-<sha> and cooldown-<n>), and
 // when the head or a check result last changed, kept from the last read while neither has.
@@ -3709,7 +3717,8 @@ function withHistory(s, was) {
 }
 // An open PR's failed checks each keep the errors their job gave (`errors`, the first as `error`), for
 // needs-you, which makes no network call, and the gate tries: read once per job, and left unset where its
-// annotations could not be read, so the next pass reads them again. A job with no annotated error keeps
+// annotations could not be read, so the next pass reads them again. `error_notes` keeps each failure's
+// path and title beside its line, for a §4 Known flaky checks test item. A job with no annotated error keeps
 // what its failed log names as `log_errors` instead, read the same way: only a test reporter that
 // annotates puts a failing test's line in `errors`.
 function withErrors(s, was) {
@@ -3722,13 +3731,16 @@ function withErrors(s, was) {
   };
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
-    const old = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    const notes = old && 'error' in old ? null : jobAnnotations(GH_REPO, c.jobId);
-    const errors = old && 'error' in old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
+    const found = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
+    const read = found && 'error' in found && Array.isArray(found.error_notes) ? null : jobAnnotations(GH_REPO, c.jobId);
+    // A record kept from before error_notes, whose read now fails, keeps its errors without them.
+    const old = read === null || (read === undefined && found && 'error' in found) ? found : null;
+    const notes = old ? null : read;
+    const errors = old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
     if (errors === undefined) return c;
     // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
     const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
-    return { ...c, error: old && 'error' in old ? old.error : errors[0] ?? null, errors, ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, old)) };
+    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
   });
   return { ...s, checks };
 }
@@ -4082,7 +4094,7 @@ runSteps({
         const again = baseHead && String(baseHead) === String(qNow.reopened_at ?? '');
         return { behind: x.behind, reopen: again ? {} : x.reopen };
       },
-      baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head),
+      baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
@@ -4340,12 +4352,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
     repo: GH_REPO, base: DEFAULT_BRANCH, ...gateLists(), ...clearsRows, stateChecks: stateRow.checks,
     build: (failing, gate) => buildCall({ pending: gate?.pending ?? [], running: gate?.running, failing }, { builds: buildRow.checks, rerun: E.permission('ci-rerun'), built: (head) => buildRecord(BUILD_DIR, n, head), behind }, n, s.head, t),
     ...driverReruns(n, s.head),
-    // Waived only as the driver waives: every name listed, and the PR touching none of their paths.
-    waived: (names) => {
-      if (flakyRow.errors.length || !names.every((x) => flakyRow.flaky.some((f) => f.name === x))) return false;
-      const files = prFiles(n, s.head);
-      return !!files && flakyWaiver(s.checks, { ...gateLists(), flaky: flakyRow.flaky, files })?.applies === true;
-    },
+    waived: (names) => waivedAt(n, s.head, s.checks, names),
     conflictFiles: () => (dirty ? dirtyFiles : conflictFiles(t.branch)),
     baseAt: () => baseAtOf(s.head),
     ...baseReads(s.head),

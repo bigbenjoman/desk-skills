@@ -110,6 +110,23 @@ t('DS-329 AC1 a clean draft whose required check was skipped beside a passing on
 t('DS-323 AC3 one whose review is not clean says that instead', withChecks(skippedTests.map((c) => ({ ...c, conclusion: 'skipped' })), [review(marker(ALL_ZERO.replace('gaps=0', 'gaps=2')))])?.why.includes('gaps=2'), true);
 t('DS-323 AC3 a failed check beside a skipped one is still not green', withChecks([...skippedTests, { name: 'build', status: 'completed', conclusion: 'failure' }], [review(marker(ALL_ZERO))])?.why.startsWith('its checks are not green'), true);
 
+// #831: a draft red only on checks the merge driver waives (§4 Known flaky checks) gets no fix worker: it
+// leaves draft as a green one does, and the driver reruns and waives them.
+{
+  const flakyRed = [{ name: 'tests', status: 'completed', conclusion: 'success', runId: 1 }, { name: 'Integration', status: 'completed', conclusion: 'failure', runId: 9 }];
+  const asked = [];
+  const wv = (ok) => (names) => { asked.push(names.join(',')); return ok; };
+  const draftOf = (checks, waived, perm = 'yes') => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks },
+    { perm, localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], waived });
+  t('#831 a clean draft red only on a waived check undrafts', draftOf(flakyRed, wv(true))?.call, 'ready');
+  t('#831 the waiver is asked about the red checks only', asked.join(' '), 'Integration');
+  t('#831 one the waiver does not cover goes to a fix worker, as before', draftOf(flakyRed, wv(false))?.call, 'checks');
+  t('#831 with no waiver read, as before', draftOf(flakyRed, undefined)?.call, 'checks');
+  t('#831 a required check red is never asked about', `${(asked.length = 0, draftOf([{ ...flakyRed[0], conclusion: 'failure' }, flakyRed[1]], wv(true))?.call)} ${asked.length}`, 'checks 0');
+  const held = draftOf(flakyRed, wv(true), 'no');
+  t('#831 without pr-ready, the person is told it is red only on known flaky checks', held?.why?.startsWith('it is clean, red only on §4 Known flaky checks the merge driver waives (Integration)'), true);
+}
+
 // DS-330: a draft whose red checks were all cancelled or timed out is re-run where §3 ci-rerun is yes.
 const rerunPr = (checks, more = {}) => undraftCall(tk, { number: 701, head: HEAD, mergeable: 'MERGEABLE', mergeState: 'DRAFT', body: '', reviews: [review(marker(ALL_ZERO))], checks: [{ name: 'types', status: 'completed', conclusion: 'success' }, ...checks] },
   { perm: 'yes', localReview: '/code-review', clean: 'no findings', handle: 'ben', required: ['tests'], rerun: 'yes', reruns: () => 0, cooledDown: true, ...more });
