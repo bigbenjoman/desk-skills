@@ -112,3 +112,20 @@ spine and owner-table approval.
 **By hand**, `/desk-admit <TICKET>...` makes the same checks now on the tickets the person names and
 admits each that passes into the supervisor's batch (`intake.mjs admit`), with no query needed;
 what fails a check comes back to the person with why, not to the digest.
+
+#### Raising a ticket from an event: push
+
+A producer that raises a ticket from an event (the Sentry investigator, or any other) admits it with
+`node ~/.claude/desk/bin/intake.mjs push <KEY> [--json]`, run from inside the repo. Push needs no
+intake query and does not wait out the 15 minutes. It takes intake's lock, waiting while a standing
+intake holds it, so the two never triage one ticket twice. Then it reads intake's register and runs
+the same batch gate, triage and checks. A ticket it admits is recorded as `by: push`, and a
+supervisor tick starts at once, whose report lists it. Before pushing, the producer must have
+created the ticket in §4 Jira project (its key matches §4 Ticket key pattern) and made it lint-clean
+(`desk-jira lint`). §3 `autopilot-workers` must be `yes`. The exit code says what happened:
+
+| Exit | Meaning |
+|---|---|
+| 0 | Admitted, its batch named. Or already in the queue, the register or another batch, or done in Jira: nothing changed |
+| 10 | Not admitted yet, and pushing again later may admit it: its triage failed, a standing batch could not be started, or another intake held the lock for 30 minutes |
+| 11 | Not admitted until the person acts, with the reason printed: a key that does not match the pattern (refused before any Jira call), §3 `autopilot-workers` not `yes`, a batch not handed over or on a base, an epic, a ticket routed to another batch, or one handed to the digest (lane C or D, a blocking lint finding, open questions, size L or XL, or a third failed triage in a row) |
