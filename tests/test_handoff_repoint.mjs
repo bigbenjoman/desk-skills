@@ -1,4 +1,4 @@
-// suite: handback re-points a ticket to its open PR's branch (queue.mjs handback, handoff.mjs repointToPr)
+// suite: handback and requeue re-point a ticket to its open PR's branch (queue.mjs handback and requeue, handoff.mjs repointToPr)
 // covers: desk/bin/handoff.mjs desk/bin/queue.mjs
 // Each case is a throwaway origin and worktree, a queue under a throwaway DESK_HOME, and a fake gh whose
 // `pr list` answers with $T/prs.json. Nothing touches your real ~/.claude, state or GitHub.
@@ -7,6 +7,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { handoffTarget } from '../desk/bin/handoff.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -176,6 +177,50 @@ prs([PR]);
 queue(wt12, { park: { question: 'lane C: the plan needs agreeing', since: new Date().toISOString(), session_step: { step: 'run the backfill' } } });
 const r12 = handback();
 t('a refused requeue after a re-point keeps the queue on the moved branch', `${r12.status !== 0} ${queued().branch} ${/Not requeued, but its branch task\/K-1-old re-pointed/.test(r12.stderr)}`, 'true task/K-1-pr true');
+
+// requeue: a worker's own park (a conflict fix on its PR), lane B, re-pointed the same way before it goes back.
+const requeue = (cmd = 'requeue') => spawnSync(process.execPath, [join(BIN, 'queue.mjs'), cmd, 'K-1'], { env, encoding: 'utf8' });
+const parkedB = (extra = {}) => ({ lane: 'B', park: { question: 'PR #861 has a merge conflict with main', since: new Date().toISOString() }, ...extra });
+
+// RQ AC1, AC2: queued on A, its recorded PR open on B, nothing on A that B lacks.
+const rq1 = fixture();
+const oldRq1 = git(rq1, 'rev-parse', 'HEAD');
+prs([], view(PR));
+queue(rq1, parkedB({ draft_pr: 861 }));
+const rr1 = requeue();
+t('RQ AC1 a requeue with its recorded PR open on another branch succeeds', rr1.status, 0);
+t('RQ AC1 the queued branch becomes the PR\'s head, and the worktree is on it', `${queued().branch} ${git(rq1, 'branch', '--show-current')}`, 'task/K-1-pr task/K-1-pr');
+t('RQ AC1 the old branch is kept as a backup ref', git(rq1, 'rev-parse', 'refs/heads/desk-backup/task/K-1-old'), oldRq1);
+t('RQ AC1 the line says it was re-pointed', /re-pointed to its open PR #861's task\/K-1-pr, the old one kept as desk-backup\/task\/K-1-old/.test(rr1.stdout), true);
+// The worker is spawned on the queued branch (pass.mjs hands it to setup-worktree.sh and the worker as
+// AUTOPILOT_BRANCH), and setup-worktree.sh hands out a kept worktree only when it is on that branch.
+t('RQ AC2 the ticket goes to a worker on B, in a worktree already on B', `${queued().state} ${handoffTarget({ worktree: rq1, branch: queued().branch })}`, 'triaged null');
+
+// RQ AC3: A holds a commit B lacks: nothing moves, the requeue still goes through and names the commit.
+const rq3 = fixture({ extra: true });
+const shaRq3 = git(rq3, 'rev-parse', '--short', 'HEAD');
+prs([], view(PR));
+queue(rq3, parkedB({ draft_pr: 861 }));
+const rr3 = requeue();
+t('RQ AC3 commits outside the PR leave the branch and worktree as they were', `${rr3.status} ${queued().state} ${queued().branch} ${git(rq3, 'branch', '--show-current')}`, '0 triaged task/K-1-old task/K-1-old');
+t('RQ AC3 the requeue line names those commits', rr3.stdout.includes(`not re-pointed`) && rr3.stdout.includes(`${shaRq3} work only on the old branch`), true);
+
+// RQ AC4: no recorded PR (an unrecorded one naming the ticket is not read), or a recorded one no longer open.
+const rq4 = fixture();
+prs([PR]);
+queue(rq4, parkedB());
+const rr4 = requeue();
+t('RQ AC4 no recorded PR leaves the branch as it was', `${rr4.status} ${queued().branch} ${git(rq4, 'branch', '--show-current')} ${/re-point/.test(rr4.stdout)}`, '0 task/K-1-old task/K-1-old false');
+const rq4b = fixture();
+prs([], view(PR, 'MERGED'));
+queue(rq4b, parkedB({ draft_pr: 861 }));
+t('RQ AC4 a recorded PR that is not open leaves the branch as it was', `${requeue().status} ${queued().branch} ${git(rq4b, 'branch', '--show-current')}`, '0 task/K-1-old task/K-1-old');
+
+// The commands that requeue on the person's behalf re-point too.
+const rq5 = fixture();
+prs([], view(PR));
+queue(rq5, parkedB({ draft_pr: 861, park: { question: 'awaiting the backfill', since: new Date().toISOString(), session_step: { step: 'run the backfill' } } }));
+t('step-done re-points as requeue does', `${requeue('step-done').status} ${queued().branch} ${git(rq5, 'branch', '--show-current')}`, '0 task/K-1-pr task/K-1-pr');
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
