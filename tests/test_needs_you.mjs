@@ -726,20 +726,24 @@ writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.jso
 const kappa = Object.fromEntries(N.collect({ word: 'kappa' }).items.map((i) => [i.t.key, i]));
 const firstOf = (k) => `${kappa[k]?.actions[0][0]} (${kappa[k]?.actions[0][1]})`;
 const offers = (k) => kappa[k]?.actions.map((a) => a[0]).join();
-t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
-t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, 'open (lane C/D: a worker would only park on it) open,done,drop,not-now');
-t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the lane C/D reason', firstOf('K-8'), 'open (lane C/D: a worker would only park on it)');
+// DS-806 AC2: each reason in plain words, with no lane letter.
+const SESSION_REASON = "it needs a plan or design agreed with you first, which a worker can't do, so it needs you";
+t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} ${offers('K-1')}`, `open (${SESSION_REASON}) open,done,drop,not-now`);
+t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, `open (${SESSION_REASON}) open,done,drop,not-now`);
+t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the session reason (DS-806: in plain words)', firstOf('K-8'), `open (${SESSION_REASON})`);
+t('DS-806 AC1 a lane C park\'s need names no lane letter', kappa['K-1']?.need, 'Demoted to plan-first work, build it in an interactive desk-ticket session');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
-t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, 'stopped drop,open,not-now lane C/D: a worker would only park on it');
+t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, `stopped drop,open,not-now ${SESSION_REASON}`);
 t('DS-556 AC3 a stopped worker whose park says it has no worker work, in no lane C, recommends drop over requeue', `${kappa['K-9']?.kind} ${firstOf('K-9')} ${offers('K-9')} ${kappa['K-9']?.actions[1][2]}`,
-  `stopped drop (its park says it has no worker work, so a requeue would only park it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; a requeue lets the next pass start it again`);
-t('DS-322 AC2 its need shows the park, not "requeue it"', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: lane C');
+  `stopped drop (its worker says nothing is left for a worker to do, so sending it back would only stop it again: drop takes it out of the batch and removes its clean worktree, and leaves Jira as it is) drop,requeue,not-now its worker gave up; requeue sends it back for a new worker to start again`);
+t('DS-322 AC2 its need shows the park, not "requeue it" (DS-806: in plain words)', kappa['K-4']?.need, 'worker stopped: Please take it out of the autopilot queue: plan-first work');
 t('DS-322 AC2 requeue is refused for it', N.record({ word: 'kappa', ticket: 'K-4', action: 'requeue' }).ok, false);
-t('DS-322 AC3 a lane D park resumes, naming the queue\'s lane', firstOf('K-3'), 'resume (lane D: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a lane D park with its canvas saved resumes, naming lane D', firstOf('K-7'), 'resume (lane D: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (lane A: a worker finishes it once it has your answer)');
-t('DS-322 AC3 a resume names the triage record\'s lane when the queue has none', firstOf('K-5'), 'resume (lane B: a worker finishes it once it has your answer)');
+// DS-806 AC2: a resume's reason names no lane letter, whichever lane the queue or triage record has.
+t('DS-322 AC3 a lane D park resumes, naming no lane', firstOf('K-3'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a lane D park with its canvas saved resumes, naming no lane', firstOf('K-7'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (a worker finishes it once it has your answer)');
+t('DS-322 AC3 a resume on the triage record\'s lane names no lane', firstOf('K-5'), 'resume (a worker finishes it once it has your answer)');
 
 // ---- DS-344: a batch held on a usage limit. Its paused workers and held ticket are none of them
 // stopped: needs-you lists one item for the hold, and desk-q shows each paused worker with the reset.
@@ -1291,7 +1295,7 @@ t('DS-701 the "waiting behind" count is in the item', ['W-1', 'W-3', 'W-2'].map(
 t('DS-701 its question is the listed need, word for word', ji701['W-1']?.question, need657('W-1'));
 t('DS-701 a PRODUCTION BROKEN park is marked so', `${ji701['W-3']?.production_broken} ${ji701['W-1']?.production_broken}`, 'true false');
 t('DS-701 the item names its batch, key, kind and ticket, and its actions with the recommendation', JSON.stringify((({ id, batch, key, kind, ticket, actions }) => ({ id, batch, key, kind, ticket, first: actions[0] }))(ji701['W-1'])),
-  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'lane A: a worker finishes it once it has your answer', note: null } }));
+  JSON.stringify({ id: 'wait657:W-1:parked', batch: 'wait657', key: 'W-1', kind: 'parked', ticket: 'W-1', first: { action: 'resume', recommended: true, why: 'a worker finishes it once it has your answer', note: null } }));
 t('DS-701 an item waiting on its own has no cause', ji701['W-1']?.cause, null);
 t('DS-701 without settling, it says so and settles nothing', `${j701.settled} ${j701.settled_lines.length} ${j701.v}`, 'false 0 1');
 t('DS-701 its queue carries its age', j701.inputs.queues.map((x) => `${x.batch} ${typeof x.age_s}`).join(), 'wait657 number');

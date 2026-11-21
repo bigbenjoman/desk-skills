@@ -56,7 +56,9 @@ outside GitHub has none: its need names the step, and it leaves once its check i
 Call `AskUserQuestion` with **at most four questions**, taking items in list order. For each one:
 
 - **header**: the ticket key.
-- **question**: `<repo> <TICKET>: <what is needed>`, in one line.
+- **question**: `<repo> <TICKET>: <what is needed>`, in one line and plain words. A park's need is
+  its worker's question already put in plain words, without the steps it did not reach. Never add a
+  lane letter, config key, stage or AC number to it, or to a reason.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
   description, then the other actions. With none, label none and say what would settle it. At most four options; free-text "Other" is always added.
 - For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
