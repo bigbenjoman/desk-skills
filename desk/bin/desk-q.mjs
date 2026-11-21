@@ -44,7 +44,7 @@ import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
-import { attachArchive } from './queue-store.mjs';
+import { attachArchive, owesReopen } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
 import { LEASE_KINDS, RULES } from './machine.mjs';
 import { LeaseStoreError, RESET_COMMAND, forceReleaseCommand, kindMode, overdue, peek, wouldRefuseByDay } from './leases.mjs';
@@ -598,8 +598,6 @@ export const landing = (t) => prStatusOf(t)?.state === 'OPEN';
 // The open child PRs whose required checks only the default branch's copy of the workflow runs on the
 // base (pr_status.behind), as `PR #n`: syncing the base starts their CI.
 export const behindPrs = (q) => Object.values(q?.tickets ?? {}).filter((t) => landing(t) && Object.keys(t.pr_status.behind ?? {}).length).map((t) => `PR #${t.result.pr}`);
-// A PR the pass closed to start its CI and has still to reopen (the ticket's `reopening`).
-const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr);
 // How long an open PR's head and check results have gone unchanged, as the last pass read it
 // (pr_status changed_at), once that is STALL_MS or more; else null. desk-q flags a Merging row that
 // is, and the check-in digest lists it (stalledPrs). One waiting on the person's step (merge_after), or
