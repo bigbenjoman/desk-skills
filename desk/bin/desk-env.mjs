@@ -170,6 +170,7 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
+import { runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
@@ -187,10 +188,7 @@ export const SCREENSHOT_FILE = /\.(png|jpe?g)$/i;
 // ---- which repo, which config --------------------------------------------------------------
 export const deskConfigRoot = () => expandHome(process.env.DESK_CONFIG_ROOT ?? join(HOME, '.config', 'desk'));
 
-const git = (dir, ...args) => {
-  try { return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-  catch { return ''; }
-};
+const git = (dir, ...args) => outOrNull(runOnce('git', ['-C', dir, ...args])) ?? '';
 
 // `owner/name` from any git remote URL: https://host/owner/name(.git)(/), git@host:owner/name.git,
 // ssh://git@host:443/owner/name.git, and ssh host aliases such as git@github-work:owner/name.git.
@@ -1447,7 +1445,8 @@ function linuxMeminfo() {
 }
 function macVmStat() {
   try {
-    const out = execFileSync('vm_stat', { encoding: 'utf8' });
+    const out = outOrNull(runOnce('vm_stat'));
+    if (out == null) return null;
     const pageSize = Number(/page size of (\d+) bytes/.exec(out)?.[1] ?? 4096);
     const pages = (label) => Number(new RegExp(`${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0) * pageSize;
     return {
@@ -1496,7 +1495,7 @@ export function parsePs(text, columns) {
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
 // partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
 export function psRows(columns, env = {}) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = runOnce('ps', ['-ww', '-axo', columns], { env, maxBuffer: PS_MAX_BUFFER });
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
