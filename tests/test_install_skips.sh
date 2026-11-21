@@ -47,6 +47,8 @@ printf '{"permissions":{"allow":["Bash(gh pr merge * --squash)","Bash(gh pr merg
 C="$HOME/.config/desk/repos/o__r"; mkdir -p "$C"
 printf '## 2. Paths on your machine\n\n| Field | Value | Notes |\n|---|---|---|\n| Primary repo root | `%s` | x |\n' "$R" > "$C/config.md"
 printf '{"rules":[{"list":"allow","rule":"Bash(gh pr merge * --squash)","rows":["pr-merge-green"],"added":"2026-01-01"}]}\n' > "$C/harness-rules.json"
+# The repo ships its own desk-kiss, which the install also links at user level: a shadowed pair.
+mkdir -p "$R/.claude/skills/desk-kiss"; printf -- '---\nname: desk-kiss\n---\nthe repo copy\n' > "$R/.claude/skills/desk-kiss/SKILL.md"
 
 # retired local CI runner: a desk installed while it shipped one, with its scripts, shim, state and
 # launchd jobs, each of which the install removes.
@@ -106,6 +108,14 @@ for q in "Make one real codex call to prove it can answer?" \
          "Install claude-statusline (settings.json backed up first)?"; do
   check "listed: $q" '[[ "$summary" == *"  SKIP  $q"* ]]'
 done
+# #736: each skip names its prompt's id, and a hook registration's apply line works with no terminal.
+check "#736 a skip names its id" '[[ "$summary" == *"  SKIP  Make one real codex call to prove it can answer? (--accept=codex-call)"* ]]'
+check "#736 a hook registration's apply line is the install with its id accepted" \
+  '[[ "$summary" == *"(--accept=hook-attribution)"*"apply: cd "*"./install.sh --accept=hook-attribution"* ]]'
+# #738: a user-level skill shadowing a configured repo's own copy is warned of and listed in the summary.
+check "#738 the repo's line warns of both user-level paths of the shadowed skill" '[[ "$out" == *"WARN  o__r: 2 user-level skill path(s) shadow a skill this repo ships"* ]]'
+check "#738 the summary lists the pair, with the repo's slug" \
+  '[[ "$summary" == *"Shadowed: "*"  o__r: "*"skills/desk-kiss"*"shadows the repo copy at .claude/skills/desk-kiss"* ]]'
 check "every skip line is followed by an apply line" \
   '[ "$(printf "%s\n" "$summary" | grep -c "^  SKIP  ")" = "$(printf "%s\n" "$summary" | grep -c "^        apply: ")" ]'
 check "DS-224 AC6: with nothing running, the summary says so in one line" \
@@ -162,14 +172,25 @@ check "the MCP is isolated on the saved login" \
   '[ "$(printf "%s" "$mcp" | jq -c ".args[1:]")" = "[\"--browser\",\"chromium\",\"--isolated\",\"--storage-state\",\"$LOGIN\"]" ]'
 check "an empty owner-only login is in place before the first sign-in" \
   '[ "$(jq -c . "$LOGIN")" = "{\"cookies\":[],\"origins\":[]}" ] && [ "$(stat -c %a "$LOGIN" 2>/dev/null || stat -f %Lp "$LOGIN")" = 600 ]'
-check "a hook skip says to re-run in a terminal" \
-  '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: run in a terminal: cd "* ]]'
+check "a hook skip's apply line runs the install with its id accepted, no terminal needed" \
+  '[[ "$summary" == *"attribution hook"*$'"'"'\n'"'"'"        apply: cd "*"&& ./install.sh --accept=hook-attribution"* ]]'
 check "a repo's recorded unpinned merge allow is retired and reported" \
   '[[ "$out" == *"RETIRED  allow Bash(gh pr merge * --squash)"* ]] && ! grep -q -- "--squash)" "$R/.claude/settings.local.json" && ! grep -q "gh pr merge" "$C/harness-rules.json"'
 check "the repo's settings are backed up before the retire" 'grep -q -- "--squash)" "$R"/.claude/settings.local.json.bak-desk-*'
 check "an unpinned merge allow the user added is reported and kept" \
   '[[ "$out" == *"retired  allow Bash(gh pr merge * --rebase)  (yours"* ]] && grep -q -- "--rebase)" "$R/.claude/settings.local.json"'
 check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.json" ] || ! grep -q desk-update-check "$HOME/.claude/settings.json"'
+# #734: a skill folder of the user's own where a vendored skill goes, which desk never installed (no
+# pristine copy), on an install with no terminal: moving it is asked and skipped, and it stays.
+rm -rf "$HOME/.agents/skills/ui-designer" "$HOME/.agents/.desk-pristine/.agents/skills/ui-designer" "$HOME/.claude/skills/ui-designer"
+mkdir -p "$HOME/.claude/skills/ui-designer"; echo mine > "$HOME/.claude/skills/ui-designer/SKILL.md"
+# shellcheck disable=SC2034  # own_out is read inside check's eval strings
+own_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "#734 moving a skill folder desk did not install is asked, saying it differs, and skipped with no terminal" \
+  '[[ "$own_out" == *"~/.claude/skills/ui-designer is a skill folder desk did not install (yours, or another tool'"'"'s); it differs from desk'"'"'s"* ]] && [[ "$own_out" == *"  SKIP  Move your ~/.claude/skills/ui-designer to the backup and install desk'"'"'s ui-designer in its place?"* ]]'
+check "#734 the folder stays where it was, and desk's copy is not installed beside it" \
+  '[ ! -L "$HOME/.claude/skills/ui-designer" ] && [ "$(cat "$HOME/.claude/skills/ui-designer/SKILL.md")" = mine ] && [ ! -e "$HOME/.agents/skills/ui-designer" ] && [[ "$own_out" != *"moved    ~/.claude/skills/ui-designer"* ]]'
+
 # A new shell runs desk-q from any directory, and it finds the repo set up above.
 # shellcheck disable=SC2034  # q_out is read inside check's eval string
 q_out="$(cd / && unset DESK_HOME DESK_MACHINE && PATH="$HOME/.local/bin:$PATH" desk-q --plain --all 2>&1)"
@@ -183,5 +204,58 @@ check "DS-709 AC13: levers-view build on PATH writes view.json and build.json an
   '[ -x "$HOME/.local/bin/levers-view" ] && [ "$lv_path" = "$lv_node" ] && [[ "$lv_path" == "levers-view: wrote $HOME/.desk-autopilot/levers/view.json and $HOME/.desk-autopilot/levers/build.json"* ]] && [ -f "$HOME/.desk-autopilot/levers/view.json" ] && [ -f "$HOME/.desk-autopilot/levers/build.json" ]'
 check "DS-709: levers is on PATH and names its commands" \
   '[ -x "$HOME/.local/bin/levers" ] && [[ "$("$HOME/.local/bin/levers" 2>&1)" == "usage: levers decide <repo> <lever> off|trial · levers undo <repo> <lever>" ]]'
+
+# #733: another tool's hook script of the same name, which desk never installed (no pristine copy), on
+# an install with no terminal: replacing it is asked and skipped, the file kept, and it is not registered.
+rm -f "$HOME/.agents/.desk-pristine/.claude/hooks/deny-ai-attribution.py"
+printf '#!/usr/bin/env python3\n# theirs\n' > "$HOME/.claude/hooks/deny-ai-attribution.py"
+out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+summary="$(printf '%s\n' "$out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
+check "#733 replacing another tool's hook script is asked, and skipped with no terminal" \
+  '[[ "$summary" == *"  SKIP  Replace your ~/.claude/hooks/deny-ai-attribution.py with desk'"'"'s (yours is backed up first)?"* ]]'
+check "#733 the file is kept, and the install says so" \
+  '[ "$(sed -n 2p "$HOME/.claude/hooks/deny-ai-attribution.py")" = "# theirs" ] && [[ "$out" == *"kept your ~/.claude/hooks/deny-ai-attribution.py"* ]]'
+check "#733 a kept hook script is not registered or described as desk's" \
+  '[[ "$summary" != *"Register the attribution hook"* ]] && [[ "$out" == *"registration left as it is: the hook script there is yours"* ]] && [[ "$out" != *"Aimed at a repo whose desk config"* ]]'
+
+# --accept and --decline answer the prompts they name with no terminal; an unknown id is a warning.
+rm -f "$HOME/.claude/hooks/deny-ai-attribution.py"
+acc_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch --accept=hook-attribution --decline=plugins --accept=no-such-prompt </dev/null 2>&1)"
+# shellcheck disable=SC2034  # acc_summary is read inside check's eval strings
+acc_summary="$(printf '%s\n' "$acc_out" | sed -n '/^Skipped (no terminal)/,/^Next:/p')"
+check "#736 an accepted prompt is applied with no terminal" \
+  '[[ "$acc_out" == *"Register the attribution hook in ~/.claude/settings.json (backed up first)? [y/N] y (--accept=hook-attribution)"* ]] && grep -q deny-ai-attribution.py "$HOME/.claude/settings.json"'
+check "#736 a declined prompt is answered no and not listed as skipped" \
+  '[[ "$acc_out" == *"(--decline=plugins)"* ]] && [[ "$acc_summary" != *"Install the missing plugins now"* ]]'
+check "#736 an unknown id is a warning naming it" '[[ "$acc_out" == *"no prompt has the id \"no-such-prompt\""* ]]'
+
+# #828: the repo-config count of unanswered fields (desk-env unanswered, which install.sh runs) reads
+# each row's value column as every desk read does, not a note or another column, and leaves out the
+# rows the template keeps `TODO` to follow the machine profile.
+cat > "$T/uc.md" <<'UEOF'
+## 2. Paths
+| Field | Value | Notes |
+|---|---|---|
+| Primary repo root | `TODO` | the main checkout |
+| Worktrees directory | `~/wt` | not `TODO` |
+
+## 3b. Cost and autonomy
+| Field | Recommended | Your setting |
+|---|---|---|
+| Autopilot worker concurrency | `2 / 3` (default / cap) | `TODO` |
+| Memory ceiling for parallel work (GB) | WSL: `16` | `TODO` (a note) |
+| Test worker cap under the test lock | `4` | `TODO` |
+| Triage concurrency | `1` | `3` (how many at once; left `TODO` it is 1) |
+| Subscription | `default` | `TODO` (`<default\|email>`) |
+| Intake query | `none` | `TODO` (a Jira query) |
+
+## 3. Permissions
+| Key | Capability | Recommended | Your setting |
+|---|---|---|---|
+| `pr-open` | Open a PR | `yes` | `TODO` |
+Left `TODO` or absent, each falls back to the machine profile.
+UEOF
+check "#828 only a value of TODO counts: not a note's, not another column's, not the rows that follow the machine profile" '[ "$(node "$S/../desk/bin/desk-env.mjs" unanswered "$T/uc.md")" = 4 ]'
+check "#828 install.sh counts with it" 'grep -q "desk-env.mjs\" unanswered \"\$c\"" "$S/../install.sh"'
 
 echo; echo "$PASS/$((PASS+FAIL)) checks passed"; [ "$FAIL" = 0 ]

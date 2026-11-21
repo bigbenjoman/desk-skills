@@ -350,29 +350,37 @@ export function deciderPrompt({ slug, report, items, rules, bin, state = null, w
 // { wait }, starting nothing, when the subscription is at its limit, no login here is signed in to it,
 // or the pass's last health check found the API refusing its login (health.mjs refusedLogin), which
 // that check's own item names to the person.
-export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
+export function startDecider({ state, slug, bin, report, items, rules, webRead = false, targets = [], judgement = null, cwd, env = process.env, claude = 'claude', now = new Date() }) {
+  const run = startHeadless({ state, kind: 'decider', id: now.toISOString().replace(/[:.]/g, '-'), effort: DECIDER_EFFORT, addDirs: [state], cwd, env, claude, now,
+    settings: deciderSettings({ bin, state, judgement }), prompt: deciderPrompt({ slug, report, items, rules, bin, state, webRead, targets, judgement }) });
+  return run.wait ? run : { ...run, items, targets };
+}
+
+// Starts one short headless session detached, on the repo's subscription (call-login.mjs), its settings,
+// prompt and `--output-format json` result written to <state>/<kind>/<id>.*. -> { id, pid, started, out,
+// login }, or { wait }, starting nothing, when no login can take it now or the pass's last health check
+// found the API refusing its login (health.mjs refusedLogin).
+export function startHeadless({ state, kind, id, settings, prompt, addDirs, effort, cwd, env: callerEnv = process.env, claude = 'claude', now = new Date() }) {
   const { login, env, wait } = callLogin({ env: callerEnv, now: now.getTime() });
   if (wait) return { wait };
   const refused = refusedLogin(state, login, login ? loginOf(callerEnv.CLAUDE_CONFIG_DIR) : null);
   if (refused) return { wait: `its login${login ? ` ${login.name}` : ''} failed its health check, ${refused}` };
-  const dir = join(state, 'decider');
+  const dir = join(state, kind);
   mkdirSync(dir, { recursive: true });
-  const id = `${now.toISOString().replace(/[:.]/g, '-')}`;
-  const settings = join(dir, `${id}.settings.json`);
-  writeFileSync(settings, `${JSON.stringify(deciderSettings({ bin, state, judgement }), null, 2)}\n`);
-  const prompt = deciderPrompt({ slug, report, items, rules, bin, state, webRead, targets, judgement });
+  const file = join(dir, `${id}.settings.json`);
+  writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`);
   writeFileSync(join(dir, `${id}.prompt.md`), prompt);
   const out = join(dir, `${id}.json`);
   const fd = openSync(out, 'w');
   const child = spawn(claude, ['-p', prompt, '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config',
-    '--permission-mode', 'dontAsk', '--settings', settings, '--add-dir', state, '--effort', DECIDER_EFFORT], {
+    '--permission-mode', 'dontAsk', '--settings', file, ...addDirs.flatMap((d) => ['--add-dir', d]), '--effort', effort], {
     // One short session: the 5-minute prompt cache costs less to write than the 1-hour one.
     cwd, env: { ...env, FORCE_PROMPT_CACHING_5M: '1' }, detached: true, stdio: ['ignore', fd, fd],
   });
   closeSync(fd);
   child.on('error', () => {});
   child.unref();
-  return { id, pid: child.pid ?? null, started: now.toISOString(), out, items, targets, login: login?.name ?? null };
+  return { id, pid: child.pid ?? null, started: now.toISOString(), out, login: login?.name ?? null };
 }
 
 // The payload on the last `mark` line of a headless session's `--output-format json` text:
@@ -387,14 +395,21 @@ export function markedResult(text, mark) {
   try { return { cost, payload: JSON.parse(line.trimStart().slice(mark.length)) }; } catch { return { cost, error: `an unreadable ${mark} line` }; }
 }
 
+// A headless session's marked payload from its output file `out`: {cost, payload}, or {cost, error} when
+// there is none to read, with `limit: true` when the usage limit stopped it.
+export function readMarked(out, mark) {
+  let text = '';
+  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
+  const r = markedResult(text, mark);
+  if (r.error && usageLimit(text).last?.kind === 'limit') return { cost: r.cost, error: 'stopped at the usage limit', limit: true };
+  return r;
+}
+
 // The session's answer from its JSON result: {cost, settled: {id: did}, handed: {id: why}} or
 // {cost, error} when there is no result line to read, with `limit: true` when the usage limit refused it.
 export function readResult(out) {
-  let text = '';
-  try { text = readFileSync(out, 'utf8'); } catch { return { cost: null, error: 'no output' }; }
-  const { cost, error, payload: r } = markedResult(text, RESULT_MARK);
-  if (error && usageLimit(text).last?.kind === 'limit') return { cost, error: 'stopped at the usage limit', limit: true };
-  if (error) return { cost, error };
+  const { cost, error, limit, payload: r } = readMarked(out, RESULT_MARK);
+  if (error) return { cost, error, ...(limit ? { limit } : {}) };
   const pairs = (xs, k) => Object.fromEntries((Array.isArray(xs) ? xs : []).filter((x) => x?.id).map((x) => [x.id, String(x[k] ?? '')]));
   return { cost, settled: pairs(r.settled, 'did'), handed: pairs(r.handed, 'why') };
 }

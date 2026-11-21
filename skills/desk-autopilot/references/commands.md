@@ -15,8 +15,8 @@ node ~/.claude/desk/bin/batch.mjs start ABC-900 feat/ABC-900-<slug> --batch ABC-
 node ~/.claude/desk/bin/batch.mjs discard ABC-900 --batch ABC-900    # its plan declined: removes the batch, and its branch when main has all of it
 node ~/.claude/desk/bin/expand-parent.mjs ABC-900 --batch ABC-900     # an epic -> its batch keys (stdout), drops on stderr
 ~/.claude/desk/bin/triage.sh ABC-123                                  # read-only, no worktree
-AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # gates first: arg order = spawn order
-node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"
+AUTOPILOT_WRITE_QUEUE=1 node ~/.claude/desk/bin/plan-batch.mjs --json ABC-GATE ABC-123 ABC-124   # prints SPAWN ORDER under its rule (order-and-holds.md)
+node ~/.claude/desk/bin/answer.mjs ABC-123 "<answer>"                # settles one open question; --all before the answer settles every one
 node ~/.claude/desk/bin/pass.mjs --json                               # one pass; drive with /loop unless the supervisor runs passes; exit 0 go on, 10 nothing yet, 11 show the person
 node ~/.claude/desk/bin/queue.mjs next-pass +1500                     # after scheduling the next pass: when it runs (here 25 minutes), so desk-q counts the batch live until then
 node ~/.claude/desk/bin/supervisor.mjs install                        # passes and the merge driver from launchd or systemd, at login and every 3 minutes
@@ -32,6 +32,7 @@ node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)
 node ~/.claude/desk/bin/queue.mjs backfill-holds --dry-run           # once, by hand: lane, size and design parks with no held_by gain their blockers' holds (drop --dry-run to write)
 node ~/.claude/desk/bin/queue.mjs admit ABC-125                      # add one triaged ticket mid-batch (never re-run plan-batch to do it)
+node ~/.claude/desk/bin/queue.mjs adopt flaky-spec-fix 512           # a PR you opened in the batch with no ticket (a flaky-test fix), keyed by a §4 work id or slug: taken in as done on that PR, so the merge driver merges it and the pass and desk-q list it (--filed for the tracker ticket filed for it)
 node ~/.claude/desk/bin/intake.mjs run --force                        # standing intake now (§3b Intake query); the supervisor runs it every 15 minutes
 node ~/.claude/desk/bin/intake.mjs admit ABC-128 --by ben --front     # /desk-admit: intake's checks on named tickets, into the supervisor's batch; exit 11 refused
 node ~/.claude/desk/bin/intake.mjs admit ABC-129 --session            # the same, into the batch this session runs (not handed to the supervisor)
@@ -66,6 +67,7 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
+                                  # on Linux also SWAP-GROWING, OOM-KILL, TMPFS-HIGH (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named

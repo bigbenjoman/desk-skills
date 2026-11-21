@@ -28,7 +28,7 @@ export const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every new
 // ticket.
-export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot'].includes(r.resume);
+export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
 export const toHandoff = (r) => r.handoff === 'pending';
 const goesFirst = (r) => toResume(r) || toHandoff(r);
 // A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which
@@ -113,6 +113,11 @@ export function* decideEligibility(s) {
       `if the re-run is deliberate: node ${g.queueBin} requeue <TICKET>`);
   }
 
+  // A resume after a per-worker budget stop spends more, so the batch budget holds it too: said by name.
+  const budgetWaits = cap > 0 && spent >= cap ? eligible.filter((r) => r.resume === 'budget') : [];
+  if (budgetWaits.length) {
+    yield say(null, 'stalled', `waiting on the batch budget ($${spent.toFixed(2)} of $${cap}) to resume after a per-worker budget stop: ${budgetWaits.map((r) => r.key).join(', ')}`);
+  }
   if (s.usageHold) yield say(null, 'stalled', `${usageHeldText(s.usageHold)} (probe: ${s.probes.filter(Boolean).join('; ') || 'not run'})`);
   const held = s.maintHold ? 'the maintenance window holds every spawn' : s.usageHold ? usageHeldText(s.usageHold) : overBudget ? 'the batch budget holds every spawn' : s.modelsBad ? 'config §3b "Worker models" holds every spawn'
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'

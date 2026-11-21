@@ -47,7 +47,7 @@
 //   hand-away {key, placement}                admit it in the repo its code is in
 //   start {key, how, pick?, setup?}           start it: `how` is resume, handoff, cloud or local
 
-import { set, say } from './shared.mjs';
+import { set, say, runsInCloud } from './shared.mjs';
 
 export function* decideSpawn(s) {
   const { t } = s;
@@ -85,7 +85,7 @@ export function* decideSpawn(s) {
   // Its last round's upload running in the machine's upload queue (another repo's pass may be running
   // it) edits the PR body the next round's worker edits too: that round waits until it ends. Otherwise
   // the job is dropped by the claim, in the same locked step, so no pump can start it before the worker runs.
-  if (!s.resume && !s.handoff && t.location !== 'cloud') {
+  if (!s.resume && !s.handoff && !runsInCloud(t)) {
     const claim = yield { type: 'claim-upload', key };
     if (!claim.ok) {
       yield wait(`the machine's upload queue could not be read to drop its last round's upload (${claim.why}), so no worker was spawned. The next pass looks again`);
@@ -96,7 +96,7 @@ export function* decideSpawn(s) {
       return yield skip;
     }
   }
-  if (t.location !== 'cloud') {
+  if (!runsInCloud(t)) {
     const failures = yield { type: 'read-repos' };
     if (failures.length) {
       const failure = `read-only repo could not be refreshed, so no worker was spawned to read a stale copy — ${failures.map((f) => `${f.repo}: ${f.why}`).join('; ')}`;
@@ -112,13 +112,13 @@ export function* decideSpawn(s) {
     }
   }
   // A new session starts on the repo's subscription; a resumed one has its own, so it still goes ahead.
-  const needsLogin = !s.resume && (s.handoff || t.location !== 'cloud');
+  const needsLogin = !s.resume && (s.handoff || !runsInCloud(t));
   const pick = needsLogin ? yield { type: 'login', key } : null;
   if (needsLogin && !pick) return yield skip;
   yield { type: 'take-slot', key };
   if (s.resume) return yield { type: 'start', key, how: 'resume' };
   if (s.handoff) return yield { type: 'start', key, how: 'handoff', pick };
-  if (t.location === 'cloud') return yield { type: 'start', key, how: 'cloud' };
+  if (runsInCloud(t)) return yield { type: 'start', key, how: 'cloud' };
   // An earlier setup in this pass found the local database down: no other worktree is set up on it.
   if (s.dbDown) {
     yield wait('held, the local database is not answering (health); it spawns on the first pass it answers');

@@ -1,13 +1,13 @@
 // suite: check-build (§4 Check builds: where a build runs, what it is given, and the head's checkout)
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startBuild, buildRecord, anyRunning, prepareTree, pruneTrees } from '../desk/bin/check-build.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'desk-check-build-')));
+const dir = realpathSync(scratch('desk-check-build-'));
 const git = (...a) => execFileSync('git', a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x' } }).trim();
 const origin = join(dir, 'origin.git');
 const src = join(dir, 'src');

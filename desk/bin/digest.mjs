@@ -21,6 +21,7 @@ import { userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
+import { CHECKIN_TIME, checkinTimesOf } from './config-schema.mjs';
 import { jiraSearch, keySearch } from './jira-search.mjs';
 import { isHeld, settlesByScript, localDay } from './batch-state.mjs';
 import { stalledPrs as stalledOf, STALL_FOR } from './desk-q.mjs';
@@ -49,8 +50,8 @@ export const checkinRow = () => (E.configValues('checkin-times') ?? []).join(' '
 // The §3b row as sorted HH:MM strings: {ok, times} or {ok: false, why}. Unset is the default.
 export function checkinTimes(raw) {
   if (raw == null || raw === '' || /^todo\b/i.test(raw)) return { ok: true, times: DEFAULT_TIMES };
-  const parts = String(raw).split(/[\s,]+/).filter(Boolean);
-  const bad = parts.filter((p) => !/^([01]\d|2[0-3]):[0-5]\d$/.test(p));
+  const parts = checkinTimesOf(String(raw));
+  const bad = parts.filter((p) => !CHECKIN_TIME.test(p));
   if (!parts.length || bad.length) {
     return { ok: false, why: `config §3b "Check-in times" is "${raw}": want local HH:MM times, e.g. \`08:00, 17:00\`` };
   }
@@ -502,14 +503,15 @@ const who = () => {
   return userInfo().username;
 };
 
-// Records an answer through the named repo's answer.mjs, as an answer given there would be.
+// Records an answer through the named repo's answer.mjs, as an answer given there would be. The page
+// lists a ticket once, its triage unknowns joined into one item, so the answer settles all of them.
 export function answer({ slug, ticket, text, dir = digestDir(), list = repos(), bin = E.runBin(), now = new Date() }) {
   const r = batchFor(list, slug, ticket);
   if (!r) return { ok: false, why: `no repo ${slug} in the digest (it has no queue and no decision log)` };
   const question = openQuestions(r).find((q) => q.ticket === ticket);
   let out;
   try {
-    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, text], {
+    out = execFileSync('node', [join(bin, 'answer.mjs'), ticket, '--all', text], {
       encoding: 'utf8', env: { ...process.env, DESK_AUTOPILOT_STATE: r.state, DESK_QUEUE: r.queue }, stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) { return { ok: false, why: `answer.mjs refused: ${`${e.stdout ?? ''}${e.stderr ?? ''}`.trim()}` }; }

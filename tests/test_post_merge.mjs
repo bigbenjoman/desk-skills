@@ -1,16 +1,16 @@
 // suite: post-merge watch (reverts and a red default branch within the watch, recorded once)
-import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { postMergeScan, postMergeDue, readPostMerge, revertedPr, gitLog, postMergePath } from '../desk/bin/post-merge.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const NOW = Date.parse('2026-11-13T12:00:00Z');
 const H = 3_600_000;
 const iso = (ms) => new Date(ms).toISOString();
-const tmp = mkdtempSync(join(tmpdir(), 'post-merge-'));
+const tmp = scratch('post-merge-');
 
 // A fixture repo whose main holds each ticket's merge and, later, the reverts.
 const repo = join(tmp, 'repo');

@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 # Shared setup for the pass suites (tests/test_pass_*.sh), which each source it first: a scratch HOME,
-# a git repo and its config, a DESK_HOME whose bin holds the real queue and harvest scripts beside stubs
+# a git repo and its config, a DESK_HOME whose bin holds the real desk/bin scripts beside stubs
 # for everything that would touch GitHub, a browser, a worktree or a worker, and the helpers more than
 # one suite uses. Not a suite: tests/run.sh runs only tests/test_*.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/logs" "$T/desk/bin" "$T/stub" "$T/wt"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -39,9 +40,8 @@ cat > "$T/config.md" <<EOF
 | \`pr-images\` | Upload PR screenshots | \`yes\` | \`yes\` |
 EOF
 
-# A DESK_HOME whose bin holds the real queue and harvest scripts beside stubs for everything that
-# would touch GitHub, a browser, a worktree or a worker.
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# A DESK_HOME whose bin holds the real scripts (link_bin, after the stubs) beside stubs for everything
+# that would touch GitHub, a browser, a worktree or a worker.
 cat > "$T/desk/bin/upload-images.mjs" <<EOF
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 appendFileSync('$T/uploads', \`\${process.argv[2]} \${process.argv[3]}\\n\`);
@@ -64,6 +64,8 @@ const fr = '$T/fr/' + process.argv[2] + '.json';
 if (existsSync('$T/upload-fills') && existsSync(fr)) { const j = JSON.parse(readFileSync(fr, 'utf8')); j.body = j.body.replace(/_drag (\S+?)\.png_/g, '<img alt="\$1" src="https://github.com/user-attachments/assets/1">'); writeFileSync(fr, JSON.stringify(j)); }
 console.log('done: 1 image(s) in the body, 0 placeholder(s) left');
 EOF
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -90,8 +92,9 @@ chmod +x "$T/stub0/gh"
 # The process listing a pass reads for each kept worktree: what $T/lsof.out says, else nothing.
 printf '#!/bin/sh\ncat "%s/lsof.out" 2>/dev/null\nexit 0\n' "$T" > "$T/stub/lsof"
 chmod +x "$T/stub/claude" "$T/stub/gh" "$T/stub/lsof"
-# The process table the pass reads: what $T/ps.out says, else the real ps.
-printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\nexec "%s" "$@"\n' "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
+# The process table the pass reads: what $T/ps.out says, else the real ps; with $T/ps.out, the ages
+# it reads are what $T/ps-ages.out says, else none, so a fake pid never reads a real process's age.
+printf '#!/bin/sh\n[ -f "%s/ps.fail" ] && exit 1\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,ppid=,args=" ] && exec cat "%s/ps.out"\n[ -f "%s/ps.out" ] && [ "$*" = "-ww -axo pid=,etime=" ] && { cat "%s/ps-ages.out" 2>/dev/null; exit 0; }\nexec "%s" "$@"\n' "$T" "$T" "$T" "$T" "$T" "$(command -v ps)" > "$T/stub/ps"; chmod +x "$T/stub/ps"
 # Finishes the batch: every ticket done and every PR merged, so the next pass reports it idle.
 all_done(){ jq -c '.tickets |= map_values(.state = "done" | if .result.pr != null then .merged_at //= "2026-10-23T10:00:00Z" | .pr_status = { pr: .result.pr, state: "MERGED", merged_at: .merged_at, checks: [] } else . end)' "$DESK_QUEUE" > "$DESK_QUEUE.all-done" && mv "$DESK_QUEUE.all-done" "$DESK_QUEUE"; }
 
@@ -137,7 +140,6 @@ cat >> "$T/config.md" <<'EOF'
 | Tracker | `jira` |
 | Ticket key pattern | `T-[0-9]+` |
 EOF
-ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
 cat > "$T/stub/desk-jira" <<'EOF'
 #!/bin/sh
 echo "$*" >> "$JIRA_CALLS"
@@ -229,7 +231,7 @@ else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (a[0] === 'workflow' && a[1] === 'run' && fs.existsSync('$T/wf-refuse-' + a[a.length - 1].replace('pr=', ''))) { console.error('HTTP 502: Bad Gateway'); process.exit(1); }
 else if (a[0] === 'workflow' && a[1] === 'run') console.log('https://github.com/acme/widgets/actions/runs/77' + a[a.length - 1].replace('pr=', ''));
 else if (a[0] === 'api' && /\/issues\/\d+\/events/.test(a[2])) { try { process.stdout.write(fs.readFileSync('$T/fr/' + a[2].match(/issues\/(\d+)\//)[1] + '.events', 'utf8')); } catch { /* not put back to draft */ } }
-else if (a[0] === 'api' && /check-runs\/\d+\/annotations$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
+else if (a[0] === 'api' && /check-runs\/\d+\/annotations(\?per_page=100)?$/.test(a[1] ?? '')) { try { process.stdout.write(fs.readFileSync('$T/fr/notes-' + a[1].match(/check-runs\/(\d+)\//)[1] + '.json', 'utf8')); } catch { process.exit(1); } }
 else process.exit(1);
 EOF
 chmod +x "$T/stub/gh"

@@ -3,19 +3,19 @@
 // cache-report.mjs on fixture transcripts in a scratch HOME with two Claude logins: one session per
 // caller, a sidechain request, a request logged on two lines, a line that is not JSON, a session no
 // caller claims, a caller with both TTLs, and a before and an after window.
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cacheReport, callerOf, requestOf, requestUsd, rangeWindow, windowsFromArgs, windowText, compareText, worktreeDirs } from '../desk/bin/cache-report.mjs';
 import { DECIDER_OPENING } from '../desk/bin/decider.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = fileURLToPath(new URL('../desk/bin/', import.meta.url));
 
-const T = mkdtempSync(join(tmpdir(), 'desk-cache-'));
+const T = scratch('desk-cache-');
 const HOME = join(T, 'home');
 const A = join(HOME, '.claude', 'projects', '-repo');
 const B = join(HOME, '.claude-logins', 'b', 'projects', '-repo');

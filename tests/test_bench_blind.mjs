@@ -1,19 +1,18 @@
 // suite: bench blind (diffs exported under random letters, scores joined back to arms)
 // covers: desk/bin/bench-rubric.md
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { scrub, joinScores, PLACEHOLDER } from '../desk/bin/bench-blind.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
 const SCRIPT = join(BIN, 'bench-blind.mjs');
-const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bench-blind-test-')));
-process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+const dir = realpathSync(scratch('bench-blind-test-'));
 const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { cwd: dir, encoding: 'utf8' });
 
 const ARMS = [

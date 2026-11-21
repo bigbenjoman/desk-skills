@@ -41,7 +41,8 @@
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
 //     or, with anything parked, failed or held behind a blocker in no batch (held_outside),
 //     DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch went idle, so a pass sees what
-//     cleared a park, or landed a blocker, outside the queue. Each idle tick refreshes the
+//     cleared a park, or landed a blocker, outside the queue; DESK_RUN_RECHECK_MS (2 minutes) while a
+//     park a pass settles waits on an Actions run or a PR's checks. Each idle tick refreshes the
 //     batch's heartbeat (so desk-q and needs-you read it as run, not stopped), and still runs the
 //     check-in (killed past 5 minutes, DESK_CHECKIN_TIMEOUT_MS) and moves the weekly maintenance
 //     window and the auto-release on (maintenance.mjs step), pushing what the step pushes.
@@ -72,7 +73,7 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
-import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS } from './batch-state.mjs';
+import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHECK_MS, waitingOnRun } from './batch-state.mjs';
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
@@ -145,10 +146,14 @@ function units(slug, job) {
   return { service, timer };
 }
 const sysFail = (what, r) => die(`systemctl --user ${what} failed: ${(r.stderr || r.stdout || r.error?.message || '').trim()}`);
-// Without lingering, systemd stops a user's timers once their last session ends.
+// Without lingering, systemd stops a user's timers once their last session ends. On WSL that is not
+// enough: WSL stops the whole distro once the last process started from Windows exits, and no systemd
+// unit, lingering or not, keeps it up, so install says so there whatever lingering is.
 function lingerNote() {
   const r = spawnSync('loginctl', ['show-user', String(process.env.USER || process.getuid()), '-p', 'Linger'], { encoding: 'utf8' });
-  return /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+  const linger = /^Linger=no$/m.test(r.stdout ?? '') ? ' Lingering is off, so ticks stop once you log out; `loginctl enable-linger` keeps them running.' : '';
+  const wsl = E.isWSL() ? ' On WSL, ticks run only while WSL is up, and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if this is not your default distro), with "Stop the task if it runs longer than 3 days" turned off.' : '';
+  return linger + wsl;
 }
 
 function installSystemd(slug, job, reload) {
@@ -534,8 +539,12 @@ function batchInterval(intake) {
     const by = String(t.held_by ?? '').split('|');
     return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
   };
-  const recheck = Object.values(q.tickets ?? {}).some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t))
-    && Date.now() - idleAt >= IDLE_RECHECK_MS;
+  // A park waiting on an Actions run or a PR's checks is rechecked sooner, so it is requeued within
+  // minutes of the run finishing.
+  const all = Object.values(q.tickets ?? {});
+  const since = Date.now() - idleAt;
+  const recheck = (all.some(waitingOnRun) && since >= RUN_RECHECK_MS)
+    || (all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) && since >= IDLE_RECHECK_MS);
   // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
   const watchDue = postMergeDue({ state, queue: q });
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue) {
@@ -713,7 +722,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
     s.idle_at = startedAt;
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch`);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch${Object.values(qAfter.tickets ?? {}).some(waitingOnRun) ? ` (${RUN_RECHECK_MS / 60000} minutes while a park waits on an Actions run or a PR's checks)` : ''}`);
   }
   writeState(state, s);
   log(out);

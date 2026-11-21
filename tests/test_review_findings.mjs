@@ -3,13 +3,13 @@
 // AUTOPILOT_FINDINGS line a worker printed in the ticket's findings file, once, and a round that ended
 // without one in its run record. Pure: no git, no GitHub; a scratch state directory only.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findingsLine, render, VerdictError } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewRounds, recordFindings, recordCarry, parseFindings, findingsPath, runsPath } from '../desk/bin/findings.mjs'
 import { spawnRecords } from '../desk/bin/phase0-report.mjs'
+import { scratch } from './scratch.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -29,7 +29,7 @@ const said = (text) => JSON.stringify({ type: 'assistant', message: { content: [
 const logOf = (...texts) => texts.map(said).join('\n') + '\n'
 const marker = (o) => `AUTOPILOT_FINDINGS: ${JSON.stringify({ round: 1, reviewer: 'self', head: SHA, p0: 0, p1: 0, p2: 0, fixed: 0, carried: false, refuter_vendor: 'codex', ...o })}`
 
-const dir = mkdtempSync(join(tmpdir(), 'review-findings-'))
+const dir = scratch('review-findings-')
 const jsonl = (p) => (existsSync(p) ? readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
 let n = 0
 const harvest = (key, ...texts) => {

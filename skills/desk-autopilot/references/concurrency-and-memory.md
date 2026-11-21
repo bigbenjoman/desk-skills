@@ -13,7 +13,7 @@ Default **2**, cap **3** (config §3b "Autopilot worker concurrency" can change 
 RAM binds before CPU, and the 5-hour and 7-day usage limits
 are account-level, shared with the user's own sessions. Worker ports start **one above** config §3b
 "Preferred dev-server port" (`AUTOPILOT_PORT_FLOOR` overrides), skipping any port another ticket
-holds or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
+holds, a peer session claimed (`port-claims.mjs`, from its handshake), with the port lease kind on another session leases (`port-lease.mjs`), or anything bound. Where §4 Local database is set and §3 `db-per-ticket` allows, each ticket
 gets its own database; otherwise every §4 Database URL variable in its worktree is blanked, and a
 ticket that needs a database parks. Shared local services (§4 Local services: a search index, a cache) cannot be
 isolated, so workers park rather than rebuild them.
@@ -55,6 +55,12 @@ Lowering is silent but **reported**: say which number caused it. Raising back ne
 evidence. The ladder is what the "machine looks idle" red flag guards: a fan-out sized from the
 guest figure can take the whole VM down and kill every agent mid-flight.
 An OOM leaves a worker's worktree, database and port behind.
+
+**Only `avail` lowers the count.** The pass report's `memory ceiling` line is the footprint budget,
+and on WSL its figure counts page cache; neither it nor `vmmem` is a reason to set a lower
+`concurrency`. The `workers:` line says "lowered on memory" only while `avail` is under the ladder's
+line; a count below the user's with `avail` above it reads "memory did not lower it", and goes back
+to the user's number.
 
 **The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
 machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
@@ -117,6 +123,20 @@ fires only on `avail` below the ladder's lowest band (2 GiB, or a lower band the
 never write a shell loop around `render` and `mem status` instead, which Claude Code prompts on every
 time. Both keep their state in the process, so re-arm one when its `Monitor` expires. Killing a
 runaway process is a call to make from the monitor, not a park.
+
+**On Linux the watch also reads the signals that came before real harm**, beside `avail`, each said
+once until it clears:
+
+- `SWAP-GROWING`: swap used up 2 GiB or more within 10 minutes. Hold new spawns until it settles.
+- `OOM-KILL`: the kernel killed a process for memory since the watch started. Drop to the ladder's
+  lowest count (§3b "Spawn gate (available memory)" `drop to`), and read which process it was in
+  `dmesg` before raising again.
+- `TMPFS-HIGH`: `/tmp` is a tmpfs holding 4 GiB or more. Memory pressure pushes it to swap, which
+  looks like a leak and is not one: see what holds it before lowering anything.
+- `OOM-UNKNOWN`, once: `dmesg` cannot be read here (`kernel.dmesg_restrict`), so OOM kills go
+  unwatched. Say so in the batch notes.
+
+Say which line moved the count when you lower it. On macOS none of these is read.
 
 **Waiting on one PR is a watch command too.** Under `Monitor`, run
 `node ~/.claude/desk/bin/pr-watch.mjs checks <n>` (one line once every check on the head has

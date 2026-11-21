@@ -3,13 +3,13 @@
 // refuter results, and no results with an open finding, partial coverage or a dead seat can print
 // the clean verdict. Pure: no git, no GitHub, no codex.
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { render, tally, isClean, carriedSection, acceptedSection, postMergeSection, methodLine, CLEAN, VerdictError, gateRejects } from '../skills/desk-review/bin/verdict.mjs'
 import { reviewGaps, reviewFix, personGapsCall } from '../desk/bin/fix-tries.mjs'
 import { parseVerdict as undraftVerdict, verdictAt, postMergeIn, postMergeSteps } from '../desk/bin/undraft.mjs'
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const SCRIPT = join(ROOT, 'skills', 'desk-review', 'bin', 'verdict.mjs')
@@ -272,6 +272,16 @@ want('refuses a finding from an unknown seat', base({ findings: [f({ seat: 'nadi
 want('refuses a finding from a dead seat', base({ seats: [seat('correctness'), seat('nadia', 'claude', 'died')], findings: [f({ seat: 'nadia' })] }), 'died, so it raised nothing')
 want('refuses a finding with no result', base({ findings: [f({ result: undefined })] }), 'result must be one of')
 want('refuses a refuted finding with no refuter', base({ findings: [f({ refuted_by: undefined })] }), 'refuted_by must be')
+want('#763 refuses an agent as the refuter, naming the vendor it wants', base({ findings: [f({ refuted_by: 'ada-devils-advocate' })] }), 'refuted_by must be the refuter\'s vendor, claude or codex, not its agent ("ada-devils-advocate")')
+{
+  const doc = readFileSync(join(ROOT, 'skills', 'desk-review', 'SKILL.md'), 'utf8')
+  const example = JSON.parse(doc.match(/desk-review-results-<run>\.json`[\s\S]*?```json\n([\s\S]*?)```/)[1].replace('<full reviewed SHA>', SHA))
+  t('DS-845 AC2 the skill\'s results example is accepted', refused(example), 'accepted')
+  t('DS-845 AC2 the example refutes each seat\'s finding by the other vendor',
+    example.findings.map((x) => `${x.seat}:${x.refuted_by}`).join(), 'correctness:codex,codex:claude')
+  t('DS-845 AC1 the field description names the vendor, not an agent',
+    /`refuted_by`: `claude` or `codex`, not an agent;\s+absent when `UNREFUTED`/.test(doc), true)
+}
 want('refuses an UNREFUTED finding naming a refuter', base({ findings: [f({ result: 'UNREFUTED' })] }), 'has no refuted_by')
 want('refuses P3', base({ findings: [f({ severity: 'P3' })] }), 'severity must be')
 want('refuses a finding listed twice', base({ findings: [f(), f()] }), 'listed twice')
@@ -293,8 +303,7 @@ for (const anchor of ['pullrequestreview-311', 'discussion_r12']) {
 }
 
 // ---- the CLI, and SKILL.md's documented forms
-const T = mkdtempSync(join(tmpdir(), 'desk-verdict-'))
-process.on('exit', () => rmSync(T, { recursive: true, force: true }))
+const T = scratch('desk-verdict-')
 writeFileSync(join(T, 'ok.json'), JSON.stringify(base()))
 writeFileSync(join(T, 'bad.json'), JSON.stringify(base({ gaps: undefined })))
 const ok = spawnSync('node', [SCRIPT, join(T, 'ok.json')], { encoding: 'utf8' })
@@ -433,7 +442,7 @@ t('after a base merge', whole.includes('`git log --merges --oneline <since>..HEA
   t('DS-422 AC5 a heading contradicting a clean marker is rejected', /lists "1 P1"/.test(gateRejects(body(clean(), '## desk-review: 1 P1'), H, gate)), true)
   t('DS-422 AC5 counts handed on are no format fault', gateRejects(body(clean({ p1: 1 }), '## desk-review: 1 P1'), H, gate), null)
   t('DS-422 AC5 a repo gate exporting only parseVerdict still checks the marker and its head', `${gateRejects(body(clean()), H, { parseVerdict: gate.parseVerdict })} ${/attests/.test(gateRejects(body(clean({ sha: 'c'.repeat(40) })), H, { parseVerdict: gate.parseVerdict }))}`, 'null true')
-  const dir = mkdtempSync(join(tmpdir(), 'verdict-check-'))
+  const dir = scratch('verdict-check-')
   const f = join(dir, 'report.md')
   writeFileSync(f, body(clean({ sha: 'c'.repeat(40) })))
   const r = spawnSync('node', [SCRIPT, '--check', f, H], { cwd: dir, encoding: 'utf8' })

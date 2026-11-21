@@ -31,7 +31,7 @@ import * as E from './desk-env.mjs';
 import { readRegistry } from './claude-logins.mjs';
 import { takeBorrowLock, otherQueues } from './borrow.mjs';
 import { readInstalled } from './installed.mjs';
-import { bootTime } from './pass/shared.mjs';
+import { bootTime, runsInCloud } from './pass/shared.mjs';
 
 export const WINDOW_ROW = E.CONFIG_ROWS['maintenance-window'].row;
 export const DRAIN_ROW = E.CONFIG_ROWS['maintenance-drain'].row;
@@ -102,8 +102,8 @@ export const digestNotes = (dir = maintDir()) => (readState(dir)?.notes ?? []).f
 const selfSlug = () => { try { return E.repoSlug(); } catch { return 'this repo'; } };
 
 // A worker running on this computer. A cloud session (cloud-worker.mjs) runs away from it, so the
-// window neither waits for one nor stops it, in any repo.
-export const runningHere = (t) => t?.state === 'running' && t.location !== 'cloud';
+// window neither waits for one nor stops it, in any repo; a review try on a cloud ticket's PR runs here.
+export const runningHere = (t) => t?.state === 'running' && !runsInCloud(t);
 
 // A queue's workers running on this computer, as rows stopForWindow can stop: its running tickets, and
 // its base conflict fix while one runs (pass.mjs keeps it on the queue as `base_fix`, not as a ticket,
@@ -116,16 +116,19 @@ export function runningWorkers(q) {
 }
 
 // Running workers in every other repo's queue (with `self`, this repo's too) that `where` keeps, and
-// the queues that cannot be read.
-function othersRunning(selfQueue, { self = false, where = () => true } = {}) {
+// the queues that cannot be read. `rows(q)` picks a queue's rows to judge (runningWorkers by default),
+// and `label(t)` adds to each one's name. `selfView`, the calling pass's queue with its unwritten
+// changes, stands in for this repo's file, which can lag what the pass has already decided.
+function othersRunning(selfQueue, { self = false, selfView = null, where = () => true, rows = runningWorkers, label = () => '' } = {}) {
   const queues = otherQueues({ self: selfQueue });
-  if (self && selfQueue && existsSync(selfQueue)) {
+  if (self && selfView) queues.unshift({ slug: selfSlug(), q: selfView });
+  else if (self && selfQueue && existsSync(selfQueue)) {
     try { queues.unshift({ slug: selfSlug(), q: JSON.parse(readFileSync(selfQueue, 'utf8')) }); } catch (e) { queues.unshift({ slug: selfSlug(), error: e.message }); }
   }
   const running = []; const unreadable = [];
   for (const { slug, q, error } of queues) {
     if (error) unreadable.push(`${slug}'s queue cannot be read, so its workers cannot be counted (${error})`);
-    for (const t of runningWorkers(q)) if (where(t)) running.push(`${slug} ${t.key}`);
+    for (const t of rows(q)) if (where(t)) running.push(`${slug} ${t.key}${label(t)}`);
   }
   return { running, unreadable };
 }
@@ -175,7 +178,7 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. -> {ok, old, new, commits} | {ok: false, why, old}
+// untracked files in its way block it. -> {ok, old, new, commits, restarted} | {ok: false, why, old}
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -191,7 +194,16 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, commits };
+  return { ok: true, old, new: head, commits, restarted: restartedDrivers(inst.out) };
+}
+
+// The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
+// install.sh prints each line twice (its section and its summary). One left running is not named.
+function restartedDrivers(out) {
+  const found = String(out ?? '').split('\n')
+    .map((l) => /^\s*merge driver for (.+?): restarted on the new code \(pid (\d+) -> (\d+)\)/.exec(l))
+    .filter(Boolean).map(([, who, from, to]) => `${who} (pid ${from} -> ${to})`);
+  return [...new Set(found)];
 }
 
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
@@ -269,6 +281,10 @@ function newestPassed(git, src, base, head) {
 
 // A worker at Stage 7, which may be pushing.
 const atStage7 = (t) => /^7(\/|$)/.test(String(t.stage ?? '')) || (t.stage == null && String(t.handoff_stage) === '7');
+// A ticket handed off to Stage 7 whose session has not started yet: it is triaged with its handoff
+// pending (pass.mjs), not running, and its next spawn would start on whatever bin is installed then.
+const awaitingStage7 = (t) => t?.handoff === 'pending' && String(t.handoff_stage) === '7' && !runsInCloud(t);
+const stage7Rows = (q) => [...runningWorkers(q), ...Object.values(q?.tickets ?? {}).filter((t) => !runningHere(t) && awaitingStage7(t))];
 
 // The notification for main's failed check, which release.json gives to the repo whose pass first saw
 // it fail. That repo returns it from every pass while origin/main is still at that commit, whatever
@@ -282,7 +298,7 @@ export function releasePush({ dir = maintDir(), src = sourceCheckout() } = {}) {
 }
 
 // One step of the auto-release. -> {lines}
-export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, src = sourceCheckout() } = {}) {
+export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = null, selfView = null, src = sourceCheckout() } = {}) {
   const none = { lines: [] };
   if (!src || !existsSync(src)) return none;
   mkdirSync(dir, { recursive: true });
@@ -347,19 +363,25 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
       why = `; main's head ${short(head)} was not installed: its ${RELEASE_CHECK} check ${failed ? 'failed' : c.word === 'cancelled' ? 'was cancelled, and is read again next pass' : 'is still running'} (${c.word})`;
     }
 
-    const o = othersRunning(selfQueue, { self: true, where: atStage7 });
-    const pushing = [...o.running.map((w) => `${w} at Stage 7`), ...o.unreadable];
+    const o = othersRunning(selfQueue, { self: true, selfView, where: (t) => atStage7(t) || awaitingStage7(t), rows: stage7Rows,
+      label: (t) => (runningHere(t) || t.base_fix ? ' at Stage 7' : ' waiting on its Stage 7 session') });
+    const pushing = [...o.running, ...o.unreadable];
     if (pushing.length) {
       lines.push(`release: desk-skills main ${short(to)} passed its ${RELEASE_CHECK} check${why}; waiting to install it for ${pushing.join(', ')}`);
       return { lines };
     }
 
+    // The workers still running here pick the new bin up on their next call to it.
+    const live = othersRunning(selfQueue, { self: true, selfView }).running;
     const u = updateDesk(src, { to });
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}`);
-    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}`);
+    // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
+    const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
+    const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };
   } finally { lock.release(); }
 }
@@ -372,7 +394,7 @@ export async function maintenance(opts = {}) {
   const at = opts.at ?? now();
   const m = await windowStep({ ...opts, dir, at });
   const lines = [...m.lines];
-  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null })).lines);
+  if (!m.hold && !HOLDING.includes(readState(dir)?.phase)) lines.push(...(await autoRelease({ dir, at, selfQueue: opts.selfQueue ?? null, selfView: opts.selfView ?? null })).lines);
   return { ...m, lines, push: releasePush({ dir }) };
 }
 

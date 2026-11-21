@@ -36,17 +36,18 @@
 // is made then, with the label it is listed under. The supervisor command runs that repo's supervisor.mjs install, uninstall or
 // status, and changes no config row or approval. The one other write is a repo's <state>/eta.jsonl,
 // which gains a ticket's first ship estimate the first time a live batch's forecast dates it.
-import { closeSync, existsSync, openSync, readFileSync, readSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, readSync, realpathSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, shortName, shownNames } from './desk-env.mjs';
-import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept }from './batch-state.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames } from './desk-env.mjs';
+import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
-import { RULES } from './machine.mjs';
+import { LEASE_KINDS, RULES } from './machine.mjs';
+import { LeaseStoreError, RESET_COMMAND, forceReleaseCommand, kindMode, overdue, peek, wouldRefuseByDay } from './leases.mjs';
 import { LIVE_MS, lastBeat, liveBeat, machineCap } from './borrow.mjs';
 import { lastStage } from './harvest.mjs';
 import { listBatches } from './batches.mjs';
@@ -68,6 +69,7 @@ import { startRefresh, readCache, chargesByName, forCosts, isFull, fullMonth, pr
 import { readCosts, billingUrl, SUPPLIERS } from './costs.mjs';
 import { needsCount } from './needs-you.mjs';
 import { readAsks } from './asks.mjs';
+import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
@@ -261,6 +263,9 @@ function blockerHold(q, key, b, ctx, seen) {
   const bt = q.tickets?.[b];
   if (!bt && keysOf(q.tickets?.[key]?.held_outside).includes(b)) {
     if (ctx.stepOf?.(key, b)) return { k: 'needs', name: b, step: b, text: `waits to start on your step ${b}: take it and move it to Done in Jira` };
+    // Its code merged into another branch, raised in needs-you to promote or start without it.
+    const u = unpromotedHolds(q.tickets[key]).find(([k]) => k === b)?.[1];
+    if (u) return { k: 'waiting', name: b, text: `behind ${b}, outside this batch: Done, its code on ${u.branch} with ${promotionWords(u)}, asked whether to promote it` };
     return { k: 'waiting', name: b, text: ctx.blockerCategory?.(key, b) === 'done' ?`behind ${b}, outside this batch: Done, waiting for its code to reach ${ctx.base}`
       : `behind ${b}, outside this batch, until it is Done and on ${ctx.base}` };
   }
@@ -420,6 +425,10 @@ function prNeed(q, t, ctx = NOBODY, now = Date.now()) {
   // approval, waits on a person's approval before the driver merges it.
   const approval = /^approval: (.+)$/.exec(String(t.merge_blocked ?? ''));
   if (approval) return needs({ code: 'approval', text: approval[1] }, [approval[1], WARN], [' · approve it', null]);
+  // One GitHub has had no mergeability answer for at its head long past usual: its merge ref looks
+  // wedged, and only a new commit (or a new PR) gives it a fresh one (merge-driver.sh unknown_age).
+  const ref = /^merge ref: (.+)$/.exec(String(t.merge_blocked ?? ''));
+  if (ref) return needs({ code: 'merge-ref', text: ref[1] }, [ref[1], WARN], [' · push a new commit', null]);
   if (ps.mergeable === 'CONFLICTING' || ps.mergeState === 'DIRTY') {
     // A conflict has its own tries (fix-tries.mjs conflictTriesMade), whatever other kinds have used.
     const made = conflictTriesMade(t.fix_tries);
@@ -621,6 +630,26 @@ const fixOn = (t) => (t.fix && !t.fix.finished && t.state !== 'done' ? t.fix : n
 export const unmergedBlockers = (q, t) => String(t.held_by ?? '').split('|').filter(Boolean)
   .filter((p) => { const pt = q.tickets?.[p]; return !(pt?.state === 'done' && pt.result?.pr != null && !['OPEN', 'CLOSED'].includes(prStatusOf(pt)?.state)); });
 
+// The tickets whose triage is running for a batch, or just finished with the admit to follow: triage.sh
+// writes <state>/triage/<KEY>.log as it runs, and a ticket in no live queue row is not admitted yet. A log
+// untouched for TRIAGE_LIVE_MS is a triage that ended. Sorted keys, [] with none.
+export const TRIAGE_LIVE_MS = 5 * 60 * 1000;
+export function triagingKeys(stateDir, q, now = Date.now()) {
+  const dir = join(stateDir, 'triage');
+  let names;
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => n.endsWith('.log')).map((n) => n.slice(0, -4)).filter((k) => {
+    // Live tickets only: an archived one, found behind them (attachArchive), can be admitted again.
+    if (q?.tickets && Object.hasOwn(q.tickets, k)) return false;
+    try { return now - statSync(join(dir, `${k}.log`)).mtimeMs < TRIAGE_LIVE_MS; } catch { return false; }
+  }).sort();
+}
+// "triaging A-1, A-2", the first three and how many more, or '' with none.
+const triagingText = (r) => {
+  const ks = r.triaging ?? [];
+  return ks.length ? `triaging ${ks.slice(0, 3).join(', ')}${ks.length > 3 ? ` +${ks.length - 3}` : ''}` : '';
+};
+
 function readTriageRecord(stateDir, key) {
   const p = join(stateDir, 'triage', `${key}.json`);
   if (!existsSync(p)) return null;
@@ -745,6 +774,7 @@ function loadBatch(c, repoName, batch, limits, now) {
   r.prs = rows.filter(prRow).map((t) => ({ t, k: shownState(r.q, t, r.ctx), pos: null, pr: true, st: rowStage(stateDir, t, r.last) }));
   r.done = rows.length - r.rows.length - r.prs.length;
   r.workers = r.q ? batchConcurrency(r.q, limits).n : null;
+  r.triaging = triagingKeys(stateDir, r.q, now);
   r.run = r.q ? whoRuns(r) : null;
   r.stall = r.q ? stallOf(r, now) : null;
   return r;
@@ -840,6 +870,19 @@ const workersRunning = (r) => (r.rows ? count(r, 'running') : 0) + baseFixes(r);
 // A scoped load's other batches (loadRepos `others`) count too.
 const withOthers = (repos) => [...repos, ...(repos.find((r) => r.machine)?.machine.others ?? [])];
 export const machineRunning = (repos) => withOthers(repos).reduce((a, r) => a + (r.error ? r.cap ?? 0 : workersRunning(r)), 0);
+// A batch's merge driver while it holds its lock: how long it has held it (the lock's mtime, set as it
+// writes its pid) and the last line of its log. Null once it has stopped, which stallOf's note covers.
+function driverUp(b, now = Date.now()) {
+  if (!b.stateDir || mergeDriverHolder(b.stateDir) == null) return null;
+  let at = null;
+  try { at = statSync(join(b.stateDir, 'merge-driver.lock.d')).mtimeMs; } catch { /* released since */ }
+  return { b, up: at == null ? null : Math.max(0, now - at), last: tailLines(join(b.stateDir, 'merge-driver.log')).at(-1) ?? null };
+}
+// The merge drivers running in every repo here, each batch's state folder once.
+const machineDrivers = (repos, now = Date.now()) => {
+  const dirs = new Set(withOthers(repos).flatMap((r) => r.batches ?? [r]).map((b) => b.stateDir).filter(Boolean));
+  return [...dirs].filter((d) => driverUp({ stateDir: d }, now)).length;
+};
 // The workers running on one Claude login, by the login spawn-worker.sh recorded for each
 // (claude-logins.mjs), a worker with no record on the default. A batch whose queue cannot be read
 // counts at its repo's cap.
@@ -918,6 +961,7 @@ export function repoRow(bs) {
   return { ...lead, name: lead.repo, word: lead.repo, id: lead.slug, batch: null, batches: ok,
     unreadable: ok.length ? bs.filter((b) => b.error) : [], error: ok.length ? null : lead.error,
     rows: ok.flatMap((b) => tag(b, b.rows)), prs: ok.flatMap((b) => tag(b, b.prs)), done: ok.reduce((a, b) => a + b.done, 0),
+    triaging: [...new Set(ok.flatMap((b) => b.triaging ?? []))].sort(),
     workers: Math.min(lead.cap, ok.reduce((a, b) => a + (b.workers ?? 0), 0)) };
 }
 // A merged row's batch whose queue cannot be read, said where its tickets would have been.
@@ -962,9 +1006,9 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
   if (!forecasts.has(id)) {
     if (forecasts.size > 64) forecasts.clear();
     const sizes = Object.fromEntries(rows.map((x) => [x.key, x.size]));
-    const left = r.rows.some((x) => AUTOPILOT_STATES.includes(x.k));
+    const paused = passesPaused(r);
     const F = { ...forecast({ rows, workers: r.workers, history, now: at, checkin, epics: open }), d: durations(history), sizes,
-      paused: !r.live && left, idle: !r.live && !left, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
+      paused, idle: !r.live && !paused, epics: ep.epics, of: ep.of, noEpic: ep.noEpic, unread: ep.unread };
     // A state directory desk-q cannot write to costs the saved estimate, never the screen.
     if (!F.none && r.live && !checkin) try { saveEstimates(r.stateDir, F.T, at); } catch { /* shown, not saved */ }
     forecasts.set(id, F);
@@ -974,7 +1018,10 @@ export function forecastOf(r, { now = Date.now(), checkin = false } = {}) {
 
 const SOON = MINUTE;
 // The shown states a pass can still move on: anything else waits on the user.
-const AUTOPILOT_STATES = ['running', 'ready', 'queued', 'waiting'];
+const MOVABLE_STATES = ['running', 'ready', 'queued', 'waiting'];
+// A batch whose passes stopped while it has a ticket autopilot could move: forecastOf's `paused`, and
+// needs-you's stalled item for a batch a session runs.
+export const passesPaused = (r) => !r.live && r.rows.some((x) => MOVABLE_STATES.includes(x.k));
 const undatable = (F) => !F || F.none || F.paused || F.idle;
 const etaOf = (F, key) => (undatable(F) ? null : F.T[key]);
 // With passes stopped there are no dates, but a running worker carries on, so its row says so.
@@ -983,7 +1030,10 @@ const startsCell = (F, x, now) => {
   const e = etaOf(F, x.t.key);
   return !e ? '—' : e.start <= now + SOON ? (x.k === 'running' ? 'running' : 'now') : when(e.start, now);
 };
-const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : 'no date');
+// An undated ticket held behind a blocker whose code waits on another branch's promotion shows that
+// promotion PR's state (none, draft, open or red) in place of "no date".
+const promoOf = (t) => unpromotedHolds(t)[0]?.[1] ?? null;
+const shipsCell = (F, x, now) => (undatable(F) ? '—' : F.T[x.t.key] ? when(F.T[x.t.key].likely, now) : promoOf(x.t) ? `promo ${promoOf(x.t).state}` : 'no date');
 const noHistory = (r, F) => `No ship estimate: ${r.name} has ${F.count} merged autopilot tickets in its history (the last ${WINDOW_DAYS} days), and estimates need ${MIN_HISTORY}.`;
 // The same under a note's repo tag, which already names the repo.
 const noHistoryText = (F) => `no ship estimate yet, with ${F.count} of the ${MIN_HISTORY} merged autopilot tickets an estimate needs (the last ${WINDOW_DAYS} days).`;
@@ -1237,7 +1287,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
 // needs-you and machine lines.
 function tabHead(repos, r, now, solid, pinUsage) {
   if (!r) return overviewHead(repos, shownRepos(repos, false), { now, solid, pinUsage });
-  return r.q ? [countsLine(r), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
+  return r.q ? [countsLine(r, now), passHead(r, now)[0], ...(pinUsage ? [] : usageLines(usageOf(repos, now, [r]), { now, solid }))] : [];
 }
 
 // A ships view's forecast line, labels grey and figures bright: from when, over how many runs and
@@ -1944,8 +1994,9 @@ function needsLine(list, now) {
 }
 
 // The overview's second line: workers running, the machine cap and the room it leaves, free memory.
-function machineLine(running, cap, room, avail) {
-  return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY], BAR,
+function machineLine(running, cap, room, avail, drivers = 0) {
+  return segLine([[`● ${running} worker${running === 1 ? '' : 's'} running`, running ? STATE_SGR.running : GREY],
+    ...(drivers ? [[' · ', GREY], [`▸ ${drivers} merge driver${drivers === 1 ? '' : 's'} running`, STATE_SGR.merging]] : []), BAR,
     ...(cap == null ? [['no machine cap (/desk-setup writes a machine profile)', GREY]] : [['machine cap ', GREY], [String(cap), BOLD]]),
     [' · ', GREY], ['room for ', GREY], [`${room} more`, BOLD], BAR, [`${avail.toFixed(1)} GiB`, BOLD], [' free', GREY]]);
 }
@@ -2528,7 +2579,7 @@ const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKIL
 function overviewHead(repos, list, { now = Date.now(), solid = false, avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), pinUsage = false, levers = null } = {}) {
   const running = machineRunning(repos);
   const each = byRepo(list);
-  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail), ...(levers ? [levers] : []),
+  return [...list.flatMap(bandsOf), needsLine(each, now), machineLine(running, cap, headroom({ running, cap, avail, gate, perWorker }), avail, machineDrivers(repos, now)), ...(levers ? [levers] : []),
     ...(pinUsage ? [] : usageLines(usageOf(repos, now, each), { now, solid }))];
 }
 
@@ -2551,7 +2602,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
   const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
-  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}`;
+  const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
   const steps = [{ ...wide, slot: true }, { ...wide, slot: false }, { ...fit, drop: [] }, { ...fit, drop: ['DONE'] }, { ...fit, drop: ['DONE', 'MERGING'] },
@@ -2630,6 +2681,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       notes.push({ tag: `▸ ${r.name}`, sgr: STATE_SGR.merging, text: [[`${m} PR${m === 1 ? '' : 's'} merging. Its screen lists ${m === 1 ? 'it' : 'them'}.`, null]] });
     }
   }
+  if (!lay.slot) for (const r of ok.filter((x) => triagingText(x))) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${capital(triagingText(r))}: the batch admits ${r.triaging.length === 1 ? 'it' : 'them'} once triage finishes.`, null]] });
   if (!lay.slot) for (const r of ok.filter((x) => unslotted(x) > 0)) notes.push({ tag: `  ${r.name}`, sgr: GREY, text: [[`${unslotted(r)} ready with no free slot: ${unslotted(r) === 1 ? 'it starts' : 'they start'} as its running workers finish.`, null]] });
   const you = [...needs.values()].reduce((a, y) => a + y.shown, 0);
   if (you && needsYouSkill()) notes.push({ tag: '◆ needs you', sgr: YOU, text: [['/desk-needs-you', BOLD], [`, in a Claude session, asks you about ${you === 1 ? 'the 1 ticket' : `all ${you}`}.`, null]] });
@@ -2640,7 +2692,55 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   }
   if (badge) notes.push({ tag: '  dates', sgr: GREY, text: [[badge, null]] });
   if (notes.length) foot.push('', ...noteLines(notes, w, width));
+  foot.push('', ...leaseLines({ now, width }));
   return { head, rows, foot };
+}
+
+// The Queue view's Leases section: each live lease with its holder, age and time to expiry, an overdue
+// one with the command that frees it, then each kind's shadow would-refuse counts by day. It only
+// reads: lapsing and freeing a lease stay with desk-env lease.
+const LEASE_DAYS = 7;
+function leaseLines({ now, width }) {
+  const env = { psRows, machineValue };
+  const at = { env, now: () => now };
+  // A failure stays in this section, so the rest of the Queue still draws: an unreadable store or log
+  // names itself (the store with the command that starts an empty one); anything else, such as ps
+  // failing while the owners are checked, is shown as it is.
+  const trouble = (e, reset) => (e instanceof LeaseStoreError
+    ? [...wrapped([[`▲ ${capital(e.message)}.`, WARN]], width), ...(reset ? [{ ...segLine([['    to start an empty one: ', GREY], [RESET_COMMAND, BOLD]]), whole: true }] : [])]
+    : wrapped([[`▲ The leases could not be read: ${printable(String(e?.message ?? e))}.`, WARN]], width));
+  const section = (lines, reset) => { try { return lines(); } catch (e) { return trouble(e, reset); } };
+  return [bold('Leases'), ...section(() => heldLines(peek(at), now), true), ...section(() => refusedLines(wouldRefuseByDay({ ...at, days: LEASE_DAYS }), env, width), false)];
+}
+
+// `segs` as lines indented two columns; with `width`, wrapped between words, each further line indented
+// two more.
+const wrapped = (segs, width) => (width == null ? [segs] : wrapSegs(segs, Math.max(12, width - 4)))
+  .map((s, j) => segLine([[j ? '    ' : '  ', null], ...s]));
+
+// Each held lease's row, its stored text made printable, and an overdue one's command line.
+function heldLines(held, now) {
+  if (!held.length) return ['  No leases are held.'];
+  const text = (v) => printable(String(v ?? '?'));
+  const holder = (l) => `${text(l.label)} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})`;
+  const key = (l) => `${text(l.key)}${l.units > 1 ? ` ×${l.units}` : ''}`;
+  const kw = Math.max(6, ...held.map((l) => text(l.kind).length + 2)), yw = Math.max(5, ...held.map((l) => key(l).length + 2)), hw = Math.max(8, ...held.map((l) => holder(l).length + 2));
+  const out = [segLine([[`  ${pad('KIND', kw)}${pad('KEY', yw)}${pad('HOLDER', hw)}${pad('AGE', 9)}EXPIRES`, GREY]])];
+  for (const l of held) {
+    const late = overdue(l, now), expires = Date.parse(l.expires);
+    out.push(segLine([[`  ${pad(text(l.kind), kw)}${pad(key(l), yw)}${pad(holder(l), hw)}${pad(span(now - Date.parse(l.acquired)), 9)}`, null],
+      late ? [`▲ overdue ${span(now - expires)}`, WARN] : [`in ${span(expires - now)}`, null]]));
+    if (late) out.push({ ...segLine([['    to free it: ', GREY], [forceReleaseCommand(l.id), BOLD]]), whole: true });
+  }
+  return out;
+}
+
+// Each kind's shadow would-refuse counts: the last 24 hours, then each day of the window.
+function refusedLines(refused, env, width) {
+  const kinds = LEASE_KINDS.filter((k) => refused[k]);
+  if (!kinds.length) return [segLine([[`  No shadow would-refuse in the last ${LEASE_DAYS} days.`, GREY]])];
+  return kinds.flatMap((k) => wrapped([[`${pad(k, 15)}${pad(kindMode(k, env).mode, 8)}`, null], [String(refused[k][0]), BOLD],
+    [` would-refuse in 24h · each of the last ${LEASE_DAYS} days, newest first: ${refused[k].join(' ')}`, GREY]], width));
 }
 
 export const overview = (repos, opts) => joined(overviewParts(repos, opts));
@@ -2686,6 +2786,7 @@ function passHead(r, now) {
   const line = segLine([[on ? cell.split(' · ')[0] : cell, sgr], ['  ', null], ...last, BAR,
     ['workers ', GREY], [`${workersRunning(r)} of ${r.workers}`, BOLD], [' · cap ', GREY], [String(r.cap), BOLD],
     ...(r.machine?.cap == null ? [] : [[' · machine ', GREY], [`${r.machine.running} of ${r.machine.cap}`, r.machine.running >= r.machine.cap ? WARN : BOLD]]),
+    ...(triagingText(r) ? [[' · ', GREY], [triagingText(r), null]] : []),
     ...(r.batches?.length > 1 ? [] : [BAR, [`batch ${r.q.batch ?? '-'}`, GREY]])]);
   if (on) return [line];
   const log = r.run?.agent === 'loaded' ? supervisorLogLine(r) : null;
@@ -2705,11 +2806,15 @@ function barWrap(line, width) {
 }
 
 // A repo screen's first header line: what needs the user, each state's count in its colour, then
-// the merged tickets left off the list.
-function countsLine(r) {
+// the merged tickets left off the list, then each merge driver running: its age and the last line it logged.
+const DRIVER_LAST_W = 100;
+function countsLine(r, now = Date.now()) {
   const segs = [needsYou(needsCount(r).shown)];
   for (const k of SHOWN.filter((g) => g !== 'needs')) if (count(r, k)) segs.push(['  ', null], [`${LABEL[k][0]} ${count(r, k)} ${k}`, STATE_SGR[k]]);
-  return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY]]);
+  const drivers = (r.batches ?? [r]).map((b) => driverUp(b, now)).filter(Boolean).flatMap(({ b, up, last }) => [BAR,
+    [`▸ ${r.batches && b.batch ? `${b.batch} ` : ''}merge driver up`, STATE_SGR.merging], ...(up == null ? [] : [[` ${since(up)}`, BOLD]]),
+    [' · last: ', GREY], [last == null ? 'nothing logged yet' : cut(last, DRIVER_LAST_W), null]]);
+  return segLine([...segs, BAR, [`✓ ${r.done} done`, null], [', not shown', GREY], ...drivers]);
 }
 
 // What holds a ready ticket back from the next free worker, or null: its batch's worker slots, a
@@ -2905,6 +3010,24 @@ const ROW_LEAD = 2 + 4 + 2 + 10 + STATE_W + 13 + 14;
 // A Needs you row put off with not-now goes under Put off, last and grey: needsCount leaves it out of
 // every count, so Needs you lists exactly what the counts and /desk-needs-you do.
 const PUT_OFF = 'putoff';
+// TITLE for a Needs you item that is not a ticket row, by its kind; any other kind shows as itself.
+const ITEM_TITLE = { follow: 'check after merge', ask: 'a session asked you' };
+// A Queue row for a counted item that is not a ticket row, in group `k`. A follow item's need leads
+// with where its ticket is, which the TICKET column already names, so WHAT IT NEEDS starts at its
+// first check. In a repo of several batches, TITLE names the item's batch; a step is the repo's, so
+// it names none. TICKET is the ticket the item is about: `item.ticket` where it has one, else its key
+// past a follow:, link:, unpromoted: or step: prefix.
+const itemKey = (t, item) => item.ticket ?? (/^(follow|link|unpromoted|step):/.test(t.key) ? t.key.replace(/^[a-z]+:/, '').split(':')[0] : t.key);
+const itemRowOf = (r, k, { now, nw, tw }) => ({ r: b, t, item }) => {
+  const need = String(item.need ?? '').replace(/\s+/g, ' ').trim();
+  const shown = item.kind === 'follow' && need.includes('Check: ') ? need.slice(need.indexOf('Check: ')) : need;
+  const what = `${ITEM_TITLE[item.kind] ?? item.kind ?? ''}${(r.batches?.length ?? 0) > 1 && item.kind !== 'step' ? ` · ${b?.batch ?? 'standing batch'}` : ''}`;
+  return segRow(null, [
+    [`  ${rpad('-', 4)}  ${pad(cut(itemKey(t, item), 9), 10)}`, null], [pad(LABEL[k], STATE_W), STATE_SGR[k]],
+    ...fitSegs([[shown, k === PUT_OFF ? GREY : null]], nw - 2, nw),
+    [pad(item.since != null ? `for ${span(now - item.since)}` : '', 13), null], [`${pad('—', 14)}${cut(what, tw)}`, null],
+  ], null);
+};
 const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging'], ['Waiting', 'waiting'], ['Needs you', 'needs'], ['Put off', PUT_OFF]];
 
 // `width` is the terminal's: titles take what the row has left, rather than a fixed 60. `epic` keeps
@@ -2914,7 +3037,17 @@ const GROUPS = [['Running', 'running'], ['Ready', 'ready'], ['Merging', 'merging
 function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = null, title = false, usage = null, pinUsage = false } = {}) {
   const none = { rows: [], foot: [] };
   if (r.error) return { head: [`${r.name} · queue unreadable: ${r.error}`], ...none };
-  if (!r.q) return { head: [`${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
+  if (!r.q) {
+    const setUp = `${r.name} · set up, no autopilot batch yet · cap ${r.cap} · ports ${r.claim.port}–${r.claim.last}`;
+    // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
+    const nc = needsCount(r), nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
+    const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
+    const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
+    if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
+    const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
+    return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
+      rows, foot: ['', ...stateKey(groups.map(([, k]) => k), width)] };
+  }
   const nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
   const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
   // A repo of several batches dates and words each row by its own batch, `x.b`.
@@ -2925,7 +3058,7 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
   const head = [
     ...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []),
     ...(ep ? [`${ep.key} · ${ep.summary} · ${ep.done} of ${ep.total} children done`] : []),
-    countsLine(r),
+    countsLine(r, now),
     ...passHead(r, now),
     ...(r.unreadable ?? []).map(unreadableText),
     ...((p) => (p ? [uploadPauseText(p)] : []))(uploadPause()),
@@ -2957,11 +3090,20 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     ...fitSegs(gk(x) === PUT_OFF ? needSegs(of(x), x, now).map(([t]) => [t, GREY]) : needSegs(of(x), x, now), nw - (x.pr ? 1 : 2), nw),
     [pad(starts(x), 13), startsSgr(x)], [`${pad(ships(x), 14)}${cut(tt(summary(x)), tw)}`, null],
   ], { kind: 'ticket', slug: of(x).id, key: x.t.key, ...(epic ? { epic } : {}) });
+  // Every counted item that is not a ticket row (a step, a follow-on check, an ask, a sign-in, …) is a
+  // Needs you row too, so the count above never names more than the table shows.
+  // A put-off item goes under Put off, grey, as a put-off ticket row does.
+  const items = epic ? [] : nc.items, offItems = epic ? [] : nc.offItems;
+  const itemRow = (k) => itemRowOf(r, k, { now, nw, tw });
+  const extraOf = { needs: items, [PUT_OFF]: offItems };
   const rows = GROUPS.flatMap(([name, k]) => {
     const g = list.filter((x) => groupOf(gk(x)) === k);
-    return g.length ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${g.length}`, GREY]], null), ...g.map(row)] : [];
+    const extra = extraOf[k] ?? [];
+    const n = g.length + extra.length;
+    return n ? [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${n}`, GREY]], null), ...g.map(row), ...extra.map(itemRow(k))] : [];
   });
-  const foot = !list.length ? ['  No unfinished tickets.'] : ['', ...stateKey(list.map(gk), width)];
+  const shownKs = [...list.map(gk), ...items.map(() => 'needs'), ...offItems.map(() => PUT_OFF)];
+  const foot = !shownKs.length ? ['  No unfinished tickets.'] : ['', ...stateKey(shownKs, width)];
   if (list.some((x) => x.t.placed)) foot.push('', '* placed by you: letting it start or a requeue leaves it where it is');
   return { head: fit, rows, foot };
 }
@@ -3112,7 +3254,30 @@ function timingFields(r, F, x, h, now) {
   const why = !F ? null : F.idle ? idleNote(r) : F.none ? noHistory(r, F) : F.paused ? `${capital(stoppedNote(r, now))}.`
     : h || ['stuck', 'running', 'failed'].includes(k) ? null : r.workers === 0 ? 'Workers are set to 0, so nothing starts.'
       : k === 'needs' ? 'Press c to date it as if answered at the next check-in.' : b.length ? `Until ${listed(b)} ${b.length > 1 ? 'have dates' : 'has a date'}.` : null;
+  const u = promoOf(t);
+  if (u) return [['Starts', [[starts, null]]], ['Ships', [[`not until ${u.branch} is promoted`, null], [`  ${capital(promotionWords(u))}.`, DIM]]]];
   return [['Starts', [[starts, null]]], ['Ships', [['no date', null], ...(why ? [[`  ${why}`, DIM]] : [])]]];
+}
+
+// The ticket's PR as the merge log has it: merged, or auto-merge armed, by whom at which head. A merged
+// PR the log has no entry for was merged outside desk, unless it merged before the log's first entry.
+// An open PR with no entry has nothing to say. { text, warn }, or null.
+function mergeOf(r, t, events) {
+  const pr = t.result?.pr;
+  if (pr == null) return null;
+  // The PR's own repo where its status names one (a ticket done on a PR in another repo), else this one.
+  const ps = prStatusOf(t);
+  const repo = String(ps?.url ?? '').match(/github\.com\/([^/]+\/[^/]+)\/pull\//)?.[1] ?? r.slug.replace('__', '/');
+  const e = latestMerge(events, { repo, pr });
+  if (e?.event === 'merged') return { text: `#${pr} merged by ${e.by} at ${shortSha(e)}`, warn: false };
+  if (e) return { text: `#${pr} auto-merge armed by ${e.by} at ${shortSha(e)}`, warn: false };
+  // The PR's own status decides whether it merged: merged_at stays from an earlier PR once a ticket is
+  // requeued for more work, so it is read only where no status was recorded for any PR of the ticket.
+  const mergedAt = ps ? (ps.state === 'MERGED' ? ps.merged_at ?? t.merged_at ?? '' : null) : t.pr_status == null ? t.merged_at ?? null : null;
+  if (mergedAt == null) return null;
+  const began = timeOf(events[0]?.at);
+  if (began == null || (timeOf(mergedAt) ?? Infinity) < began) return { text: `#${pr} merged before desk kept a merge log, so who merged it is not recorded`, warn: false };
+  return { text: `#${pr} merged outside desk: the merge log has no entry for it`, warn: true };
 }
 
 // `jiraUrl` adds the Jira line the interactive screen opens with o. `open` is the interactive screen's
@@ -3215,6 +3380,12 @@ function ticketParts(r, key, { width = null, jiraUrl = null, now = Date.now(), c
   const files = (tr.files_in_scope ?? []).map((f) => `  ${f}`);
   if (files.length) out.push(segLine([['Files in scope', BOLD], [` · ${files.length}`, DIM]]), ...folded('f', files, files, (n) => `${n} more`), '');
   if (t.collides_with) out.push(segLine([['Never runs with ', BOLD], [String(t.collides_with).split('|').join(', '), DIM]]));
+  if (t.result?.pr != null) {
+    // A log that cannot be read says so on this line, never takes the ticket page down with it.
+    let merge;
+    try { merge = mergeOf(r, t, readMergeLog()); } catch (e) { merge = { text: `the merge log could not be read (${e.code ?? e.message})`, warn: true }; }
+    if (merge) field('Merge', [[merge.text, merge.warn ? WARN : null]]);
+  }
   const branch = t.branch ?? tr.branch;
   if (branch) field('Branch', [[branch, DIM]], true);
   field('Open', width == null ? [['log ', null], [logPath(r, key), DIM]]

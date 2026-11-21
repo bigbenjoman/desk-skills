@@ -2,9 +2,32 @@
 // Read a worker's stream-json log and print what the orchestrator needs: the
 // AUTOPILOT_* markers and the final result. Never print the whole log — that is
 // how the orchestrator's context stops being O(1).
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync, writeFileSync, constants } from 'node:fs';
+import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+
+// A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
+// *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
+// worker has exited (keepReviewResults), so a later worker can post that round's accepted re-verdict.
+const REVIEW_RESULTS = /^desk-review-results-[A-Za-z0-9-]+\.json$/;
+// Copies each results file at `worktree`'s root into <state>/reviews/<KEY>/, under its own name. A
+// worktree that is gone or unreadable keeps nothing, and a copy that fails keeps that file only: it
+// never throws, so the pass goes on to record how the worker ended.
+export function keepReviewResults(worktree, stateDir, key) {
+  let names;
+  try { names = readdirSync(worktree, { withFileTypes: true }).filter((d) => d.isFile() && REVIEW_RESULTS.test(d.name)).map((d) => d.name); } catch { return; }
+  if (!names.length) return;
+  const dir = join(stateDir, 'reviews', key);
+  try { mkdirSync(dir, { recursive: true }); } catch { return; }
+  // Opened without following a link, so a worker cannot swap a file for a link to one it may not read.
+  for (const n of names) {
+    let fd;
+    try { fd = openSync(join(worktree, n), constants.O_RDONLY | constants.O_NOFOLLOW); writeFileSync(join(dir, n), readFileSync(fd)); }
+    catch { /* that file is not kept */ }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+}
 
 // A worker log's text: a finished round is moved aside gzipped (`<KEY>.log.round<n>.gz`).
 export const readLogFile = (path) => (path.endsWith('.gz') ? gunzipSync(readFileSync(path)) : readFileSync(path)).toString('utf8');
@@ -92,16 +115,55 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
-export function endedNormally(logText) {
+// A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
+// inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
+// characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
+// prints the words, and the prompt or the worker's own prose, never do. A worker that hits one cannot
+// run commands, so whatever it said or parked on then is no judgement on its ticket.
+const HOST_RESULTS = 12;
+const HOST_FAULT = /\bENOSPC\b|No space left on device/;
+export function hostFault(logText) {
+  const results = [];
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!line.includes('tool_result')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.type === 'user' ? e.message?.content : null;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) if (c?.type === 'tool_result') results.push(c);
+  }
+  for (const c of results.slice(-HOST_RESULTS).reverse()) {
+    if (!c.is_error) continue;
+    const text = typeof c.content === 'string' ? c.content
+      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+    const m = HOST_FAULT.exec(text);
+    if (!m) continue;
+    const at = Math.max(0, m.index - 80);
+    return text.slice(at, at + 200).replace(/\s+/g, ' ').trim();
+  }
+  return null;
+}
+
+// The result event that closed the log's last session, or null where it stopped mid-turn. With
+// `launch`, a launch boundary (desk_spawn, written before each spawn or resume) ends the search too:
+// a launch that wrote nothing since has no result of its own, whatever an earlier run ended with.
+function lastResult(logText, { launch = false } = {}) {
   const lines = logText.split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
     let d;
     try { d = JSON.parse(lines[i]); } catch { continue; }
-    if (d?.type === 'result') return true;
-    if (TURN_EVENTS.has(d?.type)) return false;
+    if (d?.type === 'result') return d;
+    if (TURN_EVENTS.has(d?.type) || (launch && d?.type === 'desk_spawn')) return null;
   }
-  return false;
+  return null;
 }
+// The subtype of a session claude -p ended at its --max-budget-usd, the per-worker budget.
+const BUDGET_SUBTYPE = 'error_max_budget_usd';
+// Whether the log's last launch ended at its per-worker budget: its own result event says so. With the
+// budget (desk-env.mjs workerBudget) off, no ceiling was passed, so that subtype is any other error.
+export const budgetStop = (logText, budget) => !budget?.off && lastResult(logText, { launch: true })?.subtype === BUDGET_SUBTYPE;
+
+export const endedNormally = (logText) => lastResult(logText) != null;
 
 // How a worker that printed no marker ended, in a phrase: that its session wrote nothing after desk's
 // own lines (`desk_*` events, before and around the launch), else its session's error, else the last
@@ -161,6 +223,17 @@ export function followOnIn(done) {
   return { steps: list.map((x) => ({ step: x.step.trim().slice(0, FOLLOW_ON_MAX), row: x.row?.trim() || null, ...gateOf(x.after) })), error: null };
 }
 // A queue entry whose follow-on steps wait on the person: its PR merged, steps kept, none said run yet.
+// Two follow-on steps are the same step by their text and gate (`after`, none for the merge).
+export const sameStep = (a, b) => a?.step === b?.step && (a?.after ?? 'merge') === (b?.after ?? 'merge');
+// Settling steps `ran` of follow-on list `followOn` at time `at`: { left, fields }, `left` the steps
+// kept and `fields` the queue set that records it (follow_on=<left>, or follow_on_done=<at> once none
+// is left; none where no step of `ran` is there).
+export function settleSteps(followOn, ran, at) {
+  const all = followOn ?? [];
+  const left = all.filter((s) => !ran.some((x) => sameStep(s, x)));
+  const fields = left.length === all.length ? [] : left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`];
+  return { left, fields };
+}
 export const followOnPending = (t) => !!t?.merged_at && !t.follow_on_done && Array.isArray(t.follow_on) && t.follow_on.length > 0;
 // A kept PR status naming criteria its review left for after the merge that the pass has not made
 // follow-on steps of yet for PR `n` (pass.mjs post_merge_read).
@@ -180,7 +253,8 @@ if (isMain) {
   const wantBody = process.argv.includes('--pr-body');
   if (!log) { console.error('usage: harvest.mjs <worker.log> [--pr-body]'); process.exit(1); }
 
-  const { texts, said, result } = readLog(readLogFile(log));
+  const logText = readLogFile(log);
+  const { texts, said, result } = readLog(logText);
 
   // --pr-body prints only the last body a worker wrote between AUTOPILOT_PR_BODY_BEGIN: and
   // AUTOPILOT_PR_BODY_END:, verbatim, and exits 3 when there is none.
@@ -204,7 +278,12 @@ if (isMain) {
     console.log(`\nresult: error=${result.is_error} turns=${result.num_turns} notional=$${(result.total_cost_usd ?? 0).toFixed(2)}`);
     const park = markers.find(([k]) => k === 'AUTOPILOT_PARK');
     const done = markers.find(([k]) => k === 'AUTOPILOT_DONE');
-    console.log(`state:  ${park ? 'PARKED' : done ? 'DONE' : result.is_error ? 'FAILED' : 'ENDED (no marker)'}`);
+    let budget = null;
+    if (!park && !done && result.subtype === BUDGET_SUBTYPE) {
+      try { budget = (await import('./desk-env.mjs')).workerBudget(); } catch { /* unreadable: read as the pass reads it */ }
+    }
+    const stopped = !park && !done && budgetStop(logText, budget);
+    console.log(`state:  ${park ? 'PARKED' : done ? 'DONE' : stopped ? 'BUDGET STOP' : result.is_error ? 'FAILED' : 'ENDED (no marker)'}`);
   } else {
     // No result event yet is the NORMAL state for a live worker. Exiting non-zero here made
     // pass.mjs (which runs this tolerantly) discard every marker until the worker finished,

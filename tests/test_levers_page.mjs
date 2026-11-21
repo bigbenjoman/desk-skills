@@ -1,12 +1,12 @@
 // suite: levers page (the offline Levers page rendered from view.json)
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import vm from 'node:vm';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const j = (v) => JSON.stringify(v);
-process.env.HOME = mkdtempSync(join(tmpdir(), 'levers-page-home-'));
+process.env.HOME = scratch('levers-page-home-');
 const V = await import('../desk/bin/levers-view.mjs');
 const P = await import('../desk/bin/levers-page.mjs');
 
@@ -46,7 +46,7 @@ total (red CI counts every failed run in the repo, not only batch branches):
 `;
 
 function machine({ repos = REPOS, files = {}, now }) {
-  const base = mkdtempSync(join(tmpdir(), 'levers-page-'));
+  const base = scratch('levers-page-');
   const configRoot = join(base, 'config');
   const root = join(base, 'autopilot');
   for (const r of repos) {
@@ -316,7 +316,7 @@ const labels = (chart) => [...chart.matchAll(/<span(?: class="gap-note")? style=
 
 // render writes index.html beside view.json.
 {
-  const dir = mkdtempSync(join(tmpdir(), 'levers-page-out-'));
+  const dir = scratch('levers-page-out-');
   w(join(dir, 'view.json'), JSON.stringify(today));
   const { file } = V.render({ dir });
   t('render: index.html beside view.json', file, join(dir, 'index.html'));

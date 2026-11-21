@@ -55,15 +55,27 @@ mismatch is pushed once as `health:<slug>:reviewer`, naming both logins; a sign-
 only on a §4 State check (`desk-env list state-checks`) of kind verdict, which the pass records as
 `gate_hold`, and needs-you lists it as one `reviewer` item naming those PRs.
 
+A mismatch still lets one try through: a head with no clean desk-review verdict, or a stale one, gets
+its review worker while the gate is red, since the merge driver counts desk's verdict though the gate
+does not. A sign-in it cannot read holds that review too, as its verdict could not post.
+
+The hold is for a review that is missing or stale, so it never holds findings. A desk-review at the
+head that is not clean, a §4 Gate reviewer's or else desk's own, goes to a review fix as on any PR, or
+to the person for gaps only they settle, whatever the reviewer check failed on. A PR one goes to is not
+recorded as `gate_hold`; one whose review yields neither stays held.
+
 **Weekly usage pacing.** One weekly allowance runs every repo's workers, so each pass reads the
 newest 7-day reading from the `rate_limit_event` lines in every repo's worker logs written in the
 last 6 hours (`usage-pace.mjs`). Pace is the share of the 7-day window gone since its last reset,
 read from the event's `resetsAt`. While utilisation is more than §3b "Usage pacing headroom
 (points)" (unset: 5; `off` turns it off) above pace, new spawns hold under `STALLED` and running
-workers carry on; it releases by itself as the week goes on. The report always carries one `usage:`
-line: `usage: 7-day 40%, pace 50%`, `… + 5: holding spawns`, `usage: no recent data` (no reading,
-or the newest one's window has reset), or `pacing off`. A row that reads as neither a number nor
-`off` holds every spawn, naming the row, as a malformed budget does.
+workers carry on; it releases by itself as the week goes on. It reads the login this repo's new
+workers start on. The report always carries one `usage:` line: `usage: 7-day 40%, pace 50%`,
+`… + 5: holding spawns`, `usage: no recent data for login <name>` (no reading, or the newest one's
+window has reset; with none at all the pass probes that login once, and a failed probe says why), or
+`pacing off`. After three passes in a row with no reading, a `health:` line says pacing holds nothing
+for that login. A row that reads as neither a number nor `off` holds every spawn, naming the row, as
+a malformed budget does.
 
 **The weekly maintenance window.** One per computer (`maintenance.mjs`). With §3b "Maintenance
 window" set in a repo (e.g. `Mon 06:30 UTC`, just after the weekly usage reset; unset is `none`), the

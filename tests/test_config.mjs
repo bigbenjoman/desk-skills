@@ -1,11 +1,12 @@
 // suite: config values (list items, trailing notes)
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
+import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK } from '../desk/bin/config-schema.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const items = (cell) => cellItems(cell).join(' | ');
@@ -20,10 +21,35 @@ t('a mid-cell parenthesis is not trailing', items('`A` (x) `B`'), 'A | B');
 t('a note-only cell is left whole', items('(`a`)'), 'a');
 t('doubled display backticks', items('`` `A` `B` `` (see `C`)'), 'A | B');
 t('no spans: the cell is the item', items('none (no tracker)'), 'none (no tracker)');
+t('DS-844 AC3 a note holding a fenced example in runs of three backticks adds no item', items('`a` `b` (write ```evidence``` as ```` ```evidence ```` then `c`)'), 'a | b');
+t('DS-844 AC3 an unclosed run in the note is text, not a span', items('`a` (one ``` here, `c`)'), 'a');
+t('DS-844 a note inside the doubled display form adds no item', items('`` `ABC` (not `parent`) ``'), 'ABC');
+t('DS-844 a none row copied in the doubled display form with its note is none alone', items('`` `none` (not `pr-evidence.yml`) ``'), 'none');
+t('DS-844 only the one trailing note is stripped: a parenthesis before it keeps its items', items('`Lint` (CI build: `Build`) (names from GitHub)'), 'Lint | Build');
+t('DS-844 a note after the doubled display form is the one note: a parenthesis inside keeps its items', items('`` `Lint` (CI build: `Build`) `` (names from GitHub)'), 'Lint | Build');
+// #770: a note quoting a run of three or four backticks keeps the spans in step, as CommonMark reads them.
+t('#770 a note quoting a fenced block adds no item', items('`none` (it carries a fenced ```` ```evidence ```` block, as `` `<file>.yml` ``)'), 'none');
+t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
+
+// #770: every template row whose value starts `TODO`, answered `none` with the template's note kept,
+// reads as `none` alone, as the pass's configValues does.
+{
+  const tpl = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'desk-config.md'), 'utf8');
+  const bad = [];
+  for (const line of tpl.split('\n')) {
+    const cells = line.split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim());
+    const at = cells.findIndex((c, i) => i > 0 && c.startsWith('`TODO`'));
+    if (at < 0) continue;
+    const got = cellItems(cells[at].replace('`TODO`', '`none`'));
+    if (got.length !== 1 || got[0] !== 'none') bad.push(`${cells[0]}: ${JSON.stringify(got)}`);
+  }
+  t('#770 every TODO row answered none, its note kept, reads none alone', bad.join(' / '), '');
+}
 
 // End to end: `desk-env list` on a §4 row that carries a note.
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-config-'));
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
+const T = scratch('desk-config-');
 const cfg = join(T, 'config.md');
 writeFileSync(cfg, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n'
   + '| Other work id patterns | `BUG-[0-9]+` `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` (not `roadmap-fw-3xx`) |\n');
@@ -63,6 +89,47 @@ t('cmds prints nothing for a plain none', plain('cmds', 'lint-cmd'), '');
 t('list prints a plain none', plain('list', 'lint-cmd'), 'none');
 t('a backticked note in trailing parens is still one none', plain('cmds', 'test-cmd'), '');
 
+// The shipped template with every TODO answered none: each row reads as none alone through `list`,
+// as it does through `get`, though a note may hold backtick runs of any length.
+const answered = join(T, 'answered-none.md');
+writeFileSync(answered, readFileSync(join(ROOT, 'desk-config.md'), 'utf8').replaceAll('`TODO`', '`none`'));
+const answeredEnv = { ...process.env, DESK_CONFIG: answered, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const evidence = (() => {
+  try { return `exit 0: ${execFileSync('node', [BIN, 'list', 'evidence-workflow'], { encoding: 'utf8', env: answeredEnv, stdio: 'pipe' }).trim()}`; }
+  catch (e) { return `exit ${e.status}: ${String(e.stderr).trim()}`; }
+})();
+t('DS-844 AC1 the template Evidence workflow cell answered none lists none alone', evidence, 'exit 0: none');
+// Which rows the template leaves TODO is read from a copy answered with a marker no reader treats as
+// none or unset, so a row `get` misreads as anything but none is checked too, not skipped.
+const marked = join(T, 'answered-marker.md');
+writeFileSync(marked, readFileSync(join(ROOT, 'desk-config.md'), 'utf8').replaceAll('`TODO`', '`DS844ANSWER`'));
+const readRows = (file, script) => execFileSync('node', ['--input-type=module', '-e', `
+  import { CONFIG_ROWS, configValue, configValues } from ${JSON.stringify(BIN)};
+  ${script}`], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: file, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim();
+const todoRows = readRows(marked, `console.log(Object.keys(CONFIG_ROWS).filter((id) => !CONFIG_ROWS[id].table && configValue(id) === 'DS844ANSWER').join(' '));`).split(' ').filter(Boolean);
+const todoCells = readFileSync(join(ROOT, 'desk-config.md'), 'utf8').split('\n').filter((l) => /^\|.*`TODO`/.test(l)).length;
+t('DS-844 AC2 the template rows left TODO are found (at least half its TODO cells)', todoRows.length >= Math.ceil(todoCells / 2) && todoRows.length > 0, true);
+const misread = readRows(answered, `
+  const bad = [];
+  for (const id of ${JSON.stringify(todoRows)}) {
+    let got; try { got = [configValue(id), configValues(id)]; } catch (e) { got = e.message; }
+    if (JSON.stringify(got) !== '["none",["none"]]') bad.push(id + ' = ' + JSON.stringify(got));
+  }
+  console.log(bad.join('; '));`);
+t(`DS-844 AC2 every template row answered none (${todoRows.length} rows) reads none alone through get and list`, misread, '');
+
+// A `none` beside another item, with no note, is still refused; `ids` names such a row as not readable.
+const mixed = join(T, 'mixed.md');
+writeFileSync(mixed, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `pr-evidence.yml` |\n');
+const mixedEnv = { ...process.env, DESK_CONFIG: mixed, DESK_MACHINE: join(T, 'none.md'), HOME: T };
+const mixedList = (() => {
+  try { execFileSync('node', [BIN, 'list', 'evidence-workflow'], { encoding: 'utf8', env: mixedEnv, stdio: 'pipe' }); return 'exit 0'; }
+  catch (e) { return `exit ${e.status}: ${/mixes `none` with other items \(none \| pr-evidence\.yml\)/.test(String(e.stderr))}`; }
+})();
+t('DS-844 AC4 none beside pr-evidence.yml is still refused', mixedList, 'exit 4: true');
+const idsLine = execFileSync('node', [BIN, 'ids'], { encoding: 'utf8', env: mixedEnv }).split('\n').find((l) => l.startsWith('get  evidence-workflow '));
+t('DS-844 AC5 ids names a row get and list read differently as not readable', /= \(not readable: .*mixes `none`/.test(idsLine ?? ''), true);
+
 // The worker rows: known ids, `no` when the row is missing, read by key when it is there.
 const perms = join(T, 'perms.md');
 writeFileSync(perms, '## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
@@ -76,7 +143,7 @@ t('AC2 jira-comment yes reads as yes', perm('jira-comment'), 'yes');
 t('AC3 jira-comment missing reads as no', execFileSync('node', [BIN, 'perm', 'jira-comment'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: tool, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim(), 'no');
 
 // Outside any repo there is no config: a permission is refused unread, never read as `no`.
-const away = mkdtempSync(join(tmpdir(), 'desk-norepo-'));
+const away = scratch('desk-norepo-');
 const awayEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
 Object.assign(awayEnv, { HOME: away, DESK_CONFIG_ROOT: join(away, 'cfg'), DESK_MACHINE: join(away, 'none.md') });
 const outside = (args) => {
@@ -94,7 +161,6 @@ rmSync(away, { recursive: true, force: true });
 
 // `desk-env drift`: rows the template has that a config lacks, `ask` rows an unattended batch parks
 // on, and a settings file that starts sessions in dontAsk.
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const tpl = join(T, 'template.md');
 const P3 = '## 3. Permissions\n\n### Git\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n';
 const B3 = '## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n';
@@ -108,7 +174,8 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
 const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
-  const keys = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'].filter((k) => !omit.includes(k));
+  const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
+  const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
     + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
@@ -143,6 +210,32 @@ t('AC5 and exits 1', d.code, 1);
 writeFileSync(join(repoDir, '.claude', 'settings.local.json'), JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } }));
 t('another defaultMode is not drift', drift(conf()).out, 'no drift');
 
+// §4 Suite weight comes from the repo's committed settings (env.DESK_SUITE_WEIGHT in
+// .claude/settings.json) over the config's row, and drift names a row that disagrees.
+const settings = join(repoDir, '.claude', 'settings.json');
+const weight = (body) => {
+  const c = join(T, 'weight.md');
+  writeFileSync(c, body);
+  try { return execFileSync('node', [BIN, 'get', 'suite-weight'], { encoding: 'utf8', env: driftEnv({ DESK_CONFIG: c }), stdio: 'pipe' }).trim(); }
+  catch (e) { return `exit ${e.status}`; }
+};
+const wrow = (v) => `${conf()}| Suite weight | \`${v}\` |\n`;
+writeFileSync(settings, JSON.stringify({ env: { DESK_SUITE_WEIGHT: 'light' } }));
+t('DS-939 AC1 the committed value reads where the config has no row', weight(conf()), 'light');
+t('DS-939 AC1 and wins over a row that disagrees', weight(wrow('heavy')), 'light');
+d = drift(wrow('heavy'));
+t('DS-939 AC2 a row that disagrees is one drift line naming both values', d.out,
+  `WEIGHT   §4 Suite weight is heavy in the config but light in the repo's committed settings (env.DESK_SUITE_WEIGHT in ${settings}), which win: set the row to light or remove it`);
+t('DS-939 AC2 and exits 1', d.code, 1);
+t('DS-939 AC3 a row that agrees is not drift', drift(wrow('light')).out, 'no drift');
+t('DS-939 AC3 and no row is not drift', drift(conf()).out, 'no drift');
+writeFileSync(settings, JSON.stringify({ env: { OTHER: 'x' } }));
+t('DS-939 AC4 settings without the key read the row', weight(wrow('light')), 'light');
+rmSync(settings);
+t('DS-939 AC4 with nothing committed the row reads', weight(wrow('light')), 'light');
+t('DS-939 AC4 and with no row either, heavy', weight(conf()), 'heavy');
+t('DS-939 AC4 nothing committed is not drift', drift(wrow('heavy')).out, 'no drift');
+
 // A §4 command item a worker's settings can never allow is a blocking line naming its row.
 const compound = `bash -c 'bash tests/run.sh $(node tests/scope_sections.mjs --json)'`;
 d = drift(`${conf()}| Related tests | \`${compound}\` |\n| Lint | \`pnpm lint\` \`rm -rf dist\` |\n`);
@@ -151,6 +244,13 @@ t('DS-395 AC4 a compound command item is named with its row', d.out.split('\n')[
 t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLISTED §4 Related tests item "${compound}" is a compound or env-prefixed shell command`), true);
 t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
 t('DS-395 AC4 and exits 1', d.code, 1);
+
+// A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
+t('a Local services item with no service name is named, where workers start services', d.out,
+  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('and `name: port` reads as its name', d.code, 1);
+t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.
@@ -370,6 +470,196 @@ t('git-author blank is unset', gitAuthor(''), 'exit 3');
 t('git-author none is unset', gitAuthor('`none`'), 'exit 3');
 t('git-author with no email is refused', gitAuthor('`Ben Lavender`'), 'exit 4');
 t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 4');
+// #750: outside a configured repo `paths` prints the machine paths, reports the per-repo ones unset
+// and still exits 4; `paths --machine` prints only the machine paths.
+{
+  const none = { ...process.env, DESK_CONFIG: '', DESK_REPO_DIR: T, DESK_REPO_ROOT: '', DESK_MACHINE: join(T, 'none.md'), HOME: T };
+  delete none.DESK_CONFIG; delete none.DESK_REPO_ROOT; delete none.DESK_SKILLS_DIR;
+  const r = spawnSync('node', [BIN, 'paths'], { encoding: 'utf8', env: none });
+  const machine = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+  t('DS-858 AC5 paths outside a configured repo still exits 4', r.status, 4);
+  t('DS-858 AC4 paths there prints every machine path with its value', machine.every((k) => new RegExp(`^${k}='[^']+'$`, 'm').test(r.stdout)), true);
+  t('DS-858 AC4 DESK_SKILLS_DIR is the default under HOME', r.stdout.includes(`DESK_SKILLS_DIR='${join(T, '.agents', 'skills')}'`), true);
+  const perRepo = ['DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_SLUG', 'DESK_DEFAULT_BRANCH', 'DESK_STATE', 'DESK_DEV_PORT'];
+  t('DS-858 AC5 each per-repo path is reported unset, none given a value', perRepo.every((k) => r.stdout.includes(`# ${k} unset: no repo config`) && !r.stdout.includes(`${k}=`)), true);
+  t('DS-858 AC5 paths there says no repo config was found', /no repo config found/.test(r.stderr), true);
+  const m = execFileSync('node', [BIN, 'paths', '--machine'], { encoding: 'utf8', env: none });
+  t('#750 paths --machine prints the machine paths there', ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR'].every((k) => m.includes(`${k}=`)) && !m.includes('DESK_REPO_ROOT='), true);
+  const c = join(T, 'paths.md');
+  writeFileSync(c, `${P2}| Primary repo root | \`${repoDir}\` | |\n`);
+  const inRepo = spawnSync('node', [BIN, 'paths'], { encoding: 'utf8', env: { ...none, DESK_CONFIG: c, DESK_REPO_OVERRIDE: 'acme/widgets' } });
+  t('DS-858 AC6 paths inside a configured repo exits 0', inRepo.status, 0);
+  t('DS-858 AC6 and prints every path with a value', PATH_VARS.every((k) => new RegExp(`^${k}='[^']+'$`, 'm').test(inRepo.stdout)) && !inRepo.stdout.includes('unset'), true);
+  t('DS-858 AC6 DESK_REPO_ROOT is the configured root', inRepo.stdout.includes(`DESK_REPO_ROOT='${repoDir}'`), true);
+}
+// #746: a skill reads the config's rows through `desk-env show`: headings and tables, not the prose,
+// and not the §3c rule ledger unless asked for by name.
+{
+  const text = '# Desk config\n\nIntro prose.\n\n---\n\n## Rules for the agent reading this file\n\n5. **The Recommended column is not this user\'s answer.**\n\n---\n\n## 1. You\n\nProse about you.\n\n| Field | Value |\n|---|---|\n| GitHub handle | `me` |\n\n'
+    + '## 3. Permissions\n\n### Git\n\nWhy these matter.\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n| `git-push` | push | `ask` | `yes` |\n\n'
+    + '```bash\n| not | a row |\n```\n\n## 3c. Harness rules written by setup\n\nLedger prose.\n\n| Rule | List | Owning rows | Added |\n|---|---|---|---|\n| `Bash(x)` | allow | `git-push` | 2026-10-21 |\n';
+  const all = configRows(text);
+  t('#746 show keeps the headings and table rows', ['# Desk config', '## 1. You', '| GitHub handle | `me` |', '### Git', '| `git-push` | push | `ask` | `yes` |'].every((l) => all.split('\n').includes(l)), true);
+  t('#746 and leaves out the prose and a fenced block', /prose|Why these|not \| a row/i.test(all), false);
+  t('#746 and the §3c ledger', /3c|Bash\(x\)/.test(all), false);
+  t('#746 the rules for the agent reading it are printed whole, prose and all', all.includes("## Rules for the agent reading this file\n\n5. **The Recommended column is not this user's answer.**"), true);
+  t('#746 but not when a section is named', configRows(text, ['1']).includes('Rules for the agent'), false);
+  t('#746 a named section is printed alone, §3c included when named', `${configRows(text, ['1'])} / ${/Bash\(x\)/.test(configRows(text, ['§3c']))}`, '## 1. You\n| Field | Value |\n|---|---|\n| GitHub handle | `me` | / true');
+  const showEnv = { ...process.env, DESK_CONFIG: join(T, 'show.md'), DESK_MACHINE: join(T, 'none.md'), HOME: T };
+  writeFileSync(join(T, 'show.md'), text);
+  t('#746 desk-env show prints the same', execFileSync('node', [BIN, 'show', '3'], { encoding: 'utf8', env: showEnv }).trim(), configRows(text, ['3']));
+  let code = 0; try { execFileSync('node', [BIN, 'show'], { stdio: 'ignore', env: { ...showEnv, DESK_CONFIG: join(T, 'missing.md') } }); } catch (e) { code = e.status; }
+  t('#746 with no config it exits 3', code, 3);
+}
+// The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
+// derives from it against the literals they replaced.
+{
+  const tpl = readFileSync(join(ROOT, 'desk-config.md'), 'utf8');
+  const named = (list) => list.map(({ section, label }) => `§${section} ${label}`).join(' / ');
+  const cov = coverage(declaredRows(tpl));
+  t('DS-867 AC1 every row the template declares in §0 to §5 has a schema entry with its section and label', named(cov.missing), '');
+  t('DS-867 AC2 every schema entry names a row or table the template declares', named(cov.extra), '');
+  const declared = declaredRows(tpl);
+  t('DS-867 AC1 the §3c ledger and the review asks are not declared rows', declared.rows.some((r) => r.section === '3c' || /^(todo|rule)$/i.test(r.label)), false);
+  t('DS-867 AC1 the §0 to §5 rows are all read', ['0', '1', '2', '3', '3b', '4', '5'].every((s) => declared.rows.some((r) => r.section === s)), true);
+  const added = tpl.replace('| Slack channels |', '| Pager rota | `TODO` |\n| Slack channels |');
+  t('DS-867 AC3 a template row the schema lacks is named by section and label', named(coverage(declaredRows(added)).missing), '§4 Pager rota');
+  t('DS-867 AC3 so is a removed one, from the schema side', named(coverage(declaredRows(tpl.replace(/^\| Slack channels \|.*\n/m, ''))).extra), '§4 Slack channels');
+  t('DS-867 every schema id is unique', ROWS.length - new Set(ROWS.map((e) => e.id)).size, 0);
+  t('DS-867 every entry has a known kind and section', ROWS.filter((e) => !['value', 'list', 'perm', 'table'].includes(e.kind) || !['0', '1', '2', '3', '3b', '4', '5'].includes(e.section)).map((e) => e.id).join(' '), '');
+
+  // AC4: the literals desk-env held before the schema, as `id|section|row`, `|table` marking a table id.
+  const BEFORE_ROWS = [
+    'gh-repo|0|GitHub repo', 'default-branch|0|Default branch', 'repo-description|0|One-line description', 'github-handle|1|GitHub handle',
+    'jira-email|1|Jira email', 'jira-display-name|1|Jira display name', 'jira-account-id|1|Jira account id', 'git-author|1|Git author name / email',
+    'name|1|Name', 'repo-root|2|Primary repo root', 'worktrees-dir|2|Worktrees directory', 'handoff-dir|2|Handoff directory',
+    'backups-dir|2|Backups directory', 'design-dir|2|Design canvases directory', 'wsl|2|Running on WSL?', 'browser-profile|2|Signed-in browser profile',
+    'handoff-pct|2|Handoff at context %', 'handoff-pct-1m|2|Handoff at context % on a 1M window', 'tracker|4|Tracker', 'jira-site|4|Jira site',
+    'jira-project|4|Jira project', 'ticket-pattern|4|Ticket key pattern', 'in-progress-state|4|In-progress state', 'review-state|4|Review state',
+    'done-state|4|Done state', 'jira-priority|4|Priority', 'jira-other-fields|4|Other fields', 'jira-required-fields|4|Required fields',
+    'jira-size-field|4|Size field', 'jira-priority-user-only|4|Priorities only you set', 'jira-cloudid|4|Jira cloudId', 'labels|4|Labels',
+    'person-step-labels|4|Person-step labels', 'person-input-labels|4|Person-input labels', 'required-checks|4|Required checks',
+    'work-id-patterns|4|Other work id patterns', 'merge-holds|4|Merge holds', 'incidental-paths|4|Incidental paths',
+    'append-only-paths|4|Append-only paths', 'merge-method|4|Merge method', 'local-review|4|Local review command',
+    'clean-verdict|4|Clean review verdict', 'review-account|4|Review account', 'gate-reviewers|4|Gate reviewers', 'review-bar|4|Review bar',
+    'review-experts|4|Review domain experts', 'agents-sync|4|Project subagents sync', 'package-manager|4|Package manager',
+    'command-prefix|4|Command prefix', 'install-cmd|4|Install', 'dev-cmd|4|Dev server', 'typecheck-cmd|4|Typecheck', 'lint-cmd|4|Lint',
+    'baseline-checks|4|Baseline checks', 'test-cmd|4|Unit tests', 'related-test-cmd|4|Related tests', 'suite-weight|4|Suite weight',
+    'e2e-cmd|4|E2E tests', 'storybook-cmd|4|Storybook', 'build-cmd|4|Build', 'codegen-cmd|4|Codegen', 'integration-cmd|4|Integration tests',
+    'acceptance-specs|4|Acceptance specs', 'pre-push-checks|4|Pre-push checks', 'merged-tree-check-cmd|4|Merged-tree check',
+    'pr-description-checks|4|PR-description checks', 'seed-cmd|4|Seed', 'db-url-var|4|Database URL variable', 'db-migrate-cmd|4|Database migrate',
+    'branch-protection|4|Branch protection', 'advisory-checks|4|Advisory checks', 'flaky-checks|4|Known flaky checks', 'state-checks|4|State checks',
+    "operator-checks|4|Checks workers can't fix", 'check-builds|4|Check builds', 'live-reads|4|Live reads', 'pre-merge-steps|4|Pre-merge steps',
+    'evidence-workflow|4|Evidence workflow', 'worker-workflows|4|Worker workflows', 'worker-read-repos|4|Worker read-only repos',
+    'worker-measure-cmds|4|Worker measuring commands', 'repo-merge-settings|4|Repo merge settings', 'vercel|4|Vercel',
+    'staging-bypass|4|Staging bypass token location', 'slack-channels|4|Slack channels', 'review-asks|4|What review here consistently asks for|table',
+    'code-reviewer|4|Code reviewer', 'product-owner|4|Product owner', 'repo-instructions|5|Repo instructions',
+    'subagents-without-asking|3b|Subagents that may run without asking', 'test-cap|3b|Test worker cap under the test lock',
+    'spawn-gate|3b|Spawn gate (available memory)', 'park-after|3b|Park an unanswered question after (minutes)',
+    'resume-killed|3b|Resume a killed worker (times)', 'disk-floor|3b|Free disk floor (GB)', 'promotion-slice|3b|Promotion slice size (children)',
+    'claim-release|3b|Release idle claims after (hours)', 'usage-pacing|3b|Usage pacing headroom (points)', 'subscription|3b|Subscription',
+    'checkin-times|3b|Check-in times', 'intake-query|3b|Intake query', 'file-budget|3b|Per-file collision budget',
+    'triage-concurrency|3b|Triage concurrency', 'maintenance-window|3b|Maintenance window', 'maintenance-drain|3b|Maintenance drain limit (minutes)',
+    'env-files|4|Env files', 'local-db|4|Local database', 'local-services|4|Local services', 'staging|4|Staging', 'promotion-ref|4|Promotion ref',
+    'checkout-destination|4|Check-out destination', 'ai-attribution|5|AI attribution', 'branch-names|5|Branch names', 'pr-title|5|PR title',
+    'breakpoints|5|Breakpoints', 'themes|5|Themes', 'design-system|5|Design system', 'dev-port|3b|Preferred dev-server port',
+    'concurrency|3b|Autopilot worker concurrency', 'memory-ceiling|3b|Memory ceiling for parallel work (GB)',
+    'worker-budget|3b|Autopilot per-worker budget (USD)', 'batch-budget|3b|Autopilot batch budget (USD)', 'worker-models|3b|Worker models',
+    'worker-location|3b|Worker location', 'borrow-idle|3b|Borrow idle workers', 'batches-run-by|3b|Batches run by',
+    'status-table|3b|Orchestrator status table', 'levers|3b|Phase 0 levers', 'worker-effort|3b|Worker effort', 'codex-models|3b|Codex review',
+  ];
+  const BEFORE_PERMS = ('read-own-work read-local-git read-others read-slack-public read-figma read-vercel read-confluence read-transcripts '
+    + 'read-calendar read-slack-own jira-assign-self jira-comment jira-create jira-edit jira-transition jira-close-own-merged jira-close '
+    + 'jira-route jira-others git-commit git-push git-force-with-lease pr-open pr-edit pr-images pr-self-review-comment pr-review-others '
+    + 'pr-reply pr-request-review pr-ready pr-auto-merge pr-merge-green merge-feedback-first pr-update-branch pr-conflict-unreviewed '
+    + 'pr-conflict-reviewed ci-rerun codex-review ci-protection gh-close-linked-issue gh-issue-create gh-issue-comment autopilot-workers '
+    + 'autopilot-worker-mode autopilot-merge merge-hold-routine batch-base-push autopilot-judgement autopilot-reclaim machine-reboot '
+    + 'worker-dependency-install worker-screenshots worker-local-services worker-web-read worker-workflow-dispatch db-per-ticket '
+    + 'db-clone-staging staging-write local-reindex tests-shared-db worktree-remove branch-delete server-stop skills-edit vercel-env '
+    + 'slack-draft slack-send merge-bypass others-prs product-calls legal-content').split(' ');
+  const sorted = (a) => [...a].sort().join('\n');
+  const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
+  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held', sorted(rowsNow), sorted(BEFORE_ROWS));
+  t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
+  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
+  t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
+}
+
+// Every schema entry's type, example and default, and the template's Recommended column, parse by the
+// row's type; each type parses a good item and refuses a bad one, fatal only where the reader throws.
+{
+  const errs = (pairs) => pairs.filter(([, r]) => r.error).map(([id, r]) => `${id}: ${r.error}`).join(' / ');
+  t('DS-868 every entry names a known type and has an example', ROWS.filter((e) => !TYPES[e.type] || e.example == null).map((e) => e.id).join(' '), '');
+  t('DS-868 AC1 every entry\'s example parses by its type', errs(ROWS.map((e) => [e.id, parseRow(e, e.example)])), '');
+  t('DS-868 every default parses by its type', errs(ROWS.filter((e) => 'default' in e).map((e) => [e.id, parseRow(e, e.default)])), '');
+
+  // The template's Recommended cells, by section and row label.
+  const recs = [];
+  let section = null, col = -1, inTable = false;
+  for (const line of readFileSync(join(ROOT, 'desk-config.md'), 'utf8').split('\n')) {
+    const h = /^##\s+(\d+[a-z]?)\.\s/.exec(line);
+    if (h) section = h[1];
+    if (!line.startsWith('|')) { inTable = false; continue; }
+    const cells = line.split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim());
+    if (!inTable) { inTable = true; col = cells.findIndex((c) => /^recommended$/i.test(c)); continue; }
+    if (col < 0 || /^-+$/.test(cells[0]) || !cells[col]) continue;
+    recs.push({ section, label: cells[0], cell: cells[col] });
+  }
+  t('DS-868 AC2 the template\'s Recommended cells are found in §3 and §3b', ['3', '3b'].every((s) => recs.filter((r) => r.section === s).length > 20), true);
+  const entryOf = (r) => ROWS.find((e) => e.section === r.section && norm(e.label) === norm(r.label));
+  t('DS-868 AC2 every row with a Recommended value has a schema entry', recs.filter((r) => !entryOf(r)).map((r) => r.label).join(' / '), '');
+  t('DS-868 AC2 every Recommended value parses by its row\'s type', errs(recs.filter(entryOf).map((r) => [entryOf(r).id, parseRow(entryOf(r), cellItems(r.cell))])), '');
+
+  // One good and one bad item per type: [type, good, bad or null where nothing is refused, fatal].
+  const CASES = [
+    ['text', 'anything at all', null], ['perm', 'ask', 'maybe', false], ['perm-merged', 'merged', 'gone', false],
+    ['whole', '4', 'four', false], ['whole-or-none', 'none', '-1', false], ['promotion-slice', '5', '11', false],
+    ['number', '1.5', 'soon', false], ['number-or-off', 'off', 'on', false], ['gb', '16', '0', false], ['port', '3228', '70000', false],
+    ['subagent-cap', 'no cap', 'lots', false], ['concurrency', '2 / 3', 'two', false], ['times', '08:00, 17:00', 'morning', false],
+    ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
+    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
+    ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
+    ['command', 'apps/api: uv run pytest', null], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
+    ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
+    ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
+    ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
+    ['git-author', 'Pat <pat@example.com>', 'Pat', true], ['review-account', 'none', 'agent pullbot', true],
+    ['gate-reviewers', 'agent-pullbot', 'agent pullbot', true],
+  ];
+  t('DS-868 every type has a parse case', Object.keys(TYPES).filter((n) => !CASES.some(([c]) => c === n)).join(' '), '');
+  for (const [name, good, badItem, fatal] of CASES) {
+    const type = TYPES[name];
+    let r;
+    try { r = type.parse(good); } catch (e) { r = { error: `threw ${e.message}` }; }
+    t(`DS-868 ${name} parses "${good}"`, r.error ?? 'ok', 'ok');
+    if (badItem == null) continue;
+    try { r = type.parse(badItem); } catch (e) { r = { error: `threw ${e.message}`, threw: true }; }
+    t(`DS-868 ${name} refuses "${badItem}" without throwing, ${fatal ? '' : 'not '}fatal`, `${!!r.error && !r.threw} ${r.fatal}`, `true ${fatal}`);
+  }
+  const svc = TYPES['service-port'].parse('Typesense on port 8108');
+  t('DS-868 AC3 the service-port error names the form <service> [:<port>]', svc.error?.includes('`<service> [:<port>]`'), true);
+  t('DS-868 AC3 the decision: a service with no port parses', JSON.stringify(TYPES['service-port'].parse('mailpit').value), '{"service":"mailpit","port":null}');
+  t('DS-868 AC4 Worker location "remote" is a fatal error, as its reader throws on it', TYPES['worker-location'].parse('remote').fatal, true);
+  t('DS-868 AC4 the service-port error is not fatal, as its reader warns', svc.fatal, false);
+  const list = ROWS.find((e) => e.id === 'evidence-workflow');
+  t('DS-868 none beside another item in a list row is fatal, as configValues refuses it', parseRow(list, ['none', 'pr-evidence.yml']).fatal, true);
+  t('DS-868 a lone none is a list row\'s value', JSON.stringify(parseRow(list, ['none']).value), '["none"]');
+
+  // A row whose reader reads every span is parsed whole, as the reader reads it.
+  const row = (id) => ROWS.find((e) => e.id === id);
+  t('DS-868 Worker effort named twice across spans is fatal, as its reader throws', parseRow(row('worker-effort'), ['0=low', '0=high']).fatal, true);
+  t('DS-868 Codex review named twice across spans is fatal, as its reader throws', parseRow(row('codex-models'), ['timeout=60', 'timeout=90']).fatal, true);
+  t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
+  t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
+  t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
+
+  // The machine profile fallback desk-env reads.
+  t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
+  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
+}
+
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

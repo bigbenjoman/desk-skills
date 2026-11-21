@@ -69,7 +69,7 @@ export const everyTicket = (q) => ({ ...archivedOf(q), ...(q?.tickets ?? {}) });
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
-const keys = (v) => String(v ?? '').split('|').filter(Boolean);
+export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
 // Whether ticket `key` of queue `q` moves to the archive: done, with its PR merged (recorded by
 // `queue.mjs merged`) or closed, no follow-on steps waiting on the person or owed by the pass, and nothing live still
@@ -95,7 +95,13 @@ export function archiveDone(file, q, now = new Date().toISOString()) {
   const moving = Object.keys(q.tickets ?? {}).filter((k) => archivable(q, k));
   if (!moving.length) return [];
   const a = readArchive(file);
-  for (const k of moving) a.tickets[k] = { ...q.tickets[k], archived_at: now };
+  // A ticket archived before, admitted again and finished, keeps when it was first admitted
+  // (first_added_at), so the batch's worker cost still counts that first admission's rounds.
+  for (const k of moving) {
+    const was = a.tickets[k];
+    const first = [was?.first_added_at, was?.added_at, q.tickets[k].first_added_at].filter(Boolean).sort()[0];
+    a.tickets[k] = { ...q.tickets[k], ...(first && first !== q.tickets[k].added_at ? { first_added_at: first } : {}), archived_at: now };
+  }
   writeJsonAtomic(archivePath(file), a);
   for (const k of moving) delete q.tickets[k];
   return moving;
@@ -123,7 +129,7 @@ function mergeFields(base, mine, theirs, out, ticket, conflicts) {
   }
 }
 
-const batchFields = (q) => Object.fromEntries(Object.entries(q ?? {}).filter(([k]) => k !== 'tickets' && k !== 'version'));
+export const batchFields = (q) => Object.fromEntries(Object.entries(q ?? {}).filter(([k]) => k !== 'tickets' && k !== 'version'));
 
 // The queue that holds both writers' changes: `theirs` (the file as another writer left it) with what
 // `mine` changed since `base` (the file as this writer read it) laid on top, field by field. Where both

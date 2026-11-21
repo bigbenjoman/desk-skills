@@ -3,16 +3,16 @@
 // `levers.mjs` runs as a subprocess on a scratch HOME and desk config root holding two repos; admission
 // (assignPin), each lever's state (leverStatesIn) and the needs-you items (the levers view) read the
 // lever log it writes through the same readers the pass uses.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'levers-cli-'));
+const T = scratch('levers-cli-');
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 const CONFIG = join(T, 'config');
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_CONFIG_ROOT: CONFIG, DESK_HOME: join(T, 'deskhome'), DESK_MACHINE: join(T, 'none.md'), GIT_CONFIG_NOSYSTEM: '1' });

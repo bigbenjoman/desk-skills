@@ -3,12 +3,12 @@
 // `desk-env levers` says where each lever's state comes from, refuses `none` beside another name,
 // sets and clears ~/.desk-autopilot/levers.freeze and logs it in every repo's lever log, and logs a
 // changed row; `queue.mjs add` pins the row's named levers. Scratch HOME, config root and queue only.
-import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { leverRow, parseLevers } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -23,7 +23,7 @@ t('none beside a lever is invalid too', leverRow(['none', 'preflight']).on, []);
 t('none alone is valid', leverRow(['none']).invalid, null);
 
 // ---- scratch HOME, configs, queue -----------------------------------------------------------------
-const T = mkdtempSync(join(tmpdir(), 'desk-levers-row-'));
+const T = scratch('desk-levers-row-');
 const HOME = join(T, 'home');
 const CROOT = join(T, 'config-root');
 for (const d of [HOME, join(T, 'repo'), join(T, 'state')]) mkdirSync(d, { recursive: true });

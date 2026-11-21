@@ -26,14 +26,17 @@
 //   epic-merged {key}             -> whether epic key's batch recorded its epic PR merged
 //   other-repo {key}              -> whether key's Jira Repository is another configured repo
 //   landed {key}                  -> intake.mjs landedOn(key) on the default branch
+//   unpromoted {key, into}        -> intake.mjs unpromotedBase(key, into): the branch key merged into instead, and its promotion PR into `into`
 //   landed-here {key}             -> whether key is in another configured repo, or landed on the default branch
-import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText,
-  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS } from '../batch-state.mjs';
+import { isHeld, spinePark, leftPark, needsSession, mergedTailPr, holdsKept, stoppedHold, dateHeld, dateHoldOf, badLabelText, UNPROMOTED_AFTER_MS, promotionWords,
+  HELD_PREFIX, LIVE_READ, personStep, triageGate, IDLE_RECHECK_MS, doneOnPr } from '../batch-state.mjs';
 import { describeCond, recorded, restateLapsed, RESTATE_MS } from '../clears-when.mjs';
 import { splitOwnEpic, closedUnlanded } from '../desk-q-eta.mjs';
 import { keysOf } from '../desk-q.mjs';
 import { INTAKE_EVERY_MS } from '../intake.mjs';
 import { LINKS_MADE, ownWords, linkSteps, parkFollowOn, set, say } from './shared.mjs';
+import { redraftable, unrunFields } from '../fix-tries.mjs';
+import { tryLabel } from './fix-tries.mjs';
 
 // ---- parks whose condition cleared ---------------------------------------------
 // A park that recorded what clears it (clears-when.mjs) is checked each pass, and settled once that
@@ -67,7 +70,8 @@ export function decideLapsedRestates(s) {
 
 // Each clearable park in turn: those on "base contains" where `onBase`, every other one where not.
 //
-// The snapshot: tickets, onBase, dry, putOff (the keys whose park the person put off with not-now).
+// The snapshot: tickets, onBase, dry, putOff (the keys whose park the person put off with not-now), passAt
+// (when the pass started, ISO).
 export function* decideClears(s) {
   for (const t of Object.values(s.tickets)) {
     if (clearable(t) && (t.park.clears_when.kind === BASE_CONTAINS) === s.onBase) yield* settleClear(t, s);
@@ -82,8 +86,7 @@ function* settleClear(t, s) {
   // the harvest records one: the undraft step and the merge driver take it from there.
   const merges = yield { type: 'merge-park', key: t.key, cond: c };
   if (merges?.call === 'done') {
-    yield set(t.key, 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${merges.pr}`,
-      `result.summary=parked only on who merges PR #${merges.pr}, which desk now merges: recorded done`,
+    yield set(t.key, ...doneOnPr(merges.pr, { summary: `parked only on who merges PR #${merges.pr}, which desk now merges: recorded done` }),
       // Link steps alone (keepLinks) do not hold the park's words: those are added after them.
       ...(t.follow_on?.length > linkSteps(t.follow_on).length ? [] : [parkFollowOn(ownWords(t.park.question), t.follow_on)]), 'follow_on_comment=due');
     yield say(t.key, 'done', `${t.key}: PR #${merges.pr} recorded done, no longer parked: its park waited only on #${merges.pr} merging, #${merges.pr} is green with a clean review at ${String(merges.head).slice(0, 9)}, and desk may now undraft and merge it (${merges.grant})`);
@@ -113,8 +116,20 @@ function* settleClear(t, s) {
   // Jira could not be read is left parked, not recorded done.
   if (own.pr != null && own.pr === mergedTailPr(t) && (yield { type: 'tail-after-merge', key: t.key }) !== false) return;
   if (own.pr != null) {
-    if (yield { type: 'write', key: t.key, fields: ['state=done', 'park=null', 'handoff_stage=null', `result.summary=closed out: ${what}, and its PR #${own.pr} merged`, `result.pr=${own.pr}`] }) {
+    if (yield { type: 'write', key: t.key, fields: doneOnPr(own.pr, { summary: `closed out: ${what}, and its PR #${own.pr} merged` }) }) {
       yield say(t.key, 'clears', `${t.key}: "${what}" holds and its PR #${own.pr} merged: recorded done`);
+    }
+    return;
+  }
+  // A fix try parked before its worker started was drafted from the PR as it read then, and the park
+  // is what changed since: it is dropped, not spawned, as fixTryStale drops one whose PR moved, and the
+  // ticket is done on its PR again, so the PR's reading drafts the try it needs now. A person's call
+  // (gaps, an instruction, a review sent back) and a renames try are theirs, so they still spawn.
+  const f = t.fix;
+  if (f && !f.finished && !f.started && f.pr != null && redraftable(f)) {
+    if (yield { type: 'write', key: t.key, fields: [`fix.finished=${s.passAt}`, `fix.ended=parked before its worker started, and "${what}" holds`,
+      ...unrunFields(t, f), 'state=done', 'park=null', 'handoff_stage=null', `result.pr=${f.pr}`] }) {
+      yield say(t.key, 'clears', `${t.key}: "${what}" holds: its ${tryLabel(f)} on PR #${f.pr}, parked before its worker started, is dropped, and the PR is read again for what it needs now`);
     }
     return;
   }
@@ -248,10 +263,11 @@ function blockerViews(tickets, epic) {
     wontDoOf: (rec) => (Array.isArray(rec?.blockers)
       ? ownEpicSplit(rec).blockers.filter((b) => !tickets[b.key]?.merged_at && closedUnlanded(b)).map((b) => b.key)
       : null),
-    // A blocker in no batch read Done with no resolution read (a record from before resolutions were, or
-    // a read that failed): read again once, or one closed without landing is never told from one that landed.
+    // A blocker in no batch read Done with no resolution or resolution date read (a record from before
+    // they were, or a read that failed): read again once, or one closed without landing is never told from
+    // one that landed, and how long one has been Done is never known.
     resolutionUnread: (rec) => Array.isArray(rec?.blockers)
-      && ownEpicSplit(rec).blockers.some((b) => !(b.key in tickets) && b.category === 'done' && !('resolution' in b)),
+      && ownEpicSplit(rec).blockers.some((b) => !(b.key in tickets) && b.category === 'done' && !('resolution' in b && 'resolved' in b)),
   };
 }
 // A ticket waiting to merge on the person's steps (merge_after).
@@ -309,6 +325,9 @@ export function* decideOutsideBlockers(s) {
 // with no PR left to land: it stays, raised once (wont_do_link), until its link is removed. The merge driver never releases a
 // ticket held outside its batch, so lifting the last blocker releases it here. A ticket parked at
 // triage for its own reason (triagePark) loses only the hold: its park stays, and nothing spawns it.
+// One Done for UNPROMOTED_AFTER_MS or more, by its record's `resolved`, whose code merged only into
+// another branch is recorded on the ticket with that branch and its promotion PR (raiseUnpromoted), for
+// the person to promote it or start without it; the hold stays.
 //
 // Whether a blocker landed reads GitHub, so a pass asks it once per blocker however many tickets wait
 // on it, and for a ticket's blockers at most once every IDLE_RECHECK_MS (outside_read): a busy batch
@@ -318,11 +337,12 @@ export function* decideOutsideBlockers(s) {
 // nothing recorded keeps its answer in that archive (pass.mjs epicMerged) and so has its own interval.
 //
 // The snapshot: tickets, epic, triage (as for person-step holds), defaultBranch (the batch's base),
-// repoDefault (the repo's default branch), now, dry.
+// repoDefault (the repo's default branch), now (in ms), dry.
 export function* decideOutsideHolds(s) {
   const { tickets } = s;
   const { ownEpicOf } = blockerViews(tickets, s.epic);
   const answers = { landed: new Map(), 'epic-merged': new Map() };
+  const unpromoted = new Map();
   for (const t of Object.values(tickets).filter((x) => holdsKept(x) && x.held_outside && !stoppedHold(x))) {
     const outside = keysOf(t.held_outside);
     const rec = s.triage[t.key] ?? null;
@@ -353,10 +373,26 @@ export function* decideOutsideHolds(s) {
     const awayDone = [];
     for (const p of outside) if (!tickets[p] && !ownEpic.includes(p) && !epicLanded.includes(p) && done.has(p) && (yield { type: 'other-repo', key: p })) awayDone.push(p);
     const landedNow = [];
+    const away = {};
     for (const p of outside) {
       if (tickets[p] || ownEpic.includes(p) || epicLanded.includes(p) || awayDone.includes(p) || !done.has(p)) continue;
-      if ((yield* ask('landed', p)) === true) landedNow.push(p);
+      const isLanded = yield* ask('landed', p);
+      if (isLanded === true) { landedNow.push(p); continue; }
+      // A read that failed, or one not asked because this ticket's were read within the interval,
+      // keeps what was recorded.
+      const kept = t.unpromoted?.[p];
+      if (isLanded !== false) { if (kept) away[p] = kept; continue; }
+      // Done a day or more with its code merged into another branch, never promoted: raised once, in needs-you.
+      const since = Date.parse((blockers ?? []).find((b) => b?.key === p)?.resolved);
+      if (!(s.now - since >= UNPROMOTED_AFTER_MS)) continue;
+      // Read against the repo's default branch, which needs-you promotes into, never a named batch's base.
+      if (!unpromoted.has(p)) unpromoted.set(p, yield { type: 'unpromoted', key: p, into: s.repoDefault });
+      const u = unpromoted.get(p);
+      // `promote` is the promotion PR the person asked for in needs-you, kept across reads.
+      if (u) away[p] = { ...u, since: new Date(since).toISOString(), ...(kept?.promote != null ? { promote: kept.promote } : {}) };
+      else if (kept) away[p] = kept;
     }
+    yield* raiseUnpromoted(t, away, s);
     const lifted = [...ownEpic, ...epicLanded, ...awayDone, ...landedNow, ...unlinked];
     const left = outside.filter((p) => !tickets[p] && !lifted.includes(p));
     const stamp = read && !s.dry ? [`outside_read=${new Date(s.now).toISOString()}`] : [];
@@ -380,6 +416,21 @@ export function* decideOutsideHolds(s) {
       yield epicLine(`outside hold: ${t.key}: ${what}; RELEASED`);
     }
   }
+}
+
+// What ticket `t` waits on that is merged only into another branch, as `unpromoted` {BLOCKER: {branch, pr,
+// state, since}}, read by needs-you and desk-q: written when it changes, and said once per blocker when
+// first recorded, so a pass that finds it again raises nothing.
+function* raiseUnpromoted(t, away, s) {
+  const was = t.unpromoted ?? {};
+  const keys = Object.keys(away);
+  const fresh = keys.filter((p) => !was[p]);
+  for (const p of fresh) {
+    const u = away[p];
+    yield epicLine(`outside hold${s.dry ? ' (dry run)' : ''}: ${t.key}: ${p} Done since ${u.since.slice(0, 10)}, its code on ${u.branch} with ${promotionWords(u)}: raised once, in needs-you`);
+  }
+  if (s.dry || JSON.stringify(was) === JSON.stringify(away)) return;
+  yield set(t.key, `unpromoted=${keys.length ? JSON.stringify(away) : 'null'}`);
 }
 
 // ---- merge holds on the person's steps -----------------------------------

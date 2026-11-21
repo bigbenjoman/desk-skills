@@ -22,7 +22,7 @@ export DESK_CONFIG_ROOT="$T/cfg" DESK_REPO_OVERRIDE=acme/widgets DESK_HOME="$T/d
 PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
-# config <autopilot-workers> <autopilot-merge>
+# config <autopilot-workers> <autopilot-merge> [<running on WSL?>, default no, so a WSL host reads as plain Linux]
 config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widgets/config.md" <<EOF
 ## 0. Repo
 | Field | Value |
@@ -33,6 +33,7 @@ config(){ mkdir -p "$T/cfg/repos/acme__widgets"; cat > "$T/cfg/repos/acme__widge
 | Field | Value |
 |---|---|
 | Primary repo root | \`$T/repo\` |
+| Running on WSL? | \`${3:-no}\` |
 
 ## 3. Permissions
 | Key | Capability | Recommended | Your setting |
@@ -44,10 +45,12 @@ EOF
 }
 config yes yes
 
-# The supervisor copied beside the real modules it imports, so it runs the fakes next to it.
-# installed.mjs is copied too: it restarts the merge driver beside it, which must be the fake.
+# The supervisor copied beside the fakes below and links to the real modules (link_bin, after them),
+# so it runs the fakes next to it. installed.mjs is copied too: it restarts the merge driver beside it,
+# which must be the fake.
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"
 cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
-for f in desk-env.mjs machine.mjs test-scope.mjs batch-state.mjs batches.mjs batch.mjs decider.mjs handoff.mjs briefing.mjs intake.mjs epic-plan.mjs closeout.mjs run-by.mjs usage-limit.mjs borrow.mjs post-merge.mjs dir-lock.mjs notify.mjs; do ln -s "$B/$f" "$T/bin/$f"; done
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
@@ -74,6 +77,7 @@ console.log(JSON.stringify(d));
 EOF
 # The maintenance step an idle tick runs: no window.
 echo "console.log(JSON.stringify({ hold: false, lines: [] }));" > "$T/bin/maintenance.mjs"
+link_bin "$B" "$T/bin"
 # The merge driver, whose output the supervisor sends to merge-driver.log. By default it ends as the
 # real one does, with its exit line; driver.mode `fail` stops it at once as a signed-out gh does, and
 # `hang` keeps it running, holding the lock. driver.calls is written last, once its log lines are out.
@@ -339,12 +343,16 @@ verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"n
 : > "$T/pass.calls"
 out=$(tick); out=$(tick)
 check "DS-269 an idle batch with a failed ticket runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
-# The first idle is 4s old by the recheck, so a 3s interval runs a pass after it only if that pass
-# did not record the idle again.
-sleep 4
-out=$(DESK_IDLE_RECHECK_MS=1 tick)
+# backdate <seconds>: moves the recorded idle that far into the past, as if the batch had sat idle that
+# long, so an interval passes without the test waiting it out. Each case below backdates 10 minutes
+# and sets a 5-minute interval: a tick on a loaded machine never takes the difference.
+backdate(){ node -e 'const fs = require("fs"), f = process.argv[1], s = JSON.parse(fs.readFileSync(f, "utf8")); s.idle_at = new Date(Date.parse(s.idle_at) - Number(process.argv[2]) * 1000).toISOString(); fs.writeFileSync(f, JSON.stringify(s))' "$T/state/supervisor.json" "$1"; }
+# The first idle is 10 minutes old by the recheck, so a 5-minute interval runs a pass after it only if
+# that pass did not record the idle again.
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-269 AC1 once the interval has passed, the next tick runs a pass anyway" '[ "$(count "$T/pass.calls")" = 2 ] && grep -q "a park is answered, or 30 minutes pass with anything parked, failed or held behind a blocker in no batch" "$LOG"'
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-269 AC1 that pass starts the interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}}}' b3
 out=$(tick); out=$(DESK_IDLE_RECHECK_MS=1 tick)
@@ -354,7 +362,8 @@ mkdir -p "$T/state/briefings"
 printf '# Briefing for P\n\n## Answer from the user (2020-01-01T09:30:00Z)\n\nan answer the last pass already had\n' > "$T/state/briefings/P.md"
 out=$(tick); out=$(tick)
 check "DS-269 AC5 an answer older than the idle wakes nothing" '[ "$(count "$T/pass.calls")" = 4 ]'
-sleep 1
+# The idle is 10 minutes old (inside the 30-minute recheck), so an answer stamped this second is after it.
+backdate 600
 printf '\n## Answer from the user (%s)\n\nblue\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$T/state/briefings/P.md"
 out=$(tick)
 check "DS-269 AC5 an answer to a park never handed on ends the idle: a pass runs" '[ "$(count "$T/pass.calls")" = 5 ]'
@@ -368,15 +377,34 @@ queue true '{}' '{"H":{"key":"H","state":"parked","held_by":"X-1","held_outside"
 : > "$T/pass.calls"
 out=$(tick); out=$(tick)
 check "DS-815 an idle batch held behind an outside blocker runs no pass before the recheck interval" '[ "$(count "$T/pass.calls")" = 1 ]'
-sleep 4
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC1 once the interval has passed, a batch held only behind an outside blocker runs a pass" '[ "$(count "$T/pass.calls")" = 2 ]'
 queue true '{}' '{"A":{"key":"A","state":"done","result":{"pr":7}},"H":{"key":"H","state":"parked","held_by":"A","held_outside":"X-9","park":{"question":"held by orchestrator: blocked by A"}}}' b7
 : > "$T/pass.calls"
-out=$(tick); sleep 4
-out=$(DESK_IDLE_RECHECK_MS=3000 tick)
+out=$(tick); backdate 600
+out=$(DESK_IDLE_RECHECK_MS=300000 tick)
 check "DS-815 AC2 a batch held only behind blockers inside it, an outside key a release left behind included, runs no extra pass on the interval" '[ "$(count "$T/pass.calls")" = 1 ]'
 queue true '{}' "$DONE" b8
+
+# ---- DS-852: an idle batch whose park waits on an Actions run rechecks on the shorter interval -----
+verdict '{"status":"idle","code":11,"message":"IDLE","waiting":[],"parked":[],"notify":true,"push":[]}'
+queue true '{}' '{"R":{"key":"R","state":"parked","lane":"A","park":{"question":"wait for the run","clears_when":{"kind":"run-completed","run":44719886024}}}}' b9
+: > "$T/pass.calls"
+out=$(tick)
+check "DS-852 the idle line names the shorter interval while a park waits on a run" 'grep -q "(2 minutes while a park waits on an Actions run or a PR.s checks)" "$LOG"'
+backdate 600
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
+check "DS-852 AC2 once the run interval has passed, an idle batch waiting on a run runs a pass, well inside the idle interval" '[ "$(count "$T/pass.calls")" = 2 ]'
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
+check "DS-852 AC2 that pass starts the run interval again" '[ "$(count "$T/pass.calls")" = 2 ]'
+queue true '{}' '{"P":{"key":"P","state":"parked","lane":"A","park":{"question":"which colour?","clears_when":{"kind":"none"}}}}' b10
+# P's answer from the idle-recheck cases above is not this batch's: backdated past it, the idle would read it as new.
+rm -f "$T/state/briefings/P.md"; : > "$T/pass.calls"
+out=$(tick); backdate 600
+out=$(DESK_RUN_RECHECK_MS=300000 tick)
+check "DS-852 AC6 an idle batch with no park on a run or checks keeps the idle interval" '[ "$(count "$T/pass.calls")" = 1 ]'
+queue true '{}' "$DONE" b11
 
 # ---- a pass that gives no verdict -------------------------------------------------------------
 printf 'not json\n' > "$T/verdict.json"
@@ -423,7 +451,7 @@ held(){ cat "$T/state/merge-driver.lock.d/pid" 2>/dev/null; }
 # tail): the node writing its version has finished by then.
 OLDREL="$DESK_HOME/releases/old0"; mkdir -p "$OLDREL/bin"; printf '{"commit":"old0","release":"old0"}\n' > "$OLDREL/release.json"
 cp "$T/bin/merge-driver.sh" "$T/bin/installed.mjs" "$OLDREL/bin/"
-for f in desk-env.mjs batches.mjs run-by.mjs; do ln -s "$T/bin/$f" "$OLDREL/bin/$f"; done
+link_bin "$T/bin" "$OLDREL/bin"
 olddriver(){
   kid='sleep'; [ -f "$T/busy" ] && kid='tail'
   echo loop > "$T/driver.mode"; rm -rf "$T/state/merge-driver.lock.d"
@@ -576,9 +604,10 @@ out=$(DESK_LOG_ROTATE_BYTES=1000 mtick)
 check "DS-759 AC2: with three copies, the oldest is deleted and the others move up one" '[ "$(cat "$SL.3")" = copy2 ] && [ "$(cat "$SL.2")" = copy1 ] && [ "$(cat "$SL.1")" = "$old" ] && [ ! -e "$SL.4" ] && ! grep -q "old line" "$SL"'
 
 # ---- DS-654: each tick ends by refreshing the machine-wide Levers page --------------------------
-# The real levers-refresh.mjs, linked beside the supervisor (node runs it from its own folder).
-ln -s "$B/levers-refresh.mjs" "$T/bin/levers-refresh.mjs"
-LV="$HOME/.desk-autopilot/levers"; LS="$HOME/.desk-autopilot/acme__widgets"; mkdir -p "$LS"
+# The real levers-refresh.mjs is linked beside the supervisor (link_bin; node runs it from its own
+# folder), so the ticks above may have built the page already: it starts here from no page.
+ln -sf "$B/levers-refresh.mjs" "$T/bin/levers-refresh.mjs"
+LV="$HOME/.desk-autopilot/levers"; rm -rf "$LV"; LS="$HOME/.desk-autopilot/acme__widgets"; mkdir -p "$LS"
 built(){ grep -c "levers: built the page" "$LOG"; }
 # Moves build.json's last attempt <n> minutes into the past, leaving its fingerprint.
 attempted(){ node -e 'const f=process.argv[1],r=JSON.parse(require("fs").readFileSync(f,"utf8"));r.attempted_at=new Date(Date.now()-process.argv[2]*60000).toISOString();require("fs").writeFileSync(f,JSON.stringify(r))' "$LV/build.json" "$1"; }
@@ -640,6 +669,7 @@ check "#735 AC1: the service leaves the merge driver running and passes the repo
 check "#735 AC1: the timer runs it at once and every 180s by default" 'grep -qx "OnActiveSec=0" "$TM" && grep -qx "OnUnitActiveSec=180s" "$TM" && grep -qx "WantedBy=timers.target" "$TM"'
 check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
 check "#735 AC1: with lingering off, install says ticks stop at logout and how to keep them" 'grep -q "loginctl enable-linger" <<< "$out"'
+check "DS-838 AC3: on plain Linux, install says nothing about WSL" '! grep -q "WSL" <<< "$out"'
 out=$(sup install)
 check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
 out=$(sup install --interval 300)
@@ -653,6 +683,18 @@ echo exit-code > "$T/result"
 out=$(agent)
 check "#735 AC2: a failed last run is read as launchctl print is: its code and why" '[ "$out" = "{\"loaded\":true,\"exit\":{\"code\":3,\"why\":\"exit-code\"}}" ]'
 rm -f "$T/result"
+
+# ---- DS-838: on WSL, lingering does not keep the timer running --------------------------------------
+config yes yes yes
+out=$(sup install --interval 300 --reload)
+check "DS-838 AC1: on WSL with lingering off, install keeps the lingering note" 'grep -q "loginctl enable-linger" <<< "$out"'
+check "DS-838 AC1: and says ticks run only while WSL is up, naming both ways to keep it up" 'grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -q "Keep a terminal open" <<< "$out" && grep -qF "Windows Task Scheduler entry at logon that runs \`wsl.exe --exec sleep infinity\`" <<< "$out"'
+check "DS-838 AC1: and says how to name a non-default distro and to lift the task's 3-day limit" 'grep -qF "\`-d <distro>\` if this is not your default distro" <<< "$out" && grep -qF "\"Stop the task if it runs longer than 3 days\" turned off" <<< "$out"'
+printf '#!/bin/sh\necho Linger=yes\n' > "$T/fakes/loginctl"
+out=$(sup install --interval 300 --reload)
+check "DS-838 AC2: on WSL with lingering on, install still says ticks run only while WSL is up" '! grep -q "Lingering is off" <<< "$out" && grep -q "On WSL, ticks run only while WSL is up" <<< "$out" && grep -qF "wsl.exe --exec sleep infinity" <<< "$out"'
+printf '#!/bin/sh\necho Linger=no\n' > "$T/fakes/loginctl"
+config yes yes
 
 # ---- #735 AC3: notifications off macOS ----------------------------------------------------------
 rm -f "$T"/verdict.*.json "$T/driver.mode"

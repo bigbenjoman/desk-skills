@@ -14,10 +14,15 @@
 
 q init t
 # T-1: a requeued round whose log names PR 2 while the queue still holds round one's PR 1.
-q add T-1; q set T-1 state=running branch=fix/T-1 session_id=gone result.pr=1
+q add T-1; q set T-1 state=running branch=fix/T-1 session_id=gone result.pr=1 "worktree=$T/wt/T-1"
 say "AUTOPILOT_IMAGES: $T/state/images/T-1/" "AUTOPILOT_DONE: pr=2 jira=none" > "$T/state/logs/T-1.log"
+# DS-833: its worktree root holds a desk-review round's results file, and another JSON file.
+mkdir -p "$T/wt/T-1"; echo '{"sha":"abc1234","round":1,"gaps":1}' > "$T/wt/T-1/desk-review-results-abc1234-k3q9xz.json"; echo '{}' > "$T/wt/T-1/other.json"
+mkdir -p "$T/wt/T-1/desk-review-results-not-a-file.json"; ln -s "$T/wt/T-1/other.json" "$T/wt/T-1/desk-review-results-a-link.json"
 # T-2: a log with screenshots and no AUTOPILOT_DONE yet, so the stored PR is all there is.
-q add T-2; q set T-2 state=running branch=fix/T-2 session_id=gone result.pr=5
+q add T-2; q set T-2 state=running branch=fix/T-2 session_id=gone result.pr=5 "worktree=$T/wt/T-2"
+# Its worktree is there and holds no results file, only another JSON file.
+mkdir -p "$T/wt/T-2"; echo '{}' > "$T/wt/T-2/other.json"
 say "AUTOPILOT_IMAGES: $T/state/images/T-2/" > "$T/state/logs/T-2.log"
 for k in T-1 T-2 T-3; do mkdir -p "$T/state/images/$k"; : > "$T/state/images/$k/after-desktop.png"; done
 # I-1 and I-2: finished workers that captured nothing, naming a directory that is missing or empty.
@@ -32,6 +37,9 @@ check "the log's PR wins over the stored one"           'grep -qx "2 $T/state/im
 check "nothing goes to the stored PR when the log has one" '! grep -q "^1 " "$T/uploads"'
 check "the stored PR is used when the log has none"     'grep -qx "5 $T/state/images/T-2/" "$T/uploads"'
 check "the finished round records the log's PR"         '[ "$(field T-1 result.pr)" = 2 ]'
+check "DS-833 AC3 an exited worker's review results file is kept under the state folder for its ticket" 'grep -q "\"gaps\":1" "$T/state/reviews/T-1/desk-review-results-abc1234-k3q9xz.json" && [ ! -e "$T/state/reviews/T-1/other.json" ]'
+check "DS-833 a directory or a link named like a results file is not copied, and the pass still records the worker" '[ ! -e "$T/state/reviews/T-1/desk-review-results-not-a-file.json" ] && [ ! -e "$T/state/reviews/T-1/desk-review-results-a-link.json" ] && [ "$(field T-1 state)" = "\"done\"" ]'
+check "DS-833 AC3 a worker with no results file keeps no reviews folder" '[ ! -e "$T/state/reviews/T-2" ]'
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'
@@ -233,6 +241,11 @@ check "DS-115 AC1 a count the user set reports as theirs" 'echo "$out" | grep -q
 q set-batch concurrency=1
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-115 a lowering on memory keeps the user's number" '[ "$(bfield concurrency_by)" = "\"user\"" ] && [ "$(bfield concurrency_user)" = 4 ] && echo "$out" | grep -q "workers: concurrency 1, lowered on memory from the user.s 4: raise back to 4"'
+# #926: under a spawn gate, the line says "on memory" only with available memory under the ladder's line.
+out=$(DESK_MEM_AVAIL_GB=15 AUTOPILOT_MIN_AVAIL_GB=8 node "$B/pass.mjs" 2>&1)
+check "#926 a count below the user's with memory above the line says memory did not lower it" 'echo "$out" | grep -q "workers: concurrency 1, below the user.s 4, though available memory is 15.0G, at or above the ladder.s 8G line, so memory did not lower it" && ! echo "$out" | grep -q "lowered on memory"'
+out=$(DESK_MEM_AVAIL_GB=3 AUTOPILOT_MIN_AVAIL_GB=8 node "$B/pass.mjs" 2>&1)
+check "#926 one under the line says memory lowered it, with the figure" 'echo "$out" | grep -q "workers: concurrency 1, lowered on memory from the user.s 4 (available memory 3.0G, under the ladder.s 8G line): raise back to 4"'
 q set-batch concurrency_by=null
 check "DS-115 handing the count back to the ladder drops the user's number" '[ "$(bfield concurrency_user)" = null ]'
 q set-batch concurrency=0 concurrency_by=user
@@ -273,6 +286,32 @@ printf '%s\n' '{"tickets": not json' > "$X1/queue.json"
 spawn_one P-175
 check "DS-305 AC4 an unreadable named batch's queue does not stop the spawn, and the report names it" '[ "$(field P-175 state)" = "\"running\"" ] && [ "$(field P-175 port)" = 47501 ] && echo "$out" | grep -qF "ports: $X1/queue.json is not valid JSON ("'
 rm -rf "$T/desk/repos/acme__other/batches"; other '{"tickets": not json'
+# #823: ports a peer session claimed at handshake (port-claims.mjs) are skipped though nothing listens.
+node "$B/port-claims.mjs" claim 47501-47502 --by 'peer acme/shop' >/dev/null
+spawn_one P-176
+check "#823 a port range a peer claimed is skipped, though its server is down" '[ "$(field P-176 state)" = "\"running\"" ] && [ "$(field P-176 port)" = 47503 ]'
+node "$B/port-claims.mjs" release --by 'peer acme/shop' >/dev/null
+spawn_one P-177
+check "#823 once the peer releases it, the port is used again" '[ "$(field P-177 state)" = "\"running\"" ] && [ "$(field P-177 port)" = 47501 ]'
+# DS-910: with the port lease kind on, a pass skips a port a peer session leases, and hands each
+# worker's port lease to the pid spawn-worker.sh printed. The peer and the worker are sleep processes.
+export DESK_LEASE_DIR="$T/leases" DESK_MACHINE="$T/machine-ports-on.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=on` | test |\n' > "$DESK_MACHINE"
+other '{"tickets":{}}'
+PEER=$( (sleep 300 >/dev/null 2>&1 & echo $!) ); WPID=$( (sleep 300 >/dev/null 2>&1 & echo $!) )
+node "$B/leases.mjs" acquire port 47501 --ttl 3600 --label 'peer session acme/shop' --pid "$PEER" >/dev/null
+cp "$T/desk/bin/spawn-worker.sh" "$T/spawn-worker.kept"
+printf 'if [ "$3" = preflight ]; then echo "[preflight] pass"; else echo "[spawn] ticket=$1 pid=%s port=$AUTOPILOT_PORT"; fi\n' "$WPID" > "$T/desk/bin/spawn-worker.sh"
+spawn_one P-910
+check "DS-910 AC1 a port a peer session leases is not given out, though nothing listens on it" '[ "$(field P-910 state)" = "\"running\"" ] && [ "$(field P-910 port)" = 47502 ]'
+check "DS-910 AC3 the lease list shows the worker's port held by its process, with its repo, batch and ticket" 'node "$B/leases.mjs" list --json | jq -e --argjson p "$WPID" "select(.key == \"47502\" and .owner.pid == \$p and .label == \"acme/widgets standing P-910\")" >/dev/null'
+kill "$PEER"; while kill -0 "$PEER" 2>/dev/null; do sleep 0.1; done
+spawn_one P-911
+check "DS-910 AC6 a peer whose process exited no longer holds its port, and the report says so" '[ "$(field P-911 port)" = 47501 ] && echo "$out" | grep -qF "ports: dropped the stale lease on port 47501 held by peer session acme/shop (pid $PEER): owner exited"'
+printf '{not json' > "$T/leases/leases.json"
+spawn_one P-912
+check "DS-910 AC9 an unreadable lease store picks by the legacy rule and the report says so" '[ "$(field P-912 state)" = "\"running\"" ] && [ "$(field P-912 port)" = 47501 ] && echo "$out" | grep -qF "ports: leases were unreadable ("'
+kill "$WPID" 2>/dev/null; mv "$T/spawn-worker.kept" "$T/desk/bin/spawn-worker.sh"; unset DESK_LEASE_DIR DESK_MACHINE
 
 # DS-121: a worker at the 5-hour usage limit. The event is the rejection recorded from a real worker,
 # with its reset moved to suit each case. Each case is a running ticket whose log stopped growing
@@ -519,7 +558,7 @@ if [ "\$3" = preflight ]; then
   if grep -qx "\$1" "$T/bad-preflight"; then echo "[preflight] \$1"; echo "  W_IN   ?        FAIL (wanted OK)"; exit 1; fi
   echo "[preflight] pass"; exit 0
 fi
-echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
+echo "\$1 \$3 port=\${AUTOPILOT_PORT:-} resume=\${AUTOPILOT_RESUME:+yes}\${AUTOPILOT_BUDGET_USD:+ budget=\$AUTOPILOT_BUDGET_USD}" >> "$T/spawns"; printf '%s\n' "\${AUTOPILOT_RESUME:-}" > "$T/resume-prompt-\$1"; echo "[spawn] ticket=\$1"
 EOF
 stub_claude '[{"sessionId": "live-1"}]'
 killed(){ mkdir -p "$T/wt/$1"; q add "$1"; q set "$1" state=running lane=A "branch=fix/$1" "worktree=$T/wt/$1" "session_id=$2" port=47750 stage=4/9
@@ -553,6 +592,30 @@ check "DS-145 AC4 a session that ended normally with no marker is marked failed,
 killed K-4b sess-k4b; { result_event; echo '{"type":"command_lifecycle","state":"completed","session_id":"sess-k4b"}'; } >> "$T/state-k/logs/K-4b.log"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-145 AC4 bookkeeping after the result still reads as a normal end" '[ "$(field K-4b state)" = "\"failed\"" ] && ! spawned_for K-4b'
+# B-1's session ended on the per-worker budget with its change uncommitted.
+budget_event(){ node -e 'console.log(JSON.stringify({ type: "result", subtype: process.argv[1], is_error: true, num_turns: 90, total_cost_usd: 25.02, result: "" }))' "${1:-error_max_budget_usd}"; }
+killed B-1 sess-b1; budget_event >> "$T/state-k/logs/B-1.log"; echo change > "$T/wt/B-1/new.txt"; git -C "$T/wt/B-1" init -q
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC1 a worker stopped at the per-worker budget is resumed once in its own session, not failed" \
+  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes budget=5$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = "\"sess-b1\"" ] && [ "$(field B-1 resumes)" = 0 ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more to commit, push and finish its stage"'
+check "DS-849 AC1 with \$5 more, told to commit, push and finish its stage" \
+  'grep -q "spend it on committing your work, pushing it and finishing the stage you were in" "$T/resume-prompt-B-1"'
+# Its resumed session ends on the budget too.
+budget_event >> "$T/state-k/logs/B-1.log"; touch -t 202601010000 "$T/state-k/logs/B-1.log"
+out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
+check "DS-849 AC2 a second budget stop parks, naming the budget and the uncommitted work" \
+  '[ "$(field B-1 state)" = "\"parked\"" ] && field B-1 park.question | grep -q "stopped at the per-worker budget (\$25, config §3b ..Autopilot per-worker budget (USD)..) again after its one resume with \$5 more, and its worktree $T/wt/B-1 holds uncommitted work (1 changed file(s))" && [ "$(spawned_for B-1 | wc -l | tr -d " ")" = 1 ]'
+# B-3's session ended in another error; B-4's on the budget subtype, with no per-worker budget set.
+killed B-3 sess-b3; budget_event error_during_execution >> "$T/state-k/logs/B-3.log"
+killed B-4 sess-b4; budget_event >> "$T/state-k/logs/B-4.log"
+out=$(AUTOPILOT_BUDGET_USD=none node "$B/pass.mjs" 2>&1)
+check "DS-849 AC3 another error is marked failed as before" '[ "$(field B-3 state)" = "\"failed\"" ] && ! spawned_for B-3'
+check "DS-849 AC4 with the per-worker budget none, a budget-stop subtype is any other error" '[ "$(field B-4 state)" = "\"failed\"" ] && ! spawned_for B-4 && [ "$(field B-4 resume)" = null ]'
+h=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+h3=$(AUTOPILOT_BUDGET_USD=25 node "$B/harvest.mjs" "$T/state-k/logs/B-3.log" 2>&1)
+hn=$(AUTOPILOT_BUDGET_USD=none node "$B/harvest.mjs" "$T/state-k/logs/B-4.log" 2>&1)
+check "DS-849 harvest names a budget stop, and any other error, or one with no budget, as failed" \
+  'echo "$h" | grep -qx "state:  BUDGET STOP" && echo "$h3" | grep -qx "state:  FAILED" && echo "$hn" | grep -qx "state:  FAILED"'
 # K-9's log was written seconds ago: before a boot a minute from now it was a reboot, so resumed at
 # once; with the computer up it may be a worker the registry has not listed yet, so it is left.
 killed K-9 sess-k9; touch "$T/state-k/logs/K-9.log"

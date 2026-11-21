@@ -91,7 +91,7 @@ cat > "$T/stub/gh" <<EOF
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
-const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations(?:\?per_page=100)?$/.exec(a[1] ?? '');
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fx/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'pr' && a[1] === 'list') console.log('[]');
 else if (job) { try { process.stdout.write(fs.readFileSync('$T/fx/notes-' + job[1] + '.json', 'utf8')); } catch { process.exit(1); } }
@@ -242,6 +242,8 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC3 red on the base at its merge base too: base red, and no fix worker" \
   '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && [ "$(field FB-1 base_red | jq -c "[.class, .head, .merge_base, .checks]")" = "[\"base red\",\"$H1\",\"$MB\",[\"Lint\"]]" ]'
 check "DS-446 AC3 and the item says so" 'echo "$out" | grep -qF "FB-1: BASE RED — PR #810: base red: Lint is red on main at the merge base 444444444444 too, so no fix try is spent on it"'
+since1=$(field FB-1 base_red.since)
+check "the hold records the pass it began at, and that the call holds the PR" '[[ "$since1" =~ ^\"20[0-9]{2}-[0-9]{2}-[0-9]{2}T ]] && [ "$(field FB-1 base_red.held)" = true ]'
 check "DS-446 AC6 no run at the merge base: not base red, the fix try proceeds, and it says the base state is unknown" \
   '[ "$(field FB-2 state)" = "\"triaged\"" ] && [ "$(field FB-2 base_red)" = null ] && [ "$(field FB-2 fix.what)" = "\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\"" ]'
 check "DS-446 AC2 the try records its class before its worker spawns" \
@@ -252,10 +254,12 @@ check "DS-639 AC2 in the same pass, the ticket pinned without the lever gets its
   '[ "$(field FB-10 state)" = "\"triaged\"" ] && [ "$(field FB-10 fix | jq -c "[.what, .class]")" = "[\"red: Lint; base state unknown for Lint (no run of it read on main at the merge base or since)\",\"dependency wait\"]" ] && ! echo "$out" | grep -q "FB-10: WAITING"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 while the job has no newer completed run on the base, the hold stays" '[ "$(field FB-1 state)" = "\"done\"" ] && [ "$(field FB-1 fix)" = null ] && echo "$out" | grep -q "FB-1: BASE RED"'
+check "and the next pass keeps when it began" '[ "$(field FB-1 base_red.since)" = "$since1" ]'
 runs "$MT" Lint '[{"status":"completed","conclusion":"success"}]'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-446 AC8 once the job passes on the base, even ten commits back, the hold clears and a fix try proceeds as today" \
   '[ "$(field FB-1 state)" = "\"triaged\"" ] && [ "$(field FB-1 fix.what)" = "\"red: Lint\"" ] && [ "$(field FB-1 fix.class)" = "\"application defect\"" ] && [ "$(field FB-1 base_red | jq -c "[.checks, .cleared]")" = "[[],[\"Lint\"]]" ]'
+check "and the record no longer reads as a hold" '[ "$(field FB-1 base_red.held)" = false ]'
 q add FB-5; q add FB-6; q add FB-7; q set FB-7 state=triaged
 q park FB-5 "which reviewer handle goes in the PR body?"; q park FB-6 "waiting on the weather"; q hold FB-7 FB-1
 check "DS-446 AC1 with the lever on, a park records its class and the rule that gave it" \
@@ -436,7 +440,7 @@ q set C-8 'undraft={"call":"ready","why":null,"action":null,"sha":"'"$H0"'","pr"
 check "DS-316 AC1 a verdict carried across a merge of the base undrafts the PR at the new head" \
   'grep -q "^pr ready 751 --repo acme/widgets" "$T/gh-calls" && [ "$(field C-1 state)" = "\"done\"" ] && [ "$(field C-1 fix_tries)" = null ]'
 check "DS-316 AC1 and the pass record says it was carried from the reviewed commit" \
-  '[ "$(field C-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #751 (C-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as only clean merges of main came since"'
+  '[ "$(field C-1 undraft.carried_from)" = "\"$CA\"" ] && echo "$out" | grep -qF "undrafted: PR #751 (C-1) at ${CB:0:12}; its review verdict is carried from ${CA:0:12}, as only clean merges of main and empty commits came since"'
 check "DS-316 AC1 its comment names the commit reviewed and the head it holds on" \
   'grep -qF "pr comment 751 --repo acme/widgets --body Out of draft: the desk-review verdict posted on \`${CA:0:12}\` is clean" "$T/gh-calls" && grep -qF "holds on this head (\`${CB:0:12}\`)" "$T/gh-calls"'
 check "DS-316 AC2 a verdict its own commits moved past sends the head to a review worker" \
@@ -755,8 +759,8 @@ for k in 1 2 3; do q add "V-$k"; q set "V-$k" state=done lane=A "branch=fix/V-$k
 fbx 761 "$HB1" tests:SUCCESS "Flows image:FAILURE:9001"
 fbx 762 "$HB2" tests:FAILURE:9002 "Flows image:FAILURE:9002"
 fbx 763 "$HB3" tests:SUCCESS "Lambda image:FAILURE:9003"
-# Waits for PR n's build at head to write its exit code.
-built(){ for _ in $(seq 1 100); do [ -f "$T/state-b/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
+# Waits for PR n's build at head to write its exit code, in the state directory in force.
+built(){ for _ in $(seq 1 100); do [ -f "$DESK_AUTOPILOT_STATE/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1); built 761 "$HB1"; built 763 "$HB3"
 check "DS-327 AC1 a draft red only on a named check gets its command, once, from the pass's checkout of main, given its head (DS-489)" \
   '[ "$(cat "$T/built")" = "$(cd "$BCO" && pwd -P) $HB1 $HB1" ] && echo "$out" | grep -q "undraft: PR #761 (V-1) stays draft: \"Flows image\" red at ${HB1:0:9}, which §4 Check builds clears"'
@@ -778,6 +782,45 @@ check "DS-327 AC3 still red after the build and its re-run: the command is not r
   '[ "$(wc -l < "$T/built" | tr -d " ")" = 1 ] && ! grep -q "^run rerun" "$T/gh-calls"'
 check "DS-327 AC3 and the PR is put to the person, naming the check" \
   'echo "$out" | grep -q "V-1: DRAFT — PR #761 stays draft: \"Flows image\" is still red at ${HB1:0:9} after its check build \`sh $T/build-ok.sh\` ran and the check was re-run. Fix \"Flows image\" on #761"'
+
+# ---- DS-863: a check build that finds its image already there exits 0 having built nothing, and the
+# check is still re-run, a draft's (N8-1) and a ready PR's (N8-2) alike, over two passes. With §3
+# ci-rerun not yes, a draft red only on that check (N8-3) is the person's, saying why it was not built.
+cat > "$T/build-none.sh" <<EOF
+printf '%s\n' "\$DESK_CHECK_HEAD" >> "$T/none-built"
+echo "flows-lambda:staging-tree-1 is already in ECR: nothing to build"
+EOF
+sed -e "s#^| Check builds .*#| Check builds | \`Flows image: sh $T/build-none.sh\` |#" "$T/config-b.md" > "$T/config-n8.md"
+sed -e 's/^| `ci-rerun` .*$/| `ci-rerun` | Re-run CI | `yes` | `no` |/' "$T/config-n8.md" > "$T/config-n8no.md"
+for k in 1 2 3; do vwt "N8-$k"; done
+HN1=$(git -C "$T/wt/N8-1" rev-parse HEAD); HN2=$(git -C "$T/wt/N8-2" rev-parse HEAD); HN3=$(git -C "$T/wt/N8-3" rev-parse HEAD)
+fbx 861 "$HN1" tests:SUCCESS "Flows image:FAILURE:8601"
+fbx 862 "$HN2" tests:SUCCESS "Flows image:FAILURE:8602"
+fbx 863 "$HN3" tests:SUCCESS "Flows image:FAILURE:8603"
+node -e 'const fs = require("fs"); const v = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); fs.writeFileSync(process.argv[1], JSON.stringify({ ...v, isDraft: false, commits: [{ oid: v.headRefOid, committedDate: "2026-11-13T15:10:00Z" }] }));' "$T/fb/862.json"
+export DESK_CONFIG="$T/config-n8.md" DESK_QUEUE="$T/queue-n8.json" DESK_AUTOPILOT_STATE="$T/state-n8"; mkdir -p "$T/state-n8/logs"
+q init n8; q set-batch concurrency=5
+for k in 1 2; do q add "N8-$k"; q set "N8-$k" state=done lane=A "branch=fix/N8-$k" "worktree=$T/wt/N8-$k" "result.pr=86$k"; done
+: > "$T/gh-calls"; : > "$T/none-built"; out=$(node "$B/pass.mjs" 2>&1); built 861 "$HN1"; built 862 "$HN2"
+check "DS-863 AC1 first pass: the draft's build starts at its head, and nothing is re-run yet" \
+  '[ "$(field N8-1 undraft.call)" = "\"build\"" ] && grep -qx "$HN1" "$T/none-built" && ! grep -q "^run rerun" "$T/gh-calls"'
+check "DS-863 AC2 first pass: the ready PR's fix tries start its build" \
+  'grep -qx "$HN2" "$T/none-built" && echo "$out" | grep -qF "fix tries: PR #862 (N8-2) is out of draft: \"Flows image\" red at ${HN2:0:9}, which §4 Check builds clears"'
+: > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-863 AC1 second pass: the build that built nothing still re-runs the draft's check with --failed, and records the re-run" \
+  '[ "$(grep -c "^run rerun 8601 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(field N8-1 undraft.call)" = "\"rebuilt\"" ] && [ "$(jq -r .ok "$T/state-n8/check-builds/861-$HN1.reran")" = true ]'
+check "DS-863 AC2 second pass: and the ready PR's the same way" \
+  '[ "$(grep -c "^run rerun 8602 --repo acme/widgets --failed$" "$T/gh-calls")" = 1 ] && [ "$(jq -r .ok "$T/state-n8/check-builds/862-$HN2.reran")" = true ]'
+check "DS-863 AC1 each build ran once, at its own head" '[ "$(wc -l < "$T/none-built" | tr -d " ")" = 2 ]'
+export DESK_CONFIG="$T/config-n8no.md" DESK_QUEUE="$T/queue-n8no.json" DESK_AUTOPILOT_STATE="$T/state-n8no"; mkdir -p "$T/state-n8no/logs"
+q init n8no; q set-batch concurrency=5
+q add N8-3; q set N8-3 state=done lane=A branch=fix/N8-3 "worktree=$T/wt/N8-3" result.pr=863
+: > "$T/spawns"; : > "$T/none-built"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-863 AC3 ci-rerun not yes: the pass names the check and says it was not built for that reason, with the command" \
+  'echo "$out" | grep -qF "N8-3: DRAFT — PR #863 stays draft: \"Flows image\" red at ${HN3:0:9} was not built, though §4 Check builds clears it: config §3 ci-rerun is \"no\", so the pass neither runs \`sh $T/build-none.sh\` nor re-runs the check. Run \`sh $T/build-none.sh\` at the head of #863, then re-run \"Flows image\""'
+check "DS-863 AC3 and nothing is built, re-run or sent to a fix worker" \
+  '[ ! -s "$T/none-built" ] && [ ! -e "$T/state-n8no/check-builds/863-$HN3.json" ] && [ "$(field N8-3 state)" = "\"done\"" ] && [ "$(field N8-3 undraft.call)" = "\"person\"" ] && [ ! -s "$T/spawns" ]'
+export DESK_CONFIG="$T/config-b.md" DESK_QUEUE="$T/queue-b.json" DESK_AUTOPILOT_STATE="$T/state-b"
 
 # ---- DS-490: a draft's check stuck pending, its run completed without it or pending past the limit, is
 # re-run once, then put to the person naming the job. The fake gh also answers run view from
@@ -825,7 +868,7 @@ cat > "$T/stub/gh" <<EOF
 const fs = require('fs');
 const a = process.argv.slice(2);
 fs.appendFileSync('$T/gh-calls', a.join(' ') + '\n');
-const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations$/.exec(a[1] ?? '');
+const job = a[0] === 'api' && /check-runs\/(\d+)\/annotations(?:\?per_page=100)?$/.exec(a[1] ?? '');
 if (a[0] === 'pr' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'view') { try { process.stdout.write(fs.readFileSync('$T/fb/run-' + a[2] + '.json', 'utf8')); } catch { process.exit(1); } }
 else if (a[0] === 'run' && a[1] === 'rerun') { /* accepted */ }
@@ -1024,8 +1067,7 @@ HC1=$(git -C "$T/wt/C-1" rev-parse HEAD); HC2=$(git -C "$T/wt/C-2" rev-parse HEA
 for k in 1 2; do q add "C-$k"; q set "C-$k" state=done lane=A "branch=fix/C-$k" "worktree=$T/wt/C-$k" "result.pr=77$k"; done
 fbx 771 "$HC1" tests:SUCCESS "Flows image:FAILURE:9011"
 fbx 772 "$HC2" tests:SUCCESS "Flows image:FAILURE:9012"
-cbuilt(){ for _ in $(seq 1 100); do [ -f "$T/state-c/check-builds/$1-$2.code" ] && return 0; sleep 0.1; done; return 1; }
-: > "$T/c-built"; : > "$T/c-cwd"; : > "$T/c-tree"; out=$(node "$B/pass.mjs" 2>&1); cbuilt 771 "$HC1"
+: > "$T/c-built"; : > "$T/c-cwd"; : > "$T/c-tree"; out=$(node "$B/pass.mjs" 2>&1); built 771 "$HC1"
 CTREE="$T/state-c/check-trees/771"
 check "DS-489 AC1 the script that runs is the one on origin's main, and the head's version does not run" \
   '[ ! -e "$T/branch-built" ] && [ "$(cut -d" " -f1 "$T/c-built")" = main ] && [ "$(wc -l < "$T/c-built" | tr -d " ")" = 1 ]'

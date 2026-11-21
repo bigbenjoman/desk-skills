@@ -1,13 +1,13 @@
 // suite: lever log (every lever action as one line in the repo's levers.jsonl)
-import { appendFileSync, existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const HOME = mkdtempSync(join(tmpdir(), 'lever-log-'));
+const HOME = scratch('lever-log-');
 process.env.HOME = HOME;
 const { append, read, logFile, LeverLogError } = await import('../desk/bin/lever-log.mjs');
 const { REASON_CODES, reasonWording } = await import('../desk/bin/lever-registry.mjs');

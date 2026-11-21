@@ -1,10 +1,10 @@
 // suite: promotion window (one question a day at the last check-in, staging-check page, go, production-broken)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkin, promote, DEFAULT_TIMES } from '../desk/bin/digest.mjs';
 import { promotionRef, promotionFor, rangeCommits, personSteps, urgentPromotion, promotionSlot, recordOffered } from '../desk/bin/promotion.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
@@ -60,7 +60,7 @@ t('AC5 an unset row asks nothing and says why', promotionFor({ ...inputs({ ref: 
 t('AC4 nothing merged since the ref is empty', promotionFor({ ...inputs(), exec: fakeExec({ log: '' }) }).empty, true);
 
 // The digest: two repos, one with a range, one with no Promotion ref, one with nothing merged.
-const root = mkdtempSync(join(tmpdir(), 'desk-promotion-'));
+const root = scratch('desk-promotion-');
 const repo = (slug) => {
   const state = join(root, 'state', slug);
   mkdirSync(state, { recursive: true });

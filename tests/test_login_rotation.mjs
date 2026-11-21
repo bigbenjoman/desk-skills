@@ -2,16 +2,16 @@
 // The real pass.mjs against a fake claude whose sign-in answers
 // per config folder, a stub spawn-worker.sh that records the login each call was given, and each login's
 // reading in its own probe log. A throwaway HOME: nothing reads this computer's logins.
-import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-login-rotation-'));
+const T = scratch('desk-login-rotation-');
 const H = join(T, 'home');
 const dirOf = (name) => join(H, '.claude-logins', name);
 for (const k of ['CLAUDE_CONFIG_DIR', 'DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH', 'DESK_SUBSCRIPTION',
@@ -313,7 +313,8 @@ const benchRow = (name, at = RESET) => ({ login: name, config_dir: name === 'def
 const holdRow = (at = RESET, name = 'b') => ({ since: '2026-11-07T00:00:00.000Z', type: 'five_hour', resets_at: at, preflight: 'Y-1', paused: [], login_dir: dirOf(name) });
 const SEEN = join(T, 'decider-login');
 const DECIDER_CLAUDE = join(W, 'stub', 'decider-claude');
-writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}"\n`, { mode: 0o755 });
+// Written aside and renamed into place, so the caller polling for the file never reads it empty.
+writeFileSync(DECIDER_CLAUDE, `#!/bin/sh\nprintf '%s' "\${CLAUDE_CONFIG_DIR-unset}" > "${SEEN}.tmp.$$" && mv "${SEEN}.tmp.$$" "${SEEN}"\n`, { mode: 0o755 });
 // In a child with the world's environment, from the repo: the decider's spawn environment (or `none`
 // when it started nothing), epic planning's headless environment, and call-login.mjs's answer for triage.
 const calling = (env) => {

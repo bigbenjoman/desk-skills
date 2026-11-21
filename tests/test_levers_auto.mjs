@@ -2,17 +2,17 @@
 // covers: desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/lever-registry.mjs desk/bin/lever-pin.mjs desk/bin/queue.mjs desk/bin/seeded-random.mjs
 // assignPin draws against a repo's lever log in a scratch HOME with a seeded random source; queue.mjs
 // admit and add and `levers-auto.mjs assign` run as subprocesses on a scratch queue and repo.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'levers-auto-'));
+const T = scratch('levers-auto-');
 for (const d of ['home', 'repo', 'deskhome', 'state']) mkdirSync(join(T, d), { recursive: true });
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 

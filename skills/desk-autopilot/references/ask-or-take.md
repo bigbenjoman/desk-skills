@@ -76,9 +76,11 @@ user. One whose inputs changed is asked, with a line saying what changed since i
   what cleared it (a run's conclusion included). Each outcome, a run still in progress, and any
   check that could not run (the park left as it is), is one line under `clears-when:` in the report.
   An idle supervised batch with anything parked or failed still runs a pass every 30 minutes
-  (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen. A park with a recorded
-  condition is settled by those checks, so neither the decider nor the digest takes it up, unless
-  only the person makes it hold (a file they are asked to save, or issue links).
+  (`DESK_IDLE_RECHECK_MS`), so a condition cleared outside the queue is seen, and every 2 minutes
+  (`DESK_RUN_RECHECK_MS`) while a park waits on an Actions run or a PR's checks. A park with a recorded
+  condition is settled by those checks, so neither the decider, the digest nor the pass's NOTIFY line takes it up, unless
+  only the person makes it hold (a file they are asked to save, or issue links). A park on a PR
+  merging whose PR conflicts with its base or was closed unmerged stays in NOTIFY, with that note.
 - **A park on a push GitHub refused with a 5xx clears by being pushed**: `git push origin <branch>
   succeeds` (`git push --force-with-lease=<branch>:<sha> origin <branch> succeeds` for a lease push,
   naming the SHA it may overwrite) is one more condition, and its check is the push itself, from the
@@ -186,3 +188,34 @@ node ~/.claude/desk/bin/decisions.mjs log <TICKET> '{"question": "…", "options
 A category is one of `product`, `design`, `wording`, `review`, `engineering`, `scope` or `tracker`;
 the CLI refuses an ask category with exit 11, because that call is asked, never taken. A Jira write
 that §3 grants is a `tracker` entry.
+
+## Questions with no recommendation
+
+Two have no recommendation to give: a value only the user holds (a design URL, an asset, a
+credential), once a check you could make has not settled it (*Try before asking*): offer the routes
+to it rather than inventing one; and a call that belongs to someone
+else: name whose it is from config §4 People (product decisions: the product owner; design: the
+designer, or the product owner where Designer is `none`; engineering and review: the code reviewer;
+infra and security: that owner). Where a role is `you`, it is the user's own call and gets a
+recommendation like any other.
+
+## In the pass loop
+
+Once the pass loop runs (Stage 4 on), a question you would ask (a mid-run park, a §3 `ask` the pass
+reports, such as a conflict under `pr-conflict-reviewed`, or one of your own about the batch) never
+goes to an `AskUserQuestion` carousel or any other prompt that waits: the session would block on it,
+and the loop with it, so nothing is harvested, spawned or merged until the user is back. Keep
+running passes for every other ticket, and put the question where an answer comes back:
+
+- **A ticket's question**, or a batch-wide one a ticket waits on: park that ticket on it
+  (`queue.mjs park <TICKET> "<question, with each option and your recommendation>"`). desk-needs-you
+  lists it, and the next check-in digest carries it; a park is never pushed on its own (*Notify*).
+  The answer (`answer.mjs`, or desk-needs-you, which messages you in a session-run batch) is only
+  recorded: requeue the ticket yourself once it is in (Stage 5).
+- **A batch-wide call no ticket waits on**: put it in your report and the status table, with each
+  option and your recommendation, and run the loop without it. It is the user's to answer when they
+  are back in the conversation. Never `needs-you.mjs ask`: that records a step for the person to
+  take, with no answer for the loop to read.
+
+A carousel stays right where nothing waits on it: Stage 3's round, before the loop, and a question
+the user asks you, or answers, while they are in the conversation with you.

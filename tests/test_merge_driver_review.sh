@@ -116,7 +116,7 @@ git -C "$T/repo" checkout -q main; git -C "$T/repo" push -q origin main "$RB:ref
 vp 211 "$RA" "$CLEAN"; vp 212 "$RA" "$CLEAN"
 rv_prs carry "211|fix/T-211|$RB|fix: T-211 base merged|" "212|fix/T-212|$RC|fix: T-212 own commit|"
 rvloop; rvloop
-check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main came since"'
+check "DS-433: a clean verdict carried across a clean merge of the base merges, with no new review" '[ "$(merged)" = 211 ] && grep -qx "211 main $RB" "$T/merges.log" && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main and empty commits came since"'
 rvloop
 check "DS-433: one its own commits moved past is held for a review" '! grep -q "^212 " "$T/merges.log" && echo "$out" | grep -q "#212 green at ${RC:0:9}, HELD with no clean review at its head: its review verdict is for ${RA:0:9}"'
 
@@ -138,7 +138,7 @@ check "DS-448 AC8: lever on, a clean merge over a recorded file is held for a re
 vp 211 "$RA" "$CLEAN" '<!-- desk-review:rests-on v=1 files=["moved.txt","own.txt"] -->'
 rv_prs reuse4 "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
 RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
-check "DS-639 the merge driver reads a ticket pinned without the lever as off, whatever the row" '[ "$(merged)" = 211 ] && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main came since"'
+check "DS-639 the merge driver reads a ticket pinned without the lever as off, whatever the row" '[ "$(merged)" = 211 ] && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main and empty commits came since"'
 vp 211 "$RA" "$CLEAN"
 rv_prs reuse3 "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 "$PIN_RV"
 RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
@@ -179,5 +179,33 @@ RV_CONFIG="$T/config-rv-hold.md"; rvloop; rvloop
 check "DS-508 AC3: a §4 Merge hold the epic PR touches holds it, noted on the queue's promotion" '[ -z "$(merged)" ] && jq -r .promotion.merge_blocked "$DESK_QUEUE" | grep -q "^merge hold: deploys the stack — infra/\*\*, 1 file(s)"'
 out=$(DESK_CONFIG="$T/config-rv-hold.md" AUTOPILOT_MIN_AVAIL_GB=0 AUTOPILOT_HEALTH_CHECKS=off node "$B/pass.mjs" --json 2>/dev/null); rc=$?; RV_CONFIG=""
 check "DS-508 AC3: and the pass puts it to the person, naming the hold, exit 11" '[ $rc -eq 11 ] && js ".waiting[]" | grep -q "^EPIC PR: #301 is out of draft, but the merge driver holds it: merge hold: deploys the stack"'
+
+# An outside reviewer's gate (§4 State checks kind external) that passed at the head is the head's review:
+# the driver wants no desk verdict there as well. Red, or another check, it still does.
+cp "$T/config-rv.md" "$T/config-rv-ext.md"
+echo '| State checks | `🔐 Review gate: external agent-pullbot` |' >> "$T/config-rv-ext.md"
+SHA211=d211111111111111111111111111111111111111
+vp 211 "$SHA211" -
+rv_prs ext "211|fix/T-211|$SHA211|fix: T-211 reviewed outside|"
+jq '.["211"].checks = [["test", "SUCCESS"], ["🔐 Review gate", "SUCCESS"]]' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+RV_CONFIG="$T/config-rv-ext.md"; rvloop; rvloop; RV_CONFIG=""
+check "#991 an external gate that passed at the head merges it with no desk verdict there" '[ "$(merged)" = 211 ] && grep -qx "211 main $SHA211" "$T/merges.log" && echo "$out" | grep -qF "#211 its review at d21111111 is the outside reviewer'"'"'s: 🔐 Review gate (agent-pullbot) passed there, so no desk verdict is needed at that head"'
+rv_prs ext2 "211|fix/T-211|$SHA211|fix: T-211 reviewed outside|"
+RV_CONFIG="$T/config-rv-ext.md"; rvloop; rvloop; RV_CONFIG=""
+check "#991 with that check not at the head, the desk verdict is still wanted" '[ -z "$(merged)" ] && echo "$out" | grep -q "#211 green at d21111111, HELD with no clean review at its head"'
+
+# #752: a ready PR GitHub has no mergeability answer for is aged per head; past the limit the queue asks
+# the person for a new commit, and any answer clears that.
+SHA221=d221111111111111111111111111111111111111
+vp 221 "$SHA221" -
+rv_prs unk "221|fix/T-221|$SHA221|fix: T-221 wedged|"
+jq '.["221"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+rvloop
+check "#752 the first loop with no answer records when it was first seen, and asks nobody yet" '[ "$(cut -d" " -f1 "$SD/unknown-221")" = "$SHA221" ] && [ "$(qf T-221 .merge_blocked)" = null ]'
+out=$(DESK_CONFIG="$T/config-rv.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 MERGE_DRIVER_UNKNOWN_SECS=0 bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1)
+check "#752 past the limit the queue asks the person for a new commit, naming the wedged merge ref" '[ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 0 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 0 minutes"'
+jq '.["221"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+rvloop
+check "#752 once GitHub answers, the note and the record are cleared" '[ "$(qf T-221 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-221" ]'
 
 finish review

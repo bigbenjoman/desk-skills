@@ -2,15 +2,15 @@
 // covers: desk/bin/levers-trips.mjs desk/bin/log-tool-calls.mjs desk/bin/levers-auto.mjs desk/bin/lever-log.mjs desk/bin/levers-evaluate.mjs desk/bin/lever-registry.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runTrips() runs on synthetic queues, run records, worker logs and post-merge files in a scratch HOME,
 // one repo per trip so each starts from an empty lever log.
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, utimesSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
-const T = mkdtempSync(join(tmpdir(), 'levers-trips-'));
+const T = scratch('levers-trips-');
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });

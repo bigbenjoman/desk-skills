@@ -5,17 +5,17 @@
 // malformed row or a missing directory is refused with exit 1 and never reaches gh. A fake gh on PATH
 // records its arguments and the GH_CONFIG_DIR and GH_TOKEN it ran under. Scratch directory only.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'review-post.mjs');
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
-const T = mkdtempSync(join(tmpdir(), 'desk-review-post-'));
+const T = scratch('desk-review-post-');
 const log = join(T, 'gh.log');
 const ghDir = join(T, 'gh-agent-pullbot');
 mkdirSync(ghDir);

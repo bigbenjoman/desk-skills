@@ -3,11 +3,15 @@
 // has no result event is unknown, never zero: a killed or still-running worker spent something
 // nobody recorded. The figures are what `claude -p` reports (total_cost_usd is notional on a
 // subscription), and input counts cache reads and writes as well as fresh input.
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { markersIn, saidIn, readLogFile } from './harvest.mjs';
 import { cloudWall } from './cloud-worker.mjs';
+import { fileURLToPath } from 'node:url';
+import * as E from './desk-env.mjs';
 import { NO_EFFORT } from './desk-env.mjs';
+import { archivedOf } from './queue-store.mjs';
+import { readQueue } from './batch-state.mjs';
 
 export const START_UP = 'start-up';
 
@@ -198,12 +202,21 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // A log's place in a ticket's round order: `.round<n>` by n, the current log last.
 export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
 
+// A review try on its PR runs here and logs here: those runs are added to the same row, their
+// usage the row's usage, with the cloud session kept first (`cloud: true`, no cost).
 export function ticketCost(stateDir, ticket) {
-  if (ticket.location === 'cloud' && ticket.cloud) {
+  const local = localCost(stateDir, ticket);
+  if (!(ticket.location === 'cloud' && ticket.cloud)) return local;
+  const session = { starts: [startFields({})], cost: null, cloud: true };
+  const cloud = { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) };
+  if (!local) {
     return { key: ticket.key, runs: 1, unknown: 0, usage: null, preflight: { n: 0, cost: 0, unknown: 0 }, first: null, stages: null,
-      sessions: [{ starts: [startFields({})], cost: null }],
-      cloud: { url: ticket.cloud.url ?? null, ms: cloudWall(ticket.cloud) } };
+      sessions: [session], cloud };
   }
+  return { ...local, runs: local.runs + 1, sessions: [session, ...local.sessions], cloud };
+}
+
+function localCost(stateDir, ticket) {
   const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => logRound(a) - logRound(b));
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
@@ -262,7 +275,10 @@ export function costTable(rows) {
     : `${usd(p.cost)}${p.unknown ? ` + ${p.unknown} unknown` : ''}`);
   const cells = (r, u, p = r.preflight ?? noPre) => [r.key, String(r.runs), tokens(u.input), tokens(u.output), usd(u.cost + p.cost), preOf(p), wallTime(u.ms), firstOf(r)];
   const NR = 'not reported for cloud';
-  const table = rows.map((r) => (r.cloud ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
+  // A cloud row with nothing local: nothing in it was reported. One with a local run, or a local
+  // preflight alone, shows what was.
+  const cloudOnly = (r) => Boolean(r.cloud) && !r.usage && !(r.sessions ?? []).some((x) => !x.cloud);
+  const table = rows.map((r) => (cloudOnly(r) ? [r.key, String(r.runs), NR, NR, NR, 'none', r.cloud.ms == null ? 'no PR yet' : wallTime(r.cloud.ms), NR]
     : r.usage ? cells(r, r.usage)
       : [r.key, String(r.runs), 'unknown', 'unknown', 'unknown', preOf(r.preflight), 'unknown', firstOf(r)]));
   const firstKnown = rows.filter((r) => r.first != null);
@@ -273,25 +289,28 @@ export function costTable(rows) {
   // Each worker's sessions sit under its row, then its stages in the order its runs reached them.
   const startOf = (s) => `start ${s.stage}, model ${s.model}, effort ${s.effort}`;
   const sessionLines = (r) => (r.sessions ?? []).map((s) =>
-    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${r.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
+    `      session: ${s.starts.length ? s.starts.map(startOf).join('; ') : 'start, model and effort not recorded'}: ${s.cloud ? 'cost not reported for cloud' : s.cost == null ? 'cost unknown' : usd(s.cost)}`);
   const stageLines = (r) => {
-    if (r.cloud) return [`      cloud session: ${r.cloud.url ?? 'unknown'}`];
-    if (!r.stages) return ['      stages: unknown (no usage in the log)'];
+    const url = r.cloud ? [`      cloud session: ${r.cloud.url ?? 'unknown'}`] : [];
+    if (cloudOnly(r)) return url;
+    if (!r.stages) return [...url, '      stages: unknown (no usage in the log)'];
     const w = Math.max(...r.stages.map((s) => s.name.length));
     const wi = Math.max(...r.stages.map((s) => tokens(s.input).length));
-    return r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`);
+    return [...url, ...r.stages.map((s) => `      ${s.name.padEnd(w)}  ${tokens(s.input).padStart(wi)} in  ${tokens(s.output)} out`)];
   };
   const out = [`WORKER COST — ${rows.length} worker(s); input counts cache reads and writes, cost is as claude -p reports it and includes the permissions preflights before each spawn, which the preflight column shows apart, wall time is the time inside the worker's turns (a cloud worker's runs from session start to its PR), first-turn input is the prompt each run started on, each session line gives a run's start stage, model, effort (default where none was passed) and cost before its preflight, and each worker's stages list the tokens from one stage marker to the next (${START_UP} is before the first)`, line(head)];
   for (const [i, row] of table.entries()) {
     const r = rows[i];
-    out.push(`${line(row)}${r && !r.usage && !r.cloud ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
+    out.push(`${line(row)}${r && !r.usage && !cloudOnly(r) ? `   (${r.unknown} of ${r.runs} run(s) with no result event in the log)` : ''}`);
     if (r) out.push(...sessionLines(r), ...stageLines(r));
   }
   const notes = [];
-  const cloud = rows.filter((r) => r.cloud).length;
+  const cloud = rows.filter(cloudOnly).length;
+  const partly = rows.filter((r) => r.cloud && r.usage).length;
   const leftFirst = rows.length - cloud - firstKnown.length;
   if (leftFirst) notes.push(`first-turn input leaves out ${leftFirst} worker(s) with no usage`);
   if (cloud) notes.push(`${cloud} cloud worker(s) not counted: Claude Code does not report a cloud session's tokens or cost`);
+  if (partly) notes.push(`${partly} cloud worker(s) counted for their local review runs only, not their cloud session`);
   const left = rows.length - cloud - known.length;
   if (left) notes.push(`${left} unknown worker(s) not counted`);
   if (notes.length) out[out.length - 1] += `   (${notes.join('; ')})`;
@@ -300,3 +319,27 @@ export function costTable(rows) {
 
 // Every queue ticket a worker ran in this batch, local or cloud, in queue order.
 export const batchCost = (stateDir, tickets) => tickets.map((t) => ticketCost(stateDir, t)).filter(Boolean);
+
+// This batch's tickets, from queue `q`: its live ones, then those already archived (queue-store.mjs
+// archiveDone), whose logs stay in the state directory. A new batch sets the old archive aside, so the
+// archive holds only this batch's. A ticket admitted again after it was archived counts from its first
+// admission in this batch (`first_added_at`, which archiveDone keeps), so no round of it is lost.
+export const batchTickets = (q) => {
+  const live = q?.tickets ?? {}, archived = archivedOf(q);
+  const first = (t) => [t?.first_added_at, t?.added_at].filter(Boolean).sort()[0];
+  const since = (t, a) => { const at = [first(t), first(a)].filter(Boolean).sort()[0]; return at ? { ...t, added_at: at } : t; };
+  return [...Object.values(live).map((t) => since(t, Object.hasOwn(archived, t.key) ? archived[t.key] : null)),
+    ...Object.entries(archived).filter(([k]) => !Object.hasOwn(live, k)).map(([, t]) => since(t, null))];
+};
+
+// `node worker-cost.mjs`: this batch's WORKER COST table, at any time, idle or not.
+const isMain = () => { try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; } };
+if (isMain()) {
+  try {
+    const rows = batchCost(E.stateDir(), batchTickets(readQueue(E.queueFile())));
+    console.log(rows.length ? costTable(rows) : 'WORKER COST: no worker has run in this batch');
+  } catch (e) {
+    console.error(`worker-cost: ${e.message}`);
+    process.exit(1);
+  }
+}

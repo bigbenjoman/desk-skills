@@ -1,11 +1,11 @@
 // suite: levers view (one view model of every repo's levers, with input ages and the honesty rules)
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const j = (v) => JSON.stringify(v);
-process.env.HOME = mkdtempSync(join(tmpdir(), 'levers-view-home-'));
+process.env.HOME = scratch('levers-view-home-');
 const V = await import('../desk/bin/levers-view.mjs');
 
 const NOW = Date.parse('2026-11-15T09:00:00.000Z');
@@ -56,7 +56,7 @@ Usage readings name no login.
 // A fixture machine: four configured repos, each supervisor ticked a minute ago, and `files` written
 // under the autopilot root (paths relative to it).
 function machine({ repos = REPOS, files = {}, supervisorAge = {} } = {}) {
-  const base = mkdtempSync(join(tmpdir(), 'levers-view-'));
+  const base = scratch('levers-view-');
   const configRoot = join(base, 'config');
   const root = join(base, 'autopilot');
   for (const r of repos) {

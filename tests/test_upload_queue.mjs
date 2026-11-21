@@ -1,20 +1,20 @@
 // suite: upload queue (one machine-wide queue: order, the minute and hour pace, repo rotation, shared back-off)
 // upload-queue.mjs with a fake uploader and a fake clock: nothing here opens a browser or calls GitHub.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { enqueue, pump, takeResults, readUploadQueue, isQueued, pace, backoffAfter, claimForSpawn, inFlight, signedIn } from '../desk/bin/upload-queue.mjs';
 import { tryLock, unlock } from '../desk/bin/dir-lock.mjs';
 import { uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { UPLOAD_PACE } from '../desk/bin/desk-design.mjs';
 import { EXIT_PACED, EXIT_THROTTLED, THROTTLE_MS } from '../desk/bin/upload-batches.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
   const g = typeof got === 'string' ? got : JSON.stringify(got); const w = typeof want === 'string' ? want : JSON.stringify(want);
   const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`);
 };
-const ROOT = mkdtempSync(join(tmpdir(), 'upload-queue-'));
+const ROOT = scratch('upload-queue-');
 let n = 0;
 const START = Date.parse('2026-11-15T10:00:00Z');
 

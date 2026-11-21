@@ -15,7 +15,8 @@
 //                                          back as the inputs now: decidePutOffRefresh)
 //   { type: 'park-inputs', key, question, inputs }  a put-off park's refreshed inputs, written only
 //                                          while the ticket is still parked on `question`
-import { isHeld, batchIdle, waitingOnRead } from '../batch-state.mjs';
+import { isHeld, batchIdle, waitingOnRead, settlesByScript } from '../batch-state.mjs';
+import { restating } from '../clears-when.mjs';
 import { promotionHolds } from '../gate.mjs';
 import { lookup, inputsHash } from '../not-now.mjs';
 import { urgentParks } from '../digest.mjs';
@@ -48,6 +49,7 @@ export function decideDrift(s) {
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
+//   portLeaseLines         what the port leases did this pass: unreadable, a stale holder dropped
 //   concurrency, eligible  the batch's worker count, and how many triaged tickets could spawn
 //   queueBin               queue.mjs, as the person runs it
 export function decideReportOpening(s) {
@@ -67,6 +69,7 @@ export function decideReportOpening(s) {
     if (c.now < c.configured) acts.push(out(`collisions: ${c.file} runs ${c.now} of its configured ${c.configured}, after ${c.recent} merge-time conflict(s) in the last 7 days`));
   }
   for (const why of s.unreadableQueues) acts.push(out(`ports: ${why} — its running workers' ports were not skipped`));
+  for (const l of s.portLeaseLines ?? []) acts.push(out(l));
   for (const l of s.epicLines) acts.push(out(l));
   if (r.paused.length) acts.push(out(`paused on the usage limit: ${r.paused.join(' | ')}`));
   for (const u of r.unrecognised) acts.push(out(`unrecognised usage-limit event: ${u} — not read as a pause, so the stall check applies as before`));
@@ -196,7 +199,8 @@ export function decideGroups(s) {
 // ---- verdict -----------------------------------------------------------------
 // Everything that waits on the person: this pass's failures, WAITING ON YOU, the stalls only they can
 // clear, unanswered questions, and every ticket parked for its own reason (a hold is not one: it
-// releases by itself, nor is a park whose live reads the pass is running).
+// releases by itself, nor is a park a pass settles: its live reads, or a clears-when a script reads,
+// unless the park carries a note saying the PR it waits on conflicts with its base or was closed).
 // The snapshot adds:
 //   queue                    the queue as the pass ends
 //   report, blocked          the report lists, and blockedOf the pass's rows
@@ -204,8 +208,15 @@ export function decideGroups(s) {
 //   parkNotes                a Map of a parked ticket's note, by key
 //   prStates                 { [pr]: state } for each PR the pass read
 //   gatePending, epicPending, promotionPending   a base gate, epic PR or promotion still to come
+//   followPending            a follow-step checker running or still to start (pass/follow-steps.mjs)
 //   spawned                  how many tickets this pass spawned
 // -> { waiting, parked, idle, status, needsYou }
+// A park a pass settles by checking its recorded clears-when. One still to be restated is not: it stays
+// in `parked`, the only way the decider (decider.mjs deciderItems) is asked to restate it.
+const passChecks = (t) => settlesByScript(t) && !restating(t.park.clears_when);
+// Each park the person could be shown: its own reason, not put off, and no live read the pass is running.
+const ownParks = (s) => Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t))
+  .map((t) => ({ t, p: { key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) } }));
 export function verdictOf(s) {
   const r = s.report;
   const waiting = [
@@ -214,22 +225,39 @@ export function verdictOf(s) {
     ...r.personStalls,
     ...s.blocked.map((b) => `${b.key}: ${b.open_questions} question(s) open — answer with answer.mjs ${b.key} "<answer>"`),
   ];
-  const parked = Object.values(s.queue.tickets).filter((t) => t.state === 'parked' && !isHeld(t) && !s.putOff.has(t.key) && !waitingOnRead(t))
-    .map((t) => ({ key: t.key, question: t.park?.question ?? '', ...(s.parkNotes.has(t.key) ? { note: s.parkNotes.get(t.key) } : {}) }));
-  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending;
+  // A park with a note is still the person's: the PR it waits on conflicts with its base or was closed
+  // unmerged, so it cannot merge on its own and the condition a pass checks would never hold.
+  const parked = ownParks(s).filter(({ t, p }) => p.note || !passChecks(t)).map(({ p }) => p);
+  const idle = batchIdle(s.queue, (n) => s.prStates[n] ?? null) && !s.gatePending && !s.epicPending && !s.promotionPending && !s.followPending;
   const status = idle ? 'idle' : (waiting.length || parked.length) ? 'show_person' : s.spawned ? 'go_on' : 'nothing_yet';
   const needsYou = [...parked.map((p) => p.key), ...waiting.map((x) => x.split(':')[0])];
   return { waiting, parked, idle, status, needsYou };
 }
 
+// A crash's error verdict, given its message and the pass's report so far: what the pass had already
+// done (started a worker, moved, parked or failed a ticket) is listed under the message and set in the
+// JSON, so nobody reads the error as "nothing happened" and starts a ticket that already has a session.
+// Its parks go in `parked_this_pass`: the verdict's `parked` is the decider's {key, question} list.
+// -> { message, fields }: fields holds only the lists with entries, and is {} when nothing was done.
+const CRASH_FIELDS = [['spawned', 'spawned'], ['advanced', 'advanced'], ['parked', 'parked_this_pass'], ['failed', 'failed']];
+export function crashVerdict(message, report) {
+  const did = CRASH_FIELDS.map(([k, field]) => [k, field, [...(report?.[k] ?? [])]]).filter(([, , v]) => v.length);
+  if (!did.length) return { message, fields: {} };
+  const lines = did.flatMap(([k, , v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
+  return { message: `${message}\n${lines.join('\n')}`, fields: Object.fromEntries(did.map(([, field, v]) => [field, v])) };
+}
+
 // The verdict's opening line, and the parks that are pushed now rather than shown in the session (a
-// park reading production broken), given the snapshot verdictOf takes plus `slug`.
+// park reading production broken, whatever it waits on), given the snapshot verdictOf takes plus `slug`.
+// An idle batch still holding a park a pass settles is not finished: the line says how many wait.
 export function decideVerdict(s) {
   const v = verdictOf(s);
   const acts = [];
+  const waits = Object.values(s.queue.tickets).filter((t) => passChecks(t) || waitingOnRead(t)).length;
   if (v.needsYou.length) acts.push(line(`NOTIFY: ${v.needsYou.length} item(s) need you — ${[...new Set(v.needsYou)].join(', ')}`));
+  else if (v.idle && waits) acts.push(line(`NOTIFY: nothing needs you — ${waits} park(s) wait on a condition a pass checks, and are requeued once it holds`));
   else if (v.idle) acts.push(line('NOTIFY: the batch is finished — nothing left to run'));
-  for (const p of urgentParks(v.parked, s.slug)) acts.push({ type: 'push', push: p });
+  for (const p of urgentParks(ownParks(s).map(({ p }) => p), s.slug)) acts.push({ type: 'push', push: p });
   return acts;
 }
 

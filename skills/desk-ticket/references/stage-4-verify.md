@@ -47,6 +47,19 @@ that wait is the feature. **Do not add a timeout, and do not run two at a percen
 It uses `flock` where it exists (macOS: `brew install flock`) and otherwise a `mkdir` lock that
 takes over from a dead holder. Do not hand-roll a lock of your own.
 
+**An interactive session runs targeted tests, and lets CI be the full run.** The test lock is one for
+the whole machine, so a long full suite here stalls every other repo's batch behind it. While
+iterating, run only the test files the change touches, each under the lock as above. Where the
+repo's CI runs the full suite on every PR (a §4 Required checks entry, `desk-env list required-checks`,
+runs it), push and let CI be the full run; do not run it locally as well. Take the lock for a local
+full run only where CI does not run the full suite, or to reproduce a CI failure a targeted run cannot.
+An autopilot worker still runs its suites as above.
+
+Where §4 Suite weight (`desk-env get suite-weight`) is `light`, `with-lock.sh test` runs the suite
+under a light lock of its own instead, one run at a time across the machine, so it neither holds nor
+waits behind the heavy suites and typechecks on the test lock. Run it the same way; typechecks still
+take the test lock.
+
 A typecheck is often a single multi-GB process; take the same lock for it
 (`with-lock.sh tsc --cwd <DIR> -- <CMD>` for each item of `desk-env cmds typecheck-cmd`) rather than running typecheck and a suite together. Screenshot
 and Playwright capture uses a separate lock, `with-lock.sh browser …`, so it does not queue behind a

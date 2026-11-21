@@ -4,7 +4,8 @@
 #   RERUN_PERM=<§3 ci-rerun> rerun.sh <driver state dir> <owner/repo> <n> <sha>   with the gate JSON on stdin,
 #   { "gate": { "pending": [...], "failedRuns": [...], "full": <rerun every job of failedRuns, not only failed ones>, "failedJobs": [{ runId, jobId, name, why? }],
 #               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
-# RERUN_PERM unset reruns nothing, as `no` does. A check in stateFailing (§4 State checks) is logged and
+# RERUN_PERM unset reruns nothing, as `no` does. A preview check's rerun first takes §4 Vercel's
+# preview-build lease (preview_lease). A check in stateFailing (§4 State checks) is logged and
 # never rerun here: only the rest of `failing` counts. (merge-driver.sh stale_approval reruns an approval
 # or verdict one whose run predates the head's approval or clean verdict, once per head, before this is called.)
 #
@@ -13,6 +14,30 @@
 # fix-tries.mjs holds the same two numbers for the pass.
 RERUNS_MAX=2; RERUN_COOLDOWN=720
 reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
+RERUN_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# A rerun of a preview check starts a preview build (`names`: the checks with a run, which a rerun
+# reruns; a deploy service's own status has none), and so may a `full` rerun, which restarts every job
+# of its runs, passed ones included. Either first takes a unit of §4 Vercel's preview-build lease,
+# labelled with the PR, or waits for a later loop while every unit is held. -> 0 to rerun, 1 to wait.
+PREVIEW_CHECK='(^|[^[:alnum:]])(vercel|netlify|preview)([^[:alnum:]]|$)'
+preview_lease(){ # preview_lease <n> <names> <full>
+  [ "$3" = true ] || printf '%s\n' "$2" | grep -qiE "$PREVIEW_CHECK" || return 0
+  preview_unit "$1" "red + completed" "rerunning"
+}
+# The lease step itself, for anything the driver does to PR <n> that starts a preview build (a preview
+# check's rerun, merge-driver.sh behind's update-branch), through desk-env preview-slot: no §4 Vercel
+# team, or the kind off, takes nothing. A lease the broker cannot give (an unreadable store) is logged
+# and the step goes ahead without one. -> 0 to go ahead, 1 to wait for a later loop.
+preview_unit(){ # preview_unit <n> <state> <what it does>
+  local said rc
+  said=$(node "$RERUN_BIN/desk-env.mjs" preview-slot --wait 0 "$REPO#$1" 2>&1 >/dev/null); rc=$?
+  case "$rc" in
+    0) case "$said" in shadow:*) log "#$1 preview build: $said";; esac; return 0 ;;
+    3) log "#$1 $2, but waits on the preview build before $3: ${said#refused: }"; return 1 ;;
+    *) log "#$1 could not take a preview-build lease (exit $rc: $(printf '%s' "$said" | head -1)) — $3 without it"; return 0 ;;
+  esac
+}
 
 rerun(){ # rerun <n> <sha> <gate json>
   local g="$3" full pend ids jobs jid names rid name cnt cd_file now last all_ok=1 ok="" st states
@@ -45,6 +70,7 @@ EOF_NAMES
   if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
   # gate.full reruns every job of each run, so a job that reads other jobs' results reads the new ones.
   full=$(printf '%s' "$g" | jq -r '.gate.full // false')
+  preview_lease "$1" "$(printf '%s' "$g" | jq -r '.gate.failing[] | select(.runId != null) | .name')" "$full" || return
   for rid in $ids; do
     # An accepted rerun credits only the checks of that run; one with no run id, only if every rerun was accepted.
     if [ "$full" = true ]; then

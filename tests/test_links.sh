@@ -4,6 +4,7 @@
 # desk-skills tree and a throwaway HOME. Nothing touches your real ~/.claude or ~/.agents.
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
 : > "$GIT_CONFIG_GLOBAL"; git config --global user.email t@example.com; git config --global user.name t
 PASS=0; FAIL=0

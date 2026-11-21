@@ -2,14 +2,14 @@
 // covers: desk/bin/levers-evaluate.mjs desk/bin/lever-changes.mjs desk/bin/digest.mjs desk/bin/levers-trips.mjs desk/bin/decisions.mjs desk/bin/lever-stats.mjs desk/bin/levers-auto.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/phase0-report.mjs
 // evaluate() runs on synthetic per-ticket rows, findings files and post-merge files in a scratch HOME,
 // with a fixed clock, so its seeded bootstrap draws the same numbers every run.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
-const T = mkdtempSync(join(tmpdir(), 'levers-evaluate-'));
+const T = scratch('levers-evaluate-');
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'none.md') });
 mkdirSync(join(T, 'home'), { recursive: true });

@@ -5,12 +5,12 @@
 // off switch set. Two tickets' workers send the same appended system prompt, drop the per-machine
 // sections, and carry their own briefing in the first message, at a later stage too, and never again
 // on a resume. A stub claude on PATH records each call's argv. Scratch HOME and repo only.
-import { readFileSync, readdirSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, statSync, chmodSync, cpSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, existsSync, statSync, chmodSync, cpSync, rmSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WORKER_TOOLS, TRIAGE_TOOLS } from '../desk/bin/worker-tools.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -82,7 +82,7 @@ t('worker-tools.mjs none is empty', cli('none').stdout, '\n');
 t('worker-tools.mjs <unknown> exits 2', cli('bogus').status, 2);
 
 // Dry-run spawns through a stub claude.
-const T = mkdtempSync(join(tmpdir(), 'desk-tools-'));
+const T = scratch('desk-tools-');
 for (const d of ['home', 'state', 'stub', 'repo']) mkdirSync(join(T, d), { recursive: true });
 // spawn-worker.sh builds the --agents file from the user-level agents and refuses a spawn without them.
 cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });

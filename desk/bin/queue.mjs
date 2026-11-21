@@ -9,7 +9,7 @@
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, copyFileSync, readdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr } from './batch-state.mjs';
+import { isHeld, STOPPED_PREFIX, stoppedHold, heldBehindOf, holdsAmong, dateHeld, badLabelText, spinePark, planPark, childDone, leftPark, LEFT_PREFIX, waitingOnMerge, waitingOnPark, lanePark, designPark, sizePark, triagePark, labelPark, personStepPark, personInputPark, blockerHold, triageGate, needsSession, neverStep, EXIT, crashShowsPerson, readQueue, readTriage, openQuestion, prStatusOf, failedWhy, ownPr, doneOnPr } from './batch-state.mjs';
 import { saveAnswer, collectAnswers } from './briefing.mjs';
 import { handoffTarget, openPrOf, fetchPrHead, repointToPr, writeHandback } from './handoff.mjs';
 import { prNames } from './recoveries.mjs';
@@ -19,19 +19,20 @@ import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHist
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
-import { followOnPending, postMergeUnmade, workerMarkers, lastStage } from './harvest.mjs';
+import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
 import { assignPin } from './levers-auto.mjs';
 import { leverOnFor } from './lever-pin.mjs';
+import { QUEUE_COMMANDS, unknownQueueCommand } from './queue-commands.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
 
@@ -58,7 +59,7 @@ const hereRepo = () => { try { return ghRepo(); } catch { return null; } };
 
 // A command about one ticket already in a batch acts on the batch holding it (useTicketBatch). add and
 // admit put a ticket in this batch, so they are not looked up.
-const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop'];
+const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'merged', 'drop', 'get', 'transfer', 'stop', 'finish'];
 {
   const [, , c, ...a] = process.argv;
   const at = a.indexOf('--claimed-by');
@@ -219,6 +220,29 @@ let exitedPark = null;
 // pr, fetchError }, its own open PR (handoff.mjs openPrOf), whether its head could be fetched, and the
 // queue fields that chose it, checked again under the lock.
 let prePr = null;
+// Read before the queue lock as well, for `finish`: the PR it names, as GitHub shows it, or { error }.
+let finishPr = null;
+
+// finish <TICKET> --pr <n>: the orchestrator finished a parked ticket's last step itself (recovery's
+// "a single remaining step" row), so the ticket is recorded done on its PR as the pass records one whose
+// draft PR it opened: state done, the park cleared, result.pr and a summary, draft_pr while it is a draft.
+// Refused unless the ticket is parked and the PR is open or merged, from this repo, on the ticket's
+// branch, into the batch's base: the merge driver merges by that branch.
+function finish(q, key, n, pr) {
+  const t = ticket(q, key);
+  if (t.state !== 'parked') throw new Error(`${key} is ${t.state ?? 'in no state'}, not parked: finish records done only a parked ticket whose last step you finished`);
+  if (pr.error) throw new Error(`gh could not read PR #${n} on ${hereRepo() ?? 'this repo'} (${pr.error})`);
+  if (pr.isCrossRepository) throw new Error(`PR #${n} is from a fork, not this repo: nothing recorded`);
+  if (!['OPEN', 'MERGED'].includes(pr.state)) throw new Error(`PR #${n} is ${String(pr.state).toLowerCase()}, not open or merged: nothing recorded`);
+  if (t.branch && pr.headRefName !== t.branch) throw new Error(`PR #${n} is from ${pr.headRefName}, not ${key}'s branch ${t.branch}: nothing recorded`);
+  const base = baseOf(q);
+  if (pr.baseRefName !== base) throw new Error(`PR #${n} is into ${pr.baseRefName}, not this batch's base ${base}: nothing recorded`);
+  const was = String(t.park?.question ?? '').split('\n')[0].slice(0, 120);
+  applySet(t, [...doneOnPr(n, { draft: pr.isDraft, summary: `PR #${n}: its last step finished by the orchestrator, after the worker parked${was ? ` (${was})` : ''}` }),
+    ...(t.branch ? [] : [`branch=${pr.headRefName}`])]);
+  save(q);
+  return `${key} recorded done on PR #${n} (${pr.isDraft ? 'a draft' : pr.state.toLowerCase()}, ${pr.headRefName} into ${base}): no longer parked`;
+}
 
 function requeue(q, key, { handedBack = false } = {}) {
   const t = ticket(q, key);
@@ -252,6 +276,8 @@ function requeue(q, key, { handedBack = false } = {}) {
   // A lane D ticket handed back (handback) had its session step done by the person, so its design park
   // no longer keeps it from a worker. A lane C one is moved to lane B first.
   if (!handedBack && t.lane === 'D' && needsSession(t)) throw new Error(`${key} was parked at triage on its design (${t.park.question}): once its canvas is saved on the base, run triage.sh ${key} again and re-plan (plan-batch.mjs)`);
+  // An adopted PR (queue.mjs adopt) has no worktree or ticket for a worker: what holds it is the PR's own.
+  if (t.adopted) throw new Error(`${key} is PR #${t.result?.pr ?? '?'}, adopted with no ticket, so no worker takes it: undraft it, review it or fix its checks on the PR itself, and the merge driver merges it once it is green`);
   if (!['A', 'B', 'D', 'E'].includes(t.lane)) throw new Error(`${key} is lane ${t.lane ?? '?'}, and only lanes A, B and E, and D with its canvas saved, go to a headless worker. Only if the user rules the lane wrong: queue.mjs set ${key} lane=<A, B or E>, then requeue`);
   // A standard-model worker that failed, or was stopped as stalled, comes back one step stronger
   // (config §3b Worker models). A park with a question keeps its model, and so does a ticket whose
@@ -706,9 +732,10 @@ function transfer(q, key, to) {
 
 const [, , cmd, ...args] = process.argv;
 
-const WRITES = ['init', 'add', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'drop', 'merged', 'transfer'];
+const WRITES = ['init', 'add', 'adopt', 'admit', 'hold', 'set', 'set-batch', 'park', 'clears-when', 'requeue', 'handback', 'step-done', 'follow-ran', 'approve', 'reject', 'front', 'move', 'order', 'drop', 'merged', 'transfer', 'finish'];
 
 try {
+if (!Object.hasOwn(QUEUE_COMMANDS, cmd ?? '')) throw new Error(unknownQueueCommand(cmd));
 if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.state === 'running') exitedPark = { key: args[0], session: t.session_id ?? null, park: exitedOnPark(t) };
@@ -720,6 +747,17 @@ if (cmd === 'handback' && args[0] && existsSync(QUEUE)) {
     const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
     prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
   }
+}
+// finish's gh read, like handback's, runs before the lock.
+const finishAt = cmd === 'finish' ? args.indexOf('--pr') : -1;
+if (cmd === 'finish') {
+  const at = finishAt;
+  const n = at < 0 ? '' : String(args[at + 1] ?? '');
+  if (!args[0] || args[0].startsWith('--') || !/^[1-9][0-9]*$/.test(n)) throw new Error('usage: queue.mjs finish <TICKET> --pr <PR number>');
+  try {
+    finishPr = JSON.parse(execFileSync('gh', ['pr', 'view', n, ...(hereRepo() ? ['--repo', hereRepo()] : []), '--json', 'number,state,isDraft,headRefName,baseRefName,isCrossRepository'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (e) { finishPr = { error: String(e.stderr ?? e.message ?? e).trim().split('\n').pop() }; }
+  finishPr.n = n;
 }
 if (WRITES.includes(cmd) || (cmd === 'backfill-holds' && !args.includes('--dry-run'))) lock();
 const q = cmd === 'init' ? empty() : load(); // init must be able to repair a corrupt queue
@@ -815,6 +853,48 @@ switch (cmd) {
     };
     save(q);
     console.log(`added ${key}`);
+    break;
+  }
+
+  // A PR opened in the batch with no ticket (a fix for a flaky test it kept hitting, say) taken in as a
+  // done ticket on that PR, so the merge driver merges it with the batch's tickets (by its branch), and
+  // the pass and desk-q list it while it waits. The key is checked as a merge driver --tickets entry is.
+  case 'adopt': {
+    const filed = args.includes('--filed');
+    const [key, prArg] = args.filter((a) => a !== '--filed');
+    if (!key || !/^[1-9][0-9]*$/.test(String(prArg ?? ''))) throw new Error('usage: queue.mjs adopt <TICKET> <PR number> [--filed]');
+    const kind = ticketKind(key);
+    if (!kind.ok) throw new Error(kind.error);
+    // A key in the tracker's pattern is a real ticket, which the merge driver moves to Done when the PR
+    // merges: only the ticket filed for this PR, said so with --filed. A made-up one would close another.
+    if (kind.kind === 'tracker' && !filed) throw new Error(`${key} is a tracker key, and the merge driver moves that ticket to Done when PR #${prArg} merges: give the PR an id from §4 Other work id patterns, or, if ${key} is the ticket filed for this PR, say so with --filed`);
+    if (Object.hasOwn(q.tickets, key)) throw new Error(`${key} is already in the queue (${q.tickets[key].state}): adopt takes a key no ticket has`);
+    const elsewhere = belongsElsewhere(key);
+    if (elsewhere) throw new Error(elsewhere.why);
+    const repo = ghRepo();
+    let pr;
+    try {
+      pr = JSON.parse(execFileSync('gh', ['pr', 'view', prArg, '--repo', repo, '--json', 'number,state,headRefName,baseRefName,title,author'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+    } catch (e) { throw new Error(`gh could not read PR #${prArg} on ${repo} (${String(e.stderr ?? e.message).trim().split('\n').pop()}): nothing adopted`); }
+    if (pr.state !== 'OPEN') throw new Error(`PR #${prArg} is ${String(pr.state).toLowerCase()}, not open: nothing adopted`);
+    const base = baseOf(q);
+    if (pr.baseRefName !== base) throw new Error(`PR #${prArg} is on ${pr.baseRefName}, not this batch's base ${base}: the merge driver would not merge it, so nothing adopted`);
+    // The merge driver lists only PRs by §1 GitHub handle.
+    let handle = null;
+    try { handle = githubHandle(); } catch { /* unset: the driver refuses to start, so it is not checked here */ }
+    if (handle && pr.author?.login && pr.author.login.toLowerCase() !== handle.toLowerCase()) throw new Error(`PR #${prArg} is by ${pr.author.login}, and the merge driver merges only PRs by ${handle}: nothing adopted`);
+    const owner = Object.values(q.tickets).find((t) => t.branch === pr.headRefName);
+    if (owner) throw new Error(`PR #${prArg}'s branch ${pr.headRefName} is already ${owner.key}'s: nothing adopted`);
+    const now = new Date().toISOString();
+    q.tickets[key] = {
+      key, type: 'Task', lane: '?', state: 'done',
+      worktree: null, branch: pr.headRefName, database: null, port: null,
+      session_id: null, pid: null, base_sha: null, stage: null,
+      park: null, log: null, result: { pr: String(pr.number), summary: `adopted: ${pr.title}` }, adopted: true,
+      added_at: now, updated_at: now,
+    };
+    save(q);
+    console.log(`${key} adopted PR #${pr.number} (${pr.headRefName} into ${base}): the merge driver merges it with the batch's tickets, and the pass and desk-q list it until it does`);
     break;
   }
 
@@ -1009,6 +1089,11 @@ switch (cmd) {
     break;
   }
 
+  case 'finish': {
+    console.log(finish(q, args[0], finishPr.n, finishPr));
+    break;
+  }
+
   case 'step-done': {
     const [key] = args;
     if (!key) throw new Error('usage: queue.mjs step-done <TICKET>');
@@ -1025,9 +1110,8 @@ switch (cmd) {
     try { ran = JSON.parse(json ?? ''); } catch { ran = null; }
     if (!key || !Array.isArray(ran) || !ran.length || ran.some((s) => typeof s?.step !== 'string') || !at) throw new Error('usage: queue.mjs follow-ran <TICKET> <JSON array of {step, after}> <ISO time>');
     const t = ticket(q, key);
-    const same = (a, b) => a?.step === b.step && (a?.after ?? 'merge') === (b.after ?? 'merge');
-    const left = (t.follow_on ?? []).filter((s) => !ran.some((x) => same(s, x)));
-    applySet(t, left.length ? [`follow_on=${JSON.stringify(left)}`] : [`follow_on_done=${at}`]);
+    const { left, fields } = settleSteps(t.follow_on, ran, at);
+    if (fields.length) applySet(t, fields);
     save(q);
     console.log(`${key}: ${ran.length} follow-on ${ran.length === 1 ? 'step' : 'steps'} recorded done${left.length ? `, ${left.length} kept` : ''}`);
     break;
@@ -1131,6 +1215,20 @@ switch (cmd) {
     t.updated_at = new Date().toISOString();
     save(q);
     console.log(`${key} moved to position ${n} of ${order.length} in the spawn order and marked placed: front and requeue leave it there`);
+    break;
+  }
+
+  // plan-batch's spawn order, laid over the slots these tickets already hold: an epic's children are
+  // admitted before its plan seeds them, and add leaves a queued ticket where it is. Every other
+  // ticket keeps its slot, and so does one running, finished or placed by the user (move).
+  case 'order': {
+    const free = (k) => Object.hasOwn(q.tickets, k) && !FINISHED.includes(q.tickets[k].state) && q.tickets[k].state !== 'running' && !q.tickets[k].placed;
+    const keys = [...new Set(args)].filter(free);
+    const slots = new Set(keys);
+    const next = keys[Symbol.iterator]();
+    reorder(q, unfinished(q).map((k) => (slots.has(k) ? next.next().value : k)));
+    save(q);
+    console.log(`spawn order: ${keys.join(' ') || 'nothing to reorder'}`);
     break;
   }
 
@@ -1247,7 +1345,7 @@ switch (cmd) {
   }
 
   default:
-    throw new Error(`${cmd ? `unknown command "${cmd}"` : 'no command'}. usage: queue.mjs init|add|admit|hold|backfill-holds [--dry-run]|set|set-batch|park|clears-when|requeue|stop|handback|step-done|follow-ran|approve|reject|front|move|transfer|drop|merged|next-pass|get|list|render|watch [--interval s] [--stages]`);
+    throw new Error(unknownQueueCommand(cmd));
 }
 } catch (e) {
   console.error(`queue: ${e.message}`);
@@ -1301,14 +1399,19 @@ function doneLabel(t) {
 function tableRows(q, { stages = true, asks = {} } = {}) {
   const rows = Object.values(q.tickets);
   const order = { parked: 0, running: 1, triaged: 2, queued: 3, failed: 4, done: 5 };
-  rows.sort((a, b) => (order[a.state] ?? 9) - (order[b.state] ?? 9));
+  // A ticket handed off between sessions (handoff pending, pass.mjs) is triaged until its next session
+  // starts, which a preflight can take minutes over: it reads as a handoff beside the running rows,
+  // not as a fresh ticket.
+  const handingOff = (t) => t.state === 'triaged' && t.handoff === 'pending' && !isHeld(t) && !(questionsOpen(t) > 0);
+  const rank = (t) => (handingOff(t) ? order.running : order[t.state] ?? 9);
+  rows.sort((a, b) => rank(a) - rank(b));
   const head = `batch ${q.batch ?? '-'}   concurrency ${q.concurrency}${q.epic ? `   epic ${q.epic}` : ''}${q.base ? `   base ${q.base}` : ''}`;
   const out = [];
   for (const t of rows) {
     const parks = isHeld(t) ? waitingOnPark(q, t) : null;
     const day = dateHeld(t);
     const stuck = !day && isHeld(t) && !parks && !waitingOnMerge(q, t);
-    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : t.state.toUpperCase();
+    const label = stuck ? 'STUCK' : isHeld(t) ? 'HELD' : t.state === 'done' ? doneLabel(t) : handingOff(t) ? 'HANDOFF' : t.state.toUpperCase();
     const spines = String(t.held_by ?? '').split('|').filter((p) => spinePark(q.tickets[p]));
     const tail = day?.bad ? badLabelText(day.label)
       : day ? `until ${day.until} (label ${day.label})`
@@ -1322,6 +1425,7 @@ function tableRows(q, { stages = true, asks = {} } = {}) {
       : t.state === 'running' ? `${stages ? `stage ${t.stage ?? '?'}  ` : ''}port ${t.port ?? '-'}${t.model ? `  model ${t.model}` : ''}${t.draft_pr ? `  PR #${t.draft_pr}` : ''}${asks[t.key] ? `  asks: ${asks[t.key]}` : ''}`
       : t.state === 'done' ? (t.result?.pr ? `PR #${t.result.pr}${t.merged_at ? ' merged' : ''}` : '')
       : t.state === 'triaged' && questionsOpen(t) > 0 ? `blocked: ${questionsOpen(t)} question(s) open, ${answerWith(t)}`
+      : handingOff(t) ? `starting Stage ${t.handoff_stage ?? '?'}`
       : '';
     // A tier raised by a requeue shows until the ticket finishes, so the change is visible.
     const modelNote = t.model_note && ['triaged', 'running'].includes(t.state) ? `  (${t.model_note})` : '';

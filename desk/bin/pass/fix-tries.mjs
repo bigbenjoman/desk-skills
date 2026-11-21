@@ -25,6 +25,7 @@
 //   conflictRows  { 'pr-conflict-reviewed', 'pr-conflict-unreviewed' }: each { perm, key }, its §3 value and key
 //   feedbackFirst config §3 merge-feedback-first is not `no`
 //   judgement     config §3 autopilot-judgement
+//   outage        set here: outageChecks's map of the checks red on many ready PRs at once
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
 //   out {line}                          a line of the pass's report
@@ -39,8 +40,9 @@
 //   settle-worked {key, pr, head, worked}   -> the ids of the threads a finished feedback try worked, replied on and resolved
 //   check-build {key, pr, head, call}   -> the build's record: `call` 'person' where it could not start or re-run
 //   apply {key, pr, head, call}         carry out the call: stuck, requeue, held, wait or rerun
-import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, treeHeld, builtStuck } from '../fix-tries.mjs';
+import { fixCall, gateTry, reviewFix, feedbackFix, personGapsCall, resolvable, verdictTry, externalTry, driverReviewTry, treeHeld, builtStuck, outageChecks } from '../fix-tries.mjs';
 import { reviewerGated, set, say } from './shared.mjs';
+import { externalReview } from '../review-threads.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (key, line) => say(key, 'waiting', line);
@@ -48,7 +50,13 @@ const waiting = (key, line) => say(key, 'waiting', line);
 export function* decideFixTries(s) {
   if (s.rowErrors.length && s.undrafted.length) yield out(`fix tries: none this pass, since config ${s.rowErrors.join('; ')}. Run /desk-setup`);
   if (s.rowErrors.length) return;
-  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, s);
+  // A check red on many ready PRs at once is said once here, and each PR it holds is held (fixCall).
+  const outage = outageChecks(s.undrafted, s.gate);
+  for (const [name, prs] of outage) {
+    yield out(`fix tries: "${name}" is red on ${prs.length} ready PRs at once (#${[...prs].sort((a, b) => a - b).join(', #')}), which reads as its platform failing, not their code: no fix try is spent on it, and nothing desk reruns turns it green; once the platform is back, redeploy there or push to the PRs`);
+  }
+  const snap = outage.size ? { ...s, outage } : s;
+  for (const { t, s: p } of s.undrafted) yield* fixTry(t, p, snap);
 }
 
 // How the report names a try: "capture try", "extra review try", "protected files try 1 of 2".
@@ -74,8 +82,8 @@ function* fixTry(t, p, s) {
   // would need a verdict the gate does not count either. A conflict or a merged-tree hold is not red
   // only on the gate, so it still goes to its own fix below.
   const gated = !dirty && !tree && reviewerGated(p, s);
-  yield { type: 'gate-hold', key: t.key, on: gated };
-  if (gated) return;
+  if (gated) { yield* heldTry(t, p, s); return; }
+  yield { type: 'gate-hold', key: t.key, on: false };
   if (dirty || tree) {
     const row = (yield { type: 'human-seen', key: t.key, pr: n }) ? 'pr-conflict-reviewed' : 'pr-conflict-unreviewed';
     const { perm, key } = s.conflictRows[row];
@@ -86,12 +94,18 @@ function* fixTry(t, p, s) {
       return;
     }
   }
-  const { ctx, baseMerge, ...reads } = yield { type: 'reads', key: t.key, dirty, dirtyFiles };
+  const { ctx: read, baseMerge, ...reads } = yield { type: 'reads', key: t.key, dirty, dirtyFiles };
+  const ctx = s.outage ? { ...read, outage: s.outage } : read;
   // A red check a change on the branch may clear (an unneeded protected file, a stale verdict) goes to a
   // worker before anything is put to the person.
   let c = gateTry(t, p, { ...ctx, baseMerge }) ?? fixCall(t, p, ctx) ?? (yield* feedbackCall(t, p, s, ctx.waived, reads));
   if (!c) { if (t.stuck && !s.dry) yield set(t.key, 'stuck=null'); return; }
-  if (c.call === 'wait') { yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`); return; }
+  // Waiting on an outside reviewer leaves the person nothing to do, so an earlier stuck record goes.
+  if (c.call === 'wait') {
+    if (c.external && t.stuck && !s.dry) yield set(t.key, 'stuck=null');
+    yield out(`fix tries: PR #${n} (${t.key}) is out of draft: ${c.why}`);
+    return;
+  }
   // A §4 Check builds build to start or re-run: on its own, or beside a check a person clears.
   const b = c.call === 'build' || c.call === 'rebuilt' ? c : c.build;
   if (b) {
@@ -105,6 +119,37 @@ function* fixTry(t, p, s) {
     }
   }
   yield { type: 'apply', key: t.key, pr: n, head: p.head, call: c };
+}
+
+// A PR the reviewer check holds. The hold is for a review that is missing or stale, so a review at the
+// head that is not clean, a §4 Gate reviewer's (`gate` on the read) or else desk's own, still goes to a
+// review fix, or to the person for the gaps only they settle; the hold lifts only where one goes.
+// Where the check fails only because the gate counts another account (kind `mismatch`), desk still
+// posts its verdicts and the merge driver counts them though the gate does not, so a head the driver
+// would hold for want of a clean verdict gets its review try now, while the gate is red. Nothing else
+// goes to it: red checks and threads wait.
+function* heldTry(t, p, s) {
+  const reads = yield { type: 'reads', key: t.key, dirty: false, dirtyFiles: null };
+  const fb = yield { type: 'feedback', key: t.key, pr: p.pr, gate: true };
+  const atHead = !!fb && fb.head === p.head;
+  const review = atHead ? fb.gateReview ?? fb.review : null;
+  const worked = review ? findingsFix(t, p, s, { ...fb, review }, reads) ?? personGapsCall(review, { judgement: s.judgement }) : null;
+  // The hold is recorded, and listed, only where nothing goes to the PR's findings.
+  yield { type: 'gate-hold', key: t.key, on: !worked };
+  if (!atHead) return;
+  let c = worked;
+  if (!review && s.reviewer?.kind === 'mismatch') {
+    const { carry, scope, baseMerge } = reads.moves();
+    const r = driverReviewTry(t, p, { atHead: () => reads.atHead(fb.payload, carry, scope), stateChecks: s.stateChecks, base: s.base, baseMerge });
+    c = r?.call === 'requeue' ? r : null;
+  }
+  if (c) yield { type: 'apply', key: t.key, pr: p.pr, head: p.head, call: c };
+}
+// The review fix a ready PR's review at its head that is not clean gets (reviewFix), marked ready.
+function findingsFix(t, p, s, fb, reads) {
+  const comments = () => reads.comments(fb.review.id);
+  const rf = reviewFix(t, { pr: p.pr, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement: s.judgement, outside: reads.outside, title: reads.title });
+  return rf?.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
 }
 
 // A ready PR's review, read as the merge driver reads it (review-threads.mjs): a desk-review at its
@@ -124,10 +169,14 @@ function* feedbackCall(t, p, s, waived, reads) {
   const settled = worked.length ? yield { type: 'settle-worked', key: t.key, pr: n, head: p.head, worked } : [];
   if (settled.length < worked.length && !s.dry) return null;
   const { judgement } = s;
+  // A red check reading an outside reviewer's review goes ahead of desk's own review and feedback
+  // routes: it waits for that reviewer at the head, then sends their findings (externalTry).
+  const external = (login) => externalReview(fb.payload, login);
+  const ext = externalTry(t, p, { ...s.gate, stateChecks: s.stateChecks, external });
+  if (ext !== undefined) return ext;
   if (fb.review) {
-    const comments = () => reads.comments(fb.review.id);
-    const rf = reviewFix(t, { pr: n, head: p.head, verdict: fb.review.verdict, body: fb.review.body, comments }, { judgement });
-    if (rf) return rf.call === 'requeue' ? { ...rf, fix: { ...rf.fix, ready: true } } : rf;
+    const rf = findingsFix(t, p, s, fb, reads);
+    if (rf) return rf;
   }
   const ff = !s.feedbackFirst ? null
     : feedbackFix(t, { pr: n, head: p.head, decision: fb.decision, threads: fb.left.filter((x) => !settled.includes(x.id)) });
@@ -139,5 +188,5 @@ function* feedbackCall(t, p, s, waived, reads) {
   // does a green PR the driver would hold for want of a clean verdict, where a driver may merge.
   const { carry, scope, baseMerge } = reads.moves();
   const atHead = () => reads.atHead(fb.payload, carry, scope);
-  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, waived, base: s.base, baseMerge });
+  return verdictTry(t, p, { ...s.gate, stateChecks: s.stateChecks, settled: !!fb.review, atHead, external, waived, base: s.base, baseMerge });
 }

@@ -4,13 +4,13 @@
 // spawn-worker.sh exports a pinned ticket's set to its preflight, its spawn line and its worker, and
 // leaves an unpinned one on the row. A stub claude on PATH answers the version, account and agent
 // registry reads, and records each -p call's argv and DESK_LEVERS. Scratch HOME, queue and repo only.
-import { readFileSync, writeFileSync, mkdirSync, mkdtempSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync, cpSync, symlinkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { pinAtAdmission, pinnedSet, envValue, leverOnFor, pinDisagrees } from '../desk/bin/lever-pin.mjs';
 import { levers } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -46,7 +46,7 @@ t('DS-639 a start missing a pinned lever disagrees', pinDisagrees(['memory', 'co
 t('DS-639 no pin, or no recorded levers, never disagrees', [pinDisagrees(null, ['memory']), pinDisagrees(['memory'], null)], [false, false]);
 
 // ---- scratch repo, config, queue and stub claude --------------------------------------------------
-const T = mkdtempSync(join(tmpdir(), 'desk-pin-'));
+const T = scratch('desk-pin-');
 for (const d of ['home', 'state', 'stub', 'repo', 'deskhome']) mkdirSync(join(T, d), { recursive: true });
 cpSync(join(root, 'agents'), join(T, 'home', '.claude', 'agents'), { recursive: true });
 symlinkSync(BIN, join(T, 'deskhome', 'bin'));

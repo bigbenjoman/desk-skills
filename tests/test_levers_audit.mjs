@@ -2,14 +2,14 @@
 // covers: desk/bin/levers-audit.mjs desk/bin/lever-registry.mjs desk/bin/lever-log.mjs desk/bin/levers-auto.mjs desk/bin/desk-env.mjs desk/bin/pass.mjs desk/bin/spawn-worker.sh
 // runAudits() runs on synthetic queues and lever logs in a scratch HOME, with a stub review worker:
 // its spawn, merge-commit read, end and log are functions the test supplies.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
-const T = mkdtempSync(join(tmpdir(), 'levers-audit-'));
+const T = scratch('levers-audit-');
 for (const k of Object.keys(process.env)) if (/^(DESK_|AUTOPILOT_)/.test(k)) delete process.env[k];
 // A desk-jira on PATH that records any call, so AC8 can show the audit never reached the tracker.
 const fakeBin = join(T, 'bin');

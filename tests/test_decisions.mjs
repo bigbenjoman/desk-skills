@@ -1,10 +1,10 @@
 // suite: decision log (calls taken on the recommendation, one entry each)
-import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { readFileSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseDecision, parseCheck, decisionEntry, appendDecisions, decisionsPath, ASK_CATEGORIES, prLink, triageCalls } from '../desk/bin/decisions.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -32,7 +32,7 @@ t('DS-613 AC2 an unreserved call with a recommendation is taken, as today', `${t
 t('DS-613 AC2 and with no reserved field', split({}).taken.length, 1);
 for (const v of ['yes', 1, null, {}]) t(`DS-613 AC4 reserved ${JSON.stringify(v)} keeps the call asked`, `${JSON.stringify(split({ reserved: v }).ask)} ${split({ reserved: v }).taken.length}`, '["Which Opus drafting effort? (recommended: high)"] 0');
 
-const dir = mkdtempSync(join(tmpdir(), 'desk-decisions-'));
+const dir = scratch('desk-decisions-');
 const e = decisionEntry({ decision: parseDecision(raw()).decision, ticket: 'D-1', run: 'run-1', repo: 'acme/widgets', pr: 7, source: 'worker' });
 t('an entry has every field', ['id', 'at', 'repo', 'ticket', 'question', 'options', 'chose', 'category', 'pr'].every((k) => e[k] != null), true);
 t('the first append writes it', appendDecisions([e], dir).length, 1);
