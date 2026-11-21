@@ -298,7 +298,7 @@ export function decideVerdictLines(s) {
 // of this pass missed its append. `check` is queue-ledger.mjs queueDifference's result, or { error }
 // when it did not run; `missed` counts this pass's missed appends; `queueBin` is queue.mjs as the
 // person runs it. It names the first LEDGER_SHOWN differing fields.
-export const LEDGER_SHOWN = 10;
+const LEDGER_SHOWN = 10;
 export function ledgerLine({ check, missed, queueBin }) {
   if (check.error) return `ledger: the difference check did not run (${check.error})`;
   const n = check.diffs.length;

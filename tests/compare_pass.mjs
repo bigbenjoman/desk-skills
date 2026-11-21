@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFi
 import { constants } from 'node:os';
 import { join } from 'node:path';
 import { lock, unlock } from '../desk/bin/dir-lock.mjs';
-import { flattenQueue, stampLeaf } from '../desk/bin/queue-fields.mjs';
+import { flattenQueue } from '../desk/bin/queue-fields.mjs';
 
 const [mode, ...args] = process.argv.slice(2);
 
@@ -287,13 +287,16 @@ const show = (x, others) => (others.some((y) => y.shape === x.shape) ? x.text : 
 // Each key is normalized and its SHAs named (rn) in the order the queue holds them, so a ticket keyed
 // by an id one tree made up is the same ticket on both, and sorting the paths later cannot reorder
 // the names. A process id a record keeps (a `pid` field) differs between runs as a printed one does,
-// and a port (a `port` field) is compared as a printed one is (tokens, pairer). A queue stamp is
-// compared as set or not, and by its type (queue-fields.mjs stampLeaf).
+// and a port (a `port` field) is compared as a printed one is (tokens, pairer). A queue stamp, which says when
+// the pass last wrote a ticket or started its worker, lands wherever the load of the machine put that
+// write in its run, so it is compared as set or not, and by its type: <STAMP:string> when it holds a
+// string.
+const STAMP = /(?:^|[ .])(?:updated_at|spawned_at|last_start|cloud\.started)$/;
 const flatten = (rec, norm, rn) => flattenQueue(rec, {
   key: (k) => rn(norm(k)),
   leaf: (v, path) => (Number.isInteger(v) && /(?:^|\.)pid$/.test(path) ? '<PID>'
     : Number.isInteger(v) && /(?:^|[ .])port$/.test(path) ? `port ${v}`
-      : stampLeaf(v, path) ?? norm(JSON.stringify(v))),
+      : v != null && STAMP.test(path) ? `<STAMP:${typeof v}>` : norm(JSON.stringify(v))),
 });
 
 const crashed = (r) => r.signal || (r.exit !== 0 && /^Node\.js v\d+/m.test(r.out));

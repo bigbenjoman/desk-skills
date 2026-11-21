@@ -272,7 +272,7 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
 
 // The difference check: queue.json against the queue rebuilt from the log, and the pass's line for it.
 {
-  const diff = (f, opts) => queueDifference(f, read(f), opts);
+  const diff = (f, opts) => queueDifference(f, opts);
   const paths = (r) => r.diffs.map((d) => d.path).join(', ');
   const line = (check, missed = 0) => ledgerLine({ check, missed, queueBin: '/bin/queue.mjs' });
 
@@ -301,6 +301,22 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   t('AC2 the line names them and counts them', line(off), 'ledger: 2 field(s) differ between queue.json and the queue rebuilt from the log, 0 missed append(s) this pass: A lane, B park.question. See each with node /bin/queue.mjs rebuild');
   other(f, (x) => { x.tickets.A.updated_at = 'later'; x.tickets.A.idle_passes = 4; });
   t('a stamp is compared as set or not, and a pass\'s observation not at all', paths(diff(f)), 'A lane, B park.question');
+  const ws = queueWriter(f);
+  ws.apply(['set', 'A', 'spawned_at=2026-11-20T09:00:00.000Z']);
+  ws.flush();
+  t('a spawn time written through the store matches', paths(diff(f)), 'A lane, B park.question');
+  other(f, (x) => { x.tickets.A.spawned_at = '2026-11-20T09:30:00.000Z'; });
+  t('a spawn time is compared by its value', paths(diff(f)), 'A lane, A spawned_at, B park.question');
+  other(f, (x) => { x.tickets.A.spawned_at = '2026-11-20T09:00:00.000Z'; });
+  // The check holds the queue lock, as writers do: a held lock is waited on, then refused.
+  lock(`${f}.lock`);
+  let held;
+  try { diff(f, { waitMs: 100 }); held = 'ran'; } catch (e) { held = /locked by pid/.test(e.message) ? 'refused' : e.message; }
+  unlock(`${f}.lock`);
+  t('the check waits on the queue lock, then refuses', held, 'refused');
+  let gone;
+  try { diff(join(dirname(f), 'missing', 'queue.json')); gone = 'ran'; } catch (e) { gone = /no queue to compare/.test(e.message) ? 'refused' : e.message; }
+  t('a queue that does not read is a check that did not run', gone, 'refused');
   const many = { diffs: Array.from({ length: 12 }, (_, i) => ({ path: `T-${i} lane` })), seeded: 0 };
   t('only the first ten are named', line(many).endsWith('T-9 lane, and 2 more. See each with node /bin/queue.mjs rebuild'), true);
   t('a check that did not run says why', line({ error: 'boom' }), 'ledger: the difference check did not run (boom)');
@@ -318,9 +334,10 @@ const q = (f, cfg, ...args) => spawnSync(process.execPath, [join(B, 'queue.mjs')
   // AC3: a pass archiving a done ticket leaves the difference at zero: it is on neither side.
   const g = fixture({ version: 1, batch: 'b', tickets: { M: tk('M', { state: 'done', result: { pr: 4 } }), A: tk('A') } });
   const wg = queueWriter(g);
-  wg.apply(['set', 'M', 'merged_at=2026-11-20T10:00:00.000Z']);
-  const ra = wg.flush({ archive: true });
-  t('AC3 the done ticket is archived, and nothing differs', `${ra.archived.join(' ')} ${diff(g).diffs.length}`, 'M 0');
+  t('an archiving write with nothing pending and nothing to archive writes nothing', wg.flush({ archive: true }).wrote, false);
+  other(g, (x) => { x.tickets.M.merged_at = '2026-11-20T10:00:00.000Z'; });
+  const ra = queueWriter(g).flush({ archive: true });
+  t('AC3 an archiving write with nothing else pending archives the done ticket, and nothing differs', `${ra.wrote} ${ra.archived.join(' ')} ${diff(g).diffs.length}`, 'true M 0');
 
   // AC5: a write that missed its append: the field it changed differs, and the line counts the miss.
   lock(ledgerPaths(dirname(g)).lock);

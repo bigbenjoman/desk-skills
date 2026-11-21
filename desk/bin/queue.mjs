@@ -24,7 +24,7 @@ import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
-import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf, readQueueAt } from './queue-store.mjs';
+import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
 import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
@@ -1346,9 +1346,7 @@ switch (cmd) {
       if (!b) throw new Error(`no batch ${name} in this repo: its batches are ${listBatches(repoSlug()).map((x) => x.name ?? 'standing').join(', ')}`);
       file = b.queue;
     }
-    const current = readQueueAt(file);
-    if (!current) throw new Error(`no queue to compare at ${file}`);
-    const { rebuilt, diffs } = queueDifference(file, current);
+    const { rebuilt, diffs } = queueDifference(file, { waitMs: LOCK_WAIT_MS });
     const out = join(dirname(file), 'queue.rebuilt.json');
     writeFileSync(out, `${JSON.stringify(rebuilt, null, 2)}\n`);
     for (const d of diffs) console.log(`${d.path}: queue.json ${d.queue ?? '(absent)'}, rebuilt ${d.rebuilt ?? '(absent)'}`);

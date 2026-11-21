@@ -71,10 +71,9 @@ import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
-import { queueWriter } from './queue-writer.mjs';
+import { queueWriter, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
 import { MISSED_PREFIX, LEDGER_BY_ENV, ledgerOn, queueDifference } from './queue-ledger.mjs';
-import { readQueueAt } from './queue-store.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -5226,17 +5225,18 @@ const heldEnd = Object.values(qEnd.tickets).filter(isHeld).map((t) => t.key);
 const mergedEnd = Object.values(qEnd.tickets).filter((t) => t.merged_at).map((t) => t.key);
 
 // ---- ledger difference ---------------------------------------------------------
-// With the ledger lever on, the pass's changes so far are written, then queue.json is compared with
-// the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding a batch the log has never
-// named), and the count goes in the report (pass/report.mjs ledgerLine) and the metrics line. The
-// pass record's write after it changes only the batch's own fields, which a rebuild carries over.
+// With the ledger lever on, the pass's changes so far are written and its done tickets archived, then
+// queue.json is compared with the queue rebuilt from the log (queue-ledger.mjs queueDifference, seeding
+// a batch the log has never named), and the count goes in the report (pass/report.mjs ledgerLine) and
+// the metrics line. The pass record's write after it changes the batch's own fields, which a rebuild
+// carries over, and archives only a ticket another writer finished since.
 const ledgerLate = [];
 let ledgerRec = {};
 if (!DRY && ledgerOn()) {
-  ledgerLate.push(...writeLines(QW.flush()));
+  ledgerLate.push(...writeLines(QW.flush({ archive: true })));
   const missed = [...report.failed, ...ledgerLate].filter((l) => l.startsWith(MISSED_PREFIX)).length;
   let check;
-  try { check = queueDifference(QUEUE_FILE, readQueueAt(QUEUE_FILE), { seed: true, by: 'pass' }); }
+  try { check = queueDifference(QUEUE_FILE, { seed: true, by: 'pass', waitMs: LOCK_WAIT_MS }); }
   catch (e) { check = { error: String(e?.message ?? e).split('\n')[0] }; }
   const l = ledgerLine({ check, missed, queueBin: join(SHOWN_BIN, 'queue.mjs') });
   if (l) lines.push(l);
