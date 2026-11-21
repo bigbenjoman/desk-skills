@@ -296,6 +296,7 @@ export function decideVerdictLines(s) {
 export function heldWhyOf(s) {
   if (s.spawned || !s.eligible) return null;
   return s.held ?? (s.baseHold ? `the batch base sync holds every spawn${s.baseLag ? `: ${s.baseLag}` : ''}`
+    : s.harmWhy ? s.harmWhy
     : s.lowMemory ? `memory: ${s.availGB.toFixed(1)}G available, under the ${s.minAvailGB}G spawn gate`
     : s.lockQueueHeldText ?? (s.machine.room <= 0 ? `the machine budget: ${s.machine.line}`
     : s.repoUnlocked ? `the repo's shared cap: ${s.repoLine}`

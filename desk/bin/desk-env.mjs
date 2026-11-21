@@ -86,8 +86,10 @@
 //   node desk-env.mjs mem watch [--interval s] [--window s]   runs until killed; prints SUSTAINED-HIGH
 //                                             when avail stays under the band for the window (default 300s)
 //                                             with nothing heavy running, and HEAVY-UNKNOWN while ps cannot be read
-//                                             (harmStep) SWAP-GROWING, OOM-KILL, TMPFS-HIGH and TMPFS-INODES on
-//                                             the harm signals, and OOM-UNKNOWN once when dmesg cannot be read
+//                                             (harmStep) SWAP-GROWING, OOM-KILL, WORKER-OOM, TMPFS-HIGH, TMPFS-INODES
+//                                             and VMMEM-HIGH on the harm signals, and OOM-UNKNOWN once when dmesg
+//                                             cannot be read; each harm line goes to $DESK_STATE/mem-harm.json,
+//                                             which the pass reads to hold spawns
 //   node desk-env.mjs uuid
 //   node desk-env.mjs port-in-use <port>      exit 0 if something is listening
 //   node desk-env.mjs ports [--cap <n>]       every repo config's dev port and worker block (REPO), each
@@ -161,9 +163,12 @@
 //                                             email), ignoring DESK_SUBSCRIPTION
 //   node desk-env.mjs subscription set <slug> <default|email>
 //                                             write that repo's Subscription row, naming the previous value
-import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync } from 'node:fs';
+import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
+// Not from harvest.mjs: its CLI awaits desk-env at top level, so that import would never settle.
+import { toolResults } from './log-tool-calls.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
@@ -1550,23 +1555,45 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
   return { state: { since, fired: true }, line: `SUSTAINED-HIGH: avail=${avail.toFixed(1)}G below ${band}G for ${mins}m with nothing heavy running` };
 }
 
+// The window the harm signals are judged over, and the one the pass holds spawns for after one.
+export const HARM_WINDOW_MS = 600_000;
+
+// §3b "Swap growth that holds spawns (GB)", "tmpfs /tmp size that holds spawns (GB)" and "WSL VM
+// share of its grant that holds spawns (%)": each parsed as its row's type, and a value that does not
+// parse, or is not above zero, keeps its default.
+export function harmThresholds(read = configValue) {
+  const num = (id) => {
+    const raw = read(id);
+    const r = raw == null ? null : checkRow(ROW_ENTRY.get(id), [String(raw)]);
+    return r && !r.errors.length && r.value > 0 ? r.value : Number(rowDefault(id));
+  };
+  return { swapGrowGiB: num('harm-swap-growth'), tmpfsGiB: num('harm-tmpfs'), vmmemShare: num('harm-vmmem') / 100 };
+}
+
 // The harm signals the watch also reads, which preceded real damage where the host's free memory did
 // not: swap use growing by `swapGrowGiB` or more within `windowMs`, a kernel OOM kill newer than the
-// watch's first reading (`oom` is each kill's key as oomKills reads it, its kernel timestamp or its
-// line; null when the kernel log cannot be read, undefined off Linux, where none is watched),
-// a tmpfs /tmp holding `tmpfsGiB` or more (its contents are pushed to swap, which looks like a
-// leak), and a tmpfs /tmp with `inodeShare` or more of its fixed count of inodes used (`tmpInodes`:
-// { used, total }): once every one is used, no file can be made there, and every shell on the machine,
-// Claude Code's included, stops. Each line is said once, and again only after the signal has cleared.
-//   sample { now, swapGiB, oom, tmpGiB, tmpInodes }  ->  { state, lines }
-export function harmStep(state, { now, swapGiB, oom, tmpGiB, tmpInodes }, { swapGrowGiB = 2, windowMs = 600_000, tmpfsGiB = 4, inodeShare = 0.8 } = {}) {
-  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, oomUnread: false, ...state };
+// watch's first reading (`oom` is each kill as oomKills reads it, { key, proc }, or its bare key;
+// null when the kernel log cannot be read, undefined off Linux, where none is watched), a worker's log
+// gaining a sign one of its commands ran out of memory (`workers`: [{ key, text }], the text each
+// log gained since the last sample), a tmpfs /tmp holding `tmpfsGiB` or more (its contents are
+// pushed to swap, which looks like a leak), a tmpfs /tmp with `inodeShare` or more of its fixed count
+// of inodes used (`tmpInodes`: { used, total }): once every one is used, no file can be made there,
+// and every shell on the machine, Claude Code's included, stops; and on WSL the VM's footprint at
+// `vmmemShare` or more of its .wslconfig grant (`vmmem`: { usedGiB, grantGiB }), past which it can
+// only swap. Each line is said once, and again only after the signal has cleared. `standing` names
+// the signals still past their threshold, said or not.
+//   sample { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem }  ->  { state, lines, standing }
+export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem }, { swapGrowGiB = 2, windowMs = HARM_WINDOW_MS, tmpfsGiB = 2, inodeShare = 0.8, vmmemShare = 0.9 } = {}) {
+  const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, vmmemFired: false, oomUnread: false, ...state };
   const lines = [];
+  // Past its threshold on this sample, whatever the latch that keeps a line from repeating says.
+  const standing = [];
   if (swapGiB != null) {
     const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
     const low = Math.min(...swap.map((x) => x.gib));
     const grew = swapGiB - low;
-    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
+    if (grew >= swapGrowGiB) standing.push('SWAP-GROWING');
+    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used went from ${low.toFixed(1)}G to ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
     st.swapFired = grew >= swapGrowGiB ? true : grew < swapGrowGiB / 2 ? false : st.swapFired;
     st.swap = swap;
   }
@@ -1578,41 +1605,129 @@ export function harmStep(state, { now, swapGiB, oom, tmpGiB, tmpInodes }, { swap
     // A kill is new when its line was not in the last reading: the ring buffer dropping old kill
     // lines, even while a new kill writes them out, hides nothing. Each line is keyed by its
     // timestamp, or its whole text in a log with none (printk.time off).
-    const keys = oom.map(String);
+    const kills = oom.map((k) => (k != null && typeof k === 'object' ? { key: String(k.key), proc: k.proc ?? null } : { key: String(k), proc: null }));
     if (st.oomKeys != null) {
       const was = new Set(st.oomKeys);
-      const fresh = keys.filter((k) => !was.has(k)).length;
-      if (fresh) lines.push(`OOM-KILL: the kernel killed ${fresh} process(es) for memory: drop to the ladder's lowest count`);
+      const fresh = kills.filter((k) => !was.has(k.key));
+      const procs = fresh.map((k) => k.proc).filter(Boolean);
+      if (fresh.length) lines.push(`OOM-KILL: the kernel killed ${fresh.length} process(es) for memory${procs.length ? ` (${procs.join(', ')})` : ''}: drop to the ladder's lowest count`);
     }
-    st.oomKeys = keys;
+    st.oomKeys = kills.map((k) => k.key);
+  }
+  for (const { key, text } of workers ?? []) {
+    for (const sig of workerMemSignals(text)) lines.push(`WORKER-OOM: ${key}'s log shows ${sig}: drop to the ladder's lowest count`);
   }
   if (tmpGiB != null) {
+    if (tmpGiB >= tmpfsGiB) standing.push('TMPFS-HIGH');
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
     st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
   }
   if (tmpInodes?.total > 0) {
     const share = tmpInodes.used / tmpInodes.total;
+    if (share >= inodeShare) standing.push('TMPFS-INODES');
     if (share >= inodeShare && !st.inodesFired) {
       lines.push(`TMPFS-INODES: /tmp (tmpfs) has used ${Math.round(share * 100)}% of its inodes (${tmpInodes.used.toLocaleString('en-US')} of ${tmpInodes.total.toLocaleString('en-US')}); once all are used no shell on this computer can start: see what holds them (du --inodes -s /tmp/* | sort -n | tail)`);
     }
     st.inodesFired = share >= inodeShare ? true : share < inodeShare * 0.75 ? false : st.inodesFired;
   }
-  return { state: st, lines };
+  if (vmmem?.grantGiB > 0) {
+    const share = vmmem.usedGiB / vmmem.grantGiB;
+    if (share >= vmmemShare) standing.push('VMMEM-HIGH');
+    if (share >= vmmemShare && !st.vmmemFired) {
+      lines.push(`VMMEM-HIGH: the WSL VM holds ${vmmem.usedGiB.toFixed(1)}G of its ${vmmem.grantGiB.toFixed(1)}G .wslconfig grant (${Math.round(share * 100)}%), past which it can only swap: hold new spawns`);
+    }
+    st.vmmemFired = share >= vmmemShare ? true : share < vmmemShare - 0.05 ? false : st.vmmemFired;
+  }
+  return { state: st, lines, standing };
+}
+
+// The signs in a worker log's text that one of its commands ran out of memory: Node's fatal heap
+// error opening a line of a failed tool call's output, or a failed call the Bash tool reports as
+// killed by SIGKILL (exit 137, what the OOM killer sends). Only failed tool results are read, decoded,
+// so a file read, a grep or the worker's own prose that quotes either is not one.
+export function workerMemSignals(text) {
+  const failed = toolResults(text).filter((r) => r.failed).map((r) => r.text);
+  return [
+    ...(failed.some((t) => /^FATAL ERROR:.*JavaScript heap out of memory/m.test(t)) ? ['JavaScript heap out of memory'] : []),
+    ...(failed.some((t) => /^Exit code 137\b/.test(t)) ? ['a command killed with exit 137 (SIGKILL)'] : []),
+  ];
+}
+
+// What each worker log in `dir` gained since `seen` ({ <file>: bytes read }), in whole lines, as
+// { seen, chunks: [{ key, text }] } with the key the log's ticket. The first reading (seen null)
+// takes every log as read so far, so only what is written after the watch starts counts; a log that
+// shrank was rewritten and is read from its start.
+const LOG_TAIL_MAX = 16 * 1024 * 1024;
+export function workerLogTail(dir, seen) {
+  const next = {};
+  const chunks = [];
+  let names = [];
+  try { names = readdirSync(dir).filter((f) => f.endsWith('.log')); } catch { return { seen: seen ?? {}, chunks }; }
+  for (const f of names) {
+    let fd = null;
+    try {
+      const size = statSync(join(dir, f)).size;
+      let from = seen == null ? size : (seen[f] ?? 0);
+      if (size < from) from = 0;
+      next[f] = from;
+      if (size === from) continue;
+      const buf = Buffer.alloc(Math.min(size - from, LOG_TAIL_MAX));
+      fd = openSync(join(dir, f), 'r');
+      const n = readSync(fd, buf, 0, buf.length, from);
+      const end = buf.lastIndexOf(0x0a, n - 1) + 1 || (n === LOG_TAIL_MAX ? n : 0);
+      if (!end) continue;
+      next[f] = from + end;
+      chunks.push({ key: f.slice(0, -'.log'.length), text: buf.toString('utf8', 0, end) });
+    } catch { /* gone between the listing and the read */ } finally { if (fd != null) closeSync(fd); }
+  }
+  return { seen: next, chunks };
+}
+
+// The harm record the watch keeps for the pass, $DESK_STATE/mem-harm.json: { <SIGNAL>: { at, line } },
+// `at` the last time the signal was said or still stood (ms). OOM-UNKNOWN is not harm and is left out.
+export const HARM_FILE = 'mem-harm.json';
+export function harmRecord(prev, { now, lines, standing }) {
+  const rec = { ...(prev ?? {}) };
+  for (const line of lines) {
+    const signal = /^([A-Z-]+):/.exec(line)?.[1];
+    if (signal && signal !== 'OOM-UNKNOWN') rec[signal] = { at: now, line };
+  }
+  for (const s of standing) if (rec[s]) rec[s] = { ...rec[s], at: now };
+  return rec;
+}
+export const writeHarmRecord = (state, rec) => writeJsonAtomic(join(state, HARM_FILE), rec);
+export function readHarmRecord(state) {
+  try { const rec = JSON.parse(readFileSync(join(state, HARM_FILE), 'utf8')); return rec && typeof rec === 'object' ? rec : null; } catch { return null; }
+}
+// The signals said or standing within `windowMs` of `now`, newest first: [{ signal, at, line }].
+// A record that is missing or does not read holds nothing.
+export function harmHold(state, now = Date.now(), windowMs = HARM_WINDOW_MS) {
+  return Object.entries(readHarmRecord(state) ?? {}).filter(([, r]) => Number.isFinite(r?.at) && now - r.at <= windowMs && r.at <= now + 60_000)
+    .map(([signal, r]) => ({ signal, at: r.at, line: String(r.line ?? signal) })).sort((a, b) => b.at - a.at);
 }
 
 // The OOM kills in a kernel log, each keyed by its timestamp in seconds since boot, or by its whole
 // line where it has none: one `Out of memory: Killed process` line per kill, global or a cgroup's
 // (`Memory cgroup out of memory: …`); the `oom-kill:` summary beside a global one is not counted.
+// `proc` names the killed process, `<name> (pid <pid>)`, or null where the line does not.
 export const oomKills = (dmesg) => String(dmesg).split('\n').filter((l) => /out of memory: Killed process/i.test(l))
-  .map((l) => { const m = /^\[\s*(\d+(?:\.\d+)?)\]/.exec(l); return m ? Number(m[1]) : l.trim(); });
+  .map((l) => {
+    const m = /^\[\s*(\d+(?:\.\d+)?)\]/.exec(l);
+    const p = /Killed process (\d+) \(([^)]*)\)/i.exec(l);
+    return { key: m ? Number(m[1]) : l.trim(), proc: p ? `${p[2]} (pid ${p[1]})` : null };
+  });
 
-// What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, and /tmp
-// when it is a tmpfs. Each is null where it cannot be read; off Linux none is read (oom undefined).
+// What harmStep reads on this computer: swap from /proc/meminfo, OOM-killer lines from dmesg, /tmp
+// when it is a tmpfs, and on WSL the VM's footprint against MemTotal, which is its .wslconfig grant.
+// Each is null where it cannot be read; off Linux none is read (oom undefined).
 export function harmSample() {
   // Off Linux there is no swap figure, kernel log or tmpfs to read: nothing is watched, and nothing said.
-  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null, tmpInodes: null };
+  if (platform() !== 'linux') return { swapGiB: null, oom: undefined, tmpGiB: null, tmpInodes: null, vmmem: null };
   const m = linuxMeminfo();
   const swapGiB = m?.SwapTotal != null && m?.SwapFree != null ? (m.SwapTotal - m.SwapFree) / GiB : null;
+  let wsl = false;
+  try { wsl = isWSL(); } catch { /* no config here: not known to be WSL */ }
+  const vmmem = wsl && m ? { usedGiB: (m.MemTotal - m.MemFree) / GiB, grantGiB: m.MemTotal / GiB } : null;
   let oom = null;
   try {
     const out = execFileSync('dmesg', [], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, maxBuffer: 64 * 1024 * 1024 });
@@ -1627,7 +1742,7 @@ export function harmSample() {
       tmpInodes = { used: st.files - st.ffree, total: st.files };
     }
   } catch { /* not Linux */ }
-  return { swapGiB, oom, tmpGiB, tmpInodes };
+  return { swapGiB, oom, tmpGiB, tmpInodes, vmmem };
 }
 
 // ---- misc ----------------------------------------------------------------------------------
@@ -2441,6 +2556,14 @@ if (isMain) {
           let state = null;
           let harm = null;
           let unread = null;
+          // The worker logs and the harm record are this batch's; with no state folder neither is kept.
+          let stateFolder = null;
+          try { stateFolder = stateDir(); } catch { /* not in a desk repo */ }
+          const thresholds = harmThresholds();
+          let logsSeen = null;
+          // A restarted watch keeps what the last one recorded, so its recent signals still hold.
+          let record = stateFolder ? readHarmRecord(stateFolder) : null;
+          let recordUnwritten = null;
           for (;;) {
             // A sample whose processes cannot be read is skipped, said once until ps reads again.
             let heavy = null;
@@ -2452,9 +2575,19 @@ if (isMain) {
             state = r.state;
             if (r.line) console.log(r.line);
             // --window is the avail watch's; the harm signals keep their own ten-minute window.
-            const h = harmStep(harm, { now: Date.now(), ...harmSample() });
+            const tail = stateFolder ? workerLogTail(join(stateFolder, 'logs'), logsSeen) : { seen: null, chunks: [] };
+            logsSeen = tail.seen;
+            const now = Date.now();
+            const h = harmStep(harm, { now, ...harmSample(), workers: tail.chunks }, thresholds);
             harm = h.state;
             for (const l of h.lines) console.log(l);
+            if (stateFolder && (h.lines.length || h.standing.length)) {
+              record = harmRecord(record, { now, lines: h.lines, standing: h.standing });
+              try { writeHarmRecord(stateFolder, record); recordUnwritten = null; } catch (e) {
+                if (recordUnwritten !== e.message) console.log(`HARM-UNRECORDED: ${e.message}: the pass cannot see these signals, so hold spawns by hand`);
+                recordUnwritten = e.message;
+              }
+            }
             await new Promise((res) => setTimeout(res, intervalMs));
           }
         }

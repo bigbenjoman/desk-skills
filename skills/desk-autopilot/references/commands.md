@@ -67,7 +67,8 @@ desk-env heavy                   # suites, typechecks, dev servers actually runn
 # the two Monitors, started once at Stage 0b (change-only; the second fires on sustained only)
 node ~/.claude/desk/bin/queue.mjs watch   # table + memory line at start, then only on a state or question change, not a stage step (--stages adds them; quiet: one line per changed ticket); every 90s, or --interval <s>
 desk-env mem watch               # SUSTAINED-HIGH: avail=<x>G below <band>G for 5m with nothing heavy running
-                                  # on Linux also SWAP-GROWING, OOM-KILL, TMPFS-HIGH (concurrency-and-memory.md)
+                                  # also WORKER-OOM; on Linux SWAP-GROWING, OOM-KILL, TMPFS-HIGH; on WSL VMMEM-HIGH;
+                                  # each held by the pass for 10m (concurrency-and-memory.md)
 
 # waiting on one PR, under Monitor: one line, then exit (never a loop around gh pr checks / gh pr view)
 node ~/.claude/desk/bin/pr-watch.mjs checks 123          # every check done: "none failed", or each failed check named
