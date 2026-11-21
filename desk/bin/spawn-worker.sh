@@ -526,7 +526,7 @@ case "${REPO_STATE##*/batches/}" in "$REPO_STATE"|*/*) ;; *) REPO_STATE="${REPO_
 export DESK_EXITS_DIR="$REPO_STATE/exits" DESK_EXIT_KEY="$TICKET"
 mkdir -p "$DESK_EXITS_DIR" 2>/dev/null || true
 # A supervisor's tick deletes the files it has seen; with none installed, nothing older than a day is kept.
-find "$DESK_EXITS_DIR" -type f -mtime +1 -delete 2>/dev/null || true
+find "$DESK_EXITS_DIR" -type f -mtime +0 -delete 2>/dev/null || true
 # ${arr[@]+"${arr[@]}"}: bash 3.2 (stock macOS) treats an empty array as unbound under set -u.
 desk_detach bash -c '"$@"; rc=$?; rec="$(printf "{\"session\":\"%s\",\"code\":%d,\"at\":\"%s\"}" "$DESK_EXIT_SID" "$rc" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 printf "%s\n" "$rec" > "$DESK_EXIT_FILE"
