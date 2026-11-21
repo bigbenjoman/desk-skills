@@ -166,6 +166,8 @@
 import { readFileSync, readdirSync, existsSync, realpathSync, writeFileSync, mkdirSync, copyFileSync, renameSync, statSync, utimesSync, unlinkSync, statfsSync, openSync, readSync, closeSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
+import { toolResults } from './harvest.mjs';
+import { writeJsonAtomic } from './dir-lock.mjs';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { homedir, platform, totalmem, freemem, release } from 'node:os';
@@ -1557,9 +1559,14 @@ export function sustainedStep(state, { now, avail, heavy }, { band, windowMs }) 
 export const HARM_WINDOW_MS = 600_000;
 
 // §3b "Swap growth that holds spawns (GB)", "tmpfs /tmp size that holds spawns (GB)" and "WSL VM
-// share of its grant that holds spawns (%)": a value that is not a positive number keeps its default.
+// share of its grant that holds spawns (%)": each parsed as its row's type, and a value that does not
+// parse, or is not above zero, keeps its default.
 export function harmThresholds(read = configValue) {
-  const num = (id) => { const n = Number(read(id)); return Number.isFinite(n) && n > 0 ? n : Number(rowDefault(id)); };
+  const num = (id) => {
+    const raw = read(id);
+    const r = raw == null ? null : checkRow(ROW_ENTRY.get(id), [String(raw)]);
+    return r && !r.errors.length && r.value > 0 ? r.value : Number(rowDefault(id));
+  };
   return { swapGrowGiB: num('harm-swap-growth'), tmpfsGiB: num('harm-tmpfs'), vmmemShare: num('harm-vmmem') / 100 };
 }
 
@@ -1579,11 +1586,14 @@ export function harmThresholds(read = configValue) {
 export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes, vmmem }, { swapGrowGiB = 2, windowMs = HARM_WINDOW_MS, tmpfsGiB = 2, inodeShare = 0.8, vmmemShare = 0.9 } = {}) {
   const st = { swap: [], oomKeys: null, swapFired: false, tmpFired: false, inodesFired: false, vmmemFired: false, oomUnread: false, ...state };
   const lines = [];
+  // Past its threshold on this sample, whatever the latch that keeps a line from repeating says.
+  const standing = [];
   if (swapGiB != null) {
     const swap = [...st.swap.filter((x) => now - x.at <= windowMs), { at: now, gib: swapGiB }];
     const low = Math.min(...swap.map((x) => x.gib));
     const grew = swapGiB - low;
-    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
+    if (grew >= swapGrowGiB) standing.push('SWAP-GROWING');
+    if (grew >= swapGrowGiB && !st.swapFired) lines.push(`SWAP-GROWING: swap used went from ${low.toFixed(1)}G to ${swapGiB.toFixed(1)}G, up ${grew.toFixed(1)}G in ${Math.round(windowMs / 60000)}m: hold new spawns`);
     st.swapFired = grew >= swapGrowGiB ? true : grew < swapGrowGiB / 2 ? false : st.swapFired;
     st.swap = swap;
   }
@@ -1608,11 +1618,13 @@ export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes,
     for (const sig of workerMemSignals(text)) lines.push(`WORKER-OOM: ${key}'s log shows ${sig}: drop to the ladder's lowest count`);
   }
   if (tmpGiB != null) {
+    if (tmpGiB >= tmpfsGiB) standing.push('TMPFS-HIGH');
     if (tmpGiB >= tmpfsGiB && !st.tmpFired) lines.push(`TMPFS-HIGH: /tmp (tmpfs) holds ${tmpGiB.toFixed(1)}G, which memory pressure pushes to swap, not a leak: see what holds it (du -sh /tmp/*)`);
     st.tmpFired = tmpGiB >= tmpfsGiB ? true : tmpGiB < tmpfsGiB / 2 ? false : st.tmpFired;
   }
   if (tmpInodes?.total > 0) {
     const share = tmpInodes.used / tmpInodes.total;
+    if (share >= inodeShare) standing.push('TMPFS-INODES');
     if (share >= inodeShare && !st.inodesFired) {
       lines.push(`TMPFS-INODES: /tmp (tmpfs) has used ${Math.round(share * 100)}% of its inodes (${tmpInodes.used.toLocaleString('en-US')} of ${tmpInodes.total.toLocaleString('en-US')}); once all are used no shell on this computer can start: see what holds them (du --inodes -s /tmp/* | sort -n | tail)`);
     }
@@ -1620,23 +1632,26 @@ export function harmStep(state, { now, swapGiB, oom, workers, tmpGiB, tmpInodes,
   }
   if (vmmem?.grantGiB > 0) {
     const share = vmmem.usedGiB / vmmem.grantGiB;
+    if (share >= vmmemShare) standing.push('VMMEM-HIGH');
     if (share >= vmmemShare && !st.vmmemFired) {
       lines.push(`VMMEM-HIGH: the WSL VM holds ${vmmem.usedGiB.toFixed(1)}G of its ${vmmem.grantGiB.toFixed(1)}G .wslconfig grant (${Math.round(share * 100)}%), past which it can only swap: hold new spawns`);
     }
     st.vmmemFired = share >= vmmemShare ? true : share < vmmemShare - 0.05 ? false : st.vmmemFired;
   }
-  const standing = [['SWAP-GROWING', st.swapFired], ['TMPFS-HIGH', st.tmpFired], ['TMPFS-INODES', st.inodesFired], ['VMMEM-HIGH', st.vmmemFired]]
-    .filter(([, on]) => on).map(([s]) => s);
   return { state: st, lines, standing };
 }
 
 // The signs in a worker log's text that one of its commands ran out of memory: Node's fatal heap
-// error, or a command the Bash tool reports killed by SIGKILL (exit 137, what the OOM killer sends).
-// Both are matched as the runtime prints them, so a ticket or briefing that only mentions them is not.
-export const workerMemSignals = (text) => [
-  ...(/FATAL ERROR:[^"\n]*JavaScript heap out of memory/.test(text) ? ['JavaScript heap out of memory'] : []),
-  ...(/(?:^|"|\\n)Exit code 137\b/m.test(text) ? ['a command killed with exit 137 (SIGKILL)'] : []),
-];
+// error opening a line of a failed tool call's output, or a failed call the Bash tool reports as
+// killed by SIGKILL (exit 137, what the OOM killer sends). Only failed tool results are read, decoded,
+// so a file read, a grep or the worker's own prose that quotes either is not one.
+export function workerMemSignals(text) {
+  const failed = toolResults(text).filter((r) => r.failed).map((r) => r.text);
+  return [
+    ...(failed.some((t) => /^FATAL ERROR:.*JavaScript heap out of memory/m.test(t)) ? ['JavaScript heap out of memory'] : []),
+    ...(failed.some((t) => /^Exit code 137\b/.test(t)) ? ['a command killed with exit 137 (SIGKILL)'] : []),
+  ];
+}
 
 // What each worker log in `dir` gained since `seen` ({ <file>: bytes read }), in whole lines, as
 // { seen, chunks: [{ key, text }] } with the key the log's ticket. The first reading (seen null)
@@ -1680,12 +1695,7 @@ export function harmRecord(prev, { now, lines, standing }) {
   for (const s of standing) if (rec[s]) rec[s] = { ...rec[s], at: now };
   return rec;
 }
-export function writeHarmRecord(state, rec) {
-  const file = join(state, HARM_FILE);
-  mkdirSync(state, { recursive: true });
-  writeFileSync(`${file}.tmp`, `${JSON.stringify(rec)}\n`);
-  renameSync(`${file}.tmp`, file);
-}
+export const writeHarmRecord = (state, rec) => writeJsonAtomic(join(state, HARM_FILE), rec);
 export function readHarmRecord(state) {
   try { const rec = JSON.parse(readFileSync(join(state, HARM_FILE), 'utf8')); return rec && typeof rec === 'object' ? rec : null; } catch { return null; }
 }

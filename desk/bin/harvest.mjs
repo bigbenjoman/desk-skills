@@ -115,6 +115,25 @@ export function lastStage(logText) {
 // command_lifecycle event, say) is not a turn, so only turn events after the last result count.
 // Lines that are not JSON (stderr) are skipped.
 const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
+// Every tool result in a log's text, in order, as { failed, text }: `failed` is the tool's own is_error,
+// `text` its output as the tool returned it (decoded, not as the log escapes it).
+export function toolResults(logText) {
+  const results = [];
+  for (const line of String(logText ?? '').split('\n')) {
+    if (!line.includes('tool_result')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    const content = e?.type === 'user' ? e.message?.content : null;
+    if (!Array.isArray(content)) continue;
+    for (const c of content) {
+      if (c?.type !== 'tool_result') continue;
+      const text = typeof c.content === 'string' ? c.content
+        : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+      results.push({ failed: !!c.is_error, text });
+    }
+  }
+  return results;
+}
 // A fault of the computer, not the ticket: a tool call that failed (is_error) on ENOSPC, no space or no
 // inodes left, among the worker's last HOST_RESULTS tool results. The text naming it, cut to 200
 // characters, or null. Only a failed call counts: a file read, a grep or a passing run that merely
@@ -123,19 +142,8 @@ const TURN_EVENTS = new Set(['assistant', 'user', 'stream_event', 'system']);
 const HOST_RESULTS = 12;
 const HOST_FAULT = /\bENOSPC\b|No space left on device/;
 export function hostFault(logText) {
-  const results = [];
-  for (const line of String(logText ?? '').split('\n')) {
-    if (!line.includes('tool_result')) continue;
-    let e;
-    try { e = JSON.parse(line); } catch { continue; }
-    const content = e?.type === 'user' ? e.message?.content : null;
-    if (!Array.isArray(content)) continue;
-    for (const c of content) if (c?.type === 'tool_result') results.push(c);
-  }
-  for (const c of results.slice(-HOST_RESULTS).reverse()) {
-    if (!c.is_error) continue;
-    const text = typeof c.content === 'string' ? c.content
-      : Array.isArray(c.content) ? c.content.map((x) => (typeof x?.text === 'string' ? x.text : '')).join('\n') : '';
+  for (const { failed, text } of toolResults(logText).slice(-HOST_RESULTS).reverse()) {
+    if (!failed) continue;
     const m = HOST_FAULT.exec(text);
     if (!m) continue;
     const at = Math.max(0, m.index - 80);

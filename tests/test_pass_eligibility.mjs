@@ -189,6 +189,8 @@ function slots(s) {
   const held = eligibility(snap(byKey({ key: 'R', state: 'running' }, triaged('A')), { memory: { low: true, avail: 20, hold: 4, start: 8, dropTo: 1, harm } }));
   t('a recent harm signal holds spawns with avail high, naming the signal', j(held.lines), j([`${harm} — holding spawns (1 running carry on)`]));
   t('and it is not a person stall', j(held.stalls), '[]');
+  t('AC7 it holds every spawn, so no ticket gets a slot with avail high', j([held.spawnHeld, slots(slotsSnap(held)).slots]), j([harm, 0]));
+  t('AC9 with no harm signal, avail high gives the slots as before', slots(slotsSnap(eligibility(snap(byKey(triaged('A'), triaged('B')))))).slots, 2);
 }
 
 // ---- slots, and borrowing ----

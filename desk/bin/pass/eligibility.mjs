@@ -125,6 +125,7 @@ export function* decideEligibility(s) {
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
     : s.health.holding.length ? `a failing health check (${s.health.holding.join(', ')}) holds every spawn`
     : !g.may ? `config §3 ${g.key} is "${g.perm}"`
+    : s.memory.harm ? s.memory.harm
     : s.pace.bad ? `config §3b "${s.pacingRow}" holds every spawn`
     : s.pace.hold ? PACE_HELD : null;
   // Pacing holds new tickets, never a fix try: its PR is already out and stalls until the try runs, so
