@@ -105,7 +105,8 @@
 //                                             "no drift" and exit 0, else exit 1. --all: every repo
 //   node desk-env.mjs drift --app <dir>       every §4 row that app needs to run for screenshots and lacks,
 //                                             with the value to add: Dev server (NODEV) and the .env* files
-//                                             its primary-checkout directory holds (NOENV); exit 1 if any
+//                                             its primary-checkout directory holds (NOENV), and a Test sign-in
+//                                             user for an app it runs (NOSIGNIN); exit 1 if any
 //   node desk-env.mjs add-row <section> <§3 key | "row name"> <value> [--note "<text>"]
 //                                             add one row drift names MISSING, from the template, with that
 //                                             value; prints ADDED, and a §3 row's perm read back
@@ -170,6 +171,7 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
+import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
@@ -187,10 +189,7 @@ export const SCREENSHOT_FILE = /\.(png|jpe?g)$/i;
 // ---- which repo, which config --------------------------------------------------------------
 export const deskConfigRoot = () => expandHome(process.env.DESK_CONFIG_ROOT ?? join(HOME, '.config', 'desk'));
 
-const git = (dir, ...args) => {
-  try { return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
-  catch { return ''; }
-};
+const git = (dir, ...args) => outOrNull(runOnce('git', ['-C', dir, ...args])) ?? '';
 
 // `owner/name` from any git remote URL: https://host/owner/name(.git)(/), git@host:owner/name.git,
 // ssh://git@host:443/owner/name.git, and ssh host aliases such as git@github-work:owner/name.git.
@@ -1159,6 +1158,9 @@ export function batchPaths(slug, batch = null) {
 }
 export const stateDir = () => expandHome(process.env.DESK_AUTOPILOT_STATE ?? batchPaths(repoSlug(), batchName()).state);
 export const queueFile = () => expandHome(process.env.DESK_QUEUE ?? batchPaths(repoSlug(), batchName()).queue);
+// The repo's exits folder, whichever batch this is: a worker's exit file renamed in here wakes the
+// supervisor's next tick (spawn-worker.sh writes it, supervisor.mjs watches and empties it).
+export const exitsDir = () => join(repoStateOf(stateDir()), 'exits');
 // The clones of §4 Worker read-only repos belong to the repo, not to a batch: they sit under the
 // standing batch's folder whichever batch this is, and DESK_AUTOPILOT_STATE, which names one batch, never moves them.
 export const readRepoDir = () => join(batchPaths(repoSlug()).state, 'ref');
@@ -1473,7 +1475,8 @@ function linuxMeminfo() {
 }
 function macVmStat() {
   try {
-    const out = execFileSync('vm_stat', { encoding: 'utf8' });
+    const out = outOrNull(runOnce('vm_stat'));
+    if (out == null) return null;
     const pageSize = Number(/page size of (\d+) bytes/.exec(out)?.[1] ?? 4096);
     const pages = (label) => Number(new RegExp(`${label}:\\s+(\\d+)`).exec(out)?.[1] ?? 0) * pageSize;
     return {
@@ -1522,7 +1525,7 @@ export function parsePs(text, columns) {
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
 // partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
 export function psRows(columns, env = {}) {
-  const r = spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const r = remember(['ps', columns, env], () => spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);
@@ -1836,7 +1839,8 @@ const readPackage = (root, dir) => { try { return JSON.parse(readFileSync(join(r
 // Every §4 row one app needs before a worker can run it for screenshots, that the config lacks for
 // it, each with the value to add: a Dev server item where its package.json has a dev script, and the
 // `.env*` files its directory holds in the primary checkout (`root`) where Env files names none under
-// it. A row unset is drift's MISSING, and `none` is a decision: neither is a gap here.
+// it, and a Test sign-in item. A row unset is drift's MISSING, and `none` is a decision: neither is a
+// gap here, except the Test sign-in row unset.
 // -> [{ row, dir, value: [item], have?: [file] }]
 export function appSetupGaps(parsed, root, dir) {
   const app = String(dir).replace(/^(\.\/)+/, '').replace(/\/+$/, '') || '.';
@@ -1853,14 +1857,24 @@ export function appSetupGaps(parsed, root, dir) {
     try { have = readdirSync(join(root, app), { withFileTypes: true }).filter((e) => e.isFile() && /^\.env/.test(e.name) && !/\.(example|sample|template|dist)$/.test(e.name)).map((e) => e.name).sort(); } catch { /* no such directory */ }
     if (have.length) gaps.push({ row: 'Env files', dir: app, value: have.map((f) => (app === '.' ? f : `${app}/${f}`)), have });
   }
+  // An app with a Dev server item, or one just proposed, needs a user to sign in as. Unlike the rows
+  // above, an unset Test sign-in row is a gap here: only the person can name the user.
+  const runs = gaps.some((g) => g.row === 'Dev server') || (dev && !isNone(dev) && (devServed(dev).has(app) || (p?.name && devServed(dev).has(p.name))));
+  const signin = configValuesIn(parsed, 'test-signin');
+  if (runs && !(signin && isNone(signin)) && !(signin ?? []).some((x) => parseCommandItem(x).dir === app)) {
+    gaps.push({ row: 'Test sign-in', dir: app, value: [`${app === '.' ? '' : `${app}: `}${SIGNIN_PLACEHOLDER}`] });
+  }
   return gaps;
 }
+const SIGNIN_PLACEHOLDER = '<email of an existing development user who holds the app\'s grant>';
 
 export function appGapLines(gaps, dir) {
   const spans = (xs) => xs.map((x) => `\`${x}\``).join(' ');
   const lines = gaps.map((g) => (g.row === 'Dev server'
     ? `NODEV    §4 Dev server has no item for ${g.dir}, whose package.json has a dev script: add ${spans(g.value)}`
-    : `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`));
+    : g.row === 'Env files'
+      ? `NOENV    §4 Env files has no item under ${g.dir}, whose primary checkout holds ${g.have.join(', ')}: add ${spans(g.value)}`
+      : `NOSIGNIN §4 Test sign-in has no item for ${g.dir}, which a worker runs for screenshots: add ${spans(g.value)}, never a password (\`none\` where no app needs signing in to)`));
   return lines.length ? lines : [`no setup gaps for ${dir}`];
 }
 
@@ -1999,7 +2013,7 @@ export async function setRepoSubscription(slug, value, root = deskConfigRoot()) 
 // for another repo must not inherit that part, so PER_REPO_ENV names it (with DESK_BATCH, an input).
 const PATHS = {
   DESK_REPO_ROOT: repoRoot, DESK_WORKTREES_DIR: worktreesDir, DESK_HOME: deskHome, DESK_SLUG: repoSlug, DESK_REPO_CONFIG_DIR: repoConfigDir, DESK_DEFAULT_BRANCH: defaultBranch,
-  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_SKILLS_DIR: skillsDir,
+  DESK_BIN: binDir, DESK_RUN_BIN: runBin, DESK_STATE: stateDir, DESK_QUEUE: queueFile, DESK_EXITS_DIR: exitsDir, DESK_SKILLS_DIR: skillsDir,
   DESK_LOCK_DIR: lockDir, DESK_MEMORY_DIR: memoryDir, DESK_GH_REPO: ghRepo,
   DESK_PG_CONTAINER: pgContainer, DESK_DEV_PORT: devPort, DESK_WORKER_PORT_FLOOR: workerPortFloor, DESK_IS_WSL: () => (isWSL() ? 'yes' : 'no'),
 };

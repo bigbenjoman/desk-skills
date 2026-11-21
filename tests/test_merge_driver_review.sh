@@ -203,9 +203,36 @@ jq '.["221"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.
 rvloop
 check "#752 the first loop with no answer records when it was first seen, and asks nobody yet" '[ "$(cut -d" " -f1 "$SD/unknown-221")" = "$SHA221" ] && [ "$(qf T-221 .merge_blocked)" = null ]'
 out=$(DESK_CONFIG="$T/config-rv.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 MERGE_DRIVER_UNKNOWN_SECS=0 bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1)
-check "#752 past the limit the queue asks the person for a new commit, naming the wedged merge ref" '[ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 0 minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 0 minutes"'
+check "DS-856 AC5: past the limit with §3 pr-update-branch not yes, no repair is tried and the queue asks the person, saying none was permitted" '! grep -q "pr update-branch 221" "$T/gh.log" && [ "$(qf T-221 .merge_blocked)" = "merge ref: GitHub has not worked out whether #221 conflicts with its base at d22111111 for 0 minutes, and starts no run for that head; no repair was permitted, as §3 pr-update-branch is no: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ] && echo "$out" | grep -q "#221 at d22111111 has had no mergeability answer from GitHub for 0 minutes"'
 jq '.["221"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
 rvloop
 check "#752 once GitHub answers, the note and the record are cleared" '[ "$(qf T-221 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-221" ]'
+
+# DS-856: where §3 pr-update-branch is yes, past the limit the driver updates the branch once, logging
+# the PR and how long it has had no answer; past it again, the queue asks the person, naming that repair.
+awk '{ print } /^\| `pr-ready`/ { print "| `pr-update-branch` | Update branch | `yes` | `yes` |" }' "$T/config-rv.md" > "$T/config-rv-up.md"
+SHA222=d222111111111111111111111111111111111111
+vp 222 "$SHA222" -
+rv_prs unkup "222|fix/T-222|$SHA222|fix: T-222 wedged|"
+jq '.["222"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+unkloop(){ out=$(DESK_CONFIG="$T/config-rv-up.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 MERGE_DRIVER_UNKNOWN_SECS="$1" bash "$B/merge-driver.sh" --tickets "$RV_TICKETS" 2>&1); }
+unkloop 3600; unkloop 3600
+check "DS-856 AC3: within the limit it waits, with no repair and no note" '! grep -q "pr update-branch 222" "$T/gh.log" && [ "$(qf T-222 .merge_blocked)" = null ]'
+unkloop 0
+check "DS-856 AC1/AC6: past the limit the branch is updated once, and the log names the PR and how long it has had no answer" 'grep -q "pr update-branch 222 --repo acme/widgets" "$T/gh.log" && echo "$out" | grep -qF "#222 at d22211111 has had no mergeability answer from GitHub for 0 minutes — its merge ref looks wedged; gh pr update-branch once" && [ "$(qf T-222 .merge_blocked)" = null ]'
+unkloop 0
+check "DS-856 AC2: still no answer past the limit after that repair, the queue asks the person, naming it, and no second update is made" '[ "$(grep -c "pr update-branch 222" "$T/gh.log")" = 1 ] && [ "$(qf T-222 .merge_blocked)" = "merge ref: GitHub has not worked out whether #222 conflicts with its base at d22211111 for 0 minutes, and starts no run for that head; desk already updated its branch from its base once, and GitHub still has no answer: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch" ]'
+jq '.["222"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+unkloop 0
+check "DS-856 AC4: once GitHub answers, the record and the repair are cleared, so a later spell starts afresh" '[ "$(qf T-222 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-222" ] && [ ! -e "$SD/unknown-repair-222" ]'
+
+# A PR a worker still holds for the person's instruction is never updated under it, however long it has had no answer.
+SHA223=d223111111111111111111111111111111111111
+vp 223 "$SHA223" -
+rv_prs unkheld "223|fix/T-223|$SHA223|fix: T-223 wedged and held|"
+q set T-223 'fix={"try":1,"of":1,"kind":"instruction","pr":223,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+jq '.["223"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+unkloop 0; unkloop 0; unkloop 0
+check "DS-856: a PR held for a worker's instruction gets no update-branch past the limit" '! grep -q "pr update-branch 223" "$T/gh.log" && echo "$out" | grep -q "#223 HELD: a worker has still to carry out"'
 
 finish review

@@ -1489,14 +1489,23 @@ dragbody 764 "Before | After
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-492 AC2 every cell filled, the next pass takes it out of draft though the upload was partial" \
   '[ "$(field S-4 images_uploaded)" = "\"partial\"" ] && grep -q "^pr ready 764" "$T/gh-calls"'
-# S-5: an upload that matched no cell at all still goes to the person, as before.
+# S-5: an upload that matched no cell at all is partial, and never a person's: its cell goes to the undraft step.
 q add S-5; q set S-5 state=running session_id=gone lane=A branch=fix/S-5 result.pr=765; frx 765 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 765 "_drag s-5.png_"
 mkdir -p "$T/state-s/images/S-5"; : > "$T/state-s/images/S-5/other.png"
 say "AUTOPILOT_IMAGES: $T/state-s/images/S-5/" "AUTOPILOT_DONE: pr=765 jira=Done" > "$T/state-s/logs/S-5.log"
 printf '%s\n' '[upload] uploaded, but found no _drag placeholders matching the files' > "$T/upload-left"
 out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/upload-left"
-check "DS-492 an upload that matched no cell is partial and put to the person, never re-uploaded" \
-  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 is INCOMPLETE — .*do not re-upload\.$"'
+check "DS-492 an upload that matched no cell is partial, never re-uploaded, and not put to the person" \
+  '[ "$(field S-5 images_uploaded)" = "\"partial\"" ] && echo "$out" | grep -q "S-5: image upload to PR #765 placed no image: none of its files matches a cell in the body — .*nothing is re-uploaded, and any cell left goes to the undraft step$" && ! echo "$out" | grep -q "INCOMPLETE"'
+# S-9: every before/after pair is byte for byte the same, so the body has no table: nothing to upload,
+# images_uploaded=none, and nothing for the person.
+q add S-9; q set S-9 state=running session_id=gone lane=A branch=fix/S-9 result.pr=769; frx 769 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 769 "No visual change: every before/after pair is identical."
+mkdir -p "$T/state-s/images/S-9"; for v in desktop mobile; do printf 'same-%s' "$v" > "$T/state-s/images/S-9/before-$v.png"; printf 'same-%s' "$v" > "$T/state-s/images/S-9/after-$v.png"; done
+say "AUTOPILOT_IMAGES: $T/state-s/images/S-9/" "AUTOPILOT_DONE: pr=769 jira=Done" > "$T/state-s/logs/S-9.log"
+ups=$(grep -c . "$T/uploads" 2>/dev/null || echo 0)
+out=$(node "$B/pass.mjs" 2>&1)
+check "identical before/after pairs record images_uploaded=none, with no upload and nothing for the person" \
+  '[ "$(field S-9 images_uploaded)" = "\"none\"" ] && [ "$(grep -c . "$T/uploads" 2>/dev/null || echo 0)" = "$ups" ] && ! echo "$out" | grep -q "S-9.*INCOMPLETE\|S-9: image upload"'
 # S-6: an evidence workflow that cannot start asks for it to be run, never for an upload.
 q add S-6; q set S-6 state=done lane=A branch=fix/S-6 result.pr=766 images_uploaded=none; frx 766 "$H1" "$H1" 'p0=0 p1=0 p2=0'; dragbody 766 "$mixed"
 : > "$T/wf-refuse-766"; out=$(node "$B/pass.mjs" 2>&1); rm -f "$T/wf-refuse-766"

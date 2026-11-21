@@ -34,9 +34,9 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what the pass reads when nothing is there.
 const READS = {
-  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
+  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null },
+  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -78,6 +78,14 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('AC1 and a quiet worker it cannot stop is counted, not parked as wedged', j(sets(advance(tickets[2]))), '["idle_passes=6"]');
 }
 
+// DS-695: a pass another worker's exit woke counts no quiet pass, so it never stops a quiet worker sooner.
+{
+  const quiet = snap(ticket('W', { session_id: 'live-1', log_bytes: 0, idle_passes: 5 }), logOf('W', '', []), { sessions: [{ sessionId: 'live-1', pid: 7 }] });
+  const as = advance({ ...quiet, woken: true });
+  t('DS-695 a woken pass leaves a quiet worker\'s count and running', j([sets(as), types(as).includes('park'), types(as).includes('kill')]), j([[], false, false]));
+  t('DS-695 the interval\'s pass still counts it, and stops it at six', j([sets(advance(quiet)).includes('idle_passes=6'), types(advance(quiet)).includes('park')]), j([true, true]));
+}
+
 // AC2: workers the registry lists, whose logs show them still working, get no action that moves them on.
 {
   const sessions = [{ sessionId: 'sid-A', pid: 11 }, { sessionId: 'sid-B', pid: 12 }];
@@ -94,10 +102,39 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const as = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])));
   const done = as.find((a) => a.type === 'done');
   t('AC3 a DONE worker is recorded done on the PR it names', j(done), j({ type: 'done', key: 'D', pr: '12', summary: 'pr=12 jira=Done', line: 'pr=12 jira=Done', sets: [] }));
-  t('AC3 after recording its exited head, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","done","settle-links","park-links"]');
+  t('AC3 after recording its exited head and reading whose its PR is, and then its issue links are settled', j(types(as).slice(types(as).indexOf('worker-head'))), '["worker-head","pr-owner","done","settle-links","park-links"]');
   t('DS-193 AC1 a finished worker with no screenshot records none', j(sets(as)), j([`log_bytes=${logOf('D', DONE, [said(DONE), RESULT]).size}`, 'idle_passes=0', 'images_uploaded=none']));
   const parkedLinks = advance(snap(ticket('D'), logOf('D', DONE, [said(DONE), RESULT])), { 'settle-links': [{ why: 'no grant', link: null }] });
   t('links a DONE worker asked for that were not made go to park-links', j(parkedLinks.at(-1)), j({ type: 'park-links', key: 'D', needs: [{ why: 'no grant', link: null }], pr: '12' }));
+}
+
+// A DONE marker naming a PR that is not the worker's own: on another branch, or opened by another
+// person (their epic roll-up PR, say). It is never taken as the ticket's result: the ticket parks.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=77 jira=Done';
+  const log = () => logOf('D', DONE, [said(DONE), RESULT]);
+  const ownerOf = (branch, author) => (a) => (a.pr === '77' ? { pr: a.pr, branch, author } : null);
+  const theirs = advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('epic/E', 'alice') });
+  t('a DONE naming a PR on another branch is not recorded done', j(types(theirs).filter((x) => ['done', 'park'].includes(x))), '["park"]');
+  t('it parks, naming the PR, its branch and the ticket\'s, and that nothing is done to it', /^its PR #77 is not its own: PR #77 is on branch epic\/E, not D's branch fix\/D\. .*nothing is done to #77: no fix or review try, undraft, reopen or merge/.test(theirs.find((a) => a.type === 'park')?.question ?? ''), true);
+  t('the report says so', lines(theirs, 'parked').some((l) => l.startsWith('D: its worker reported PR #77, which is not its own')), true);
+  t('nor is one on its own branch that another account opened', types(advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('fix/D', 'alice') })).includes('done'), false);
+  t('its own PR is recorded done as before', types(advance({ ...snap(ticket('D'), log()), logins: 'me,me-bot' }, { 'pr-owner': ownerOf('fix/D', 'Me-Bot') })).includes('done'), true);
+  t('a PR whose owner could not be read is recorded done, the fix tries checking it again', types(advance({ ...snap(ticket('D'), log()), logins: 'me' })).includes('done'), true);
+}
+
+// Before/after pairs whose two files are the same show no change: nothing to upload, and the ticket
+// records none, with no upload and nothing for the person.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=12 jira=Done';
+  const h = `AUTOPILOT_IMAGES: /state/images/D/\n${DONE}`;
+  const log = () => logOf('D', h, [said('AUTOPILOT_IMAGES: /state/images/D/'), said(DONE), RESULT]);
+  const pairs = ['before-desktop.png', 'after-desktop.png', 'before-mobile.png', 'after-mobile.png'];
+  const same = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs });
+  t('identical before/after pairs record images_uploaded=none', sets(same).includes('images_uploaded=none'), true);
+  t('and nothing is uploaded or put to the person', j([types(same).includes('upload'), lines(same, 'waiting').length]), j([false, 0]));
+  const one = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2) });
+  t('a changed pair beside them is uploaded as before', j([types(one).includes('upload'), sets(one).includes('images_uploaded=none')]), j([true, false]));
 }
 
 // The cases tests/test_pass_workers.sh runs end to end, decided here.

@@ -63,7 +63,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -160,6 +160,8 @@ export function* decideAdvance(s) {
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
     if (t.idle_passes) yield set(t.key, 'idle_passes=0');
+  } else if (s.woken) {
+    // A pass another worker's exit woke counts no quiet pass: six still take six intervals.
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     const stall = idle >= WEDGE_PASSES && !done && !handoff && !reboot;
@@ -216,8 +218,12 @@ export function* decideAdvance(s) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     const shots = (yield { type: 'shots', key: t.key, dir: imgDir }).filter((f) => SCREENSHOT_FILE.test(f));
+    // A before/after pair whose two files are the same shows no change: the PR body leaves it out
+    // (desk-pr screenshots.md), so it is nothing to upload.
+    const same = shots.length ? yield { type: 'same-pairs', key: t.key, dir: imgDir, shots } : [];
+    const changed = shots.filter((f) => !same.includes(f));
     const finished = done || built || mergeOnly;
-    if (!shots.length) {
+    if (!changed.length) {
       if (finished) yield set(t.key, 'images_uploaded=none');
     } else if (!namedImgDir && (crashOf(t, prNo) || !(finished && (yield { type: 'cells', key: t.key, pr: prNo, shots })))) {
       // The briefed directory, unnamed this round, is uploaded only once its worker is finished (with no
@@ -322,6 +328,15 @@ export function* decideAdvance(s) {
   } else if (handoff) yield { type: 'handoff', key: t.key, said: handoff, imgs: logImgDir, stopped };
   else if (done) {
     const pr = /pr=(\d+)/.exec(done)?.[1] ?? null;
+    // A PR is a ticket's result only on the branch its worker made, opened by desk's account: another
+    // person's PR (their epic roll-up, say) taken as one would get desk's fix and review tries pushed to it.
+    const foreign = pr ? notOwnPr(t, yield { type: 'pr-owner', key: t.key, pr }, s.logins) : null;
+    if (foreign) {
+      yield { type: 'decisions', key: t.key, pr: null };
+      yield { type: 'park', key: t.key, question: foreignQuestion(pr, foreign) };
+      yield say(t.key, 'parked', `${t.key}: its worker reported PR #${pr}, which is not its own (${foreign}): parked, not recorded done`);
+      return;
+    }
     // A finished ticket sent back later (a spec check, a spine rejected) is rework: from Stage 0, not
     // the stage its last handoff named.
     // A capture try's said= names each screen it could not take and why: kept whole (result.done.said), as

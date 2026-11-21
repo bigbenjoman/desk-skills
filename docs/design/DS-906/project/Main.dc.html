@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q Queue today, with Leases</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t{font-family:"SF Mono",Menlo,Monaco,"Cascadia Mono",monospace;font-size:13px;line-height:18px;color:#d6d7dc}
+.l{white-space:pre;height:18px;overflow:hidden}
+.b{font-weight:700;color:#f3f3f5}
+.d{color:#868991}
+.p{color:#c7a0f2}
+.g{color:#93d081}
+.c{color:#6fc8dc}
+.y{color:#e8b65a}
+.o{color:#e5a463}
+.u{color:#82a9f6}
+.inv{background:#e4e4e8;color:#1d1e22}
+.sel{background:#2f3038}
+.lnk{text-decoration:underline}
+.flag{background:rgba(232,90,90,0.16);box-shadow:inset 3px 0 0 #ef7b7b}
+</style>
+</helmet>
+<div style="width: 920px; height: 860px; display: flex; flex-direction: column; background: #f4f4f2; font-family: Inter, system-ui, sans-serif">
+<div class="t" style="height: 660px; background: #1d1e22; border-radius: 12px 12px 0 0; display: flex; flex-direction: column; overflow: hidden">
+<div style="height: 28px; background: #2a2b31; display: flex; align-items: center; gap: 8px; padding: 0 12px; flex-shrink: 0">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #ef6a5e"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #f4bf4f"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #61c454"></span>
+<span style="margin-left: 12px; font-size: 12px; color: #a3a5ad">desk-q</span>
+</div>
+<div style="padding: 10px 14px; display: flex; flex-direction: column; flex-grow: 1; overflow: hidden">
+<div class="l"><span class="b">desk-q</span> · 16:18</div>
+<div class="l"><span class="inv">1 Queue</span>  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="p b">◆ 34 tickets need you</span>  <span class="d">oldest 9d 21h │</span> studia-web <span class="b">19</span> <span class="d">·</span> ai-agents <span class="b">12</span> <span class="d">·</span> desk-skills <span class="b">2</span> <span class="d">·</span> studia-zendesk <span class="b">1</span></div>
+<div class="l"><span class="g">● 16 workers running</span> <span class="d">·</span> <span class="c">▸ 12 merge drivers running</span> <span class="d">│</span> machine cap <span class="b">30</span> <span class="d">·</span> room for <span class="b">5 more</span> <span class="d">│</span> <span class="b">21.4 GiB</span> free</div>
+<div class="l"><span class="d">○ Levers too early to say │ testing 6 · smaller arm 0 of 30 tickets │</span> <span class="lnk">Open Levers ↗</span></div>
+<div class="l">&#160;</div>
+<div class="l b">  REPO            LAST PASS                  RUN  READY  WAIT          NEEDS YOU  ALL DONE BY  WORKERS</div>
+<div class="l">  studia-web      <span class="g">● supervisor · just now</span>      <span class="d">0</span>      <span class="d">0</span>    <span class="o">59</span>    <span class="p">19 (+9 put off)</span>  no date yet  0 of 30 · cap 30</div>
+<div class="l sel">› desk-skills     <span class="g">● supervisor · just now</span>     <span class="g">16</span>     <span class="u">16</span>    <span class="o">74</span>    <span class="p">2 (+11 put off)</span>  no date yet  16 of 30 · cap 30</div>
+<div class="l">  ai-agents       <span class="g">● supervisor · just now</span>      <span class="d">0</span>      <span class="d">0</span>    <span class="o">26</span>   <span class="p">12 (+14 put off)</span>  no date yet  0 of 21 · cap 30</div>
+<div class="l">  studia-zendesk  <span class="g">● supervisor · just now</span>      <span class="d">0</span>      <span class="d">0</span>     <span class="o">6</span>                  <span class="p">1</span>  no date yet  0 of 18 · cap 30</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">note</span>  <span class="y">▲ studia-web</span>     the merge driver stopped at 00:52: no ready batch PRs.</div>
+<div class="l">      <span class="c">▸ desk-skills</span>    1 PR merging. Its screen lists it.</div>
+<div class="l">        <span class="d">desk-skills</span>    13 ready with no free slot: they start as its running workers finish.</div>
+<div class="l">      <span class="p">◆ needs you</span>      <span class="b">/desk-needs-you</span>, in a Claude session, asks you about all 34.</div>
+<div class="l">        <span class="d">dates</span>          Tickets that need your answer have no date · c: date them as if answered at the</div>
+<div class="l">                       next check-in</div>
+<div class="l">&#160;</div>
+<div class="flag" style="display: flex; flex-direction: column">
+<div class="l b">Leases</div>
+<div class="l d">  KIND  KEY    HOLDER                                                                                    AGE      EXPIRES</div>
+<div class="l">  port  3204   bigbenjoman/desk-skills standing DS-796 (pid 57970)                                       2h 17m   in 21h 42m</div>
+<div class="l">  port  3212   bigbenjoman/desk-skills standing DS-871 (pid 79184)                                       33m      in 23h 26m</div>
+<div class="l">  port  3234   bigbenjoman/desk-skills standing DS-207 (pid 12176)                                       33m      in 23h 26m</div>
+<div class="l">  port  3213   bigbenjoman/desk-skills standing DS-696 (pid 89200)                                       27m      in 23h 32m</div>
+<div class="l">  port  3237   bigbenjoman/desk-skills standing DS-949 (pid 50600)                                       24m      in 23h 35m</div>
+<div class="l">  port  3236   bigbenjoman/desk-skills standing DS-947 (pid 90678)                                       21m      in 23h 38m</div>
+<div class="l">  port  3228   bigbenjoman/desk-skills standing DS-836 (pid 52681)                                       21m      in 23h 39m</div>
+</div>
+<div style="flex-grow: 1"></div>
+<div class="l"><span class="d">Claude</span>  ben@studia.io  <span class="d">7d</span> <span class="g">██</span><span class="d">████████</span>  <span class="g">23%</span> Thu 18:00  <span class="d">│ default</span></div>
+<div class="l"><span class="d">Codex</span>   ben@studia.io  <span class="d">7d</span> <span class="g">█████</span><span class="d">█████</span>  <span class="g">54%</span> Mon 10:21  <span class="d">│ default</span></div>
+<div class="l"><span class="d">move</span>  <span class="b">↑↓</span> select <span class="d">·</span> <span class="b">enter</span> open <span class="d">·</span> <span class="b">↔</span> or <span class="b">1-6</span> view</div>
+<div class="l"><span class="d">act</span>   <span class="b">a</span> all repos <span class="d">·</span> <span class="b">c</span> parked dates <span class="d">·</span> <span class="b">s</span> supervisor <span class="d">·</span> <span class="b">v</span> levers <span class="d">·</span> <span class="b">:</span> command <span class="d">·</span> <span class="b">q</span> quit</div>
+</div>
+</div>
+<div style="flex-grow: 1; background: #ffffff; border: 1px solid #deded9; border-top: 0; border-radius: 0 0 12px 12px; padding: 20px 24px; display: flex; flex-direction: column; gap: 8px; color: #26272b">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #9a3b3b">Today</div>
+<div style="font-size: 18px; font-weight: 600; line-height: 24px">Nine lines that only say things are fine</div>
+<div style="font-size: 14px; line-height: 21px; color: #4a4b52">15 leases are held right now. The screen fits 7, the EXPIRES column runs off the edge, and every extra note pushes more rows off. No row asks you to do anything. The two things that would need you, a stuck lease and a clash, look the same as the healthy rows.</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":920,"height":860}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
