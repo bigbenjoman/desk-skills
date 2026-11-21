@@ -67,7 +67,7 @@ import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
 import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { queueWriter } from './queue-writer.mjs';
-import { archivedOf } from './queue-store.mjs';
+import { archivedOf, mergedPrs } from './queue-store.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -1239,11 +1239,8 @@ const foreign = (x, here) => !!x.url && repoOfPr(x.url) !== here;
 const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
 // kept as merged_pr with the url its status gave it, so a spawn never forgets one, nor whose repo it is in
-// once a later PR's status replaces that one. Whose repo each is in is judged when it is read. A kept bare
-// number was kept with no url, so no status named another repo's PR of it: it is this repo's, and is never
-// given the url of a PR status that may now name another repo's PR of its number.
-const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((x) => x != null)
-  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
+// once a later PR's status replaces that one. Whose repo each is in is judged when it is read (mergedPrs,
+// queue-store.mjs).
 // Kept by repo and number, so another repo's PR of the same number (needs-you's elsewhereDone) never
 // replaces this repo's own: a PR with no url, or this repo's, is this repo's.
 const keepMergedPr = (t) => {

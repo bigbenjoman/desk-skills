@@ -70,6 +70,12 @@ export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, 
 export const owesReopen = (t) => t?.reopening != null && String(t.reopening) === String(t.result?.pr)
   && !(String(t.pr_status?.pr) === String(t.result.pr) && t.pr_status?.state === 'MERGED');
 
+// The PRs a ticket's spawns kept (merged_pr, pass.mjs keepMergedPr) as { pr, url }. A kept bare number was
+// kept with no url, so no status named another repo's PR of it: it is this repo's (url null), never given
+// the url of a PR status that may now name another repo's PR of its number.
+export const mergedPrs = (t) => [].concat(t?.merged_pr ?? []).filter((x) => x != null)
+  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : { pr: Number(x), url: null }));
+
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
 
@@ -84,9 +90,12 @@ export function archivable(q, key) {
   const own = Number(t.pr_status?.pr) === Number(t.result.pr) ? t.pr_status : null;
   const closed = own?.state === 'CLOSED';
   // merged_at stays from an earlier PR once a ticket is requeued (batch-state.mjs ownPr), so it archives
-  // the ticket only while its current PR is read and not open, or while no PR status was read at all. A
-  // status naming another PR leaves the current one unread: the ticket stays live until a pass reads it.
-  const merged = !!t.merged_at && (own ? own.state !== 'OPEN' : t.pr_status?.pr == null);
+  // the ticket only while its current PR is read and not open, or, with no PR status read at all, while no
+  // spawn kept an earlier PR the current one is not among. A status naming another PR leaves the current
+  // one unread: the ticket stays live until a pass reads it.
+  const kept = mergedPrs(t).map((x) => x.pr);
+  const merged = !!t.merged_at && (own ? own.state !== 'OPEN'
+    : t.pr_status?.pr == null && (!kept.length || kept.includes(Number(t.result.pr))));
   if (!merged && !closed) return false;
   // A PR the pass still owes a reopen (its retry was refused) is kept whatever its stored state, which a
   // failed reopen leaves as last read (OPEN): the next pass retries it.

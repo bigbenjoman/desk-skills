@@ -171,6 +171,8 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
     U: tk('U', { state: 'done', result: { pr: 11 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 11, state: 'OPEN' } }),
     V: tk('V', { state: 'done', result: { pr: 13 }, merged_at: '2026-11-16T10:00:00.000Z', merged_pr: [12], pr_status: { pr: 12, state: 'MERGED' } }),
     W: tk('W', { state: 'done', result: { pr: 15 }, merged_at: '2026-11-16T10:00:00.000Z', pr_status: { pr: 14, state: 'MERGED' } }),
+    // The driver recorded Y's earlier merge with no status read; its spawn kept that PR, and its new one is unread.
+    Y: tk('Y', { state: 'done', result: { pr: 17 }, merged_at: '2026-11-16T10:00:00.000Z', merged_pr: [{ pr: 16, url: null }] }),
     A: tk('A'),
   } });
   const w = queueWriter(f);
@@ -190,7 +192,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('DS-796 a closed PR still owed its reopen stays live, so the next pass retries it', 'R' in q.tickets, true);
   t('DS-796 an owed reopen keeps the ticket live whatever its stored state, an earlier merge included', 'S' in q.tickets, true);
   t('DS-796 but a PR recorded merged owes no reopen, so its ticket is archived', 'T' in q.tickets, false);
-  t('DS-796 an earlier round\'s merge does not archive a requeued ticket whose PR is open or not yet read', `${'U' in q.tickets} ${'V' in q.tickets} ${'W' in q.tickets}`, 'true true true');
+  t('DS-796 an earlier round\'s merge does not archive a requeued ticket whose PR is open or not yet read', `${'U' in q.tickets} ${'V' in q.tickets} ${'W' in q.tickets} ${'Y' in q.tickets}`, 'true true true true');
   t('a merged ticket with follow-on steps waiting stays live', 'F' in q.tickets, true);
   t('a merged ticket another ticket is held behind stays live', 'H' in q.tickets, true);
 
