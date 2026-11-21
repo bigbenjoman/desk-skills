@@ -1668,6 +1668,12 @@ export const STALLING_ROWS = Object.freeze({
 const MERGE_ROWS = new Set(['pr-merge-green', 'autopilot-merge']);
 
 // -> { missing: [{section, label}], stalls: [{key, reason}], unlisted, noDev, weight, dontAsk: file | null }
+// A row's items for drift's own checks, or null where configValuesIn refuses the row (`none` beside
+// other items): invalidRows names that row INVALID, so drift reports it and goes on to the next repo.
+function driftValues(parsed, id) {
+  try { return configValuesIn(parsed, id); } catch (e) { if (e instanceof DeskConfigError) return null; throw e; }
+}
+
 export function configDrift({ config, template = templatePath(), root = null, home = HOME }) {
   if (!existsSync(template)) throw new DeskConfigError(`desk-env drift: no template at ${template}: run ./install.sh, or set DESK_CONFIG_TEMPLATE`);
   const parsed = parseConfigFile(config);
@@ -1687,7 +1693,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // Command items a worker's settings cannot allow: every worker is refused them.
   const unlisted = [];
   for (const id of [...WORKER_COMMAND_IDS, 'worker-measure-cmds']) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const why = commandItemProblem(parseCommandItem(item).cmd);
@@ -1695,7 +1701,7 @@ export function configDrift({ config, template = templatePath(), root = null, ho
     }
   }
   // With §3 worker-local-services yes, a §4 Local services item a worker starts by its leading name.
-  const services = configValuesIn(parsed, 'local-services');
+  const services = driftValues(parsed, 'local-services');
   if (/^yes\b/.test(perm('worker-local-services')) && services && !isNone(services)) {
     for (const item of services) {
       if (!localServiceName(item)) unlisted.push({ row: CONFIG_ROWS['local-services'].row, item, why: 'does not start with a compose service name (lowercase, then `:port` or a space)' });
@@ -2557,7 +2563,7 @@ if (isMain) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
           const root = configRepoRoot(parsed, { cwd: !slug });
-          const premerge = configValuesIn(parsed, 'pre-merge-steps');
+          const premerge = driftValues(parsed, 'pre-merge-steps');
           const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;

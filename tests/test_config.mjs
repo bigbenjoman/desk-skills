@@ -267,6 +267,11 @@ t('DS-871 AC4 an Evidence workflow cell mixing none with another item is INVALID
 t('DS-871 AC4 and exits 1', d.code, 1);
 t('DS-871 a single span holding none beside a lever is INVALID, as `desk-env levers` reads it',
   drift(conf({ b3rows: '| Phase 0 levers | `none` | `none, codex` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+t('DS-871 none beside a lever across spans is INVALID, as the whole cell is read',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none,` `effort` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`none\` \`search: 8108\` |\n| Pre-merge steps | \`none\` \`Migrate: run migration\` |\n`);
+t('DS-871 a row its reader refuses for none beside other items is INVALID, not an abort', `${d.code}\n${d.out}`,
+  '1\nINVALID  §4 Pre-merge steps: `none` must stand alone, not beside other items (none | Migrate: run migration)\nINVALID  §4 Local services: `none` must stand alone, not beside other items (none | search: 8108)');
 t('DS-871 a §3 value that is no permission is INVALID', drift(conf({ perms: { 'git-push': 'maybe' } })).out.startsWith('INVALID  §3 git-push: "maybe" is not'), true);
 t('DS-871 AC5 every row unset or fitting its type is no drift', drift(`${conf({ b3rows: '| Worker effort | `none` | `0=medium 4b=high` |\n| Phase 0 levers | `none` | `codex` `effort` |\n| Promotion slice size (children) | `8` | `TODO` |\n' })}| Local services | \`search: 8108\` \`mailpit :8025\` |\n| Evidence workflow | \`pr-evidence.yml\` |\n| Merge method | \`squash\` |\n`).out, 'no drift');
 
