@@ -49,6 +49,7 @@ export function decideDrift(s) {
 //   incidentalBad, appendOnlyBad, fileBudgetBad, conflictRecordBad   a row read as its default, or null
 //   conflicts              [{ file, configured, now, recent }] for each file with merge-time conflicts
 //   unreadableQueues       the other queues whose running workers' ports were not read
+//   portLeaseLines         what the port leases did this pass: unreadable, a stale holder dropped
 //   concurrency, eligible  the batch's worker count, and how many triaged tickets could spawn
 //   queueBin               queue.mjs, as the person runs it
 export function decideReportOpening(s) {
@@ -68,6 +69,7 @@ export function decideReportOpening(s) {
     if (c.now < c.configured) acts.push(out(`collisions: ${c.file} runs ${c.now} of its configured ${c.configured}, after ${c.recent} merge-time conflict(s) in the last 7 days`));
   }
   for (const why of s.unreadableQueues) acts.push(out(`ports: ${why} — its running workers' ports were not skipped`));
+  for (const l of s.portLeaseLines ?? []) acts.push(out(l));
   for (const l of s.epicLines) acts.push(out(l));
   if (r.paused.length) acts.push(out(`paused on the usage limit: ${r.paused.join(' | ')}`));
   for (const u of r.unrecognised) acts.push(out(`unrecognised usage-limit event: ${u} — not read as a pause, so the stall check applies as before`));

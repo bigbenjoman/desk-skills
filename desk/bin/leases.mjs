@@ -216,11 +216,11 @@ function lapseOf(l, starts, t) {
   if (l.kind !== 'slot' && t > expires + l.ttl * 1000) return { why: 'hard lapse', detail: `pid ${l.owner.pid} is alive but has not renewed it in twice its ${l.ttl}s TTL` };
   return null;
 }
-// Drops every lease that has lapsed, logging each.
-function sweep(store, log, starts, t) {
+// Drops every lease that has lapsed, logging each, and adding each to `lapsed` when given.
+function sweep(store, log, starts, t, lapsed = null) {
   store.leases = store.leases.filter((l) => {
     const gone = lapseOf(l, starts, t);
-    if (gone) log({ event: 'lapse', ...brief(l), ...gone });
+    if (gone) { log({ event: 'lapse', ...brief(l), ...gone }); lapsed?.push({ ...brief(l), ...gone }); }
     return !gone;
   });
 }
@@ -315,9 +315,11 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
 }
 
 // Renews lease `id` for its new or same owner (`req.pid`): a fresh TTL from now, the owner changed to
-// `req.pid`, and the label changed to `req.label` where one is given. A lease the store does not hold
-// is re-created under the same id where its key is free, and refused (or in shadow granted) where
-// another owner holds it. -> { code, lease?, why }.
+// `req.pid`, and the label changed to `req.label` where one is given. With `req.expect` ({ pid?, label? })
+// a held lease is renewed only while its owner pid and label still match, read under the store's lock,
+// so a caller deciding from an earlier list never takes back a lease handed on since. A lease the store
+// does not hold is re-created under the same id where its key is free, and refused (or in shadow
+// granted) where another owner holds it. -> { code, lease?, holder?, why }.
 export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
@@ -333,6 +335,10 @@ export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), 
     const l = store.leases.find((x) => x.id === id);
     if (l) {
       if (l.pool !== p.pool || l.key !== p.key) throw usage(`lease ${id} is ${l.kind} ${l.key}, not ${req.kind} ${p.key}`);
+      const x = req.expect;
+      if (x && ((x.pid !== undefined && (l.owner?.pid ?? null) !== x.pid) || (x.label !== undefined && l.label !== x.label))) {
+        return { code: EXIT_REFUSED, holder: l.label, why: `refused: lease ${id} is now held by ${l.label} (${l.owner ? `pid ${l.owner.pid}` : 'no owner'})` };
+      }
       const was = l.owner;
       // A renew that names a label gives the lease that label (a branch's unit takes its PR's number).
       Object.assign(l, { owner, ...(req.label ? { label: req.label } : {}), ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
@@ -396,10 +402,11 @@ export function resetStore(reason, { dir = leaseDir(), now = Date.now }) {
   } finally { unlock(lockDir); }
 }
 
-// The live leases, after lapsing those whose owner has gone or whose time is up.
-export function list({ env, dir = leaseDir(), now = Date.now }) {
+// The live leases, after lapsing those whose owner has gone or whose time is up; each lapsed is added
+// to `lapsed` when given, as { id, kind, key, units, owner, label, why, detail? }.
+export function list({ env, dir = leaseDir(), now = Date.now, lapsed = null }) {
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store, env), now());
+    sweep(store, log, ownerStarts(store, env), now(), lapsed);
     return store.leases;
   });
 }

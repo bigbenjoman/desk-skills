@@ -111,7 +111,7 @@ const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
 const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried']
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
 const RESULTS = ['CONFIRMED', 'REJECTED', 'DUPLICATE', 'UNREFUTED']
-const VENDORS = ['claude', 'codex']
+export const VENDORS = ['claude', 'codex']
 
 // The seats that have a named agent. One that ran as general-purpose is a fallback even without the
 // flag, and the heading names it, so a fleet that became one model checking itself never reads as a full run.

@@ -51,7 +51,7 @@ the rows. A missing §3 row is `no`.
 ### Which review bar
 
 The bar is the one **at the reviewed commit**, `<TIP>` (Phase 1), never the current checkout's copy
-and never one remembered from an earlier run. A branch moves its bar with its code, and a PR is
+nor one remembered from an earlier run. A branch moves its bar with its code, and a PR is
 judged by the bar its own commit carries:
 
 1. §4 Review bar names a repo-relative path, and it exists at `<TIP>`
@@ -138,7 +138,7 @@ Each Claude prompt carries, in order:
 6. The round, and on round 2+ the re-review rules below.
 
 **Every behavioural claim needs a `file:line` in real code.** An inference from a name is not
-evidence. `NO FINDINGS` is the expected result for most changes and is not a failure.
+evidence. `NO FINDINGS` is the expected result for most changes, not a failure.
 
 ```
 FINDING
@@ -223,13 +223,12 @@ worker: at its worktree root, left in place, `phase-7-post.md`):
 - `codex`: with the codex lever on, `{"finder": "<model>:<effort>", "refuter": "<model>:<effort>"}`
   as `desk-codex settings` prints them, and `login` (Phase 0); left out otherwise.
 - `seats`: every seat dispatched, Bea and simplicity included, each `ran` or `died` (Phase 3).
-- `reason`, on a seat that died, says why where it is known (`"timed out"`).
+- `reason`, on a seat that died, says why, where known (`"timed out"`).
   `"fallback": true` where its named agent did not resolve and general-purpose ran its brief (not
   simplicity or domain: general-purpose by design).
 - `findings`: every finding any seat raised, kept even when `REJECTED` or `DUPLICATE`, with its
-  refutation `result` and the refuter's vendor (`refuted_by`: `claude` or `codex`, not an agent;
-  absent when `UNREFUTED`). Scope findings
-  are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
+  refutation `result` and the refuter's vendor (<!-- facts: refuted-by -->`refuted_by`: `claude` or `codex`, not an agent; absent when `UNREFUTED`<!-- /facts -->).
+  Scope findings are Bea's (`"seat": "requirements"`); `PREMISE` findings carry no result. `deferred: true` for a
   finding deliberately left unfixed; `carried: true` for a P2 carried from round 2 (above). A
   merged duplicate is `"result": "DUPLICATE"` with `duplicate_of` naming the finding kept, and it
   still counts unless that one is counted at the same severity or higher: merging must never drop a
@@ -248,8 +247,8 @@ node ~/.agents/skills/desk-review/bin/verdict.mjs <results>
 ```
 
 `<results>` is the file's full scratchpad path, or `desk-review-results-<run>.json` in a worker (run from
-its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where it is set. It prints four lines (five from round 2) and refuses (exit 2) any results file that
-is incomplete or contradicts itself. Its tests prove that no
+its worktree root). `$DESK_SKILLS_DIR` goes in place of `~/.agents/skills` where set. It prints four lines (five from round 2) and refuses (exit 2) any results file that
+is incomplete or contradicts itself. Its tests prove no
 combination with an open finding, a skipped file, a dead seat or an open gap prints the clean
 verdict. Use its output verbatim, then the report below it. The clean form, which the tests hold
 this line to:

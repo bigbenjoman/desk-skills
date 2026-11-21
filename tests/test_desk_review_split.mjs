@@ -80,6 +80,9 @@ const REWRITTEN = [
   ['DS-834', 'with two exceptions**, both for claims', 1], // a finder also traces a server-set value
   ['DS-833', 'different counts (above). `--paginate` is not optional', 1], // the landed check allows the accepted re-verdict
   ['DS-845', '"refuted_by": "codex", "deferred": false } ] }', 1], // the results example shows both refuter vendors
+  // trimmed so the core holds the generated refuted_by region under its cap
+  ...['and never one remembered from an earlier run', 'is the expected result for most changes and is not a failure',
+    'goes in place of `~/.agents/skills` where it is set'].map((s) => ['DS-886', s, 1]),
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

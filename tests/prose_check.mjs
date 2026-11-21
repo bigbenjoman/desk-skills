@@ -12,10 +12,14 @@
 //   prose     some `queue.mjs frobnicate` text <!-- prose-ok: <why> -->
 //   shell     node ~/.claude/desk/bin/old.mjs   # prose-ok: <why>
 // An opt-out with no reason is itself a finding.
+//
+// A generated region (tests/prose_facts.mjs) that is unknown, unclosed or not what the code says is a
+// finding too, and one no opt-out or baseline holds: `node tests/prose_facts.mjs --write` fixes it.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scan, DEFAULT_PATHS } from './prose_scan.mjs';
+import { regionProblems } from './prose_facts.mjs';
 import { split, shellCommands, markdownFiles, PLACEHOLDER, FENCE, closesFence } from './command_shapes.mjs';
 import { commands, autopilot, states, statePaths, locks } from '../desk/bin/prose-facts.mjs';
 import { CONFIG_ROWS, PERMISSION_KEYS } from '../desk/bin/desk-env.mjs';
@@ -138,11 +142,13 @@ export function optOuts(text) {
   return { optedOut, bare };
 }
 
-// Every finding in the files given: { file, line, kind, value, context, message }.
-export function check(files, { root = ROOT, f = facts(root) } = {}) {
+// Every finding in the files given: { file, line, kind, value, context, message }. `values` overrides a
+// generated region's values (prose_facts.mjs regenerate).
+export function check(files, { root = ROOT, f = facts(root), values } = {}) {
   const out = [];
   for (const path of files) {
     const text = readFileSync(path, 'utf8'), file = relative(root, path) || path;
+    for (const p of regionProblems(text, { values })) out.push({ file, line: p.line, kind: 'region', value: p.name, context: text.split('\n')[p.line - 1].trim(), message: p.message });
     const { optedOut, bare } = optOuts(text);
     for (const line of bare) out.push({ file, line, kind: 'opt-out', value: OPT_OUT, context: text.split('\n')[line - 1].trim(), message: `the opt-out on line ${line} gives no reason` });
     for (const r of scan(text)) {
@@ -159,14 +165,14 @@ export const keyOf = (x) => JSON.stringify([x.file, x.kind, x.value, x.context])
 export const readBaseline = (path = BASELINE) => JSON.parse(readFileSync(path, 'utf8'));
 export const baselineEntries = (findings) => {
   const seen = new Map();
-  for (const { file, kind, value, context } of findings) seen.set(keyOf({ file, kind, value, context }), { file, kind, value, context });
+  for (const { file, kind, value, context } of findings.filter((x) => x.kind !== 'region')) seen.set(keyOf({ file, kind, value, context }), { file, kind, value, context });
   return [...seen.values()];
 };
 
 // The findings the baseline does not hold, and how many of its entries still match a finding.
 export function gate(findings, baseline) {
   const held = new Set(baseline.map(keyOf));
-  const fresh = findings.filter((x) => !held.has(keyOf(x)));
+  const fresh = findings.filter((x) => x.kind === 'region' || !held.has(keyOf(x)));
   const live = new Set(findings.map(keyOf));
   return { fresh, remaining: baseline.filter((e) => live.has(keyOf(e))).length, stale: baseline.filter((e) => !live.has(keyOf(e))).length };
 }
