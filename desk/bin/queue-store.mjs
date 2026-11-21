@@ -85,6 +85,9 @@ export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, 
 
 // Whether ticket `t`'s own PR (result.pr) was last read closed unmerged.
 export const prClosed = (t) => t?.result?.pr != null && Number(t.pr_status?.pr) === Number(t.result.pr) && t.pr_status?.state === 'CLOSED';
+// Whether ticket `t`'s own PR (result.pr) was closed by the pass to restart its CI and is still owed
+// its reopen (`reopening` names that PR). A marker naming an earlier PR owes nothing.
+export const owesReopen = (t) => t?.reopening != null && t?.result?.pr != null && String(t.reopening) === String(t.result.pr);
 
 const HOLD_FIELDS = ['held_by', 'held_outside', 'merge_after'];
 export const keys = (v) => String(v ?? '').split('|').filter(Boolean);
@@ -99,6 +102,8 @@ export function archivable(q, key) {
   if (t?.state !== 'done' || t.result?.pr == null || followOnPending(t)) return false;
   const closed = prClosed(t);
   if (!t.merged_at && !closed) return false;
+  // A PR the pass closed to reopen for its CI is not closed for good: archived, the reopen is never retried.
+  if (closed && owesReopen(t)) return false;
   // A merged PR's criteria its review left for after the merge that the pass has not made follow-on
   // steps yet: an append it skipped is owed to the next pass, so the ticket stays.
   if (!closed && postMergeUnmade(t)) return false;

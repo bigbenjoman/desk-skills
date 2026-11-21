@@ -224,11 +224,12 @@ q set base-red-main session_id=live-1
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC4 with the repair running, no second one starts, and the line names it" \
   '[ "$(field base-red-main state)" = "\"running\"" ] && ! echo "$out" | grep -q "base-red-main port=" && echo "$out" | grep -A1 "^RED BASE:" | grep -qF "Repair ticket base-red-main is running"'
-# This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again.
-q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}'
+# This spell's repair, its PR closed unmerged and archived: done with, so the key is admitted again. Its
+# reopening marker names an earlier PR (700), so owes #901 nothing.
+q set base-red-main state=done session_id=null result.pr=901 'pr_status={"pr":901,"state":"CLOSED"}' reopening=700
 out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 [ "$(field base-red-main state)" = "\"running\"" ] || out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
-check "DS-850 AC3 a repair archived with its PR closed unmerged does not stop the base being repaired" \
+check "DS-850 AC3 a repair archived with its PR closed unmerged, a reopening marker left from an earlier PR, does not stop the base being repaired" \
   '[ "$(field base-red-main state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main port="'
 # The repair merged in an earlier red spell and is still in the live queue, kept there by the follow-on
 # step it owes: the base red again is a new spell under a key of its own, so its

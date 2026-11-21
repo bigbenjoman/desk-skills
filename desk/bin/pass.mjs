@@ -98,7 +98,7 @@ import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
 import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { leaseCli } from './leases.mjs';
-import { isArchived, prClosed } from './queue-store.mjs';
+import { isArchived, prClosed, owesReopen } from './queue-store.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
 // the person, 11 the person is needed (a parked or failed ticket, anything under WAITING ON YOU, a
@@ -1736,8 +1736,9 @@ if (BASE_RED) {
   const key = BASE_RED.repair_key;
   const qB = queue();
   const was = qB.tickets[key] ?? null;
-  // A PR the pass closed to reopen for its CI (reopening) is not closed for good.
-  const closed = was?.state === 'done' && !was.merged_at && !was.reopening && prClosed(was);
+  // A PR the pass closed to reopen for its CI (reopening, naming that PR) is not closed for good; a marker
+  // left from an earlier PR owes the current one nothing.
+  const closed = was?.state === 'done' && !was.merged_at && !owesReopen(was) && prClosed(was);
   const had = was && !closed ? was : null;
   if (had && !had.merged_at) baseRedRepair = { key, state: had.state };
   else if (had) baseRedRepair = { key, state: `merged at ${had.merged_at} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
