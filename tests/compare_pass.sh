@@ -11,6 +11,8 @@
 #   PASS_CMP_KEEP=1 bash tests/compare_pass.sh ...              keep the recordings and both trees when a run
 #                                                               differs or was not compared, and print the
 #                                                               diff command that lists them again
+#   PASS_CMP_SERIAL=1 bash tests/compare_pass.sh ...            run the trees and suites one after the
+#                                                               other rather than side by side
 # Exit 0 when nothing differs, 1 when something does, 2 when a run was not compared (it ran on one tree
 # only, or crashed on one only) or the trees could not be built.
 set -u
@@ -19,7 +21,7 @@ suites=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) [ $# -ge 2 ] || { echo "compare_pass: --suite needs a suite name" >&2; exit 2; }; suites+=("${2##*/}"); shift 2 ;;
-    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     -*) echo "compare_pass: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -66,17 +68,21 @@ export PASS_CMP_NODE="$NODE" PASS_CMP_RECORDER="$S/compare_pass.mjs"
 # second, so one tree could show a single SHA where the other shows two.
 GIT_AUTHOR_DATE="$(date +%s) +0000"; GIT_COMMITTER_DATE=$GIT_AUTHOR_DATE
 export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
-# The two trees run one after the other, each suite in its own scratch HOME: side by side, one tree's
-# queue.mjs stop ends the other's stand-in worker, which it finds by session id across the machine.
-side(){ mkdir -p "$W/rec/$1"
-  for s in "${suites[@]}"; do
-    echo "compare_pass: $s on the $1" >&2
-    (cd "$W/$1" && PATH="$W/shim:$PATH" PASS_CMP_OUT="$W/rec/$1/$s" PASS_CMP_SUITE_LOG="$W/rec/$1/$s.log" \
-      "$SH" "tests/$s" > "$W/rec/$1/$s.log" 2>&1 < /dev/null)
-    mkdir -p "$W/rec/$1/$s"
-  done; }
-side base
-side head
+# One suite $2 on the tree $1, in its own scratch HOME.
+run(){ echo "compare_pass: $2 on the $1" >&2
+  (cd "$W/$1" && PATH="$W/shim:$PATH" PASS_CMP_OUT="$W/rec/$1/$2" PASS_CMP_SUITE_LOG="$W/rec/$1/$2.log" \
+    "$SH" "tests/$2" > "$W/rec/$1/$2.log" 2>&1 < /dev/null)
+  mkdir -p "$W/rec/$1/$2"; }
+mkdir -p "$W/rec/base" "$W/rec/head"
+# Both trees and every suite run side by side, each suite's stand-in workers under session ids of its own
+# (tests/pass_setup.sh SID_SUFFIX), as queue.mjs stop finds a worker by session id across the machine.
+# PASS_CMP_SERIAL=1 runs them one after the other, as does a base whose suites predate those ids.
+if [ "${PASS_CMP_SERIAL:-}" = 1 ] || ! grep -q '^SID_SUFFIX=' "$W/base/tests/pass_setup.sh" 2>/dev/null; then
+  for t in base head; do for s in "${suites[@]}"; do run "$t" "$s"; done; done
+else
+  for t in base head; do for s in "${suites[@]}"; do run "$t" "$s" & done; done
+  wait
+fi
 "$NODE" "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"; rc=$?
 if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
   trap - EXIT

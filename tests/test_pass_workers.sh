@@ -1028,13 +1028,20 @@ check "DS-339 a round started at Stage 0 moves the stale state-dir resume file a
 all_done
 handing S-1; hlog S-1 "AUTOPILOT_STAGE: 5/9 evidence"
 # What an earlier release left on it: a label whose day has come, and a blocker in no batch.
-q set S-1 held_label=blocked-until-2000-01-01 held_outside=GONE-9
+q set S-1 held_label=blocked-until-2000-01-01 held_outside=GONE-9 "session_id=old-S-1-$SID_SUFFIX"
 echo "half-written" > "$T/wt/S-1/widget.txt"
-# The worker, as spawn-worker.sh starts it: a session leader whose command line names its session.
-perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id old-S-1 &
-sw=$!; sleep 0.5
-node "$B/queue.mjs" stop S-1 >/dev/null 2>&1
+# The worker, as spawn-worker.sh starts it: a session leader whose command line names its session,
+# started outside the suite's scratch dirs. Beside it, the same ticket's worker in another suite
+# running at the same time, which only its session id tells apart.
+(cd / && exec perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id "old-S-1-$SID_SUFFIX") &
+sw=$!
+perl -MPOSIX -e 'POSIX::setsid(); exec @ARGV or exit 127' bash -c 'sleep 300 & wait' desk-worker claude -p x --session-id "old-S-1-other$SID_SUFFIX" &
+ow=$!; sleep 0.5
+node "$B/queue.mjs" stop S-1 >/dev/null 2>&1; stoprc=$?
 wait "$sw" 2>/dev/null
+check "DS-960 AC5 queue.mjs stop ends a real worker started outside the suite's dirs, found by its session id across the machine" '[ $stoprc = 0 ] && ! kill -0 "$sw" 2>/dev/null'
+check "DS-960 AC1 another suite's worker for a ticket of the same key is still running" 'kill -0 "$ow" 2>/dev/null'
+kill -TERM -- "-$ow" 2>/dev/null; wait "$ow" 2>/dev/null
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-742 AC2 a stopped ticket gets no worker from the next pass" '! spawned_for S-1 && [ "$(field S-1 state)" = "\"parked\"" ] && [ "$(field S-1 held_by)" = null ] && echo "$out" | grep -q "S-1: STOPPED — its worker was stopped by queue.mjs stop"'
 check "DS-742 a stopped ticket is not released on the date label or outside blocker an earlier release left" '[ "$(field S-1 held_outside)" = null ] && ! echo "$out" | grep -qE "(date|outside) hold: S-1"'

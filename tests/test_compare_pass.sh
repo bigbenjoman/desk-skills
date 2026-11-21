@@ -256,6 +256,26 @@ echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/s
 PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pass.mjs" record "$T/stopped.mjs"; rc=$?
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
+# Two suites on each tree, each noting in one file when it starts and when it ends, and waiting up to 3 s
+# for all four to start: side by side every one starts before the first ends; one after the other each
+# ends before the next starts. Only a base whose tests/pass_setup.sh mints SID_SUFFIX runs side by side.
+mkdir -p "$T/order/desk/bin" "$T/order/tests" "$T/order-old/desk/bin"; echo 'SID_SUFFIX=x' > "$T/order/tests/pass_setup.sh"
+for s in test_pass.sh test_pass_b.sh; do cat > "$T/order/tests/$s" <<'EOF'
+#!/usr/bin/env bash
+echo start >> "$CMP_ORDER"
+for _ in $(seq 30); do [ "$(grep -c start "$CMP_ORDER")" -ge 4 ] && break; sleep 0.1; done
+echo end >> "$CMP_ORDER"; echo "ok   noted"
+EOF
+done
+cp -R "$T/order/tests" "$T/order-old/"; rm "$T/order-old/tests/pass_setup.sh"
+order(){ CMP_ORDER="$T/$1.order" PASS_CMP_SERIAL=$2 bash "$S/compare_pass.sh" "$3" "$3" >/dev/null 2>&1; rc=$?; out=$(tr '\n' ' ' < "$T/$1.order"); }
+order side '' "$T/order"
+check "DS-960 AC2 with no suite option, every suite of both trees starts before the first one ends" '[ $rc = 0 ] && [ "$out" = "start start start start end end end end " ]'
+order serial 1 "$T/order"
+check "DS-960 AC4 with PASS_CMP_SERIAL=1 the trees and suites run one after the other" '[ $rc = 0 ] && [ "$out" = "start end start end start end start end " ]'
+order old '' "$T/order-old"
+check "DS-960 a base whose suites mint no SID_SUFFIX runs one after the other" '[ $rc = 0 ] && [ "$out" = "start end start end start end start end " ]'
+
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
 # The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
 # push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
