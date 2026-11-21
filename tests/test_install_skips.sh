@@ -33,6 +33,15 @@ exit 1
 EOF
 printf '#!/bin/sh\nexit 0\n' > "$T/bin/codex"
 chmod +x "$T/bin/claude" "$T/bin/gh" "$T/bin/codex"
+# A node that answers --version with $NODE_V and is the real node otherwise, so each installer run
+# below sees the Node version it names, whatever node runs this suite.
+NODE_REAL="$(command -v node)"
+cat > "$T/bin/node" <<EOF
+#!/bin/sh
+[ "\$1" = --version ] && [ -n "\${NODE_V:-}" ] && { echo "\$NODE_V"; exit 0; }
+exec "$NODE_REAL" "\$@"
+EOF
+chmod +x "$T/bin/node"
 export PATH="$T/bin:$PATH"
 
 # AC3: stdin that is not a terminal means no terminal, whatever /dev/tty says.
@@ -88,7 +97,8 @@ echo mine > "$HOME/.claude/desk/bin/my-own.sh"
 
 # --any-branch: this checkout is a feature branch, or CI's detached merge commit (the guard: test_installed.sh).
 # No git protocol allowed: the guard's fetch never reaches the network or this checkout's origin refs.
-out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+# On Node 22, so the Dependencies section warns of it.
+out="$(NODE_V=v22.11.0 GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
 # shellcheck disable=SC2034  # rc and summary are read inside check's eval strings
 rc=$?
 # shellcheck disable=SC2034
@@ -151,6 +161,8 @@ check "DS-428 AC5: a delete that fails is a warning naming the command, and the 
 w="$(PATH=/usr/bin:/bin; purge_runner_tart; echo "gone=$RUNNER_TART_GONE")"
 check "DS-428 AC4: with no tart on PATH, nothing is called or named" \
   '[ "$w" = "gone=" ] && [ ! -s "$T/tart.deletes" ] && grep -qx "local $VM" "$TV"'
+check "DS-953 AC3: on Node 22 the Dependencies section warns, naming the version found and Node 24, and the install goes on" \
+  '[ $rc -eq 0 ] && printf "%s\n" "$out" | sed -n "/^== Dependencies$/,/^== [^D]/p" | grep -qx "  WARN  node v22.11.0 is older than Node 24, the version desk runs on and CI tests. Install Node 24 from your version manager (nvm, fnm, mise) or https://nodejs.org/en/download"'
 check "DS-760 AC3: a script the repo no longer has is removed, and the install names it" \
   '[ ! -e "$HOME/.claude/desk/bin/retired-tool.mjs" ] && printf "%s\n" "$out" | grep -qx "  ok    removed ~/.claude/desk/bin/retired-tool.mjs (no longer in desk)"'
 check "DS-760 AC5: a file desk never installed is left alone" '[ "$(cat "$HOME/.claude/desk/bin/my-own.sh")" = mine ]'
@@ -185,7 +197,9 @@ check "nothing was written to settings.json" '[ ! -f "$HOME/.claude/settings.jso
 rm -rf "$HOME/.agents/skills/ui-designer" "$HOME/.agents/.desk-pristine/.agents/skills/ui-designer" "$HOME/.claude/skills/ui-designer"
 mkdir -p "$HOME/.claude/skills/ui-designer"; echo mine > "$HOME/.claude/skills/ui-designer/SKILL.md"
 # shellcheck disable=SC2034  # own_out is read inside check's eval strings
-own_out="$(GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+own_out="$(NODE_V=v24.22.3 GIT_ALLOW_PROTOCOL=none "$SH" "$S/../install.sh" --any-branch </dev/null 2>&1)"
+check "DS-953 AC4: on Node 24 the install prints no Node version warning" \
+  '[[ "$own_out" == *"== Dependencies"* ]] && [[ "$own_out" != *"older than Node 24"* ]]'
 check "#734 moving a skill folder desk did not install is asked, saying it differs, and skipped with no terminal" \
   '[[ "$own_out" == *"~/.claude/skills/ui-designer is a skill folder desk did not install (yours, or another tool'"'"'s); it differs from desk'"'"'s"* ]] && [[ "$own_out" == *"  SKIP  Move your ~/.claude/skills/ui-designer to the backup and install desk'"'"'s ui-designer in its place?"* ]]'
 check "#734 the folder stays where it was, and desk's copy is not installed beside it" \

@@ -76,7 +76,7 @@ async function holders(rest) {
   if (rest.some((a) => a !== '--light')) { console.error('usage: slot-lease.mjs holders [--light]'); return 2; }
   const S = await import('./suite-wait.mjs');
   const dir = E.lockDir(), locks = rest.includes('--light') ? 'light' : 'test';
-  const runs = S.lockHolderRuns({ procs: S.processList(), holders: S.lockHolders(dir, { locks }), cwds: S.processCwds(), ages: S.processAges(), stamps: S.lockHolderStamps(dir, { locks }), locks });
+  const runs = S.holdersNow(dir, locks);
   if (runs.length) console.log(S.holdersText(runs));
   return 0;
 }

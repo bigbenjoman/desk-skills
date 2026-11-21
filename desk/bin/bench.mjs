@@ -17,7 +17,8 @@
 // A task's result is one of: accepted (every hidden test passed), rejected (one failed) or failed
 // (the run errored, timed out or was stopped, or the hidden tests could not finish), and failed counts
 // neither way. Under <out>/runs/<task>.<arm>.<key>/ each run keeps result.json (order, tokens,
-// attempts, and ran_at: the model and effort the session's own log says it ran at), diff.patch, transcript.jsonl and test-output.log; <key> hashes the base and the arm's
+// attempts, ran_at: the model and effort the session's own log says it ran at, and added_checks: how
+// many of the checks the task's PR added or changed passed), diff.patch, transcript.jsonl and test-output.log; <key> hashes the base and the arm's
 // settings, so a run with an accepted or rejected result there is reused and a failed one runs again.
 // <out>/run.json lists this invocation's seed, per-task arm order and outcomes. <out> defaults to
 // bench-out beside the task set, so results outlive a run.
@@ -57,14 +58,14 @@ import { runItem } from './baseline.mjs';
 import { nearestDir, takesFiles } from './test-scope.mjs';
 import { HOME, lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 import * as Q from './bench-quota.mjs';
-import { loadPlans } from './bench-report.mjs';
+import { loadPlans, SCORED } from './bench-report.mjs';
 import { endpointArms, providersPath } from './bench-endpoint.mjs';
 import { seededRandom } from './seeded-random.mjs';
+import { tallyChecks, UNFINISHED } from './bench-checks.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
 const SHA = /^[0-9a-f]{40}$/;
-const SCORED = new Set(['accepted', 'rejected']);
 // The hidden tests' ceiling, wait for the test lock included.
 const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 
@@ -291,8 +292,14 @@ function saveDiff(wt, baseline, file) {
   if (r.status !== 0) throw new Error('git diff failed');
 }
 
-// Copies the hidden tests in and runs them, writing test-output.log in `dir`. -> { status, why? }
+// Copies the hidden tests in and runs them, writing test-output.log in `dir`. -> { status, why?,
+// added_checks? }: for a task that names the checks its PR added or changed, how many passed, of how
+// many, with passed null and why when the tests did not finish or their output names no check.
 export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
+  const checks = task.added_checks?.checks ?? [];
+  const added = (r) => (!checks.length ? r : { ...r, added_checks: r.status === 'failed'
+    ? { passed: null, of: checks.length, why: UNFINISHED }
+    : tallyChecks(task.added_checks, readFileSync(join(dir, 'test-output.log'), 'utf8')) });
   for (const f of task.hidden_tests.files) {
     mkdirSync(dirname(join(wt, f)), { recursive: true });
     cpSync(join(task.hidden_tests.dir, f), join(wt, f), { force: true });
@@ -305,10 +312,10 @@ export function score(repo, task, wt, dir, timeout = SCORE_TIMEOUT_MS) {
     const r = runItem({ bin: HERE, root: wt, dir: d, cmd: line, lock: 'test', prefix: repo.prefix, env: armEnv(), timeout });
     log.push(`$ ${line}\n${r.out}\nexit ${r.code}\n`);
     writeFileSync(join(dir, 'test-output.log'), log.join('\n'));
-    if (r.stopped) return { status: 'failed', why: `the hidden tests did not finish: ${line}` };
+    if (r.stopped) return added({ status: 'failed', why: `the hidden tests did not finish: ${line}` });
     if (r.code !== 0) failed ??= line;
   }
-  return failed ? { status: 'rejected', why: `a hidden test failed: ${failed}` } : { status: 'accepted' };
+  return added(failed ? { status: 'rejected', why: `a hidden test failed: ${failed}` } : { status: 'accepted' });
 }
 
 // One task on one arm, start to tidy-up. Whatever goes wrong is this run's failure, with the reason.

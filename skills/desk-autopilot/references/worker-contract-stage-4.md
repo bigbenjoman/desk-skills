@@ -36,21 +36,21 @@ including on a crash: **do not add a timeout and do not work around a wait; wait
 feature.** If `with-lock.sh` is refused, check headroom, drop to the lower cap, and **say in your
 output that you ran unlocked**.
 
-**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Silence is
-not proof: it has not started while `ps -ww -axo pid,ppid,etime,args` shows your `with-lock.sh`, or its
-`flock … desk-test.lock`, with no child running your command. At 20 minutes (`etime`) so, commit all
-your work, `TaskStop` it, and note the holder: a live pid in `desk-test.lock*{.pid,.d/pid}` in
-`DESK_LOCK_DIR`, else the `flock … desk-test.lock` that has a child. Record each suite
-in your verification and the PR's Testing as `not run locally: test lock busy (<holder>); CI's
-required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming them and the holder,
-and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
+**A run the lock has not started in 20 minutes is skipped; a busy lock is never a park.** Give each
+run the Bash `timeout` 600000. One it backgrounds, wait on in one call, never a `ps`,
+`tail` or `TaskStop` loop: `~/.claude/desk/bin/desk-wait.mjs <its output file> --max 540`, same
+`timeout`. Call again on `started <pid>` or `waiting (<holder>) <min>`; `done ?` ends it with its
+last 30 lines. At 20 minutes waiting it stops the run and prints the line to record: commit all your
+work, record each suite in your verification and the PR's Testing as `not run locally: test lock
+busy (<holder>); CI's required tests cover it`, print one `engineering` `AUTOPILOT_DECISION` naming
+them and the holder, and carry on. A typecheck or lint does the same. A started run is yours: fix what fails.
 
 The typecheck takes the same lock, so typecheck and tests never overlap. Screenshot capture uses
 `with-lock.sh browser`: a dev server plus Chromium is hundreds of MB, not ten GB, and should not
 queue behind a suite. **Never end your turn with a suite running in the background**: `claude -p`
 kills it when the turn ends. A Stop hook blocks your first attempt to, naming the task; a second
 attempt ends the turn and your log records the rule as broken. A suite your tool timeout moved to the
-background is still yours: wait for it, or stop it with `TaskStop` and run it again in the foreground.
+background is still yours: wait for it with `desk-wait.mjs`, above; stop a server with `TaskStop`.
 
 **Before any heavy stage, read the right number:**
 

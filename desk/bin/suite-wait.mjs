@@ -114,10 +114,12 @@ export function lockHolderStamps(dir, { locks = 'test' } = {}) {
 
 // The process itself, by its first words: a worker's own command line quotes these commands in its
 // prompt, and must not read as one.
-const WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+(?:test|tsc)(?:\s|$)/;
+// `names` is the lock names an alternation matches, e.g. 'test|tsc'.
+export const wrapperOf = (names) => new RegExp(`^(?:\\S*\\/)?(?:(?:ba|z)?sh\\s+)?(?:\\S*\\/)?with-lock\\.sh\\s+(?:${names})(?:\\s|$)`);
+const WRAPPER = wrapperOf('test|tsc');
 const FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-test\.lock(?:\.\d+)?(?:\s|$)/;
 // The same for the light lock, which a worker's suite takes in a repo whose §4 Suite weight is light.
-const LIGHT_WRAPPER = /^(?:\S*\/)?(?:(?:ba|z)?sh\s+)?(?:\S*\/)?with-lock\.sh\s+light(?:\s|$)/;
+const LIGHT_WRAPPER = wrapperOf('light');
 const LIGHT_FLOCK = /^(?:\S*\/)?flock\s+(?:-\S+\s+)*\S*desk-light\.lock(?:\s|$)/;
 
 // Whether a process is a flock(1) on one of the locks (`locks`, as holderFiles takes it).
@@ -212,6 +214,10 @@ export function lockHolderRuns({ procs, holders, cwds, ages, stamps, locks = 'te
   };
   return holding.filter((p) => !pids.has(p.ppid)).map((p) => ({ pid: p.pid, cwd: cwds?.find((c) => c.pid === p.pid)?.cwd ?? null, args: p.args, seconds: held(p) }));
 }
+// Who holds the test lock (or `locks`) in lock dir `dir` now, read from the process table, cwds and
+// holder files as lockHolderRuns takes them.
+export const holdersNow = (dir, locks = 'test') => lockHolderRuns({ procs: processList(), holders: lockHolders(dir, { locks }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(dir, { locks }), locks });
+
 // Each holder as `<where>: <command>, held <age>`, the command cut to 80 characters, `; `-separated.
 export function holdersText(runs) {
   return runs.map((r) => {

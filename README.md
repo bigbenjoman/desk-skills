@@ -226,13 +226,20 @@ and saves the report to the main checkout's `.handoffs/`. `protection` saves a r
 protection and rulesets before any CI change and restores them, binds each required check to the
 GitHub Actions app so a same-named status from a personal token no longer satisfies it, and makes
 the default workflow token read-only once every workflow declares its permissions. Each write is
-printed as a plan first and applies only by that plan's id, under §3 `ci-protection`:
+printed as a plan first and applies only by that plan's id, under §3 `ci-protection`.
+`aws-fallback` is the other half of the AWS fallback watchdog (`.github/workflows/aws-fallback-watch.yml`,
+every 10 minutes): when a repo listed in this repo's `DESK_AWS_WATCHED_REPOS` variable has had a job
+queued on one of its declared AWS runner labels for over 15 minutes, the watchdog sets that repo's
+`DESK_AWS_FALLBACK` variable to `on`, opens an issue here saying so, and cancels its queued runs and
+re-runs their cancelled jobs. It never turns the fallback off; `aws-fallback off` does, and `aws-fallback status`
+says whether each repo's fallback is on, since when, and when the watchdog last ran:
 
 ```
 node ~/.claude/desk/bin/desk-ci.mjs classify     placement per job, with file:line
 node ~/.claude/desk/bin/desk-ci.mjs ci-lint      exit 1 on any finding
 node ~/.claude/desk/bin/desk-ci.mjs measure      CI cost and red rate over 90 days, sampled to a call budget
 node ~/.claude/desk/bin/desk-ci.mjs protection   snapshot --ticket <KEY|none> | restore <file> | pin | token  [--apply <plan id>]
+node ~/.claude/desk/bin/desk-ci.mjs aws-fallback status [--repo owner/name] | off --repo owner/name
 ```
 
 **`supervisor.mjs`** runs autopilot passes from launchd on macOS, or from a systemd user timer on
@@ -901,6 +908,12 @@ the same inputs skips it; delete `<state dir>/workers/<TICKET>.preflight.json` t
 A preflight session that ran no check (no reply, or no tool turn), or that read BLOCKED only on
 checks that should be OK, is run once more at default effort; a boundary failure is never retried.
 
+With the `ledger` lever on (config §3b Phase 0 levers), every queue write also appends what it
+changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.jsonl`, naming its
+writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
+batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
+first and read by everything; a missed append is reported by the writer and never fails the write.
+
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
 ```bash
@@ -927,7 +940,7 @@ the summary names it under `flaked:` (CI's `tests` job prints each shard's); fai
 fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
-`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
+`run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK` and `DESK_REQUIRE_PLAYWRIGHT`)
 or `DATABASE_URL` and `DIRECT_DATABASE_URL`, so a desk worker's environment cannot reach a suite.
 
 `bash tests/compare_pass.sh <base> [<head>]` shows whether a change moved what `pass.mjs` does. It
@@ -936,7 +949,10 @@ runs the base's `tests/test_pass*.sh` against both trees (a ref or a directory e
 output line and suite check that differs, with times, elapsed times, ids, ports and scratch paths
 left out, text the pass cut short compared up to the cut, and queue stamps (`updated_at`,
 `spawned_at`, `last_start`, `cloud.started`) compared only as set or unset. It exits 0
-when nothing differs, 1 when something does, and 2 when a run was not compared.
+when nothing differs, 1 when something does, and 2 when a run was not compared. With
+`PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
+directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
+in seconds and without replaying a suite.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
@@ -975,9 +991,9 @@ shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers
 `desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
 a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
 CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
-shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
-Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
-the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
+shards (the `macOS` workflow, not a required check). Every run, pull requests included, uses
+Node 24, the version desk runs on. The `macOS` workflow's nightly run only runs the suite when no
+macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,
 cancelled or over 36 hours old, an issue labelled `ci-main-red` stays open, assigned to the repo's
 owner, and `/desk-needs-you` lists it for them.
 

@@ -123,7 +123,7 @@ pass
 check "DS-155 AC3 a handoff at the end of Stage 6 starts a new session at Stage 7 through the real spawn-worker" '[ "$(state T-80)" = running ] && grep -q "This session starts at Stage 7" "$T/runs/T-80.4" && grep -q "## Handoff: this session starts at Stage 7" "$T/runs/T-80.4" && grep -q "P2 src/h.txt:1 fixed in abc1234" "$T/runs/T-80.4"'
 check "DS-338 AC2 a session resumed at Stage 4b or 7 is told to read the Stage 3 file, which holds the dev server's form" 'grep -q "for Stage 4b and its Stage 3 file" "$T/runs/T-80.2" && grep -q "for Stage 7 and its Stage 3 file" "$T/runs/T-80.4"'
 check "DS-157 AC3 the Stage 7 session runs on the text model, and the batch report shows it" '[ "$(ran_on T-80 4)" = haiku ] && [ "$(field T-80 model)" = "\"haiku\"" ] && echo "$out" | grep -q "T-80 fresh session from Stage 7 (handed off) .*model=haiku"'
-check "DS-157 every preflight proved the text model on its own" '[ "$(grep -c "^claude model-check model=haiku$" "$T/calls.log")" = 4 ]'
+check "DS-696 AC1 every preflight proved the text model from the CLI's list, spending no model turn on it" '[ "$(grep -c "^claude model-list$" "$T/calls.log")" = 4 ] && ! grep -q "^claude model-check model=haiku$" "$T/calls.log"'
 finish T-80
 pass
 check "DS-155 the handoff session's DONE finishes the ticket, and a later rework requeue starts from Stage 0" '[ "$(state T-80)" = done ] && [ "$(field T-80 result.pr)" = 180 ] && [ "$(field T-80 handoff_stage)" = null ] && node "$B/queue.mjs" requeue T-80 >/dev/null 2>&1 && [ "$(field T-80 handoff)" = null ]'
@@ -227,7 +227,7 @@ q drop T-14
 config "standard=sonnet high=opus finder=nosuchalias"
 record T-16 src/o.txt A S; q admit T-16
 pass
-check "DS-157 AC4 a rejected finder model fails the preflight, naming the row and the value" '[ "$(state T-16)" = failed ] && [ ! -e "$T/runs/T-16.1" ] && echo "$out" | grep -q "T-16: preflight failed" && echo "$out" | grep -q "FINDER  FAIL .*Worker models names finder=\"nosuchalias\""'
+check "DS-157 AC4 and DS-696 AC2 a finder model the CLI does not list, and rejects, fails the preflight, naming the row and the value" '[ "$(state T-16)" = failed ] && [ ! -e "$T/runs/T-16.1" ] && echo "$out" | grep -q "T-16: preflight failed" && echo "$out" | grep -q "FINDER  FAIL .*Worker models names finder=\"nosuchalias\""'
 q drop T-16
 config "default text=no-such-model"
 record T-17 src/p.txt A S; q admit T-17

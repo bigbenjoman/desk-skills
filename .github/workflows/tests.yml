@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       # The prose baseline only shrinks. On every pull request, whatever suites its change reaches.
       - name: The prose baseline does not grow
         if: github.event_name == 'pull_request'
@@ -80,6 +80,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Shell scripts under bash 3.2
         env:
           SHELLS: ${{ needs.plan.outputs.shells }}
@@ -96,9 +99,11 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     # shellcheck's findings do not depend on the OS, so Linux (where it is preinstalled) requires it;
-    # test_lint.sh, in whichever shard runs it, reads this.
+    # test_lint.sh, in whichever shard runs it, reads this. Likewise test_stitch.mjs and test_design.mjs
+    # fail rather than skip their browser checks without desk's Playwright, which the shard installs.
     env:
       DESK_REQUIRE_SHELLCHECK: '1'
+      DESK_REQUIRE_PLAYWRIGHT: '1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -106,7 +111,7 @@ jobs:
           fetch-depth: 2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -115,6 +120,14 @@ jobs:
           command -v jq >/dev/null || { sudo apt-get update && sudo apt-get install -y jq; }
           jq --version
           shellcheck --version | head -2
+      # Desk's pinned Playwright (install.sh's PLAYWRIGHT_VERSION) and its Chromium, where and as
+      # install.sh puts them, for the suites that render in a browser.
+      - name: Install desk's Playwright
+        if: contains(matrix.suites, 'test_stitch.mjs') || contains(matrix.suites, 'test_design.mjs')
+        run: |
+          v=$(sed -n 's/^PLAYWRIGHT_VERSION="\(.*\)"$/\1/p' install.sh)
+          [ -n "$v" ] || { echo "no PLAYWRIGHT_VERSION in install.sh"; exit 1; }
+          bash desk/bin/install-playwright.sh --with-deps "$HOME/.claude/desk/playwright" "$v"
       # The result file is the shard's report to the tests job: written only once run.sh has finished,
       # so a shard cancelled or timed out leaves none. run.sh writes the suites' durations beside it.
       # A suite over its CPU budget fails a pull request from the date in run.sh, and only warns on
@@ -157,6 +170,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Fetch the shard results
         uses: actions/download-artifact@v4
         continue-on-error: true
@@ -205,7 +221,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - name: Fetch the shard results
         uses: actions/download-artifact@v4
         with:

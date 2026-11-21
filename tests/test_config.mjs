@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
-import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK } from '../desk/bin/config-schema.mjs';
+import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK, requiredFieldsIn, requiredFieldsByType } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -173,11 +173,11 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
   + `${P2}| Primary repo root | \`TODO\` | |\n\n${P4}| Branch protection | \`TODO\` |\n`);
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
-const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
+const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true, b3rows = '' } = {}) => {
   const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
   const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
-    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
+    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n${b3rows}\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
 };
 const driftEnv = (extra) => ({ ...process.env, DESK_CONFIG_TEMPLATE: tpl, DESK_MACHINE: join(T, 'none.md'), HOME: T, DESK_REPO_DIR: T, ...extra });
@@ -246,12 +246,37 @@ t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n')
 t('DS-395 AC4 and exits 1', d.code, 1);
 
 // A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+const badService = 'INVALID  §4 Local services: "Typesense on port 8108" is not `<service> [:<port>]`';
 d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
-t('a Local services item with no service name is named, where workers start services', d.out,
-  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('a Local services item with no service name is named, where workers start services', d.out, [badService,
+  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it'].join('\n'));
 t('and `name: port` reads as its name', d.code, 1);
-t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
+// A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
+d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
+t('DS-871 AC1 a Local services item that is no `<service> [:<port>]` is INVALID, naming the row, the item and the form', d.out, badService);
+t('DS-871 AC1 and exits 1', d.code, 1);
+t('DS-871 AC2 `search: 8108` fits, so says nothing about Local services', drift(`${conf()}| Local services | \`search: 8108\` |\n`).out, 'no drift');
+d = drift(conf({ b3rows: '| Worker effort | `none` | `0=medium bogus=high` |\n' }));
+t('DS-871 AC3 a Worker effort start desk does not know is INVALID, naming the row and that item',
+  `${d.code} ${d.out.split('\n').length} ${d.out.startsWith('INVALID  §3b Worker effort is "0=medium bogus=high" — unknown start `bogus`;')}`, '1 1 true');
+d = drift(`${conf()}| Evidence workflow | \`none\` \`pr-evidence.yml\` |\n`);
+t('DS-871 AC4 an Evidence workflow cell mixing none with another item is INVALID', d.out,
+  'INVALID  §4 Evidence workflow: `none` must stand alone, not beside other items (none | pr-evidence.yml)');
+t('DS-871 AC4 and exits 1', d.code, 1);
+t('DS-871 a single span holding none beside a lever is INVALID, as `desk-env levers` reads it',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none, codex` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+t('DS-871 none beside a lever across spans is INVALID, as the whole cell is read',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none,` `effort` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`none\` \`search: 8108\` |\n| Pre-merge steps | \`none\` \`Migrate: run migration\` |\n`);
+t('DS-871 a row its reader refuses for none beside other items is INVALID, not an abort', `${d.code}\n${d.out}`,
+  '1\nINVALID  §4 Pre-merge steps: `none` must stand alone, not beside other items (none | Migrate: run migration)\nINVALID  §4 Local services: `none` must stand alone, not beside other items (none | search: 8108)');
+d = drift(`${conf()}| Dev server | \`pnpm dev\` |\n| Lint | \`none\` \`pnpm lint\` |\n`);
+t('DS-871 a worker command row with none beside a command is INVALID, not an abort, with a Dev server set', `${d.code} ${d.out}`,
+  '1 INVALID  §4 Lint: `none` must stand alone, not beside other items (none | pnpm lint)');
+t('DS-871 a §3 value that is no permission is INVALID', drift(conf({ perms: { 'git-push': 'maybe' } })).out.startsWith('INVALID  §3 git-push: "maybe" is not'), true);
+t('DS-871 AC5 every row unset or fitting its type is no drift', drift(`${conf({ b3rows: '| Worker effort | `none` | `0=medium 4b=high` |\n| Phase 0 levers | `none` | `codex` `effort` |\n| Promotion slice size (children) | `8` | `TODO` |\n' })}| Local services | \`search: 8108\` \`mailpit :8025\` |\n| Evidence workflow | \`pr-evidence.yml\` |\n| Merge method | \`squash\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.
 mkdirSync(join(repoDir, 'apps/portal/apps/web'), { recursive: true });
@@ -328,6 +353,11 @@ t('AC7 each repo is reported by slug', d.out, '== acme__clean\n  no drift\n== ac
 t('AC7 any drift exits 1', d.code, 1);
 rmSync(join(croot, 'repos', 'acme__stale'), { recursive: true });
 t('AC7 no drift anywhere exits 0', all().code, 0);
+mkdirSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
+writeFileSync(join(croot, 'repos', 'acme__typo', 'config.md'), `${conf()}| Local services | \`Typesense on port 8108\` |\n`);
+d = all();
+t('DS-871 AC6 the INVALID line is under the slug of the repo with the invalid row only', `${d.code}\n${d.out}`, `1\n== acme__clean\n  no drift\n== acme__typo\n  ${badService}`);
+rmSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
 
 // `desk-env add-row`: a row drift names MISSING, copied from the template with the person's answer.
 const added = join(T, 'add.md');
@@ -659,11 +689,161 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
   t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
   t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-871 Phase 0 levers is checked whole, its value still one entry per span', [JSON.stringify(parseRow(row('levers'), ['codex', 'effort']).value),
+    JSON.stringify(parseRow(row('levers'), ['none']).value), !!parseRow(row('levers'), ['none,', 'effort']).error].join(' '), '[["codex"],["effort"]] ["none"] true');
   t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
 
   // The machine profile fallback desk-env reads.
   t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
   t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
+}
+
+// `desk-env get --json`: typed rows with where each value came from, its default and its type errors.
+{
+  const bare = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
+  const jenv = (cfg, extra = {}) => ({ ...bare, HOME: T, DESK_CONFIG_ROOT: join(T, 'cfg-870'), DESK_MACHINE: join(T, 'none.md'), DESK_CONFIG: cfg, ...extra });
+  const node = (env, args, cwd = T) => spawnSync('node', [BIN, ...args], { encoding: 'utf8', env, cwd });
+  const getJson = (env, ...a) => {
+    const r = node(env, ['get', '--json', ...a]);
+    let json = null; try { json = JSON.parse(r.stdout); } catch { /* not JSON */ }
+    return { code: r.status, json, out: r.stdout, err: r.stderr.trim() };
+  };
+  const c = join(T, 'json.md');
+  writeFileSync(c, `${P4}| Tracker | \`jira\` |\n| Required checks | \`Lint\` \`Unit tests\` |\n| Local services | \`Typesense on port 8108\` |\n`
+    + `| Append-only paths | \`TODO\` |\n| Production | \`https://example.com\` |\n\n${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n`);
+  let r = getJson(jenv(c), 'tracker', 'required-checks');
+  const tr = r.json?.rows?.tracker, rc = r.json?.rows?.['required-checks'];
+  t('DS-870 AC1 prints one JSON object and exits 0', `${r.code} ${!!r.json}`, '0 true');
+  t('DS-870 AC1 Tracker reads jira, set, from the repo', JSON.stringify([tr?.value, tr?.set, tr?.source]), '["jira",true,"repo"]');
+  t('DS-870 AC1 Required checks gives both checks as items, set, from the repo', JSON.stringify([rc?.items, rc?.set, rc?.source]), '[["Lint","Unit tests"],true,"repo"]');
+  r = getJson(jenv(c), 'local-services');
+  const ls = r.json?.rows?.['local-services'];
+  t('DS-870 AC2 a row with a type error prints the JSON and exits 4', `${r.code} ${!!r.json}`, '4 true');
+  t('DS-870 AC2 the error names the item and the form the type expects', ls?.errors?.length === 1 && ls.errors[0].item === 'Typesense on port 8108' && ls.errors[0].error.includes('`<service> [:<port>]`'), true);
+  writeFileSync(join(T, 'machine-870.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
+  const cc = getJson(jenv(c, { DESK_MACHINE: join(T, 'machine-870.md') }), 'concurrency').json?.rows?.concurrency;
+  t('DS-870 AC3 a TODO row the machine profile sets reads the profile, source machine', JSON.stringify([cc?.value, cc?.set, cc?.source]), '["5 / 10",true,"machine"]');
+  r = getJson(jenv(c), '--section', '4');
+  const four = ROWS.filter((e) => e.section === '4').map((e) => e.id);
+  t('DS-870 AC4 --section 4 gives every §4 row the schema declares, and only those', JSON.stringify(Object.keys(r.json?.rows ?? {})), JSON.stringify(four));
+  t('DS-870 AC4 the §4 rows no script reads yet are among them', ROWS.some((e) => e.section === '4' && e.unread && !CONFIG_ROWS[e.id]) && four.every((id) => r.json?.rows?.[id]), true);
+  t('DS-870 AC4 and every row it gives is a §4 row', Object.values(r.json?.rows ?? {}).every((x) => x.section === '4'), true);
+  const prod = r.json?.rows?.production;
+  t('DS-870 AC4 an unread row reads its repo value, set, from the repo', JSON.stringify([prod?.value, prod?.items, prod?.set, prod?.source]), '["https://example.com",["https://example.com"],true,"repo"]');
+  r = getJson(jenv(c), '--section', '3c');
+  t('DS-870 AC5 --section 3c exits 2 and prints no rows', `${r.code} ${r.out === ''}`, '2 true');
+  t('DS-870 AC5 saying the ledger is read by desk-setup alone', /§3c.*\/desk-setup alone/.test(r.err), true);
+  r = getJson(jenv(c), 'tracker', 'no-such-row');
+  t('DS-870 AC6 an unknown id exits 2 naming it', `${r.code} ${r.out === ''} ${r.err.includes('"no-such-row"')}`, '2 true true');
+  const nowhere = scratch('desk-norepo-870-');
+  r = node({ ...bare, HOME: nowhere, DESK_CONFIG_ROOT: join(nowhere, 'cfg'), DESK_MACHINE: join(nowhere, 'none.md') }, ['get', '--json', 'tracker'], nowhere);
+  t('DS-870 AC7 outside any configured repo it exits 3, printing nothing', `${r.status} ${r.stdout === ''}`, '3 true');
+  r = node({ ...bare, HOME: nowhere, DESK_CONFIG_ROOT: join(nowhere, 'cfg'), DESK_MACHINE: join(nowhere, 'none.md') }, ['get', '--json', '--where', 'tracker'], nowhere);
+  let wj = null; try { wj = JSON.parse(r.stdout); } catch { /* not JSON */ }
+  t('DS-933 --where outside any repo still prints where, with no rows, and exits 3', JSON.stringify([r.status, wj?.where?.slug, wj?.where?.exists, wj?.rows]), '[3,"",false,{}]');
+  rmSync(nowhere, { recursive: true, force: true });
+  {
+    const env = jenv(c);
+    const w = Object.fromEntries(node(env, ['where']).stdout.trim().split('\n').map((l) => { const i = l.indexOf('='); return [l.slice(0, i), l.slice(i + 1).replace(/^'|'$/g, '')]; }));
+    const g = getJson(env, '--where', 'tracker');
+    t('DS-933 --where gives what where prints, beside the rows', JSON.stringify([g.code, g.json?.where, g.json?.rows?.tracker?.value]),
+      JSON.stringify([0, { slug: w.SLUG, gh_repo: w.GH_REPO, config: w.CONFIG, creds: w.CREDS, exists: w.EXISTS === 'yes' }, 'jira']));
+    t('DS-933 without --where there is no where', 'where' in (getJson(env, 'tracker').json ?? { where: 1 }), false);
+    const rules = ['Story, bug : customfield_1, customfield_2', 'task:customfield_3 customfield_1,customfield_3', 'Évolution: f4', 'BUG: customfield_5', 'no rule here'];
+    const by = requiredFieldsByType(rules);
+    t('DS-933 requiredFieldsByType gives one key per type case-blind, as first written', JSON.stringify(Object.keys(by.need)), '["Story","bug","task","Évolution"]');
+    t('DS-933 and each key holds what requiredFieldsIn gives that type', Object.entries(by.need).every(([ty, need]) => JSON.stringify(need) === JSON.stringify(requiredFieldsIn(rules, ty).need)) && JSON.stringify(by.need.bug), '["customfield_1","customfield_2","customfield_5"]');
+    t('DS-933 with the malformed items requiredFieldsIn names', JSON.stringify(by.malformed), JSON.stringify(requiredFieldsIn(rules, null).malformed));
+    t('DS-933 --where without jira-required-fields gives no required_fields', 'required_fields' in (getJson(env, '--where', 'tracker').json ?? { required_fields: 1 }), false);
+  }
+  writeFileSync(c, `${P4}| Local services | \`TODO\` |\n| Append-only paths | \`TODO\` |\n`);
+  r = getJson(jenv(c), 'local-services', 'append-only-paths');
+  const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
+  t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
+  t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // Where something other than the row gives the value, its type is checked on that value, not the row.
+  const label = (id) => ROWS.find((e) => e.id === id).label;
+  const root = join(T, 'root-870');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({ env: { DESK_SUITE_WEIGHT: 'medium' } }));
+  writeFileSync(c, `## 0. Rows\n\n| Field | Value |\n|---|---|\n| ${label('default-branch')} | \`main\` |\n\n## 2. Rows\n\n| Field | Value |\n|---|---|\n| ${label('repo-root')} | \`${root}\` |\n\n`
+    + `${P4}| ${label('suite-weight')} | \`light\` |\n\n${B3}| ${label('memory-ceiling')} | \`16\` | \`32\` |\n`);
+  writeFileSync(join(T, 'machine-870.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| memory-ceiling-gb | `16` | x |\n');
+  r = getJson(jenv(c, { DESK_MACHINE: join(T, 'machine-870.md'), DESK_DEFAULT_BRANCH: 'release' }), 'default-branch', 'memory-ceiling', 'suite-weight');
+  const read = (x) => JSON.stringify([x?.value, x?.source, x?.parsed, x?.errors?.map((e) => e.item)]);
+  t('DS-870 a DESK_DEFAULT_BRANCH over the row is the value parsed, source environment', read(r.json?.rows?.['default-branch']), '["release","environment","release",[]]');
+  t('DS-870 a memory ceiling the machine caps is the cap parsed, source machine', read(r.json?.rows?.['memory-ceiling']), '["16","machine",16,[]]');
+  t('DS-870 a committed suite weight over the row is the value checked, so a bad one errors and exits 4', `${r.code} ${read(r.json?.rows?.['suite-weight'])}`, '4 ["medium","repo",null,["medium"]]');
+
+  // The parity sweeps: a config holding every row desk-env reads, each set to TODO, its example or none,
+  // read through `get --json` and through `desk-env config`, which snapshots every get, list and perm
+  // read in one process. A snapshot value is `=` and what the read printed, `!` where it exits 3, and
+  // empty where it threw.
+  const snapshot = (env) => {
+    const out = {};
+    for (const m of node(env, ['config']).stdout.matchAll(/_DESK_([GLPU])_(\w+)='((?:[^']|'\\'')*)'/g)) out[`${m[1]} ${m[2].replaceAll('_', '-')}`] = m[3].replaceAll("'\\''", "'");
+    return out;
+  };
+  const span = (v) => [].concat(v).map((x) => `\`${x}\``).join(' ');
+  const valueRows = ROWS.filter((e) => CONFIG_ROWS[e.id]);
+  // The rows the schema marks unread are template rows too, but plain get and list refuse them as unknown
+  // (the schema keeps them out of CONFIG_ROWS, and this ticket leaves get and list as they are), so they
+  // have no printed value to match. AC8 and AC9 cover them as that: get and list refuse each one, and
+  // get --json reads each through the same configValueFrom and configValuesIn as the rows get serves.
+  const unreadRows = ROWS.filter((e) => e.kind !== 'perm' && e.unread);
+  t('DS-870 AC8/AC9 every template row but the permissions is swept, served or unread', valueRows.length + unreadRows.length, ROWS.filter((e) => e.kind !== 'perm').length);
+  const sweptRows = [...valueRows, ...unreadRows];
+  const configOf = (pick) => [...new Set(sweptRows.map((e) => e.section))].map((s) => {
+    const es = sweptRows.filter((e) => e.section === s);
+    const rows = es.filter((e) => e.kind !== 'table').map((e) => `| ${e.label} | ${span(pick(e))} |`);
+    const tables = es.filter((e) => e.kind === 'table').map((e) => `\n### ${e.label}\n\n| Ask | Detail |\n|---|---|\n`
+      + [].concat(pick(e)).map((x) => { const [a, ...d] = String(x).split(': '); return `| \`${a}\` | ${d.length ? `\`${d.join(': ')}\`` : ''} |`; }).join('\n'));
+    return `## ${s}. Rows\n\n| Field | Value |\n|---|---|\n${rows.join('\n')}\n${tables.join('\n')}\n`;
+  }).join('\n');
+  for (const [name, pick] of [['TODO', () => 'TODO'], ['its example', (e) => e.example], ['none', () => 'none']]) {
+    const f = join(T, `sweep-${name.replace(/\W/g, '')}.md`);
+    writeFileSync(f, configOf(pick));
+    const env = jenv(f);
+    const json = getJson(env, ...valueRows.map((e) => e.id)).json?.rows ?? {};
+    const snap = snapshot(env);
+    const db = node(env, ['get', 'default-branch']);
+    snap['G default-branch'] = db.status === 3 ? '!' : `=${db.stdout}`;
+    const getBad = [], listBad = [];
+    for (const e of valueRows) {
+      const j = json[e.id], g = snap[`G ${e.id}`], l = snap[`L ${e.id}`];
+      if (!j || (g === '!' ? j.value !== null || j.set : g !== `=${j.value}\n`)) getBad.push(`${e.id}: get ${JSON.stringify(g)}, json ${JSON.stringify(j && [j.value, j.set])}`);
+      const listed = l === '!' ? j?.items === null : l === '' ? j?.items === null && j.errors.some((x) => x.fatal) : l === `=${(j?.items ?? []).map((x) => `${x}\n`).join('')}` && j?.items !== null;
+      if (!listed) listBad.push(`${e.id}: list ${JSON.stringify(l)}, json ${JSON.stringify(j && [j.items, j.errors])}`);
+    }
+    t(`DS-870 AC8 every row set to ${name} reads through get --json as through get (${valueRows.length} rows)`, getBad.join(' / '), '');
+    t(`DS-870 AC9 every row set to ${name} reads through get --json as through list`, listBad.join(' / '), '');
+    // An unread row: get and list refuse it, and get --json reads the cell as a served row's would read.
+    const uj = getJson(env, ...unreadRows.map((e) => e.id)).json?.rows ?? {};
+    const unreadBad = [];
+    for (const e of unreadRows) {
+      // As get and list print a path, `~` is the sweep's HOME (T).
+      const cell = name === 'TODO' ? null : [].concat(pick(e)).map((x) => String(x).replace(/^~(?=\/|$)/, T));
+      const want = JSON.stringify([cell?.[0] ?? null, cell, cell !== null]);
+      const j = uj[e.id], got = JSON.stringify(j && [j.value, j.items, j.set]);
+      const refused = ['get', 'list'].every((cmd) => { const x = node(env, [cmd, e.id]); return x.status !== 0 && x.stdout === '' && x.stderr.includes(`unknown config id "${e.id}"`); });
+      if (got !== want || !refused) unreadBad.push(`${e.id}: json ${got}, want ${want}, get and list refuse it ${refused}`);
+    }
+    t(`DS-870 AC8/AC9 every unread row set to ${name} is refused by get and list, and read by get --json (${unreadRows.length} rows)`, unreadBad.join(' / '), '');
+  }
+  const permRows = ROWS.filter((e) => e.kind === 'perm');
+  for (const v of ['yes', 'no', 'TODO']) {
+    const f = join(T, `perms-${v}.md`);
+    writeFileSync(f, `## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n${permRows.map((e) => `| \`${e.id}\` | c | \`yes\` | \`${v}\` |`).join('\n')}\n`);
+    const env = jenv(f);
+    const json = getJson(env, '--section', '3').json?.rows ?? {};
+    const snap = snapshot(env);
+    const bad = permRows.filter((e) => {
+      const j = json[e.id];
+      return !j || snap[`P ${e.id}`] !== `=${j.value}\n` || (snap[`U ${e.id}`] === '!') === j.set;
+    }).map((e) => `${e.id}: perm ${JSON.stringify(snap[`P ${e.id}`])} unset ${snap[`U ${e.id}`] === '!'}, json ${JSON.stringify(json[e.id] && [json[e.id].value, json[e.id].set])}`);
+    t(`DS-870 AC10 every permission set to ${v} reads through get --json as through perm (${permRows.length} keys)`, bad.join(' / '), '');
+  }
 }
 
 rmSync(T, { recursive: true, force: true });

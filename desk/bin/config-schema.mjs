@@ -90,10 +90,21 @@ export const permValue = (key, v) => permMatch(key, v) ?? 'no';
 export function requiredFieldsIn(rules, type) {
   const want = type == null ? null : String(type).trim().toLowerCase();
   const need = rules.flatMap((rule) => {
-    const m = /^([^:]+):(.+)$/.exec(rule);
-    return m && (want == null || m[1].split(',').some((t) => t.trim().toLowerCase() === want)) ? m[2].split(/[,\s]+/).filter(Boolean) : [];
+    const r = requiredRule(rule);
+    return r && (want == null || r.types.some((t) => t.toLowerCase() === want)) ? r.fields : [];
   });
   return { need: [...new Set(need)], malformed: rules.filter((r) => !/^[^:]+:.*\S/.test(r)) };
+}
+const requiredRule = (rule) => {
+  const m = /^([^:]+):(.+)$/.exec(rule);
+  return m && { types: m[1].split(',').map((t) => t.trim()), fields: m[2].split(/[,\s]+/).filter(Boolean) };
+};
+// requiredFieldsIn for every type the rules name, so a caller with no node can look its type up:
+// {need: {<type as first written>: [field id…]}, malformed: [item…]}, one key per type case-blind.
+export function requiredFieldsByType(rules) {
+  const types = new Map();
+  for (const t of rules.flatMap((rule) => requiredRule(rule)?.types ?? [])) if (t && !types.has(t.toLowerCase())) types.set(t.toLowerCase(), t);
+  return { need: Object.fromEntries([...types.values()].map((t) => [t, requiredFieldsIn(rules, t).need])), malformed: requiredFieldsIn(rules, null).malformed };
 }
 
 // A spend guard is a number of USD or explicitly off. Anything else ("25 USD", "0", "lots") is
@@ -152,7 +163,7 @@ export function parseWorkerLocation(raw) {
 // the caller to name, and is never on.
 //   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
 //   parseLevers -> { on, unknown }
-export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'ledger', 'memory', 'preflight', 'review-reuse', 'wrappers']);
 export const LEVERS_AUTO = 'auto';
 export const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
 export function leverRow(items) {
@@ -443,8 +454,9 @@ export const TYPES = Object.freeze({
   command: matching('a command', () => true, parseCommandItem),
   'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
-    (s) => ({ types: s.split(':')[0].split(',').map((t) => t.trim()), fields: requiredFieldsIn([s], null).need })),
-  lever: { parse(item) { const r = parseLevers([item]); return r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(r.on); } },
+    (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
+  // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
+  lever: cell({ parse(items) { const r = leverRow(items); return r.invalid ? fail(r.invalid) : r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(isNone(items) ? ['none'] : items.map((x) => leverRow([x]).on)); } }),
   budget: refusing((s) => parseBudget(s, 'the budget')),
   'worker-models': refusing(parseWorkerModels),
   'worker-effort': cell(refusing(parseWorkerEffort)),
@@ -462,24 +474,29 @@ export const TYPES = Object.freeze({
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
-// A row's items parsed by its entry's type: -> { value } or { error, fatal }; never throws. A cell type
-// parses every item together, as its reader reads them. Otherwise a value row parses its first item, as
-// configValue reads it, and a list row parses each item. `none` stands alone in a list or a cell (a lone
-// `none` is the row's value), so `none` beside another item is fatal, as configValues refuses it.
-export function parseRow(entry, items) {
+// A row's items checked by its entry's type: -> { value, errors: [{ item, error, fatal }] }, value null
+// unless errors is empty; never throws. A cell type parses every item together, as its reader reads
+// them, and its error names no item (null). Otherwise a value row parses its first item, as configValue
+// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone in
+// a list or a cell (a lone `none` is the row's value), so `none` beside another item is fatal, as
+// configValues refuses it.
+export function checkRow(entry, items) {
   const all = [].concat(items ?? []).map((x) => String(x).trim());
   const type = TYPES[entry.type];
-  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false);
-  if (type.cell) return type.parse(all);
-  if (entry.kind !== 'list' && entry.kind !== 'table') return type.parse(all[0] ?? '');
-  if (isNone(all)) return ok(['none']);
-  const values = [];
-  for (const item of all) {
-    const r = type.parse(item);
-    if (r.error) return r;
-    values.push(r.value);
-  }
-  return ok(values);
+  const one = (r, item) => (r.error ? { value: null, errors: [{ item, error: r.error, fatal: r.fatal }] } : { value: r.value, errors: [] });
+  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
+  if (type.cell) return one(type.parse(all), null);
+  if (entry.kind !== 'list' && entry.kind !== 'table') return one(type.parse(all[0] ?? ''), all[0] ?? '');
+  if (isNone(all)) return { value: ['none'], errors: [] };
+  const read = all.map((item) => [item, type.parse(item)]);
+  const errors = read.filter(([, r]) => r.error).map(([item, r]) => ({ item, error: r.error, fatal: r.fatal }));
+  return errors.length ? { value: null, errors } : { value: read.map(([, r]) => r.value), errors };
+}
+
+// checkRow's first error, as one reader that stops at it sees the row: -> { value } or { error, fatal }.
+export function parseRow(entry, items) {
+  const { value, errors } = checkRow(entry, items);
+  return errors.length ? fail(errors[0].error, errors[0].fatal) : ok(value);
 }
 
 // ---- the rows ----------------------------------------------------------------------------------
@@ -685,8 +702,11 @@ export const ROWS = Object.freeze([
 // desk-env's id tables, which it re-exports: the §3 key of each permission id, and the section and row
 // of every other id scripts read.
 export const PERMISSION_KEYS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind === 'perm').map((e) => [e.id, e.label])));
-export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm' && !e.unread)
-  .map((e) => [e.id, e.kind === 'table' ? { section: e.section, row: e.label, table: true } : { section: e.section, row: e.label }])));
+const idRow = (e) => [e.id, e.kind === 'table' ? { section: e.section, row: e.label, table: true } : { section: e.section, row: e.label }];
+export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm' && !e.unread).map(idRow)));
+// Every non-permission row the schema declares, unread ones included, in the same shape: `get --json`
+// reads them all, where plain `get` reads CONFIG_ROWS alone.
+export const DECLARED_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm').map(idRow)));
 // The rows that fall back to the machine profile, as id -> profile key.
 export const MACHINE_FALLBACK = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.machine).map((e) => [e.id, e.machine])));
 

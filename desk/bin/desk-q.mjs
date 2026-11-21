@@ -72,7 +72,8 @@ import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
-import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
+import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
+import { newBuild, oneBuild } from './build-memo.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -733,6 +734,33 @@ export function loadRepos(now = Date.now(), word = null) {
   return all;
 }
 
+// What loadRepos reads, as one string of modification times and sizes, so an open screen rereads only
+// once it changes: the repos' configs, and each batch's queue folder and state folder with every entry
+// in it. A folder's own time moves as an entry in it is added, removed or replaced. Logs (logs/, any
+// *.log) and the read-only clones (ref/) are left out: workers write them all the time.
+const UNSTAMPED = new Set(['logs', 'ref']);
+function stampOf(path, depth, out) {
+  let st;
+  try { st = statSync(path); } catch { out.push(`${path} -`); return; }
+  out.push(`${path} ${st.mtimeMs} ${st.size}`);
+  if (!depth || !st.isDirectory()) return;
+  let names = [];
+  try { names = readdirSync(path).sort(); } catch { /* stamped by its own time */ }
+  for (const n of names) if (!UNSTAMPED.has(n) && !n.endsWith('.log')) stampOf(join(path, n), depth - 1, out);
+}
+function stateStamp() {
+  const out = [];
+  const repos = join(deskConfigRoot(), 'repos');
+  stampOf(repos, 2, out);
+  let slugs = [];
+  try { slugs = readdirSync(repos).sort(); } catch { /* no repo set up */ }
+  for (const slug of slugs) {
+    for (const b of listBatches(slug)) { stampOf(dirname(b.queue), 1, out); stampOf(b.state, 1, out); }
+  }
+  stampOf(uploadQueueFile(), 0, out);
+  return out.join('\n');
+}
+
 // A batch's names, as loadBatch gives them: its repo's for the standing batch, else its own with its base.
 function batchNames(c, repoName, batch, q) {
   if (!batch) return { name: repoName, repo: repoName, word: repoName, id: c.slug };
@@ -1206,6 +1234,8 @@ const STATE_SGR = byGroup({ running: HUE.green, merging: HUE.cyan, ready: HUE.bl
 const WARN = HUE.yellow, YOU = HUE.magenta, YOU_BOLD = `1;${HUE.magenta}`, BAND = `1;7;${HUE.red}`;
 // A link's text, underlined in the terminal's own colour.
 const UNDERLINE = '4';
+// An amber note: its text, then its fix in bold where there is one.
+function warnNote(tag, text, fix) { return { tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] }; }
 // A PR number's cyan, and its checks: passed green, failed red.
 const PR_SGR = STATE_SGR.merging, GOOD = HUE.green, FAIL = HUE.red;
 // A line of coloured runs that is not a row: a heading, a ticket page's line, a legend.
@@ -1283,7 +1313,7 @@ function etaScope(repos, slug, { now, checkin, epic = null, width = null, pinUsa
   const ep = epic ? dated[0]?.F.epics[epic] : null;
   const wrapped = (l) => (width == null ? [l] : barWrap(l, width));
   const head = [...tabHead(repos, place, now, solidBars(width), pinUsage), ...(dated.length ? [forecastSegs(now, dated.reduce((a, d) => a + d.F.count, 0), checkin, ep, slug ? list : null)] : [])].flatMap(wrapped);
-  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => ({ tag: `▲ ${tagOf(r)}`, sgr: WARN, text: [[`${lead(r)}${stoppedNote(r, now)}. `, null], [`${resumeLine(r)}.`, BOLD]] })), w, width);
+  const stopped = noteLines(per.filter((p) => p.stopped).map(({ r }) => warnNote(`▲ ${tagOf(r)}`, `${lead(r)}${stoppedNote(r, now)}. `, `${resumeLine(r)}.`)), w, width);
   return { list, per, notes, items, head, stopped, manyBatches: !!slug && list.length > 1 };
 }
 
@@ -1652,7 +1682,7 @@ function budgetNotes(costs, cache, period) {
   if (budget == null || !Number.isFinite(budget)) return [];
   const spent = actionsCharged({ cache, costs, period });
   if (spent == null || Math.round(spent * 100) < Math.round(budget * 100)) return [];
-  return [{ tag: '▲ budget', sgr: WARN, text: [[`GitHub Actions budget used up: ${usd(spent)} of ${usd(budget)}.`, null]] }];
+  return [warnNote('▲ budget', `GitHub Actions budget used up: ${usd(spent)} of ${usd(budget)}.`)];
 }
 
 // Home's notes on this month's costs: the Actions budget used up, and the use AWS credits are
@@ -1664,8 +1694,8 @@ function homeCost({ costs = readCosts(costsPath()), cache = readCache() } = {}) 
   if (!c) return { notes: [] };
   const covered = c.names.filter((x) => x.credits > 0).map((x) => x.name);
   return {
-    notes: [...budgetNotes(costs, fc, c.period), ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN,
-      text: [[`AWS credits are covering ${usd(c.credits)} of use for ${andList(covered)}. It becomes a charge when they run out.`, null]] }] : [])],
+    notes: [...budgetNotes(costs, fc, c.period), ...(c.credits > 0 ? [warnNote('▲ credits',
+      `AWS credits are covering ${usd(c.credits)} of use for ${andList(covered)}. It becomes a charge when they run out.`)] : [])],
   };
 }
 
@@ -1696,7 +1726,7 @@ function costsParts(repos, { now = Date.now(), costs = readCosts(costsPath()), c
   const includes = old ? [['  ', null], [`includes ${old}`, GREY]] : [];
   const notes = [
     ...budgetNotes(costs, fc, c.period),
-    ...(c.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`, null]] }] : []),
+    ...(c.credits > 0 ? [warnNote('▲ credits', `AWS credits are covering ${usd(c.credits)} of use. It becomes a charge when they run out.`)] : []),
     ...stale.map((r) => ({ tag: `◌ ${r.name}`, sgr: GREY, text: [[r.failedToday
       ? `Its ${SUPPLIER_LABEL[r.supplier]} bill couldn't be read today, so this shows the ${dayMonth(r.at)} figure. desk-q tries again every hour.`
       : `Its ${SUPPLIER_LABEL[r.supplier]} bill hasn't been read yet today, so this shows the ${dayMonth(r.at)} figure.`, null]] })),
@@ -1765,8 +1795,8 @@ function supplierParts(repos, name, { now = Date.now(), costs = readCosts(costsP
   const charged = segLine([['charged ', GREY], [money(x.total), BOLD], [` to ${name} in ${monthText(c.period)}`, GREY]]);
   // The budget note on a name GitHub bills; it is the account's budget, not the name's.
   const notes = [...(mine.some((e) => e.supplier === 'github') ? budgetNotes(costs, fc, c.period) : []),
-    ...(x.credits > 0 ? [{ tag: '▲ credits', sgr: WARN, text: [[`AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
-      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`, null]] }] : [])];
+    ...(x.credits > 0 ? [warnNote('▲ credits', `AWS credits covered ${usd(x.credits)}. Without them, ${name} would have been charged ${
+      usd((Math.round((x.total ?? 0) * 100) + Math.round(x.credits * 100)) / 100)}.`)] : [])];
   return { head: [charged, '', bold(`  ${pad('SUPPLIER', SUPPLIER_W)}${pad('FOR', FOR_W)}${rpad('CHARGED', aw)}`)], rows,
     foot: [segLine([[`  ${pad('total', SUPPLIER_W + FOR_W)}`, GREY], [rpad(money(x.total), aw), BOLD]]), ...(notes.length ? ['', ...noteLines(notes, 14, width)] : []), ...foot] };
 }
@@ -1864,9 +1894,9 @@ function awsParts(lines, mine) {
     ...named.map((l) => segLine([...lead(l), [rpad(usd(l.used), uw), WARN], [rpad(neg(l.credits), kw), null], [rpad(usd(l.charged), aw), null]])),
     segLine([[`  ${pad('total', ww + nw)}`, GREY], [rpad(usd(sum('used') / 100), uw), WARN], [rpad(neg(sum('credits') / 100), kw), BOLD], [rpad(usd(sum('charged') / 100), aw), BOLD]]));
   const [used, credits] = [usd(sum('used') / 100), usd(sum('credits') / 100)];
-  const notes = [{ tag: '▲ credits', sgr: WARN, text: [[sum('credits') >= sum('used')
+  const notes = [warnNote('▲ credits', sum('credits') >= sum('used')
     ? `Credits cover all ${used} of this month's use so far. It becomes a charge when they run out.`
-    : `Credits covered ${credits} of ${used} of this month's use so far. The rest was charged.`, null]] }];
+    : `Credits covered ${credits} of ${used} of this month's use so far. The rest was charged.`)];
   const saved = mine.filter((e) => e.credit?.usd != null);
   notes.push(...(saved.length ? saved.map((e) => ({ tag: '◌ balance', sgr: GREY, text: [[`Credit left was ${usd(e.credit.usd)} on ${ymdText(e.credit.entered)}, ending ${ymdText(e.credit.ends)}.`, null]] }))
     : [{ tag: '◌ balance', sgr: GREY, text: [["Credit left is unknown: AWS doesn't report it. Add the balance and end date in desk-setup.", null]] }]));
@@ -2603,13 +2633,36 @@ function quietNotes(shown) {
   }));
 }
 
+// Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
+// each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
+// several repos have it, one note naming them all, on the first one's batch.
+const OLD_CODE = [
+  ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
+  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
+  ['driver', 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.',
+    (repos) => `the merge drivers of ${repos} run old desk code. Each moves to the installed code when it next waits between loops.`, null],
+];
+function oldCodeNotes(shown) {
+  const at = new Map();
+  for (const [kind, one, many, fix] of OLD_CODE) {
+    const first = new Map();
+    for (const r of shown) if (r.stall?.oldCode?.[kind] && !first.has(r.slug)) first.set(r.slug, r);
+    const rs = [...first.values()];
+    if (!rs.length) continue;
+    const note = rs.length === 1 ? warnNote(`▲ ${rs[0].repo}`, one, fix) : warnNote('▲ desk code', many(andList(rs.map((r) => r.repo))), fix);
+    at.set(rs[0], [...(at.get(rs[0]) ?? []), note]);
+  }
+  return at;
+}
+
 // The amber notes for a batch that runs but does not move, each with its fix where there is one.
-// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note. With `allOut`,
-// Home's note on the Claude default's limit stands for the batch's hold on it.
-function stallNotes(r, quiet, allOut = false) {
+// `quiet` is quietNotes's, which says which batch carries its repo's no-progress note, and `old`
+// oldCodeNotes's, which batch carries the old desk code notes. With `allOut`, Home's note on the
+// Claude default's limit stands for the batch's hold on it.
+function stallNotes(r, quiet, old, allOut = false) {
   const s = r.stall, tag = `▲ ${r.repo}`;
   if (!s) return [];
-  const note = (text, fix) => ({ tag, sgr: WARN, text: [[text, null], ...(fix ? [[fix, BOLD]] : [])] });
+  const note = (text, fix) => warnNote(tag, text, fix);
   const out = [];
   const u = allOut ? null : usageHoldOf(r);
   if (u) out.push(note(`${u}. `, 'Switch subscription to lift it sooner.'));
@@ -2621,9 +2674,7 @@ function stallNotes(r, quiet, allOut = false) {
     const fix = /signed out/i.test(reason) ? 'Run gh auth login.' : null;
     out.push(note(`${what}: ${reason}.${fix ? ' ' : ''}`, fix));
   }
-  if (s.oldCode?.supervisor) out.push(note('the supervisor runs old desk code. ', 'Run ./install.sh in desk-skills.'));
-  // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
-  if (s.oldCode?.driver) out.push(note('the merge driver runs old desk code. It moves to the installed code when it next waits between loops.'));
+  out.push(...(old.get(r) ?? []));
   return out;
 }
 
@@ -2657,7 +2708,7 @@ function wrapSegs(segs, w) {
 function handOverNote(r) {
   const text = r.live ? 'set to the supervisor, but a session runs this batch. Its next batch hands over.'
     : `${r.last == null ? 'no pass yet' : 'passes stopped'}. To resume: run /desk-autopilot in ${r.repo}; it hands the batch to the supervisor at Stage 4.`;
-  return { tag: `▲ ${r.repo}`, sgr: WARN, text: [[text, null]] };
+  return warnNote(`▲ ${r.repo}`, text);
 }
 
 const needsYouSkill = () => existsSync(join(skillsDir(), 'desk-needs-you', 'SKILL.md'));
@@ -2739,13 +2790,13 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
     const more = `${none.length} more set up with no batch: ${none.map((r) => r.name).join(', ')}. ${interactive ? 'Press a to list them.' : 'desk-q --all lists them.'}`;
     foot.push('', ...(width == null ? [[[more, DIM]]] : wrapSegs([[more, DIM]], Math.max(12, width - 2))).map((segs) => segLine([['  ', null], ...segs])));
   }
-  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable);
+  const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const out = claude?.limit ? claude : null;
-  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => ({ tag: `▲ ${r.name}`, sgr: WARN, text: [[unreadableText(b), null]] }))),
-    ...readable.flatMap((r) => stallNotes(r, quiet, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
+  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
+    ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
-  if (pause) notes.unshift({ tag: '▲ uploads', sgr: WARN, text: [[uploadPauseText(pause), null]] });
+  if (pause) notes.unshift(warnNote('▲ uploads', uploadPauseText(pause)));
   const seen = new Set();
   // Ports are claimed per repo, so each repo is checked once, as its standing batch.
   const standing = repos.filter((r) => !r.batch);
@@ -2755,7 +2806,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
       const pair = [r.name, o.name].sort();
       if (seen.has(pair.join())) continue;
       seen.add(pair.join());
-      notes.push({ tag: '▲ ports', sgr: WARN, text: [[`${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`, null]] });
+      notes.push(warnNote('▲ ports', `${pair.join(' + ')} share ${Math.max(r.claim.port, c.port)}–${Math.min(r.claim.last, c.last)}. Two batches there at once can get the same worker port.`));
     }
   }
   notes.push(...cost.notes);
@@ -3719,7 +3770,10 @@ function scopeWord(argv) {
   return first && !['costs', ...SHIPS, 'days', 'levers'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
 }
 
-export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
+// One build: each git, launchctl and ps question it asks runs once (build-memo.mjs).
+export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
+
+function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
@@ -3738,8 +3792,11 @@ export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = (
   if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    const after = loadOrRefuse(now, word);
-    return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    // The change read back in a build of its own, so nothing the first build remembered is shown.
+    return newBuild(() => {
+      const after = loadOrRefuse(now, word);
+      return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    });
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
@@ -3868,6 +3925,8 @@ function jsonCommand(repos, argv, now) {
 // ---- the interactive screen --------------------------------------------------------------------
 
 export const REFRESH_MS = 2000;
+// The longest an open screen goes without rereading the queues while nothing it stamps changes.
+export const REREAD_MS = 30 * 1000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
@@ -4034,8 +4093,8 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 // The full-screen view is a place (every repo, a repo, an epic, a ticket) and, for every place but a
 // ticket, a view of it: Queue, Timeline, By day or Epics. Tab, 1–4, w and a click on the tab line change the view
 // and keep the place; Enter, Esc and a click on the breadcrumb change the place and keep the view.
-// ↑↓ select, : takes a command, q quits. Rereads the queues every REFRESH_MS, keeping the selection
-// on the same repo or ticket.
+// ↑↓ select, : takes a command, q quits. Redraws every REFRESH_MS, rereading the queues when their
+// files changed (stateStamp) or REREAD_MS has passed, keeping the selection on the same repo or ticket.
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
@@ -4048,9 +4107,20 @@ export function interactive({
   // Once loaded, the scope is the repo's slug, which names its standing batch (always listed) whichever
   // named batches come and go. A scoped reread that still fails reads every repo, which says what is gone.
   let scope = word;
-  const reload = () => {
+  const load = () => {
     if (scope == null) return loadOrRefuse(clock());
     try { return loadOrRefuse(clock(), scope); } catch { scope = null; return loadOrRefuse(clock()); }
+  };
+  // `lastRead`: the state stamp and the time of the last reread that did not fail, null after one that
+  // did. The stamp is taken first, so a write made during the reread brings the next. `avail`, Home's
+  // free memory, is sampled with each reread: on macOS a sample runs vm_stat, which an idle tick must not.
+  let lastRead = null, avail;
+  const reload = (stamp = stateStamp()) => {
+    lastRead = null;
+    const out = load();
+    avail = availableGiB();
+    lastRead = { stamp, at: clock() };
+    return out;
   };
   let repos = reload();
   if (scope != null) scope = repos[0].slug;
@@ -4162,7 +4232,7 @@ export function interactive({
     }
     if (view.kind === 'overview') {
       // Home's parked note goes in its notes, not on the tab line, where a 100-column terminal cuts it.
-      return { badge: '', ...overviewParts(repos, { all: view.all, now, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
+      return { badge: '', ...overviewParts(repos, { all: view.all, now, avail, interactive: true, checkin, width: w, badge: badge(repos), pinUsage: true }), ...claude(shownRepos(repos, view.all)),
         keys: `↑↓ select · enter open · ${VIEW_KEYS} · a ${view.all ? 'hide repos with no batch' : 'all repos'} · c parked dates · s supervisor · v levers · ${cmdKeys}` };
     }
     if (view.kind === 'repo') {
@@ -4189,12 +4259,15 @@ export function interactive({
   }
 
   // Rebuilds the screen from disk, then writes it.
+  // One build, joined by the refresh's reread where it made one (build-memo.mjs).
   function draw() {
-    if (done) return;
-    try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
-    try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
-    crumbs = crumbParts();
-    frame();
+    oneBuild(() => {
+      if (done) return;
+      try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+      try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+      crumbs = crumbParts();
+      frame();
+    });
   }
 
   // Writes the screen last built, reading nothing: all a change of selection, window or command line
@@ -4641,7 +4714,7 @@ export function interactive({
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = reload(); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = newBuild(reload); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
@@ -4778,10 +4851,15 @@ export function interactive({
   input.resume?.();
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
-  timer = setInterval(() => {
-    try { repos = reload(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+  // Every tick redraws, as one build; the queues are reread only once the state stamp has changed, or
+  // REREAD_MS has passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
+  timer = setInterval(() => oneBuild(() => {
+    try {
+      const stamp = stateStamp();
+      if (lastRead == null || stamp !== lastRead.stamp || clock() - lastRead.at >= REREAD_MS) repos = reload(stamp);
+    } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
-  }, refreshMs);
+  }), refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
@@ -4804,14 +4882,15 @@ if (isMain) {
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
-    let start = null;
-    const word = scopeWord(argv);
-    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
+    // The screen's first load, its own reload and its first draw are one build (build-memo.mjs).
+    const ui = oneBuild(() => {
+      const word = scopeWord(argv);
+      if (!process.stdin.isTTY || !process.stdout.isTTY || ['--plain', '--help', '--json'].some((f) => argv.includes(f))) return null;
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now(), word), argv);
-    }
-    if (start && !isCommand(start)) {
-      const ui = interactive({ start, word });
+      const start = target(loadOrRefuse(Date.now(), word), argv);
+      return start && !isCommand(start) ? interactive({ start, word }) : null;
+    });
+    if (ui) {
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

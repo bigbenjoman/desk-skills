@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # One CI shard of tests/plan_shards.mjs's matrix, shared by every job that runs one (tests.yml's Linux
-# shards, nightly-macos.yml's macOS and Node 24 shards). The job puts its matrix row in the environment:
+# shards, nightly-macos.yml's macOS shards). The job puts its matrix row in the environment:
 # SHARD, OF, SUITES (suite names, space-separated) and HOOK (true on the one shard that runs the
 # attribution hook self-test). The argument is how many suites run at once: one fewer than the
 # runner's vCPUs.

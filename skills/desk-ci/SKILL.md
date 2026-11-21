@@ -12,7 +12,9 @@ description: >-
   or to make the default workflow token read-only ("/desk-ci protection snapshot|restore|pin|token").
   Also when asking which jobs a batch's child PRs into a batch base could skip ("/desk-ci profile"):
   proposes a light profile for those PRs and a full one for the rest, with an estimated saving.
-argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token"
+  Also when a repo's AWS runners stopped taking jobs and its CI fell back to GitHub-hosted runners
+  ("is the AWS fallback on?", "put voicepa back on AWS", "/desk-ci aws-fallback status|off").
+argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token | aws-fallback status|off [--repo owner/name]"
 ---
 
 # desk-ci
@@ -27,8 +29,9 @@ land on a self-hosted runner.
 
 **Core principle: show the proposal, change nothing.** This skill reads workflows and CI history,
 and prints; its only writes are `measure`'s report and `protection snapshot`'s file under
-`.handoffs/`, and the protection writes below, each shown first and gated on config §3
-`ci-protection`. It never edits `.github/`, opens a PR, or changes runner settings, in this repo or any other. Writing
+`.handoffs/`, the protection writes below, each shown first and gated on config §3
+`ci-protection`, and `aws-fallback off`, which the user runs to put a repo back on its AWS runners.
+It never edits `.github/`, opens a PR, or changes runner settings, in this repo or any other. Writing
 the workflow changes a proposal implies is separate work, done only after the user has read the
 proposal and said which placements to take.
 
@@ -83,15 +86,41 @@ For every job whose `runs-on` **can resolve** to a self-hosted runner, `ci-lint`
   one that picks anything but a GitHub-hosted label (the `!=` form,
   `github.actor != 'dependabot[bot]' && 'self-hosted' || 'ubuntu-latest'`, is read too).
 
-"Can resolve" means any value other than a GitHub-hosted image label (`ubuntu-*`, `macos-*`,
-`windows-*`): `self-hosted` or any custom label, a runner `group:`, a matrix entry holding one, or a
-value read from `vars`, `inputs`, `env` or `needs` that the file does not fix. Each finding names the
-job and the line:
+"Can resolve" means any label set other than GitHub-hosted image labels (`ubuntu-*`, `macos-*`,
+`windows-*`) or the repo's declared AWS runner labels (below): a bare `self-hosted` or any other
+custom label, a runner `group:`, a matrix entry holding one, or a value read from `vars`, `inputs`,
+`env` or `needs` that the file does not fix. Where the repo declares AWS runner labels, a `${{ }}`
+expression is read for every label set it can pick, through `&&`, `||`, `fromJSON` and `format`, and a
+value only compared (`vars.X == 'on'`) is not a label source. Where it declares none, every quoted
+literal in an expression counts as a label it may pick, as it always has. Each finding names the job
+and the line:
 
 ```
 <file>:<line>  <job>  can run self-hosted but receives secret DEPLOY_KEY
 summary: findings=<n>
 ```
+
+### A repo's AWS runners: `.github/desk-ci.yml`
+
+A repo whose CI runs on its own AWS runners declares their labels in `.github/desk-ci.yml`, read from
+the root of the repo holding the workflows:
+
+```yaml
+aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]
+hosted-workflows: [release.yml]   # workflow files kept on GitHub-hosted runners
+```
+
+- A label set whose labels are all declared, with or without `self-hosted`, is the repo's cloud
+  runner: a job that can pick only those or GitHub-hosted labels may receive a secret, an environment
+  or `id-token`, and needs no Dependabot branch. A declared label covers its `<label>-on-demand` twin.
+- A declared label beside one that is not, a bare `self-hosted`, or a label from `vars` or `inputs`
+  is still reported.
+- `ci-lint` fails on `self-hosted` or a GitHub-hosted label under `aws-runner-labels`, naming the file
+  and line, and on any job in a `hosted-workflows` file whose `runs-on` can pick a runner that is not
+  GitHub-hosted.
+- `classify` places every job of a `hosted-workflows` file hosted with the reason `hosted-workflows`,
+  and names the AWS label a job runs on today: `(runs-on today: AWS runner <label>, …)`.
+- With no `.github/desk-ci.yml`, both read as before.
 
 ## Running it
 
@@ -113,6 +142,7 @@ beyond this file.
 | Running `measure`, or `batch-red` against its baseline | *measure*, *batch-red* | `references/measure.md` |
 | Running `profile`, or acting on its plan or its saving | *profile* | `references/profile.md` |
 | Any `protection` command: `snapshot`, `restore`, `pin` or `token` | *protection* | `references/protection.md` |
+| `aws-fallback status` or `off`, or an `AWS fallback on for` issue the watchdog opened | *aws-fallback* | `references/aws-fallback.md` |
 
 **A reference file you cannot read stops the command.** If the file a step names is missing or
 empty, stop and name it by its full path; never run the command from memory or an earlier copy of

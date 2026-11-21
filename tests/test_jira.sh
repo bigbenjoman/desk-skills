@@ -247,6 +247,42 @@ puts() { jq -s '[.[] | select(.method == "PUT")] | length' "$LOG"; }
 comments_sent() { jq -s '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | length' "$LOG"; }
 last_comment() { jq -sr '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
 
+# The repo and every config row come from one desk-env.mjs run. A `node` ahead on PATH logs
+# each run; a desk-env.mjs that refuses --where sends desk-jira down the separate where/get/list/perm
+# reads, so the two paths can be compared value for value.
+mkdir -p "$T/countbin" "$T/oldenv"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/node.calls"\nexec "%s" "$@"\n' "$T" "$(command -v node)" > "$T/countbin/node"
+chmod +x "$T/countbin/node"
+cat > "$T/oldenv/desk-env.mjs" <<EOF
+import { spawnSync } from 'node:child_process';
+const a = process.argv.slice(2);
+if (a.includes('--where')) process.exit(2);
+process.exit(spawnSync(process.execPath, ['$DESK_ENV_MJS', ...a], { stdio: 'inherit' }).status ?? 1);
+EOF
+envruns() { : > "$T/node.calls"; ( cd "$1" && shift && PATH="$T/countbin:$PATH" "$J" "$@" ) >/dev/null 2>&1; grep -c 'desk-env\.mjs' "$T/node.calls"; }
+check "DS-933 AC1 where starts one desk-env process" '[ "$(envruns "$C" where)" -eq 1 ]'
+check "DS-933 AC1 a create its field rules refuse starts one desk-env process" '[ "$(envruns "$C" create Story s body.md --no-lint)" -eq 1 ]'
+check "DS-933 AC1 where outside any repo starts one desk-env process" '[ "$(envruns "$T/state" where)" -eq 1 ]'
+SLUG_P=$(mkrepo p "https://github.com/acme/parity" jira "http://127.0.0.1:$PORT"); P="$T/repos/p"
+printf '| Priority | `customfield_10207` |\n| Required fields | `Story, bug : customfield_1, customfield_2` `task:customfield_3 customfield_1,customfield_3` `Évolution: customfield_4` `no rule here` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_P/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"
+printf 'a body' > "$P/body.md"
+mkdir -p "$T/repos/unset"; git init -q "$T/repos/unset"; git -C "$T/repos/unset" remote add origin https://github.com/acme/unset
+both() { local d="$1" one two; shift
+  one=$(cd "$d" && "$J" "$@" 2>&1; echo "rc=$?"); two=$(cd "$d" && DESK_ENV_MJS="$T/oldenv/desk-env.mjs" "$J" "$@" 2>&1; echo "rc=$?")
+  [ "$one" = "$two" ] || { printf '  one call:\n%s\n  separate reads:\n%s\n' "$one" "$two"; return 1; }; }
+for d in "$A" "$C" "$P" "$T/repos/n" "$T/repos/unset" "$T/state"; do
+  check "DS-933 AC2 where in ${d##*/} reads as the separate reads do" 'both "$d" where && both "$d" where --dir'
+done
+for ty in Story BUG task Epic ÉVOLUTION; do
+  n0=$(creates)
+  check "DS-933 AC2 create $ty in a repo of mixed rules is refused as the separate reads refuse it" 'both "$P" create "$ty" s body.md customfield_10207=P0 --no-lint && [ "$(creates)" -eq "$n0" ]'
+done
+err=$(cd "$P" && "$J" create bug s body.md customfield_10207=P0 --no-lint 2>&1)
+check "DS-933 AC2 the one call's rules are the row's rules" 'printf "%s" "$err" | grep -q "a bug needs customfield_1 " && printf "%s" "$err" | grep -q "a bug needs customfield_2 " &&
+  ! printf "%s" "$err" | grep -q customfield_3 && printf "%s" "$err" | grep -q "item \"no rule here\" is not" && printf "%s" "$err" | grep -q P0'
+
 n0=$(creates)
 err=$(cd "$C" && "$J" create Story s body.md customfield_10207=P2 2>&1); rc=$?
 check "create without a required field is refused and names it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Story needs customfield_10208 (config §4 Required fields)" && [ "$(creates)" -eq "$n0" ]'
@@ -574,6 +610,19 @@ check "DS-824 AC4 lint: no design-tool URL anywhere and no No UI line is still b
 clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://claude.ai/design/p/1a2b" }' > "$LD/cdref.md"
 lint "$LD/cdref.md" customfield_10208=M
 check "DS-824 lint: a Claude Design link outside the Design section is not a design link" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+for w in code noformat; do
+  clean | awk -v w="$w" '{ print } /^Reviewers see/ { print "The word `" w "` is text here." }' > "$LD/span.md"
+  lint "$LD/span.md" customfield_10208=M
+  check "DS-667 AC1/AC2 lint: the word $w in a code span opens no block, and every later section is read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+done
+clean | awk '{ print } /^Reviewers see/ { print "{code}"; print "Whether to decide the rest: TBD"; print "{code}" }' > "$LD/codeblock.md"
+lint "$LD/codeblock.md" customfield_10208=M
+check "DS-667 AC3 lint: a real {code} block stays code, and the sections after it are still read" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
+clean | awk '{ print } /^Reviewers see/ { print "{code}}"; print "Whether to decide the rest: TBD"; print "{code}"; print "{code}"; print "x"; print "{{code}" }' > "$LD/bracecode.md"
+lint "$LD/bracecode.md" customfield_10208=M
+# A line starting {code makes desk-jira read the draft as wiki, so its ## headings draw a rendering
+# advisory: assert on what the tags hide, as AC3 does, not on an empty output.
+check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
@@ -668,7 +717,8 @@ h2. Out of scope
 * None.
 EOF
 printf 'h2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Design\nhttps://claude.ai/design/p/abc123\nh2. Verification\n* none\nh2. Out of scope\n* None.\n' > "$LD/47.wiki"
-jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" '
+printf 'h2. Outcome\nThe word {{code}} is text here.\n{code}\nWhether to decide the rest: TBD\n{code}\nSo is {{noformat}}.\nh2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Verification\n* Unit: tests/test\\_jira.sh.\nh2. Design\nNo UI.\nh2. Out of scope\n* None.\n' > "$LD/49.wiki"
+jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" --rawfile d49 "$LD/49.wiki" '
   {"issues": {
     "KAN-2": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}},
     "KAN-45": {"summary": "Lint every ticket before create", "issuetype": {"name": "Story"}, "description": $d45,
@@ -679,6 +729,8 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
       "issuelinks": [{"id": "5", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-3"}}]},
     "KAN-47": {"summary": "a canvas", "issuetype": {"name": "Story"}, "description": $d47,
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
+    "KAN-49": {"summary": "code in monospace", "issuetype": {"name": "Story"}, "description": $d49,
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
     "KAN-48": {"summary": "blocked by its own epic", "issuetype": {"name": "Story"}, "description": $d45,
       "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
@@ -712,6 +764,8 @@ check "lint KEY: a canvas in the working tree only, not on the base, is still bl
 git -C "$A" add docs/design && git -C "$A" -c user.name=t -c user.email=t@example.com commit -q -m canvas && git -C "$A" branch -M main
 klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
+klint KAN-49
+check "DS-667 AC4 lint KEY: {{code}} and {{noformat}} in a stored description are text, a real {code} block stays code, and the sections after them are read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
 klint KAN-46 Story
 check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "pass no type or fields"'
 
