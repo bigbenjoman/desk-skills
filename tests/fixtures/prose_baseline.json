@@ -70,7 +70,7 @@
 {"file":"skills/desk-checkout/SKILL.md","kind":"script","value":"claude_activity.py","context":"claude_activity.py"},
 {"file":"skills/desk-checkout/SKILL.md","kind":"script","value":"jira_activity.py","context":"jira_activity.py"},
 {"file":"skills/desk-checkout/SKILL.md","kind":"script","value":"github_activity.py","context":"github_activity.py"},
-{"file":"skills/desk-ci/SKILL.md","kind":"script","value":"manage.py","context":"manage.py migrate"},
+{"file":"skills/desk-ci/references/profile.md","kind":"script","value":"manage.py","context":"manage.py migrate"},
 {"file":"skills/desk-clearance/references/repo-facts.md","kind":"row","value":"§4 Vercel team","context":"vercel list --scope <§4 Vercel team> 2>&1"},
 {"file":"skills/desk-clearance/references/subagent-briefs.md","kind":"row","value":"§3 limits","context":"<§3 limits>"},
 {"file":"skills/desk-design/SKILL.md","kind":"state-path","value":"designs/<TICKET>/","context":"$DESK_STATE/designs/<TICKET>/"},
