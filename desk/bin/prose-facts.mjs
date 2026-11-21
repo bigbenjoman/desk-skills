@@ -53,8 +53,8 @@ export const locks = (root = ROOT) => ({
 });
 
 // An AUTOPILOT_ name, bounded on the left, so the tail of a longer name (DESK_AUTOPILOT_WORKER) is not
-// read as one.
-export const AUTOPILOT_NAME = /(?<![A-Za-z0-9_])AUTOPILOT_[A-Z0-9_]*[A-Z0-9]/g;
+// read as one. Named in lower case so autopilotNames, reading this file, never reads its own name.
+export const autopilotNameRe =/(?<![A-Za-z0-9_])AUTOPILOT_[A-Z0-9_]*[A-Z0-9]/g;
 
 // Each AUTOPILOT_ name a file under desk/bin (at any depth) or a skill's bin uses, with the files using
 // it: { name: [repo-relative path, …] }.
@@ -66,7 +66,7 @@ export function autopilotNames(root = ROOT) {
   const skills = existsSync(join(root, 'skills')) ? readdirSync(join(root, 'skills')) : [];
   const found = {};
   for (const rel of [...walk('desk/bin'), ...skills.flatMap((s) => walk(`skills/${s}/bin`))].sort()) {
-    for (const m of readFileSync(join(root, rel), 'utf8').matchAll(AUTOPILOT_NAME)) {
+    for (const m of readFileSync(join(root, rel), 'utf8').matchAll(autopilotNameRe)) {
       (found[m[0]] ??= new Set()).add(rel);
     }
   }

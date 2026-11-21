@@ -29,7 +29,7 @@ import { join, dirname, relative, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { split, shellCommands, markdownFiles, PLACEHOLDER, FENCE, closesFence } from './command_shapes.mjs';
 import { CONFIG_ROWS, CODE_SPAN_WRAPPING as SPAN } from '../desk/bin/desk-env.mjs';
-import { AUTOPILOT_NAME as AUTOPILOT } from '../desk/bin/prose-facts.mjs';
+import { autopilotNameRe as AUTOPILOT } from '../desk/bin/prose-facts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_PATHS = ['skills', 'agents'];
