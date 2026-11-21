@@ -22,7 +22,8 @@ minutes") is the only warning before a 10GB spike.
 (`desk-env lease mode port`):
 
 - **`shadow` or `on`**: lease the range for your own Claude session with
-  `~/.claude/desk/bin/port-lease.mjs range <from>-<to>`, and publish it at the handshake too. Run the
+  `~/.claude/desk/bin/port-lease.mjs range <from>-<to>` (with `--batch <EPIC>` for an epic batch, so
+  the lease carries your batch's name), and publish it at the handshake too. Run the
   same command again at each handshake and at least every 30 minutes while the batch runs: it renews
   the ports you hold and leases any your workers have given back. A lease nobody renews lapses at
   twice its one-hour TTL, and every lease you hold lapses when your session exits. Your own pass

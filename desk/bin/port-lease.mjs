@@ -11,13 +11,13 @@
 // beside the leases: the caller passes those as `taken` and `inUse`.
 //
 // An orchestrator leases its batch's range for its Claude session at the handshake, and renews it:
-//   port-lease.mjs range <from>-<to> [--ttl <seconds>] [--label <text>]
+//   port-lease.mjs range <from>-<to> [--ttl <seconds>] [--batch <name>]
 // Each port in the range no other session leases is leased (or renewed) under the label
 // "<repo> <batch> range". Its own pass may give a worker a port in that range: it hands that port's
 // lease to the worker rather than refusing it.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { EXIT_OK, EXIT_UNREADABLE, LeaseStoreError, claudeAncestor, kindMode, list, peek, renew, tryAcquire } from './leases.mjs';
+import { EXIT_OK, EXIT_UNREADABLE, EXIT_USAGE, LeaseStoreError, claudeAncestor, kindMode, list, peek, renew, tryAcquire } from './leases.mjs';
 
 // The pass's hold on a port while it spawns the worker.
 export const PICK_TTL = 300;
@@ -25,7 +25,6 @@ export const PICK_TTL = 300;
 // keeps it (a live owner that never renews lapses at twice its TTL).
 export const WORKER_TTL = 24 * 3600;
 export const RANGE_TTL = 3600;
-export const EXIT_USAGE = 2;
 
 export const batchLabel = (repo, batch) => `${repo} ${batch ?? 'standing'}`;
 export const workerLabel = (repo, batch, key) => `${batchLabel(repo, batch)} ${key}`;
@@ -77,7 +76,7 @@ export async function pickPort({ env, taken, inUse, own = null, floor, repo, bat
     try {
       const held = byPort.get(port);
       if (held?.label === range) {
-        const r = renew(held.id, { ...portReq(port, PICK_TTL, label, pid), relabel: true }, { env, ...at });
+        const r = renew(held.id, { ...portReq(port, PICK_TTL, label, pid), expect: { label: range } }, { env, ...at });
         if (r.code === EXIT_OK) return { port, lease: held.id, mode, notes };
       } else {
         const r = tryAcquire({ ...portReq(port, PICK_TTL, label, pid), final: true }, { env, ...at, mode });
@@ -98,9 +97,10 @@ export async function pickPort({ env, taken, inUse, own = null, floor, repo, bat
 // ticket. A worker whose pid is unknown leaves it with the pass, so it lapses when the pass exits.
 // -> null, or why it was not handed over.
 export function handToWorker({ env, id, port, workerPid, label, dir }) {
-  if (!id || !(Number(workerPid) > 0)) return null;
+  if (!id) return null;
+  if (!(Number(workerPid) > 0)) return 'spawn-worker.sh printed no worker pid';
   try {
-    const r = renew(id, { ...portReq(port, WORKER_TTL, label, Number(workerPid)), relabel: true }, { env, ...(dir == null ? {} : { dir }) });
+    const r = renew(id, { ...portReq(port, WORKER_TTL, label, Number(workerPid)) }, { env, ...(dir == null ? {} : { dir }) });
     return r.code === EXIT_OK ? null : r.why;
   } catch (e) { return e.message; }
 }
@@ -122,7 +122,9 @@ export function leaseRange({ env, from, to, owner, label, ttl = RANGE_TTL, dir }
   for (let p = from; p <= to; p += 1) {
     const l = byPort.get(p);
     if (l && l.owner?.pid === owner && l.label === label) {
-      if (renew(l.id, portReq(p, ttl, label, owner), { env, ...at }).code === EXIT_OK) out.renewed.push(p);
+      // Checked again under the lock: the pass may have handed this port to a worker since the list.
+      const r = renew(l.id, { ...portReq(p, ttl, label, owner), expect: { pid: owner, label } }, { env, ...at });
+      if (r.code === EXIT_OK) out.renewed.push(p); else out.held.push({ port: p, label: r.holder ?? r.why });
       continue;
     }
     if (l) { out.held.push({ port: p, label: l.label }); continue; }
@@ -140,14 +142,15 @@ const spans = (ports) => {
   }
   return out.map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(', ');
 };
-const USAGE = 'usage: port-lease.mjs range <from>-<to> [--ttl <seconds>] [--label <text>]';
+const USAGE = 'usage: port-lease.mjs range <from>-<to> [--ttl <seconds>] [--batch <name>]';
 
-async function cli(argv) {
+async function cli() {
+  // desk-env takes `--batch <name>` out of process.argv as it loads, so the arguments are read after it.
   const E = await import('./desk-env.mjs');
   const { parseRange } = await import('./port-claims.mjs');
-  const args = [...argv];
+  const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v ?? ''; };
-  const ttlText = flag('--ttl'); const labelText = flag('--label');
+  const ttlText = flag('--ttl');
   const [cmd, text, extra] = args;
   if (cmd !== 'range' || extra != null) { console.error(USAGE); return EXIT_USAGE; }
   const r = parseRange(text);
@@ -160,7 +163,7 @@ async function cli(argv) {
   }
   const owner = claudeAncestor(E.psRows('pid=,ppid=,args='), process.pid);
   if (owner == null) { console.error('port-lease: no Claude session was found above this command, so the range has no owner to hold it'); return EXIT_USAGE; }
-  const label = labelText?.trim() || rangeLabel(E.ghRepo(), E.batchName());
+  const label = rangeLabel(E.ghRepo(), E.batchName());
   try {
     const o = leaseRange({ env: E, from: r.from, to: r.to, owner, label, ttl });
     if (o.leased.length) console.log(`leased ${spans(o.leased)} to "${label}" (pid ${owner}) for ${ttl}s`);
@@ -177,4 +180,4 @@ async function cli(argv) {
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
 })();
-if (isMain) process.exit(await cli(process.argv.slice(2)));
+if (isMain) process.exit(await cli());

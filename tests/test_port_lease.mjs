@@ -5,7 +5,7 @@
 // any port here: the bind probe is a stub that says so.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
 
@@ -18,7 +18,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const S = scratch('port-lease-');
 Object.assign(process.env, { HOME: S, DESK_CONFIG: join(S, 'none.md'), DESK_MACHINE: join(S, 'none-machine.md') });
 const { psRows } = await import('../desk/bin/desk-env.mjs');
-const { tryAcquire, list } = await import('../desk/bin/leases.mjs');
+const { tryAcquire, list, renew } = await import('../desk/bin/leases.mjs');
 const P = await import('../desk/bin/port-lease.mjs');
 
 // desk-env's exports as leases.mjs reads them, with the port kind in `mode`.
@@ -118,9 +118,25 @@ try {
     t('range: another batch\'s pass skips the whole range', other.port, F + 3);
     const again = P.leaseRange({ env: ON, dir: d, from: F, to: F + 2, owner: orch.pid, label });
     t('range: renewing leaves the worker\'s port to the worker', `${again.renewed} | ${again.held.map((h) => `${h.port} ${h.label}`)}`, `${F + 1},${F + 2} | ${F} acme/widgets B-1 T-1`);
+    // A renew decided from a list read before the hand-over is checked again under the lock.
+    const handed = list({ env: ON, dir: d }).find((l) => l.key === String(F));
+    const stale = renew(handed.id, { kind: 'port', key: String(F), units: 1, ttl: 3600, label, pid: orch.pid, expect: { pid: orch.pid, label } }, { env: ON, dir: d });
+    t('range: a renew from a stale list does not take back a port handed to a worker', `${stale.code} ${stale.holder} ${list({ env: ON, dir: d }).find((l) => l.key === String(F))?.owner?.pid === worker.pid}`, '3 acme/widgets B-1 T-1 true');
     t('range: with the kind off, nothing is leased', P.leaseRange({ env: OFF, dir: fresh(), from: F, to: F, owner: orch.pid, label }).leased, []);
   }
   t('spawnedPid reads spawn-worker.sh\'s pid', [P.spawnedPid('[spawn] ticket=T-1 pid=4242 port=3201 model=default session=x'), P.spawnedPid('[spawn] ticket=T-1 pid=? port=3201')], [4242, null]);
+  // A worker whose pid spawn-worker.sh did not print leaves the lease with the pass, and says why.
+  {
+    const d = fresh(); const r = await pick(d, ON, { key: 'T-9' });
+    t('AC3: a hand-over with no worker pid says why, for the pass report', P.handToWorker({ env: ON, dir: d, id: r.lease, port: r.port, workerPid: null, label: 'x' }), 'spawn-worker.sh printed no worker pid');
+  }
+  // The range command reads --batch, as every desk command does, rather than refusing it.
+  {
+    const machine = join(S, 'port-off-machine.md');
+    writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=off` | test |\n');
+    const c = spawnSync(process.execPath, [join(root, 'desk/bin/port-lease.mjs'), 'range', `${F}-${F + 2}`, '--batch', 'EPIC-1'], { encoding: 'utf8', env: { ...process.env, DESK_MACHINE: machine } });
+    t('range: --batch <name> is accepted (with the kind off, nothing is leased)', `${c.status} ${c.stdout.trim().split('\n')[0]}`, '0 port leases are off (desk-env lease mode port): publish your range at the handshake, and take no lease');
+  }
 
   // AC10 and AC11: the desk-autopilot handshake leases the range by the port kind's mode.
   const sk = readFileSync(join(root, 'skills/desk-autopilot/references/sharing-the-machine.md'), 'utf8');

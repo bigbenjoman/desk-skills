@@ -4795,8 +4795,10 @@ async function promotionChecksStep(qx) {
 // Starts a try on a PR of the base's in the base worktree, after the spawn summary is printed, so it says
 // its own.
 async function startBaseTry(fix) {
-  const [s0, f0] = [report.spawned.length, report.failed.length];
+  const [s0, f0, l0] = [report.spawned.length, report.failed.length, portLeaseLines.size];
   await spawnBaseFix({ wt: baseWt, fix });
+  // The report's port lines were printed before this try picked its port.
+  for (const l of [...portLeaseLines].slice(l0)) out.push(l);
   // A preflight refused at the usage limit held the batch after the save.
   saveUsage();
   if (report.spawned.length > s0) {
