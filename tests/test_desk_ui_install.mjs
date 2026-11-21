@@ -1,0 +1,107 @@
+// suite: desk-ui install and uninstall (the token file, the port check and the launchd job)
+// covers: desk/bin/desk-ui.mjs install.sh
+// desk-ui.mjs install and install.sh --uninstall-ui on a throwaway HOME with a fake launchctl, which
+// starts and stops the server itself on a test-only port. Nothing touches your real launchd,
+// ~/.claude, ~/.config/desk or state.
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { connect, createServer } from 'node:net';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
+
+let fails = 0;
+const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const BIN = join(ROOT, 'desk', 'bin', 'desk-ui.mjs');
+
+const freePort = () => new Promise((resolve) => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+const answers = (port) => new Promise((resolve) => { const c = connect({ host: '127.0.0.1', port }); c.once('connect', () => { c.destroy(); resolve(true); }); c.once('error', () => resolve(false)); });
+
+const T = scratch('desk-ui-install-');
+const PORT = await freePort();
+const UID = process.getuid();
+const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'home', '.claude', 'desk'), DESK_CONFIG_ROOT: join(T, 'home', '.config', 'desk'),
+  DESK_PLATFORM: 'darwin', DESK_UI_TEST_PORT: String(PORT), PATH: `${join(T, 'bin')}:${process.env.PATH}` };
+mkdirSync(join(T, 'bin'), { recursive: true });
+mkdirSync(env.HOME, { recursive: true });
+// launchd: `print` answers while loaded, `bootstrap` starts the server, `bootout` stops it.
+writeFileSync(join(T, 'bin', 'launchctl'), `#!/bin/sh
+echo "$@" >> "${T}/launchctl.calls"
+case "$1" in
+  print) [ -f "${T}/loaded" ] ;;
+  bootstrap) : > "${T}/loaded"; node "${BIN}" serve >> "${T}/server.out" 2>&1 & echo $! > "${T}/server.pid" ;;
+  bootout) [ -f "${T}/server.pid" ] && kill "$(cat "${T}/server.pid")" 2>/dev/null; rm -f "${T}/loaded" "${T}/server.pid"; sleep 0.3 ;;
+esac
+`, { mode: 0o755 });
+process.on('exit', () => { try { process.kill(Number(readFileSync(join(T, 'server.pid'), 'utf8')), 'SIGTERM'); } catch { /* not running */ } });
+
+const calls = () => { try { return readFileSync(join(T, 'launchctl.calls'), 'utf8').trim().split('\n').filter(Boolean); } catch { return []; } };
+const clearCalls = () => writeFileSync(join(T, 'launchctl.calls'), '');
+const install = (more = {}) => { const r = spawnSync('node', [BIN, 'install'], { env: { ...env, ...more }, encoding: 'utf8', timeout: 30000 }); return { code: r.status, out: r.stdout + r.stderr }; };
+const TOKEN = join(env.DESK_CONFIG_ROOT, 'ui-token');
+const PLIST = join(env.HOME, 'Library', 'LaunchAgents', 'com.desk-skills.ui.plist');
+
+// State that must never change: a queue and a batch's state files.
+mkdirSync(join(env.DESK_HOME, 'repos', 'acme__widgets'), { recursive: true });
+writeFileSync(join(env.DESK_HOME, 'repos', 'acme__widgets', 'queue.json'), '{"version":1,"tickets":{}}');
+mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__widgets', 'parks'), { recursive: true });
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__widgets', 'parks', 'WID-1.json'), '{"question":"which?"}');
+const walk = (d) => (existsSync(d) ? readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)])) : []);
+const state = () => [join(env.DESK_HOME, 'repos'), join(env.HOME, '.desk-autopilot', 'acme__widgets')].flatMap(walk).sort()
+  .map((f) => `${f} ${createHash('sha256').update(readFileSync(f)).digest('hex')}`);
+
+// ---- elsewhere than macOS, nothing is installed
+const linux = install({ DESK_PLATFORM: 'linux' });
+t('off macOS the install is skipped and touches nothing', [linux.code, /skipped/.test(linux.out), calls().length, existsSync(TOKEN)], [0, true, 0, false]);
+
+// ---- AC8: another process on the port stops the install, naming it
+const holder = createServer().listen(PORT, '127.0.0.1');
+await new Promise((r) => holder.once('listening', r));
+const clash = install();
+t('AC8 another listener on the port stops the install', clash.code, 3);
+t('AC8 the message names the port', clash.out.includes(`port ${PORT}`) && /never moves to another port/.test(clash.out), true);
+t('AC8 the server is never started, here or on another port', [calls().filter((c) => c.startsWith('bootstrap')).length, existsSync(PLIST)], [0, false]);
+await new Promise((r) => holder.close(r));
+clearCalls();
+
+// ---- AC9: with no token file, the install writes it for you alone and loads a job that answers
+const before = state();
+const first = install();
+t('AC9 the install succeeds', first.code, 0);
+t('AC9 the token file exists, readable only by you', [existsSync(TOKEN), existsSync(TOKEN) && (statSync(TOKEN).mode & 0o777).toString(8)], [true, '600']);
+t('AC9 the token is 32 random bytes', /^[0-9a-f]{64}$/.test(readFileSync(TOKEN, 'utf8').trim()), true);
+t('AC9 the launchd job is loaded from its plist', calls().includes(`bootstrap gui/${UID} ${PLIST}`), true);
+t('AC9 and answers on 127.0.0.1', [await answers(PORT), first.out.includes(`answering on http://127.0.0.1:${PORT}`)], [true, true]);
+const plist = existsSync(PLIST) ? readFileSync(PLIST, 'utf8') : '';
+t('AC9 the job runs desk-ui serve, kept alive by launchd',
+  [/<key>Label<\/key>\s*<string>com\.desk-skills\.ui<\/string>/.test(plist), /desk-ui\.mjs<\/string>\s*<string>serve<\/string>/.test(plist), /<key>KeepAlive<\/key>\s*<true\/>/.test(plist)], [true, true, true]);
+const token = readFileSync(TOKEN, 'utf8');
+
+// Run again, the server it already runs is not a clash, and the token stays.
+clearCalls();
+const again = install();
+t('a second install reloads its own server', [again.code, calls().filter((c) => /^(bootout|bootstrap) /.test(c)).map((c) => c.split(' ')[0])], [0, ['bootout', 'bootstrap']]);
+t('a second install keeps the token', readFileSync(TOKEN, 'utf8'), token);
+t('AC9 the install changes no queue or state file', state(), before);
+
+// ---- AC10: install.sh --uninstall-ui unloads the job and removes its plist, and nothing else
+clearCalls();
+const un = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 30000 });
+t('AC10 install.sh --uninstall-ui succeeds', [un.status, /removed com\.desk-skills\.ui/.test(un.stdout)], [0, true]);
+t('AC10 the launchd job is unloaded', calls().includes(`bootout gui/${UID}/com.desk-skills.ui`), true);
+t('AC10 its plist is removed', existsSync(PLIST), false);
+t('AC10 the server no longer answers', await answers(PORT), false);
+t('AC10 no queue or state file changes', state(), before);
+t('AC10 the token file stays', readFileSync(TOKEN, 'utf8'), token);
+const twice = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 30000 });
+t('uninstalling again says it was not installed', [twice.status, /was not installed/.test(twice.stdout)], [0, true]);
+
+// install.sh runs the install on macOS and warns, without stopping the rest, when it refuses.
+const sh = readFileSync(join(ROOT, 'install.sh'), 'utf8');
+t('install.sh runs desk-ui.mjs install on macOS', /elif out="\$\(DESK_HOME="\$DESKDIR" node "\$DESKDIR\/bin\/desk-ui\.mjs" install 2>&1\)"; then/.test(sh), true);
+t('install.sh --help lists --uninstall-ui', spawnSync('bash', [join(ROOT, 'install.sh'), '--help'], { env, encoding: 'utf8' }).stdout.includes('--uninstall-ui'), true);
+
+console.log(fails ? `\n${fails} failed` : '\nall passed');
+process.exit(fails ? 1 : 0);
