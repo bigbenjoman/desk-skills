@@ -216,8 +216,12 @@ export function* decideAdvance(s) {
     // A directory that is missing or holds no screenshot means no images, not a failed upload. A
     // running worker may still capture into it, so only a finished one is recorded as having none.
     const shots = (yield { type: 'shots', key: t.key, dir: imgDir }).filter((f) => SCREENSHOT_FILE.test(f));
+    // A before/after pair whose two files are the same shows no change: the PR body leaves it out
+    // (desk-pr screenshots.md), so it is nothing to upload.
+    const same = shots.length ? yield { type: 'same-pairs', key: t.key, dir: imgDir, shots } : [];
+    const changed = shots.filter((f) => !same.includes(f));
     const finished = done || built || mergeOnly;
-    if (!shots.length) {
+    if (!changed.length) {
       if (finished) yield set(t.key, 'images_uploaded=none');
     } else if (!namedImgDir && (crashOf(t, prNo) || !(finished && (yield { type: 'cells', key: t.key, pr: prNo, shots })))) {
       // The briefed directory, unnamed this round, is uploaded only once its worker is finished (with no
