@@ -71,7 +71,8 @@ export function standing(run) {
   }
   const wrappers = run.filter((p) => WRAPPER.test(p.args));
   const seconds = Math.max(0, ...run.filter((p) => /with-lock\.sh/.test(p.args)).map((p) => etimeSeconds(p.etime) ?? 0));
-  return { state: 'waiting', seconds, wrappers: wrappers.map((p) => p.pid), pids: [...pids] };
+  const light = wrappers.some((p) => /with-lock\.sh\s+light(?:\s|$)/.test(p.args));
+  return { state: 'waiting', seconds, wrappers: wrappers.map((p) => p.pid), pids: [...pids], light };
 }
 
 // The pids holding a file open: lsof, else /proc. Null when neither can be read.
@@ -102,13 +103,15 @@ function ancestors(procs) {
 
 const startOf = (p, now) => now - (etimeSeconds(p.etime) ?? 0) * 1000;
 
-// Who holds the lock the run waits on, as with-lock.sh names them.
-function holderNow() {
+// Who holds the lock the run waits on, as with-lock.sh names them: the test lock's holders, or the light
+// lock's where the run waits on that (a repo whose §4 Suite weight is light).
+function holderNow(light) {
   const dir = process.env.DESK_LOCK_DIR || '/tmp';
+  const locks = light ? 'light' : 'test';
   try {
     const procs = psRows('pid=,ppid=,args=');
     const ages = new Map(psRows('pid=,etime=').map((p) => [p.pid, etimeSeconds(p.etime)]));
-    const runs = lockHolderRuns({ procs, holders: lockHolders(dir), cwds: processCwds(), ages, stamps: lockHolderStamps(dir) });
+    const runs = lockHolderRuns({ procs, holders: lockHolders(dir, { locks }), cwds: processCwds(), ages, stamps: lockHolderStamps(dir, { locks }), locks });
     return runs.length ? holdersText(runs) : 'holder unknown';
   } catch { return 'holder unknown'; }
 }
@@ -163,7 +166,7 @@ export function main(argv = process.argv.slice(2), { out = console.log, err = co
       return 0;
     }
     if (last.state === 'waiting' && last.seconds >= skipAfter) {
-      const holder = holderNow();
+      const holder = holderNow(last.light);
       const stop = treeOf(last.wrappers, procs);
       for (const pid of stop) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
       out(`waiting (${holder}) ${Math.floor(last.seconds / 60)}`);
@@ -175,7 +178,7 @@ export function main(argv = process.argv.slice(2), { out = console.log, err = co
     sleep(poll);
   }
   if (last.state === 'started') out(`started ${last.pid}`);
-  else out(`waiting (${holderNow()}) ${Math.floor(last.seconds / 60)}`);
+  else out(`waiting (${holderNow(last.light)}) ${Math.floor(last.seconds / 60)}`);
   return 0;
 }
 

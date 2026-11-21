@@ -42,7 +42,8 @@ transcript "$T/t1.jsonl" b1
 stop s1 "$T/t1.jsonl" worker
 check "AC1: running task blocks the end of turn"           '[ $rc -eq 0 ] && blocked'
 check "AC1: the reason names the task and its description" '[[ "$(reason)" == *"b1 (Run the suite b1)"* ]]'
-check "AC1: no broken-rule line on the first block"        '[ ! -s "$DESK_WORKER_LOG" ]'
+check "DS-705 the reason sends it to desk-wait on the task's output file, not TaskStop" '[[ "$(reason)" == *"desk-wait.mjs <its output file> --max 540"* ]] && [[ "$(reason)" == *"b1.output"* ]] && [[ "$(reason)" != *TaskStop* ]]'
+check "AC1: no broken-rule line on the first block"       '[ ! -s "$DESK_WORKER_LOG" ]'
 stop s1 "$T/t1.jsonl" worker
 check "AC4: a second Stop with it running ends the turn"   '[ $rc -eq 0 ] && [ -z "$out" ]'
 check "AC4: the worker log records the broken rule"        'grep -q "^\[stop-hook\] .*rule broken.*b1 (Run the suite b1)" "$DESK_WORKER_LOG"'

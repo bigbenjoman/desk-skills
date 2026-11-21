@@ -27,7 +27,9 @@ const shell = { pid: 10, ppid: 1, etime: '05:00', args: "/bin/zsh -c source ~/.z
 const wrapper = { pid: 11, ppid: 10, etime: '04:59', args: 'bash /Users/x/.claude/desk/bin/with-lock.sh test -- bash tests/run.sh' };
 t('no process left is done', standing([]).state, 'done');
 t('the shell, with-lock.sh and its pause are a wait, timed from the oldest',
-  standing([shell, wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'sleep 2' }]), { state: 'waiting', seconds: 300, wrappers: [11], pids: [10, 11, 12] });
+  standing([shell, wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'sleep 2' }]), { state: 'waiting', seconds: 300, wrappers: [11], pids: [10, 11, 12], light: false });
+t('a wrapper re-run under the light lock is read as waiting on it',
+  standing([{ ...wrapper, args: 'bash /x/with-lock.sh light --cwd . -- bash tests/run.sh' }]).light, true);
 t('a flock and the lease broker are a wait too',
   standing([wrapper, { pid: 12, ppid: 11, etime: '00:01', args: 'flock 9' }, { pid: 13, ppid: 11, etime: '00:01', args: 'node /x/slot-lease.mjs take test --pid 11 -- bash tests/run.sh' }]).state, 'waiting');
 t('the command, exec\'d into the wrapper\'s pid, has started', standing([shell, { ...wrapper, args: 'bash tests/run.sh' }, { pid: 14, ppid: 11, etime: '00:01', args: 'node tests/test_x.mjs' }]), { state: 'started', pid: 11 });
