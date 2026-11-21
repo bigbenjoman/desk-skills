@@ -2,9 +2,8 @@ name: macOS
 
 # The full suite on macOS under the system /bin/bash (3.2.57), the bash every Mac running desk has, on
 # every push to main. Pull requests run Linux only (tests.yml), so this catches what only macOS or bash
-# 3.2 shows: a BSD tool's flags, a bash 4 feature at run time. The same shards also run on Linux under
-# Node 24, the current LTS, while tests.yml stays on Node 22, so a Node 24-only difference turns this
-# workflow red instead of first showing up on a developer's machine. It is not a required check: no job is
+# 3.2 shows: a BSD tool's flags, a bash 4 feature at run time. The same shards also run on Linux; every
+# job here, like tests.yml, runs Node 24, the version desk runs on. It is not a required check: no job is
 # named `tests`, so nothing here writes a check the merge gate counts. The schedule is the quiet-day
 # fallback, running the suite only when no push or dispatch run on main passed in the last 24 h
 # (tests/ci_main_red.mjs nightly-due). ci-main-red.yml opens an issue while it is red, cancelled or stale.
@@ -69,7 +68,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
       - uses: actions/setup-python@v5
         with:
           python-version: 3.x
@@ -99,7 +98,7 @@ jobs:
           # 2 suites at once on the 3 vCPU runner
           bash tests/ci_shard.sh 2
 
-  # The same shards on Linux under Node 24 (tests.yml runs Node 22). A failure here fails this run,
+  # The same shards on Linux under Node 24. A failure here fails this run,
   # so tests/ci_main_red.mjs reports the macOS lane red.
   node24:
     name: Node 24 shard ${{ matrix.shard }}/${{ matrix.of }}

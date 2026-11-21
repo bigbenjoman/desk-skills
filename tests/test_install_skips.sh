@@ -151,6 +151,20 @@ check "DS-428 AC5: a delete that fails is a warning naming the command, and the 
 w="$(PATH=/usr/bin:/bin; purge_runner_tart; echo "gone=$RUNNER_TART_GONE")"
 check "DS-428 AC4: with no tart on PATH, nothing is called or named" \
   '[ "$w" = "gone=" ] && [ ! -s "$T/tart.deletes" ] && grep -qx "local $VM" "$TV"'
+# The Node version check on its own, with a stub node, so the result holds whatever node runs this suite.
+eval "$(sed -n '/^node_version_check() {/,/^}/p' "$S/../install.sh")"
+check "node_version_check is found in install.sh" '[ "$(type -t node_version_check)" = function ]'
+check "install.sh runs it once node is found, in Dependencies" \
+  'grep -A3 "^if need node 1 " "$S/../install.sh" | grep -q "^  node_version_check$"'
+mkdir -p "$T/oldnode"; printf '#!/bin/sh\necho "$NODE_V"\n' > "$T/oldnode/node"; chmod +x "$T/oldnode/node"
+# shellcheck disable=SC2034
+w="$(PATH="$T/oldnode:$PATH" NODE_V=v22.11.0 node_version_check; echo "rc=$?")"
+check "DS-953 AC3: below Node 24 it warns, naming the version found and Node 24, and the install goes on" \
+  '[ "$w" = "WARN node v22.11.0 is older than Node 24, the version desk runs on and CI tests. Install Node 24 from your version manager (nvm, fnm, mise) or https://nodejs.org/en/download
+rc=0" ]'
+# shellcheck disable=SC2034
+w="$(PATH="$T/oldnode:$PATH" NODE_V=v24.22.3 node_version_check; echo "rc=$?")"
+check "DS-953 AC4: on Node 24 or later no version warning is printed" '[ "$w" = "rc=0" ]'
 check "DS-760 AC3: a script the repo no longer has is removed, and the install names it" \
   '[ ! -e "$HOME/.claude/desk/bin/retired-tool.mjs" ] && printf "%s\n" "$out" | grep -qx "  ok    removed ~/.claude/desk/bin/retired-tool.mjs (no longer in desk)"'
 check "DS-760 AC5: a file desk never installed is left alone" '[ "$(cat "$HOME/.claude/desk/bin/my-own.sh")" = mine ]'
