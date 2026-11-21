@@ -293,6 +293,21 @@ check "#823 a port range a peer claimed is skipped, though its server is down" '
 node "$B/port-claims.mjs" release --by 'peer acme/shop' >/dev/null
 spawn_one P-177
 check "#823 once the peer releases it, the port is used again" '[ "$(field P-177 state)" = "\"running\"" ] && [ "$(field P-177 port)" = 47501 ]'
+# DS-825: a claim that lapsed unrenewed (its peer's session gone) no longer blocks its ports, and the
+# pass says it dropped it, once; a claims file it cannot read is named, and the pass picks as before.
+claims="$HOME/.desk-autopilot/port-claims.jsonl"
+echo '{"at":"2026-01-01T00:00:00.000Z","by":"peer gone","event":"claim","from":47501,"to":47502,"until":"2026-01-01T12:00:00.000Z"}' >> "$claims"
+spawn_one P-178
+check "DS-825 AC3 a lapsed claim's ports are used, and the report says the stale claim was dropped" '[ "$(field P-178 port)" = 47501 ] && echo "$out" | grep -qF "ports: dropped peer gone'"'"'s claim on 47501-47502, which lapsed unrenewed at 2026-01-01T12:00:00.000Z"'
+spawn_one P-179
+check "DS-825 AC3 a claim dropped once is not reported again" '[ "$(field P-179 port)" = 47501 ] && ! echo "$out" | grep -qF "peer gone"'
+mv "$claims" "$claims.aside"; mkdir "$claims"
+spawn_one P-180
+check "DS-825 AC4 a claims file that cannot be read is named, and the pass picks as before" '[ "$(field P-180 state)" = "\"running\"" ] && [ "$(field P-180 port)" = 47501 ] && echo "$out" | grep -qF "ports: the port claims file $claims cannot be read (EISDIR)"'
+rmdir "$claims"
+spawn_one P-181
+check "DS-825 AC4 a missing claims file is named, and the pass picks as before" '[ "$(field P-181 state)" = "\"running\"" ] && [ "$(field P-181 port)" = 47501 ] && echo "$out" | grep -qF "ports: there is no port claims file $claims, so no peer has claimed a port"'
+mv "$claims.aside" "$claims"
 # DS-910: with the port lease kind on, a pass skips a port a peer session leases, and hands each
 # worker's port lease to the pid spawn-worker.sh printed. The peer and the worker are sleep processes.
 export DESK_LEASE_DIR="$T/leases" DESK_MACHINE="$T/machine-ports-on.md"
