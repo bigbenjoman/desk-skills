@@ -4,8 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
-import { ROWS, coverage } from '../desk/bin/config-schema.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS, MACHINE_FALLBACK_ROWS } from '../desk/bin/desk-env.mjs';
+import { ROWS, coverage, TYPES, parseRow, norm, MACHINE_FALLBACK } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -583,6 +583,81 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
   t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
   t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
+}
+
+// Every schema entry's type, example and default, and the template's Recommended column, parse by the
+// row's type; each type parses a good item and refuses a bad one, fatal only where the reader throws.
+{
+  const errs = (pairs) => pairs.filter(([, r]) => r.error).map(([id, r]) => `${id}: ${r.error}`).join(' / ');
+  t('DS-868 every entry names a known type and has an example', ROWS.filter((e) => !TYPES[e.type] || e.example == null).map((e) => e.id).join(' '), '');
+  t('DS-868 AC1 every entry\'s example parses by its type', errs(ROWS.map((e) => [e.id, parseRow(e, e.example)])), '');
+  t('DS-868 every default parses by its type', errs(ROWS.filter((e) => 'default' in e).map((e) => [e.id, parseRow(e, e.default)])), '');
+
+  // The template's Recommended cells, by section and row label.
+  const recs = [];
+  let section = null, col = -1, inTable = false;
+  for (const line of readFileSync(join(ROOT, 'desk-config.md'), 'utf8').split('\n')) {
+    const h = /^##\s+(\d+[a-z]?)\.\s/.exec(line);
+    if (h) section = h[1];
+    if (!line.startsWith('|')) { inTable = false; continue; }
+    const cells = line.split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim());
+    if (!inTable) { inTable = true; col = cells.findIndex((c) => /^recommended$/i.test(c)); continue; }
+    if (col < 0 || /^-+$/.test(cells[0]) || !cells[col]) continue;
+    recs.push({ section, label: cells[0], cell: cells[col] });
+  }
+  t('DS-868 AC2 the template\'s Recommended cells are found in §3 and §3b', ['3', '3b'].every((s) => recs.filter((r) => r.section === s).length > 20), true);
+  const entryOf = (r) => ROWS.find((e) => e.section === r.section && norm(e.label) === norm(r.label));
+  t('DS-868 AC2 every row with a Recommended value has a schema entry', recs.filter((r) => !entryOf(r)).map((r) => r.label).join(' / '), '');
+  t('DS-868 AC2 every Recommended value parses by its row\'s type', errs(recs.filter(entryOf).map((r) => [entryOf(r).id, parseRow(entryOf(r), cellItems(r.cell))])), '');
+
+  // One good and one bad item per type: [type, good, bad or null where nothing is refused, fatal].
+  const CASES = [
+    ['text', 'anything at all', null], ['perm', 'ask', 'maybe', false], ['perm-merged', 'merged', 'gone', false],
+    ['whole', '4', 'four', false], ['whole-or-none', 'none', '-1', false], ['promotion-slice', '5', '11', false],
+    ['number', '1.5', 'soon', false], ['number-or-off', 'off', 'on', false], ['gb', '16', '0', false], ['port', '3228', '70000', false],
+    ['subagent-cap', 'no cap', 'lots', false], ['concurrency', '2 / 3', 'two', false], ['times', '08:00, 17:00', 'morning', false],
+    ['yes-no', 'no', 'maybe', false], ['on-off', 'on', 'yes', false], ['tracker', 'none', 'linear', false],
+    ['merge-method', 'rebase', 'squash-merge', false], ['suite-weight', 'heavy', 'medium', false], ['status-table', 'quiet', 'loud', false],
+    ['batches-run-by', 'session', 'cron', false], ['ai-attribution', 'allowed', 'sometimes', false], ['regex', 'KAN-[0-9]+', 'KAN-[0-9', false],
+    ['command', 'apps/api: uv run pytest', null], ['service-port', 'search: 8108', 'Typesense on port 8108', false],
+    ['required-fields', 'Bug: customfield_1', 'customfield_1', false], ['lever', 'codex, effort', 'turbo', false],
+    ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
+    ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
+    ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
+    ['git-author', 'Pat <pat@example.com>', 'Pat', true], ['review-account', 'none', 'agent pullbot', true],
+    ['gate-reviewers', 'agent-pullbot', 'agent pullbot', true],
+  ];
+  t('DS-868 every type has a parse case', Object.keys(TYPES).filter((n) => !CASES.some(([c]) => c === n)).join(' '), '');
+  for (const [name, good, badItem, fatal] of CASES) {
+    const type = TYPES[name];
+    let r;
+    try { r = type.parse(good); } catch (e) { r = { error: `threw ${e.message}` }; }
+    t(`DS-868 ${name} parses "${good}"`, r.error ?? 'ok', 'ok');
+    if (badItem == null) continue;
+    try { r = type.parse(badItem); } catch (e) { r = { error: `threw ${e.message}`, threw: true }; }
+    t(`DS-868 ${name} refuses "${badItem}" without throwing, ${fatal ? '' : 'not '}fatal`, `${!!r.error && !r.threw} ${r.fatal}`, `true ${fatal}`);
+  }
+  const svc = TYPES['service-port'].parse('Typesense on port 8108');
+  t('DS-868 AC3 the service-port error names the form <service> [:<port>]', svc.error?.includes('`<service> [:<port>]`'), true);
+  t('DS-868 AC3 the decision: a service with no port parses', JSON.stringify(TYPES['service-port'].parse('mailpit').value), '{"service":"mailpit","port":null}');
+  t('DS-868 AC4 Worker location "remote" is a fatal error, as its reader throws on it', TYPES['worker-location'].parse('remote').fatal, true);
+  t('DS-868 AC4 the service-port error is not fatal, as its reader warns', svc.fatal, false);
+  const list = ROWS.find((e) => e.id === 'evidence-workflow');
+  t('DS-868 none beside another item in a list row is fatal, as configValues refuses it', parseRow(list, ['none', 'pr-evidence.yml']).fatal, true);
+  t('DS-868 a lone none is a list row\'s value', JSON.stringify(parseRow(list, ['none']).value), '["none"]');
+
+  // A row whose reader reads every span is parsed whole, as the reader reads it.
+  const row = (id) => ROWS.find((e) => e.id === id);
+  t('DS-868 Worker effort named twice across spans is fatal, as its reader throws', parseRow(row('worker-effort'), ['0=low', '0=high']).fatal, true);
+  t('DS-868 Codex review named twice across spans is fatal, as its reader throws', parseRow(row('codex-models'), ['timeout=60', 'timeout=90']).fatal, true);
+  t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
+  t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
+  t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
+
+  // The machine profile fallback desk-env reads.
+  t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
+  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
 rmSync(T, { recursive: true, force: true });
