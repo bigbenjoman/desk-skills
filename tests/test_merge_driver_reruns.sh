@@ -277,7 +277,7 @@ for k in T-912 T-913 T-914 T-915; do q add "$k" Bug A; q set "$k" "branch=fix/$k
 pvloop(){ out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$1" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "$2" 2>&1); rc=$?; }
 hold "$T/machine-one.md" "acme/site#7"
 pvloop "$T/machine-one.md" "T-912 T-913 T-915"
-check "DS-912 AC3: with the team's one unit held, a preview check is not rerun, and the log says it waits on the preview build" '! grep -q "run rerun 9912" "$T/gh.log" && echo "$out" | grep -qF "#1912 red + completed, but waits on the preview build for acme before rerunning: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/reruns-1912-$SHA912" ] && [ ! -e "$SD/cooldown-1912" ]'
+check "DS-912 AC3: with the team's one unit held, a preview check is not rerun, and the log says it waits on the preview build" '! grep -q "run rerun 9912" "$T/gh.log" && echo "$out" | grep -qF "#1912 red + completed, but waits on the preview build before rerunning: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/reruns-1912-$SHA912" ] && [ ! -e "$SD/cooldown-1912" ]'
 check "DS-912 AC3: a red check that is no preview is rerun as before" 'grep -q "run rerun 9913 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/site#7 null" ]'
 check "DS-912 AC3: a red Vercel status with no run is not rerun, so the build beside it reruns without the lease" 'grep -q "run rerun 9915 --repo acme/widgets --failed" "$T/gh.log" && ! echo "$out" | grep -q "#1915 .*waits on the preview build"'
 rm -rf "$LD"
@@ -285,7 +285,7 @@ pvloop "$T/machine-one.md" "T-912"
 check "DS-912 AC3: once a unit is free the rerun takes it, labelled with the PR, and runs" 'grep -q "run rerun 9912 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1912 null" ]'
 rm -rf "$LD"; hold "$T/machine-two.md" "acme/site#7"; hold "$T/machine-two.md" "acme/docs#8"
 pvloop "$T/machine-two.md" "T-914"
-check "DS-912 AC5: with preview-build-slots 2 and both held, the third build waits" '! grep -q "run rerun 9914" "$T/gh.log" && echo "$out" | grep -qF "#1914 red + completed, but waits on the preview build for acme before rerunning: all 2 preview-build slots for acme are held"'
+check "DS-912 AC5: with preview-build-slots 2 and both held, the third build waits" '! grep -q "run rerun 9914" "$T/gh.log" && echo "$out" | grep -qF "#1914 red + completed, but waits on the preview build before rerunning: all 2 preview-build slots for acme are held"'
 rm -rf "$LD"; : > "$T/gh.log"
 pvloop "$T/machine-two.md" "T-914"
 check "DS-912 AC5: and runs once a unit is free" 'grep -q "run rerun 9914 --repo acme/widgets --failed" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1914 null" ]'
@@ -297,7 +297,7 @@ q add T-916 Bug A; q set T-916 branch=fix/T-916 state=done result.pr=1916
 uploop(){ out=$(DESK_CONFIG="$T/config-vercel-up.md" DESK_MACHINE="$T/machine-one.md" DESK_LEASE_DIR="$LD" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets T-916 2>&1); rc=$?; }
 rm -rf "$LD"; hold "$T/machine-one.md" "acme/site#7"; : > "$T/gh.log"
 uploop
-check "DS-912: with the team's one unit held, a BEHIND PR is not updated, and the log says it waits on the preview build" '! grep -q "pr update-branch 1916" "$T/gh.log" && echo "$out" | grep -qF "#1916 BEHIND, but waits on the preview build for acme before updating the branch: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/updated-1916-$SHA916" ]'
+check "DS-912: with the team's one unit held, a BEHIND PR is not updated, and the log says it waits on the preview build" '! grep -q "pr update-branch 1916" "$T/gh.log" && echo "$out" | grep -qF "#1916 BEHIND, but waits on the preview build before updating the branch: the preview-build slot for acme is held by acme/site#7 (no owner" && [ ! -e "$SD/updated-1916-$SHA916" ]'
 rm -rf "$LD"
 uploop
 check "DS-912: once a unit is free the update takes it, labelled with the PR, and runs" 'grep -q "pr update-branch 1916 --repo acme/widgets" "$T/gh.log" && [ "$(leases)" = "acme/widgets#1916 null" ] && [ -e "$SD/updated-1916-$SHA916" ]'

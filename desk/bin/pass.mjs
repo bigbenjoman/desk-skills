@@ -240,25 +240,31 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
 // The preview-build slot a push of ticket `t`'s `branch` takes first (desk-env previewSlotArgs), labelled
-// with its PR, or the branch before one exists (E.previewLabel), waiting for none: a pass never blocks on
-// a build. -> { wait } naming why the push waits for a later pass, else { id, renewed } of the lease
-// taken (`renewed`: the PR's unit was already held, for a build that may still run), or {} where there
-// is nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
+// with the branch's open PR as GitHub reads it, or the branch before one exists (E.previewLabel), as
+// push-retry.mjs and rerun.sh label it, waiting for none: a pass never blocks on a build. -> { wait }
+// naming why the push waits for a later pass, else { id, renewed, expires } of the lease taken
+// (`renewed`: the PR's unit was already held, for a build that may still run), or {} where there is
+// nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
 // leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
-// unit it placed, and keeps one it only renewed.
+// unit it placed, unless another taker renewed it since, and keeps one it only renewed.
 const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
 const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
 function previewSlot(t, branch) {
-  if (DRY) return {};
-  const args = E.previewSlotArgs(E.previewLabel(GH_REPO, { pr: t.result?.pr ?? t.draft_pr, branch }), 0);
-  if (!args) return {};
+  if (DRY || !E.previewSlotArgs('', 0)) return {};
+  const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
+  const args = E.previewSlotArgs(E.previewLabel(GH_REPO, { pr: open.ok && /^\d+$/.test(open.out) ? open.out : null, branch }), 0);
   const said = [];
   const code = leaseCli(args, { env: LEASE_ENV, out: (s) => said.push(s), err: (s) => said.push(s) });
   if (code === 3 || code === 75) return { wait: `waits on the preview build for ${args[2]}: ${String(said.at(-1) ?? 'refused').replace(/^refused: /, '').split('\n')[0]}` };
-  return code === 0 ? { id: said.find((l) => /^L-\w+$/.test(l)), renewed: said.some((l) => /^renewed /.test(l)) } : {};
+  if (code !== 0) return {};
+  const id = said.find((l) => /^L-\w+$/.test(l));
+  const listed = [];
+  if (id) leaseCli(['list', '--json'], { env: LEASE_ENV, out: (s) => listed.push(s), err: () => {} });
+  const expires = listed.flatMap((l) => l.split('\n')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((l) => l?.id === id)?.expires;
+  return { id, renewed: said.some((l) => /^renewed /.test(l)), expires };
 }
 function freeSlot(slot) {
-  if (slot?.id && !slot.renewed) leaseQuiet(['release', slot.id]);
+  if (slot?.id && !slot.renewed) leaseQuiet(['release', slot.id, ...(slot.expires ? ['--if-expires', slot.expires] : [])]);
 }
 // A push that went through renews its slot from now, for its build: the push itself may have taken
 // minutes. `pr`, once the pass has opened the PR, puts its number on a unit taken for the branch.
@@ -4286,10 +4292,9 @@ function rerunBuilt(t, n, head, c, rec, ready = false) {
 }
 
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
-// driver and the pass keep one record, cap and cooldown per head. PREVIEW_TEAM gates a preview check's
-// rerun on §4 Vercel's preview-build lease.
+// driver and the pass keep one record, cap and cooldown per head.
 function rerunDraft(t, n, head, c) {
-  const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun'), PREVIEW_TEAM: E.previewTeam() ?? '' } });
+  const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun') } });
   const said = r.out.split('\n').filter(Boolean).join('; ');
   out.push(`undraft: PR #${n} (${t.key}) stays draft: ${c.why}${said ? ` (${said})` : ''}`);
 }

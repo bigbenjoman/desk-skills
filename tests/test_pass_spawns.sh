@@ -591,9 +591,10 @@ say "AUTOPILOT_PARK: R-2: buy the paid plan (recommended), or stay on free?" 'AU
 # DS-912: this pass runs with §4 Vercel set and the preview-build kind on, so each push it makes takes a unit.
 node -e 'const [f, g] = process.argv.slice(1), fs = require("fs"); fs.writeFileSync(g, fs.readFileSync(f, "utf8").replace(/^(\| Ticket key pattern .*\n)/m, "$1| Vercel | `acme` |\n"))' "$T/config.md" "$T/config-pv.md"
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n| `preview-build-slots` | `3` | test |\n' > "$T/machine-pv.md"
+rm -rf "$T/leases-pv"
 out=$(DESK_CONFIG="$T/config-pv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" node "$B/pass.mjs" 2>&1)
-check "DS-912 a draft the pass opens takes a unit before its push, and the unit takes the PR's number once it is open" \
-  '[ "$(DESK_LEASE_DIR="$T/leases-pv" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | sort | paste -sd, -)" = "acme/widgets#91,acme/widgets@fix/P-3" ]'
+check "DS-912 a draft the pass opens takes a unit before its push, the unit takes the PR's number once it is open, and P-3's failed push gives its unit back" \
+  '[ "$(DESK_LEASE_DIR="$T/leases-pv" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | sort | paste -sd, -)" = "acme/widgets#91" ] && grep -q "\"event\":\"release\".*acme/widgets@fix/P-3" "$T/leases-pv/"*.jsonl'
 check "DS-397 AC6 a branch adding nothing beyond a merged PR for its key is recorded done on that PR" \
   '[ "$(field D-1 state)" = "\"done\"" ] && [ "$(field D-1 result.pr)" = 88 ] && [ "$(field D-1 park)" = null ] && echo "$out" | grep -qF "D-1: its branch fix/D-1 adds nothing to main, and merged PR #88 (fix(x): D-1 add x) names it: recorded done on that PR, worktree and branch dropped"'
 check "DS-397 AC6 its worktree and branch are dropped" '[ ! -e "$T/wt/D-1" ] && ! git -C "$T/repo" rev-parse --verify -q refs/heads/fix/D-1 >/dev/null'

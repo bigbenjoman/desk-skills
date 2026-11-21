@@ -345,14 +345,16 @@ export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), 
   });
 }
 
-// Gives back lease `id`, which only its owner (`pid`) may; one with no owner anyone may.
-// -> { code, why }.
-export function release(id, pid, { env, dir = leaseDir(), now = Date.now }) {
+// Gives back lease `id`, which only its owner (`pid`) may; one with no owner anyone may. With
+// `ifExpires`, only while the lease still expires then: one another taker renewed since (a PR's
+// rerun joining its push's unit) is kept for that taker's build. -> { code, why }.
+export function release(id, pid, { env, dir = leaseDir(), now = Date.now, ifExpires = null }) {
   return withStore(dir, (store, log) => {
     sweep(store, log, ownerStarts(store, env), now());
     const l = store.leases.find((x) => x.id === id);
     if (!l) return { code: EXIT_OK, why: `lease ${id} was already gone` };
     if (l.owner && l.owner.pid !== pid) return { code: EXIT_REFUSED, why: `refused: lease ${id} is held by pid ${l.owner.pid}, and only its owner releases it` };
+    if (ifExpires && l.expires !== ifExpires) return { code: EXIT_OK, why: `kept lease ${id}: it was renewed since, until ${l.expires}` };
     store.leases = store.leases.filter((x) => x !== l);
     log({ event: 'release', ...brief(l) });
     return { code: EXIT_OK, why: `released ${l.kind} ${l.key} (lease ${id})` };
@@ -442,7 +444,7 @@ const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, uni
 
 export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
        desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
-       desk-env lease release <lease id> [--pid <owner pid>]
+       desk-env lease release <lease id> [--pid <owner pid>] [--if-expires <its expires, unrenewed since>]
        ${forceReleaseCommand('<lease id>')}
        ${RESET_COMMAND}
        desk-env lease list [--json]
@@ -528,9 +530,9 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       return r.code;
     }
     if (sub === 'release') {
-      const { pos, opt } = parseArgs(rest, ['pid']);
+      const { pos, opt } = parseArgs(rest, ['pid', 'if-expires']);
       if (pos.length !== 1) throw usage('release takes one lease id');
-      const r = release(pos[0], ownerPid(opt.pid), { env, dir });
+      const r = release(pos[0], ownerPid(opt.pid), { env, dir, ifExpires: opt['if-expires'] ?? null });
       (r.code === EXIT_OK ? out : err)(r.why);
       return r.code;
     }

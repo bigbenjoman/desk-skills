@@ -537,7 +537,10 @@ out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEA
 check "DS-912 with the team's one unit held, the pass does not push, keeps the park, and says it waits on the preview build" \
   '! on_origin P-11 && [ "$(field P-11 state)" = "\"parked\"" ] && [ "$(field P-11 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-11\"}" ] && grep -q "P-11: waiting on \"git push origin feat/P-11 succeeds\" (it waits on the preview build for acme: the preview-build slot for acme is held by acme/site#7" <<< "$out"'
 rm -rf "$LD"
+# The label is the branch's open PR as GitHub lists it (the stub answers `pr list --head` from this file).
+echo 1911 > "$T/gh/merged-feat_P-11"
 out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
+rm -f "$T/gh/merged-feat_P-11"
 check "DS-912 once a unit is free the pass takes it, labelled with the PR, pushes and requeues" 'on_origin P-11 && [ "$(field P-11 state)" = "\"triaged\"" ] && [ "$(pvl)" = "acme/widgets#1911" ]'
 # While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.
 q add C-9 Story A; q park C-9 "waiting on KAN-1087"

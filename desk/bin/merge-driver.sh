@@ -249,10 +249,6 @@ fi
 desk_list merge-holds >/dev/null 2>&1 \
   || { echo "FAIL: config §4 Merge holds is not set — run /desk-setup (\`none\` if no path needs a person to merge it). Refusing to guess." >&2; exit 1; }
 RERUN_PERM="$(desk_perm ci-rerun)"
-# §4 Vercel's team, whose preview-build lease a preview check's rerun and a BEHIND update take first
-# (rerun.sh preview_unit); empty for none.
-PREVIEW_TEAM="$(desk_list vercel 2>/dev/null | head -1 || true)"
-case "$PREVIEW_TEAM" in none|TODO*) PREVIEW_TEAM="" ;; esac
 UPDATE_PERM="$(desk_perm pr-update-branch)"
 # Unset, ask and no all leave a hold's routine unrun: only `yes` lets the driver run it unattended.
 ROUTINE_PERM="$(desk_perm merge-hold-routine)"
