@@ -340,17 +340,17 @@ const aliased = (include) => wf(`  a:
     runs-on: \${{ matrix.label }}
     steps: [{ run: 'true' }]
 ${computedInc(include).split('\n').slice(3).join('\n')}`);
-t('an include written as a YAML alias is reported', linted(aliased('*extra'), VPA), 'm@16 m@20');
-t('an include item written as a YAML alias is reported', linted(aliased('\n          - *extra'), VPA), 'm@17 m@21');
-t('an include entry merged in with a YAML merge key is reported', linted(aliased('\n          - <<: *extra'), VPA), 'm@17 m@21');
+t('an include written as a YAML alias is reported', linted(aliased('*extra'), VPA), 'a@9 m@15 m@16 m@20');
+t('an include item written as a YAML alias is reported', linted(aliased('\n          - *extra'), VPA), 'a@9 m@16 m@17 m@21');
+t('an include entry merged in with a YAML merge key is reported', linted(aliased('\n          - <<: *extra'), VPA), 'a@9 m@16 m@17 m@21');
 t('a * in a quoted matrix value is not an alias',
   linted(computedInc('[]').replace('include: []', `note: ['see *details', "and *more"]`), VPA), '');
 t('a hosted-workflows job with a quoted * and no labels declared lints clean',
   linted(computedInc('[]').replace('include: []', `note: ['see *details']`).replace('[voicepa-linux-arm64]', '[ubuntu-latest]'), { hostedWorkflow: true }), '');
 t('an alias between two plain values with apostrophes is still an alias',
-  linted(aliased(`*extra\n        note: [don't, won't]`).replace('label: [voicepa-linux-arm64]', "pre: [it's]\n        label: [voicepa-linux-arm64]"), VPA), 'm@18 m@22');
+  linted(aliased(`*extra\n        note: [don't, won't]`).replace('label: [voicepa-linux-arm64]', "pre: [it's]\n        label: [voicepa-linux-arm64]"), VPA), 'a@9 m@16 m@18 m@22');
 t('an alias after a plain value with a quote inside it is still an alias',
-  linted(aliased(`*extra\n        note: ['stable']`).replace('label: [voicepa-linux-arm64]', "pre: [it's the '90s]\n        label: [voicepa-linux-arm64]"), VPA), 'm@18 m@22');
+  linted(aliased(`*extra\n        note: ['stable']`).replace('label: [voicepa-linux-arm64]', "pre: [it's the '90s]\n        label: [voicepa-linux-arm64]"), VPA), 'a@9 m@16 m@18 m@22');
 t('an alias after a compact quoted key in a flow matrix is reported',
   lint(inlineMatrix('{ label: [ubuntu-latest], "include":*extra }').replace('  m:', `  a:
     strategy:
