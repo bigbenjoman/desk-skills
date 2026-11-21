@@ -408,6 +408,15 @@ How to turn what you find into rows:
 - **Env files.** The `.env*` files the primary checkout has that a fresh worktree lacks
   (`git -C <root> ls-files --others --ignored --exclude-standard | grep -E '(^|/)\.env'`). Names
   only; never read them.
+- **Test sign-in.** Always ask, once per app a §4 Dev server item names, the second app of a
+  monorepo included: propose one item per app in the Dev server form, `` `<dir>: <email>` `` (bare
+  for the root), e.g. `` `apps/portal/apps/web: <email>` ``, and say what the user must hold: an
+  existing user in that app's development auth instance (never production, never a new one) who
+  already holds the grant its signed-in pages need, so a worker can sign in as them for screenshots.
+  The email is a fact only the user has: never guess one, and never take a password. `none` is a
+  fine answer where no app has a page behind sign-in. `desk-env drift --app <dir>` names an app with
+  a Dev server item and no item here `NOSIGNIN`; propose its item on every run, a re-run's
+  included.
 - **Database URL variable.** **Every** variable name in those env files (and `.env.example`) that
   holds a database URL or name, e.g. `` `DATABASE_URL` `DATABASE_URL_UNPOOLED` `GYGG_DB_NAME` ``,
   one span each, from the name scan above; never read a value. Missing one matters: a worker's
