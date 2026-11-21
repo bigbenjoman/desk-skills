@@ -268,6 +268,8 @@ ccmp HEAD~1 HEAD; first=$out; firstrc=$rc
 check "DS-963 a base commit's first comparison replays it and caches its recording" '[ $rc = 1 ] && replayed && [ "$(entries)" = 1 ]'
 ccmp HEAD~1 HEAD
 check "DS-963 AC1 a cached base is not replayed, the head is, and the result is the uncached one" '! replayed && grep -q " on the head$" "$T/err" && [ $rc = "$firstrc" ] && [ "$out" = "$first" ] && [ "$(entries)" = 1 ]'
+mkdir -p "$T/keepc"; PASS_CMP_KEEP=1 TMPDIR="$T/keepc" ccmp HEAD~1 HEAD; redo=$(grep '^  node ' "$T/err")
+check "DS-963 with the keep switch, a comparison against a cached base prints a command that lists it again" '! replayed && [ -n "$redo" ] && [ "$(eval "$redo" 2>/dev/null)" = "$first" ]'
 PASS_CMP_CACHE=0 ccmp HEAD~1 HEAD
 check "DS-963 AC7 with the cache off both trees are replayed" 'replayed && [ "$out" = "$first" ]'
 ccmp HEAD HEAD
