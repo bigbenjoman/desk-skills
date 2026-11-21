@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>The lease trial decision in desk-needs-you</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t{font-family:"SF Mono",Menlo,Monaco,"Cascadia Mono",monospace;font-size:13px;line-height:18px;color:#d6d7dc}
+.l{white-space:pre;height:18px;overflow:hidden}
+.b{font-weight:700;color:#f3f3f5}
+.d{color:#868991}
+.p{color:#c7a0f2}
+.g{color:#93d081}
+.y{color:#e8b65a}
+.chip{background:#3a3550;color:#d9c8fb}
+.pick{color:#c7a0f2;font-weight:700}
+</style>
+</helmet>
+<div style="width: 920px; height: 860px; display: flex; flex-direction: column; background: #f4f4f2; font-family: Inter, system-ui, sans-serif">
+<div class="t" style="height: 660px; background: #1d1e22; border-radius: 12px 12px 0 0; display: flex; flex-direction: column; overflow: hidden">
+<div style="height: 28px; background: #2a2b31; display: flex; align-items: center; gap: 8px; padding: 0 12px; flex-shrink: 0">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #ef6a5e"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #f4bf4f"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #61c454"></span>
+<span style="margin-left: 12px; font-size: 12px; color: #a3a5ad">claude · /desk-needs-you</span>
+</div>
+<div style="padding: 10px 14px; display: flex; flex-direction: column; flex-grow: 1; overflow: hidden">
+<div class="l"><span class="d">&gt;</span> /desk-needs-you</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">⏺</span> 35 items. This one is for the machine, not a ticket.</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">────────────────────────────────────────────────────────────────────────────────────────────────────</span></div>
+<div class="l"> <span class="chip"> Leases </span></div>
+<div class="l">&#160;</div>
+<div class="l b">Leases finished their 7-day trial (21 to 28 Nov). Turn them on, so a second session is</div>
+<div class="l b">turned away from a port, test slot, build or merge someone else holds, instead of let through?</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">  KIND           CLASHES CAUGHT</span></div>
+<div class="l">  port           <span class="g">0</span></div>
+<div class="l">  slot           <span class="g">0</span></div>
+<div class="l">  preview-build  <span class="g">0</span></div>
+<div class="l">  merge          <span class="g">0</span></div>
+<div class="l">  mem            <span class="y">2</span>  <span class="d">· Tue 24 and Thu 26 · desk-env lease list --clashes shows them</span></div>
+<div class="l">&#160;</div>
+<div class="l"><span class="pick">❯ 1. Turn on the 4 with no clashes (Recommended)</span></div>
+<div class="l">     Nothing they would refuse happened all week, so turning them on blocks nothing that</div>
+<div class="l">     works today. mem stays on trial while its 2 clashes are looked at.</div>
+<div class="l">  2. Turn all 5 on</div>
+<div class="l"><span class="d">     mem would have made 2 test runs wait for memory this week instead of starting.</span></div>
+<div class="l">  3. Keep all 5 on trial for 7 more days</div>
+<div class="l"><span class="d">     Changes nothing. Pick this if this week was quieter than usual.</span></div>
+<div class="l">  4. Type something.</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">Any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow</span></div>
+<div style="flex-grow: 1"></div>
+<div class="l"><span class="d">Enter to select · ↑/↓ to navigate · Esc to cancel</span></div>
+</div>
+</div>
+<div style="flex-grow: 1; background: #ffffff; border: 1px solid #deded9; border-top: 0; border-radius: 0 0 12px 12px; padding: 20px 24px; display: flex; flex-direction: column; gap: 8px; color: #26272b">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #2f6b3a">Proposed · the one decision leases ask of you</div>
+<div style="font-size: 18px; font-weight: 600; line-height: 24px">Day 7: a yes or no, with the evidence attached</div>
+<div style="font-size: 14px; line-height: 21px; color: #4a4b52">On the day the trial ends, /desk-needs-you gets one machine item and the ◆ count on the Queue goes up by one. Your answer sets lease-kinds in the machine profile. The counts here are example values; the real ones come from the lease log. "--clashes" on lease list is a new flag this ticket adds.</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":920,"height":860}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
