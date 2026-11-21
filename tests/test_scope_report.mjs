@@ -79,11 +79,12 @@ t('records: the standing batch wins, a named batch adds, ./ and repeats folded, 
 t('records: no state folder is none', scopeRecords(join(dir, 'nope')).size, 0);
 
 const joined = joinTickets(new Map([['T-1', ['a.js']], ['T-12', ['c.js']], ['T-2', ['b.js']]]), [
-  { headRefName: 'feat/T-12-x', title: 'feat: T-12 x', files: ['c.js'] },
-  { headRefName: 'feat/T-1-y', title: 'feat: y', files: ['a.js', 'd.js'] },
-  { headRefName: 'fix/z', title: 'fix(x): T-1 follow-up', files: ['./e.js', 'a.js'] },
+  { headRefName: 'feat/T-12-x', files: ['c.js'] },
+  { headRefName: 'feat/T-1-y', files: ['a.js', 'd.js'] },
+  { headRefName: 'fix/T-1-again', files: ['./e.js', 'a.js'] },
+  { headRefName: 'promote/x', title: 'promote: T-1, T-2', files: ['p.js'] },
 ]);
-t('join: a key is matched whole, by branch or title, its PRs\' files unioned, and an unmerged key dropped',
+t('join: a key is matched whole, by head branch only, its PRs\' files unioned, and an unmerged key dropped',
   S(joined), '[{"key":"T-1","named":["a.js"],"changed":["a.js","d.js","e.js"]},{"key":"T-12","named":["c.js"],"changed":["c.js"]}]');
 
 const m = measure([
@@ -108,7 +109,7 @@ t('k: never changed is the cap', proposeK(0, 4), K_CAP);
 const out = run(['o/r', 'o/s'], {
   days: 30, now: Date.parse('2026-11-21T12:00:00Z'),
   records: (r) => (r === 'o/r' ? new Map([['R-1', ['hot.js', 'cold.js']], ['R-2', ['hot.js']]]) : new Map()),
-  prs: (r, since) => (r === 'o/r' && since === '2026-10-22' ? [{ headRefName: 'feat/R-1', title: '', files: ['hot.js'] }, { headRefName: 'feat/R-2', title: '', files: ['hot.js', 'x.js'] }] : []),
+  prs: (r, since) => (r === 'o/r' && since === '2026-10-22' ? [{ headRefName: 'feat/R-1', files: ['hot.js'] }, { headRefName: 'feat/R-2', files: ['hot.js', 'x.js'] }] : []),
 }).split('\n');
 t('run: each repo\'s precision and recall overall', out.filter((l) => /^ {2}precision/.test(l)).join('|'),
   '  precision 67% (2 of 3 named files changed), recall 67% (2 of 3 changed files named)|  precision n/a (0 of 0 named files changed), recall n/a (0 of 0 changed files named)');

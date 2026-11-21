@@ -3,8 +3,8 @@
 // numbers config §3b "Per-file collision budget" is set from. Read only: it changes nothing.
 //   node scope-precision.mjs <owner/name>... [--days 30]
 // For each repo it joins the triage records under its state folder (the standing batch's and every
-// named batch's) with the files of the PRs merged in the last --days days whose branch or title names
-// the record's key, then prints precision (named files changed / files named) and recall (changed
+// named batch's) with the files of the PRs merged in the last --days days whose head branch names
+// the record's key (a title can list many keys, as a promotion PR's does), then prints precision (named files changed / files named) and recall (changed
 // files named / files changed), overall and for the 10 most-named files. It ends with a proposed k for
 // each of those files and a proposed hot-serial list, per repo.
 import { readFileSync, readdirSync, realpathSync } from 'node:fs';
@@ -45,11 +45,11 @@ export function scopeRecords(state) {
   return out;
 }
 
-// The PRs merged into a repo on or after `since` (YYYY-MM-DD): [{ number, headRefName, title, files }].
+// The PRs merged into a repo on or after `since` (YYYY-MM-DD): [{ number, headRefName, files }].
 // GitHub lists at most 100 files a PR.
 export function mergedPrs(repo, since) {
   const out = execFileSync('gh', ['pr', 'list', '--repo', repo, '--state', 'merged', '--search', `merged:>=${since}`,
-    '--limit', '1000', '--json', 'number,headRefName,title,files'], { encoding: 'utf8', maxBuffer: 256 << 20 });
+    '--limit', '1000', '--json', 'number,headRefName,files'], { encoding: 'utf8', maxBuffer: 256 << 20 });
   return JSON.parse(out).map((p) => ({ ...p, files: (p.files ?? []).map((f) => f.path) }));
 }
 
@@ -59,7 +59,7 @@ export function joinTickets(records, prs) {
   const out = [];
   for (const [key, named] of records) {
     const re = new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9])`);
-    const mine = prs.filter((p) => re.test(p.headRefName ?? '') || re.test(p.title ?? ''));
+    const mine = prs.filter((p) => re.test(p.headRefName ?? ''));
     if (mine.length) out.push({ key, named, changed: [...new Set(mine.flatMap((p) => p.files).map(norm))] });
   }
   return out;
