@@ -98,7 +98,7 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   }
 
   async function snapshot() {
-    const Q = await import('./desk-q.mjs');
+    const Q = await import('./desk-q-model.mjs');
     const now = Date.now();
     E.forgetReads(); // this process outlives edits to the machine profile and configs
     const { lines, generated_at, inputs, ...body } = Q.homeJson(Q.loadRepos(now), { all: true, now });

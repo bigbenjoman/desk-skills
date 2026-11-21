@@ -18,7 +18,7 @@
 //   slots {plan, machine, repo, repoUnlocked, slots, machineLine, repoLine}
 //                      what decideSlots decided
 import { parseBudget } from '../desk-env.mjs';
-import { keysOf } from '../desk-q.mjs';
+import { keysOf } from '../desk-q-model.mjs';
 import { borrowPlan, machineBudget, repoBudget } from '../borrow.mjs';
 import { say, usageHeldText } from './shared.mjs';
 

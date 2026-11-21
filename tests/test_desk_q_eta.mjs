@@ -273,8 +273,9 @@ t('DS-161 AC10: a size with too few to use alone names its count', histLine('B-3
 const rows = alpha.rows.map(({ t: tk, k }) => ({ key: tk.key, k, size: 'M', stage: tk.stage, held: String(tk.held_by ?? '').split('|').filter(Boolean), collides: String(tk.collides_with ?? '').split('|').filter(Boolean) }));
 const hist = range(12, (i) => ({ size: 'M', hours: 1 + i }));
 t('DS-161 AC11: two forecasts over the same input are identical', JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })) === JSON.stringify(forecast({ rows, workers: 2, history: hist, now: FIXED })), true);
-// A second copy of the module has its own empty cache, so its ships runs the simulation afresh.
-const Q2 = await import(`${pathToFileURL(DESK_Q).href}?again`);
+// A second copy of the model, which holds the forecast cache, starts with it empty, so its ships runs
+// the simulation afresh.
+const Q2 = await import(`${pathToFileURL(join(BIN, 'desk-q-model.mjs')).href}?again`);
 t('DS-161 AC11: and ships prints the same dates twice', Q2.run(['ships', 'alpha', '--plain'], { now: FIXED }), Q.run(['ships', 'alpha', '--plain'], { now: FIXED }));
 
 // ---- forecast AC12: c dates tickets waiting on the user at the next check-in, and c again undoes it
