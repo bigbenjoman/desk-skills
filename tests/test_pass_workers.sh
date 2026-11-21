@@ -304,7 +304,10 @@ check "DS-825 AC3 a claim dropped once is not reported again" '[ "$(field P-179 
 mv "$claims" "$claims.aside"; mkdir "$claims"
 spawn_one P-180
 check "DS-825 AC4 a claims file that cannot be read is named, and the pass picks as before" '[ "$(field P-180 state)" = "\"running\"" ] && [ "$(field P-180 port)" = 47501 ] && echo "$out" | grep -qF "ports: the port claims file $claims cannot be read (EISDIR)"'
-rmdir "$claims"; mv "$claims.aside" "$claims"
+rmdir "$claims"
+spawn_one P-181
+check "DS-825 AC4 a missing claims file is named, and the pass picks as before" '[ "$(field P-181 state)" = "\"running\"" ] && [ "$(field P-181 port)" = 47501 ] && echo "$out" | grep -qF "ports: there is no port claims file $claims, so no peer has claimed a port"'
+mv "$claims.aside" "$claims"
 # DS-910: with the port lease kind on, a pass skips a port a peer session leases, and hands each
 # worker's port lease to the pid spawn-worker.sh printed. The peer and the worker are sleep processes.
 export DESK_LEASE_DIR="$T/leases" DESK_MACHINE="$T/machine-ports-on.md"

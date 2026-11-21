@@ -24,14 +24,15 @@ export const CLAIM_HOURS = 12;
 export const MAX_PORTS = 200;
 export const claimsPath = () => E.expandHome(process.env.DESK_PORT_CLAIMS ?? join(E.HOME, '.desk-autopilot', 'port-claims.jsonl'));
 
-// The file read: each claimer's last event, the count of lines that do not parse, and `error`, why
-// the file could not be read at all. A missing file is no claims, not an error. A `lapse` event ends
-// only the claim it names (`of`, that claim's `at`), so a pass dropping a lapsed claim never ends a
-// claim its peer renewed in between.
+// The file read: each claimer's last event, the count of lines that do not parse, `missing` when there
+// is no file (no claims, not an error), and `error`, why the file could not be read at all. A `lapse`
+// event ends only the claim it names (`of`, that claim's `at`), so a pass dropping a lapsed claim never
+// ends a claim its peer renewed in between.
 function readFile(path) {
   const last = new Map();
+  if (!existsSync(path)) return { last, torn: 0, missing: true, error: null };
   let text;
-  try { text = existsSync(path) ? readFileSync(path, 'utf8') : ''; } catch (e) { return { last, torn: 0, error: e.code ?? e.message }; }
+  try { text = readFileSync(path, 'utf8'); } catch (e) { return { last, torn: 0, missing: false, error: e.code ?? e.message }; }
   let torn = 0;
   for (const l of text.split('\n').filter((s) => s.trim())) {
     let e;
@@ -40,7 +41,7 @@ function readFile(path) {
     if (e.event === 'lapse' && last.get(e.by)?.at !== e.of) continue;
     last.set(e.by, e);
   }
-  return { last, torn, error: null };
+  return { last, torn, missing: false, error: null };
 }
 const isClaim = (e) => e.event === 'claim'
   && Number.isInteger(e.from) && Number.isInteger(e.to) && e.from > 0 && e.to >= e.from && e.to - e.from < MAX_PORTS;
@@ -55,17 +56,16 @@ const portsOf = (claims) => {
   for (const c of claims) for (let p = c.from; p <= c.to; p += 1) ports.add(p);
   return ports;
 };
-// Every port a claim in force holds.
-export const claimedPorts = (now = Date.now(), path = claimsPath()) => portsOf(activeClaims(now, path));
 const rangeOf = (c) => (c.from === c.to ? String(c.from) : `${c.from}-${c.to}`);
 
 // What a pass reads before it gives a worker a port: `ports`, every port a claim in force holds, and
 // `lines` for its report. A claim that lapsed unrenewed is taken as its peer's session gone: with
 // `drop` it is recorded as lapsed, so the next pass does not report it again, and the line says it
-// was dropped. A file that cannot be read, or has lines that do not parse, is named, and the pass
-// picks from what it could read.
+// was dropped. A file that is missing, cannot be read, or has lines that do not parse, is named, and
+// the pass picks from what it could read.
 export function passClaims({ now = Date.now(), path = claimsPath(), drop = true } = {}) {
-  const { last, torn, error } = readFile(path);
+  const { last, torn, missing, error } = readFile(path);
+  if (missing) return { ports: new Set(), lines: [`ports: there is no port claims file ${path}, so no peer has claimed a port`] };
   if (error) return { ports: new Set(), lines: [`ports: the port claims file ${path} cannot be read (${error}), so no peer's claimed ports were skipped`] };
   const lines = torn ? [`ports: ${torn} line(s) of the port claims file ${path} do not parse and were skipped: a claim on one of them is not honoured until it is fixed or removed`] : [];
   for (const c of last.values()) {
