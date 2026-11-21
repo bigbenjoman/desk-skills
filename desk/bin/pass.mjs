@@ -32,6 +32,7 @@ import { incidentalGlobs, outOfScope, triagedScope, changedFiles, appendOnlyFrom
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount } from './conflict-record.mjs';
 import { heldCounts, collisionStep, warningText, appendMetrics, metricsPath } from './pass-metrics.mjs';
 import { batchCost, batchTickets, costTable, preflightLine, wallTime } from './worker-cost.mjs';
+import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { cloudPrompt, startCloud, findCloudPr, cloudWall, CLOUD_NO_EFFORT } from './cloud-worker.mjs';
 import { ensureBaseWorktree, syncBase, openingCommit, mergedTreeCheck, dropUnpushed, keepUnpushed, startFromKept } from './base-sync.mjs';
 import * as BL from './baseline.mjs';
@@ -964,7 +965,13 @@ const ADVANCE_HANDLERS = {
   note: (a) => { notes.push(a.line); },
   hold: (a, s) => { usageHolds.push({ key: a.key, limit: a.limit, was: a.was, login: loginOf(loginDirOf(s.t)) }); },
   'suite-wait': (a) => suiteWait(a.worktree ?? join(WORKTREES, a.key), { procs: processList(), cwds: processCwds(), holders: lockHolders(E.lockDir(), { locks: 'both' }) }),
-  kill: (a) => { sh('kill', [String(a.pid)], { tolerant: true }); },
+  // With a session id, every process of that session and its groups, so a hung child goes too; else the pid.
+  kill: (a) => {
+    let target = null;
+    if (a.sid) { try { target = workerProcs(a.sid, processRows()); } catch { /* ps unreadable: the pid alone */ } }
+    if (target && (target.groups.length || target.pids.length)) endProcs(target, { graceMs: 5000 });
+    else if (a.pid) sh('kill', [String(a.pid)], { tolerant: true });
+  },
   park: (a) => { q('park', a.key, a.question); },
   'build-park': (a, s) => buildParkOf(s.t, a.question),
   'merge-park': (a, s) => {
