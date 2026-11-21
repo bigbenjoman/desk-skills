@@ -10,6 +10,7 @@ import { spawnSync } from 'node:child_process';
 
 process.env.DESK_AUTOPILOT_STATE ??= mkdtempSync(join(tmpdir(), 'base-red-'));
 const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
+const E = await import('../desk/bin/desk-env.mjs');
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log(`ok   ${name}`); };
@@ -114,6 +115,14 @@ test('DS-850 each red spell has its own repair key, kept for the spell', () => {
   assert.notEqual(two.repair_key, one.repair_key);
 });
 
+test('DS-850 a long branch\'s repair key stays a ticket id, apart from another long branch with the same start', () => {
+  const long = `release/${'x'.repeat(80)}`;
+  const k = E.baseRedKey(long, '2026-11-21T16:35:31Z');
+  assert.ok(k.length <= 100 && E.SAFE_ID.test(k), k);
+  assert.match(k, /-20261121163531$/);
+  assert.notEqual(k, E.baseRedKey(`${long}y`, '2026-11-21T16:35:31Z'));
+});
+
 const rec = { branch: 'main', sha: sha('a'), checks: [{ name: 'tests', sha: sha('a'), url: 'https://x/runs/7' }], merges: [{ pr: 12, ticket: 'A-1', sha: sha('c'), at: 'T0' }], repair_key: 'base-red-main', since: 'T1' };
 
 test('AC1 the driver\'s hold line names the check, its run and the last merges', () => {
@@ -146,7 +155,9 @@ test('AC3 the repair key is a ticket id for the branch the driver merges into, a
     return r.status === 0 ? r.stdout.trim() : `exit ${r.status}`;
   };
   assert.deepEqual([kind('base-red-main'), kind('base-red-develop')], ['base-red', 'exit 2']);
-  assert.deepEqual([kind('base-red-main-20261121163531'), kind('base-red-main-2026'), kind('base-red-develop-20261121163531')], ['base-red', 'exit 2', 'exit 2']);
+  assert.deepEqual([kind('base-red-main-20261121163531'), kind('base-red-main-2026'), kind('base-red-develop-20261121163531'), kind('base-red-main-20261321163531')], ['base-red', 'exit 2', 'exit 2', 'exit 2']);
+  const long = `release/${'x'.repeat(80)}`;
+  assert.equal(kind(E.baseRedKey(long, '2026-11-21T16:35:31Z'), { DESK_DEFAULT_BRANCH: long }), 'base-red');
   assert.deepEqual([kind('base-red-develop', { DESK_DEFAULT_BRANCH: 'develop' }), kind('base-red-main', { DESK_DEFAULT_BRANCH: 'develop' })], ['base-red', 'exit 2']);
 });
 

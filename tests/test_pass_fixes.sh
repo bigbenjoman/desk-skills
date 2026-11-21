@@ -230,8 +230,8 @@ out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.
 [ "$(field base-red-main state)" = "\"running\"" ] || out=$(AUTOPILOT_BASE_PUSH_APPROVED=1 DESK_CONFIG="$T/config-f.md" node "$B/pass.mjs" 2>&1)
 check "DS-850 AC3 a repair archived with its PR closed unmerged does not stop the base being repaired" \
   '[ "$(field base-red-main state)" = "\"running\"" ] && echo "$out" | grep -q "base-red-main port="'
-# The repair merged in an earlier red spell and is still in the live queue (a batch with a base archives
-# nothing), with a follow-on step owed: the base red again is a new spell under a key of its own, so its
+# The repair merged in an earlier red spell and is still in the live queue, kept there by the follow-on
+# step it owes: the base red again is a new spell under a key of its own, so its
 # repair is admitted and started, and the earlier row is left as it is, its step and all.
 q set base-red-main state=done session_id=null result.pr=900 merged_at="$(isoago 7200)" 'follow_on=[{"step":"check main is green","row":null}]'
 redrec "$(isoago 60)"; jq '.repair_key = "base-red-main-20261121090000"' "$T/state-fb/base-red.json" > "$T/state-fb/base-red.tmp" && mv "$T/state-fb/base-red.tmp" "$T/state-fb/base-red.json"

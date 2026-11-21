@@ -1233,15 +1233,23 @@ export const baseFixKey = (base) => `base-${String(base).replace(/[^A-Za-z0-9._-
 // The id of the ticket that repairs a red base (base-red.mjs): the branch the batch merges into, and,
 // given `since`, the red spell it repairs (when that spell was first read, to the second, UTC), so each
 // spell's repair is a ticket of its own and an earlier one's row, steps and worktree are left as they are.
+// A branch name too long to fit beside the spell within a ticket id's 100 characters (SAFE_ID) is cut,
+// with a hash of the whole name kept so two long branches sharing a start still get two keys.
 export const baseRedKey = (branch, since = null) => {
-  const k = `base-red-${String(branch).replace(/[^A-Za-z0-9._-]/g, '-')}`;
+  const slug = String(branch).replace(/[^A-Za-z0-9._-]/g, '-');
   const t = Date.parse(since ?? '');
-  return Number.isFinite(t) ? `${k}-${new Date(t).toISOString().replace(/\D/g, '').slice(0, 14)}` : k;
+  if (!Number.isFinite(t)) return `base-red-${slug}`;
+  const spell = new Date(t).toISOString().replace(/\D/g, '').slice(0, 14);
+  const k = `base-red-${slug}-${spell}`;
+  if (k.length <= 100) return k;
+  const h = createHash('sha1').update(String(branch)).digest('hex').slice(0, 8);
+  return `base-red-${slug.slice(0, 100 - 'base-red-'.length - h.length - spell.length - 2)}-${h}-${spell}`;
 };
 // Whether `k` is a repair key baseRedKey gives for `branch`, any spell's.
 const isBaseRedKey = (k, branch) => {
-  const b = baseRedKey(branch);
-  return k === b || (k.startsWith(`${b}-`) && /^\d{14}$/.test(k.slice(b.length + 1)));
+  if (k === baseRedKey(branch)) return true;
+  const m = /-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(k);
+  return !!m && k === baseRedKey(branch, `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
 };
 // Whether a sync of the batch base may push it: §3 batch-base-push, unset meaning `ask`, which is one
 // approval per batch passed to every pass (and every base conflict fix worker) as
