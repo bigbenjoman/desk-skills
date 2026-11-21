@@ -222,10 +222,18 @@ export function* decideBaseSync(s) {
   // the gate is done, and spawns carry on from origin's base as it stands.
   const { gateBusy } = s;
   let metConflict = false;
+  // A failed sync that holds every spawn (a refused push, a base missing on origin or not granted to be
+  // pushed back, one that could not be fetched, a base worktree that could not be made) is the person's,
+  // as one needs-you item for the batch. Only a refused push carries a command.
   let stuck = null;
+  const stick = (why, cmd = null) => {
+    if (baseHold) stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why, path: wt.path, ...(cmd ? { cmd } : {}) };
+  };
   if (!wt.ok) {
-    if (wantSync) yield* blocked(wt.why);
-    else yield say('waiting', `base worktree: ${wt.why}`);
+    if (wantSync) {
+      yield* blocked(wt.why);
+      stick(wt.why);
+    } else yield say('waiting', `base worktree: ${wt.why}`);
   } else if (wantSync && gateBusy) {
     baseNotSynced = `skipped while the base gate runs in ${wt.path}`;
     yield baseLine(`base sync: ${baseNotSynced}; spawning carries on from ${BASE} as it stands`);
@@ -290,20 +298,18 @@ export function* decideBaseSync(s) {
         if (gone) baseHold = true;
         else holdSpawns();
       } else {
-        yield* blocked(`${why}${s.push.perm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`, gone);
+        const held = `${why}${s.push.perm === 'ask' ? ': ask once for the batch, then run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`;
+        yield* blocked(held, gone);
+        stick(held);
       }
     } else {
       const gone = sync.reason === 'missing' || !!sync.recreate;
       yield* blocked(sync.why, gone);
-      // A refused push that holds every spawn is the person's, as one needs-you item for the batch. Its
-      // command rolls the merge back when the push is refused again, as the sync does: a merge left
-      // unpushed in the base worktree would fail every later sync as an error and clear this item. A
-      // refused recreation's command is that push alone.
-      if (sync.reason === 'push' && baseHold) {
-        stuck = { base: BASE, source: SOURCE, behind: behindBy, frozen: s.frozen ?? 0, why: sync.why, path: wt.path,
-          cmd: sync.recreate ? `git -C ${wt.path} push origin ${sync.recreate.at}:refs/heads/${BASE}`
-            : `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}` };
-      }
+      // A refused push's command rolls the merge back when the push is refused again, as the sync does: a
+      // merge left unpushed in the base worktree would fail every later sync as an error. A refused
+      // recreation's command is that push alone.
+      stick(sync.why, sync.reason !== 'push' ? null : sync.recreate ? `git -C ${wt.path} push origin ${sync.recreate.at}:refs/heads/${BASE}`
+        : `git -C ${wt.path} fetch -q origin && git -C ${wt.path} merge --no-edit origin/${SOURCE} && git -C ${wt.path} push origin HEAD:refs/heads/${BASE} || git -C ${wt.path} reset -q --hard origin/${BASE}`);
     }
     // The ask is settled once the base is current, its push is granted, or the row no longer asks.
     if (q.base_push_ask && (sync.ok || s.push.ok || s.push.perm !== 'ask') && !s.dry) yield setBatch('base_push_ask=null');
