@@ -676,10 +676,23 @@ check "DS-431 a killed worker waits with its session kept, and parks take the sl
 q drop R-8; q drop R-9; q drop R-10; q set-batch concurrency=5
 mv "$T/remotes/acme/gone.git" "$T/remotes/acme/web.git"
 
-mkdir -p "$T/hung-git"; printf '#!/bin/sh\ncase "$*" in *fetch*) echo "$*" >> "%s"; exec sleep 30;; esac\nexec "%s" "$@"\n' "$T/hung-fetches" "$(command -v git)" > "$T/hung-git/git"; chmod +x "$T/hung-git/git"
-ready R-11; : > "$T/hung-fetches"; t0=$(date +%s); out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1); took=$(( $(date +%s) - t0 ))
+# Every fetch hangs. It writes its arguments, and when it ends, how many whole seconds it ran before
+# the pass stopped it, or "answered" if the pass waited the hang out.
+mkdir -p "$T/hung-git"; cat > "$T/hung-git/git" <<EOF
+#!/bin/sh
+case "\$*" in *fetch*)
+  s=\$(date +%s); trap 'echo "stopped after \$(( \$(date +%s) - s ))s" >> "$T/hung-ends"; kill \$! 2>/dev/null; exit 143' TERM
+  echo "\$*" >> "$T/hung-fetches"
+  sleep 30 </dev/null >/dev/null 2>&1 & wait \$!
+  echo answered >> "$T/hung-ends"; exit 0;;
+esac
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$T/hung-git/git"
+ready R-11; : > "$T/hung-fetches"; : > "$T/hung-ends"; out=$(PATH="$T/hung-git:$PATH" DESK_READ_REPO_REFRESH_MS=1000 node "$B/pass.mjs" 2>&1)
 check "DS-431 a hung remote parks within the refresh's own limit" '[ "$(field R-11 state)" = "\"parked\"" ] && field R-11 park.question | grep -q "acme/web: the refresh ran past its 1 seconds"'
-check "DS-779 a hung remote holds the pass for the refresh limit, not for as long as git hangs" '[ "$took" -lt 5 ]'
+check "DS-779 a hung remote holds the pass for the refresh limit, not for as long as git hangs" \
+  '[ -s "$T/hung-ends" ] && [ "$(wc -l < "$T/hung-ends")" = "$(wc -l < "$T/hung-fetches")" ] && ! grep -qv "^stopped after [0-3]s$" "$T/hung-ends"'
 check "DS-779 once one remote call runs out, the pass tries no more: the refresh's fetch and one of its own" '[ "$(wc -l < "$T/hung-fetches")" -le 2 ]'
 q drop R-11
 
