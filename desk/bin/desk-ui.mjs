@@ -16,7 +16,6 @@
 // per-load token in the X-Desk-Load header. Sessions live in memory, so a restart signs everyone out.
 // DESK_UI_TEST_PORT moves the port, read only when HOME is not this user's own home (a test HOME).
 import { createServer } from 'node:http';
-import { connect } from 'node:net';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
@@ -167,16 +166,8 @@ function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
 
 // ---- the port --------------------------------------------------------------------------------
 
-// Whether anything accepts a connection on 127.0.0.1:<p>: a listener on the wildcard address counts.
-function portTaken(p = port(), timeoutMs = 1000) {
-  return new Promise((resolve) => {
-    const sock = connect({ host: HOST, port: p });
-    const done = (v) => { sock.destroy(); resolve(v); };
-    sock.setTimeout(timeoutMs, () => done(false));
-    sock.once('connect', () => done(true));
-    sock.once('error', () => done(false));
-  });
-}
+// The server binds 127.0.0.1 only, so that is the address a clash is probed on.
+const portTaken = (p = port()) => E.probePort(p, HOST, 1000);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const takenMessage = (p) => `desk-ui: port ${p} on ${HOST} is in use by another process, so the server was not started. It never moves to another port: free port ${p}, then run install.sh again.`;
 // A configured repo whose dev-server and worker ports reach this one.
