@@ -259,7 +259,7 @@ check "DS-763 a suite the base lacks is refused" '[ $rc = 2 ]'
 CD="$T/cache/desk-skills/compare-pass"; rm -rf "$CD"
 git init -q -b main "$T/crepo"; cp -R "$T/base/." "$T/crepo/"; cp "$T/crepo/tests/test_pass.sh" "$T/crepo/tests/test_pass_b.sh"
 commit(){ git -C "$T/crepo" add -A; git -C "$T/crepo" -c user.name=t -c user.email=t@example.com commit -qm "$1"; }
-commit base; cp "$T/field/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; commit head
+commit base; cp "$T/line/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; commit head
 cp "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh" "$T/crepo/tests/"; cp "$SRC/desk/bin/dir-lock.mjs" "$T/crepo/desk/bin/"
 ccmp(){ out=$(bash "$T/crepo/tests/compare_pass.sh" "$@" 2>"$T/err"); rc=$?; }
 replayed(){ grep -q " on the base$" "$T/err"; }
