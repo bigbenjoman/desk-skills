@@ -927,6 +927,9 @@ export const LOCK_OF = { 'test-cmd': 'test', 'related-test-cmd': 'test', 'integr
 // Rows a worker runs only under their lock, never bare. A type-aware lint is as heavy as a typecheck.
 export const LOCK_ONLY = new Set(['storybook-cmd', 'lint-cmd']);
 export const lockFor = (id) => LOCK_OF[id] ?? 'nolock';
+// The linters a worker runs as a node_modules binary, only under `with-lock.sh tsc`: worker-settings.mjs
+// allows them there, and slot-lease.mjs gives each run a `lint` slot.
+export const LINT_BINS = Object.freeze(['eslint', 'biome', 'oxlint', 'stylelint']);
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).

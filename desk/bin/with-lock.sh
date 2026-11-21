@@ -31,6 +31,18 @@
 # a machine nobody sized keeps the old one-at-a-time lock. Slot 1 is the original lock path, so a
 # command waiting under an older copy of this script still queues for it correctly. The browser lock
 # is always one slot. Slots raise throughput; the profile keeps the memory bound.
+#
+# Each run also takes its slot as a lease from the machine's lease broker (slot-lease.mjs), so every
+# holder on the machine is in `desk-env lease list` with where it runs and what. test and tsc share the
+# heavy pool (a lint, which runs under `tsc`, is told apart and holds a `lint` slot); browser and light
+# are a slot each. The slot kind's lever (desk-env lease mode slot) says how:
+#   off     the lock files above, as before, and no lease.
+#   shadow  the lock files above, waited on as before, and then a lease beside them that never holds
+#           the command up: shadow logs a would-refuse where the pool was full.
+#   on      the lease alone, waited for in place of the lock files. An unreadable store or a failing
+#           broker falls back to the lock files, saying so once.
+# The lease is owned by this script's pid, which execs into the command, or by the command's pid where
+# the mkdir fallback runs it as a child, so it is held exactly as long as the command runs.
 set -uo pipefail
 # This script's own directory, taken before --cwd moves us: desk-env.mjs is installed beside it.
 here="$(cd "$(dirname "$0")" && pwd -P)"
@@ -91,6 +103,25 @@ esac
 [ -n "$lock" ] || exec "$@"
 gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 
+# The slot lease. Anything but shadow or on, a failing node included, is off.
+lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
+if [ "$lease_mode" = on ]; then
+  if [ -n "$timeout" ]; then node "$here/slot-lease.mjs" take "$name" --pid "$$" --timeout "$timeout" -- "$@" </dev/null
+  else node "$here/slot-lease.mjs" take "$name" --pid "$$" -- "$@" </dev/null; fi
+  case $? in
+    0) exec "$@" ;;
+    75) exit 75 ;;
+    *) lease_mode=off ;;   # it said why: the lock files below, as with the kind off
+  esac
+fi
+# shadow_lease <owner pid> <command...>: in shadow, the lease beside the lock just taken. How it ends
+# changes nothing here: the lock files are what this run waited on.
+shadow_lease() {
+  [ "$lease_mode" = shadow ] || return 0
+  local owner="$1"; shift
+  node "$here/slot-lease.mjs" take "$name" --pid "$owner" -- "$@" </dev/null >/dev/null 2>&1 || true
+}
+
 # How many commands may hold this lock at once.
 slots=1
 if [ "$name" = test ] || [ "$name" = tsc ]; then
@@ -109,13 +140,15 @@ holder() { echo "$$" > "$(slot_path "$1").pid" 2>/dev/null || true; }
 
 if command -v flock >/dev/null 2>&1; then
   if [ "$slots" -eq 1 ]; then
-    [ -n "$timeout" ] || exec flock "$lock" "$@"
-    # The descriptor form, so a timeout is told apart from the command's own exit status. The command
-    # inherits fd 9, so the lock is held until it exits.
+    [ -n "$timeout" ] || [ "$lease_mode" = shadow ] || exec flock "$lock" "$@"
+    # The descriptor form, so a timeout is told apart from the command's own exit status, and a shadow
+    # lease is taken once the lock is held. The command inherits fd 9, so the lock is held until it exits.
     exec 9>>"$lock" || exit 2
     # A timeout of 0 is one try: -n, since some flock builds (Homebrew's) refuse `-w 0`.
-    if [ "$timeout" -eq 0 ]; then flock -n 9 || gave_up; else flock -w "$timeout" 9 || gave_up; fi
+    if [ -z "$timeout" ]; then flock 9 || exit 2
+    elif [ "$timeout" -eq 0 ]; then flock -n 9 || gave_up; else flock -w "$timeout" 9 || gave_up; fi
     holder 1
+    shadow_lease "$$" "$@"
     exec "$@"
   fi
   # Several slots: try each without blocking, and wait 2 s between rounds.
@@ -124,7 +157,7 @@ if command -v flock >/dev/null 2>&1; then
     i=1
     while [ "$i" -le "$slots" ]; do
       exec 9>>"$(slot_path "$i")" || exit 2
-      flock -n 9 && { holder "$i"; exec "$@"; }
+      flock -n 9 && { holder "$i"; shadow_lease "$$" "$@"; exec "$@"; }
       exec 9>&-
       i=$((i + 1))
     done
@@ -196,10 +229,13 @@ release() { rm -rf "$ldir" 2>/dev/null || true; }
 "$@" <&0 &
 child=$!
 echo "$$ $child" > "$ldir/pid"
-# On INT/TERM, pass it on and keep holding the lock until the command has actually exited.
+# On INT/TERM, pass it on and keep holding the lock until the command has actually exited. Set before
+# the shadow lease below, so a signal while it is taken still reaches the command.
 on_signal() { kill -TERM "$child" 2>/dev/null; wait "$child" 2>/dev/null; release; exit "$1"; }
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
+# The shadow lease is the command's own, not this wrapper's: a SIGKILLed wrapper leaves it held.
+shadow_lease "$child" "$@"
 wait "$child"; rc=$?
 release
 exit "$rc"

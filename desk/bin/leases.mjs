@@ -279,9 +279,10 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
   });
 }
 
-// Takes a lease, waiting up to `wait` seconds for it. With the kind off, takes nothing.
+// Takes a lease, waiting up to `wait` seconds for it (Infinity: until it is granted), trying every
+// `poll` ms and calling `onWait(why)` at the first refusal it waits past. With the kind off, takes nothing.
 // -> { code, lease?, why? }, `why` beside a lease saying what shadow let through.
-export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
+export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, poll = POLL_MS, onWait = null }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
     poolOf(req.kind, req.key, offCaps(caps));
@@ -289,12 +290,14 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
   }
   const wait = req.wait ?? 0;
   const until = now() + wait * 1000;
+  let waiting = false;
   for (;;) {
     const final = now() >= until;
     const r = tryAcquire({ ...req, final, waited: wait }, { env, dir, caps, now, mode });
     if (r.lease) return { code: EXIT_OK, lease: r.lease, ...(r.shadow ? { why: `shadow: granted, but on would refuse: ${r.shadow}` } : {}) };
     if (final) return wait ? { code: EXIT_GAVE_UP, why: `gave up after ${wait}s waiting: ${r.refused}` } : { code: EXIT_REFUSED, why: `refused: ${r.refused}` };
-    sleepSync(Math.max(1, Math.min(POLL_MS, until - now())));
+    if (!waiting) { waiting = true; onWait?.(r.refused); }
+    sleepSync(Math.max(1, Math.min(poll, until - now())));
   }
 }
 
@@ -367,7 +370,7 @@ export function resetStore(reason, { dir = leaseDir(), now = Date.now }) {
   const lockDir = lockStore(dir);
   const t0 = performance.now();
   try {
-    try { readStore(file); return { code: EXIT_REFUSED, why: `refused: the lease store ${file} reads, so its leases are live; desk-env lease force-release <id> --reason <why> frees one` }; }
+    try { readStore(file); return { code: EXIT_REFUSED, why: `refused: the lease store ${file} reads, so its leases are live; ${forceReleaseCommand('<id>')} frees one` }; }
     catch (e) { if (!(e instanceof LeaseStoreError)) throw e; }
     const aside = `${file}.unreadable-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`;
     renameSync(file, aside);
@@ -384,6 +387,41 @@ export function list({ env, dir = leaseDir(), now = Date.now }) {
     return store.leases;
   });
 }
+// The leases list() would leave, read without the store lock and changing nothing, for a screen that
+// shows leases and never lapses one. Throws LeaseStoreError when the store cannot be read.
+export function peek({ env, dir = leaseDir(), now = Date.now }) {
+  const store = readStore(storeFile(dir));
+  const starts = ownerStarts(store, env);
+  const t = now();
+  return store.leases.filter((l) => !lapseOf(l, starts, t));
+}
+// A held lease past its expiry: its owner is alive and has not renewed it (a slot's, while it runs).
+export const overdue = (l, t) => t > Date.parse(l.expires);
+export const forceReleaseCommand = (id) => `desk-env lease force-release ${id} --reason <why>`;
+export const RESET_COMMAND = 'desk-env lease reset --reason <why>';
+
+// Each kind's would-refuse entries in the log, counted per 24 hours back from now, newest first:
+// { <kind>: [n, …] } with `days` counts, holding only kinds that have one. A line that is not JSON is
+// skipped; a log that cannot be read throws LeaseStoreError.
+export function wouldRefuseByDay({ dir = leaseDir(), now = Date.now, days = 7 } = {}) {
+  let raw;
+  try { raw = readFileSync(logFile(dir), 'utf8'); } catch (e) {
+    if (e.code === 'ENOENT') return {};
+    throw new LeaseStoreError(`the lease log ${logFile(dir)} is unreadable: ${e.message}`);
+  }
+  const t = now();
+  const out = {};
+  for (const line of raw.split('\n')) {
+    if (!line.includes('"would-refuse"')) continue;
+    let e;
+    try { e = JSON.parse(line); } catch { continue; }
+    if (e?.event !== 'would-refuse' || !KINDS.includes(e.kind)) continue;
+    const day = Math.floor((t - Date.parse(e.at)) / 86_400_000);
+    if (day >= 0 && day < days) (out[e.kind] ??= Array(days).fill(0))[day]++;
+  }
+  return out;
+}
+
 export const listRow = (l) => [l.id, l.kind, l.key, l.units, l.owner ? `pid ${l.owner.pid}` : 'no owner', l.label, `${l.ttl}s`, l.acquired, l.expires].join('\t');
 const LIST_HEAD = ['ID', 'KIND', 'KEY', 'UNITS', 'OWNER', 'LABEL', 'TTL', 'ACQUIRED', 'EXPIRES'].join('\t');
 const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, ...(l.renewed ? { renewed: l.renewed } : {}), expires: l.expires });
@@ -391,8 +429,8 @@ const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, uni
 export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <seconds> [--units <n>] [--wait <seconds>] [--label <text>] [<owner>]
        desk-env lease renew <lease id> <kind> <key> --ttl <seconds> [--units <n>] [--label <text>] [<owner>]
        desk-env lease release <lease id> [--pid <owner pid>]
-       desk-env lease force-release <lease id> --reason <why>
-       desk-env lease reset --reason <why>
+       ${forceReleaseCommand('<lease id>')}
+       ${RESET_COMMAND}
        desk-env lease list [--json]
        desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
@@ -401,7 +439,7 @@ kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <ver
 A live owner that does not renew loses its lease at twice its TTL, except a slot's.
 Each kind is off, shadow or on from the machine profile's lease-kinds row (desk-env machine set lease-kinds=port=on); unnamed kinds are ${DEFAULT_LEASE_MODE}.
 force-release and reset are for a person clearing a stuck lease or an unreadable store.`;
-const FALL_BACK = 'fall back to running without the lease; a person moves the bad store aside with desk-env lease reset --reason <why>';
+const FALL_BACK = `fall back to running without the lease; a person moves the bad store aside with ${RESET_COMMAND}`;
 
 // Parses `args` into positionals and the options `takes` names (value options; `flags` take none).
 function parseArgs(args, takes, flags = []) {
