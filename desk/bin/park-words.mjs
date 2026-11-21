@@ -28,15 +28,17 @@ export function tailSteps(clause) {
   return m ? s.slice(m[0].length).replace(/[.!;)]*$/, '') : null;
 }
 
-// A word opening a request, so a tail item starting with one is the person's ask, not a step:
-// "Not reached: the PR, so confirm the fee" still asks for the fee.
-const ASK = /^(?:so|but|please|confirm|choose|pick|decide|approve|answer|tell|say|send|add|set|give|run|check|which|what|should|can|could|would)\b/i;
+// A tail item is a step only when it names one (STEP) and opens with no request (ASK): "Not reached:
+// the PR, so confirm the fee" and "…, provide the fee to use" still ask for the fee, so they stay.
+const STEP = /\b(?:prs?|draft|reviews?|self-review|desk-review|comments?|post|jira|tracker|ticket|transitions?|state|status|done|screenshots?|images?|upload|evidence|push|commit|merge|rebase|branch|tests?|verify|verification|typecheck|lint|build|implement\w*|tools?|stages?|hygiene|cleanup|handoff|deploy\w*|preview|qa|changelog|docs?|codex|specs?)\b/i;
+const ASK = /^(?:so|but|please|confirm|choose|pick|decide|approve|answer|tell|say|send|add|set|give|provide|run|check|which|what|should|can|could|would)\b/i;
 // Whether a clause is only the list of steps its worker did not reach: the marker, a colon or dash,
-// then steps, none of them a request.
+// then steps, every one of them a step.
 function listTail(clause) {
   const steps = tailSteps(clause);
   if (steps === null || !/^\s*(?:[:—–]|-\s)/.test(steps)) return false;
-  return steps.replace(/^\s*[:—–-]\s*/, '').split(/[,;]|\band\b|\bthen\b/i).map((s) => s.trim()).every((s) => !ASK.test(s));
+  return steps.replace(/^\s*[:—–-]\s*/, '').split(/[,;]|\band\b|\bthen\b/i).map((s) => s.trim()).filter(Boolean)
+    .every((s) => STEP.test(s) && !ASK.test(s));
 }
 // A tail inside a clause: a bracketed aside, "(not reached: the PR, the Jira comment)", or one after a
 // comma or dash, "Please add the row — not reached: the PR".
@@ -53,9 +55,47 @@ function cutInner(clause) {
 }
 
 // ---- desk's terms in plain words
-// What a config §3 grant lets a worker do, for the grants a worker's park names. needs-you words a
-// row the config lacks with it too. A grant missing here is "a setting in your desk config".
+// What each config §3 grant lets a worker do (test_park_words.mjs holds every config grant to a
+// line here). needs-you words a row the config lacks with it too.
 export const GRANT_WORDS = {
+  'read-own-work': 'read your tickets and PRs',
+  'read-local-git': 'read local git history',
+  'read-others': "read other people's work",
+  'read-slack-public': 'read public Slack channels',
+  'read-figma': 'read Figma designs',
+  'read-vercel': 'read Vercel',
+  'read-confluence': 'read Confluence',
+  'read-transcripts': 'read meeting transcripts',
+  'read-calendar': 'read your calendar',
+  'read-slack-own': 'read your Slack messages',
+  'jira-close-own-merged': 'close tickets whose PR merged',
+  'jira-close': 'close tickets',
+  'jira-route': 'route tickets',
+  'jira-others': "change other people's tickets",
+  'pr-review-others': "review other people's PRs",
+  'pr-request-review': 'request reviews',
+  'merge-feedback-first': 'merge before review feedback is answered',
+  'pr-conflict-unreviewed': 'resolve conflicts on unreviewed PRs',
+  'pr-conflict-reviewed': 'resolve conflicts on reviewed PRs',
+  'ci-protection': 'change CI protection',
+  'gh-close-linked-issue': 'close linked GitHub issues',
+  'gh-issue-create': 'create GitHub issues',
+  'gh-issue-comment': 'comment on GitHub issues',
+  'autopilot-workers': 'run at all',
+  'autopilot-worker-mode': 'run in that permission mode',
+  'autopilot-merge': 'merge PRs',
+  'merge-hold-routine': 'merge routine changes under a merge hold',
+  'autopilot-reclaim': 'reclaim stuck work',
+  'worktree-remove': 'remove worktrees',
+  'branch-delete': 'delete branches',
+  'server-stop': 'stop servers',
+  'skills-edit': 'edit skills',
+  'slack-draft': 'draft Slack messages',
+  'slack-send': 'send Slack messages',
+  'merge-bypass': 'bypass merge rules',
+  'others-prs': "change other people's PRs",
+  'product-calls': 'make product calls',
+  'legal-content': 'write legal content',
   'worker-dependency-install': 'install packages',
   'worker-local-services': 'start local services',
   'worker-screenshots': 'take screenshots',
@@ -162,7 +202,11 @@ export function plainTerms(text) {
     .map((part, i) => (i % 2 ? part : proseTerms(part))).join('').trim();
 }
 
+// Code spans are set aside while the tail is cut, so a command's own ". " or "(remaining steps: …)"
+// is never taken for the park's.
 export function parkWords(question) {
-  const clauses = parkClauses(String(question ?? '').replace(/\s+/g, ' ').trim()).filter((c) => !listTail(c)).map(cutInner);
-  return plainTerms(clauses.join(' '));
+  const spans = [];
+  const masked = String(question ?? '').replace(/\s+/g, ' ').trim().replace(/`[^`]*`/g, (m) => `\u0000${spans.push(m) - 1}\u0000`);
+  const kept = parkClauses(masked).filter((c) => !listTail(c)).map(cutInner).join(' ');
+  return plainTerms(kept.replace(/\u0000(\d+)\u0000/g, (m, i) => spans[Number(i)]));
 }

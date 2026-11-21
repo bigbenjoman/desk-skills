@@ -38,11 +38,16 @@ t('AC4 the spine, an AC list and a § row are put in plain words', SPINE,
   "plan- or design-first work: the acceptance-spec check failed on the ticket's requirements; the desk config's Staging is none, so approve the specs as they are?");
 t('AC4 no internal term is left', JARGON.test(SPINE), false);
 
-// Grants: one with no words of its own, one written bare, and every config grant.
-t('AC4 an unnamed grant is the desk config', plainTerms('config §3 `pr-review-others` is "ask", so the review waits for Stage 4b self-review and Stage 3 implement.'),
-  'your desk config does not allow it, so the review waits for self-review and the build.');
-t('AC4 a bare grant id the config defines is put in plain words', plainTerms('read-figma is not granted. Can you export the frame?'),
-  'your desk config does not allow it. Can you export the frame?');
+// Grants: every config grant has its words, one written bare, and one the config does not define.
+const { GRANT_WORDS } = await import(join(BIN, 'park-words.mjs'));
+const { PERMISSION_KEYS } = await import(join(BIN, 'config-schema.mjs'));
+t('AC4 every config grant says what it lets a worker do', Object.keys(PERMISSION_KEYS).filter((k) => !GRANT_WORDS[k]).join(), '');
+t('AC4 a grant in backticks with its value, and stages, are put in plain words', plainTerms('config §3 `pr-review-others` is "ask", so the review waits for Stage 4b self-review and Stage 3 implement.'),
+  "workers can't review other people's PRs, so the review waits for self-review and the build.");
+t('AC4 a bare grant id is put in plain words', plainTerms('read-figma is not granted. Can you export the frame?'),
+  "workers can't read Figma designs. Can you export the frame?");
+t('AC4 a grant id the config does not define is the desk config', plainTerms('config §3 widget-sync is "ask". Can you sync it?'),
+  'your desk config does not allow it. Can you sync it?');
 t('AC4 a requeued park reads as sent back', plainTerms('It was requeued once; requeuing it again would only park.'),
   'It was sent back to a worker once; sending it back to a worker again would only park.');
 
@@ -61,11 +66,16 @@ t('AC3 a question with none is unchanged', parkWords('Which colour should the ba
 t('AC3 a "(not reached: …)" aside is cut, bracket and all', parkWords('Need the fee table from finance (not reached: the PR, the Jira comment).'), 'Need the fee table from finance.');
 t('AC3 a tail holding a request is kept', parkWords('Need gateway-models. Not reached: the PR, so confirm the fee.'), 'Need gateway-models. Not reached: the PR, so confirm the fee.');
 t('AC3 a question after the tail is kept', parkWords('Need the logo. Not reached: the PR. Which colour?'), 'Need the logo. Which colour?');
+t('AC3 a tail item that is no step is kept, whatever word opens it', parkWords('I need the gateway models. Not reached: the PR, provide the exact fee to use.'),
+  'I need the gateway models. Not reached: the PR, provide the exact fee to use.');
+t('AC3 a command\'s own "(remaining steps: …)" is never cut', parkWords('Run `git commit -m "Fix checkout (remaining steps: confirmation page)"`, then resume. Not reached: the PR.'),
+  'Run `git commit -m "Fix checkout (remaining steps: confirmation page)"`, then resume.');
 t('AC3 a "Remaining steps" tail is cut too', parkWords('Need the logo. Remaining steps: the PR, the Jira comment.'), 'Need the logo.');
 
 // The raw question stays the classifiers': only needs-you's copy is reworded.
 t('the raw lane C question is still a session park', sessionPark('Demoted to lane C: the plan needs agreeing'), true);
 t('the raw aws question still names its never step', neverStep('aws is refused to workers, so the upload cannot run'), 'aws');
+t('an aws CLI written as a full path is still its never step', neverStep('The worker was denied `/opt/homebrew/bin/aws sts get-caller-identity`'), 'aws');
 // undraft.mjs reads the same tail: a tail of steps only passes, one holding a request does not.
 const namesGate = (s) => /\bgate\b/.test(s);
 t('undraft still reads a tail of steps as the tail', parkOnlyNames('Re-run the gate. Not reached: the PR, the Jira comment.', namesGate), true);
