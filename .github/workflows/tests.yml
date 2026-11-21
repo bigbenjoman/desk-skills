@@ -91,7 +91,7 @@ jobs:
           bash tests/bash32_check.sh $SHELLS
 
   # The JSDoc types desk-ui reads desk's data through: tsc checks the files desk/tsconfig.json names
-  # (the read model and desk-env), then writes them out as .d.ts files. TypeScript is pinned here and
+  # (the read model and desk-env), then writes them out as .d.mts files. TypeScript is pinned here and
   # installed outside the checkout, so desk itself still has no package.json and no node_modules.
   types:
     name: types
@@ -114,12 +114,13 @@ jobs:
       - name: Emit the declarations
         run: |
           "$RUNNER_TEMP/ts/node_modules/.bin/tsc" -p desk/tsconfig.decl.json --typeRoots "$RUNNER_TEMP/ts/node_modules/@types" --pretty false
-          ls -R desk/types
+          ls desk/types/bin
           bad=0
           for t in HomeView RepoView TicketView UsageView CostsView; do
-            grep -q "type $t = " desk/types/desk-q-model.d.ts || { echo "desk-q-model.d.ts does not declare $t"; bad=1; }
+            grep -q "type $t = " desk/types/bin/desk-q-model.d.mts || { echo "desk-q-model.d.mts does not declare $t"; bad=1; }
           done
-          grep -q "type GetJson = " desk/types/desk-env.d.ts || { echo "desk-env.d.ts does not declare GetJson"; bad=1; }
+          grep -q "type GetJson = " desk/types/bin/desk-env.d.mts || { echo "desk-env.d.mts does not declare GetJson"; bad=1; }
+          [ "$bad" = 1 ] || grep -E "^export type (HomeView|RepoView|TicketView|UsageView|CostsView|GetJson) = " desk/types/bin/desk-q-model.d.mts desk/types/bin/desk-env.d.mts
           exit "$bad"
       - name: Save the declarations
         uses: actions/upload-artifact@v4

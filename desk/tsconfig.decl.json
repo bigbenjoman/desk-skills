@@ -1,6 +1,6 @@
 {
-  // The declaration step: the same program as tsconfig.json, written out as .d.ts files under
-  // desk/types/ (gitignored) for desk-ui's TypeScript to import.
+  // The declaration step: the same program as tsconfig.json, written out as .d.mts files under
+  // desk/types/bin/ (gitignored) for desk-ui's TypeScript to import.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
