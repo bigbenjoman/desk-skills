@@ -73,6 +73,7 @@ import { evaluateDue } from './levers-evaluate.mjs';
 import { runTrips, recordWait } from './levers-trips.mjs';
 import { queueWriter } from './queue-writer.mjs';
 import { runAudits, endedFromExit, auditsRunning } from './levers-audit.mjs';
+import { MISSED_PREFIX, LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { runPhase, runSteps } from './pass/run-phase.mjs';
 import { crashedUploadBodies, decideCrashedUploads } from './pass/crashed-uploads.mjs';
 import { decideAdvance, decideUsageLimit } from './pass/advance.mjs';
@@ -275,11 +276,19 @@ function writeLines(r) {
   return [
     ...r.conflicts.map((c) => `${c.ticket ?? 'batch'}: queue write not made for ${c.field === 'order' ? 'the spawn order' : c.field === '*' ? 'the whole ticket' : c.field}: ${c.gone ? 'another writer took the ticket out of the queue' : 'another writer changed it after this pass read the queue, and its value stays'}`),
     ...(r.archiveError ? [`queue archive: done tickets were not archived this pass (${r.archiveError})`] : []),
+    ...(r.ledgerMissed ? [`${MISSED_PREFIX}, queue.json was written (${r.ledgerMissed})`] : []),
   ];
 }
 // A command queue-writer.mjs does not apply in memory runs as queue.mjs, after the changes before it
-// are written, so it reads them.
-const qRun = (args) => { flushQueue(); return shOut('node', [join(BIN, 'queue.mjs'), ...args]); };
+// are written, so it reads them. The ticket ledger names the pass as that write's writer, and a missed
+// append the command reports goes in the report, as a flush's does.
+const qRun = (args) => {
+  flushQueue();
+  const r = spawnSync('node', [join(BIN, 'queue.mjs'), ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, [LEDGER_BY_ENV]: 'pass' } });
+  if (r.status !== 0) return { ok: false, code: r.status ?? null, out: `${r.stdout ?? ''}${r.stderr ?? ''}`.trim() || String(r.error?.message ?? 'queue.mjs did not run') };
+  report.failed.push(...String(r.stderr ?? '').split('\n').filter((l) => l.startsWith(MISSED_PREFIX)));
+  return { ok: true, out: r.stdout.trim() };
+};
 // One queue command, in the pass's write where queue-writer.mjs applies it, else as queue.mjs, without
 // reporting a refusal: -> { ok, out }, out being the refusal when not ok.
 const qTry = (args) => {

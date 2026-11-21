@@ -83,6 +83,11 @@ const d1 = decisions(AA);
 t('AC1 one decisions.jsonl line with that id', [d1.length, d1[0]?.id], [1, e1.decision_id]);
 t('AC1 the decision names its lever, so the digest and needs-you leave it to the Levers section', d1[0]?.lever, 'codex');
 t('AC2 exits 0', r1.status, 0);
+{
+  const n = events(AA).length;
+  const rL = levers('decide', 'ai-agents', 'ledger', 'trial');
+  t('levers decide refuses a trial of the ledger, which is never trialled, and logs nothing (DS-893)', [rL.status !== 0, /ledger is not trialled/.test(rL.stderr), events(AA).length], [true, true, n]);
+}
 t('AC2 its line', r1.stdout.trim(), `levers decide: override recorded in ai-agents/levers.jsonl (codex → off, actor ben, decision ${e1.decision_id}) · decision logged in decisions.jsonl`);
 const s3 = leverStatesIn(events(AA)).codex;
 t('AC3 the lever reads overridden off', [s3.state, s3.value], ['overridden', 'off']);

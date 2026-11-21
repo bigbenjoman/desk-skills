@@ -73,7 +73,8 @@ export function leverStatesIn(events, registry = REGISTRY) {
   for (const e of events) {
     if (!isStateChange(e) || !Object.hasOwn(out, e.lever)) continue;
     const pinned = e.kind === 'override' && (e.to === 'on' || e.to === 'off') && e.value === e.to;
-    const state = pinned ? 'overridden' : STATES.includes(e.to) ? e.to : 'off';
+    // A lever the registry does not trial (the ledger) is never on trial, whatever the log says.
+    const state = pinned ? 'overridden' : STATES.includes(e.to) && !(e.to === 'trial' && !registry[e.lever].trialled) ? e.to : 'off';
     const value = pinned ? e.to : e.value;
     const from = e.kind === 'override' && e.restores && typeof e.restores === 'object' ? e.restores : { at: e.at, id: e.id };
     out[e.lever] = { state, at: from.at ?? null, id: from.id ?? null, ...(state === 'overridden' ? { value: value === 'on' ? 'on' : 'off' } : {}) };
