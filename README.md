@@ -913,6 +913,10 @@ changed to the repo's ticket ledger, `~/.claude/desk/repos/<slug>/ledger/events.
 writer: a typed event for a ticket's change of state and a `legacy_set` for its other fields. A
 batch the ledger has not seen starts with one `seeded` event per ticket. queue.json is still written
 first and read by everything; a missed append is reported by the writer and never fails the write.
+Each pass then compares queue.json with the queue rebuilt from the log: its report names each ticket
+field that differs and counts the pass's missed appends, and its line in `passes.jsonl` records both
+counts (`ledger_diffs`, `ledger_missed`). `queue.mjs rebuild [<batch | standing>]` writes the rebuilt
+queue to `queue.rebuilt.json` beside queue.json and prints each field that differs.
 
 The desk-skills test suite runs against throwaway homes and repos, never yours:
 
