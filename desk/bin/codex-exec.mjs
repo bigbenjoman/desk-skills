@@ -14,7 +14,7 @@
 // `codex exec --sandbox read-only --skip-git-repo-check`, at ~/.codex/config.toml's model and effort,
 // ended at config §3b Codex review's timeout. Stdout is codex's final message alone. Exit: codex's own,
 // 124 timed out (`codex-exec: timed out after <n>s` on stderr: the review records the seat as died,
-// "timed out"), 127 codex did not start, 2 usage.
+// "timed out"), 127 codex did not start, 1 no final message, 2 usage.
 import { spawn } from 'node:child_process';
 import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -70,10 +70,9 @@ const isMain = (() => {
   catch { return false; }
 })();
 
-// The review form: a read-only call whose arguments only this file sets.
-async function review(rest) {
-  const say = (m) => process.stderr.write(`codex-exec: ${m}\n`);
-  const usage = () => { say('usage: codex-exec.mjs review [--cd <dir>] <prompt>'); process.exit(2); };
+// A review call's `[--cd <dir>] <prompt>`, for this file's review form and desk-codex's roles: a --cd
+// that is not a directory exits 2, and anything but one non-empty prompt runs `usage`.
+export function cdAndPrompt(rest, say, usage) {
   let cd = null;
   if (rest[0] === '--cd') {
     cd = rest[1];
@@ -81,18 +80,42 @@ async function review(rest) {
     rest = rest.slice(2);
   }
   if (rest.length !== 1 || !rest[0].trim()) usage();
+  return { cd, prompt: rest[0] };
+}
+
+// One read-only review call, its final message read from a scratch file removed afterwards. With no
+// model, ~/.codex/config.toml's model and effort apply. -> codexExec's result.
+export async function readOnlyCall({ prompt, cd = null, model = null, effort, env, timeout }) {
+  const dir = mkdtempSync(join(tmpdir(), 'codex-review-'));
+  const last = join(dir, 'last-message.txt');
+  try { return await codexExec({ args: execArgs({ sandbox: 'read-only', cd, model, effort, last, prompt }), last, env, timeout }); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+}
+
+// A review call's outcome, as a CLI reports it: the final message on stdout, why it failed on stderr
+// (`label` after each reason), and the exit code: 127 not started, 124 timed out, codex's own, 1 an
+// answer `refuse` turns down (by default an empty one). Sets process.exitCode, never process.exit: a
+// pipe write on macOS is asynchronous, and exiting at once would cut a long final message short.
+//   -> whether codex answered
+export function reportCall({ code, timedOut, message, tail, error }, { say, timeout, label = '', refuse = (m) => (m.trim() ? null : 'with no final message') }) {
+  const at = label ? ` (${label})` : '';
+  if (error) { say(`codex did not start: ${error}`); process.exitCode = 127; return false; }
+  if (timedOut) { say(`timed out after ${timeout}s${at}`); process.exitCode = 124; return false; }
+  if (message) process.stdout.write(message.endsWith('\n') ? message : `${message}\n`);
+  if (code !== 0) { say(`codex exited ${code}${at}: ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`); process.exitCode = code; return false; }
+  const why = refuse(message);
+  if (why) { say(`codex answered ${why}${at}`); process.exitCode = 1; return false; }
+  process.exitCode = 0;
+  return true;
+}
+
+// The review form: a read-only call whose arguments only this file sets.
+async function review(rest) {
+  const say = (m) => process.stderr.write(`codex-exec: ${m}\n`);
+  const { cd, prompt } = cdAndPrompt(rest, say, () => { say('usage: codex-exec.mjs review [--cd <dir>] <prompt>'); process.exit(2); });
   let timeout;
   try { timeout = (await import('./desk-env.mjs')).codexReview().timeout; } catch (e) { say(e.message); process.exit(2); }
-  const dir = mkdtempSync(join(tmpdir(), 'codex-exec-'));
-  const last = join(dir, 'last-message.txt');
-  const { code, timedOut, message, tail, error } = await codexExec({ args: execArgs({ sandbox: 'read-only', cd, last, prompt: rest[0] }), last, timeout });
-  rmSync(dir, { recursive: true, force: true });
-  if (error) { say(`codex did not start: ${error}`); process.exit(127); }
-  if (timedOut) { say(`timed out after ${timeout}s`); process.exitCode = 124; return; }
-  if (message) process.stdout.write(message.endsWith('\n') ? message : `${message}\n`);
-  if (code !== 0) say(`codex exited ${code}: ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`);
-  // Sets the exit code, never process.exit: a pipe write on macOS is asynchronous.
-  process.exitCode = code;
+  reportCall(await readOnlyCall({ prompt, cd, timeout }), { say, timeout });
 }
 
 if (isMain && process.argv[2] === 'review') review(process.argv.slice(3));

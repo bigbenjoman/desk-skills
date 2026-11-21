@@ -111,6 +111,12 @@ function* hostPark(t, fault, verb) {
   yield say(t.key, 'parked', `${t.key}: ${question}`);
 }
 
+// A wedged worker's park, once the pass has stopped it: `why` says what read as wedged.
+function* wedgedPark(t, why) {
+  yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
+  yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+}
+
 export function* decideAdvance(s) {
   const { t, log, registry } = s;
   if (runsInCloud(t) && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
@@ -161,9 +167,7 @@ export function* decideAdvance(s) {
     yield set(t.key, `log_bytes=${log.size}`, ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
     yield { type: 'kill', key: t.key, sid: t.session_id, pid: pidOf() };
     wedged = true;
-    const why = `one ${hung.tool} call${hung.id ? ` (${hung.id})` : ''} running for ${Math.floor(hung.secs / 60)} minutes, past the ${TOOL_CALL_CEILING_MS / 60000}-minute ceiling, with only its tool_progress heartbeat in the log`;
-    yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
-    yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+    yield* wedgedPark(t, `one ${hung.tool} call${hung.id ? ` (${hung.id})` : ''} running for ${Math.floor(hung.secs / 60)} minutes, past the ${TOOL_CALL_CEILING_MS / 60000}-minute ceiling, with only its tool_progress heartbeat in the log`);
   } else if (wroteSince(log.raw, t.log_bytes ?? 0)) {
     yield set(t.key, `log_bytes=${log.size}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
   } else if (pausedOnLimit) {
@@ -186,11 +190,9 @@ export function* decideAdvance(s) {
       const pid = pidOf();
       if (pid) yield { type: 'kill', key: t.key, pid };
       wedged = true;
-      const why = overCeiling
+      yield* wedgedPark(t, overCeiling
         ? `no output for ${idle} passes, ${SUITE_WAIT_TEXT[waitOn]} for over the ${SUITE_WAIT_CEILING_MS / 60000}-minute ceiling`
-        : `no output for ${idle} passes`;
-      yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
-      yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+        : `no output for ${idle} passes`);
     } else if (idle >= QUIET_PASSES) yield say(t.key, 'quiet', `${t.key}: quiet for ${idle} passes`);
   }
 
