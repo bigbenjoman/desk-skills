@@ -3,7 +3,7 @@
 // desk-ui.mjs install and install.sh --uninstall-ui on a throwaway HOME with a fake launchctl, which
 // starts and stops the server itself on a test-only port. Nothing touches your real launchd,
 // ~/.claude, ~/.config/desk or state.
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { connect, createServer } from 'node:net';
@@ -67,9 +67,10 @@ await new Promise((r) => holder.close(r));
 clearCalls();
 
 // ---- AC9: with no token file, the install writes it for you alone and loads a job that answers
+rmSync(TOKEN, { force: true }); // the refused install above wrote one
 const before = state();
 const first = install();
-t('AC9 the install succeeds', first.code, 0);
+t('AC9 the install succeeds, writing the token', [first.code, first.out.includes('token written')], [0, true]);
 t('AC9 the token file exists, readable only by you', [existsSync(TOKEN), existsSync(TOKEN) && (statSync(TOKEN).mode & 0o777).toString(8)], [true, '600']);
 t('AC9 the token is 32 random bytes', /^[0-9a-f]{64}$/.test(readFileSync(TOKEN, 'utf8').trim()), true);
 t('AC9 the launchd job is loaded from its plist', calls().includes(`bootstrap gui/${UID} ${PLIST}`), true);

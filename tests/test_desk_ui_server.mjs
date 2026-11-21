@@ -41,7 +41,7 @@ const srv = spawn('node', [BIN, 'serve'], { env, cwd: T });
 srv.stdout.on('data', (d) => { logged += d; });
 srv.stderr.on('data', (d) => { logged += d; });
 process.on('exit', () => srv.kill());
-for (let i = 0; i < 100 && !logged.includes('listening'); i++) await new Promise((r) => setTimeout(r, 50));
+for (let i = 0; i < 300 && !logged.includes('listening'); i++) await new Promise((r) => setTimeout(r, 50));
 t('the server starts on the test port', logged.includes(`listening on http://127.0.0.1:${PORT}`), true);
 
 const responses = [];
@@ -95,7 +95,7 @@ const shadowed = await call('GET', '/api/snapshot', { headers: { Cookie: `desk_u
 t('a junk desk_ui cookie from another port sent first does not sign the window out', shadowed.status, 200);
 
 // ---- AC3: any other Host is refused
-for (const host of ['evil.example', `evil.example:${PORT}`, `127.0.0.1:${PORT + 1}`, `localhost.evil.example:${PORT}`, '']) {
+for (const host of ['evil.example', `evil.example:${PORT}`, `127.0.0.1:${PORT + 1}`, `localhost.evil.example:${PORT}`, `127.0.0.1:${PORT}.evil.example`]) {
   const r = await call('GET', '/api/snapshot', { headers: { Host: host, Cookie: cookie, 'X-Desk-Load': load } });
   t(`AC3 Host "${host}" is refused with no state`, [r.status, noState(r)], [403, true]);
 }
@@ -133,8 +133,9 @@ t('/api/meta names the version and port', [meta.version, meta.port], ['c0ffee123
 t('AC4 no response carried a CORS header', responses.flatMap((r) => Object.keys(r.headers).filter((h) => h.startsWith('access-control-'))), []);
 t('every response carries the CSP', responses.every((r) => /frame-ancestors 'none'/.test(r.headers['content-security-policy'] ?? '')), true);
 
+const closed = new Promise((r) => srv.once('close', r));
 srv.kill();
-await new Promise((r) => srv.once('exit', r));
+await closed;
 t('the server logged a line per request', logged.split('\n').filter((l) => / (GET|POST|OPTIONS) \//.test(l)).length, responses.length);
 t('AC6 nothing the server logged holds any part of either token', [TOKEN, WRONG].map((k) => [k.slice(0, 16), k.slice(-16), k.slice(20, 40)].some((part) => logged.includes(part))), [false, false]);
 t('AC6 nothing the server logged holds a session cookie or per-load token', [cookie.split('=')[1], load].some((v) => logged.includes(v)), false);

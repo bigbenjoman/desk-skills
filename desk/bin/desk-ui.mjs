@@ -100,7 +100,9 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
     const Q = await import('./desk-q.mjs');
     const now = Date.now();
     const { lines, generated_at, inputs, ...body } = Q.homeJson(Q.loadRepos(now), { all: true, now });
-    const key = JSON.stringify(body);
+    // The revision moves with desk's state, not with the clock or free memory.
+    const key = JSON.stringify({ needs: body.needs_you, running: body.machine?.running, cap: body.machine?.cap,
+      repos: (body.repos ?? []).map(({ last_pass, all_done_by, ...r }) => r) });
     if (key !== lastBody) { rev += 1; lastBody = key; }
     return { at: new Date(now).toISOString(), rev, ...body, inputs };
   }
