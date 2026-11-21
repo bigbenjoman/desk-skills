@@ -273,6 +273,7 @@ put(join(standingS, 'parks', 'K-2.json'), '{"question":"which colour?"}');
 put(join(standingS, 'answers', 'K-2.txt'), 'blue');
 put(join(standingS, 'intake.json'), '{"seen":{}}');
 put(join(standingS, 'asks.json'), '{"next":2,"asks":[{"id":1,"text":"merge PR #9"}]}');
+put(join(standingS, 'config-pushed.json'), '{"keys":["config-invalid:x"]}');
 r = move();
 const slotted = 'feat-epics-coverage-to-podcasts';
 t('several epics: moved', r.code, 0);
@@ -282,6 +283,7 @@ t('several epics: its parks and answers moved', `${read(join(namedS(slotted), 'p
 t('several epics: the standing slot has no queue', existsSync(standingQ), false);
 t('several epics: intake\'s register stays with the standing slot', existsSync(join(standingS, 'intake.json')), true);
 t('several epics: the repo\'s asks stay with the standing slot', existsSync(join(standingS, 'asks.json')) && !existsSync(join(namedS(slotted), 'asks.json')), true);
+t('several epics: the refused config rows already pushed stay with the standing slot', existsSync(join(standingS, 'config-pushed.json')) && !existsSync(join(namedS(slotted), 'config-pushed.json')), true);
 const listed2 = spawnSync('node', ['--input-type=module', '-e', `import * as B from '${join(BIN, 'batches.mjs')}'; console.log(B.listBatches().map((b) => b.name ?? '-').join(' '))`], { encoding: 'utf8', env: base });
 t('several epics: the repo lists the standing slot and the branch-named batch', listed2.stdout.trim(), `- ${slotted}`);
 // The slot name keeps only what a batch name may hold.
