@@ -41,6 +41,10 @@ writeFileSync(queuePath, JSON.stringify({ version: 1, batch: 'alpha', concurrenc
   'ALPHA-1': { key: 'ALPHA-1', state: 'running', stage: '4/9' },
   'ALPHA-2': { key: 'ALPHA-2', state: 'triaged', lane: 'A' },
 } }));
+// Its orchestrator beat a minute ago, so home shows the batch as live rather than hiding a quiet one.
+const orchestrators = join(env.HOME, '.desk-autopilot', slug, 'orchestrators');
+mkdirSync(orchestrators, { recursive: true });
+writeFileSync(join(orchestrators, 'q.json'), JSON.stringify({ queue: queuePath, batch: 'alpha', pid: 1, at: new Date(Date.now() - 60_000).toISOString() }));
 
 // Every age is read against its own process's clock, so the two builds are compared without them.
 const timeless = (v) => (Array.isArray(v) ? v.map(timeless)
