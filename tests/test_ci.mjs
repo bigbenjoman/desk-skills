@@ -303,6 +303,27 @@ t('an inline matrix axis is one leg per value, so its bare self-hosted leg is re
 t('a quoted bracket in a sibling axis does not hide the runner axis',
   linted(inlineMatrix(`{ note: ['a[b'], label: [self-hosted, voicepa-linux-arm64] }`), VPA), 'm@7 m@11');
 t('an inline include entry is one label set', linted(inlineMatrix('{ include: [{ label: [self-hosted, voicepa-linux-arm64] }] }'), VPA), '');
+// A computed include can add any label, so a static axis beside it does not settle where the job runs.
+const computedInc = (include) => wf(`  m:
+    strategy:
+      matrix:
+        label: [voicepa-linux-arm64]
+        include: ${include}
+    runs-on: \${{ matrix.label }}
+    steps:
+      - run: npm test
+        env:
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+`);
+const fromNeeds = '${{ fromJSON(needs.prepare.outputs.extra) }}';
+t('a computed include beside a declared axis is reported', linted(computedInc(fromNeeds), VPA), 'm@9 m@13');
+t('a computed include finding names the secret', lint(computedInc(fromNeeds), VPA).at(-1).problem, 'can run self-hosted but receives secret DATABASE_URL');
+t('a computed include item in a flow list is reported', linted(computedInc(`[${fromNeeds}]`), VPA), 'm@9 m@13');
+t('a computed include item in a block list is reported', linted(computedInc(`\n          - ${fromNeeds}`), VPA), 'm@10 m@14');
+t('a computed include in an inline matrix is reported',
+  linted(inlineMatrix(`{ label: [voicepa-linux-arm64], include: ${fromNeeds} }`), VPA), 'm@7 m@11');
+t('a static include beside a declared axis lints clean', linted(computedInc('[{ label: voicepa-linux-arm64-8cpu }]'), VPA), '');
+t('a computed exclude only removes, so it lints clean', linted(computedInc('[]').replace('include: []', `exclude: ${fromNeeds}`), VPA), '');
 
 // A flow list may run on over several lines, its closing bracket at the key's own indent.
 const multiline = (labels) => secretJob(`[\n${labels.map((l) => `      ${l}`).join(',\n')}\n    ]`);
