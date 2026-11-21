@@ -1,0 +1,24 @@
+{
+  "name": "desk-shell",
+  "productName": "Desk",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Desk.app: a window on the local desk-ui server, built by install.sh",
+  "main": "main.mjs",
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.15.0"
+  },
+  "build": {
+    "appId": "com.desk-skills.desk",
+    "productName": "Desk",
+    "directories": { "output": "dist" },
+    "files": ["main.mjs", "app.mjs", "preload.cjs", "status.html", "status.js"],
+    "mac": {
+      "target": "dir",
+      "category": "public.app-category.developer-tools",
+      "identity": null
+    }
+  }
+}
