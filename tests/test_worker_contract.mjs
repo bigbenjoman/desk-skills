@@ -107,7 +107,7 @@ t('DS-335 AC1 under autopilot-judgement yes it opens the draft and posts the rev
 t('DS-368 AC1 from round 2 a round reads only the fix range since the previous round',
   stage4.includes('from round 2 a round reads **only the fix range**, the commits since the previous round\'s reviewed SHA') && stage4.includes('from round 2, the previous round\'s reviewed SHA'), true);
 t('DS-368 AC1 only round 1 fixes a P2', stage4.includes('- **P0, P1 or P2 on round 1**: fix it'), true);
-t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('it exists only from round 2, only for a P2'), true);
+t('DS-368 AC2 round 2 carries its P2s as round 3 does', stage4.includes('- **Round 2 or 3, only P2s**: **carry them, do not park.**') && stage4.includes('only a P2 is carried, from round 2 or when split'), true);
 t('DS-368 AC3 a round-2 P0 or P1 is fixed and round 3 runs on the fix range', stage4.includes('- **Round 2, a P0 or P1**: fix it, then run round 3 on the fix range since round 2\'s reviewed SHA.'), true);
 t('DS-335 AC1 and parks when no review is posted for the pass to read', stage4.includes('Where §3 `pr-self-review-comment` is not `yes` there is no posted review for the pass to read, so it parks as above.'), true);
 

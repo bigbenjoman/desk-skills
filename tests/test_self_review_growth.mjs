@@ -1,5 +1,5 @@
 // suite: self-review growth (a fix that grows is a scope call a worker takes under autopilot-judgement)
-// covers: skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/ask-or-take.md
+// covers: skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/ask-or-take.md skills/desk-ticket/references/stage-4b-self-review.md
 // What the worker contract tells a worker whose self-review fix needs a file outside its diff: widen
 // within the ticket's size, split past it, park where judgement is off or a §3 row is not granted.
 // Each check is also run on the text before this rule, which must fail it.
@@ -33,8 +33,8 @@ const checks = [
     (s) => s.take.includes('at most one more file and about 20 lines, none under a Merge holds glob, widens past the size')],
   ['AC2 past its size it files a follow-up and has the pass link it',
     (s) => s.take.includes('**Split** otherwise: file one follow-up ticket') && s.take.includes('`AUTOPILOT_LINK: <follow-up> relates-to <TICKET>`')],
-  ['AC2 a round-1 P2 split is carried at round 2, not parked',
-    (s) => s.take.includes('a round-1 P2 stays open into round 2, which carries it')],
+  ['DS-648 AC1 a round-1 P2 split is carried on round 1 with its follow-up, not parked',
+    (s) => s.take.includes('the follow-up\'s key in its `follow_up` (desk-review\'s results). A P2 so split is carried on round 1 too, so it needs no round 2 to carry it.')],
   ['AC2 a P0 or P1 too big to widen goes to a fix try, not a park',
     (s) => s.take.includes('A P0 or P1 is never carried: it is handed on as a round-3 P0 or P1 is (*Round 3, a P0 or P1*)')
       && s.stage4.includes('**Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.**')],
@@ -54,6 +54,12 @@ for (const [name, ok] of checks) {
   t(name, ok(now), true);
   t(`negative control: the text before this rule fails: ${name}`, ok(before), false);
 }
+t('DS-648 a round-1 split P2 no longer parks', now.take.includes('no round 2 to carry it; and'), false);
+const stage4b = read('skills/desk-ticket/references/stage-4b-self-review.md');
+t('DS-648 AC1 desk-ticket Stage 4b carries a split P2 from round 1, kept carried in later rounds',
+  stage4b.includes('- **A P2 split to a filed follow-up ticket** (under autopilot, `desk-autopilot`\'s `ask-or-take.md`) is carried from round 1 too, the follow-up\'s key in its `follow_up`, and it stays in every later round\'s results, carried'), true);
+t('DS-648 AC1 desk-ticket Stage 4b red-flags only a round-1 carry with no follow-up',
+  stage4b.includes('- Carrying a P0 or P1, or a P2 on round 1 that names no filed follow-up ticket in `follow_up`'), true);
 t('the old rule is gone', now.stage4.includes('is the user\'s call to widen the PR or split it out'), false);
 t('a fix needing someone else\'s decision still parks, in a sentence of its own', now.stage4.includes('naming it. A fix needing someone else\'s decision parks.'), true);
 
