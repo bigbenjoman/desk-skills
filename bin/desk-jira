@@ -88,15 +88,42 @@ else
 fi
 [[ -n "$SLUG" ]] || REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/(no repo)"
 
+# Every value get and perm give, from one desk-env.mjs run: its `config` snapshot, as desk-env.sh's
+# desk_load_config takes it, parsed here rather than eval'd. Each value is `'=<value>` on its own line
+# (the closing quote follows on the next), `'!'` for a row that is unset, or `''` for a read that
+# failed, which is asked of node alone so its own answer stands.
+CFG_SNAPSHOT=""
+[[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] && CFG_SNAPSHOT="$(node "$DESK_ENV_MJS" config 2>/dev/null || true)"
+# snap_read <G|P> <id>: the value and 0, 3 for an unset row, 1 where the snapshot cannot say.
+snap_read() {
+  local name="_DESK_$1_${2//-/_}=" line rest
+  [[ -n "$CFG_SNAPSHOT" && "$2" =~ ^[a-z0-9-]+$ ]] || return 1
+  while IFS= read -r line; do
+    [[ "$line" == "$name"* ]] || continue
+    rest="${line#"$name"}"
+    case "$rest" in
+      "'!'") return 3 ;;
+      "'="*) rest="${rest#"'="}"; printf '%s\n' "${rest//"$esc"/$sq}"; return 0 ;;
+      *) return 1 ;;
+    esac
+  done <<< "$CFG_SNAPSHOT"
+  return 1
+}
 # One row of this repo's config, or empty. desk-env.mjs reads it (and resolves the repo itself, by
 # the same rules as `where`), so there is one parser. Without desk-env there is no config to read.
 cfg() {
+  local rc=0
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  snap_read G "$1" || rc=$?
+  [[ $rc -eq 1 ]] || return 0
   node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
 }
 # A §3 row as yes|ask|no|never|stop; empty without desk-env, which reads as not granted.
 cfg_perm() {
+  local rc=0
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  snap_read P "$1" || rc=$?
+  [[ $rc -eq 1 ]] || return 0
   node "$DESK_ENV_MJS" perm "$1" 2>/dev/null || true
 }
 # First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.

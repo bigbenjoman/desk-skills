@@ -126,15 +126,16 @@ t('AC1 and it still reads as a pass', r.passed, true);
 t('AC1 the output names the fingerprint', /skipped: its last pass had this fingerprint/.test(r.out), true);
 t('AC1 a resume or a later start skips too', ran(preflight({ AUTOPILOT_RESUME: 'carry on', AUTOPILOT_START_STAGE: '4b' })), SKIPPED);
 
-// AC2: each input, changed alone, runs the preflight. It is put back, and the pass that makes is then
-// the one to match, so each case starts from a clean skip.
+// AC2: each input, changed alone, runs the preflight. It is put back with the first pass's record,
+// which a pass on the first inputs writes again (checked at the end), so each case starts from a
+// clean skip without a preflight run to remake it.
 const whenChanged = (name, change, undo, extra = {}) => {
   change();
   const c = preflight(extra);
   t(`AC2 a changed ${name} runs the preflight`, ran(c), RAN);
   t(`AC2 a changed ${name} is at low effort`, /--effort low( |$)/.test(c.calls[0] ?? ''), true);
   undo();
-  preflight();
+  writeFileSync(record, first);
   t(`a changed ${name} put back is a skip again`, ran(preflight()), SKIPPED);
 };
 whenChanged('CLI version', () => say('version', '2.0.1 (Claude Code)'), () => say('version', '2.0.0 (Claude Code)'));
@@ -156,7 +157,7 @@ const agentWas = readFileSync(agent, 'utf8');
 whenChanged('agents file', () => writeFileSync(agent, `${agentWas}\nOne more rule.\n`), () => writeFileSync(agent, agentWas));
 r = preflight({}, join(T, 'repo2'));
 t('AC2 a changed worktree runs the preflight', ran(r), RAN);
-preflight();
+writeFileSync(record, first);
 
 // AC3: a failure and a usage limit leave nothing to skip on, whatever passed before.
 say('reply', result('W_IN=BLOCKED'));
@@ -192,8 +193,7 @@ const off = { DESK_CONFIG: OFF };
 r = preflight(off);
 t('AC4 lever off: a matching record is not skipped on', ran(r), RAN);
 t('AC4 lever off: no --effort', r.calls.some((c) => c.includes('--effort')), false);
-preflight(off);
-t('AC4 lever off: nothing is recorded', existsSync(record), false);
+t('AC4 lever off: nothing is recorded', [r.passed, existsSync(record)], [true, false]);
 const noEffortFinder = preflight({ ...off, AUTOPILOT_FINDER_MODEL: 'opus' });
 t('AC4 lever off: the finder check has no --effort', [noEffortFinder.calls.length, noEffortFinder.calls.some((c) => c.includes('--effort'))], [2, false]);
 const finder = preflight({ AUTOPILOT_FINDER_MODEL: 'opus' });
