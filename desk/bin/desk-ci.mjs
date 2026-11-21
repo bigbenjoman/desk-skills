@@ -264,6 +264,31 @@ const computedFlow = (v) => {
   while (end < t.length && nesting(t.slice(0, end)).brackets > 0) end++;
   return flowItems(t.slice(0, end)).some(isExpr);
 };
+// Whether a line of YAML holds an alias (`*name`) or a merge key (`<<:`) where a value starts. A
+// quoted string is text, and so is the rest of a plain value once it starts (`it's the '90s`).
+function yamlAlias(line) {
+  let start = true;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    const next = line[i + 1] ?? ' ';
+    if (start && /\s/.test(c)) continue;
+    if (start && (c === "'" || c === '"')) {
+      for (i++; i < line.length; i++) {
+        if (c === '"' && line[i] === '\\') i++;
+        else if (line[i] === c) { if (c === "'" && line[i + 1] === "'") i++; else break; }
+      }
+      start = false;
+      continue;
+    }
+    if (start && c === '*' && /[^\s,[\]{}]/.test(next)) return true;
+    if (start && /^<<\s*:/.test(line.slice(i))) return true;
+    if (start && c === '-' && /\s/.test(next)) continue;
+    if (/[,[{]/.test(c) || (c === ':' && /\s/.test(next))) start = true;
+    else start = false;
+  }
+  return false;
+}
+
 // Whether the matrix has an include of its own that it computes (an expression anywhere in it) or
 // that comes from elsewhere (a YAML alias): that can add any value to any key, so no key's values can
 // be read here. An include field inside an axis value is not the matrix's, and an exclude only removes.
@@ -274,18 +299,17 @@ const computedInclude = (lines) => {
   const block = blockAfter(lines, mi);
   // A flow mapping, on the `matrix:` line or below it, over one line or several (at any indent): read
   // it as one text, through to its closing brace.
-  let flow = [kv.value, ...block.filter((l) => !l.blank).map((l) => l.text)].join(' ').trim();
+  const own = [kv.value, ...block.filter((l) => !l.blank && !l.scalar).map((l) => l.text)];
+  let flow = own.join(' ').trim();
   if (flow.startsWith('{')) {
     for (const l of lines.slice(mi + 1 + block.length)) {
       if (nesting(flow).braces <= 0) break;
-      if (!l.blank && !l.scalar) flow += ` ${l.text}`;
+      if (!l.blank && !l.scalar) { flow += ` ${l.text}`; own.push(l.text); }
     }
   }
-  // A YAML alias (`*name`) or merge key (`<<:`) brings in entries written elsewhere in the file, which
-  // this matrix's own text cannot show, so it is read as unreadable too. A `*` in a quoted string is
-  // text; a quote opens a string only where a value starts, so the apostrophe in `don't` opens none.
-  const unquoted = flow.replace(/(^|[\s,[{:-])(?:'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/g, "$1''");
-  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(unquoted)) return true;
+  // A YAML alias or merge key brings in entries written elsewhere in the file, which this matrix's own
+  // text cannot show, so it is read as unreadable too.
+  if (own.some(yamlAlias)) return true;
   if (flow.startsWith('{')) {
     const text = `matrix: ${flow}`;
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
