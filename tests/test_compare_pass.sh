@@ -234,6 +234,33 @@ check "DS-763 base and head given as commits compare those commits" '[ $rc = 1 ]
 cmp --suite test_nope.sh "$T/base" "$T/same"
 check "DS-763 a suite the base lacks is refused" '[ $rc = 2 ]'
 
+# Records as the recorder saves them, of one suite whose two runs park P-1: run 1 ran from $2 to $3 ms
+# after an epoch of its tree's own ($7), parking at $4 ms with question $5; run 2 started at $6 ms and
+# holds the park, as run 1 does once it was written. What a loaded machine makes of one park: written further into its run on one tree.
+recs(){ mkdir -p "$T/recs/$1/s.sh"; node -e '
+  const [dir, epoch, s, e, at, question, s2] = process.argv.slice(1), t = (ms) => Number(epoch) + Number(ms);
+  const park = { question, since: new Date(t(at)).toISOString() };
+  const rec = (run, started, ended) => JSON.stringify({ run, started: t(started), ended: t(ended), at_line: 0, exit: 0, signal: null, out: "",
+    queue: { tickets: t(ended) < t(at) && t(at) < t(s2) ? {} : { "P-1": { state: "parked", park } } }, archive: null });
+  require("fs").writeFileSync(dir + "/1.json", rec(1, s, e));
+  require("fs").writeFileSync(dir + "/2.json", rec(2, s2, Number(s2) + 1000));
+' "$T/recs/$1/s.sh" "$7" "$2" "$3" "$4" "$5" "$6"; }
+pdiff(){ out=$(node "$S/compare_pass.mjs" diff "$T/recs/$1" "$T/recs/$2" "$T/recs/$1" "$T/recs/$2"); rc=$?; }
+recs pb 0 2000 1250 'repo could not be refreshed' 3000 1795273210286
+recs ph 0 31000 30280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb ph
+check "DS-945 AC1 a park written 29 s further into the same run on one tree is not listed" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+recs pq 0 31000 30280 'which colour?' 32000 1795273672907
+pdiff pb pq
+check "DS-945 AC2 a park asking something else in the same run is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue P-1 park.question: base \"repo could not be refreshed\", head \"which colour?\""'
+recs pl 0 31000 3630280 'repo could not be refreshed' 32000 1795273672907
+pdiff pb pl
+check "DS-945 a park dated an hour past its run on one tree is still listed" '[ $rc = 1 ] && echo "$out" | grep -qE "^  queue P-1 park.since: base \"[0-9T:.-]+Z\", head \"[0-9T:.-]+Z\"$"'
+recs gb 0 1000 1500 'stopped by hand' 2000 1795273210286
+recs gh 0 20000 21000 'stopped by hand' 41000 1795273672907
+pdiff gb gh
+check "DS-945 a park the suite wrote between the same two runs on both trees is not listed" '[ $rc = 0 ]'
+
 # A pass stopped by a signal: the recorder in its place ends with the same status, and records it.
 echo "process.kill(process.pid, 'SIGTERM'); setTimeout(() => {}, 5000);" > "$T/stopped.mjs"
 PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pass.mjs" record "$T/stopped.mjs"; rc=$?
