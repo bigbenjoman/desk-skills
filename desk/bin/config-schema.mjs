@@ -462,38 +462,29 @@ export const TYPES = Object.freeze({
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
-// A row's items parsed by its entry's type: -> { value } or { error, fatal }; never throws. A cell type
-// parses every item together, as its reader reads them. Otherwise a value row parses its first item, as
-// configValue reads it, and a list row parses each item. `none` stands alone in a list or a cell (a lone
-// `none` is the row's value), so `none` beside another item is fatal, as configValues refuses it.
-export function parseRow(entry, items) {
+// A row's items checked by its entry's type: -> { value, errors: [{ item, error, fatal }] }, value null
+// unless errors is empty; never throws. A cell type parses every item together, as its reader reads
+// them, and its error names no item (null). Otherwise a value row parses its first item, as configValue
+// reads it, and a list row parses each item, every one that does not fit named. `none` stands alone in
+// a list or a cell (a lone `none` is the row's value), so `none` beside another item is fatal, as
+// configValues refuses it.
+export function checkRow(entry, items) {
   const all = [].concat(items ?? []).map((x) => String(x).trim());
   const type = TYPES[entry.type];
-  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false);
-  if (type.cell) return type.parse(all);
-  if (entry.kind !== 'list' && entry.kind !== 'table') return type.parse(all[0] ?? '');
-  if (isNone(all)) return ok(['none']);
-  const values = [];
-  for (const item of all) {
-    const r = type.parse(item);
-    if (r.error) return r;
-    values.push(r.value);
-  }
-  return ok(values);
+  const one = (r, item) => (r.error ? { value: null, errors: [{ item, error: r.error, fatal: r.fatal }] } : { value: r.value, errors: [] });
+  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return one(fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false), null);
+  if (type.cell) return one(type.parse(all), null);
+  if (entry.kind !== 'list' && entry.kind !== 'table') return one(type.parse(all[0] ?? ''), all[0] ?? '');
+  if (isNone(all)) return { value: ['none'], errors: [] };
+  const read = all.map((item) => [item, type.parse(item)]);
+  const errors = read.filter(([, r]) => r.error).map(([item, r]) => ({ item, error: r.error, fatal: r.fatal }));
+  return errors.length ? { value: null, errors } : { value: read.map(([, r]) => r.value), errors };
 }
 
-// Every item of a row that does not fit its entry's type, where parseRow stops at the first:
-// -> [{ item, error, fatal }], empty when the row parses. A list row's items are checked one by one;
-// any other row, or a list whose `none` does not stand alone, is checked as parseRow checks it, its
-// error naming the first item of a value row and no item (null) of a cell.
-export function rowErrors(entry, items) {
-  const all = [].concat(items ?? []).map((x) => String(x).trim());
-  const type = TYPES[entry.type];
-  if (type.cell || (entry.kind !== 'list' && entry.kind !== 'table') || mixesNone(all) || isNone(all)) {
-    const r = parseRow(entry, all);
-    return r.error ? [{ item: type.cell || mixesNone(all) ? null : all[0] ?? '', error: r.error, fatal: r.fatal }] : [];
-  }
-  return all.flatMap((item) => { const r = type.parse(item); return r.error ? [{ item, error: r.error, fatal: r.fatal }] : []; });
+// checkRow's first error, as one reader that stops at it sees the row: -> { value } or { error, fatal }.
+export function parseRow(entry, items) {
+  const { value, errors } = checkRow(entry, items);
+  return errors.length ? fail(errors[0].error, errors[0].fatal) : ok(value);
 }
 
 // ---- the rows ----------------------------------------------------------------------------------
@@ -699,8 +690,11 @@ export const ROWS = Object.freeze([
 // desk-env's id tables, which it re-exports: the §3 key of each permission id, and the section and row
 // of every other id scripts read.
 export const PERMISSION_KEYS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind === 'perm').map((e) => [e.id, e.label])));
-export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm' && !e.unread)
-  .map((e) => [e.id, e.kind === 'table' ? { section: e.section, row: e.label, table: true } : { section: e.section, row: e.label }])));
+const idRow = (e) => [e.id, e.kind === 'table' ? { section: e.section, row: e.label, table: true } : { section: e.section, row: e.label }];
+export const CONFIG_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm' && !e.unread).map(idRow)));
+// Every non-permission row the schema declares, unread ones included, in the same shape: `get --json`
+// reads them all, where plain `get` reads CONFIG_ROWS alone.
+export const DECLARED_ROWS = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.kind !== 'perm').map(idRow)));
 // The rows that fall back to the machine profile, as id -> profile key.
 export const MACHINE_FALLBACK = Object.freeze(Object.fromEntries(ROWS.filter((e) => e.machine).map((e) => [e.id, e.machine])));
 

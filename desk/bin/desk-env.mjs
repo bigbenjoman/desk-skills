@@ -173,7 +173,7 @@ import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
   permValues, permValue, requiredFieldsIn, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, parseRow, rowErrors,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, checkRow, DECLARED_ROWS,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -421,9 +421,10 @@ function codeSpanMask(s) {
 
 const unset = (v) => v == null || v === '' || /^todo\b/i.test(v);
 
-function rowFor(id) {
-  const r = CONFIG_ROWS[id];
-  if (!r) throw new Error(`desk-env: unknown config id "${id}" (known: ${Object.keys(CONFIG_ROWS).join(', ')})`);
+// `rows` is CONFIG_ROWS for every reader but `get --json`, which passes DECLARED_ROWS to read unread rows.
+function rowFor(id, rows = CONFIG_ROWS) {
+  const r = rows[id];
+  if (!r) throw new Error(`desk-env: unknown config id "${id}" (known: ${Object.keys(rows).join(', ')})`);
   return r;
 }
 
@@ -584,8 +585,7 @@ function writeWithBackup(path, text) {
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
   const parsed = parseConfig();
-  if (id === 'suite-weight') return suiteWeightIn(parsed, configRepoRoot(parsed)).value;
-  return configValueIn(parsed, id);
+  return id === 'suite-weight' ? suiteWeightFrom(parsed).value : configValueIn(parsed, id);
 }
 
 // The main checkout a config's repo settings live in: its §2 Primary repo root, else (with `cwd`,
@@ -614,15 +614,30 @@ export function suiteWeightIn(parsed, root) {
   const row = repoValueIn(parsed, 'suite-weight')?.trim().toLowerCase() ?? null;
   return { value: committed?.value ?? row ?? 'heavy', committed, row };
 }
+// suiteWeightIn's value with where it came from, as configValueFrom gives it.
+function suiteWeightFrom(parsed) {
+  const { value, committed, row } = suiteWeightIn(parsed, configRepoRoot(parsed));
+  return { value, source: committed || row != null ? 'repo' : 'default', fromRow: !committed && row != null };
+}
 
 function configValueIn(parsed, id) {
-  const own = repoValueIn(parsed, id);
-  if (own != null) return id === 'memory-ceiling' ? machineLimited(own).value : own;
-  return MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
+  return configValueFrom(parsed, id).value;
+}
+// configValueIn's value with where it came from: -> { value, source, fromRow }. source is 'repo',
+// 'machine' (the profile's fallback, or its cap on memory-ceiling) or 'unset'; fromRow is whether value
+// is the repo row's own first item, so a reader that checks the row's items checks the value.
+function configValueFrom(parsed, id, rows = CONFIG_ROWS) {
+  const own = repoValueIn(parsed, id, rows);
+  if (own != null) {
+    const capped = id === 'memory-ceiling' ? machineLimited(own) : null;
+    return capped?.limited ? { value: capped.value, source: 'machine', fromRow: false } : { value: own, source: 'repo', fromRow: true };
+  }
+  const value = MACHINE_FALLBACK[id] ? machineValue(MACHINE_FALLBACK[id]) : null;
+  return { value, source: value != null ? 'machine' : 'unset', fromRow: false };
 }
 // The repo's own row, with no machine fallback. Unset is null.
-function repoValueIn(parsed, id) {
-  const { section, row, table } = rowFor(id);
+function repoValueIn(parsed, id, rows = CONFIG_ROWS) {
+  const { section, row, table } = rowFor(id, rows);
   if (table) return tableItemsIn(parsed, id)?.join('\n') ?? null;
   const e = parsed.sections[section]?.byName[norm(row)];
   if (unset(e?.value)) return null;
@@ -695,8 +710,8 @@ function tableItemsIn(parsed, id) {
   return items.length ? items : null;
 }
 
-function configValuesIn(parsed, id) {
-  const { section, row, table } = rowFor(id);
+function configValuesIn(parsed, id, rows = CONFIG_ROWS) {
+  const { section, row, table } = rowFor(id, rows);
   if (table) return tableItemsIn(parsed, id);
   const e = parsed.sections[section]?.byName[norm(row)];
   if (!e || unset(e.value)) return null;
@@ -1064,10 +1079,18 @@ export const repoSlug = () => {
 // A named batch (DESK_BATCH) is one batch's queue: its base is this process's default branch, as the
 // standing batch's is once an autopilot entry point has applied it. An exported DESK_DEFAULT_BRANCH
 // still wins.
-export const defaultBranch = () => {
-  const base = unset(process.env.DESK_DEFAULT_BRANCH) && batchName() ? batchBase() : null;
-  return base ?? resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: rowDefault('default-branch') });
-};
+export const defaultBranch = () => defaultBranchFrom().value;
+// defaultBranch's value with where it came from, as configValueFrom gives it ('environment' for a
+// batch base or DESK_DEFAULT_BRANCH, 'default' for the schema's).
+function defaultBranchFrom() {
+  const env = process.env.DESK_DEFAULT_BRANCH;
+  if (!unset(env)) return { value: expandHome(env), source: 'environment', fromRow: false };
+  const base = batchName() ? batchBase() : null;
+  if (base != null) return { value: base, source: 'environment', fromRow: false };
+  const own = configValueFrom(parseConfig(), 'default-branch');
+  if (own.value != null) return { ...own, value: expandHome(own.value) };
+  return { value: resolve({ id: 'default-branch', fallback: rowDefault('default-branch') }), source: 'default', fromRow: false };
+}
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
 // The bin a running script starts desk's other scripts from: the release folder it was loaded from
@@ -1963,52 +1986,48 @@ function logRowChange(row, LL) {
 //     errors   [{ item, error, fatal }]: each item that does not fit the type, and list's refusal (fatal) }
 const ROW_ENTRY = new Map(ROWS.map((e) => [e.id, e]));
 const rowHead = (e) => ({ id: e.id, section: e.section, label: e.label, kind: e.kind, type: e.type });
-export const readableIds = () => [...Object.keys(CONFIG_ROWS), ...Object.keys(PERMISSION_KEYS)];
-export function readRow(id) {
-  if (PERMISSION_KEYS[id]) return permRow(id);
-  return valueRow(id);
+function readRow(id) {
+  return PERMISSION_KEYS[id] ? permRow(id) : valueRow(id);
 }
 function permRow(id) {
   const parsed = parseConfig();
   const e = ROW_ENTRY.get(id);
   const raw = parsed.sections?.['3']?.byKey[norm(e.label)]?.value;
   const set = !unset(raw);
-  const errors = set ? rowErrors(e, [raw]) : [];
+  const { value, errors } = set ? checkRow(e, [raw]) : { value: null, errors: [] };
   return { ...rowHead(e), set, source: set ? 'repo' : 'unset', value: permissionIn(parsed, id), items: null,
-    parsed: set && !errors.length ? parseRow(e, [raw]).value : null, default: null, errors };
+    parsed: value, default: null, errors };
 }
-// Where a config id's value comes from, as configValue (and defaultBranch) resolve it.
-function valueSource(parsed, id) {
-  if (id === 'default-branch' && (!unset(process.env.DESK_DEFAULT_BRANCH) || (batchName() && batchBase() != null))) return 'environment';
-  if (id === 'suite-weight') { const w = suiteWeightIn(parsed, configRepoRoot(parsed)); return w.committed || w.row ? 'repo' : 'default'; }
-  const own = repoValueIn(parsed, id);
-  if (own != null) return id === 'memory-ceiling' && machineLimited(own).limited ? 'machine' : 'repo';
-  if (MACHINE_FALLBACK[id] && machineValue(MACHINE_FALLBACK[id]) != null) return 'machine';
-  return id === 'default-branch' ? 'default' : 'unset';
+// What `get` prints for a config id, with where it came from: -> { value, source, fromRow }.
+// default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks for
+// <default> gets the branch its batch targets, not the config row.
+function rowValue(id, rows = CONFIG_ROWS) {
+  const r = id === 'default-branch' ? defaultBranchFrom() : id === 'suite-weight' ? suiteWeightFrom(parseConfig()) : configValueFrom(parseConfig(), id, rows);
+  return { ...r, value: expandHome(r.value) ?? null };
 }
-// A config id's row; throws for an id CONFIG_ROWS lacks, as configValue does. list's refusal is kept
-// in `refused` for the list wrapper to throw, so `get` still prints the first item of a row it refuses.
+// What `list` prints for a config id: -> { items, refused }, refused the DeskConfigError list throws.
+function rowItems(id, rows = CONFIG_ROWS) {
+  try { return { items: configValuesIn(parseConfig(), id, rows)?.map(expandHome) ?? null, refused: null }; }
+  catch (e) { if (!(e instanceof DeskConfigError)) throw e; return { items: null, refused: e }; }
+}
+// A declared row other than a permission. Its type is checked on the row's items where the value is
+// the row's own, and on the value itself where something else gave it (a cap, an override, a fallback).
 function valueRow(id) {
-  // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks
-  // for <default> gets the branch its batch targets, not the config row.
-  const value = expandHome(id === 'default-branch' ? defaultBranch() : configValue(id)) ?? null;
-  let items = null, refused = null;
-  try { items = configValues(id)?.map(expandHome) ?? null; } catch (e) { if (!(e instanceof DeskConfigError)) throw e; refused = e; }
-  const parsed = parseConfig();
   const e = ROW_ENTRY.get(id);
-  const source = valueSource(parsed, id);
-  const read = items ?? (value == null ? null : [value]);
-  const errors = refused ? [{ item: null, error: refused.message, fatal: true }] : read ? rowErrors(e, read) : [];
-  const row = { ...rowHead(e), set: ['environment', 'repo', 'machine'].includes(source), source, value, items,
-    parsed: read && !errors.length ? parseRow(e, read).value : null, default: e.default ?? null, errors };
-  return Object.defineProperty(row, 'refused', { value: refused });
+  const { value, source, fromRow } = rowValue(id, DECLARED_ROWS);
+  const { items, refused } = rowItems(id, DECLARED_ROWS);
+  const read = fromRow ? items : value == null ? null : [value];
+  const checked = read ? checkRow(e, read) : { value: null, errors: [] };
+  const errors = [...(refused ? [{ item: null, error: refused.message, fatal: true }] : []), ...checked.errors];
+  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
+    parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
 
 // `get --json`: the rows of the named ids and sections, in that order, each once. A bad request
 // throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
-export class GetJsonUsage extends Error {}
-export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
-export function getJson(args) {
+class GetJsonUsage extends Error {}
+const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+function getJson(args) {
   const ids = [], sections = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--json') continue;
@@ -2020,12 +2039,11 @@ export function getJson(args) {
     if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
     if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
   }
-  const known = readableIds();
-  const unknown = ids.filter((id) => !known.includes(id));
-  if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (desk-env ids lists them)`);
+  const unknown = ids.filter((id) => !ROW_ENTRY.has(id));
+  if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (the schema does not declare it)`);
   const parsed = parseConfig();
   if (!parsed.exists) throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
-  const want = [...new Set([...ids, ...known.filter((id) => sections.includes(ROW_ENTRY.get(id).section))])];
+  const want = [...new Set([...ids, ...ROWS.filter((e) => sections.includes(e.section)).map((e) => e.id)])];
   const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
   return { config: parsed.path, rows };
 }
@@ -2034,9 +2052,9 @@ export function getJson(args) {
 // 3. The CLI cases print it and `config` snapshots it, so desk-env.sh's readers answer as they do.
 const line = (v) => (v == null ? null : `${v}\n`);
 const READS = {
-  get: (id) => line(valueRow(id).value),
+  get: (id) => line(rowValue(id).value),
   list: (id) => {
-    const r = valueRow(id);
+    const r = rowItems(id);
     if (r.refused) throw r.refused;
     return r.items?.map(line).join('') ?? null;
   },

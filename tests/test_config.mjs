@@ -678,7 +678,7 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   };
   const c = join(T, 'json.md');
   writeFileSync(c, `${P4}| Tracker | \`jira\` |\n| Required checks | \`Lint\` \`Unit tests\` |\n| Local services | \`Typesense on port 8108\` |\n`
-    + `| Append-only paths | \`TODO\` |\n\n${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n`);
+    + `| Append-only paths | \`TODO\` |\n| Production | \`https://example.com\` |\n\n${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n`);
   let r = getJson(jenv(c), 'tracker', 'required-checks');
   const tr = r.json?.rows?.tracker, rc = r.json?.rows?.['required-checks'];
   t('DS-870 AC1 prints one JSON object and exits 0', `${r.code} ${!!r.json}`, '0 true');
@@ -692,9 +692,12 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const cc = getJson(jenv(c, { DESK_MACHINE: join(T, 'machine-870.md') }), 'concurrency').json?.rows?.concurrency;
   t('DS-870 AC3 a TODO row the machine profile sets reads the profile, source machine', JSON.stringify([cc?.value, cc?.set, cc?.source]), '["5 / 10",true,"machine"]');
   r = getJson(jenv(c), '--section', '4');
-  const four = Object.keys(CONFIG_ROWS).filter((id) => CONFIG_ROWS[id].section === '4');
-  t('DS-870 AC4 --section 4 gives every §4 row desk-env reads, and only those', JSON.stringify(Object.keys(r.json?.rows ?? {})), JSON.stringify(four));
+  const four = ROWS.filter((e) => e.section === '4').map((e) => e.id);
+  t('DS-870 AC4 --section 4 gives every §4 row the schema declares, and only those', JSON.stringify(Object.keys(r.json?.rows ?? {})), JSON.stringify(four));
+  t('DS-870 AC4 the §4 rows no script reads yet are among them', ROWS.some((e) => e.section === '4' && e.unread && !CONFIG_ROWS[e.id]) && four.every((id) => r.json?.rows?.[id]), true);
   t('DS-870 AC4 and every row it gives is a §4 row', Object.values(r.json?.rows ?? {}).every((x) => x.section === '4'), true);
+  const prod = r.json?.rows?.production;
+  t('DS-870 AC4 an unread row reads its repo value, set, from the repo', JSON.stringify([prod?.value, prod?.items, prod?.set, prod?.source]), '["https://example.com",["https://example.com"],true,"repo"]');
   r = getJson(jenv(c), '--section', '3c');
   t('DS-870 AC5 --section 3c exits 2 and prints no rows', `${r.code} ${r.out === ''}`, '2 true');
   t('DS-870 AC5 saying the ledger is read by desk-setup alone', /§3c.*\/desk-setup alone/.test(r.err), true);
@@ -709,6 +712,20 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
   t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
   t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // Where something other than the row gives the value, its type is checked on that value, not the row.
+  const label = (id) => ROWS.find((e) => e.id === id).label;
+  const root = join(T, 'root-870');
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude', 'settings.json'), JSON.stringify({ env: { DESK_SUITE_WEIGHT: 'medium' } }));
+  writeFileSync(c, `## 0. Rows\n\n| Field | Value |\n|---|---|\n| ${label('default-branch')} | \`main\` |\n\n## 2. Rows\n\n| Field | Value |\n|---|---|\n| ${label('repo-root')} | \`${root}\` |\n\n`
+    + `${P4}| ${label('suite-weight')} | \`light\` |\n\n${B3}| ${label('memory-ceiling')} | \`16\` | \`32\` |\n`);
+  writeFileSync(join(T, 'machine-870.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| memory-ceiling-gb | `16` | x |\n');
+  r = getJson(jenv(c, { DESK_MACHINE: join(T, 'machine-870.md'), DESK_DEFAULT_BRANCH: 'release' }), 'default-branch', 'memory-ceiling', 'suite-weight');
+  const read = (x) => JSON.stringify([x?.value, x?.source, x?.parsed, x?.errors?.map((e) => e.item)]);
+  t('DS-870 a DESK_DEFAULT_BRANCH over the row is the value parsed, source environment', read(r.json?.rows?.['default-branch']), '["release","environment","release",[]]');
+  t('DS-870 a memory ceiling the machine caps is the cap parsed, source machine', read(r.json?.rows?.['memory-ceiling']), '["16","machine",16,[]]');
+  t('DS-870 a committed suite weight over the row is the value checked, so a bad one errors and exits 4', `${r.code} ${read(r.json?.rows?.['suite-weight'])}`, '4 ["medium","repo",null,["medium"]]');
 
   // The parity sweeps: a config holding every row desk-env reads, each set to TODO, its example or none,
   // read through `get --json` and through `desk-env config`, which snapshots every get, list and perm
