@@ -216,11 +216,11 @@ function lapseOf(l, starts, t) {
   if (l.kind !== 'slot' && t > expires + l.ttl * 1000) return { why: 'hard lapse', detail: `pid ${l.owner.pid} is alive but has not renewed it in twice its ${l.ttl}s TTL` };
   return null;
 }
-// Drops every lease that has lapsed, logging each.
-function sweep(store, log, starts, t) {
+// Drops every lease that has lapsed, logging each, and adding each to `lapsed` when given.
+function sweep(store, log, starts, t, lapsed = null) {
   store.leases = store.leases.filter((l) => {
     const gone = lapseOf(l, starts, t);
-    if (gone) log({ event: 'lapse', ...brief(l), ...gone });
+    if (gone) { log({ event: 'lapse', ...brief(l), ...gone }); lapsed?.push({ ...brief(l), ...gone }); }
     return !gone;
   });
 }
@@ -396,10 +396,11 @@ export function resetStore(reason, { dir = leaseDir(), now = Date.now }) {
   } finally { unlock(lockDir); }
 }
 
-// The live leases, after lapsing those whose owner has gone or whose time is up.
-export function list({ env, dir = leaseDir(), now = Date.now }) {
+// The live leases, after lapsing those whose owner has gone or whose time is up; each lapsed is added
+// to `lapsed` when given, as { id, kind, key, units, owner, label, why, detail? }.
+export function list({ env, dir = leaseDir(), now = Date.now, lapsed = null }) {
   return withStore(dir, (store, log) => {
-    sweep(store, log, ownerStarts(store, env), now());
+    sweep(store, log, ownerStarts(store, env), now(), lapsed);
     return store.leases;
   });
 }
