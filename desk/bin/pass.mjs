@@ -1233,22 +1233,35 @@ function ownMergedPr(t) {
 // judged by the url GitHub gives its PRs (pass/pr-status.mjs repoOfPr), not the remote's spelling,
 // which a rename leaves behind: the search's own urls, else that spelling where it found nothing.
 const hereRepo = () => repoOfPr(`https://github.com/${GH_REPO}/pull/`);
-const foreignPr = (t, n, here) => n != null && t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n)
-  && !!t.pr_status.url && repoOfPr(t.pr_status.url) !== here;
+// A recorded PR as { pr, url }: url is the one its PR status gave it, where the status names it, else null.
+const recordedPr = (t, n) => ({ pr: Number(n), url: t.pr_status?.pr != null && Number(t.pr_status.pr) === Number(n) ? t.pr_status.url ?? null : null });
+const foreign = (x, here) => !!x.url && repoOfPr(x.url) !== here;
+const foreignPr = (t, n, here) => n != null && foreign(recordedPr(t, n), here);
 // The pairs a spawn writes beside result=null: every PR of its own it has recorded since its first merge,
-// kept as merged_pr, so a spawn never forgets one. Whose repo each is in is judged when it is read.
-const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((n) => n != null).map(Number);
-const keepMergedPr = (t) => (t.merged_at && t.result?.pr != null ? [`merged_pr=${JSON.stringify([...new Set([...mergedPrs(t), Number(t.result.pr)])])}`] : []);
+// kept as merged_pr with the url its status gave it, so a spawn never forgets one, nor whose repo it is in
+// once a later PR's status replaces that one. Whose repo each is in is judged when it is read. A kept bare
+// number (an older row) is judged by the PR status as it stands.
+const mergedPrs = (t) => [].concat(t.merged_pr ?? []).filter((x) => x != null)
+  .map((x) => (typeof x === 'object' ? { pr: Number(x.pr), url: x.url ?? null } : recordedPr(t, x)));
+const keepMergedPr = (t) => {
+  if (!t.merged_at || t.result?.pr == null) return [];
+  const kept = new Map([...mergedPrs(t), recordedPr(t, t.result.pr)].map((x) => [x.pr, x]));
+  return [`merged_pr=${JSON.stringify([...kept.values()].map((x) => (x.url ? x : x.pr)))}`];
+};
 const statusPr = (t, here) => {
   const s = t.merged_at ? t.pr_status : null;
-  if (s?.pr == null || (s.url && repoOfPr(s.url) !== here)) return null;
+  if (s?.pr == null || foreign({ url: s.url }, here)) return null;
   return { pr: Number(s.pr), later: Date.parse(s.at) > Date.parse(t.merged_at), merged: s.state === 'MERGED', mergedAt: Date.parse(s.merged_at) };
 };
 function shippedElsewhere(t) {
-  let here = hereRepo();
-  let status = statusPr(t, here);
-  const recorded = [t.result?.pr, ...mergedPrs(t)].filter((n) => n != null);
-  let mine = new Set(recorded.filter((n) => !foreignPr(t, n, here)).map(Number));
+  const recorded = [...(t.result?.pr != null ? [recordedPr(t, t.result.pr)] : []), ...mergedPrs(t)];
+  let here, status, mine;
+  const judge = (repo) => {
+    here = repo;
+    status = statusPr(t, here);
+    mine = new Set(recorded.filter((x) => !foreign(x, here)).map((x) => x.pr));
+  };
+  judge(hereRepo());
   try {
     const since = Math.max(...[Date.parse(t.added_at), mine.size ? Date.parse(t.merged_at) : NaN].filter((n) => !Number.isNaN(n)), -Infinity);
     const search = since === -Infinity ? t.key : `merged:>=${new Date(since).toISOString().slice(0, 10)}`;
@@ -1257,11 +1270,7 @@ function shippedElsewhere(t) {
       ['pr', 'list', '--repo', GH_REPO, '--state', 'merged', '--search', search, '--limit', '1000', '--json', 'number,headRefName,mergedAt,url'])));
     const list = Array.isArray(prs) ? prs : [];
     const seen = list.find((p) => p?.url)?.url;
-    if (seen) {
-      here = repoOfPr(seen);
-      status = statusPr(t, here);
-      mine = new Set(recorded.filter((n) => !foreignPr(t, n, here)).map(Number));
-    }
+    if (seen) judge(repoOfPr(seen));
     const at = Date.parse(t.merged_at);
     if (!mine.size && status && list.some((p) => Number(p?.number) === status.pr && Date.parse(p.mergedAt) <= at)) mine.add(status.pr);
     // A status read as MERGED was written for the ticket's own result.pr, its merge known before the spawn
@@ -3283,7 +3292,10 @@ const SPAWN_HANDLERS = {
   skip: () => {},
   'record-done': (a, s) => {
     const before = report.failed.length;
-    if (!DRY) q(...(a.dropStatus ? [...shippedSet({ ...s.t, pr_status: null }, a.how, a.pr, a.mergedAt), 'pr_status=null'] : shippedSet(s.t, a.how, a.pr, a.mergedAt)));
+    // shipped_pr keeps it live until a pass reads that PR's review (harvest.mjs postMergeUnmade), as the
+    // merge driver's record does: a kept status names an earlier PR, or none once dropped.
+    if (!DRY) q(...(a.dropStatus ? [...shippedSet({ ...s.t, pr_status: null }, a.how, a.pr, a.mergedAt), 'pr_status=null'] : shippedSet(s.t, a.how, a.pr, a.mergedAt)),
+      ...(a.pr != null ? [`shipped_pr=${a.pr}`] : []));
     if (report.failed.length === before) report.done.push(a.line);
   },
   park: (a) => {
