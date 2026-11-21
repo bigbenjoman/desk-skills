@@ -147,10 +147,11 @@ function renamer() {
   return rename;
 }
 
-// A normalized string with each port and SHA in it as <PORT> or <SHA>, and those values in order,
-// each marked when the pass cut it short. Ports first, so a port cut short is not taken for a SHA.
 // The text before the port a pass names in dropping a stale lease (port-lease.mjs pickPort).
 const STALE_LEASE = /\bdropped the stale lease on $/;
+// A normalized string with each port and SHA in it as <PORT> or <SHA>, and those values in order,
+// each marked when the pass cut it short, and when a stale lease held it. Ports first, so a port cut
+// short is not taken for a SHA.
 function tokens(s) {
   const found = [];
   const mark = (tag, v, cut, stale = false) => { found.push({ tag, v, cut, stale }); return `\u0001${found.length - 1}\u0002`; };
