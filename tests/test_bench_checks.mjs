@@ -2,7 +2,7 @@
 import { mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join, dirname } from 'node:path';
-import { helpersIn, addedLines, suiteLabel, findChecks, suiteSections, tallyChecks } from '../desk/bin/bench-checks.mjs';
+import { helpersIn, changedAt, suiteLabel, findChecks, suiteSections, tallyChecks } from '../desk/bin/bench-checks.mjs';
 import { addedChecks } from '../desk/bin/bench-build.mjs';
 import { scratch } from './scratch.mjs';
 
@@ -17,7 +17,8 @@ t('a bash helper that prints a failure line is found', [...helpersIn(SH_CHECK)].
 t('a failure counter is no helper', helpersIn('PASS=0; FAIL=0\nconst FAILED = new Set([1]);').size, 0);
 t('a suite label is its suite: line', suiteLabel('// suite: widgets (all of them)\nimport x;', 'tests/test_w.mjs'), 'widgets (all of them)');
 t('else its file name', suiteLabel('import x;', 'tests/test_w.mjs'), 'test_w.mjs');
-t('a diff gives the merge side\'s lines', JSON.stringify([...addedLines('--- a/x\n+++ b/tests/x.mjs\n@@ -1 +1 @@\n-old\n+new\n')]), '[["tests/x.mjs",["new"]]]');
+t('a diff gives the merge side\'s changed lines, and a removal between two',
+  JSON.stringify([...changedAt('--- a/x\n+++ b/tests/x.mjs\n@@ -1 +1 @@\n-old\n+new\n@@ -5,2 +5,2 @@\n-a\n-b\n+c\n+d\n@@ -9 +8,0 @@\n-gone\n')]), '[["tests/x.mjs",[1,5,6,8.5]]]');
 
 // AC1: a real PR that adds two checks and changes one, in a JS suite, and adds a bash check beside a
 // sourced helper. A check it leaves alone, a templated name and a call that is no check are not counted.
@@ -34,8 +35,8 @@ const commit = (files) => {
 };
 mkdirSync(repo);
 execFileSync('git', ['init', '-q', '-b', 'main', repo], { env: gitEnv });
-const JS_BASE = `// suite: widgets\n${JS_T}\nt('kept', 1, 1);\nt('changed', f(), 1);\n`;
-const JS_MERGE = `// suite: widgets\n${JS_T}\nt('kept', 1, 1);\nt('changed', f(), 2);\nt("added one", g(), 3);\nconsole.log('note');\nfor (const x of xs) t(\`\${x}\`, x, x);\nt(\`added \${n} two\`, h(), 4);\n`;
+const JS_BASE = `// suite: widgets\n${JS_T}\nt('kept', 1, 1);\nt('changed', f(), 1);\nt('kept too (two lines)',\n  k(), 1);\nt('changed below',\n  j(), 1);\nt('kept last', 1, 1);\n`;
+const JS_MERGE = `// suite: widgets\n${JS_T}\nt('kept', 1, 1);\nt('changed', f(), 2);\nt("added one", g(), 3);\nconsole.log('note');\nfor (const x of xs) t(\`\${x}\`, x, x);\nt(\`added \${n} two\`, h(), 4);\nt('kept too (two lines)',\n  k(), 1);\nt('changed below',\n  j(), 2);\nt('kept last', 1, 1);\n`;
 const base = commit({ 'tests/test_w.mjs': JS_BASE, 'tests/setup.sh': `${SH_CHECK}\n`, 'tests/test_s.sh': '. tests/setup.sh\n' });
 const merge = commit({ 'tests/test_w.mjs': JS_MERGE, 'tests/test_s.sh': '. tests/setup.sh\ncheck "AC1 the $thing is there" \'[ -f x ]\'\n' });
 const hidden = join(dir, 'hidden');
@@ -44,24 +45,31 @@ for (const [f, body] of [['tests/test_w.mjs', JS_MERGE], ['tests/test_s.sh', git
 }
 const found = addedChecks(repo, base, merge, ['tests/test_s.sh', 'tests/test_w.mjs'], hidden);
 const names = found.checks.map((c) => `${c.suite}/${c.name}`).sort();
-t('AC1 the task records the checks the PR added or changed', JSON.stringify(names), JSON.stringify(['test_s.sh/AC1 the … is there', 'widgets/added one', 'widgets/added … two', 'widgets/changed']));
-t('AC1 a check the PR left alone is not one', names.some((n) => n.endsWith('/kept')), false);
+t('AC1 the task records the checks the PR added or changed', JSON.stringify(names), JSON.stringify(['test_s.sh/AC1 the … is there', 'widgets/added one', 'widgets/added … two', 'widgets/changed', 'widgets/changed below']));
+t('AC1 a check the PR left alone is not one', names.some((n) => /\/kept/.test(n)), false);
 t('AC1 with no why when it found some', found.why, undefined);
 const none = findChecks({ diff: '+++ b/tests/test_w.mjs\n+t(\'x y z\', 1, 1)\n', defs: '', texts: { 'tests/test_w.mjs': '' } });
 t('no helper beside the tests: none, with why', none.checks.length === 0 && /no check helper/.test(none.why), true);
 
 // AC2: tests/run.sh's output, where the arm fails one of the three JS checks and passes the bash one.
 const checks = found.checks;
-const section = (label, body) => `\n== ${label}\nok: 3\ntook: 1 s\ncpu: 0.100 s${body}`;
+const section = (label, body) => `\n== ${label}\nok: 3\ntook: 1 s\ncpu: 0.100 s${body}\n`;
 const RUN = `$ bash tests/run.sh 'tests/test_s.sh' 'tests/test_w.mjs'\n${section('test_s.sh', '')}${section('widgets', '\nexit 1\nFAIL added 7 two: 5 (want 4)\nok   nothing')}\n\nFAILURES above (6 checks passed)\nfailed suites: test_w.mjs\n\nexit 1\n`;
-t('AC2 a failing check is read off its failure line', JSON.stringify(tallyChecks(checks, RUN)), '{"passed":3,"of":4}');
+t('AC2 a failing check is read off its failure line', JSON.stringify(tallyChecks(checks, RUN)), '{"passed":4,"of":5}');
 const widgets = checks.filter((c) => c.suite === 'widgets');
-t('AC2 the arm passes two of the three JS checks', JSON.stringify(tallyChecks(widgets, RUN)), '{"passed":2,"of":3}');
-t('a suite that failed naming no check crashed: it passed none of them',
-  JSON.stringify(tallyChecks(widgets, section('widgets', '\nexit 1\nTypeError: boom'))), '{"passed":0,"of":3}');
-t('a suite that is not in the output: its checks did not pass', JSON.stringify(tallyChecks(widgets, section('other', ''))), '{"passed":0,"of":3}');
+t('AC2 the arm passes three of the four JS checks', JSON.stringify(tallyChecks(widgets, RUN)), '{"passed":3,"of":4}');
+const unread = (log) => { const r = tallyChecks(widgets, log); return r.passed === null && r.of === 4 ? r.why : JSON.stringify(r); };
+t('AC3 a suite that failed naming no check crashed: not measured, never 0',
+  unread(section('widgets', '\nexit 1\nTypeError: boom')), 'the hidden tests did not finish: suite widgets crashed');
+t('AC3 a suite that named one failure, then crashed: not measured, its unrun checks never counted',
+  unread(section('widgets', '\nexit 1\nFAIL added 7 two: 5 (want 4)\nTypeError: boom\n    at file:///w/tests/test_w.mjs:9:3')), 'the hidden tests did not finish: suite widgets crashed');
+t('AC3 a bash suite that named one failure, then hit a bash error: not measured',
+  unread(section('widgets', '\nexit 1\nFAIL changed: 1 (want 2)\ntests/test_w.sh: line 9: x: unbound variable')), 'the hidden tests did not finish: suite widgets crashed');
+t('a suite that is not in the output: not measured', unread(section('other', '')), 'the test output has no section for suite widgets');
+t('a heading or trailer in a suite\'s own output opens and closes nothing',
+  JSON.stringify(tallyChecks(widgets, section('widgets', '\nexit 1\nFAIL changed: out:\n== other\nall passed: 3 checks\nFAIL changed below: 1 (want 2)'))), '{"passed":2,"of":4}');
 t('a retried suite\'s first run is not counted',
-  JSON.stringify(tallyChecks(widgets, section('widgets', '\nretried: failed its first run, passed its retry\n-- first run\nexit 1\nFAIL changed: 1 (want 2)'))), '{"passed":3,"of":3}');
+  JSON.stringify(tallyChecks(widgets, section('widgets', '\nretried: failed its first run, passed its retry\n-- first run\nexit 1\nFAIL changed: 1 (want 2)'))), '{"passed":4,"of":4}');
 t('the trailer is no suite\'s', suiteSections(`${section('widgets', '')}\n\nFAILURES above\nexit 1\n`).get('widgets').crashed, false);
 const other = tallyChecks(widgets, 'PASS tests/w.test.ts\n  ✓ changed\n');
 t('another runner\'s output is not measured, never 0', other.passed === null && /no tests\/run\.sh suite headings/.test(other.why), true);

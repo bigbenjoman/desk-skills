@@ -98,7 +98,8 @@ export function loadBaseline(path) {
 }
 
 export const NOT_AVAILABLE = 'not available';
-const FINISHED = new Set(['accepted', 'rejected']);
+// The results that are a score: the hidden tests finished.
+export const SCORED = new Set(['accepted', 'rejected']);
 
 // The task set's added_checks by task id; an unreadable set records none.
 export function loadAddedChecks(file) {
@@ -110,7 +111,7 @@ export function loadAddedChecks(file) {
 export function runChecks(added, status, result, dir) {
   if (!Array.isArray(added?.checks)) return { state: 'old' };
   if (!added.checks.length) return { state: 'unmatched' };
-  if (!FINISHED.has(status)) return { state: 'failed' };
+  if (!SCORED.has(status)) return { state: 'failed' };
   const log = dir ? join(dir, 'test-output.log') : null;
   const r = result?.added_checks ?? (log && existsSync(log) ? tallyChecks(added.checks, readFileSync(log, 'utf8')) : {});
   return typeof r.passed === 'number' ? { passed: r.passed, of: r.of } : { state: 'unmatched' };

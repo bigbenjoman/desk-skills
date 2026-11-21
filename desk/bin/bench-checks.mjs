@@ -2,11 +2,11 @@
 //
 // A check is a call to a helper whose one-line definition prints FAIL (tests/run.sh's suites:
 // `t('name', got, want)`, `check "name" '<test>'`), named by the string its call starts with. The PR's
-// checks are those whose call is on a line its test diff adds or changes, from its base to its merge.
-// tests/run.sh prints a `FAIL <name>` line per failing check and no line per passing one, under a
-// `== <suite label>` heading, so a check passed when its suite ran, printed no FAIL line naming it,
-// and did not fail without naming any check (a crash). Output from any other runner is not read:
-// its checks are not measured.
+// checks are those whose call, to its closing parenthesis, spans a line its test diff adds, changes or
+// removes, from its base to its merge. tests/run.sh prints a `FAIL <name>` line per failing check and
+// no line per passing one, under a `== <suite label>` heading, so a check passed when its suite ran to
+// the end and printed no FAIL line naming it. A run where a check's suite crashed or is missing is
+// not measured. Output from any other runner is not read: its checks are not measured.
 
 const IDENT = '[A-Za-z_$][\\w$]*';
 const DEFS = [
@@ -25,15 +25,39 @@ export function helpersIn(text) {
   return out;
 }
 
-// `git diff -U0` text -> Map of path -> the lines its merge side adds or changes.
-export function addedLines(diff) {
+// `git diff -U0` text -> Map of path -> where its merge side changed: each added or changed line's
+// number, and n + 0.5 for lines removed between merge lines n and n + 1.
+export function changedAt(diff) {
   const out = new Map();
   let file = null;
   for (const line of String(diff).split('\n')) {
     if (line.startsWith('+++ ')) { file = line === '+++ /dev/null' ? null : line.slice(4).replace(/^b\//, ''); continue; }
-    if (file && line.startsWith('+')) out.set(file, [...(out.get(file) ?? []), line.slice(1)]);
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (!file || !hunk) continue;
+    const [from, count] = [Number(hunk[1]), hunk[2] === undefined ? 1 : Number(hunk[2])];
+    const at = count ? Array.from({ length: count }, (_, i) => from + i) : [from + 0.5];
+    out.set(file, [...(out.get(file) ?? []), ...at]);
   }
   return out;
+}
+
+// The last line (1-based) of the call whose `(` is at `lines[row][col]`: where its parentheses close,
+// strings and line comments skipped. The call's own line when they never close.
+function callEnd(lines, row, col) {
+  let depth = 0, quote = null;
+  for (let r = row; r < Math.min(lines.length, row + 200); r++) {
+    const s = lines[r];
+    for (let i = r === row ? col : 0; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) { if (ch === '\\') i++; else if (ch === quote) quote = null; continue; }
+      if (ch === '/' && s[i + 1] === '/') break;
+      if (ch === "'" || ch === '"' || ch === '`') quote = ch;
+      else if (ch === '(') depth++;
+      else if (ch === ')' && --depth === 0) return r + 1;
+    }
+    if (quote !== '`') quote = null;
+  }
+  return row + 1;
 }
 
 // tests/run.sh's label for a suite: its first `# suite: ` or `// suite: ` line in the first ten,
@@ -61,55 +85,72 @@ function namePattern(quote, body) {
 export function findChecks({ diff, defs, texts }) {
   const helpers = [...helpersIn(defs)];
   if (!helpers.length) return { checks: [], why: 'no check helper that prints FAIL is defined beside the hidden tests' };
-  const call = new RegExp(`(?:^|[^\\w$.])(?:${helpers.map(escape).join('|')})(?:\\(\\s*|\\s+)(['"\`])((?:\\\\.|(?!\\1)[^\\\\])*)\\1`, 'g');
+  const call = new RegExp(`(^|[^\\w$.])(${helpers.map(escape).join('|')})(?:\\(\\s*|\\s+)(['"\`])((?:\\\\.|(?!\\3)[^\\\\])*)\\3`, 'g');
   const checks = [];
   const seen = new Set();
-  for (const [file, lines] of addedLines(diff)) {
+  for (const [file, at] of changedAt(diff)) {
     if (!Object.hasOwn(texts, file)) continue;
     const suite = suiteLabel(texts[file], file);
-    for (const line of lines) {
+    const lines = String(texts[file]).split('\n');
+    lines.forEach((line, row) => {
       for (const m of line.matchAll(call)) {
-        const p = namePattern(m[1], m[2]);
+        const col = m.index + m[1].length + m[2].length;
+        const end = line[col] === '(' ? callEnd(lines, row, col) : row + 1;
+        if (!at.some((n) => n >= row + 1 && n <= end)) continue;
+        const p = namePattern(m[3], m[4]);
         if (!p || seen.has(`${suite}\n${p.pattern}`)) continue;
         seen.add(`${suite}\n${p.pattern}`);
         checks.push({ file, suite, ...p });
       }
-    }
+    });
   }
-  return checks.length ? { checks } : { checks, why: 'no line the PR added or changed in its hidden tests calls a check helper with a quoted name' };
+  return checks.length ? { checks } : { checks, why: 'no check the PR added or changed in its hidden tests calls a check helper with a quoted name' };
 }
 
+// tests/run.sh's trailers, and bench.mjs's `$ <command>` line, each printed after a blank line.
 const TRAILER = /^(\$ |all passed: |FAILURES above|failed suites:|flaked:|over budget:)/;
+// A suite that stopped part way: tests/run.sh's own bash error words, or node's uncaught error.
+const CRASH = /too many arguments|unbound variable|bad substitution|syntax error|^\s+at .+:\d+:\d+\)?$|^node:internal\/|^Uncaught /;
 
-// A run's test-output.log -> Map of suite label -> { fails: [text], crashed }. A retried suite's first
-// run is skipped: its retry is what counted.
+// A run's test-output.log -> Map of suite label -> { fails: [text], crashed }. A suite crashed when
+// it failed (a non-zero exit, or no checks ran) naming no check, or with a crash line beside its FAIL
+// lines: either way it did not run all its checks. Headings and trailers count only after a blank
+// line, as tests/run.sh prints them, so a suite's own output cannot open or close a section. A
+// retried suite's first run is skipped: its retry is what counted.
 export function suiteSections(log) {
   const out = new Map();
-  let cur = null, skipping = false;
+  let cur = null, skipping = false, prev = '';
   for (const line of String(log).split('\n')) {
-    const head = /^== (.*)$/.exec(line);
-    if (head) { cur = { fails: [], why: false }; out.set(head[1], cur); skipping = false; continue; }
+    const after = prev === '';
+    prev = line;
+    const head = after && /^== (.*)$/.exec(line);
+    if (head) { cur = { fails: [], why: false, crash: false }; out.set(head[1], cur); skipping = false; continue; }
     if (!cur) continue;
-    if (TRAILER.test(line)) { cur = null; continue; }
+    if (after && TRAILER.test(line)) { cur = null; continue; }
     if (line === '-- first run') { skipping = true; continue; }
     if (line === '-- retry') { skipping = false; continue; }
     if (skipping) continue;
     if (/^FAIL /.test(line)) cur.fails.push(line.replace(/^FAIL +/, ''));
     else if (/^(exit [1-9]\d*|no checks ran)$/.test(line)) cur.why = true;
+    else if (CRASH.test(line)) cur.crash = true;
   }
-  for (const s of out.values()) { s.crashed = s.why && !s.fails.length; delete s.why; }
+  for (const s of out.values()) { s.crashed = s.why && (s.crash || !s.fails.length); delete s.why; delete s.crash; }
   return out;
 }
 
 // How many of `checks` the run whose output is `log` passed. -> { passed, of } | { passed: null, of, why }
+// Not measured, never 0, when a check's suite crashed or is not in the output.
 export function tallyChecks(checks, log) {
   const sections = suiteSections(log);
-  if (!sections.size) return { passed: null, of: checks.length, why: 'the test output has no tests/run.sh suite headings to read checks from' };
+  const unread = (why) => ({ passed: null, of: checks.length, why });
+  if (!sections.size) return unread('the test output has no tests/run.sh suite headings to read checks from');
   let passed = 0;
   for (const c of checks) {
     const s = sections.get(c.suite);
+    if (!s) return unread(`the test output has no section for suite ${c.suite}`);
+    if (s.crashed) return unread(`the hidden tests did not finish: suite ${c.suite} crashed`);
     const re = new RegExp(`^${c.pattern}(?::|$)`);
-    if (s && !s.crashed && !s.fails.some((f) => re.test(f))) passed += 1;
+    if (!s.fails.some((f) => re.test(f))) passed += 1;
   }
   return { passed, of: checks.length };
 }

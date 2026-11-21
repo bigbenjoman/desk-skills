@@ -58,7 +58,7 @@ import { runItem } from './baseline.mjs';
 import { nearestDir, takesFiles } from './test-scope.mjs';
 import { HOME, lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.mjs';
 import * as Q from './bench-quota.mjs';
-import { loadPlans } from './bench-report.mjs';
+import { loadPlans, SCORED } from './bench-report.mjs';
 import { endpointArms, providersPath } from './bench-endpoint.mjs';
 import { seededRandom } from './seeded-random.mjs';
 import { tallyChecks } from './bench-checks.mjs';
@@ -66,7 +66,6 @@ import { tallyChecks } from './bench-checks.mjs';
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
 const SHA = /^[0-9a-f]{40}$/;
-const SCORED = new Set(['accepted', 'rejected']);
 // The hidden tests' ceiling, wait for the test lock included.
 const SCORE_TIMEOUT_MS = 60 * 60 * 1000;
 
