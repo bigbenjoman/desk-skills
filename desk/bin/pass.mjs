@@ -4197,10 +4197,10 @@ function rerunBuilt(t, n, head, c, rec, ready = false) {
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
 // driver and the pass keep one record, cap and cooldown per head.
 // §4 Vercel's team, whose preview-build lease a preview check's rerun takes first; '' for none.
-const previewTeam = () => {
+function previewTeam() {
   let v; try { v = String([].concat(E.configValues('vercel') ?? [])[0] ?? '').trim(); } catch { return ''; }
   return /^(none|todo)?$/i.test(v) ? '' : v;
-};
+}
 function rerunDraft(t, n, head, c) {
   const r = shOut('bash', [join(BIN, 'rerun.sh'), DRIVER_DIR, GH_REPO, String(n), head], { input: JSON.stringify({ gate: c.gate }), stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, RERUN_PERM: E.permission('ci-rerun'), PREVIEW_TEAM: previewTeam() } });
   const said = r.out.split('\n').filter(Boolean).join('; ');
