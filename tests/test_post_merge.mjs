@@ -103,5 +103,13 @@ const shared = { tickets: { 'T-A': { merged_at: iso(mergedA), result: { pr: 1 } 
 postMergeScan({ state: join(tmp, 'state10'), queue: shared, log, runs: () => [], now: NOW });
 t('a revert of a PR on two tickets is recorded on both', readPostMerge(join(tmp, 'state10')).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join(), 'T-A,T-F');
 
+// A ticket done on another repo's PR #1 (needs-you's elsewhereDone keeps that PR's url) is not this repo's #1.
+const foreign = { tickets: { ...shared.tickets, 'T-G': { merged_at: iso(mergedA), result: { pr: 1 }, pr_status: { pr: 1, state: 'MERGED', url: 'https://github.com/o/other/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'state11'), queue: foreign, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('another repo\'s PR of the same number gets no revert record', readPostMerge(join(tmp, 'state11')).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join(), 'T-A,T-F');
+const local = { tickets: { 'T-H': { merged_at: iso(mergedA), pr_status: { pr: 1, url: 'https://github.com/o/here/pull/1' } } } };
+postMergeScan({ state: join(tmp, 'state12'), queue: local, repo: 'O/Here', log, runs: () => [], now: NOW });
+t('this repo\'s PR, its url spelt in another case, still gets its revert record', readPostMerge(join(tmp, 'state12')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-H');
+
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

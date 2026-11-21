@@ -10,6 +10,7 @@ import { readFileSync, existsSync, appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
+import { repoOfPr } from './pass/pr-status.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -42,11 +43,15 @@ export function revertedPr(subject) {
 }
 
 // Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
-// within a pass of its merge): [{ticket, pr, merged_at}].
-export function mergedTickets(queue) {
+// within a pass of its merge): [{ticket, pr, merged_at}]. Given `repo` (owner/name), a ticket done on
+// another repo's PR (its pr_status url names that repo) is left out: this repo's reverts and runs are
+// not its own, though its PR may have the same number as one of this repo's.
+export function mergedTickets(queue, repo = null) {
+  const here = repo ? repoOfPr(`https://github.com/${repo}/pull/`) : null;
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = mergedPr(t);
+    if (here && t.pr_status?.url && repoOfPr(t.pr_status.url) !== here) continue;
     if (pr) out.push({ ticket, pr, merged_at: t.merged_at });
   }
   return out;
@@ -87,7 +92,7 @@ export function findRecords({ merges, commits, runs, at }) {
 
 const lastScan = (have) => Math.max(-Infinity, ...have.filter((r) => r.kind === 'scan').map((r) => Date.parse(r.at)).filter(Number.isFinite));
 // A merge a day older than the watch is still read, so a scan a day late misses nothing in it.
-const watched = (queue, now) => mergedTickets(queue).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
+const watched = (queue, now, repo = null) => mergedTickets(queue, repo).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
 
 // Whether a scan is due and has a merge to watch: the supervisor runs a pass for it on an idle batch,
 // which would otherwise run none, so the watch lasts its WATCH_DAYS after the batch's last merge.
@@ -97,11 +102,11 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
 
 // One scan, if one is due: `log(sinceIso)` gives the default branch's commits and `runs(sinceIso)` its
 // runs since then, each throwing when it cannot read all of them. -> {ran, written: [records], line}
-export function postMergeScan({ state, queue, log, runs, now = Date.now() }) {
+export function postMergeScan({ state, queue, log, runs, repo = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
-  const merges = watched(queue, now);
+  const merges = watched(queue, now, repo);
   const why = [];
   let commits = [];
   let runList = null;
@@ -146,7 +151,7 @@ export function ghRuns(repo, branch, since) {
 export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
-      state, queue,
+      state, queue, repo,
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);
