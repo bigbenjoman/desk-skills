@@ -84,12 +84,8 @@ const FORMS = [
   }],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
-const FORM_LIST = ['pr <n> merged', 'pr <n> ready', 'ticket <KEY> done', 'variable <NAME> set', 'run <id> completed', 'git push origin <branch> succeeds',
-  'base contains <branch>', 'pr <n> reviewed by <login> at head', 'file <path> exists', 'ticket <KEY> in <repo> batch',
-  'check "<name>" on pr <n> passes', 'commit <sha> on <branch>', 'gh pr view <n> [--repo <owner/name>] reports MERGED'];
-export const CLEARS_WHEN_FORMS = `${FORM_LIST.join(', ')}, or none`;
-// Each form beside a line written in it, as the worker contract's table gives them
-// (autopilot-worker-contract.md, which tests/test_clears_when.sh keeps in step with this list).
+// Each form a pass reads, beside a line written in it: the one list of them. The worker contract's
+// table gives them (autopilot-worker-contract.md, which tests/test_clears_when.sh keeps in step).
 export const CLEARS_WHEN_EXAMPLES = [
   ['pr <n> merged', 'pr 812 merged'], ['pr <n> ready', 'pr 812 ready'], ['ticket <KEY> done', 'ticket ABC-41 done'],
   ['variable <NAME> set', 'variable DEPLOY_TOKEN set'], ['run <id> completed', 'run 18842117 completed'],
@@ -99,6 +95,8 @@ export const CLEARS_WHEN_EXAMPLES = [
   ['commit <sha> on <branch>', 'commit 4f2a9c1 on main'], ['gh pr view <n> [--repo <owner/name>] reports MERGED', 'gh pr view 812 --repo acme/web reports MERGED'],
   ['none', 'none'],
 ];
+const FORM_LIST = CLEARS_WHEN_EXAMPLES.map(([f]) => f).filter((f) => f !== 'none');
+export const CLEARS_WHEN_FORMS = `${FORM_LIST.join(', ')}, or none`;
 // One form a line, for a worker checking its line before it ends (queue.mjs clears-when --check).
 export const CLEARS_WHEN_FORM_LINES = [...FORM_LIST, 'none'];
 

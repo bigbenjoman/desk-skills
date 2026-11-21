@@ -609,13 +609,12 @@ check "a path that could be a branch is refused, saying to write the file form, 
 # The worker contract gives every form with a line written in it, and each such line reads as its form.
 contract="$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"
 rows=$(CW="$B/clears-when.mjs" node -e '
-  import(process.env.CW).then(({ CLEARS_WHEN_EXAMPLES: ex, CLEARS_WHEN_FORM_LINES: forms, parseClearsWhen }) => {
+  import(process.env.CW).then(({ CLEARS_WHEN_EXAMPLES: ex, parseClearsWhen }) => {
     const bad = ex.filter(([, e]) => !parseClearsWhen(e).ok).map(([, e]) => e);
-    const missing = forms.filter((f) => !ex.some(([g]) => g === f));
-    console.log(JSON.stringify({ bad, missing }));
+    console.log(JSON.stringify({ bad }));
     for (const [f, e] of ex) console.log("| `" + f + "` | `" + e + "` |");
   });')
-check "every form has an example, and each example reads" '[ "$(head -1 <<< "$rows")" = "{\"bad\":[],\"missing\":[]}" ]'
+check "each form's example reads" '[ "$(head -1 <<< "$rows")" = "{\"bad\":[]}" ]'
 check "the worker contract carries each form beside its example" 'while IFS= read -r row; do grep -qxF "$row" "$contract" || exit 1; done < <(tail -n +2 <<< "$rows")'
 
 echo "clears-when: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
