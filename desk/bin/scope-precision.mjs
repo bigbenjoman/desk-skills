@@ -2,8 +2,8 @@
 // How well triage's files_in_scope predicted what each ticket's merged PRs changed, per repo: the
 // numbers config §3b "Per-file collision budget" is set from. Read only: it changes nothing.
 //   node scope-precision.mjs <owner/name>... [--days 30]
-// For each repo it joins the triage records under its state folder (the standing batch's and every
-// named batch's) with the files of the PRs merged in the last --days days whose head branch names
+// For each repo it joins the triage records under its state folder (the standing batch's, every
+// named batch's and every archived batch's) with the files of the PRs merged in the last --days days whose head branch names
 // the record's key (a title can list many keys, as a promotion PR's does), then prints precision (named files changed / files named) and recall (changed
 // files named / files changed), overall and for the 10 most-named files. It ends with a proposed k for
 // each of those files and a proposed hot-serial list, per repo.
@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { slugOf, batchPaths, BATCHES_DIR } from './desk-env.mjs';
 import { fileBudget } from './config-schema.mjs';
+import { keyPattern } from './batch-state.mjs';
+import { namedBatches } from './batches.mjs';
 
 export const TOP = 10;
 export const SERIAL_AT = 0.8;
@@ -24,11 +26,16 @@ const norm = (s) => String(s).trim().replace(/^\.\//, '');
 const covers = (entry, file) => (entry.endsWith('/') ? file.startsWith(entry) : file === entry);
 const pct = (n, d) => (d ? `${Math.round((100 * n) / d)}%` : 'n/a');
 
-// Every triage record under a repo's state folder -> Map key -> files_in_scope. A key in more than one
-// batch keeps the standing batch's record. Challenge files and unreadable records are skipped.
+// Every triage record under a repo's state folder -> Map key -> files_in_scope: the standing batch's,
+// each named batch's, then each archived batch's (batch.mjs moves a finished batch's state folder into
+// batches/.done/, and its merged tickets' records go with it). A key in more than one batch keeps the
+// first record. Challenge files and unreadable records are skipped.
 export function scopeRecords(state) {
-  const dirs = [join(state, 'triage')];
-  try { for (const b of readdirSync(join(state, BATCHES_DIR))) dirs.push(join(state, BATCHES_DIR, b, 'triage')); } catch {}
+  const done = join(state, BATCHES_DIR, '.done');
+  let archived = [];
+  try { archived = readdirSync(done, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch {}
+  const dirs = [join(state, 'triage'), ...namedBatches(state).map((b) => join(state, BATCHES_DIR, b, 'triage')),
+    ...archived.map((b) => join(done, b, 'triage'))];
   const out = new Map();
   for (const dir of dirs) {
     let names = [];
@@ -54,11 +61,11 @@ export function mergedPrs(repo, since) {
 }
 
 // The records with a merged PR naming their key -> [{ key, named, changed }], `changed` the union of
-// those PRs' files. A key is matched whole: DS-69 is not DS-697.
+// those PRs' files. A key is matched as the pass matches it (keyPattern): DS-69 is not DS-697 or DS-69-2.
 export function joinTickets(records, prs) {
   const out = [];
   for (const [key, named] of records) {
-    const re = new RegExp(`(^|[^A-Za-z0-9])${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![0-9])`);
+    const re = new RegExp(keyPattern(key));
     const mine = prs.filter((p) => re.test(p.headRefName ?? ''));
     if (mine.length) out.push({ key, named, changed: [...new Set(mine.flatMap((p) => p.files).map(norm))] });
   }

@@ -73,18 +73,23 @@ writeFileSync(join(st, 'triage', 'T-1.challenge.json'), JSON.stringify({ files_i
 writeFileSync(join(st, 'triage', 'T-3.json'), '{not json');
 writeFileSync(join(st, 'batches/E-1/triage', 'T-1.json'), JSON.stringify({ files_in_scope: ['batch.js'] }));
 writeFileSync(join(st, 'batches/E-1/triage', 'T-2.json'), JSON.stringify({ files_in_scope: ['b.js'] }));
+mkdirSync(join(st, 'batches/.done/E-0/triage'), { recursive: true });
+writeFileSync(join(st, 'batches/.done/E-0/triage', 'T-4.json'), JSON.stringify({ files_in_scope: ['old.js'] }));
+writeFileSync(join(st, 'batches/.done/E-0/triage', 'T-2.json'), JSON.stringify({ files_in_scope: ['stale.js'] }));
+writeFileSync(join(st, 'batches', 'stray.txt'), '');
 const recs = scopeRecords(st);
-t('records: the standing batch wins, a named batch adds, ./ and repeats folded, challenges and bad JSON skipped',
-  S([...recs]), '[["T-1",["a.js","lib/"]],["T-2",["b.js"]]]');
+t('records: the standing batch wins, a named then an archived batch add, ./ and repeats folded, challenges and bad JSON skipped',
+  S([...recs]), '[["T-1",["a.js","lib/"]],["T-2",["b.js"]],["T-4",["old.js"]]]');
 t('records: no state folder is none', scopeRecords(join(dir, 'nope')).size, 0);
 
 const joined = joinTickets(new Map([['T-1', ['a.js']], ['T-12', ['c.js']], ['T-2', ['b.js']]]), [
   { headRefName: 'feat/T-12-x', files: ['c.js'] },
+  { headRefName: 'feat/T-1-2-sub', files: ['sub.js'] },
   { headRefName: 'feat/T-1-y', files: ['a.js', 'd.js'] },
   { headRefName: 'fix/T-1-again', files: ['./e.js', 'a.js'] },
   { headRefName: 'promote/x', title: 'promote: T-1, T-2', files: ['p.js'] },
 ]);
-t('join: a key is matched whole, by head branch only, its PRs\' files unioned, and an unmerged key dropped',
+t('join: a key is matched whole (not T-12 nor T-1-2), by head branch only, its PRs\' files unioned, and an unmerged key dropped',
   S(joined), '[{"key":"T-1","named":["a.js"],"changed":["a.js","d.js","e.js"]},{"key":"T-12","named":["c.js"],"changed":["c.js"]}]');
 
 const m = measure([
