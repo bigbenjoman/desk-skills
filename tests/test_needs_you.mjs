@@ -2017,7 +2017,13 @@ t('DS-403 AC1 one base-push item for the batch, and no ticket is one', bp.map((i
 t('DS-403 AC1 its need names the base, the source and the row, and approve is recommended',
   `${bp[0]?.need} | ${bp[0]?.actions.map((a) => a[0]).join()} ${!!bp[0]?.actions[0][1]}`,
   'feat/x is behind main, and config §3 batch-base-push is "ask", so no pass merges main into it: approve it once for this batch | approve,not-now true');
-t('DS-403 AC1 it has waited since the pass first asked', Math.round((NOW - bp[0]?.since) / 60000), 40);
+put('rho964', { port: 3964, beat: 1, supervised: true, batch: { base: 'feat/x', base_push_ask: { since: minsAgo(40), base: 'feat/x', source: 'main', recreate: true } },
+  tickets: { 'R-1': { state: 'triaged', lane: 'A' } } });
+const bpGone = N.collect({ word: 'rho964' }).items[0];
+t('a base-push item for a merged, deleted base asks to recreate it',
+  `${bpGone?.need} | ${bpGone?.actions[0][1]}`,
+  'feat/x is missing on origin (merged into main, then deleted), and config §3 batch-base-push is "ask", so no pass recreates it: approve it once for this batch | it is only code: the next pass pushes main\'s head back as feat/x, and every later sync in this batch runs without asking');
+t('DS-403 AC1 it has waited since the pass first asked',Math.round((NOW - bp[0]?.since) / 60000), 40);
 const rho2Count = () => N.needsCount(loadRepos().find((r) => r.name === 'rho2')).shown;
 t('DS-403 AC1 desk-q counts it as needing you, since it never lifts by itself', rho2Count(), 1);
 const bpOk = N.record({ word: 'rho2', ticket: 'base-push', action: 'approve' });

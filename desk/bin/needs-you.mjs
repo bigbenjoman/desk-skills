@@ -1398,6 +1398,10 @@ function itemOf(r, x, reads = null, finds = reads) {
     const a = r.q.base_push_ask;
     const base = a.base ?? 'the batch base', source = a.source ?? 'the default branch';
     const ci = behindPrs(r.q);
+    if (a.recreate) {
+      return { kind: 'base-push', need: `${base} is missing on origin (merged into ${source}, then deleted), and config §3 batch-base-push is "ask", so no pass recreates it: approve it once for this batch`,
+        actions: [['approve', `it is only code: the next pass pushes ${source}'s head back as ${base}, and every later sync in this batch runs without asking`], ['not-now']] };
+    }
     const starts = ci.length ? ` Syncing ${base} starts CI on its child ${ci.length === 1 ? 'PR' : 'PRs'} ${andList(ci)}, whose required checks only ${source}'s workflow runs on ${base}; the pass then reopens ${ci.length === 1 ? 'it' : 'them'}.` : '';
     return { kind: 'base-push', need: `${base} is behind ${source}, and config §3 batch-base-push is "ask", so no pass merges ${source} into it: approve it once for this batch${starts ? `.${starts}` : ''}`,
       actions: [['approve', `it is only code: the next pass merges ${source} into ${base} and pushes it, and every later sync in this batch runs without asking`], ['not-now']] };
