@@ -1254,6 +1254,67 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row split over two code spans is 1 for every file, and the report says so" \
   'spawned FB-51 && ! spawned FB-52 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" holds more than one code span" && echo "$out" | grep -qF "read as 1 for every file"'
 
+# ---- The tickets running in this repo's other batches fill places in the per-file budget too.
+# Batch XB-1 of this repo (acme__widgets) and the standing batch of acme__third each run a ticket.
+XBQ="$DESK_HOME/repos/acme__widgets/batches/XB-1"; XBS="$HOME/.desk-autopilot/acme__widgets/batches/XB-1"
+X3Q="$DESK_HOME/repos/acme__third"; X3S="$HOME/.desk-autopilot/acme__third"
+mkdir -p "$XBQ" "$XBS/triage" "$X3Q" "$X3S/triage"
+# xb <state> [fix]: XB-1's queue, its one ticket XO-1 in that state (a review try with `fix`); XO-1's
+# triage record names src/big.ts.
+xb(){
+  local fix=''
+  if [ -n "${2:-}" ]; then fix=',"fix":{"kind":"rereview","try":1,"of":2,"pr":9,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'; fi
+  printf '{"tickets":{"XO-1":{"key":"XO-1","state":"%s"%s}}}\n' "$1" "$fix" > "$XBQ/queue.json"
+}
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$XBS/triage/XO-1.json"
+fbq xba '1'; xb running
+fbt XA-1 triaged src/big.ts; fbt XA-2 triaged src/solo.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC1 a ticket naming a file at its budget once another batch's running ticket counts does not start, naming the batch, ticket and file" \
+  '! spawned XA-1 && spawned XA-2 && [ "$(field XA-1 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "XA-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
+check "DS-664 the metrics line names the other batch's ticket among those filling the file" \
+  'tail -n 1 "$T/state-xba/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"XA-1\")) == [{\"key\":\"XA-1\",\"with\":[\"XO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
+xb 'done'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC2 once the other batch's ticket stops running, the held ticket starts" 'spawned XA-1'
+xb running fix; fbq xbr '1'; fbt XR-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 DS-664 a review try running in another batch fills no place either" 'spawned XR-1'
+rm -f "$XBQ/queue.json"
+printf '{"tickets":{"XT-1":{"key":"XT-1","state":"running"}}}\n' > "$X3Q/queue.json"
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$X3S/triage/XT-1.json"
+# A decoy where this repo's standing batch keeps its records, so counting the other repo's ticket holds.
+XWS="$HOME/.desk-autopilot/acme__widgets/triage"; mkdir -p "$XWS"
+printf '{"files_in_scope":["src/big.ts"]}\n' > "$XWS/XT-1.json"
+fbq xbc '1'; fbt XC-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC3 a file shared only with a ticket running in another repo's batch holds nothing" 'spawned XC-1 && ! echo "$out" | grep "^held back by a collision:" | grep -qF "XT-1"'
+rm -f "$XWS/XT-1.json"
+printf '{"tickets": not json\n' > "$XBQ/queue.json"
+fbq xbd '1'; fbt XD-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+# AC4 as the person reworded it on PR #725: "Given another batch's queue that cannot be read, when
+# the pass runs, then the per-file budget does not hold the ticket, and the report says that batch
+# was not checked." DS-308's repo worker cap still counts an unreadable queue at the cap (borrow.mjs,
+# unchanged), so nothing starts this pass on that account.
+check "DS-664 AC4 another batch's queue that does not read holds no ticket on the per-file budget, and the report says that batch was not checked" \
+  '! echo "$out" | grep "^held back by a collision:" | grep -qF "XD-1" && echo "$out" | grep -qF "collisions: $XBQ/queue.json is not valid JSON (" && echo "$out" | grep -qF "that batch'"'"'s running tickets were not counted toward the per-file budget" && echo "$out" | grep -qF "batch XB-1 unreadable ("'
+xb running
+fbq xbe ''; fbt XE-1 triaged src/big.ts
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-664 AC5 a file shared with another batch's running ticket, with room counting both batches, starts" 'spawned XE-1'
+# XO-1 starts running in XB-1 while this pass waits for the borrow lock, which a live process holds:
+# the pass counts it from the queues read under the lock, so XF-1 does not start beside it.
+xb triaged; fbq xbf '1'; fbt XF-1 triaged src/big.ts
+mkdir -p "$T/xlocks/desk-borrow.lock.d"; sleep 30 & holder=$!
+echo "$holder" > "$T/xlocks/desk-borrow.lock.d/pid"
+DESK_LOCK_DIR="$T/xlocks" node "$B/pass.mjs" > "$T/xbf.out" 2>&1 & passpid=$!
+sleep 3; xb running; kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null; wait "$passpid"
+out=$(cat "$T/xbf.out")
+check "DS-664 a ticket another batch starts while the pass waits for the borrow lock holds the file" \
+  '! spawned XF-1 && echo "$out" | grep "^held back by a collision:" | grep -qF "XF-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
+rm -rf "${XBQ:?}" "${XBS:?}" "${X3Q:?}" "${X3S:?}"
+
 # ---- DS-575: admitted tickets naming one file start in queue order within its budget, and none is asked
 # about. RK-182, RK-147 and RK-181 all name desk/bin/desk-q.mjs (budget 1), queued in that order, not
 # key order; collides_with is each one's two others, both ways as admission records it. RK-90 and RK-91

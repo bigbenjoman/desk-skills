@@ -99,10 +99,12 @@ budget" (`desk-env get file-budget`). Unset, it is `3 over 1000 lines, else 1; s
 three tickets whose triage records name a file longer than 1,000 lines on the batch base run at
 once, one for any other file, and one for any file the `serial:` globs name, whatever its length. A
 bare `1` restores one at a time everywhere. A pass works the budget out at spawn time from the triage
-records of the tickets running then, so a finished ticket holds nothing, and a ready ticket with any
-file at its budget waits, in queue order. The report's `held back by a collision:` line names each
-such file and the running tickets filling it. A row that does not read is 1 for every file, and the
-report says so.
+records of the tickets running then in every batch of the repo, its own and the others, so a
+finished ticket holds nothing, and a ready ticket with any file at its budget waits, in queue order.
+The report's `held back by a collision:` line names each such file and the running tickets filling
+it, each one from another batch as `<ticket> in batch <name>` (or `in the standing batch`). Another
+batch's queue that does not read counts nothing, and a `collisions:` line names it as not checked. A
+row that does not read is 1 for every file, and the report says so.
 
 **A file whose merge-time conflicts rise runs fewer at once, on its own.** Each time a pass meets a
 ready PR in conflict with its base, or a base sync that stops on one, it records one entry per
