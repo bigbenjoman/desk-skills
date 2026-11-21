@@ -156,6 +156,7 @@ import net from 'node:net';
 import * as M from './machine.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
+import { PERMISSION_KEYS, CONFIG_ROWS, norm } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
 export const expandHome = (p) => (typeof p === 'string' ? p.replace(/^~(?=\/|$)/, HOME) : p);
@@ -254,219 +255,14 @@ const configPathHint = () =>
   configPathOrNull() ?? '(no repo: run inside the repo, or set DESK_REPO_DIR or DESK_CONFIG)';
 
 // ---- the one map from what a script means to where the config says it ------------------------
-// Scripts never name a config row directly. They name a logical id below, and this is the only
-// place that knows which row that is, so a row renamed by /desk-setup is a one-line edit here.
+// Scripts never name a config row directly. They name a logical id, and the schema
+// (config-schema.mjs) is the only place that knows which row that is, so a row renamed by
+// /desk-setup is a one-line edit there. PERMISSION_KEYS and CONFIG_ROWS are derived from it.
 //
 // §3 rows are matched by their stable Key column. §1, §2 and §3b have no key column, so their rows
 // are matched by display name. Either way the match is EXACT (case, backticks and spacing aside):
 // a near-miss must read as unset, never borrow a neighbouring row's value.
-export const PERMISSION_KEYS = Object.freeze({
-  'read-own-work': 'read-own-work',
-  'read-local-git': 'read-local-git',
-  'read-others': 'read-others',
-  'read-slack-public': 'read-slack-public',
-  'read-figma': 'read-figma',
-  'read-vercel': 'read-vercel',
-  'read-confluence': 'read-confluence',
-  'read-transcripts': 'read-transcripts',
-  'read-calendar': 'read-calendar',
-  'read-slack-own': 'read-slack-own',
-  'jira-assign-self': 'jira-assign-self',
-  'jira-comment': 'jira-comment',
-  'jira-create': 'jira-create',
-  'jira-edit': 'jira-edit',
-  'jira-transition': 'jira-transition',
-  'jira-close-own-merged': 'jira-close-own-merged',
-  'jira-close': 'jira-close',
-  'jira-route': 'jira-route',
-  'jira-others': 'jira-others',
-  'git-commit': 'git-commit',
-  'git-push': 'git-push',
-  'git-force-with-lease': 'git-force-with-lease',
-  'pr-open': 'pr-open',
-  'pr-edit': 'pr-edit',
-  'pr-images': 'pr-images',
-  'pr-self-review-comment': 'pr-self-review-comment',
-  'pr-review-others': 'pr-review-others',
-  'pr-reply': 'pr-reply',
-  'pr-request-review': 'pr-request-review',
-  'pr-ready': 'pr-ready',
-  'pr-auto-merge': 'pr-auto-merge',
-  'pr-merge-green': 'pr-merge-green',
-  'merge-feedback-first': 'merge-feedback-first',
-  'pr-update-branch': 'pr-update-branch',
-  'pr-conflict-unreviewed': 'pr-conflict-unreviewed',
-  'pr-conflict-reviewed': 'pr-conflict-reviewed',
-  'ci-rerun': 'ci-rerun',
-  'codex-review': 'codex-review',
-  'ci-protection': 'ci-protection',
-  'gh-close-linked-issue': 'gh-close-linked-issue',
-  'gh-issue-create': 'gh-issue-create',
-  'gh-issue-comment': 'gh-issue-comment',
-  'autopilot-workers': 'autopilot-workers',
-  'autopilot-worker-mode': 'autopilot-worker-mode',
-  'autopilot-merge': 'autopilot-merge',
-  'merge-hold-routine': 'merge-hold-routine',
-  'batch-base-push': 'batch-base-push',
-  'autopilot-judgement': 'autopilot-judgement',
-  'autopilot-reclaim': 'autopilot-reclaim',
-  'machine-reboot': 'machine-reboot',
-  'worker-dependency-install': 'worker-dependency-install',
-  'worker-screenshots': 'worker-screenshots',
-  'worker-local-services': 'worker-local-services',
-  'worker-web-read': 'worker-web-read',
-  'worker-workflow-dispatch': 'worker-workflow-dispatch',
-  'db-per-ticket': 'db-per-ticket',
-  'db-clone-staging': 'db-clone-staging',
-  'staging-write': 'staging-write',
-  'local-reindex': 'local-reindex',
-  'tests-shared-db': 'tests-shared-db',
-  'worktree-remove': 'worktree-remove',
-  'branch-delete': 'branch-delete',
-  'server-stop': 'server-stop',
-  'skills-edit': 'skills-edit',
-  'vercel-env': 'vercel-env',
-  'slack-draft': 'slack-draft',
-  'slack-send': 'slack-send',
-  'merge-bypass': 'merge-bypass',
-  'others-prs': 'others-prs',
-  'product-calls': 'product-calls',
-  'legal-content': 'legal-content',
-});
-
-export const CONFIG_ROWS = Object.freeze({
-  'gh-repo': { section: '0', row: 'GitHub repo' },
-  'default-branch': { section: '0', row: 'Default branch' },
-  'repo-description': { section: '0', row: 'One-line description' },
-  'github-handle': { section: '1', row: 'GitHub handle' },
-  'jira-email': { section: '1', row: 'Jira email' },
-  'jira-display-name': { section: '1', row: 'Jira display name' },
-  'jira-account-id': { section: '1', row: 'Jira account id' },
-  'git-author': { section: '1', row: 'Git author name / email' },
-  name: { section: '1', row: 'Name' },
-  'repo-root': { section: '2', row: 'Primary repo root' },
-  'worktrees-dir': { section: '2', row: 'Worktrees directory' },
-  'handoff-dir': { section: '2', row: 'Handoff directory' },
-  'backups-dir': { section: '2', row: 'Backups directory' },
-  'design-dir': { section: '2', row: 'Design canvases directory' },
-  wsl: { section: '2', row: 'Running on WSL?' },
-  'browser-profile': { section: '2', row: 'Signed-in browser profile' },
-  'handoff-pct': { section: '2', row: 'Handoff at context %' },
-  'handoff-pct-1m': { section: '2', row: 'Handoff at context % on a 1M window' },
-  tracker: { section: '4', row: 'Tracker' },
-  'jira-site': { section: '4', row: 'Jira site' },
-  'jira-project': { section: '4', row: 'Jira project' },
-  'ticket-pattern': { section: '4', row: 'Ticket key pattern' },
-  'in-progress-state': { section: '4', row: 'In-progress state' },
-  'review-state': { section: '4', row: 'Review state' },
-  'done-state': { section: '4', row: 'Done state' },
-  'jira-priority': { section: '4', row: 'Priority' },
-  'jira-other-fields': { section: '4', row: 'Other fields' },
-  'jira-required-fields': { section: '4', row: 'Required fields' },
-  'jira-size-field': { section: '4', row: 'Size field' },
-  'jira-priority-user-only': { section: '4', row: 'Priorities only you set' },
-  'jira-cloudid': { section: '4', row: 'Jira cloudId' },
-  labels: { section: '4', row: 'Labels' },
-  'person-step-labels': { section: '4', row: 'Person-step labels' },
-  'person-input-labels': { section: '4', row: 'Person-input labels' },
-  'required-checks': { section: '4', row: 'Required checks' },
-  'work-id-patterns': { section: '4', row: 'Other work id patterns' },
-  'merge-holds': { section: '4', row: 'Merge holds' },
-  'incidental-paths': { section: '4', row: 'Incidental paths' },
-  'append-only-paths': { section: '4', row: 'Append-only paths' },
-  'merge-method': { section: '4', row: 'Merge method' },
-  'local-review': { section: '4', row: 'Local review command' },
-  'clean-verdict': { section: '4', row: 'Clean review verdict' },
-  'review-account': { section: '4', row: 'Review account' },
-  'gate-reviewers': { section: '4', row: 'Gate reviewers' },
-  'review-bar': { section: '4', row: 'Review bar' },
-  'review-experts': { section: '4', row: 'Review domain experts' },
-  'agents-sync': { section: '4', row: 'Project subagents sync' },
-  'package-manager': { section: '4', row: 'Package manager' },
-  'command-prefix': { section: '4', row: 'Command prefix' },
-  'install-cmd': { section: '4', row: 'Install' },
-  'dev-cmd': { section: '4', row: 'Dev server' },
-  'typecheck-cmd': { section: '4', row: 'Typecheck' },
-  'lint-cmd': { section: '4', row: 'Lint' },
-  'baseline-checks': { section: '4', row: 'Baseline checks' },
-  'test-cmd': { section: '4', row: 'Unit tests' },
-  'related-test-cmd': { section: '4', row: 'Related tests' },
-  'suite-weight': { section: '4', row: 'Suite weight' },
-  'e2e-cmd': { section: '4', row: 'E2E tests' },
-  'storybook-cmd': { section: '4', row: 'Storybook' },
-  'build-cmd': { section: '4', row: 'Build' },
-  'codegen-cmd': { section: '4', row: 'Codegen' },
-  'integration-cmd': { section: '4', row: 'Integration tests' },
-  'acceptance-specs': { section: '4', row: 'Acceptance specs' },
-  'pre-push-checks': { section: '4', row: 'Pre-push checks' },
-  'merged-tree-check-cmd': { section: '4', row: 'Merged-tree check' },
-  'pr-description-checks': { section: '4', row: 'PR-description checks' },
-  'seed-cmd': { section: '4', row: 'Seed' },
-  'db-url-var': { section: '4', row: 'Database URL variable' },
-  'db-migrate-cmd': { section: '4', row: 'Database migrate' },
-  'branch-protection': { section: '4', row: 'Branch protection' },
-  'advisory-checks': { section: '4', row: 'Advisory checks' },
-  'flaky-checks': { section: '4', row: 'Known flaky checks' },
-  'state-checks': { section: '4', row: 'State checks' },
-  'operator-checks': { section: '4', row: "Checks workers can't fix" },
-  'check-builds': { section: '4', row: 'Check builds' },
-  'live-reads': { section: '4', row: 'Live reads' },
-  'pre-merge-steps': { section: '4', row: 'Pre-merge steps' },
-  'evidence-workflow': { section: '4', row: 'Evidence workflow' },
-  'worker-workflows': { section: '4', row: 'Worker workflows' },
-  'worker-read-repos': { section: '4', row: 'Worker read-only repos' },
-  'worker-measure-cmds': { section: '4', row: 'Worker measuring commands' },
-  'repo-merge-settings': { section: '4', row: 'Repo merge settings' },
-  vercel: { section: '4', row: 'Vercel' },
-  'staging-bypass': { section: '4', row: 'Staging bypass token location' },
-  'slack-channels': { section: '4', row: 'Slack channels' },
-  // A `###` table of the user's own rows rather than one row: every Ask, with its Detail.
-  'review-asks': { section: '4', row: 'What review here consistently asks for', table: true },
-  'code-reviewer': { section: '4', row: 'Code reviewer' },
-  'product-owner': { section: '4', row: 'Product owner' },
-  'repo-instructions': { section: '5', row: 'Repo instructions' },
-  'subagents-without-asking': { section: '3b', row: 'Subagents that may run without asking' },
-  'test-cap': { section: '3b', row: 'Test worker cap under the test lock' },
-  'spawn-gate': { section: '3b', row: 'Spawn gate (available memory)' },
-  'park-after': { section: '3b', row: 'Park an unanswered question after (minutes)' },
-  'resume-killed': { section: '3b', row: 'Resume a killed worker (times)' },
-  'disk-floor': { section: '3b', row: 'Free disk floor (GB)' },
-  'promotion-slice': { section: '3b', row: 'Promotion slice size (children)' },
-  'claim-release': { section: '3b', row: 'Release idle claims after (hours)' },
-  'usage-pacing': { section: '3b', row: 'Usage pacing headroom (points)' },
-  subscription: { section: '3b', row: 'Subscription' },
-  'checkin-times': { section: '3b', row: 'Check-in times' },
-  'intake-query': { section: '3b', row: 'Intake query' },
-  'file-budget': { section: '3b', row: 'Per-file collision budget' },
-  'triage-concurrency': { section: '3b', row: 'Triage concurrency' },
-  'maintenance-window': { section: '3b', row: 'Maintenance window' },
-  'maintenance-drain': { section: '3b', row: 'Maintenance drain limit (minutes)' },
-  'env-files': { section: '4', row: 'Env files' },
-  'local-db': { section: '4', row: 'Local database' },
-  'local-services': { section: '4', row: 'Local services' },
-  staging: { section: '4', row: 'Staging' },
-  'promotion-ref': { section: '4', row: 'Promotion ref' },
-  'checkout-destination': { section: '4', row: 'Check-out destination' },
-  'ai-attribution': { section: '5', row: 'AI attribution' },
-  'branch-names': { section: '5', row: 'Branch names' },
-  'pr-title': { section: '5', row: 'PR title' },
-  breakpoints: { section: '5', row: 'Breakpoints' },
-  themes: { section: '5', row: 'Themes' },
-  'design-system': { section: '5', row: 'Design system' },
-  'dev-port': { section: '3b', row: 'Preferred dev-server port' },
-  concurrency: { section: '3b', row: 'Autopilot worker concurrency' },
-  'memory-ceiling': { section: '3b', row: 'Memory ceiling for parallel work (GB)' },
-  'worker-budget': { section: '3b', row: 'Autopilot per-worker budget (USD)' },
-  'batch-budget': { section: '3b', row: 'Autopilot batch budget (USD)' },
-  'worker-models': { section: '3b', row: 'Worker models' },
-  'worker-location': { section: '3b', row: 'Worker location' },
-  'borrow-idle': { section: '3b', row: 'Borrow idle workers' },
-  'batches-run-by': { section: '3b', row: 'Batches run by' },
-  'status-table': { section: '3b', row: 'Orchestrator status table' },
-  levers: { section: '3b', row: 'Phase 0 levers' },
-  'worker-effort': { section: '3b', row: 'Worker effort' },
-  'codex-models': { section: '3b', row: 'Codex review' },
-});
+export { PERMISSION_KEYS, CONFIG_ROWS };
 
 export class DeskConfigError extends Error {}
 // No config file resolves (outside a repo, or setup never ran): nothing was read, so nothing may be
@@ -481,7 +277,6 @@ export class NoRepoConfigError extends DeskConfigError {}
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
 let cache = null;
-const norm = (s) => s.replace(/[*`]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
@@ -514,6 +309,13 @@ function tableLines(text) {
     out.rows.push({ i, section, sub, table, header, cells, label, declared: !!label && ['key', 'field', 'role'].includes(header[0]) });
   });
   return out;
+}
+// What a config file's text declares, for the schema's coverage check: its declared rows, and the
+// `###` headings of its tables of the person's own rows (the §3c ledger has none).
+export function declaredRows(text) {
+  const { rows } = tableLines(String(text));
+  const tables = new Map(rows.filter((r) => !r.declared && r.sub).map((r) => [`${r.section}/${r.sub}`, { section: r.section, heading: r.sub }]));
+  return { rows: rows.filter((r) => r.declared).map(({ section, label }) => ({ section, label })), tables: [...tables.values()] };
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 

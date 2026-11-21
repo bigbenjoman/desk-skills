@@ -50,7 +50,7 @@ import { Script } from 'node:vm';
 
 export const ALWAYS = ['test_lint.sh'];
 // Shared by everything: a change here can move any suite.
-const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/];
+const FOUNDATION = [/^tests\/(run\.sh|suite_env\.sh|scope_sections\.mjs|bash32_check\.sh|bash32_features\.txt)$/, /^\.github\//, /^desk\/bin\/desk-env\.(mjs|sh)$/, /^desk\/bin\/config-schema\.mjs$/];
 // A foundational module whose change, when it only adds exports, reaches only the suites using them.
 const EXPORTS_ONLY = new Set(['desk/bin/desk-env.mjs']);
 const CODE_EXT = /\.(sh|bash|mjs|cjs|js|py)$/;

@@ -4,7 +4,8 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows, PATH_VARS } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, declaredRows, CONFIG_ROWS, PATH_VARS } from '../desk/bin/desk-env.mjs';
+import { ROWS, coverage } from '../desk/bin/config-schema.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -484,6 +485,80 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   let code = 0; try { execFileSync('node', [BIN, 'show'], { stdio: 'ignore', env: { ...showEnv, DESK_CONFIG: join(T, 'missing.md') } }); } catch (e) { code = e.status; }
   t('#746 with no config it exits 3', code, 3);
 }
+// The schema (config-schema.mjs) against the shipped template, both ways, and the id tables desk-env
+// derives from it against the literals they replaced.
+{
+  const tpl = readFileSync(join(ROOT, 'desk-config.md'), 'utf8');
+  const named = (list) => list.map(({ section, label }) => `§${section} ${label}`).join(' / ');
+  const cov = coverage(declaredRows(tpl));
+  t('DS-867 AC1 every row the template declares in §0 to §5 has a schema entry with its section and label', named(cov.missing), '');
+  t('DS-867 AC2 every schema entry names a row or table the template declares', named(cov.extra), '');
+  const declared = declaredRows(tpl);
+  t('DS-867 AC1 the §3c ledger and the review asks are not declared rows', declared.rows.some((r) => r.section === '3c' || /^(todo|rule)$/i.test(r.label)), false);
+  t('DS-867 AC1 the §0 to §5 rows are all read', ['0', '1', '2', '3', '3b', '4', '5'].every((s) => declared.rows.some((r) => r.section === s)), true);
+  const added = tpl.replace('| Slack channels |', '| Pager rota | `TODO` |\n| Slack channels |');
+  t('DS-867 AC3 a template row the schema lacks is named by section and label', named(coverage(declaredRows(added)).missing), '§4 Pager rota');
+  t('DS-867 AC3 so is a removed one, from the schema side', named(coverage(declaredRows(tpl.replace(/^\| Slack channels \|.*\n/m, ''))).extra), '§4 Slack channels');
+  t('DS-867 every schema id is unique', ROWS.length - new Set(ROWS.map((e) => e.id)).size, 0);
+  t('DS-867 every entry has a known kind and section', ROWS.filter((e) => !['value', 'list', 'perm', 'table'].includes(e.kind) || !['0', '1', '2', '3', '3b', '4', '5'].includes(e.section)).map((e) => e.id).join(' '), '');
+
+  // AC4: the literals desk-env held before the schema, as `id|section|row`, `|table` marking a table id.
+  const BEFORE_ROWS = [
+    'gh-repo|0|GitHub repo', 'default-branch|0|Default branch', 'repo-description|0|One-line description', 'github-handle|1|GitHub handle',
+    'jira-email|1|Jira email', 'jira-display-name|1|Jira display name', 'jira-account-id|1|Jira account id', 'git-author|1|Git author name / email',
+    'name|1|Name', 'repo-root|2|Primary repo root', 'worktrees-dir|2|Worktrees directory', 'handoff-dir|2|Handoff directory',
+    'backups-dir|2|Backups directory', 'design-dir|2|Design canvases directory', 'wsl|2|Running on WSL?', 'browser-profile|2|Signed-in browser profile',
+    'handoff-pct|2|Handoff at context %', 'handoff-pct-1m|2|Handoff at context % on a 1M window', 'tracker|4|Tracker', 'jira-site|4|Jira site',
+    'jira-project|4|Jira project', 'ticket-pattern|4|Ticket key pattern', 'in-progress-state|4|In-progress state', 'review-state|4|Review state',
+    'done-state|4|Done state', 'jira-priority|4|Priority', 'jira-other-fields|4|Other fields', 'jira-required-fields|4|Required fields',
+    'jira-size-field|4|Size field', 'jira-priority-user-only|4|Priorities only you set', 'jira-cloudid|4|Jira cloudId', 'labels|4|Labels',
+    'person-step-labels|4|Person-step labels', 'person-input-labels|4|Person-input labels', 'required-checks|4|Required checks',
+    'work-id-patterns|4|Other work id patterns', 'merge-holds|4|Merge holds', 'incidental-paths|4|Incidental paths',
+    'append-only-paths|4|Append-only paths', 'merge-method|4|Merge method', 'local-review|4|Local review command',
+    'clean-verdict|4|Clean review verdict', 'review-account|4|Review account', 'gate-reviewers|4|Gate reviewers', 'review-bar|4|Review bar',
+    'review-experts|4|Review domain experts', 'agents-sync|4|Project subagents sync', 'package-manager|4|Package manager',
+    'command-prefix|4|Command prefix', 'install-cmd|4|Install', 'dev-cmd|4|Dev server', 'typecheck-cmd|4|Typecheck', 'lint-cmd|4|Lint',
+    'baseline-checks|4|Baseline checks', 'test-cmd|4|Unit tests', 'related-test-cmd|4|Related tests', 'suite-weight|4|Suite weight',
+    'e2e-cmd|4|E2E tests', 'storybook-cmd|4|Storybook', 'build-cmd|4|Build', 'codegen-cmd|4|Codegen', 'integration-cmd|4|Integration tests',
+    'acceptance-specs|4|Acceptance specs', 'pre-push-checks|4|Pre-push checks', 'merged-tree-check-cmd|4|Merged-tree check',
+    'pr-description-checks|4|PR-description checks', 'seed-cmd|4|Seed', 'db-url-var|4|Database URL variable', 'db-migrate-cmd|4|Database migrate',
+    'branch-protection|4|Branch protection', 'advisory-checks|4|Advisory checks', 'flaky-checks|4|Known flaky checks', 'state-checks|4|State checks',
+    "operator-checks|4|Checks workers can't fix", 'check-builds|4|Check builds', 'live-reads|4|Live reads', 'pre-merge-steps|4|Pre-merge steps',
+    'evidence-workflow|4|Evidence workflow', 'worker-workflows|4|Worker workflows', 'worker-read-repos|4|Worker read-only repos',
+    'worker-measure-cmds|4|Worker measuring commands', 'repo-merge-settings|4|Repo merge settings', 'vercel|4|Vercel',
+    'staging-bypass|4|Staging bypass token location', 'slack-channels|4|Slack channels', 'review-asks|4|What review here consistently asks for|table',
+    'code-reviewer|4|Code reviewer', 'product-owner|4|Product owner', 'repo-instructions|5|Repo instructions',
+    'subagents-without-asking|3b|Subagents that may run without asking', 'test-cap|3b|Test worker cap under the test lock',
+    'spawn-gate|3b|Spawn gate (available memory)', 'park-after|3b|Park an unanswered question after (minutes)',
+    'resume-killed|3b|Resume a killed worker (times)', 'disk-floor|3b|Free disk floor (GB)', 'promotion-slice|3b|Promotion slice size (children)',
+    'claim-release|3b|Release idle claims after (hours)', 'usage-pacing|3b|Usage pacing headroom (points)', 'subscription|3b|Subscription',
+    'checkin-times|3b|Check-in times', 'intake-query|3b|Intake query', 'file-budget|3b|Per-file collision budget',
+    'triage-concurrency|3b|Triage concurrency', 'maintenance-window|3b|Maintenance window', 'maintenance-drain|3b|Maintenance drain limit (minutes)',
+    'env-files|4|Env files', 'local-db|4|Local database', 'local-services|4|Local services', 'staging|4|Staging', 'promotion-ref|4|Promotion ref',
+    'checkout-destination|4|Check-out destination', 'ai-attribution|5|AI attribution', 'branch-names|5|Branch names', 'pr-title|5|PR title',
+    'breakpoints|5|Breakpoints', 'themes|5|Themes', 'design-system|5|Design system', 'dev-port|3b|Preferred dev-server port',
+    'concurrency|3b|Autopilot worker concurrency', 'memory-ceiling|3b|Memory ceiling for parallel work (GB)',
+    'worker-budget|3b|Autopilot per-worker budget (USD)', 'batch-budget|3b|Autopilot batch budget (USD)', 'worker-models|3b|Worker models',
+    'worker-location|3b|Worker location', 'borrow-idle|3b|Borrow idle workers', 'batches-run-by|3b|Batches run by',
+    'status-table|3b|Orchestrator status table', 'levers|3b|Phase 0 levers', 'worker-effort|3b|Worker effort', 'codex-models|3b|Codex review',
+  ];
+  const BEFORE_PERMS = ('read-own-work read-local-git read-others read-slack-public read-figma read-vercel read-confluence read-transcripts '
+    + 'read-calendar read-slack-own jira-assign-self jira-comment jira-create jira-edit jira-transition jira-close-own-merged jira-close '
+    + 'jira-route jira-others git-commit git-push git-force-with-lease pr-open pr-edit pr-images pr-self-review-comment pr-review-others '
+    + 'pr-reply pr-request-review pr-ready pr-auto-merge pr-merge-green merge-feedback-first pr-update-branch pr-conflict-unreviewed '
+    + 'pr-conflict-reviewed ci-rerun codex-review ci-protection gh-close-linked-issue gh-issue-create gh-issue-comment autopilot-workers '
+    + 'autopilot-worker-mode autopilot-merge merge-hold-routine batch-base-push autopilot-judgement autopilot-reclaim machine-reboot '
+    + 'worker-dependency-install worker-screenshots worker-local-services worker-web-read worker-workflow-dispatch db-per-ticket '
+    + 'db-clone-staging staging-write local-reindex tests-shared-db worktree-remove branch-delete server-stop skills-edit vercel-env '
+    + 'slack-draft slack-send merge-bypass others-prs product-calls legal-content').split(' ');
+  const sorted = (a) => [...a].sort().join('\n');
+  const rowsNow = Object.entries(CONFIG_ROWS).map(([id, r]) => [id, r.section, r.row, ...(r.table ? ['table'] : [])].join('|'));
+  t('DS-867 AC4 CONFIG_ROWS holds exactly the ids, sections and rows it held', sorted(rowsNow), sorted(BEFORE_ROWS));
+  t('DS-867 AC4 and nothing else on any entry', Object.values(CONFIG_ROWS).filter((r) => Object.keys(r).some((k) => !['section', 'row', 'table'].includes(k))).length, 0);
+  t('DS-867 AC4 PERMISSION_KEYS holds exactly the ids and keys it held', sorted(Object.entries(PERMISSION_KEYS).map(([id, k]) => `${id}=${k}`)), sorted(BEFORE_PERMS.map((k) => `${k}=${k}`)));
+  t('DS-867 AC4 both stay frozen', Object.isFrozen(CONFIG_ROWS) && Object.isFrozen(PERMISSION_KEYS), true);
+}
+
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');
