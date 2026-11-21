@@ -78,6 +78,14 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('AC1 and a quiet worker it cannot stop is counted, not parked as wedged', j(sets(advance(tickets[2]))), '["idle_passes=6"]');
 }
 
+// DS-695: a pass another worker's exit woke counts no quiet pass, so it never stops a quiet worker sooner.
+{
+  const quiet = snap(ticket('W', { session_id: 'live-1', log_bytes: 0, idle_passes: 5 }), logOf('W', '', []), { sessions: [{ sessionId: 'live-1', pid: 7 }] });
+  const as = advance({ ...quiet, woken: true });
+  t('DS-695 a woken pass leaves a quiet worker\'s count and running', j([sets(as), types(as).includes('park'), types(as).includes('kill')]), j([[], false, false]));
+  t('DS-695 the interval\'s pass still counts it, and stops it at six', j([sets(advance(quiet)).includes('idle_passes=6'), types(advance(quiet)).includes('park')]), j([true, true]));
+}
+
 // AC2: workers the registry lists, whose logs show them still working, get no action that moves them on.
 {
   const sessions = [{ sessionId: 'sid-A', pid: 11 }, { sessionId: 'sid-B', pid: 12 }];
