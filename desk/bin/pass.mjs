@@ -73,7 +73,7 @@ import { decidePrStatus, followState } from './pass/pr-status.mjs';
 import { PACE_HELD, toResume, toHandoff, decideEligibility, decideSlots, ticketSlotsOf } from './pass/eligibility.mjs';
 import { decideEvidenceFailures } from './pass/evidence-failures.mjs';
 import { decideLapsedRestates, decideClears, decidePersonSteps, decidePersonInputs, decideDateHolds, decideOutsideBlockers, decideOutsideHolds, decideMergeHolds } from './pass/parks.mjs';
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from './pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from './pass/report.mjs';
 import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
@@ -123,21 +123,13 @@ function verdict(status, message, fields = {}) {
   return code;
 }
 const refuse = (message) => process.exit(verdict('error', message));
-// A crash after the pass has changed something (started a worker, moved, parked or failed a ticket)
-// says what it had done, in the message and as `before_crash` in the JSON, so nobody reads the error
-// as "nothing happened this pass" and starts a ticket that already has a session.
-const doneSoFar = () => {
-  let r;
-  try { r = report; } catch { return null; } // a crash before the report exists changed nothing it records
-  const got = Object.fromEntries(['spawned', 'advanced', 'parked', 'failed'].map((k) => [k, [...(r?.[k] ?? [])]]).filter(([, v]) => v.length));
-  return Object.keys(got).length ? got : null;
-};
+// A crash says what the pass had already done (pass/report.mjs crashVerdict).
 const crashed = (e) => {
   const what = e instanceof Refusal ? describeCrash(e) : `pass.mjs crashed: ${describeCrash(e)}`;
-  const did = doneSoFar();
-  if (!did) return verdict('error', what);
-  const lines = Object.entries(did).flatMap(([k, v]) => [`before it stopped, this pass ${k}:`, ...v.map((l) => `  ${l}`)]);
-  return verdict('error', `${what}\n${lines.join('\n')}`, { before_crash: did });
+  let r = null;
+  try { r = report; } catch { /* a crash before the report exists changed nothing it records */ }
+  const { message, fields } = crashVerdict(what, r);
+  return verdict('error', message, fields);
 };
 crashShowsPerson(crashed);
 
@@ -2817,6 +2809,21 @@ async function spawnBaseFix({ wt, fix: asked }) {
   flushQueue();
   report.spawned.push(`${key} port=${port} model=${model || 'default'}${pick.line} (${tryWhat(fix)} try ${fix.try} of ${fix.of} on ${BASE}${review ? `, PR #${fix.pr}` : ''}); ${preflightNote(pre.cost)}`);
 }
+// The rows below are used only after the spawns, but read here, before the first: a row that cannot be
+// read stops the pass before it starts a worker rather than after, and still lets it record what the
+// running workers finished, the tickets' above and a base fix try's in the base sync.
+// §4 Evidence workflow, for the evidence runs of done tickets' draft PRs.
+const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
+// §4 Checks workers can't fix, for a draft's red checks and a ready PR's in the fix tries.
+const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
+// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
+// applied to staging), so no fix worker is sent for it and the person is told the step.
+const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
+// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
+// sends a review worker for one reading the verdict).
+const stateRow = parseStateChecks(E.configValues('state-checks'));
+// §4 Known flaky checks, for the fix tries.
+const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 const spawnedBefore = report.spawned.length;
 if (baseFix) await spawnBaseFix(baseFix);
 
@@ -3594,7 +3601,6 @@ function withUntriggered(s) {
 }
 const DRIVER_DIR = join(STATE, 'merge-driver');
 const EVIDENCE_DIR = join(STATE, 'evidence-runs');
-const evidenceRow = parseEvidenceRow(E.configValues('evidence-workflow'));
 // A run's status for evidence.mjs evidenceRecord, or null when gh cannot read it.
 const viewRun = (id) => { try { return clearsRead.run(id); } catch { return null; } };
 const driverLines = (f) => { try { return readFileSync(join(DRIVER_DIR, f), 'utf8').split('\n'); } catch { return []; } };
@@ -3813,11 +3819,6 @@ runSteps({
 // writes they yield are the handlers below; the readers undraftCall and the fix tries call as they need
 // them go in the undraft snapshot's `reads`.
 const undraftErrors = [];
-// §4 Checks workers can't fix, for a draft's red checks here and a ready PR's in the fix tries below.
-const operatorRow = parseOperatorChecks(E.configValues('operator-checks'));
-// §4 Pre-merge steps: what a person does first for a check, or a step in one, to go green (a migration
-// applied to staging), so no fix worker is sent for it and the person is told the step.
-const preMergeRow = parseOperatorChecks(E.configValues('pre-merge-steps'));
 // What git says about a PR's head and the base, for a head of the ticket's branch: whether a verdict for
 // an older head still holds at it (carry), and whether a merge from the base last moved it (baseMerge):
 // such a head, since the last try's, gets its own review try, outside the fix tries. With the
@@ -3843,9 +3844,6 @@ const baseMoves = (t, head) => {
     },
   };
 };
-// §4 State checks: red checks that read the PR's state, so no fix worker is sent for them (verdictTry
-// sends a review worker for one reading the verdict).
-const stateRow = parseStateChecks(E.configValues('state-checks'));
 // A failing reviewer check (health.mjs: the account desk posts verdicts from is not one §4 Gate
 // reviewers counts, or cannot be read) holds every PR red only on a §4 State check of kind verdict,
 // with nothing pending: a review or fix try there posts a verdict the gate does not count. The PR
@@ -4235,7 +4233,6 @@ function reviewComments(id) {
 // recorded as stuck and put to the person: pass/fix-tries.mjs decides, and the handlers below read
 // git, gh and the driver's per-head rerun record, and write the queue. A §4 Check builds check gets its
 // build here as a draft's does (startCheckBuild).
-const flakyRow = parseFlaky(E.configValues('flaky-checks'));
 // The files a PR conflicts on, as git works them out against the base; null when it cannot.
 function conflictFiles(branch) {
   if (!branch) return null;
