@@ -94,6 +94,7 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { runOnce, outOrNull } from './build-memo.mjs';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
@@ -238,7 +239,7 @@ export const READS = {
       return JSON.parse(execFileSync('desk-jira', ['get', key, '--json'], { ...quiet, cwd: at.cwd, env: at.env }))?.fields?.status?.statusCategory?.key ?? null;
     } catch { return null; }
   },
-  git: (dir, args) => { try { return execFileSync('git', ['-C', dir, ...args], quiet).trim(); } catch { return null; } },
+  git: (dir, args) => outOrNull(runOnce('git', ['-C', dir, ...args])),
   // origin fetched in `dir`, so its remote refs are as GitHub has them: true, or false when it failed.
   fetch: (dir) => { try { execFileSync('git', ['-C', dir, 'fetch', '-q', 'origin'], { ...quiet, timeout: 120000 }); return true; } catch { return false; } },
   // The newest PR merged in repo `slug` whose branch names `key` (a title is not enough: another
