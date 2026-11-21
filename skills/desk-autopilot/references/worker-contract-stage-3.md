@@ -127,7 +127,8 @@ Your settings are an **allow-list**: anything not named here is refused.
   end-to-end run you ask for is the narrowest one that covers your change": read it first.
 - **`codex`**: only `codex exec --sandbox read-only …` and `codex --version`, where §3 `codex-review`
   is `yes`. With the `codex` lever on, `desk-codex …` too, and a direct call passing a model,
-  profile or output file is refused.
+  profile or output file is refused; with it off, `node ~/.claude/desk/bin/codex-exec.mjs review …`
+  too (desk-review's finder and refuter calls).
 - **Reading tools**: `rg`, `grep`, `find` (without `-exec`/`-delete`), `ls`, `cat`, `head`, `tail`,
   `wc`, `diff`, `jq`, `tr`, `cut`, `stat`, `du`, `file`, `mkdir`, `ps`, `pgrep`, and `echo`,
   `printf` and `true` to stdout. **Not** `sed`,
@@ -236,6 +237,10 @@ orchestrator cannot see the stall. Never offer a benign alternative ("or is this
 codex rejects when uncertain, so that clause can flip a CONFIRMED P1 to REJECTED with no code
 change. Never pass `-m`. A useless or empty reply counts as REJECTED and says the refutation did
 not run, not that it passed.
+
+**The finder and refuter calls go through `codex-exec.mjs review`** with the lever off
+(desk-review's Phases 3 and 4), one command too, so a hung call ends at its timeout, exit 124, a
+dead seat, instead of heartbeating into your log until the pass stops you as wedged.
 
 **With the `codex` lever on** (`desk-env levers codex` prints `on`), every call above is
 `desk-codex` instead: `desk-codex probe`, `desk-codex finder '<prompt>'`, `desk-codex refuter

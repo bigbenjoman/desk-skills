@@ -5,6 +5,7 @@ import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
 import { budgetStop } from '../desk/bin/harvest.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
 import { parkApproval } from '../desk/bin/batch-state.mjs';
+import { workerProcs } from '../desk/bin/worker-stop.mjs';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { scratch } from './scratch.mjs';
@@ -151,6 +152,51 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const suite = advance(quiet('T-13', 'AUTOPILOT_STAGE: 4/9 verify'), { 'suite-wait': 'suite' });
   t('a quiet worker running its suite under the test lock is quiet, not wedged',
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
+}
+
+// DS-857: a log that grew only by the harness's tool_progress heartbeat, for one call.
+{
+  const beat = (secs, id = 'toolu_hung') => ({ type: 'tool_progress', tool_use_id: `${id}-heartbeat-${secs / 30}`, tool_name: 'Bash', parent_tool_use_id: id, elapsed_time_seconds: secs, heartbeat: true });
+  // A worker at Stage 4b whose last pass saw its log up to the first event; `after` are the events since.
+  const beating = (key, after, fields = {}) => {
+    const before = [said('AUTOPILOT_STAGE: 4b/9 self-review')];
+    const log = logOf(key, 'AUTOPILOT_STAGE: 4b/9 self-review', [...before, ...after]);
+    const seen = Buffer.byteLength(`${before.map((e) => JSON.stringify(e)).join('\n')}\n`);
+    return snap(ticket(key, { session_id: `sid-${key}`, stage: '4b/9', log_bytes: seen, idle_passes: 0, ...fields }), log, { sessions: [{ sessionId: `sid-${key}`, pid: 91 }] });
+  };
+  const past = advance(beating('H-1', [beat(1770), beat(1800), beat(1830)]));
+  const park = past.find((a) => a.type === 'park')?.question ?? '';
+  t('DS-857 AC1 one call past the ceiling, with only its heartbeat since, is stopped and parked as wedged',
+    j([/^wedged — one Bash call \(toolu_hung\) running for 30 minutes, past the 30-minute ceiling/.test(park), lines(past, 'stalled').length, past.filter((a) => a.type === 'kill').length]), '[true,1,1]');
+  t('DS-857 AC4 the stop names only that worker\'s session', j(past.filter((a) => a.type === 'kill').map((a) => [a.sid, a.pid])), j([['sid-H-1', 91]]));
+  t('DS-857 AC1 its log is counted, so the next pass does not read it again', sets(past).some((f) => f.startsWith('log_bytes=')), true);
+
+  const under = advance(beating('H-2', [beat(600), beat(630)]));
+  t('DS-857 AC2 a call still under the ceiling is left running, as alive',
+    j([types(under).filter((a) => ['kill', 'park'].includes(a)), sets(under).includes('idle_passes=0')]), j([[], true]));
+
+  const more = advance(beating('H-3', [beat(1830), said('the refutation came back')]));
+  t('DS-857 AC3 a log that grew by anything else is alive as today',
+    j([types(more).filter((a) => ['kill', 'park'].includes(a)), sets(more).includes('idle_passes=0')]), j([[], true]));
+
+  const unread = advance({ ...beating('H-4', [beat(1830)]), registry: registryView({ why: 'claude agents failed' }) });
+  t('DS-857 with the registry unread, a hung call is not stopped', types(unread).filter((a) => ['kill', 'park'].includes(a)).length, 0);
+}
+
+// DS-857 AC4: ending a session's processes takes its own groups (its hung codex's too) and no other session's.
+{
+  const rows = [
+    { pid: 1, ppid: 0, pgid: 1, args: 'launchd' },
+    { pid: 10, ppid: 1, pgid: 10, args: 'bash spawn-worker.sh --session-id sid-A' },
+    { pid: 11, ppid: 10, pgid: 10, args: 'claude -p --session-id sid-A' },
+    { pid: 12, ppid: 11, pgid: 12, args: 'codex exec --sandbox read-only x' },
+    { pid: 20, ppid: 1, pgid: 20, args: 'bash spawn-worker.sh --session-id sid-B' },
+    { pid: 21, ppid: 20, pgid: 20, args: 'claude -p --session-id sid-B' },
+    { pid: 22, ppid: 21, pgid: 22, args: 'codex exec --sandbox read-only y' },
+    { pid: 30, ppid: 1, pgid: 30, args: 'node pass.mjs' },
+  ];
+  const target = workerProcs('sid-A', rows, 30);
+  t('DS-857 AC4 only the wedged worker\'s groups, its codex\'s included, are signalled', j([target.groups.sort((a, b) => a - b), target.pids]), j([[10, 12], []]));
 }
 
 // A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.

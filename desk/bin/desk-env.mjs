@@ -998,7 +998,8 @@ export const NO_EFFORT = 'default';
 // The effort a session starting at `start` is launched at: NO_EFFORT (no --effort) with the lever off.
 export const workerEffort = (start) => (leverOn('effort') ? parseWorkerEffort(configValues('worker-effort'))[start] ?? DEFAULT_EFFORT : NO_EFFORT);
 
-// §3b Codex review, read by parseCodexReview (config-schema.mjs) with the codex lever on.
+// §3b Codex review, read by parseCodexReview (config-schema.mjs): every role with the codex lever on,
+// and only its timeout with it off (codex-exec.mjs review).
 export function codexReview() {
   try { return parseCodexReview(configValues('codex-models')); } catch (e) { if (e instanceof NoRepoConfigError) return parseCodexReview(null); throw e; }
 }

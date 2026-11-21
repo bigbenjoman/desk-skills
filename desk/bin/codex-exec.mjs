@@ -7,17 +7,28 @@
 // both call codexExec. A synchronous caller runs this file instead, with the call as JSON on stdin:
 //   node codex-exec.mjs   < {"args": [...], "last": "<file>", "cwd": "<dir>", "timeout": <seconds>}
 // and reads one JSON line back: {"code", "timedOut", "message", "tail", "error"}.
+//
+// A review's finder or refuter call with the codex lever off runs this file's review form, the one
+// form a worker may run, since its codex arguments are fixed here and never read from the caller:
+//   node codex-exec.mjs review [--cd <dir>] <prompt>
+// `codex exec --sandbox read-only --skip-git-repo-check`, at ~/.codex/config.toml's model and effort,
+// ended at config §3b Codex review's timeout. Stdout is codex's final message alone. Exit: codex's own,
+// 124 timed out (`codex-exec: timed out after <n>s` on stderr: the review records the seat as died,
+// "timed out"), 127 codex did not start, 2 usage.
 import { spawn } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const KILL_GRACE_MS = 5000;
 const EXIT_FOR = { SIGHUP: 1, SIGINT: 2, SIGTERM: 15 };
 
-// The exec arguments. `config` items are extra `-c key=value` overrides, after the effort.
-export function execArgs({ sandbox, cd = null, model, effort, last, prompt, config = [] }) {
+// The exec arguments. `config` items are extra `-c key=value` overrides, after the effort. With no
+// model, neither model nor effort is passed, so ~/.codex/config.toml's apply.
+export function execArgs({ sandbox, cd = null, model = null, effort, last, prompt, config = [] }) {
   return ['exec', '--sandbox', sandbox, '--skip-git-repo-check', ...(cd ? ['--cd', cd] : []),
-    '-m', model, '-c', `model_reasoning_effort="${effort}"`, ...config.flatMap((c) => ['-c', c]),
+    ...(model ? ['-m', model, '-c', `model_reasoning_effort="${effort}"`] : []), ...config.flatMap((c) => ['-c', c]),
     '--output-last-message', last, '--', prompt];
 }
 
@@ -59,7 +70,33 @@ const isMain = (() => {
   catch { return false; }
 })();
 
-if (isMain) {
+// The review form: a read-only call whose arguments only this file sets.
+async function review(rest) {
+  const say = (m) => process.stderr.write(`codex-exec: ${m}\n`);
+  const usage = () => { say('usage: codex-exec.mjs review [--cd <dir>] <prompt>'); process.exit(2); };
+  let cd = null;
+  if (rest[0] === '--cd') {
+    cd = rest[1];
+    try { if (!cd || !statSync(cd).isDirectory()) throw new Error(); } catch { say(`--cd ${cd ?? ''} is not a directory`); process.exit(2); }
+    rest = rest.slice(2);
+  }
+  if (rest.length !== 1 || !rest[0].trim()) usage();
+  let timeout;
+  try { timeout = (await import('./desk-env.mjs')).codexReview().timeout; } catch (e) { say(e.message); process.exit(2); }
+  const dir = mkdtempSync(join(tmpdir(), 'codex-exec-'));
+  const last = join(dir, 'last-message.txt');
+  const { code, timedOut, message, tail, error } = await codexExec({ args: execArgs({ sandbox: 'read-only', cd, last, prompt: rest[0] }), last, timeout });
+  rmSync(dir, { recursive: true, force: true });
+  if (error) { say(`codex did not start: ${error}`); process.exit(127); }
+  if (timedOut) { say(`timed out after ${timeout}s`); process.exitCode = 124; return; }
+  if (message) process.stdout.write(message.endsWith('\n') ? message : `${message}\n`);
+  if (code !== 0) say(`codex exited ${code}: ${tail.trim().split('\n').slice(-5).join(' | ') || 'no error text'}`);
+  // Sets the exit code, never process.exit: a pipe write on macOS is asynchronous.
+  process.exitCode = code;
+}
+
+if (isMain && process.argv[2] === 'review') review(process.argv.slice(3));
+else if (isMain) {
   let call;
   try {
     call = JSON.parse(readFileSync(0, 'utf8'));

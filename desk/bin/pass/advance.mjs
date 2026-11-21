@@ -59,11 +59,11 @@ import { LIVE_READ, needsSession, unnamedForcePush, approvalText } from '../batc
 import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
-import { wroteSince } from '../worker-cost.mjs';
+import { wroteSince, heartbeatOnly } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, TOOL_CALL_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -148,14 +148,23 @@ export function* decideAdvance(s) {
   else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
-  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
-  // overstates liveness. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own: a hung call (a `codex exec`) keeps the harness writing a
+  // tool_progress heartbeat every 30s, so growth that is only that heartbeat, for one call past
+  // TOOL_CALL_CEILING_MS, is a hang. Its session's processes are ended, each group whole, so the hung
+  // call goes with it and no other session's is touched.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
   let wedged = false;
-  if (wroteSince(log.raw, t.log_bytes ?? 0)) {
+  const hung = heartbeatOnly(log.raw, t.log_bytes ?? 0);
+  if (hung && hung.secs * 1000 > TOOL_CALL_CEILING_MS && !done && !handoff && !reboot && registry.read) {
+    yield set(t.key, `log_bytes=${log.size}`, ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
+    yield { type: 'kill', key: t.key, sid: t.session_id, pid: pidOf() };
+    wedged = true;
+    const why = `one ${hung.tool} call${hung.id ? ` (${hung.id})` : ''} running for ${Math.floor(hung.secs / 60)} minutes, past the ${TOOL_CALL_CEILING_MS / 60000}-minute ceiling, with only its tool_progress heartbeat in the log`;
+    yield { type: 'park', key: t.key, question: `wedged — ${why}, worker stopped (session ${t.session_id}). Requeue it with queue.mjs requeue ${t.key} (desk-autopilot's orchestrator-recovery.md); never resume the session by hand, which would run it without the worker sandbox` };
+    yield say(t.key, 'stalled', `${t.key}: ${why} — stopped and parked, slot freed`);
+  } else if (wroteSince(log.raw, t.log_bytes ?? 0)) {
     yield set(t.key, `log_bytes=${log.size}`, 'idle_passes=0', ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
