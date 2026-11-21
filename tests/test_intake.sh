@@ -135,7 +135,7 @@ cat > "$T/fakes/gh" <<EOF
 #!/bin/sh
 case "\$*" in
   "pr list "*"--head "*) [ -f "$T/promos.fails" ] && exit 1
-    node -e 'const a = process.argv, h = a[a.indexOf("--head") + 1], b = a[a.indexOf("--base") + 1]; let v = []; try { v = JSON.parse(require("fs").readFileSync("$T/promos.json", "utf8")); } catch {} console.log(JSON.stringify(v.filter((p) => p.headRefName === h && p.baseRefName === b)))' -- "\$@" ;;
+    node -e 'const a = process.argv, h = a[a.indexOf("--head") + 1], b = a[a.indexOf("--base") + 1], s = a[a.indexOf("--state") + 1]; let v = []; try { v = JSON.parse(require("fs").readFileSync("$T/promos.json", "utf8")); } catch {} console.log(JSON.stringify(v.filter((p) => p.headRefName === h && p.baseRefName === b && (!p.state || p.state === s))))' -- "\$@" ;;
   "pr list "*) cat "$T/prs.json" 2>/dev/null || echo "[]" ;;
   "api repos/"*"/contents/.github/workflows?ref="*) [ -d "$T/wf" ] && echo .github/workflows/ci.yml || exit 1 ;;
   "api -H Accept: application/vnd.github.raw repos/"*"/contents/.github/workflows/ci.yml?ref="*) a="\$*"; cat "$T/wf/\${a##*ref=}.yml" ;;
@@ -726,6 +726,27 @@ check "DS-811 a green one is open" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/
 touch "$T/promos.fails"
 check "DS-811 a promotion PR GitHub cannot read is null" '[ "$(unpromoted L-3)" = null ]'
 rm -f "$T/promos.fails"
+# DS-947: a promotion PR from the branch into main that merged after the blocker did, and one that
+# merged only before it, which still promotes nothing of it.
+printf '%s\n' '[{"number":871,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-11-02T09:00:00Z"}]' > "$T/promos.json"
+check "DS-947 AC1 a promotion PR merged after it reads as merged, its code on main" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":871,\"state\":\"merged\"}" ]'
+# The next slice's promotion PR, opened from the same branch into main once 871 merged, hides nothing.
+printf '%s\n' '[{"number":871,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-11-02T09:00:00Z"},{"number":872,"state":"open","headRefName":"epic/L3","baseRefName":"main","isDraft":true,"statusCheckRollup":[]}]' > "$T/promos.json"
+check "DS-947 AC1 an open next-slice promotion PR does not hide the merged one" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":871,\"state\":\"merged\"}" ]'
+printf '%s\n' '[{"number":870,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-10-30T09:00:00Z"}]' > "$T/promos.json"
+check "DS-947 AC3 one merged only before it is still no promotion PR" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":null,\"state\":\"none\"}" ]'
+# DS-947 AC2: read against a batch base, a squash promotion into main lands it once the base holds its
+# commit, and not before.
+git -C "$T/repo" -c user.name=t -c user.email=t@t commit -q --allow-empty -m 'epic/L3 squashed'
+git -C "$T/repo" push -q origin main
+SQSHA=$(git -C "$T/repo" rev-parse HEAD)
+git -C "$T/repo" push -q origin "$L5SHA:refs/heads/feat/b"
+printf '[{"number":871,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-11-02T09:00:00Z","mergeCommit":{"oid":"%s"}}]\n' "$SQSHA" > "$T/promos.json"
+landedvia(){ (cd "$T/repo" && git fetch -q origin && node -e 'import(process.argv[2]).then((m) => console.log(String(m.landedOn(process.argv[1], "feat/b", "main"))))' "$1" "$T/bin/intake.mjs"); }
+check "DS-947 AC2 before the base syncs main the blocker has not landed on it" '[ "$(landedvia L-3)" = false ]'
+git -C "$T/repo" push -q origin "$SQSHA:refs/heads/feat/b"
+check "DS-947 AC2 once the base holds the promotion it has" '[ "$(landedvia L-3)" = true ]'
+git -C "$T/repo" push -q origin --delete feat/b
 printf '%s\n' '[{"number":5,"state":"MERGED","title":"fix: M-1 x","headRefName":"fix/M-1-x","baseRefName":"main","mergedAt":"2026-11-01T10:00:00Z"}]' > "$T/prs.json"
 check "DS-811 one merged only into main is not elsewhere" '[ "$(unpromoted M-1)" = null ]'
 rm -f "$T/prs.json" "$T/promos.json"

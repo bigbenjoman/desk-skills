@@ -158,16 +158,21 @@ const prsNamingKey = (repo, state, key, fields) => {
   return ghPrList(repo, ['--state', state, '--search', key, '--json', `number,title,headRefName,${fields}`])
     ?.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`)) ?? null;
 };
+// The PRs from `head` merged into `base` at or after `since`, with `fields` (mergedAt among them), or null
+// when GitHub cannot be read.
+const promotionsAfter = (repo, head, base, since, fields = 'number,mergedAt') =>
+  ghPrList(repo, ['--state', 'merged', '--head', head, '--base', base, '--json', fields])
+    ?.filter((q) => Date.parse(q?.mergedAt) >= Date.parse(since)) ?? null;
 
 // Whether ticket `key`'s code is on `base`: true once a PR naming it has merged into `base`, or into
 // another branch with its merge commit on origin/<base> or with a PR from that branch merged into `base`
 // after it (a squash or rebase promotion, which writes new commits), and when no PR is left to land
 // (none, or only closed ones); false while one is open or merged only elsewhere; null when GitHub cannot
-// be read.
-export function landedOn(key, base) {
+// be read. With `via` (the repo's default branch, where `base` is a batch's base that syncs from it), a
+// promotion merged into `via` after it lands it too, once its merge commit is on origin/<base>.
+export function landedOn(key, base, via = base) {
   let repo, root;
   try { repo = E.ghRepo(); root = E.repoRoot(); } catch { return null; }
-  const list = (args) => ghPrList(repo, args);
   const mine = prsNamingKey(repo, 'all', key, 'state,baseRefName,mergeCommit,mergedAt');
   if (!mine) return null;
   const reaches = (sha) => !!sha && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', sha, `origin/${base}`], { stdio: 'ignore' }).status === 0;
@@ -176,9 +181,13 @@ export function landedOn(key, base) {
   let unread = false;
   for (const p of merged) {
     if (!p.baseRefName || !Date.parse(p.mergedAt)) continue;
-    const promotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', base, '--json', 'number,mergedAt']);
+    const promotions = promotionsAfter(repo, p.baseRefName, base, p.mergedAt);
     if (!promotions) { unread = true; continue; }
-    if (promotions.some((q) => Date.parse(q?.mergedAt) >= Date.parse(p.mergedAt))) return true;
+    if (promotions.length) return true;
+    if (via === base || p.baseRefName === via) continue;
+    const viaPromotions = promotionsAfter(repo, p.baseRefName, via, p.mergedAt, 'number,mergedAt,mergeCommit');
+    if (!viaPromotions) { unread = true; continue; }
+    if (viaPromotions.some((q) => reaches(q.mergeCommit?.oid))) return true;
   }
   if (unread) return null;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
@@ -187,7 +196,8 @@ export function landedOn(key, base) {
 // Where ticket `key`'s code waits when landedOn finds it merged only into another branch: { branch, pr,
 // state }, `branch` the latest branch other than `base` a PR naming it merged into, and the open PR from
 // that branch into `base` as `pr` (its number, null for none) and `state`: none, draft, red (the latest
-// run of a check failed, as gate.mjs reads a rollup) or open. null when no PR naming it merged
+// run of a check failed, as gate.mjs reads a rollup) or open; one from that branch merged into `base`
+// after it is `merged`, its code on `base` already, whatever is open after it. null when no PR naming it merged
 // elsewhere, or GitHub cannot be read.
 export function unpromotedBase(key, base) {
   let repo;
@@ -197,6 +207,11 @@ export function unpromotedBase(key, base) {
   const away = prs.filter((p) => p.baseRefName && p.baseRefName !== base)
     .sort((a, b) => (Date.parse(b.mergedAt) || 0) - (Date.parse(a.mergedAt) || 0))[0];
   if (!away) return null;
+  // A merged promotion is read first: a feature batch opens its next slice's promotion PR, from the same
+  // branch into the same base, as soon as one merges, so an open one does not mean this code waits.
+  const done = promotionsAfter(repo, away.baseRefName, base, away.mergedAt);
+  if (!done) return null;
+  if (done[0]) return { branch: away.baseRefName, pr: done[0].number, state: 'merged' };
   const open = ghPrList(repo, ['--state', 'open', '--head', away.baseRefName, '--base', base, '--json', 'number,isDraft,statusCheckRollup']);
   if (!open) return null;
   const p = open[0];

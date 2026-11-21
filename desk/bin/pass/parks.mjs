@@ -388,6 +388,8 @@ export function* decideOutsideHolds(s) {
       // Read against the repo's default branch, which needs-you promotes into, never a named batch's base.
       if (!unpromoted.has(p)) unpromoted.set(p, yield { type: 'unpromoted', key: p, into: s.repoDefault });
       const u = unpromoted.get(p);
+      // Its branch already merged into the default branch: it lands once the base syncs it, so nothing is asked.
+      if (u?.state === 'merged') continue;
       // `promote` is the promotion PR the person asked for in needs-you, kept across reads.
       if (u) away[p] = { ...u, since: new Date(since).toISOString(), ...(kept?.promote != null ? { promote: kept.promote } : {}) };
       else if (kept) away[p] = kept;
