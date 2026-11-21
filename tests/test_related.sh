@@ -132,7 +132,7 @@ esac
 export DESK_LOCK_HELD="$name"; exec "$@"
 EOF
 export STUB_CALLS="$CALLS"
-: > "$CALLS"; out=$(cd "$R" && STUB=wait bash tests/related.sh 2>&1); rc=$?
+: > "$CALLS"; out=$(cd "$R" && STUB='wait' bash tests/related.sh 2>&1); rc=$?
 check "DS-924 AC1 it takes a test slot through the wrapper, with an hour's deadline" '[[ "$(head -n 1 "$CALLS")" == "test --timeout 3600 -- env DESK_LOCK_HELD=test "*"bash $R/tests/related.sh" ]]'
 check "DS-924 AC1 it says it waits, and on whom, and runs once it holds the slot" \
   '[ $rc -eq 0 ] && [[ "$out" == *"related: taking a test slot first, waiting up to 3600s for one"*"with-lock.sh: waiting for test lock (all 1 slots held): ~/other"* ]] && ran a && ! ran c'
@@ -150,7 +150,7 @@ check "DS-924 AC2 from a sibling worktree its suites run under the slot, in that
   '[ $rc -eq 0 ] && [ "$(sed -n 2p "$CALLS")" = "cwd $(cd "$W" && pwd -P)" ] && [[ "$out" == *"scope some against origin/main: test_a.sh test_b.sh test_c.sh test_lint.sh"* ]] && ran c'
 
 # AC3: a run already inside a slot (called through the wrapper, which exports DESK_LOCK_HELD) takes none.
-: > "$CALLS"; out=$(cd "$R" && DESK_LOCK_HELD=test bash tests/related.sh 2>&1); rc=$?
+: > "$CALLS"; out=$(cd "$R" && DESK_LOCK_HELD='test' bash tests/related.sh 2>&1); rc=$?
 check "DS-924 AC3 a run already in a slot does not take a second" '[ $rc -eq 0 ] && ran a && [ ! -s "$CALLS" ] && [[ "$out" != *"taking a test slot"* ]]'
 
 # AC4: the wait passes its deadline: the wrapper's 75, said, and no suite run.
