@@ -113,6 +113,11 @@ export function* decideEligibility(s) {
       `if the re-run is deliberate: node ${g.queueBin} requeue <TICKET>`);
   }
 
+  // A resume after a per-worker budget stop spends more, so the batch budget holds it too: said by name.
+  const budgetWaits = cap > 0 && spent >= cap ? eligible.filter((r) => r.resume === 'budget') : [];
+  if (budgetWaits.length) {
+    yield say(null, 'stalled', `waiting on the batch budget ($${spent.toFixed(2)} of $${cap}) to resume after a per-worker budget stop: ${budgetWaits.map((r) => r.key).join(', ')}`);
+  }
   if (s.usageHold) yield say(null, 'stalled', `${usageHeldText(s.usageHold)} (probe: ${s.probes.filter(Boolean).join('; ') || 'not run'})`);
   const held = s.maintHold ? 'the maintenance window holds every spawn' : s.usageHold ? usageHeldText(s.usageHold) : overBudget ? 'the batch budget holds every spawn' : s.modelsBad ? 'config §3b "Worker models" holds every spawn'
     : !s.checkin.ok ? 'config §3b "Check-in times" holds every spawn'
