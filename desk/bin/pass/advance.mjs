@@ -63,7 +63,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -327,7 +327,7 @@ export function* decideAdvance(s) {
     const foreign = pr ? notOwnPr(t, yield { type: 'pr-owner', key: t.key, pr }, s.logins) : null;
     if (foreign) {
       yield { type: 'decisions', key: t.key, pr: null };
-      yield { type: 'park', key: t.key, question: `its worker reported PR #${pr} as its result, but ${foreign}: desk takes as a ticket's result only a PR on the branch its worker made, opened by desk's account, so it was not recorded done and no fix or review try goes to #${pr}. If #${pr} already holds this ticket's work, take the ticket out of the batch; otherwise requeue it so a worker makes it on its own branch` };
+      yield { type: 'park', key: t.key, question: foreignQuestion(pr, foreign) };
       yield say(t.key, 'parked', `${t.key}: its worker reported PR #${pr}, which is not its own (${foreign}): parked, not recorded done`);
       return;
     }

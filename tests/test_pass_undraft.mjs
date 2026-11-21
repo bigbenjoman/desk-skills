@@ -83,16 +83,6 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   t('a change inside triage\'s files is not asked the scope question', run([])?.why?.startsWith('review gaps only you can settle'), false);
 }
 
-// A draft that is not the ticket's own (another branch, or another person's) is never undrafted or tried.
-{
-  const run = (fields) => drive(decideUndraft, undraftSnap([{ t: ticket('A'), s: status() }]), { 'pr-view': view([review(marker(ALL_ZERO))], fields) }).actions;
-  const epic = run({ headRefName: 'epic/E', author: { login: 'alice' } });
-  t('a draft on another branch is not undrafted, rerun or tried', j(acts(epic)), '[]');
-  t('the report says why', lines(epic)[0], 'undraft: none for PR #701 (A): PR #701 is on branch epic/E, not A\'s branch task/A, so desk neither undrafts it nor sends it a fix or review try');
-  t('nor is one on its branch another account opened', j([acts(run({ headRefName: 'task/A', author: { login: 'alice' } })).length, /opened by alice, not by ben/.test(lines(run({ headRefName: 'task/A', author: { login: 'alice' } }))[0] ?? '')]), j([0, true]));
-  t('its own draft is undrafted as before', j(acts(run({ headRefName: 'task/A', author: { login: 'ben' } }))), '["ready","comment"]');
-}
-
 // #831: the draft path reads §4 Known flaky checks as the merge driver does, from the error_notes the pass
 // kept on the PR's checks: red only on a listed test, the draft leaves draft; any other failure holds it.
 {

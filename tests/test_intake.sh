@@ -508,6 +508,9 @@ config yes; search O-9; rec O-9 A; n=$(count "$T/triage.calls")
 out=$(DESK_GITHUB_HANDLE=me intake)
 config yes '`none`'
 check "intake: a ticket another person has an open PR for is handed to the digest with it, not triaged" 'grep -q "intake: handed O-9 to the digest: already in progress by alice in #42" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ] && [ "$(qget tickets.O-9)" = undefined ]'
+printf '[%s]\n' "$(pr_json 46 MERGED "fix: O-8 done" fix/O-8 "" bob)" > "$T/prs.json"; config yes; search O-8; rec O-8 A
+out=$(DESK_GITHUB_HANDLE=me intake); out2=$(DESK_GITHUB_HANDLE=me intake); config yes '`none`'
+check "intake: a ticket another person's merged PR did is recorded done once, and not said again" 'grep -q "intake: O-8 already done by bob in #46 (merged): nothing triaged or admitted" <<< "$out" && ! grep -q "O-8" <<< "$out2" && grep -q "^done: already done by bob in #46" <<< "$(handed O-8)"'
 rm -f "$T/prs.json"
 echo 'triage stopped at the usage limit' > "$T/recs/U-2.limit"
 cp "$T/recs/U-1.limit" "$T/recs/U-3.limit"

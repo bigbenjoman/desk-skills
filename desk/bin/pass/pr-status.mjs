@@ -13,6 +13,7 @@
 // for this step: the same objects the steps after it read) adds:
 //   dry      a dry run: nothing is written but pr_status
 //   passAt    the pass's start time, ISO
+//   logins    desk's accounts, as E.verdictLogins gives them (null when unset)
 //
 // Actions ("->" is what the handler returns):
 //   fix-finished {key, at, fixTries}   the ticket's fix try is over: fix.finished=at, and, for a
@@ -27,12 +28,13 @@
 //   out {line}                         a report line
 //   fetch-origin {}                    git fetch origin in the repo root
 //   prune-builds {open}                remove the check-build checkouts of every PR not in `open`
+//   park {key, question}               park the ticket: its PR is not its own (shared.mjs notOwnPr)
 //   lists {drafts, undrafted, reopens, prStates, merges}   what the steps after this one work from:
 //                                      each list of { t, s } (reopens with `owed`), each PR's state by
 //                                      number, and the merge lines
 import { FOLLOW_ON_MAX, followOnPending, postMergeOwed } from '../harvest.mjs';
 import { fromReview, reviewStep } from '../undraft.mjs';
-import { LINK_STEP } from './shared.mjs';
+import { LINK_STEP, notOwnPr, foreignQuestion } from './shared.mjs';
 
 // A PR recorded merged or closed is not read again, unless it merged and the ticket has no merged_at yet.
 // A merged PR whose kept status names post-merge criteria not yet made follow-on steps is read on
@@ -74,6 +76,15 @@ export function* decidePrStatus(s) {
     if (!st) {
       st = yield { type: 'read-pr', key: t.key, pr: n, was: t.pr_status };
       if (!st) continue;
+      // A PR on a branch its worker did not make, or another person's, is never this ticket's: the
+      // ticket parks before any list the reopen, undraft, fix-try or merge steps work from holds it.
+      const foreign = notOwnPr(t, st, s.logins);
+      if (foreign) {
+        prStates[n] = st.state;
+        if (!s.dry) yield { type: 'park', key: t.key, question: foreignQuestion(n, foreign) };
+        yield { type: 'out', line: `PR status: ${t.key}'s PR #${n} is not its own (${foreign}): ${s.dry ? 'would park it' : 'parked'}, and nothing is done to #${n}` };
+        continue;
+      }
       // A closed PR still owed its reopen counts as open, so the batch is not idle and no ticket held
       // behind it reads as stuck while the reopen is outstanding.
       prStates[n] = owed && st.state === 'CLOSED' ? 'OPEN' : st.state;

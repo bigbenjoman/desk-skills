@@ -6,7 +6,7 @@ import { resetText, limitName } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
 import { ownedIds } from '../spine-check.mjs';
-import { evaluateGate, stateFailing } from '../gate.mjs';
+import { evaluateGate, stateFailing, loginIn } from '../gate.mjs';
 
 // ---- the snapshot ---------------------------------------------------------
 // The session registry (claude-logins.mjs readRegistry) as a phase reads it. A failed read must never
@@ -61,19 +61,19 @@ export const tryWhat = (x) => (x?.kind === 'review' ? 'epic PR review' : x?.kind
 // The last try's number, which a try that waited only on the test lock leaves for the next one too.
 export const tryNo = (rec) => rec.tries[rec.tries.length - 1]?.try ?? rec.tries.length;
 
-// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
 // Why PR `p` ({ pr, branch, author }) is not ticket `t`'s own, or null when it is: a PR on a branch
 // other than the one its worker made, or one opened by an account other than desk's (`logins`, the §1
-// GitHub handle and its review account, comma-joined, as E.verdictLogins gives them). A field not read
-// is not held against it.
+// GitHub handle and its review account, comma-joined, as E.verdictLogins gives them, read by gate.mjs
+// loginIn). A field not read is not held against it.
 export function notOwnPr(t, p, logins) {
   const at = p?.branch, mine = t?.branch;
   if (at && mine && at !== mine) return `PR #${p.pr} is on branch ${at}, not ${t.key}'s branch ${mine}`;
-  const ours = String(logins ?? '').split(',').map((x) => x.trim().toLowerCase()).filter(Boolean);
-  const who = String(p?.author ?? '').toLowerCase();
-  if (who && ours.length && !ours.includes(who)) return `PR #${p.pr} was opened by ${p.author}, not by ${ours.join(' or ')}`;
+  if (p?.author && String(logins ?? '').trim() && !loginIn(p.author, logins)) return `PR #${p.pr} was opened by ${p.author}, not by ${String(logins).split(',').map((x) => x.trim()).join(' or ')}`;
   return null;
 }
+// The park a ticket gets when PR #n, not its own (notOwnPr's `why`), was taken or reported as its result.
+export const foreignQuestion = (n, why) => `its PR #${n} is not its own: ${why}. desk takes as a ticket's result only a PR on the branch its worker made, opened by desk's account, so nothing is done to #${n}: no fix or review try, undraft, reopen or merge. If #${n} already holds this ticket's work, take the ticket out of the batch; otherwise requeue it so a worker makes it on its own branch`;
+// A merged PR's merge commit as gh reads it (`mergeCommit`), or null where GitHub names none.
 export const mergeOid = (v) => (/^[0-9a-f]{40}$/.test(String(v?.mergeCommit?.oid ?? '')) ? v.mergeCommit.oid : null);
 
 // The queue's subscription_off value to write, or null when it stands as `was`: the repo's row pinned

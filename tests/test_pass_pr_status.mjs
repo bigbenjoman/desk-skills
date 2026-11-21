@@ -24,6 +24,24 @@ const run = (s, reads) => drive(decidePrStatus(s), answers(reads));
 const ofType = (acts, type) => acts.filter((a) => a.type === type);
 const lists = (acts) => acts.at(-1);
 
+// ---- a done ticket's PR that is not its own: parked where it is read, in no list a later step works from
+{
+  const mine = (key, fields = {}) => done(key, 70, { branch: `fix/${key}`, ...fields });
+  const read = (fields) => ({ 70: status(70, 'OPEN', { branch: 'fix/F', author: 'me', ...fields }) });
+  const epic = run(snap([mine('F')], { logins: 'me' }), read({ branch: 'epic/E', author: 'alice', reopen: { tests: 'x' } }));
+  t('a PR on another branch parks its ticket, naming why', ofType(epic, 'park')[0]?.question?.startsWith("its PR #70 is not its own: PR #70 is on branch epic/E, not F's branch fix/F."), true);
+  t('it is in no draft, ready, reopen list and records no status', j([lists(epic).drafts.length, lists(epic).undrafted.length, lists(epic).reopens.length, ofType(epic, 'pr-status').length]), j([0, 0, 0, 0]));
+  t('the report says nothing is done to it', ofType(epic, 'out').some((a) => a.line === "PR status: F's PR #70 is not its own (PR #70 is on branch epic/E, not F's branch fix/F): parked, and nothing is done to #70"), true);
+  const merged = run(snap([mine('F')], { logins: 'me' }), read({ author: 'alice', state: 'MERGED', merged_at: '2026-11-19T09:00:00Z' }));
+  t('one on its branch another account opened parks it too, and its merge is not recorded as the ticket\'s', j([ofType(merged, 'park').length, ofType(merged, 'merged').length, /opened by alice, not by me/.test(ofType(merged, 'park')[0]?.question ?? '')]), j([1, 0, true]));
+  const dry = run(snap([mine('F')], { logins: 'me', dry: true }), read({ branch: 'epic/E' }));
+  t('a dry run parks nothing, and says it would', j([ofType(dry, 'park').length, /would park it/.test(ofType(dry, 'out')[0]?.line ?? '')]), j([0, true]));
+  const own = run(snap([mine('F')], { logins: 'me,me-bot' }), read({ author: 'Me-Bot' }));
+  t('its own PR is listed as before', j([ofType(own, 'park').length, lists(own).undrafted.length]), j([0, 1]));
+  const noHandle = run(snap([mine('F')], { logins: null }), read({ author: 'alice' }));
+  t('with no account configured only the branch is checked', lists(noHandle).undrafted.length, 1);
+}
+
 // ---- AC1: a merged PR with no merged time recorded
 {
   const acts = run(snap([done('A', 11)]), { 11: status(11, 'MERGED', { merged_at: '2026-11-19T09:00:00Z' }) });

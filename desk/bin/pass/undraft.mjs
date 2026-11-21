@@ -39,7 +39,7 @@ import { undraftCall, undraftComment, personHold } from '../undraft.mjs';
 import { reviewFix, conflictFix, syncFix, renamesFix, reviewTry, draftChecksFix, draftGateTry, captureTry } from '../fix-tries.mjs';
 import { latestPerCheck, normaliseRollup } from '../gate.mjs';
 import { dragCells } from '../evidence.mjs';
-import { set, say, notOwnPr } from './shared.mjs';
+import { set, say } from './shared.mjs';
 
 const out = (line) => ({ type: 'out', line });
 const waiting = (line) => say(null, 'waiting', line);
@@ -163,9 +163,6 @@ export function* decideUndraft(snap) {
     const n = s.pr;
     const v = yield { type: 'pr-view', key: t.key, pr: n };
     if (!v || typeof v !== 'object') { yield out(`undraft: PR #${n} (${t.key}) could not be read; the next pass tries again`); continue; }
-    // Another person's draft, or one on a branch the worker did not make, is never undrafted or tried.
-    const foreign = notOwnPr(t, { pr: n, branch: v.headRefName ?? null, author: v.author?.login ?? null }, cfg.handle);
-    if (foreign) { yield out(`undraft: none for PR #${n} (${t.key}): ${foreign}, so desk neither undrafts it nor sends it a fix or review try`); continue; }
     const head = v.headRefOid;
     const spine = t.key === snap.spine || t.spine_check != null || t.approved === true;
     // A verdict for an older head holds at this one when only clean merges of the base and empty commits came since.

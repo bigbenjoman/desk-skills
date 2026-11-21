@@ -108,7 +108,7 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   const ownerOf = (branch, author) => (a) => (a.pr === '77' ? { pr: a.pr, branch, author } : null);
   const theirs = advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('epic/E', 'alice') });
   t('a DONE naming a PR on another branch is not recorded done', j(types(theirs).filter((x) => ['done', 'park'].includes(x))), '["park"]');
-  t('it parks, naming the PR, its branch and the ticket\'s, and that no try goes to it', /^its worker reported PR #77 as its result, but PR #77 is on branch epic\/E, not D's branch fix\/D: .*no fix or review try goes to #77/.test(theirs.find((a) => a.type === 'park')?.question ?? ''), true);
+  t('it parks, naming the PR, its branch and the ticket\'s, and that nothing is done to it', /^its PR #77 is not its own: PR #77 is on branch epic\/E, not D's branch fix\/D\. .*nothing is done to #77: no fix or review try, undraft, reopen or merge/.test(theirs.find((a) => a.type === 'park')?.question ?? ''), true);
   t('the report says so', lines(theirs, 'parked').some((l) => l.startsWith('D: its worker reported PR #77, which is not its own')), true);
   t('nor is one on its own branch that another account opened', types(advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('fix/D', 'alice') })).includes('done'), false);
   t('its own PR is recorded done as before', types(advance({ ...snap(ticket('D'), log()), logins: 'me,me-bot' }, { 'pr-owner': ownerOf('fix/D', 'Me-Bot') })).includes('done'), true);

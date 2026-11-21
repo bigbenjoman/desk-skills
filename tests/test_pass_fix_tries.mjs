@@ -155,18 +155,6 @@ const lines = (as, type = 'out') => as.filter((a) => a.type === type).map((a) =>
   t('#881 a reviewer that cannot be read still holds the review', j(signin), j([{ type: 'reads', key: 'T-1', dirty: false, dirtyFiles: null }, { type: 'feedback', key: 'T-1', pr: 697, gate: true }, { type: 'gate-hold', key: 'T-1', on: true }]));
 }
 
-// A ready PR that is not the ticket's own (another branch, or another person's) gets no try.
-{
-  const fb = { head: HEAD, left: [], decision: null, review: { id: 'R1', verdict: { p0: '0', p1: '1' }, body: '### P1 (1)\n- src/a.ts:12 the loop never ends' }, payload: {} };
-  const epic = drive(snap([[tk(), pr([ok('tests')], { branch: 'epic/E', author: 'alice' })]], { logins: 'me' }), { feedback: fb });
-  t('a ready PR on another branch gets no fix or review try', j([applied(epic).length, types(epic).includes('feedback')]), j([0, false]));
-  t('the report says why', lines(epic)[0], 'fix tries: none for PR #697 (T-1): PR #697 is on branch epic/E, not T-1\'s branch task/T-1, so desk sends it no fix or review try');
-  const theirs = drive(snap([[tk(), redPr()]].map(([x, p]) => [x, { ...p, branch: 'task/T-1', author: 'alice' }]), { logins: 'me' }));
-  t('nor does one on its branch another person opened, red checks and all', j([applied(theirs).length, /opened by alice, not by me/.test(lines(theirs)[0] ?? '')]), j([0, true]));
-  const mine = drive(snap([[tk(), pr([ok('tests')], { branch: 'task/T-1', author: 'me' })]], { logins: 'me' }), { feedback: fb });
-  t('its own PR gets its try as before', applied(mine)[0]?.call?.fix?.kind, 'review');
-}
-
 // A green PR: its review threads are read, and a stale stuck record is cleared.
 {
   const green = pr([ok('tests')]);

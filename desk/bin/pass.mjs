@@ -3875,7 +3875,7 @@ const undrafted = [];
 const reopens = [];
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -3884,6 +3884,8 @@ runSteps({
       q('set', a.key, `fix.finished=${a.at}`); t.fix.finished = a.at;
       if (a.fixTries) { t.fix_tries = a.fixTries; q('set', a.key, `fix_tries=${JSON.stringify(a.fixTries)}`); }
     },
+    // A ticket whose PR is not its own parks, and the steps after this one in the pass see it parked.
+    park: (a) => { q('park', a.key, a.question); const t = qNow.tickets[a.key]; if (t) Object.assign(t, { state: 'parked', park: { question: a.question } }); },
     'read-pr': (a) => {
       const s = readPrStatus(a.pr);
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);
@@ -4161,7 +4163,7 @@ const UNDRAFT_HANDLERS = {
   'apply-fix': (a) => applyFix(a.t, a.pr, a.head, a.fix),
   take: (a) => { const list = a.list === 'drafts' ? drafts : undrafted; list.splice(list.indexOf(a.entry), 1); },
   'pr-view': (a) => {
-    const raw = sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefOid,headRefName,baseRefName,author,mergeable,mergeStateStatus,body,reviews,comments,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const raw = sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefOid,headRefName,baseRefName,mergeable,mergeStateStatus,body,reviews,comments,statusCheckRollup'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
     try { return JSON.parse(raw); } catch { return null; }
   },
   'gate-hold': (a) => markGateHold(a.t, a.s, a.on),
@@ -4515,7 +4517,7 @@ function fixReads(t, s, dirty, dirtyFiles) {
       undrafted, rowErrors: fixRowErrors, dry: DRY, base: DEFAULT_BRANCH, reviewer: HEALTH.reviewer ?? null, gate: gateLists(), stateChecks: stateRow.checks,
       conflictRows: Object.fromEntries(['pr-conflict-reviewed', 'pr-conflict-unreviewed'].map((r) => [r, { perm: E.permission(r), key: E.permissionKey(r) }])),
       feedbackFirst: E.permissionOrUnset('merge-feedback-first') !== 'no',
-      judgement: E.permission('autopilot-judgement'), logins: conflictHandle,
+      judgement: E.permission('autopilot-judgement'),
     }),
     decide: decideFixTries,
     report,
