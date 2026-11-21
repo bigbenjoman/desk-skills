@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Places each job in a repo's GitHub Actions workflows on a self-hosted runner (the repo's own arm64
 // Linux cloud runners) or a GitHub-hosted one by a written rule, and lints workflows so no job that
-// can land on a self-hosted runner receives a secret. Read-only: it never writes a workflow.
+// can land on a self-hosted runner receives a secret. The repo's `.github/desk-ci.yml` declares its AWS
+// runner labels, which count as its cloud runners. Read-only: it never writes a workflow.
 //   node desk-ci.mjs classify [<workflow file or directory>...]   default .github/workflows
 //   node desk-ci.mjs ci-lint  [<workflow file or directory>...]   exits 1 on any finding
 // classify prints `<file>:<line>  <job>  <hosted|self-hosted>  <reason>` per job, the line being
@@ -24,8 +25,8 @@
 // ci-protection and printed as a plan first.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { join, dirname, basename, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { permissionOrUnset, queueFile, configValue, configValues, isNone } from './desk-env.mjs';
 import { parseVerdict as gateVerdict } from '../templates/scripts/desk/review-gate.mjs';
@@ -158,11 +159,15 @@ function reusableCall(job) {
   return { line: uses.line.n, uses: uses.value, local, why: local ? null : `calls ${uses.value}, a workflow outside this repo that cannot be read here` };
 }
 
-export function classify(text) {
+// With the repo's .github/desk-ci.yml read (ciConfigFor): a job on a declared AWS runner label names
+// it, and every job of a workflow listed under hosted-workflows is placed hosted.
+export function classify(text, { awsLabels = [], hostedWorkflow = false } = {}) {
   const wf = parseWorkflow(text);
   return wf.jobs.map((job) => {
     const reasons = hostedReasons(job, wf);
-    if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: reasons[0].why, also: reasons.slice(1) };
+    const today = AWS_TODAY(runnersOf(job, awsLabels).aws);
+    if (hostedWorkflow) return { job: job.id, placement: 'hosted', line: job.line.n, why: `hosted-workflows (${CI_CONFIG})${today}`, also: reasons };
+    if (reasons.length) return { job: job.id, placement: 'hosted', line: reasons[0].line.n, why: `${reasons[0].why}${today}`, also: reasons.slice(1) };
     const call = reusableCall(job);
     if (call) {
       return call.local
@@ -170,7 +175,8 @@ export function classify(text) {
         : { job: job.id, placement: 'hosted', line: call.line, why: call.why, also: [] };
     }
     const ro = job.keys['runs-on'];
-    return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : ''}`, also: [] };
+    const runsOn = today || (ro ? ` (runs-on today: ${textOf(ro).replace(/\s+/g, ' ').trim()})` : '');
+    return { job: job.id, placement: 'self-hosted', line: job.line.n, why: `no hosted trigger${runsOn}`, also: [] };
   });
 }
 
@@ -181,40 +187,356 @@ const ACTOR = (op) => `(?:github\\.actor\\s*${op}\\s*'dependabot\\[bot\\]'|'depe
 const DEPENDABOT_EQ = new RegExp(`${ACTOR('==')}\\s*&&\\s*'([^']*)'`);
 const DEPENDABOT_NE = new RegExp(`${ACTOR('!=')}\\s*&&\\s*'[^']*'\\s*\\|\\|\\s*'([^']*)'`);
 
-// What runs-on gives Dependabot: 'hosted', 'not-hosted' (the branch exists but picks anything
-// else, or cannot be read), or 'missing'.
-function dependabotBranch(text) {
+// What runs-on gives Dependabot: 'hosted' (a GitHub-hosted or declared AWS runner), 'not-hosted' (the
+// branch exists but picks anything else, or cannot be read), or 'missing'.
+function dependabotBranch(text, aws) {
   const m = DEPENDABOT_EQ.exec(text) ?? DEPENDABOT_NE.exec(text);
-  if (m) { const t = tokens(m[1]); return t.length && t.every((c) => HOSTED_LABEL.test(c)) ? 'hosted' : 'not-hosted'; }
+  if (m) { const t = tokens(m[1]); return t.length && runnerOf(t, aws) !== 'self-hosted' ? 'hosted' : 'not-hosted'; }
   return new RegExp(ACTOR('[!=]=')).test(text) ? 'not-hosted' : 'missing';
-}
-
-// The values matrix.<key> can take, or null when the matrix is computed and cannot be read here.
-function matrixValues(job, key) {
-  const strat = job.keys.strategy;
-  if (!strat) return null;
-  const vals = [];
-  const lines = strat.block;
-  let found = false;
-  const flow = new RegExp(`[{,]\\s*${key}\\s*:\\s*(\\[[^\\]]*\\]|[^,}]+)`, 'g');
-  lines.forEach((l, idx) => {
-    if (l.scalar) return;
-    for (const m of l.text.matchAll(flow)) { found = true; vals.push(m[1].trim()); }
-    const kv = keyOf(l);
-    if (!kv || kv.key !== key) return;
-    found = true;
-    if (kv.value) vals.push(kv.value);
-    for (const b of blockAfter(lines, idx)) if (!b.blank) vals.push(b.text.replace(/^-\s*/, ''));
-  });
-  if (!found || vals.some((v) => v.includes('${{'))) return null;
-  return vals;
 }
 
 const tokens = (s) => s.split(/[\s,[\]"'{}]+/).filter((t) => t && t !== '-' && !/^[\w-]+:$/.test(t));
 
-// Whether runs-on can resolve to anything other than a GitHub-hosted image label: a self-hosted
-// label, a custom label, a runner group, or a value read from somewhere this file does not fix.
-export function canResolveSelfHosted(job) {
+// A YAML flow sequence's items, split at top-level commas: a `${{ }}` or a quoted item may hold one.
+function flowItems(s) {
+  const inner = s.trim().replace(/^\[([\s\S]*)\]$/, '$1');
+  const items = [];
+  let cur = '';
+  let q = '';
+  let depth = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (q) { if (c === q) q = ''; cur += c; continue; }
+    if (inner.startsWith('${{', i)) { depth++; cur += '${{'; i += 2; continue; }
+    if (depth && inner.startsWith('}}', i)) { depth--; cur += '}}'; i += 1; continue; }
+    if (!depth && (c === '"' || c === "'")) q = c;
+    else if (!depth && (c === '[' || c === '{')) q = c === '[' ? ']' : '}';
+    if (!depth && c === ',') { items.push(cur.trim()); cur = ''; } else cur += c;
+  }
+  if (cur.trim()) items.push(cur.trim());
+  return items;
+}
+const yamlScalar = (s) => {
+  const t = s.trim();
+  if (/^'[\s\S]*'$/.test(t)) return t.slice(1, -1).replace(/''/g, "'");
+  if (/^"[\s\S]*"$/.test(t)) return t.slice(1, -1).replace(/\\(["\\])/g, '$1');
+  return t;
+};
+// A YAML value as a label set when written as a list, else as one string.
+const yamlValue = (s) => (/^\[[\s\S]*\]$/.test(s.trim()) ? flowItems(s).map(yamlScalar) : yamlScalar(s));
+// How deep in `{` and `[` the end of a flow text sits, quoted strings skipped.
+const nesting = (s) => {
+  let braces = 0;
+  let brackets = 0;
+  let q = '';
+  for (const c of s) {
+    if (q) { if (c === q) q = ''; } else if (c === '"' || c === "'") q = c;
+    else if (c === '{') braces++; else if (c === '}') braces--; else if (c === '[') brackets++; else if (c === ']') brackets--;
+  }
+  return { braces, brackets };
+};
+// A key's value with a flow sequence that runs on over the lines after it (`following`, whatever their
+// indent) read through to its closing bracket.
+const flowValue = (value = '', following = []) => {
+  let v = value.trim();
+  if (!v.startsWith('[')) return value;
+  for (const l of following) {
+    if (nesting(v).brackets <= 0) break;
+    if (!l.blank && !l.scalar) v += ` ${l.text}`;
+  }
+  return nesting(v).brackets <= 0 ? v : `${v}]`;
+};
+// Whether a flow match at `at` in a `matrix:` line is one of the matrix's own axes: one mapping deep,
+// in no list. A key inside an include or exclude entry is one value, not an axis.
+const isFlowAxis = (text, at) => {
+  const { braces, brackets } = nesting(text.slice(text.indexOf(':') + 1, at + 1));
+  return braces === 1 && brackets === 0;
+};
+
+// Whether a YAML value is an expression, quoted or not.
+const isExpr = (s) => /^["']?\s*\$\{\{/.test(s.trim());
+// Whether a flow value is computed: an expression itself, or a list with an expression for an item.
+const computedFlow = (v) => {
+  const t = v.trim();
+  if (isExpr(t)) return true;
+  if (!t.startsWith('[')) return false;
+  let end = 1;
+  while (end < t.length && nesting(t.slice(0, end)).brackets > 0) end++;
+  return flowItems(t.slice(0, end)).some(isExpr);
+};
+// Whether a line of YAML holds an alias (`*name`) or a merge key (`<<:`) where a value starts. A
+// quoted string is text, and so is the rest of a plain value once it starts (`it's the '90s`).
+function yamlAlias(line) {
+  let start = true;
+  let quoted = false; // just past a quoted string: a `:` there ends a key, space after it or not
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    const next = line[i + 1] ?? ' ';
+    if (start && /\s/.test(c)) continue;
+    if (start && (c === "'" || c === '"')) {
+      for (i++; i < line.length; i++) {
+        if (c === '"' && line[i] === '\\') i++;
+        else if (line[i] === c) { if (c === "'" && line[i + 1] === "'") i++; else break; }
+      }
+      start = false;
+      quoted = true;
+      continue;
+    }
+    if (start && c === '*' && /[^\s,[\]{}]/.test(next)) return true;
+    if (start && /^<<\s*:/.test(line.slice(i))) return true;
+    if (start && c === '-' && /\s/.test(next)) continue;
+    if (/[,[{]/.test(c) || (c === ':' && (quoted || /\s/.test(next)))) start = true;
+    else start = false;
+    quoted = quoted && /\s/.test(c);
+  }
+  return false;
+}
+
+// Whether the matrix has an include of its own that it computes (an expression anywhere in it) or
+// that comes from elsewhere (a YAML alias): that can add any value to any key, so no key's values can
+// be read here. An include field inside an axis value is not the matrix's, and an exclude only removes.
+const computedInclude = (lines) => {
+  const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
+  if (mi < 0) return false;
+  const kv = keyOf(lines[mi]);
+  const block = blockAfter(lines, mi);
+  // A flow mapping, on the `matrix:` line or below it, over one line or several (at any indent): read
+  // it as one text, through to its closing brace.
+  const own = [kv.value, ...block.filter((l) => !l.blank && !l.scalar).map((l) => l.text)];
+  let flow = own.join(' ').trim();
+  if (flow.startsWith('{')) {
+    for (const l of lines.slice(mi + 1 + block.length)) {
+      if (nesting(flow).braces <= 0) break;
+      if (!l.blank && !l.scalar) { flow += ` ${l.text}`; own.push(l.text); }
+    }
+  }
+  // A YAML alias or merge key brings in entries written elsewhere in the file, which this matrix's own
+  // text cannot show, so it is read as unreadable too.
+  if (own.some(yamlAlias)) return true;
+  if (flow.startsWith('{')) {
+    const text = `matrix: ${flow}`;
+    return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
+      .some((m) => isFlowAxis(text, m.index) && computedFlow(text.slice(m.index + m[0].length)));
+  }
+  if (kv.value) return false;
+  const axisIndent = block.find((l) => !l.blank && !l.scalar)?.indent;
+  return block.some((l, j) => {
+    if (l.indent !== axisIndent || /^-\s/.test(l.text) || keyOf(l)?.key !== 'include') return false;
+    // However the include is spelled (a scalar, quoted or not, on its line or below; a flow list; a
+    // block list; a block scalar), an expression anywhere in it is read as one that can add any
+    // value. That also counts an expression in a field of a static entry, which errs toward reporting.
+    const idx = mi + 1 + j;
+    const text = [flowValue(keyOf(l).value, lines.slice(idx + 1)), ...blockAfter(lines, idx).map((b) => b.text)].join(' ');
+    return text.includes('${{');
+  });
+};
+
+// The values matrix.<key> can take, or null when the matrix is computed and cannot be read here. A
+// key directly under `matrix:` lists its values; one in an include or exclude entry is one value.
+// `includes: false` leaves a computed include unread, as it was before AWS runner labels existed.
+function matrixValues(job, key, { includes = true } = {}) {
+  const strat = job.keys.strategy;
+  if (!strat) return null;
+  const vals = [];
+  const lines = strat.block;
+  if (includes && computedInclude(lines)) return null;
+  let found = false;
+  const flow = new RegExp(`[{,]\\s*${key}\\s*:\\s*(\\[[^\\]]*\\]|[^,}]+)`, 'g');
+  const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
+  const axisIndent = mi >= 0 ? blockAfter(lines, mi).find((l) => !l.blank && !l.scalar)?.indent : undefined;
+  lines.forEach((l, idx) => {
+    if (l.scalar) return;
+    const kv = keyOf(l);
+    for (const m of l.text.matchAll(flow)) {
+      found = true;
+      const v = yamlValue(m[1]);
+      if (kv?.key === 'matrix' && Array.isArray(v) && isFlowAxis(l.text, m.index)) vals.push(...flowItems(m[1]).map(yamlValue)); else vals.push(v);
+    }
+    if (!kv || kv.key !== key) return;
+    found = true;
+    const axis = l.indent === axisIndent && !/^-\s/.test(l.text);
+    const block = blockAfter(lines, idx);
+    const items = block.filter((b) => !b.blank).map((b) => b.text.replace(/^-\s*/, ''));
+    if (kv.value) {
+      const value = flowValue(kv.value, lines.slice(idx + 1));
+      const v = yamlValue(value);
+      if (axis && Array.isArray(v)) vals.push(...flowItems(value).map(yamlValue)); else vals.push(v);
+    } else if (axis) vals.push(...items.map(yamlValue));
+    else vals.push(items.map(yamlScalar));
+  });
+  if (!found || JSON.stringify(vals).includes('${{')) return null;
+  return vals;
+}
+
+// ---- what a runs-on expression can resolve to ----
+// A `${{ }}` expression is evaluated to every value it can take. ANY stands for a value read from
+// somewhere this file does not fix, FALSY for a falsy one of those. A comparison or a `!` yields only
+// true or false, so whatever it reads is not a label source.
+const ANY = Symbol('any');
+const FALSY = Symbol('falsy');
+const MAX_VALUES = 64;
+const isTruthy = (v) => v !== FALSY && !(v === false || v === 0 || v === '' || v === null || Number.isNaN(v));
+const capped = (vs) => {
+  const seen = new Map();
+  for (const v of vs) seen.set(typeof v === 'symbol' ? v : JSON.stringify(v), v);
+  return seen.size > MAX_VALUES ? [ANY] : [...seen.values()];
+};
+const BOOLEANS = [true, false];
+const BOOLEAN_FUNCTIONS = new Set(['contains', 'startswith', 'endswith', 'success', 'always', 'failure', 'cancelled']);
+
+function lexExpr(src) {
+  const out = [];
+  const re = /\s*(?:('(?:[^']|'')*')|(\d+(?:\.\d+)?|0x[0-9a-f]+)|([A-Za-z_][\w-]*)|(==|!=|<=|>=|&&|\|\||[<>!().,[\]*]))/iy;
+  let m;
+  while (re.lastIndex < src.length) {
+    const at = re.lastIndex;
+    if (!(m = re.exec(src))) { if (/^\s*$/.test(src.slice(at))) break; return null; }
+    if (m[1] != null) out.push({ str: m[1].slice(1, -1).replace(/''/g, "'") });
+    else if (m[2] != null) out.push({ num: Number(m[2]) });
+    else if (m[3] != null) out.push({ id: m[3] });
+    else out.push({ op: m[4] });
+  }
+  return out;
+}
+
+function formatValues(args) {
+  let results = [[]];
+  for (const vs of args) {
+    if (vs.some((v) => typeof v === 'symbol' || (v !== null && typeof v === 'object'))) return [ANY];
+    results = results.flatMap((r) => vs.map((v) => [...r, v]));
+    if (results.length > MAX_VALUES) return [ANY];
+  }
+  return capped(results.map(([t, ...rest]) => String(t).replace(/\{\{|\}\}|\{(\d+)\}/g, (s, n) => (n == null ? s[0] : String(rest[n] ?? '')))));}
+
+// The values a GitHub Actions expression can take, matrix values read from the job.
+export function exprValues(src, job) {
+  const toks = lexExpr(src);
+  if (!toks) return [ANY];
+  let i = 0;
+  const peek = (op) => toks[i]?.op === op;
+  const take = (op) => { if (!peek(op)) throw new Error(`expected ${op}`); i++; };
+  function primary() {
+    const t = toks[i++];
+    if (!t) throw new Error('unexpected end');
+    if (t.str != null) return [t.str];
+    if (t.num != null) return [t.num];
+    if (t.op === '(') { const v = or(); take(')'); return v; }
+    if (t.op === '!') { unary(); return BOOLEANS; }
+    if (!t.id) throw new Error(`unexpected ${t.op}`);
+    const lc = t.id.toLowerCase();
+    if (lc === 'true') return [true];
+    if (lc === 'false') return [false];
+    if (lc === 'null') return [null];
+    if (peek('(')) {
+      i++;
+      const args = [];
+      while (!peek(')')) { args.push(or()); if (!peek(')')) take(','); }
+      i++;
+      if (BOOLEAN_FUNCTIONS.has(lc)) return BOOLEANS;
+      if (lc === 'format' && args.length) return formatValues(args);
+      if (lc === 'fromjson' && args.length === 1) {
+        return capped(args[0].map((v) => { if (typeof v !== 'string') return ANY; try { return JSON.parse(v); } catch { return ANY; } }));
+      }
+      return [ANY];
+    }
+    const path = [t.id];
+    let indexed = false;
+    while (peek('.') || peek('[')) {
+      if (peek('.')) { i++; const p = toks[i++]; if (!p || !(p.id || p.op === '*')) throw new Error('bad property'); path.push(p.id ?? '*'); } else { i++; or(); take(']'); indexed = true; }
+    }
+    const vals = !indexed && path.length === 2 && path[0] === 'matrix' ? matrixValues(job, path[1]) : null;
+    return vals ?? [ANY];
+  }
+  function unary() { return primary(); }
+  function compare() {
+    let v = unary();
+    while (['<', '<=', '>', '>=', '==', '!='].some(peek)) { i++; unary(); v = BOOLEANS; }
+    return v;
+  }
+  function and() {
+    let v = compare();
+    while (peek('&&')) {
+      i++;
+      const right = compare();
+      v = capped([...v.flatMap((x) => (x === ANY ? [FALSY] : isTruthy(x) ? [] : [x])), ...right]);
+    }
+    return v;
+  }
+  function or() {
+    let v = and();
+    while (peek('||')) { i++; const right = and(); v = capped([...v.filter(isTruthy), ...right]); }
+    return v;
+  }
+  try {
+    const v = or();
+    return i === toks.length ? v : [ANY];
+  } catch { return [ANY]; }
+}
+
+// A string with `${{ }}` in it: every value it can take, or a lone expression's own values.
+function templateValues(s, job) {
+  const parts = s.split(/\$\{\{([\s\S]*?)\}\}/);
+  if (parts.length === 3 && parts[0].trim() === '' && parts[2].trim() === '') return exprValues(parts[1], job);
+  const args = parts.map((p, idx) => (idx % 2 ? exprValues(p, job).map((v) => (v === FALSY ? ANY : v)) : [p.replace(/[{}]/g, (c) => c + c)]));
+  return formatValues([[parts.map((_, idx) => `{${idx}}`).join('')], ...args]);
+}
+
+// The label sets runs-on can pick: { group, sets: [[label, …] | ANY] }, or null with no runs-on.
+function runsOnChoices(job) {
+  const ro = job.keys['runs-on'];
+  if (!ro) return null;
+  const sub = mapping(ro.block);
+  if (sub.group) return { group: true, sets: [] };
+  const src = sub.labels ?? ro;
+  const value = /^[|>]/.test(src.value) ? src.block.map((l) => l.text).join(' ') : flowValue(src.value, job.lines.slice(job.lines.indexOf(src.line) + 1));
+  const items = value ? (/^\[[\s\S]*\]$/.test(value.trim()) ? flowItems(value) : [value])
+    : src.block.filter((l) => !l.blank && /^-(\s|$)/.test(l.text)).map((l) => l.text.replace(/^-\s*/, ''));
+  const single = items.length === 1 && !/^\[/.test(value?.trim() ?? '');
+  const perItem = items.map((it) => {
+    const s = yamlScalar(it);
+    return s.includes('${{') ? templateValues(s, job) : [s];
+  });
+  if (single) return { group: false, sets: perItem[0].filter(isTruthy).map((v) => (Array.isArray(v) ? v : typeof v === 'symbol' ? ANY : [v])) };
+  let sets = [[]];
+  for (const vs of perItem) {
+    if (vs.some((v) => typeof v === 'symbol' || Array.isArray(v))) return { group: false, sets: [ANY] };
+    sets = sets.flatMap((st) => vs.map((v) => [...st, v]));
+    if (sets.length > MAX_VALUES) return { group: false, sets: [ANY] };
+  }
+  return { group: false, sets };
+}
+
+// What a set of labels lands on: 'hosted' (GitHub-hosted images only), 'aws' (the repo's declared
+// AWS runner labels, with or without `self-hosted`), or 'self-hosted' (anything else).
+function runnerOf(set, aws) {
+  if (set === ANY) return 'self-hosted';
+  const labels = set.map((l) => (typeof l === 'string' ? l.trim().toLowerCase() : l)).filter((l) => l !== '');
+  if (labels.some((l) => typeof l !== 'string')) return 'self-hosted';
+  if (labels.length && labels.every((l) => HOSTED_LABEL.test(l))) return 'hosted';
+  const own = labels.filter((l) => l !== 'self-hosted');
+  return own.length && own.every((l) => aws.has(l)) ? 'aws' : 'self-hosted';
+}
+
+// The declared AWS labels and each one's on-demand twin, which the same runners carry.
+const awsSet = (labels = []) => new Set(labels.flatMap((l) => [l.toLowerCase(), `${l.toLowerCase()}-on-demand`]));
+
+// The runners runs-on can pick, of 'hosted', 'aws' and 'self-hosted', and the AWS labels among them.
+export function runnersOf(job, awsLabels = []) {
+  const choices = runsOnChoices(job);
+  if (!choices) return { kinds: new Set(), aws: [] };
+  if (choices.group) return { kinds: new Set(['self-hosted']), aws: [] };
+  const aws = awsSet(awsLabels);
+  const kinds = new Set(choices.sets.map((s) => runnerOf(s, aws)));
+  const labels = choices.sets.filter((s) => runnerOf(s, aws) === 'aws').flatMap((s) => s.filter((l) => l.trim() && l.trim().toLowerCase() !== 'self-hosted').map((l) => l.trim()));
+  return { kinds, aws: [...new Set(labels)].sort() };
+}
+
+// Whether runs-on can resolve to a self-hosted runner the repo has not declared as an AWS runner: a
+// self-hosted or custom label, a runner group, or a value read from somewhere this file does not fix.
+// A repo that declares no AWS runner labels is read as it was before .github/desk-ci.yml existed, so
+// its ci-lint output does not change: every quoted literal in an expression is a possible label.
+function canResolveSelfHosted(job, awsLabels) {
+  if (awsLabels.length) return runnersOf(job, awsLabels).kinds.has('self-hosted');
   const ro = job.keys['runs-on'];
   if (!ro) return false;
   const text = textOf(ro);
@@ -227,8 +549,8 @@ export function canResolveSelfHosted(job) {
       .replace(/'[^']*'\s*[!=]=\s*[\w.[\]-]+/g, '');
     for (const m of e.matchAll(/'([^']*)'/g)) cands.push(...tokens(m[1]));
     for (const m of e.replace(/'[^']*'/g, '').matchAll(/\b(matrix|inputs|vars|env|needs|steps|github|jobs)\.([\w-]+)/g)) {
-      const vals = m[1] === 'matrix' ? matrixValues(job, m[2]) : null;
-      if (vals) cands.push(...vals.flatMap(tokens)); else unknown = true;
+      const vals = m[1] === 'matrix' ? matrixValues(job, m[2], { includes: false }) : null;
+      if (vals) cands.push(...vals.flat().flatMap(tokens)); else unknown = true;
     }
     return ' ';
   });
@@ -236,16 +558,60 @@ export function canResolveSelfHosted(job) {
   return unknown || cands.some((c) => !HOSTED_LABEL.test(c));
 }
 
-export function lint(text) {
+// ---- .github/desk-ci.yml ----
+// A repo declares its AWS runner labels and the workflows kept on GitHub-hosted runners:
+//   aws-runner-labels: [voicepa-linux-arm64, voicepa-linux-arm64-8cpu]
+//   hosted-workflows:
+//     - release.yml
+export const CI_CONFIG = '.github/desk-ci.yml';
+
+export function parseCiConfig(text) {
+  const { lines } = parseWorkflow(text);
+  const out = { 'aws-runner-labels': [], 'hosted-workflows': [] };
+  lines.forEach((l, idx) => {
+    const kv = l.indent === 0 ? keyOf(l) : null;
+    if (!kv || !(kv.key in out)) return;
+    const items = kv.value
+      ? flowItems(flowValue(kv.value, lines.slice(idx + 1))).map((v) => ({ value: yamlScalar(v), line: l.n }))
+      : blockAfter(lines, idx).filter((b) => !b.blank && /^-(\s|$)/.test(b.text)).map((b) => ({ value: yamlScalar(b.text.replace(/^-\s*/, '')), line: b.n }));
+    out[kv.key].push(...items.filter((x) => x.value));
+  });
+  return {
+    awsLabels: out['aws-runner-labels'].filter((x) => !notAws(x.value)).map((x) => x.value),
+    hostedWorkflows: out['hosted-workflows'].map((x) => basename(x.value)),
+    findings: out['aws-runner-labels'].filter((x) => notAws(x.value))
+      .map((x) => ({ job: 'aws-runner-labels', line: x.line, problem: `${x.value} is ${x.value === 'self-hosted' ? 'the bare self-hosted label' : 'a GitHub-hosted label'}, not an AWS runner label` })),
+  };
+}
+const notAws = (label) => label.toLowerCase() === 'self-hosted' || HOSTED_LABEL.test(label);
+
+// The desk-ci.yml of the repo holding a workflow file: the nearest one walking up from it, stopping
+// at the repo root (the directory holding .git).
+export function ciConfigFor(workflowFile) {
+  let dir = dirname(resolve(workflowFile));
+  for (;;) {
+    const file = join(dir, CI_CONFIG);
+    if (existsSync(file)) return { file, ...parseCiConfig(readFileSync(file, 'utf8')) };
+    if (existsSync(join(dir, '.git')) || dirname(dir) === dir) return null;
+    dir = dirname(dir);
+  }
+}
+
+const AWS_TODAY = (labels) => (labels.length ? ` (runs-on today: AWS runner ${labels.join(', ')})` : '');
+
+export function lint(text, { awsLabels = [], hostedWorkflow = false } = {}) {
   const wf = parseWorkflow(text);
   const out = [];
   for (const job of wf.jobs) {
-    if (!canResolveSelfHosted(job)) continue;
     const ro = job.keys['runs-on'];
+    if (hostedWorkflow && [...runnersOf(job, awsLabels).kinds].some((k) => k !== 'hosted')) {
+      out.push({ job: job.id, line: ro.line.n, problem: `is in a workflow listed under hosted-workflows in ${CI_CONFIG} but runs-on can pick a runner that is not GitHub-hosted` });
+    }
+    if (!canResolveSelfHosted(job, awsLabels)) continue;
     const hits = [...secretHits(job.lines), ...inheritedEnv(wf), ...environmentHits(job), ...idTokenHits(job, wf),
       ...aliasHits(job.lines), ...inheritedAliases(wf)];
     for (const h of hits) out.push({ job: job.id, line: h.line.n, problem: `can run self-hosted but receives ${h.why}` });
-    const dependabot = dependabotBranch(textOf(ro));
+    const dependabot = dependabotBranch(textOf(ro), awsSet(awsLabels));
     if (dependabot === 'missing') {
       out.push({ job: job.id, line: ro.line.n, problem: "can run self-hosted but runs-on has no github.actor == 'dependabot[bot]' branch to a hosted runner" });
     } else if (dependabot === 'not-hosted') {
@@ -1742,6 +2108,11 @@ function workflowFiles(args) {
   return files;
 }
 
+// classify's and lint's options for a workflow file, from its repo's desk-ci.yml.
+function ciOptions(file, cfg = ciConfigFor(file)) {
+  return cfg ? { awsLabels: cfg.awsLabels, hostedWorkflow: cfg.hostedWorkflows.includes(basename(file)) } : {};
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
@@ -1754,7 +2125,7 @@ if (isMain) {
       const count = { hosted: 0, 'self-hosted': 0 };
       let jobs = 0;
       for (const f of workflowFiles(rest)) {
-        for (const r of classify(readFileSync(f, 'utf8'))) {
+        for (const r of classify(readFileSync(f, 'utf8'), ciOptions(f))) {
           jobs++; count[r.placement]++;
           const also = r.also.length ? `  (also ${r.also.map((a) => `${a.kind} :${a.line.n}`).join(', ')})` : '';
           console.log(`${f}:${r.line}  ${r.job}  ${r.placement}  ${r.why}${also}`);
@@ -1763,8 +2134,14 @@ if (isMain) {
       console.log(`summary: jobs=${jobs} hosted=${count.hosted} self-hosted=${count['self-hosted']}`);
     } else if (cmd === 'ci-lint' || cmd === 'lint') {
       let n = 0;
+      const configs = new Set();
       for (const f of workflowFiles(rest)) {
-        for (const r of lint(readFileSync(f, 'utf8'))) { n++; console.log(`${f}:${r.line}  ${r.job}  ${r.problem}`); }
+        const cfg = ciConfigFor(f);
+        if (cfg && !configs.has(cfg.file)) {
+          configs.add(cfg.file);
+          for (const r of cfg.findings) { n++; console.log(`${relative(process.cwd(), cfg.file)}:${r.line}  ${r.job}  ${r.problem}`); }
+        }
+        for (const r of lint(readFileSync(f, 'utf8'), ciOptions(f, cfg))) { n++; console.log(`${f}:${r.line}  ${r.job}  ${r.problem}`); }
       }
       console.log(`summary: findings=${n}`);
       process.exit(n ? 1 : 0);

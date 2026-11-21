@@ -25,7 +25,12 @@ const before = readFileSync(join(root, 'tests/fixtures/desk-ci-before-split.md')
 checkSize({ t, root, name: 'desk-ci', core, before });
 
 // AC2: each heading, table row and paragraph of the old file is in exactly one file, word for word.
-checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26 });
+// The fixture stays frozen, so a paragraph a later ticket rewrote is named by text only it holds
+// (`split_check.mjs`'s `rewritten`).
+const REWRITTEN = [
+  ['DS-259', '"Can resolve" means any value other than a GitHub-hosted image label', 1], // a repo's declared AWS runner labels resolve to its own cloud runner
+];
+checkSplit({ t, label: 'AC2', before, files, read, headings: 10, minRows: 26, rewritten: REWRITTEN });
 
 // AC3: the core's step table names, for each step, the sections it moved and the one file to read.
 const table = stepTable(core);
