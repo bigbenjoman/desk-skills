@@ -550,13 +550,20 @@ disarm(){
   return 0
 }
 
+# update_branch <n> <why> -> 0 updated, 1 refused (gh's output in UPDATE_OUT), 2 waiting for the
+# PR's preview-build unit. The update is a new head, so a new preview build: it takes that unit first (rerun.sh).
+update_branch(){
+  preview_unit "$1" "$2" "updating the branch" || return 2
+  UPDATE_OUT=$(gh pr update-branch "$1" --repo "$REPO" 2>&1) || return 1
+}
+
 behind(){ # behind <n> <sha> <key>
+  local rc=0
   if [ "$UPDATE_PERM" = yes ]; then
     if [ -f "$SD/updated-$1-$2" ]; then log "#$1 BEHIND; update already requested at ${2:0:9} — waiting for it"; return; fi
-    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
-    preview_unit "$1" BEHIND "updating the branch" || return
-    if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
-    else log "#$1 BEHIND and update-branch refused: $(printf '%s' "$out" | tail -1)"; back_off "$1"; fi
+    update_branch "$1" BEHIND || rc=$?
+    if [ "$rc" = 0 ]; then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
+    elif [ "$rc" = 1 ]; then log "#$1 BEHIND and update-branch refused: $(printf '%s' "$UPDATE_OUT" | tail -1)"; back_off "$1"; fi
   else
     log "#$1 BEHIND and §3 pr-update-branch is $UPDATE_PERM — parked for a person to update"
     queue_note "$3" "behind $BASE_BRANCH; §3 pr-update-branch is $UPDATE_PERM"
@@ -970,7 +977,7 @@ NODE
 # fresh merge ref. Any answer starts it again and clears the note; so does another head with no repair.
 UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-${DESK_UNKNOWN_SECS:-1800}}"
 unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
-  local f="$SD/unknown-$1" r="$SD/unknown-repair-$1" was="" at="" first="" tried="" now age total how out
+  local f="$SD/unknown-$1" r="$SD/unknown-repair-$1" was="" at="" first="" tried="" now age total how rc=0
   if [ "$4" != UNKNOWN ]; then
     if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
@@ -986,15 +993,15 @@ unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
   age=$(( now - at )); total=$(( now - ${first:-$at} ))
   [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
   if [ -z "$tried" ] && [ "$UPDATE_PERM" = yes ]; then
-    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
-    preview_unit "$1" "with no mergeability answer for $(( total / 60 )) minutes" "updating the branch" || return 0
-    if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then
+    update_branch "$1" "with no mergeability answer for $(( total / 60 )) minutes" || rc=$?
+    [ "$rc" = 2 ] && return 0
+    if [ "$rc" = 0 ]; then
       printf '%s updated\n' "$at" > "$r"; printf '%s %s\n' "$2" "$now" > "$f"
       log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged; gh pr update-branch once for a fresh merge ref"
       return 0
     fi
     printf '%s refused\n' "$at" > "$r"; tried=refused
-    log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes, and gh pr update-branch was refused: $(printf '%s' "$out" | tail -1)"
+    log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes, and gh pr update-branch was refused: $(printf '%s' "$UPDATE_OUT" | tail -1)"
   fi
   case "$tried" in
     updated) how="; desk already updated its branch from its base once, and GitHub still has no answer" ;;
@@ -1011,12 +1018,12 @@ try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
   backed_off "$n" && { log "#$n backed off after a refused merge — retrying later"; return 1; }
   g=$(node "$GATE" pr "$n" --repo "$REPO" --merger "$AUTHOR" 2>&1) || { log "#$n could not be evaluated: $(printf '%s' "$g" | tail -1)"; return 1; }
   sha=$(printf '%s' "$g" | jq -r .sha); ms=$(printf '%s' "$g" | jq -r .mergeState); state=$(printf '%s' "$g" | jq -r .gate.state)
-  unknown_age "$n" "$sha" "$key" "$ms"
   # The epic PR merges the batch base into §0 Default branch.
   [ -n "$EPIC_KEY" ] && want=$(printf '%s' "$g" | jq -r .defaultBranch)
   [ "$(printf '%s' "$g" | jq -r .base)" = "$want" ] || { log "#$n is not based on $want — not the batch's to merge"; return 1; }
   # First, so nothing updates or reruns a branch a worker is on, and an armed auto-merge is disarmed red or green.
   instruction_held "$n" "$key" "$g" && return 1
+  unknown_age "$n" "$sha" "$key" "$ms"
 
   holds=$(printf '%s' "$g" | jq -r '.holds[] | "\(.why) — \(.glob), \(.count) file(s), e.g. \(.files[0] // "?")"')
   met=$(printf '%s' "$g" | jq -r '(.holdsMet // [])[] | "\(.why) — \(.glob)"' | paste -sd ';' -)

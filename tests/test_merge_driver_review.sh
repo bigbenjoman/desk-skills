@@ -226,4 +226,13 @@ jq '.["222"].mergeState = "CLEAN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tm
 unkloop 0
 check "DS-856 AC4: once GitHub answers, the record and the repair are cleared, so a later spell starts afresh" '[ "$(qf T-222 .merge_blocked)" = null ] && [ ! -e "$SD/unknown-222" ] && [ ! -e "$SD/unknown-repair-222" ]'
 
+# A PR a worker still holds for the person's instruction is never updated under it, however long it has had no answer.
+SHA223=d223111111111111111111111111111111111111
+vp 223 "$SHA223" -
+rv_prs unkheld "223|fix/T-223|$SHA223|fix: T-223 wedged and held|"
+q set T-223 'fix={"try":1,"of":1,"kind":"instruction","pr":223,"head":null,"ready":true,"what":"your instruction","answer":"rename it"}'
+jq '.["223"].mergeState = "UNKNOWN"' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+unkloop 0; unkloop 0; unkloop 0
+check "DS-856: a PR held for a worker's instruction gets no update-branch past the limit" '! grep -q "pr update-branch 223" "$T/gh.log" && echo "$out" | grep -q "#223 HELD: a worker has still to carry out"'
+
 finish review
