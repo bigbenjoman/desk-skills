@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, 
 import { dirname, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { registerHooks } from 'node:module';
 import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -1572,6 +1573,12 @@ t('DS-215 AC13 no screen draws dim (SGR 2)', [S215, Rs, Sy].some((s) => s.output
 t('DS-215 AC13 every text colour drawn is 4.5:1 or more on the window, the selected row and black, the band\'s text on red too',
   `${sel215 != null} ${drawn215.has('38;5;247')} ${textCodes(drawn215).filter((c) => { const f = textFg(c); return !f || [window217, sel215, [0, 0, 0]].some((b) => contrast(f, b) < 4.5); }).join()}|${bands215.join()} ${bands215.every((c) => contrast(window217, fgOf(c.slice(4))) >= 4.5)}`,
   'true true |1;7;38;5;210 true');
+// The theme is read when desk-q-model.mjs loads, so a ?light or ?truecolor copy of desk-q.mjs loads its
+// own copy of the model under the same query.
+registerHooks({ resolve(s, c, next) {
+  const r = next(s, c), parent = c.parentURL && new URL(c.parentURL);
+  return parent?.search && s === './desk-q-model.mjs' && parent.pathname.endsWith('/desk-q.mjs') ? { ...r, url: `${r.url}${parent.search}` } : r;
+} });
 process.env.COLORFGBG = '0;15';
 const QL = await import(`${pathToFileURL(BIN).href}?light`);
 delete process.env.COLORFGBG;
