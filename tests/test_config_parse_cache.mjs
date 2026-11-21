@@ -38,10 +38,13 @@ slugs.forEach((slug, i) => {
 });
 const Q = await import(join(BIN, 'desk-q.mjs'));
 const E = await import(join(BIN, 'desk-env.mjs'));
-const home = Q.homeJson(Q.loadRepos(), { avail: 30 });
+// `all`: whether the home view shows a quiet repo hangs on the machine (with launchd or systemd its
+// session-run batch is one to hand over, and shown; on CI's runner it is not), and this suite counts
+// reads, not which repos are shown.
+const home = Q.homeJson(Q.loadRepos(), { all: true, avail: 30 });
 t('AC1 the home view shows the four repos', home.repos?.length, 4);
 t('AC1 each config.md is read at most once while the home view is built', slugs.map((s) => reads.get(config(s)) ?? 0).map((n) => n <= 1), [true, true, true, true]);
-Q.homeJson(Q.loadRepos(), { avail: 30 });
+Q.homeJson(Q.loadRepos(), { all: true, avail: 30 });
 t('AC1 a second build of the home view reads no config.md again', slugs.map((s) => reads.get(config(s)) ?? 0).map((n) => n <= 1), [true, true, true, true]);
 
 // AC2: an edit made after the first read is returned, with no clearing by hand.
