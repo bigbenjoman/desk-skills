@@ -84,8 +84,8 @@ const FORMS = [
   }],
   [/^none$/i, () => ({ kind: 'none' })],
 ];
-// Each form a pass reads, beside a line written in it: the one list of them. The worker contract's
-// table gives them (autopilot-worker-contract.md, which tests/test_clears_when.sh keeps in step).
+// Each form a pass reads, beside a line written in it: the one list of them. The table of forms in
+// desk-autopilot's ask-or-take.md gives them, which tests/test_clears_when.sh keeps in step.
 export const CLEARS_WHEN_EXAMPLES = [
   ['pr <n> merged', 'pr 812 merged'], ['pr <n> ready', 'pr 812 ready'], ['ticket <KEY> done', 'ticket ABC-41 done'],
   ['variable <NAME> set', 'variable DEPLOY_TOKEN set'], ['run <id> completed', 'run 18842117 completed'],

@@ -606,8 +606,8 @@ check "so is a \$DESK_STATE path" '[ $rc -eq 0 ] && [ "$out" = "reads as: file \
 out=$(node "$B/clears-when.mjs" --check 'fix/X-3 exists' 2>&1); rc=$?
 check "a path that could be a branch is refused, saying to write the file form, and listing the forms" \
   '[ $rc -eq 1 ] && grep -q "\"fix/X-3 exists\" is not a form a pass reads (for a file, write \"file fix/X-3 exists\"). The forms:" <<< "$out" && grep -qx "  file <path> exists" <<< "$out"'
-# The worker contract gives every form with a line written in it, and each such line reads as its form.
-contract="$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"
+# Ask or take, where the worker contract sends a parking worker, gives every form with a line written in it, and each reads as its form.
+contract="$S/../skills/desk-autopilot/references/ask-or-take.md"
 rows=$(CW="$B/clears-when.mjs" node -e '
   import(process.env.CW).then(({ CLEARS_WHEN_EXAMPLES: ex, parseClearsWhen }) => {
     const bad = ex.filter(([, e]) => !parseClearsWhen(e).ok).map(([, e]) => e);
@@ -615,6 +615,7 @@ rows=$(CW="$B/clears-when.mjs" node -e '
     for (const [f, e] of ex) console.log("| `" + f + "` | `" + e + "` |");
   });')
 check "each form's example reads" '[ "$(head -1 <<< "$rows")" = "{\"bad\":[]}" ]'
-check "the worker contract carries each form beside its example" 'while IFS= read -r row; do grep -qxF "$row" "$contract" || exit 1; done < <(tail -n +2 <<< "$rows")'
+check "Ask or take carries each form beside its example" 'while IFS= read -r row; do grep -qxF "  $row" "$contract" || exit 1; done < <(tail -n +2 <<< "$rows")'
+check "and the worker contract's core sends the worker to that table, and to --check" 'grep -qF "table of forms is written, and run \`node ~/.claude/desk/bin/clears-when.mjs --check" "$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"'
 
 echo "clears-when: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
