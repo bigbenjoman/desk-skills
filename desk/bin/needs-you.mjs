@@ -1362,6 +1362,23 @@ const ciRedItems = (repos, scope, read) => [...new Set(scope.filter((b) => !b.er
     since: timeOf(i.createdAt) } }));
 });
 
+// ---- a PR a desk session opened that no ticket owns (pass.mjs ticketless_prs): one item a PR -------
+// The merge driver merges only a ticket's PR, so a PR a desk session opened into a batch's base with no
+// ticket waits until a person merges or closes it. Each one a pass records is one item, listed once for
+// its repo however many of its batches record it, on the standing batch where that one does. done
+// records nothing: the next pass that finds the PR merged or closed drops it.
+const TICKETLESS = 'ticketless:';
+function ticketlessItems(batches) {
+  const seen = new Set();
+  return [...batches].sort((a, b) => (a.batch == null ? 0 : 1) - (b.batch == null ? 0 : 1))
+    .filter((r) => !r.error && Array.isArray(r.q?.ticketless_prs))
+    .flatMap((r) => r.q.ticketless_prs.filter((p) => p?.pr != null && !seen.has(`${r.slug}#${p.pr}`) && seen.add(`${r.slug}#${p.pr}`))
+      .map((p) => ({ r, dir: r.stateDir, t: { key: `${TICKETLESS}${p.pr}` }, item: { kind: 'ticketless', repoLevel: true, pr: p.pr,
+        need: `PR #${p.pr}${p.title ? ` ("${one(p.title)}")` : ''} from ${p.branch} into ${r.q.base ?? defaultOf(r)} was opened by a desk session, and no ticket owns it, so nothing will merge it: review it, then merge or close it yourself`,
+        actions: [['done', 'once it is merged or closed, the next pass drops this item; done records nothing'], ['not-now']],
+        since: timeOf(p.since) } })));
+}
+
 // ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
 // A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
 // passes again, so when that session stalls (a turn that ended short of its next step, a request that
@@ -1664,7 +1681,7 @@ export function needsCount(r) {
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own)]) {
+  for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own), ...ticketlessItems(own)]) {
     if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
@@ -1734,6 +1751,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of ticketlessItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
@@ -1874,7 +1892,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED) || ticket.startsWith(TICKETLESS)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2208,6 +2226,7 @@ function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
   if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
   if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
+  if (i.kind === 'ticketless') return say(true, `noted: the next pass that finds PR #${i.pr} merged or closed drops this item; done records nothing.`);
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);

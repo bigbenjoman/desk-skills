@@ -3548,6 +3548,30 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
+// ---- DS-836: a PR a desk session opened that no ticket owns is one item, listed once for its repo
+{
+  const rec = { pr: 77, title: 'fix(tests): steady the flaky upload spec', branch: 'fix/flaky-upload', since: minsAgo(90) };
+  put('stray836', { port: 4836, beat: 1, batch: { ticketless_prs: [rec] }, tickets: { 'S-1': { state: 'triaged', lane: 'A' } } });
+  // A named batch of the same repo that records the same PR: still one item, on the standing batch.
+  const nq = join(env.DESK_HOME, 'repos', 'acme__stray836', 'batches', 'N-1', 'queue.json');
+  mkdirSync(dirname(nq), { recursive: true });
+  mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__stray836', 'batches', 'N-1'), { recursive: true });
+  writeFileSync(nq, JSON.stringify({ version: 1, batch: 'n1-batch', concurrency: 1, ticketless_prs: [rec], tickets: {} }));
+  const strays = () => N.collect({ word: 'stray836' }).items.filter((i) => i.kind === 'ticketless');
+  const s = strays();
+  t('DS-836 AC1/AC5 one item a PR, on the standing batch, however many batches record it', s.map((i) => `${i.t.key} ${i.r.batch ?? 'standing'}`).join(), 'ticketless:77 standing');
+  t('DS-836 AC1 its need names the PR and that no ticket owns it, so nothing will merge it', s[0]?.need,
+    'PR #77 ("fix(tests): steady the flaky upload spec") from fix/flaky-upload into main was opened by a desk session, and no ticket owns it, so nothing will merge it: review it, then merge or close it yourself');
+  t('DS-836 AC1 it is aged from when the PR was opened, and offers done and not-now', `${s[0]?.since === Date.parse(rec.since)} ${s[0]?.actions.map((a) => a[0]).join()}`, 'true done,not-now');
+  t('DS-836 AC1 desk-q\'s count lists it once', N.needsCount(loadRepos(Date.now(), 'stray836').find((r) => r.slug === 'acme__stray836' && r.batch == null)).items.filter((i) => i.item.kind === 'ticketless').length, 1);
+  const done = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'done' });
+  t('DS-836 done records nothing and says what clears it', `${done.ok} ${done.line} ${strays().length}`, 'true stray836 ticketless:77: noted: the next pass that finds PR #77 merged or closed drops this item; done records nothing. 1');
+  const off = N.record({ word: 'stray836', ticket: 'ticketless:77', action: 'not-now' });
+  t('DS-836 not-now puts it off', `${off.ok} ${strays().length}`, 'true 0');
+  put('gone836', { port: 4837, beat: 1, batch: { ticketless_prs: null }, tickets: { 'G-1': { state: 'triaged', lane: 'A' } } });
+  t('DS-836 AC2 once the pass drops the record, no item', N.collect({ word: 'gone836' }).items.filter((i) => i.kind === 'ticketless').length, 0);
+}
+
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');
