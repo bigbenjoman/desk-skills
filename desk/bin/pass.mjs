@@ -4352,7 +4352,7 @@ function humanSeen(n) {
 // cannot be read), and the ticket's title from its triage record.
 function scopeOutside(n, head, key) {
   const scope = triagedScope(STATE, key);
-  const files = scope?.length ? prFiles(n, head) : null;
+  const files = Array.isArray(scope) ? prFiles(n, head) : null;
   return files ? outOfScope(files, scope, incidental) : null;
 }
 function triageTitle(key) {
