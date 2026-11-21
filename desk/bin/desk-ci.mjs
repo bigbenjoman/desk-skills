@@ -288,14 +288,12 @@ const computedInclude = (lines) => {
   const axisIndent = block.find((l) => !l.blank && !l.scalar)?.indent;
   return block.some((l, j) => {
     if (l.indent !== axisIndent || /^-\s/.test(l.text) || keyOf(l)?.key !== 'include') return false;
+    // However the include is spelled (a scalar, quoted or not, on its line or below; a flow list; a
+    // block list; a block scalar), an expression anywhere in it is read as one that can add any
+    // value. That also counts an expression in a field of a static entry, which errs toward reporting.
     const idx = mi + 1 + j;
-    const { value } = keyOf(l);
-    // A block scalar (`|` or `>`) is one string: computed when its text holds an expression.
-    if (/^[|>][-+0-9]*$/.test(value)) return blockAfter(lines, idx).some((b) => b.scalar && b.text.includes('${{'));
-    if (value) return computedFlow(flowValue(value, lines.slice(idx + 1)));
-    const items = blockAfter(lines, idx).filter((b) => !b.blank && !b.scalar);
-    const itemIndent = items[0]?.indent;
-    return items.some((b) => b.indent === itemIndent && isExpr(b.text.replace(/^-\s*/, '')));
+    const text = [flowValue(keyOf(l).value, lines.slice(idx + 1)), ...blockAfter(lines, idx).map((b) => b.text)].join(' ');
+    return text.includes('${{');
   });
 };
 

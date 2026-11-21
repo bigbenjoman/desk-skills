@@ -331,6 +331,7 @@ t('a computed include in a flow matrix that opens below its key is reported',
   linted(inlineMatrix(`\n        { label: [voicepa-linux-arm64],\n          include: "${fromNeeds}" }`), VPA), 'm@9 m@13');
 t('a computed include in a flow matrix continued at its key\'s own indent is reported',
   linted(inlineMatrix(`{ label: [voicepa-linux-arm64],\n      include: "${fromNeeds}" }`), VPA), 'm@8 m@12');
+t('a computed include item in a flow list below its key is reported', linted(computedInc(`\n          [ "${fromNeeds}" ]`), VPA), 'm@10 m@14');
 const hostedInc = computedInc(fromNeeds).replace('[voicepa-linux-arm64]', '[ubuntu-latest]');
 t('AC9 with nothing declared, a computed include is read as before', linted(hostedInc), '');
 t('with labels declared, a computed include beside a hosted axis is reported', linted(hostedInc, VPA), 'm@9 m@13');
