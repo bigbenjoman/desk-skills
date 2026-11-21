@@ -29,13 +29,15 @@ for f in "${mjs[@]}"; do
   if out=$(node --check "$f" 2>&1); then ok "node --check $f"; else bad "node --check $f: ${out%%$'\n'*}"; fi
 done
 
-# A suite's `# budget: N <ticket>` line (`//` in .mjs, in its first ten lines, which run.sh reads) names
-# the ticket that answers for it and stays at or under BUDGET_CAP CPU seconds. budget_problem prints
-# what is wrong with file $1's, or nothing.
+# A suite's `# budget: N <ticket>` line (`//` in .mjs, in its first ten lines; run.sh reads it with
+# suite_env.sh's budget_of) names the ticket that answers for it and stays at or under BUDGET_CAP CPU
+# seconds. budget_problem prints what is wrong with file $1's, or nothing.
+# shellcheck source=suite_env.sh
+. "$S/suite_env.sh"
 BUDGET_CAP=600
 budget_problem(){ local l n
   l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || return 0
-  n=$(printf '%s\n' "$l" | grep -oE '^(#|//) budget: [0-9]+( |$)' | grep -oE '[0-9]+')
+  n=$(budget_of "$1")
   if [ -z "$n" ]; then echo "its budget line has no whole number of CPU seconds: $l"
   elif ! printf '%s\n' "$l" | grep -qE '(^|[^A-Za-z0-9])[A-Z][A-Z0-9]+-[0-9]+'; then echo "its budget line names no ticket key: $l"
   elif [ "$((10#$n))" -gt "$BUDGET_CAP" ]; then echo "its budget of $n CPU seconds is over the cap of $BUDGET_CAP"

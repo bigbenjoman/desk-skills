@@ -22,7 +22,7 @@
 //     tests/run.sh starts them in.
 //   node tests/plan_shards.mjs --fetch <dir>
 //     saves the suite-durations artifact of the newest push run on main that has one into <dir>
-//     (gh, with GH_REPO set); exits 1 when none of the last FETCH_RUNS runs has one.
+//     (gh, with GH_REPO set); says so, and still exits 0, when none of the last FETCH_RUNS runs has one.
 //   node tests/plan_shards.mjs --merge <dir> --of <n> --out <file>
 //     merges the durations-<k>.json files run.sh wrote (DESK_SUITE_DURATIONS) for shards 1 to n
 //     in <dir> into <file>, as { seconds, cpu }; writes nothing when a shard has none.
@@ -35,6 +35,7 @@ import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { repoMap } from './scope_sections.mjs';
+import { quantile } from '../desk/bin/quantile.mjs';
 
 // The number of CI runners the suites are spread over; tests/test_plan_shards.mjs holds it to 6 to 8.
 export const SHARDS = 6;
@@ -43,23 +44,15 @@ export const DURATIONS = join(dirname(fileURLToPath(import.meta.url)), 'suite_du
 export const ARTIFACT = 'suite-durations';
 export const FETCH_RUNS = 10;
 
-// Linear interpolation between the closest ranks.
-export function percentile(xs, p) {
-  const s = [...xs].sort((a, b) => a - b);
-  if (!s.length) return 0;
-  const at = (s.length - 1) * p;
-  const lo = Math.floor(at);
-  return lo + 1 < s.length ? s[lo] + (s[lo + 1] - s[lo]) * (at - lo) : s[lo];
-}
-
 // The suites longest recorded first, name order between equals, a suite with no recorded duration
 // at the 75th percentile of the recorded ones. Shards are planned in this order, and tests/run.sh
-// starts its suites in it. -> { order, cost, guess, known }
+// starts its suites in it by the committed durations (--order), which may differ from the ones a CI
+// plan read. -> { order, cost, guess, known }
 export function longestFirst(suites, seconds) {
   const names = [...new Set(suites)];
   const valid = (v) => Number.isFinite(v) && v >= 0;
   const known = (s) => valid(seconds[s]);
-  const guess = percentile(Object.values(seconds).filter(valid), 0.75) || 60;
+  const guess = quantile(Object.values(seconds).filter(valid), 0.75) || 60;
   const cost = (s) => (known(s) ? seconds[s] : guess);
   return { order: names.sort((a, b) => cost(b) - cost(a) || (a < b ? -1 : a > b ? 1 : 0)), cost, guess, known };
 }
@@ -70,7 +63,8 @@ export function plan(suites, seconds, n, jobs = 1) {
   const count = Math.max(0, Math.min(Math.floor(n) || 1, order.length));
   const lanes = Array.from({ length: count * Math.max(1, Math.floor(jobs) || 1) }, () => ({ suites: [], seconds: 0 }));
   for (const s of order) {
-    const least = lanes.reduce((m, x) => (x.seconds < m.seconds ? x : m));
+    // Between equal times the lane with fewer suites, so suites recorded at 0 s still fill every shard.
+    const least = lanes.reduce((m, x) => (x.seconds < m.seconds || (x.seconds === m.seconds && x.suites.length < m.suites.length) ? x : m));
     least.suites.push(s);
     least.seconds += cost(s);
   }
@@ -167,8 +161,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
     const gh = (a) => execFileSync('gh', a, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
     let id = null;
     try { id = fetchDurations(dir, gh); } catch (e) { console.log(`could not list main's runs: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
+    // None is not a failure: the plan then reads the committed file and says so.
     console.log(id ? `fetched the ${ARTIFACT} artifact of run ${id} on main` : `no ${ARTIFACT} artifact in the last ${FETCH_RUNS} push runs on main`);
-    process.exit(id ? 0 : 1);
+    process.exit(0);
   }
   if (args[0] === '--merge') {
     const dir = opt('--merge'); const n = Number(opt('--of')); const out = opt('--out');

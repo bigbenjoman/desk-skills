@@ -9,6 +9,8 @@ set -u
 jobs=${1:?usage: ci_shard.sh <suites at once>}
 cd "$(dirname "$0")/.." || exit 2
 echo "shard $SHARD/$OF: $SUITES"
+# run.sh with no suite named runs every suite, which a shard must never do.
+[ -n "${SUITES// /}" ] || { echo "shard $SHARD/$OF has no suites to run"; exit 2; }
 flags="-j $jobs --no-hook-test"
 [ "$HOOK" = true ] && flags="-j $jobs"
 # shellcheck disable=SC2086  # flags and suite names, one per word

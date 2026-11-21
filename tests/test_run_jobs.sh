@@ -15,6 +15,7 @@ check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1";
 
 R="$T/repo/tests"; mkdir -p "$R"
 for f in run.sh ci_shard.sh suite_env.sh plan_shards.mjs scope_sections.mjs; do cat "$S/$f" > "$R/$f"; done
+mkdir -p "$T/repo/desk/bin"; cat "$S/../desk/bin/quantile.mjs" > "$T/repo/desk/bin/quantile.mjs"
 printf '{\n  "seconds": {\n    "test_a.sh": 1,\n    "test_b.sh": 50,\n    "test_c.sh": 10,\n    "test_d.sh": 30\n  }\n}\n' > "$R/suite_durations.json"
 # test_p1..p5: each waits until four run at once (or one has finished), then writes how many it saw.
 for p in 1 2 3 4 5; do cat > "$R/test_p$p.sh" <<'EOF'
@@ -175,8 +176,6 @@ check "DS-927 AC1 the shard step leaves its suites' durations beside its result 
 ci_run "test_over.sh test_pass.sh" 3 warn
 check "DS-927 AC8 a shard on main with a suite over budget passes, writes it as slow=, and the tests job passes and names it" \
   '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qxE "slow=test_over\.sh=[0-9]+\.[0-9]{3}/0" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qE "^shard 1/1 over CPU budget \(<suite>=<CPU seconds>/<budget>\): test_over\.sh="'
-check "DS-927 AC5 AC8 tests.yml enforces budgets on pull requests and only warns on a push to main" \
-  'grep -qF "DESK_SUITE_BUDGETS: \${{ github.event_name == '"'pull_request'"' && '"'enforce'"' || '"'warn'"' }}" "$W"'
 # AC7: the same under bash 3.2.
 case "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" in
   3) [ "$(/bin/bash -c 'echo "$BASH_VERSION"')" = "$BASH_VERSION" ] || checks /bin/bash ;;

@@ -126,6 +126,13 @@ export function suiteIssue(kind, items, issue, run) {
 
 const gh = (args) => execFileSync('gh', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
 const assignTo = (n, owner) => { try { gh(['issue', 'edit', String(n), '--add-assignee', owner]); } catch { console.log(`could not assign issue #${n} to ${owner}`); } };
+// Makes the label where it is missing. -> the number of its open issue, or null when none is open.
+const openIssue = (label, color, description) => {
+  try { gh(['label', 'create', label, '--color', color, '--description', description]); } catch { /* it exists */ }
+  return JSON.parse(gh(['issue', 'list', '--label', label, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;
+};
+// -> the new issue's number, read from the URL gh prints.
+const createIssue = (label, title, body) => gh(['issue', 'create', '--label', label, '--title', title, '--body', body]).trim().replace(/^.*\//, '');
 
 function suites(dir, env) {
   const files = existsSync(dir) ? readdirSync(dir).filter((f) => /^shard-\d+\.txt$/.test(f)) : [];
@@ -134,14 +141,19 @@ function suites(dir, env) {
     const { label, color, description, title } = SUITE_ISSUES[kind];
     console.log(`${label}: ${found[kind].join(' ') || 'none'}`);
     if (!found[kind].length) continue;
-    try { gh(['label', 'create', label, '--color', color, '--description', description]); } catch { /* it exists */ }
-    const issue = JSON.parse(gh(['issue', 'list', '--label', label, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;
-    const d = suiteIssue(kind, found[kind], issue, { sha: env.RUN_SHA, url: env.RUN_URL });
-    let n = issue;
-    if (d.action === 'create') n = gh(['issue', 'create', '--label', label, '--title', title, '--body', d.body]).trim().replace(/^.*\//, '');
-    else gh(['issue', 'comment', String(issue), '--body', d.body]);
-    if (env.OWNER) assignTo(n, env.OWNER);
-    console.log(`${label}: ${d.action} #${n}`);
+    // Each kind on its own, so a gh failure on one still lets the other be reported, and fails the step.
+    try {
+      const issue = openIssue(label, color, description);
+      const d = suiteIssue(kind, found[kind], issue, { sha: env.RUN_SHA, url: env.RUN_URL });
+      let n = issue;
+      if (d.action === 'create') n = createIssue(label, title, d.body);
+      else gh(['issue', 'comment', String(issue), '--body', d.body]);
+      if (env.OWNER) assignTo(n, env.OWNER);
+      console.log(`${label}: ${d.action} #${n}`);
+    } catch (e) {
+      console.log(`${label}: could not open or update its issue: ${String(e.stderr || e.message).trim().split('\n')[0]}`);
+      process.exitCode = 1;
+    }
   }
 }
 const runList = (wf, more = []) => JSON.parse(gh(['run', 'list', '--workflow', wf, '--branch', 'main', '--status', 'completed', ...more, '--json', FIELDS]));
@@ -165,13 +177,12 @@ function alarm(env, now) {
     .some((r) => IN_FLIGHT.has(r.status) && r.databaseId !== trigger?.databaseId);
   const lanes = [testsLane(tests), macosLane(macos, now, running)];
   for (const l of lanes) console.log(l.line);
-  try { gh(['label', 'create', LABEL, '--color', 'B60205', '--description', 'a CI lane on main is red, cancelled or stale']); } catch { /* it exists */ }
-  const issue = JSON.parse(gh(['issue', 'list', '--label', LABEL, '--state', 'open', '--limit', '1', '--json', 'number']))[0]?.number ?? null;
+  const issue = openIssue(LABEL, 'B60205', 'a CI lane on main is red, cancelled or stale');
   const d = decide({ lanes, issue, trigger });
   const assign = (n) => assignTo(n, env.OWNER);
   if (d.action === 'create') {
-    const url = gh(['issue', 'create', '--label', LABEL, '--title', 'main is red: a CI lane on main is failing, cancelled or stale', '--body', d.body]).trim();
-    if (env.OWNER) assign(url.replace(/^.*\//, ''));
+    const n = createIssue(LABEL, 'main is red: a CI lane on main is failing, cancelled or stale', d.body);
+    if (env.OWNER) assign(n);
   } else if (d.action === 'comment' || d.action === 'assign') {
     if (d.action === 'comment') gh(['issue', 'comment', String(issue), '--body', d.body]);
     if (env.OWNER) assign(issue);

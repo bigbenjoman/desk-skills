@@ -182,7 +182,7 @@ while IFS= read -r f; do
   [ -f "$f" ] || continue  # a glob that matched nothing
   label=$(head -n 10 "$f" | grep -m 1 -E '^(#|//) suite: '); label=${label#* suite: }
   [ -n "$label" ] || label=${f##*/}
-  b=$(head -n 10 "$f" | grep -m 1 -oE '^(#|//) budget: [0-9]+' | grep -oE '[0-9]+$')
+  b=$(budget_of "$f")
   case "$f" in
     *.sh) add "$label" sh "$f" "${f##*/}" "$((10#${b:-$BUDGET_ANY}))" ;;
     *) add "$label" mjs "$f" "${f##*/}" "$((10#${b:-$BUDGET_MJS}))" ;;

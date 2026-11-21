@@ -54,7 +54,6 @@ jobs:
             node tests/scope_sections.mjs --full --github-output
           fi
       - name: Fetch main's durations
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -185,15 +184,14 @@ jobs:
           exit "$bad"
 
   # A push to main records its suites' durations, which later runs plan from, and opens or comments the
-  # ci-slow and ci-flaky issues (tests/ci_main_red.mjs suites). A failure here never fails the run, so
-  # it never reaches the red-main alarm.
+  # ci-slow and ci-flaky issues (tests/ci_main_red.mjs suites). A suite over budget or flaked fails
+  # nothing; a step here that cannot record fails the run, so the red-main alarm shows it.
   record:
     name: record main
     needs: [plan, shard, tests]
     if: always() && github.event_name == 'push' && needs.plan.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    continue-on-error: true
     permissions:
       contents: read
       issues: write
@@ -206,7 +204,6 @@ jobs:
           node-version: 22
       - name: Fetch the shard results
         uses: actions/download-artifact@v4
-        continue-on-error: true
         with:
           pattern: shard-*
           path: results

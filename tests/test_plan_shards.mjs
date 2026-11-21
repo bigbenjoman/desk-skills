@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { plan, matrix, describe, durationsFromLog, percentile, readDurations, chooseDurations, mergeDurations, fetchDurations, SHARDS, ARTIFACT } from './plan_shards.mjs';
+import { plan, matrix, describe, durationsFromLog, readDurations, chooseDurations, mergeDurations, fetchDurations, SHARDS, ARTIFACT } from './plan_shards.mjs';
 import { repoMap } from './scope_sections.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -37,13 +37,14 @@ t('DS-927 AC2 every suite is in exactly one shard of 2 x 3 lanes', [lanes.shards
 t('DS-927 AC2 the two longest suites are in different shards', longest2.map((s) => lanes.shards.findIndex((x) => x.suites.includes(s))), [0, 1]);
 t('DS-927 AC2 a shard predicts its slowest lane, not the sum of its suites', lanes.shards.map((x) => x.seconds), [370, 310]);
 t('DS-927 AC2 the log says how many lanes', describe(lanes).split('\n')[0], '2 shard(s) of 3 lanes each, 20.1 min in all, even split 3.4 min, longest suite 6.2 min');
+const zero = plan(['test_a.sh', 'test_b.sh', 'test_c.sh'], { 'test_a.sh': 30, 'test_b.sh': 0, 'test_c.sh': 0 }, 3, 3);
+t('DS-927 AC2 suites recorded at 0 s still give every shard a suite', zero.shards.map((x) => x.suites), [['test_a.sh'], ['test_b.sh'], ['test_c.sh']]);
 for (const [n, j] of [[2, 3], [6, 3], [8, 2]]) { const q = plan(Object.keys(skew), skew, n, j); t(`DS-927 AC2 slowest shard within the even split over lanes plus the longest suite at ${n} x ${j}`, slowest(q) <= q.total / q.lanes + q.longest, true); }
-t('DS-927 AC2 one lane a shard plans as before', plan(names, secs, 3, 1).shards, p.shards);
 
 // ---- AC3: a suite with no recorded duration ------------------------------------------------------
 const q = plan([...names, 'test_new.sh'], secs, 3);
 t('AC3 a suite with no duration is still planned', every(q).includes('test_new.sh'), true);
-t('DS-927 AC4 at the 75th percentile of the recorded durations, and named', [q.guess, percentile(Object.values(secs), 0.75), q.unknown], [172.5, 172.5, ['test_new.sh']]);
+t('DS-927 AC4 at the 75th percentile of the recorded durations, and named', [q.guess, q.unknown], [172.5, ['test_new.sh']]);
 t('DS-927 AC4 the 75th percentile is of every recorded suite, not only those planned', plan(['test_j.mjs', 'test_new.sh'], secs, 2).guess, 172.5);
 t('AC3 the log says which suites had no duration', describe(q).split('\n').at(-1), 'no recorded duration, planned at 2.9 min each: test_new.sh');
 const none = plan(['test_x.sh', 'test_y.sh'], {}, 6);

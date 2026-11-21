@@ -2,7 +2,7 @@
 // The decisions as pure functions, then `alarm` and `nightly-due` end to end against a fake gh.
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { testsLane, macosLane, withTrigger, ranSuite, decide, nightlyDue, PLAN_JOB, shardFindings, suiteIssue } from './ci_main_red.mjs';
 import { scratch } from './scratch.mjs';
@@ -164,6 +164,11 @@ exit 0
   t('DS-927 AC8 a suite over budget opens one ci-slow issue, assigned to the owner', [created.length, /^issue create --label ci-slow --title slow suites: over their CPU budget on main --body [^]*?\n- test_a\.mjs: 41\.250 CPU seconds, budget 30$/m.test(all), s.gh.includes('issue edit 42 --add-assignee owner1')].join(), '1,true,true');
   t('DS-927 AC8 and no ci-main-red issue', /ci-main-red/.test(all), false);
   t('DS-927 AC9 a flaked suite comments on the open ci-flaky issue, naming it, assigned to the owner', [/^issue comment 12 --body [^]*?\n- test_b\.sh$/m.test(all), s.gh.includes('issue edit 12 --add-assignee owner1')].join(), 'true,true');
+  // gh's answer for the ci-slow issue cannot be read: the ci-flaky issue is still updated, and the step fails.
+  writeFileSync(join(T, 'issues-slow.json'), 'not json');
+  writeFileSync(LOG, '');
+  const broken = spawnSync(process.execPath, [SCRIPT, 'suites', RES], { encoding: 'utf8', env: { PATH: `${BIN}:${process.env.PATH}`, GH_REPO: 'acme/x', OWNER: 'owner1', RUN_URL: 'https://x/runs/9', RUN_SHA: 'abcdef0123' } });
+  t('DS-927 AC8 AC9 a ci-slow issue gh cannot update still lets the ci-flaky one be updated, and fails', [broken.status, /^ci-slow: could not open or update its issue/m.test(broken.stdout), /^issue comment 12 /m.test(readFileSync(LOG, 'utf8'))].join(), '1,true,true');
   writeFileSync(join(RES, 'shard-1.txt'), 'rc=0\nfailed=\nflaked=\nslow=\n');
   t('DS-927 AC8 AC9 a run with nothing slow or flaked touches no issue', cli(['suites', RES]).gh.filter((l) => /^(issue|label)/.test(l)).length, 0);
 } finally { rmSync(T, { recursive: true, force: true }); }
