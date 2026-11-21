@@ -28,7 +28,7 @@ repo_tpl_remotes(){
 }
 
 repo_template(){
-  local name=$1 builder=$2 root dir lock build pid
+  local name=$1 builder=$2 root dir lock build real pid
   root=${REPO_TPL_ROOT:-}
   [ -n "$root" ] || { echo "repo_template: REPO_TPL_ROOT is not set" >&2; return 2; }
   mkdir -p "$root" || return 2
@@ -41,10 +41,14 @@ repo_template(){
         if (export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t \
               GIT_COMMITTER_EMAIL=t@example.com GIT_AUTHOR_DATE="$REPO_TPL_DATE" GIT_COMMITTER_DATE="$REPO_TPL_DATE"
             "$builder" "$build"); then
+          # git writes some paths resolved (a worktree's gitdir), so the build's path is looked for
+          # in both forms: under a symlinked TMPDIR they differ.
+          real=$(cd "$build" && pwd -P)
           repo_tpl_remotes "$build" "$build/" "$REPO_TPL_MARK/"
+          repo_tpl_remotes "$build" "$real/" "$REPO_TPL_MARK/"
           # Only remote URLs are rewritten, so a path anywhere else (a worktree's gitdir, a nested
           # repo, an alternate) would reach every copy: such a build fails instead.
-          if grep -rqF "$build" "$build"; then
+          if grep -rqF -e "$build" -e "$real" "$build"; then
             rm -rf "$build" "$lock"; echo "repo_template: building $name left its own path in the template" >&2; return 1
           fi
           mv "$build" "$dir"
