@@ -1712,13 +1712,17 @@ const linkLines = [];
 // ---- red base --------------------------------------------------------------
 // The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
 // one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
-// allows. A repair ticket already in the queue is the one; none is admitted beside it.
+// allows. A repair ticket in the queue is the one, and so is one archived after merging in this red
+// spell: none is admitted beside it, nor a second once it merged with the base still red.
 const BASE_RED = readBaseRed(STATE);
 let baseRedRepair = null;
 if (BASE_RED) {
   const key = BASE_RED.repair_key;
-  const have = queue().tickets[key];
+  const tickets = queue().tickets;
+  const have = Object.hasOwn(tickets, key) ? tickets[key] : null;
+  const merged = have ? null : tickets[key]?.merged_at;
   if (have) baseRedRepair = { key, state: have.state };
+  else if (Date.parse(merged) >= Date.parse(BASE_RED.since)) baseRedRepair = { key, state: `merged at ${merged} with ${BASE_RED.branch} still red, so no second repair starts until it has gone green` };
   else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
   else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
   else {
