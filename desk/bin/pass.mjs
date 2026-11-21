@@ -3663,7 +3663,7 @@ runSteps({
   name: 'merge holds',
   snapshot: () => holdsSnapshot(personLabels()),
   decide: decideMergeHolds,
-  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH) === true },
+  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT) === true },
   report,
 });
 

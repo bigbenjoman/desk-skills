@@ -151,6 +151,11 @@ const prsNamingKey = (repo, state, key, fields) => {
   return ghPrList(repo, ['--state', state, '--search', key, '--json', `number,title,headRefName,${fields}`])
     ?.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`)) ?? null;
 };
+// The PRs from `head` merged into `base` at or after `since`, with `fields` (mergedAt among them), or null
+// when GitHub cannot be read.
+const promotionsAfter = (repo, head, base, since, fields = 'number,mergedAt') =>
+  ghPrList(repo, ['--state', 'merged', '--head', head, '--base', base, '--json', fields])
+    ?.filter((q) => Date.parse(q?.mergedAt) >= Date.parse(since)) ?? null;
 
 // Whether ticket `key`'s code is on `base`: true once a PR naming it has merged into `base`, or into
 // another branch with its merge commit on origin/<base> or with a PR from that branch merged into `base`
@@ -161,7 +166,6 @@ const prsNamingKey = (repo, state, key, fields) => {
 export function landedOn(key, base, via = base) {
   let repo, root;
   try { repo = E.ghRepo(); root = E.repoRoot(); } catch { return null; }
-  const list = (args) => ghPrList(repo, args);
   const mine = prsNamingKey(repo, 'all', key, 'state,baseRefName,mergeCommit,mergedAt');
   if (!mine) return null;
   const reaches = (sha) => !!sha && spawnSync('git', ['-C', root, 'merge-base', '--is-ancestor', sha, `origin/${base}`], { stdio: 'ignore' }).status === 0;
@@ -170,14 +174,13 @@ export function landedOn(key, base, via = base) {
   let unread = false;
   for (const p of merged) {
     if (!p.baseRefName || !Date.parse(p.mergedAt)) continue;
-    const after = (q) => Date.parse(q?.mergedAt) >= Date.parse(p.mergedAt);
-    const promotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', base, '--json', 'number,mergedAt']);
+    const promotions = promotionsAfter(repo, p.baseRefName, base, p.mergedAt);
     if (!promotions) { unread = true; continue; }
-    if (promotions.some(after)) return true;
+    if (promotions.length) return true;
     if (via === base || p.baseRefName === via) continue;
-    const viaPromotions = list(['--state', 'merged', '--head', p.baseRefName, '--base', via, '--json', 'number,mergedAt,mergeCommit']);
+    const viaPromotions = promotionsAfter(repo, p.baseRefName, via, p.mergedAt, 'number,mergedAt,mergeCommit');
     if (!viaPromotions) { unread = true; continue; }
-    if (viaPromotions.some((q) => after(q) && reaches(q.mergeCommit?.oid))) return true;
+    if (viaPromotions.some((q) => reaches(q.mergeCommit?.oid))) return true;
   }
   if (unread) return null;
   return !mine.some((p) => p.state === 'OPEN' || p.state === 'MERGED');
@@ -201,10 +204,9 @@ export function unpromotedBase(key, base) {
   if (!open) return null;
   const p = open[0];
   if (!p) {
-    const merged = ghPrList(repo, ['--state', 'merged', '--head', away.baseRefName, '--base', base, '--json', 'number,mergedAt']);
-    if (!merged) return null;
-    const done = merged.find((q) => Date.parse(q?.mergedAt) >= Date.parse(away.mergedAt));
-    return done ? { branch: away.baseRefName, pr: done.number, state: 'merged' } : { branch: away.baseRefName, pr: null, state: 'none' };
+    const done = promotionsAfter(repo, away.baseRefName, base, away.mergedAt);
+    if (!done) return null;
+    return done[0] ? { branch: away.baseRefName, pr: done[0].number, state: 'merged' } : { branch: away.baseRefName, pr: null, state: 'none' };
   }
   const red = latestPerCheck(normaliseRollup(p.statusCheckRollup)).some((c) => FAILED.has(c.conclusion));
   return { branch: away.baseRefName, pr: p.number, state: p.isDraft ? 'draft' : red ? 'red' : 'open' };
