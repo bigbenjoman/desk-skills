@@ -11,7 +11,7 @@
 // beside the leases: the caller passes those as `taken` and `inUse`.
 //
 // An orchestrator leases its batch's range for its Claude session at the handshake, and renews it:
-//   port-lease.mjs range <from>-<to> [--ttl <seconds>] [--batch <name>]
+//   port-lease.mjs range <from>-<to> [--batch <name>]
 // Each port in the range no other session leases is leased (or renewed) under the label
 // "<repo> <batch> range". Its own pass may give a worker a port in that range: it hands that port's
 // lease to the worker rather than refusing it.
@@ -111,9 +111,10 @@ export const spawnedPid = (out) => {
   return m ? Number(m[1]) : null;
 };
 
-// Leases each port from..to no one else holds for `owner`, renewing the ones it holds already.
-// -> { mode, leased: [port], renewed: [port], held: [{ port, label }] }.
-export function leaseRange({ env, from, to, owner, label, ttl = RANGE_TTL, dir }) {
+// Leases each port from..to no one else holds for `owner`, renewing the ones it holds already, for
+// RANGE_TTL. -> { mode, leased: [port], renewed: [port], held: [{ port, label }] }.
+export function leaseRange({ env, from, to, owner, label, dir }) {
+  const ttl = RANGE_TTL;
   const at = dir == null ? {} : { dir };
   const { mode } = kindMode('port', env);
   const out = { mode, leased: [], renewed: [], held: [] };
@@ -142,21 +143,17 @@ const spans = (ports) => {
   }
   return out.map(([a, b]) => (a === b ? `${a}` : `${a}-${b}`)).join(', ');
 };
-const USAGE = 'usage: port-lease.mjs range <from>-<to> [--ttl <seconds>] [--batch <name>]';
+const USAGE = 'usage: port-lease.mjs range <from>-<to> [--batch <name>]';
 
 async function cli() {
   // desk-env takes `--batch <name>` out of process.argv as it loads, so the arguments are read after it.
   const E = await import('./desk-env.mjs');
   const { parseRange } = await import('./port-claims.mjs');
-  const args = process.argv.slice(2);
-  const flag = (name) => { const i = args.indexOf(name); if (i < 0) return null; const v = args[i + 1]; args.splice(i, 2); return v ?? ''; };
-  const ttlText = flag('--ttl');
-  const [cmd, text, extra] = args;
+  const [cmd, text, extra] = process.argv.slice(2);
   if (cmd !== 'range' || extra != null) { console.error(USAGE); return EXIT_USAGE; }
   const r = parseRange(text);
   if (r.error) { console.error(`port-lease: ${r.error}. ${USAGE}`); return EXIT_USAGE; }
-  const ttl = ttlText == null ? RANGE_TTL : Number(ttlText);
-  if (!Number.isInteger(ttl) || ttl < 1) { console.error(`port-lease: --ttl is a whole number of seconds, not "${ttlText}"`); return EXIT_USAGE; }
+  const ttl = RANGE_TTL;
   if (kindMode('port', E).mode === 'off') {
     console.log('port leases are off (desk-env lease mode port): publish your range at the handshake, and take no lease');
     return EXIT_OK;
@@ -165,7 +162,7 @@ async function cli() {
   if (owner == null) { console.error('port-lease: no Claude session was found above this command, so the range has no owner to hold it'); return EXIT_USAGE; }
   const label = rangeLabel(E.ghRepo(), E.batchName());
   try {
-    const o = leaseRange({ env: E, from: r.from, to: r.to, owner, label, ttl });
+    const o = leaseRange({ env: E, from: r.from, to: r.to, owner, label });
     if (o.leased.length) console.log(`leased ${spans(o.leased)} to "${label}" (pid ${owner}) for ${ttl}s`);
     if (o.renewed.length) console.log(`renewed ${spans(o.renewed)} for ${ttl}s`);
     for (const h of o.held) console.log(`skipped ${h.port}: held by ${h.label}`);
