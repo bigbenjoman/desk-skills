@@ -1475,18 +1475,19 @@ function itemOf(r, x, reads = null, finds = reads) {
   const wb = worktreeBusy(t);
   // Requeued off a park and held here: the park says why its worker stopped, and the ticket is queued
   // already, so a resume only records what the next worker should know.
-  if (busyPark(t)) return { kind: 'worktree', need: parkNeed(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
+  // A reworded need is put off by its raw text (putOffKey), so a change of wording brings back nothing.
+  if (busyPark(t)) return { kind: 'worktree', need: parkNeed(busyPark(t).question), rawNeed: one(busyPark(t).question), note: `${capital(worktreeBusyText(wb))}.`, actions: [['resume', 'say what you did about it; a worker finishes it, with your note in its briefing, once a pass finds its worktree clean'], ['not-now']] };
   if (wb) return { kind: 'worktree', need: worktreeBusyText(wb), actions: [['done', 'commit, push or discard its changes (or end the session working in it), then say done; the next pass that finds it clean starts it'], ['not-now']] };
   // A stopped or outside-held ticket whose PR merged in another repo, where it was built, is done.
   const elsewhere = x.k === 'failed' || x.k === 'stuck' ? mergedElsewhere(r, t, finds) : null;
   const shipped = (item) => (elsewhere ? { ...item, elsewhere, actions: shippedFirst(item.actions, elsewhere) } : item);
-  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${parkNeed(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
+  if (x.k === 'failed' && sessionPark(parkText(r, t))) return shipped({ kind: 'stopped', need: `worker stopped: ${parkNeed(parkText(r, t))}`, rawNeed: `worker stopped: ${one(parkText(r, t))}`, actions: withDrop(r, t, [['open', sessionWhy(parkText(r, t))], ['not-now']]) });
   if (x.k === 'failed') {
     // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
     const actions = [['requeue', 'its worker gave up; requeue sends it back for a new worker to start again'], ['not-now']];
     // With no reason of its own recorded, its need is its park in plain words, not the raw question.
     const said = String(t.failed?.why ?? '').trim() ? '' : parkNeed(parkText(r, t));
-    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
+    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), rawNeed: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
@@ -1565,7 +1566,7 @@ function putOffKey(r, t, item) {
   if (item.promotion != null) return { question: `${t.key} red`, inputs: { 'pr-head': item.head, checks: item.checks.join(', ') } };
   const inputs = { ticket: t.key };
   if (item.kind === 'pr') inputs['pr-head'] = t.pr_status?.head ?? '';
-  else inputs.need = item.need;
+  else inputs.need = item.rawNeed ?? item.need;
   if (item.approval) inputs.approvals = (t.pr_status?.approvals ?? []).join(', ') || 'none';
   // A worktree item led by its park's reason holds the worktree's state in its note: a new hold brings it back.
   if (item.kind === 'worktree' && item.note) inputs.hold = item.note;

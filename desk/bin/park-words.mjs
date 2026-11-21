@@ -202,9 +202,14 @@ function proseTerms(s) {
 // a command, so it is quoted instead and reworded with the prose.
 const termSpan = (m, w) => (Object.hasOwn(PERMISSION_KEYS, w) || /^(?:yes|no|ask|off|unset)$/.test(w) ? `"${w}"` : m);
 
-// The text in plain words, or the empty string for none. Other code spans pass through as written.
+// A desk script run with its subcommand, written without backticks ("queue.mjs requeue DS-1", as the
+// pass's own environment and wedged parks write it): a command, so its words are never reworded.
+const BARE_COMMAND = String.raw`(?<![\w/.~-])[\w./~-]*\w\.(?:mjs|sh|py) [a-z][\w-]*(?: [A-Z][A-Z0-9]*-\d+)?`;
+
+// The text in plain words, or the empty string for none. Other code spans, and bare desk commands,
+// pass through as written.
 export function plainTerms(text) {
-  return String(text ?? '').replace(/`([a-z0-9-]+)`/g, termSpan).split(/(`[^`\n]*`)/)
+  return String(text ?? '').replace(/`([a-z0-9-]+)`/g, termSpan).split(new RegExp(String.raw`(\`[^\`\n]*\`|${BARE_COMMAND})`))
     .map((part, i) => (i % 2 ? part : proseTerms(part))).join('').trim();
 }
 

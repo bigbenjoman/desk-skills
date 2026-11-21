@@ -758,6 +758,11 @@ t('DS-322 AC3 a lane D park resumes, naming no lane', firstOf('K-3'), 'resume (a
 t('DS-322 AC3 a lane D park with its canvas saved resumes, naming no lane', firstOf('K-7'), 'resume (a worker finishes it once it has your answer)');
 t('DS-322 AC3 a park that rules lane C out resumes', firstOf('K-6'), 'resume (a worker finishes it once it has your answer)');
 t('DS-322 AC3 a resume on the triage record\'s lane names no lane', firstOf('K-5'), 'resume (a worker finishes it once it has your answer)');
+// DS-806: a stopped worker's item is put off by its raw park, so a change of wording brings it back to no one.
+N.record({ word: 'kappa', ticket: 'K-11', action: 'not-now' });
+const k11Off = [...NN.readRegister(join(env.HOME, '.desk-autopilot', 'acme__kappa')).entries.values()].find((x) => x.ticket === 'K-11');
+t('DS-806 a reworded stopped item is put off by its raw park, not its plain words', k11Off?.inputs?.need,
+  'worker stopped: Stage 5 needs worker-screenshots, which is not granted. Allow it, or skip the screenshots? Not reached: Stage 7 PR, Jira comment.');
 
 // ---- DS-344: a batch held on a usage limit. Its paused workers and held ticket are none of them
 // stopped: needs-you lists one item for the hold, and desk-q shows each paused worker with the reset.
