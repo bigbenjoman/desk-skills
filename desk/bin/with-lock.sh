@@ -106,12 +106,12 @@ esac
 export DESK_LOCK_HELD="$name"
 gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
 # Says once that this run waits, with the lock's state ($1) and, for the test and light locks, who holds
-# it as suite-wait.mjs names them: where each holder runs, what, and for how long.
+# it as suite-wait.mjs names them (slot-lease.mjs holders): where each holder runs, what, and for how long.
 waiting() {
   local by=""
   case "$name" in
-    test|tsc) by="$(node "$here/suite-wait.mjs" holders 2>/dev/null)" ;;
-    light) by="$(node "$here/suite-wait.mjs" holders --light 2>/dev/null)" ;;
+    test|tsc) by="$(node "$here/slot-lease.mjs" holders 2>/dev/null)" ;;
+    light) by="$(node "$here/slot-lease.mjs" holders --light 2>/dev/null)" ;;
   esac
   echo "with-lock.sh: waiting for $name lock ($1)${by:+: $by}" >&2
 }

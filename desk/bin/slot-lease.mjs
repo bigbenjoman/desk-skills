@@ -4,6 +4,7 @@
 //
 //   node slot-lease.mjs mode                                  # off, shadow or on: the slot kind's mode
 //   node slot-lease.mjs take <class> --pid <owner> [--timeout <s>] -- <command...>
+//   node slot-lease.mjs holders [--light]                     # who holds the test lock, one line
 //
 // `take` names the lease's owner (the wrapper's own pid, which then execs into the command, or the
 // command's pid where the wrapper runs it as a child), so the lease is held for as long as the command
@@ -68,13 +69,25 @@ function take({ cls, pid, timeout, words }) {
   }
 }
 
-function cli(argv) {
+// Who holds the test lock (with --light, the light lock's holders too), as suite-wait.mjs's one line,
+// or nothing where nobody can be named: with-lock.sh prints it when it starts to wait on its lock files.
+async function holders(rest) {
+  if (rest.some((a) => a !== '--light')) { console.error('usage: slot-lease.mjs holders [--light]'); return 2; }
+  const S = await import('./suite-wait.mjs');
+  const dir = E.lockDir();
+  const runs = S.lockHolderRuns({ procs: S.processList(), holders: S.lockHolders(dir, { light: rest.includes('--light') }), cwds: S.processCwds(), ages: S.processAges(), stamps: S.lockHolderStamps(dir) });
+  if (runs.length) console.log(S.holdersText(runs));
+  return 0;
+}
+
+async function cli(argv) {
   const [sub, ...rest] = argv;
   if (sub === 'mode') {
     try { console.log(kindMode('slot', E).mode); } catch { console.log('off'); }
     return 0;
   }
-  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | take <class> --pid <pid> [--timeout <s>] -- <command...>'); return 2; }
+  if (sub === 'holders') return holders(rest);
+  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | take <class> --pid <pid> [--timeout <s>] -- <command...>'); return 2; }
   const at = rest.indexOf('--');
   const head = at < 0 ? rest : rest.slice(0, at);
   const words = at < 0 ? [] : rest.slice(at + 1);
@@ -92,4 +105,4 @@ const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
-if (isMain) process.exit(cli(process.argv.slice(2)));
+if (isMain) process.exit(await cli(process.argv.slice(2)));
