@@ -36,7 +36,8 @@
 //     and handed on, in the log and the batch notes;
 //   - first, where config §3b "Intake query" names a query, runs standing intake (intake.mjs) at most
 //     every 15 minutes: it admits the new tickets a worker can take, starting a batch handed over at
-//     once if none is live, and its lines go into the tick's report;
+//     once if none is live, and its lines go into the tick's report, after those of any ticket a
+//     producer pushed since the last tick (intake.mjs push, which starts a tick at once);
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
 //     or, with anything parked, failed or held behind a blocker in no batch (held_outside),
@@ -77,7 +78,7 @@ import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHE
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
-import { intakeQuery, prOpen, handedByIntake } from './intake.mjs';
+import { intakeQuery, prOpen, handedByIntake, takePushed } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
@@ -419,7 +420,8 @@ function interval() {
   tickStates = batches.map((b) => b.state);
   // Standing intake first, in the standing batch's environment: it may start the batch this tick passes.
   if (!named) enterBatch(null);
-  const intake = runIntake();
+  // What pushes admitted since the last tick goes in this tick's report with intake's own lines.
+  const intake = [...(named ? [] : takePushed(E.stateDir())), ...runIntake()];
   templateCheck(batches[0].state);
   batches.forEach((b, i) => {
     if (!named) enterBatch(b.name);

@@ -5,6 +5,9 @@
 // The supervisor runs it each tick; it searches Jira at most every INTAKE_EVERY_MS.
 //
 //   node intake.mjs run [--json] [--force]   one intake now (--force: whether or not one is due)
+//   node intake.mjs push <TICKET> [--json]   a producer's ticket, now: the same per-ticket path as a run, with
+//                                            no search and no interval, then a supervisor tick at once once
+//                                            it is admitted (pushTicket: exit 0, 10 or 11)
 //   node intake.mjs forget <TICKET>          take a ticket out of the register: the next intake triages it again
 //   node intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--session] [--front] [--json]
 //                                            /desk-admit: the same checks on tickets the person names, now
@@ -64,8 +67,8 @@
 // batch is live is admitted into that batch, held behind its blockers there. The person naming it is
 // the approval. The open blockers in no batch of
 // what it admits are printed as `admit next: <KEY>...`, for /desk-admit to admit with no question.
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, appendFileSync, renameSync, mkdirSync, rmSync, realpathSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
@@ -74,7 +77,8 @@ import { machineCap } from './borrow.mjs';
 import { usagePace } from './usage-pace.mjs';
 import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
-import { designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
+import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
+import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl } from './run-by.mjs';
 import { FAILED, normaliseRollup, latestPerCheck } from './gate.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
@@ -90,6 +94,9 @@ export const SEARCH_MAX = 100;
 export const TRIAGE_TRIES = 3;
 // Triages /desk-admit runs at once when config §3b "Triage concurrency" does not say.
 export const TRIAGE_DEFAULT = 1;
+// How long a push waits for another intake to finish: as long as the supervisor lets one run.
+export const PUSH_WAIT_MS = Number(process.env.DESK_PUSH_WAIT_MS) || 30 * 60 * 1000;
+const LOCK_POLL_MS = 500;
 // Whether a line of an admit's output only reports how the run went, so a refusal's reason is not in it.
 export const isProgress = (line) => /^(triage|waiting|summary): /.test(line);
 
@@ -292,6 +299,11 @@ function handedOver(name) {
   try { return !!b && readQueueAt(b.queue).supervised === true; } catch { return false; }
 }
 
+// Whether a register entry keeps its ticket out while it stands: one routed to another live batch.
+// One routed to a session-run batch by its files waits only until that batch is handed over: then the
+// next intake triages it again and joins it there, as the standing batch's own gate does.
+const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch) && !(e.handover && handedOver(e.batch));
+
 // ---- one run -----------------------------------------------------------------------------------
 export function runIntake({ state = E.stateDir(), force = false, now = new Date() } = {}) {
   const query = intakeQuery();
@@ -303,10 +315,17 @@ export function runIntake({ state = E.stateDir(), force = false, now = new Date(
 }
 
 // One intake at a time, by hand or not: two would triage, and admit, the same ticket twice. Taken
-// exclusively (dir-lock.mjs tryLockFile), so of two intakes starting together only one runs.
-async function withLock(state, fn) {
+// exclusively (dir-lock.mjs tryLockFile), so of two intakes starting together only one runs. With
+// `waitMs`, a held lock is waited for that long before giving up.
+async function withLock(state, fn, { waitMs = 0 } = {}) {
   const lockFile = join(state, 'intake.lock');
-  const got = tryLockFile(lockFile);
+  const until = Date.now() + waitMs;
+  let got = tryLockFile(lockFile);
+  while (got !== true && Date.now() < until) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((res) => { setTimeout(res, LOCK_POLL_MS); });
+    got = tryLockFile(lockFile);
+  }
   if (got !== true) return { ran: false, lines: [`intake: skipped, another intake is running (pid ${got ?? '?'})`] };
   try { return await fn(); }
   finally { unlockFile(lockFile); }
@@ -569,9 +588,6 @@ async function intake({ state, query, reg, now }) {
   // for its epic's feature batch is skipped while that batch is live. One that cannot be checked, because
   // another batch's queue cannot be read, waits for the next intake and is said to.
   const unchecked = new Map();
-  // One routed to a session-run batch by its files waits only until that batch is handed over: then the
-  // next intake triages it again and joins it there, as the standing batch's own gate does.
-  const skipped = (e) => e?.outcome === 'elsewhere' && liveBatch(e.batch) && !(e.handover && handedOver(e.batch));
   const away = (k) => { const a = belongsElsewhere(k, null, E.queueFile()); if (a?.unreadable) unchecked.set(k, a.why); return a; };
   const isNew = (k) => E.SAFE_ID.test(k) && !q?.tickets?.[k] && !['admitted', 'handed'].includes(reg.tickets[k]?.outcome)
     && !skipped(reg.tickets[k]) && !away(k);
@@ -621,69 +637,88 @@ async function intake({ state, query, reg, now }) {
   const recs = {};
   for (const key of triageNow) {
     const { rec, why } = triage(key, state);
-    if (rec) { recs[key] = rec; continue; }
-    const tries = (reg.tickets[key]?.tries ?? 0) + 1;
-    if (tries >= TRIAGE_TRIES) {
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'handed', text: `${why} (${tries} intakes in a row)`, tries };
-      handed.push(key);
-      lines.push(`intake: handed ${key} to the digest: ${why}, ${tries} intakes in a row`);
-    } else {
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'triage_failed', text: why, tries };
-      lines.push(`intake: ${key} not admitted: ${why}; the next intake tries again`);
-    }
+    if (rec) recs[key] = rec;
+    else triageFailed({ key, why, reg, now, lines, handed });
   }
   writeIntake(state, reg);
   const order = blockersFirst(recs);
   let started = null;
   for (const key of order) {
-    const rec = recs[key];
-    const r = placeOne(key, rec, { started, by: 'intake', now });
-    if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return done({ started }); }
-    if (r.closed) { lines.push(waitFor(r.cur)); return done({ started }); }
-    if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); continue; }
-    // A ticket whose files are on another running batch's base joins that batch, where the supervisor runs it.
-    if (r.elsewhere?.route && r.elsewhere.supervised) {
-      const j = await joinFeature(key, r.elsewhere.route, { by: 'intake' });
-      if (j.why) { hand(key, `${r.elsewhere.why}, but it was not admitted there: ${j.why}`); continue; }
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', batch: r.elsewhere.route, text: `${laneSize(j.rec)}${heldText(j)}${j.took}, into batch ${r.elsewhere.route}` };
-      writeIntake(state, reg);
-      admitted.push(key);
-      lines.push(`intake: admitted ${key} by intake into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j)}${j.took}: ${r.elsewhere.why}`);
-      continue;
-    }
-    // One a session runs is the session's until it is handed over (closed's 'session'): it waits for that.
-    if (r.elsewhere?.route) {
-      const why = `${r.elsewhere.why}, once a session hands batch ${r.elsewhere.route} to the supervisor (queue.mjs set-batch supervised=true): /desk-admit ${key} adds it now`;
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.route, handover: true, text: why };
-      writeIntake(state, reg);
-      lines.push(`intake: ${key} not admitted yet: ${why}`);
-      continue;
-    }
-    if (r.elsewhere) {
-      const why = r.elsewhere.epic ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
-      reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: why };
-      writeIntake(state, reg);
-      lines.push(`intake: ${key} not admitted: ${why}`);
-      continue;
-    }
-    if (r.reasons) { hand(key, r.reasons.join('; ')); continue; }
-    if (r.startFailed) {
-      lines.push(`intake: admits nothing: a standing batch could not be started (${r.startFailed}); the next intake tries again`);
-      reg.last_run = null;
-      writeIntake(state, reg);
+    const s = await settle(key, recs[key], { state, reg, now, by: 'intake', started, lines, admitted, hand });
+    started = s.started;
+    if (s.stop) {
+      if (s.result === 'start_failed') { reg.last_run = null; writeIntake(state, reg); }
       return done({ started });
     }
-    if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
-    if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); continue; }
-    const parkedOn = labelPark(rec, E.personStepLabels(), E.personInputLabels()) ?? designPark(rec);
-    const parked = parkedOn ? `, parked: ${parkedOn}` : '';
-    const took = logTaken(key, rec, state, r.free);
-    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', text: `${laneSize(rec)}${heldText(r)}${took}${parked}` };
-    writeIntake(state, reg);
-    admitted.push(key);
-    lines.push(`intake: admitted ${key} by intake into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${took}${parked}${r.note ?? ''}`);
   }
   return done({ started });
+}
+
+// A ticket whose triage left no record: tried again by the next intake, or handed to the digest once it
+// has failed TRIAGE_TRIES intakes in a row. -> 'handed' or 'retry'. The caller writes the register.
+function triageFailed({ key, why, reg, now, lines, handed }) {
+  const tries = (reg.tickets[key]?.tries ?? 0) + 1;
+  if (tries >= TRIAGE_TRIES) {
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'handed', text: `${why} (${tries} intakes in a row)`, tries };
+    handed.push(key);
+    lines.push(`intake: handed ${key} to the digest: ${why}, ${tries} intakes in a row`);
+    return 'handed';
+  }
+  reg.tickets[key] = { at: now.toISOString(), outcome: 'triage_failed', text: why, tries };
+  lines.push(`intake: ${key} not admitted: ${why}; the next intake tries again`);
+  return 'retry';
+}
+
+// One triaged ticket placed by intake, standing or pushed: admitted, handed to the digest, or left for
+// later, its register entry written and its lines said. `started` is the standing batch this run
+// started, if any. -> {result, started, stop}: `result` is admitted, handed, elsewhere, closed, retry or
+// start_failed, and `stop` says nothing more may be placed this run.
+async function settle(key, rec, { state, reg, now, by, started, lines, admitted, hand }) {
+  const out = (result, extra = {}) => ({ result, started, stop: false, ...extra });
+  const r = placeOne(key, rec, { started, by, now });
+  if (r.unreadable) { lines.push(`intake: admits nothing more: ${r.unreadable}`); return out('retry', { stop: true }); }
+  if (r.closed) { lines.push(waitFor(r.cur)); return out('closed', { stop: true }); }
+  if (r.elsewhere?.unreadable) { lines.push(`intake: not admitted: ${r.elsewhere.why}; the next intake tries again`); return out('retry'); }
+  // A ticket whose files are on another running batch's base joins that batch, where the supervisor runs it.
+  if (r.elsewhere?.route && r.elsewhere.supervised) {
+    const j = await joinFeature(key, r.elsewhere.route, { by });
+    if (j.why) { hand(key, `${r.elsewhere.why}, but it was not admitted there: ${j.why}`); return out('handed'); }
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', by, batch: r.elsewhere.route, text: `${laneSize(j.rec)}${heldText(j)}${j.took}, into batch ${r.elsewhere.route}` };
+    writeIntake(state, reg);
+    admitted.push(key);
+    lines.push(`intake: admitted ${key} by ${by} into batch ${r.elsewhere.route} (${laneSize(j.rec)})${heldText(j)}${j.took}: ${r.elsewhere.why}`);
+    return out('admitted', { batch: r.elsewhere.route });
+  }
+  // One a session runs is the session's until it is handed over (closed's 'session'): it waits for that.
+  if (r.elsewhere?.route) {
+    const why = `${r.elsewhere.why}, once a session hands batch ${r.elsewhere.route} to the supervisor (queue.mjs set-batch supervised=true): /desk-admit ${key} adds it now`;
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.route, handover: true, text: why };
+    writeIntake(state, reg);
+    lines.push(`intake: ${key} not admitted yet: ${why}`);
+    return out('elsewhere');
+  }
+  if (r.elsewhere) {
+    const why = r.elsewhere.epic ? `${r.elsewhere.why}: /desk-admit ${key} adds it to that batch` : r.elsewhere.why;
+    reg.tickets[key] = { at: now.toISOString(), outcome: 'elsewhere', batch: r.elsewhere.batch, text: why };
+    writeIntake(state, reg);
+    lines.push(`intake: ${key} not admitted: ${why}`);
+    return out('elsewhere');
+  }
+  if (r.reasons) { hand(key, r.reasons.join('; ')); return out('handed'); }
+  if (r.startFailed) {
+    lines.push(`intake: admits nothing: a standing batch could not be started (${r.startFailed}); the next intake tries again`);
+    return out('start_failed', { stop: true });
+  }
+  if (r.started) { started = r.started; lines.push(`intake: started standing batch ${started}, handed to the supervisor`); }
+  if (r.admitFailed) { lines.push(`intake: ${key} not admitted: ${r.admitFailed}; the next intake tries again`); return out('retry'); }
+  const parkedOn = labelPark(rec, E.personStepLabels(), E.personInputLabels()) ?? designPark(rec);
+  const parked = parkedOn ? `, parked: ${parkedOn}` : '';
+  const took = logTaken(key, rec, state, r.free);
+  reg.tickets[key] = { at: now.toISOString(), outcome: 'admitted', by, text: `${laneSize(rec)}${heldText(r)}${took}${parked}` };
+  writeIntake(state, reg);
+  admitted.push(key);
+  lines.push(`intake: admitted ${key} by ${by} into batch ${r.batch ?? '?'} (${laneSize(rec)})${heldText(r)}${took}${parked}${r.note ?? ''}`);
+  return out('admitted', { batch: r.batch });
 }
 
 // ---- by hand -----------------------------------------------------------------------------------
@@ -964,6 +999,110 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
   return done({ started, next: [...next] });
 }
 
+// ---- pushed by a producer ---------------------------------------------------------------------
+// A producer that raised a ticket from an event pushes its key: the same per-ticket path as standing
+// intake (its lock, register, batch gate, triage and checks), with no search and no interval, and a
+// supervisor tick started at once once it is admitted. -> {code, lines}: `code` is EXIT.GO_ON (0) when
+// it is admitted, or already in the queue, the register or another batch, or done in Jira;
+// EXIT.NOTHING_YET (10) when nothing is admitted yet and pushing again later may (a triage failure under
+// TRIAGE_TRIES, an intake that held the lock past PUSH_WAIT_MS, a queue that cannot be read); and
+// EXIT.SHOW_PERSON (11) when it is not admitted until the person acts, saying why.
+export async function pushTicket(key, { state = E.stateDir(), now = new Date(), waitMs = PUSH_WAIT_MS, wake = wakeSupervisor } = {}) {
+  const kind = E.ticketKind(key);
+  if (!kind.ok || kind.kind !== 'tracker') {
+    const pattern = E.configValue('ticket-pattern');
+    return { code: EXIT.SHOW_PERSON, lines: [`intake: push refused ${key}: it does not match §4 Ticket key pattern (${pattern || 'unset'}), so no Jira ticket was read`] };
+  }
+  const perm = E.permission('autopilot-workers');
+  if (perm !== 'yes') return { code: EXIT.SHOW_PERSON, lines: [`intake: push admits nothing: it needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${perm}")`] };
+  mkdirSync(state, { recursive: true });
+  const r = await withLock(state, () => pushOne(key, { state, now }), { waitMs });
+  if (r.ran === false) return { code: EXIT.NOTHING_YET, lines: [...r.lines, `intake: ${key} not admitted yet: push it again once that intake ends`] };
+  if (r.admitted) {
+    noteForTick(state, r.lines);
+    r.lines.push(wake());
+  }
+  return r;
+}
+
+async function pushOne(key, { state, now }) {
+  const lines = [];
+  const reg = readIntake(state);
+  const result = (code, extra = {}) => ({ code, lines, ...extra });
+  let q;
+  try { q = readQueue(); } catch (e) { lines.push(`intake: admits nothing: the queue at ${E.queueFile()} cannot be read (${e.message})`); return result(EXIT.NOTHING_YET); }
+  const already = (text) => { lines.push(`intake: ${key} ${text}: nothing changed`); return result(EXIT.GO_ON); };
+  if (q?.tickets?.[key]) return already(`is already in batch ${q.batch ?? '?'} (${q.tickets[key].state})`);
+  const entry = reg.tickets[key];
+  if (['admitted', 'handed'].includes(entry?.outcome)) return already(`is already in the intake register (${entry.outcome}: ${entry.text})`);
+  if (skipped(entry)) return already(`is already in the intake register (elsewhere: ${entry.text})`);
+  const away = belongsElsewhere(key, null, E.queueFile());
+  if (away?.unreadable) { lines.push(`intake: ${key} not admitted yet: ${away.why}`); return result(EXIT.NOTHING_YET); }
+  if (away) return already(`belongs to another batch: ${away.why}`);
+  if (waitFor(q)) { lines.push(waitFor(q)); return result(EXIT.SHOW_PERSON); }
+  const jira = readJira(key);
+  if (jira.done) return already(`is already done in Jira (${jira.done}): nothing triaged or admitted`);
+  if (jira.epic) { lines.push(`intake: push refused ${key}: an epic runs as its own feature batch: /desk-admit ${key} starts it`); return result(EXIT.SHOW_PERSON); }
+
+  const handed = [];
+  const admitted = [];
+  const hand = (k, text) => {
+    reg.tickets[k] = { at: now.toISOString(), outcome: 'handed', text };
+    writeIntake(state, reg);
+    handed.push(k);
+    lines.push(`intake: handed ${k} to the digest: ${text}`);
+  };
+  const { rec, why } = triage(key, state);
+  if (!rec) {
+    const t = triageFailed({ key, why, reg, now, lines, handed });
+    writeIntake(state, reg);
+    return result(t === 'handed' ? EXIT.SHOW_PERSON : EXIT.NOTHING_YET);
+  }
+  const s = await settle(key, rec, { state, reg, now, by: 'push', started: null, lines, admitted, hand });
+  const code = { admitted: EXIT.GO_ON, retry: EXIT.NOTHING_YET, start_failed: EXIT.NOTHING_YET }[s.result] ?? EXIT.SHOW_PERSON;
+  return result(code, { admitted: s.result === 'admitted', batch: s.batch ?? null });
+}
+
+// Lines a push left for the next supervisor tick's report, kept in <state>/intake.pushed until a tick
+// takes them.
+const pushedPath = (state) => join(state, 'intake.pushed');
+function noteForTick(state, lines) {
+  try { appendFileSync(pushedPath(state), `${lines.join('\n')}\n`); } catch { /* the push still printed them */ }
+}
+// The lines pushes left since the last tick took them, taken: -> [line].
+export function takePushed(state) {
+  const file = pushedPath(state);
+  const taken = `${file}.${process.pid}`;
+  try { renameSync(file, taken); } catch { return []; }
+  try { return readFileSync(taken, 'utf8').split('\n').filter(Boolean); } finally { rmSync(taken, { force: true }); }
+}
+
+// Starts a supervisor tick now rather than at its next interval: the repo's agent where it is loaded
+// (launchctl kickstart, or the systemd service started), so the tick runs as every other does; else
+// supervisor.mjs tick from the repo root. -> the line saying which. DESK_SUPERVISOR_MJS stands in for
+// the script in tests, as run-by.mjs reads it.
+export function wakeSupervisor() {
+  let slug;
+  try { slug = E.repoSlug(); } catch { slug = null; }
+  if (slug && backend() === 'launchd' && supervisorLoaded(slug)) {
+    const r = spawnSync('launchctl', ['kickstart', `${launchdDomain()}/${supervisorLabel(slug)}`], { encoding: 'utf8' });
+    if (r.status === 0) return `intake: started a supervisor tick now (${supervisorLabel(slug)})`;
+  } else if (slug && backend() === 'systemd' && supervisorLoaded(slug)) {
+    const r = systemctl('start', '--no-block', `${supervisorLabel(slug)}.service`);
+    if (r.status === 0) return `intake: started a supervisor tick now (${supervisorLabel(slug)}.service)`;
+  }
+  let cwd = process.cwd();
+  try { const root = E.repoRoot(); if (existsSync(root)) cwd = root; } catch { /* from here */ }
+  const script = process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
+  try {
+    const child = spawn(process.execPath, [script, 'tick'], { cwd, env: process.env, detached: true, stdio: 'ignore' });
+    child.unref();
+    return 'intake: started a supervisor tick now (supervisor.mjs tick)';
+  } catch (e) {
+    return `intake: could not start a supervisor tick (${e.message}): the next interval picks it up`;
+  }
+}
+
 export function forget(key, state = E.stateDir()) {
   const reg = readIntake(state);
   if (!reg.tickets[key]) return false;
@@ -998,10 +1137,14 @@ if (isMain) {
     if (json) console.log(JSON.stringify(r));
     else if (r.ran === false) console.log(r.lines.join('\n'));
     if (r.ran === false || r.refused.length) process.exitCode = EXIT.SHOW_PERSON;
+  } else if (cmd === 'push' && rest.filter((a) => !a.startsWith('--')).length === 1) {
+    const r = await pushTicket(rest.find((a) => !a.startsWith('--')));
+    console.log(json ? JSON.stringify(r) : r.lines.join('\n'));
+    process.exitCode = r.code;
   } else if (cmd === 'forget' && rest[0] && E.SAFE_ID.test(rest[0])) {
     console.log(forget(rest[0]) ? `intake: ${rest[0]} forgotten: the next intake triages it again if the query still finds it` : `intake: ${rest[0]} is not in the register`);
   } else {
-    console.error('usage: intake.mjs run [--json] [--force] | intake.mjs forget <TICKET> | intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--session] [--front] [--json]');
+    console.error('usage: intake.mjs run [--json] [--force] | intake.mjs push <TICKET> [--json] | intake.mjs forget <TICKET> | intake.mjs admit <TICKET>... [--by <who>] [--into <batch>] [--session] [--front] [--json]');
     process.exit(EXIT.SHOW_PERSON);
   }
 }
