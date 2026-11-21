@@ -268,6 +268,7 @@ const computedFlow = (v) => {
 // quoted string is text, and so is the rest of a plain value once it starts (`it's the '90s`).
 function yamlAlias(line) {
   let start = true;
+  let quoted = false; // just past a quoted string: a `:` there ends a key, space after it or not
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     const next = line[i + 1] ?? ' ';
@@ -278,13 +279,15 @@ function yamlAlias(line) {
         else if (line[i] === c) { if (c === "'" && line[i + 1] === "'") i++; else break; }
       }
       start = false;
+      quoted = true;
       continue;
     }
     if (start && c === '*' && /[^\s,[\]{}]/.test(next)) return true;
     if (start && /^<<\s*:/.test(line.slice(i))) return true;
     if (start && c === '-' && /\s/.test(next)) continue;
-    if (/[,[{]/.test(c) || (c === ':' && /\s/.test(next))) start = true;
+    if (/[,[{]/.test(c) || (c === ':' && (quoted || /\s/.test(next)))) start = true;
     else start = false;
+    quoted = quoted && /\s/.test(c);
   }
   return false;
 }

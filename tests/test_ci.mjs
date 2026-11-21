@@ -351,6 +351,14 @@ t('an alias between two plain values with apostrophes is still an alias',
   linted(aliased(`*extra\n        note: [don't, won't]`).replace('label: [voicepa-linux-arm64]', "pre: [it's]\n        label: [voicepa-linux-arm64]"), VPA), 'm@18 m@22');
 t('an alias after a plain value with a quote inside it is still an alias',
   linted(aliased(`*extra\n        note: ['stable']`).replace('label: [voicepa-linux-arm64]', "pre: [it's the '90s]\n        label: [voicepa-linux-arm64]"), VPA), 'm@18 m@22');
+t('an alias after a compact quoted key in a flow matrix is reported',
+  lint(inlineMatrix('{ label: [ubuntu-latest], "include":*extra }').replace('  m:', `  a:
+    strategy:
+      matrix:
+        include: &extra [{ label: self-hosted }]
+    runs-on: ubuntu-latest
+    steps: [{ run: 'true' }]
+  m:`), { hostedWorkflow: true }).some((r) => r.job === 'm' && /hosted-workflows/.test(r.problem)), true);
 const hostedInc = computedInc(fromNeeds).replace('[voicepa-linux-arm64]', '[ubuntu-latest]');
 t('AC9 with nothing declared, a computed include is read as before', linted(hostedInc), '');
 t('with labels declared, a computed include beside a hosted axis is reported', linted(hostedInc, VPA), 'm@9 m@13');
