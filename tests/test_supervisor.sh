@@ -290,6 +290,13 @@ printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
 old A.11.json; ( sleep 2; rm -f "$EX/A.11.json" ) &
 out=$(tick); wait
 check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
+# The same, with a push landing while it waits: the push's lines still get their pass.
+HOLDER=$(sh -c 'sleep 4 >/dev/null 2>&1 & echo $!')
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
+old A.13.json; ( sleep 2; rm -f "$EX/A.13.json"; printf 'intake: admitted ACME-10\n' > "$T/state/intake.pushed" ) &
+out=$(tick); wait
+check "DS-695: a woken tick that waited still passes a push that landed meanwhile" '[ "$(count "$T/pass.calls")" = $((before + 5)) ] && [ ! -e "$T/state/intake.pushed" ]'
+before=$((before + 1))
 # An interval after the last counted pass, a pass counts whatever woke it: an exit file never stops it.
 old A.12.json; printf '2020-01-01T00:00:00.000Z\n' > "$COUNTED"
 out=$(tick)

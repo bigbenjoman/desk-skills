@@ -517,7 +517,7 @@ function interval() {
   if (woken && !held) return;
   try {
     if (woken) sleep(wakeAt('round') + WAKE_GAP_MS - Date.now());
-    if (woken && !exitFiles(exits).length) return;
+    if (woken && !exitFiles(exits).length && !pushWaiting(E.stateDir())) return;
     // Pinned once: a round enters each batch in turn, which would read as a pin to the next round.
     const named = batchPinned();
     for (let round = 1; ; round += 1) {
