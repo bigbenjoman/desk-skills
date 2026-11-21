@@ -88,15 +88,26 @@ else
 fi
 [[ -n "$SLUG" ]] || REPO_DIR="${DESK_CONFIG_ROOT:-$HOME/.config/desk}/repos/(no repo)"
 
+# Config rows are read through desk-env.sh beside desk-env.mjs, where there is one: desk_load_config
+# takes every value in one node run, and desk_cfg and desk_perm answer from it. Without it each read
+# runs desk-env.mjs, as desk_cfg does for a value its snapshot lacks.
+DESK_SH="$(dirname "$DESK_ENV_MJS")/desk-env.sh"
+HAVE_DESK_SH=""
+if [[ -n "$SLUG" && -r "$DESK_ENV_MJS" && -r "$DESK_SH" ]] && command -v node >/dev/null 2>&1; then
+  # shellcheck source=../desk/bin/desk-env.sh
+  . "$DESK_SH" && desk_load_config && HAVE_DESK_SH=1
+fi
 # One row of this repo's config, or empty. desk-env.mjs reads it (and resolves the repo itself, by
 # the same rules as `where`), so there is one parser. Without desk-env there is no config to read.
 cfg() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  if [[ -n "$HAVE_DESK_SH" ]]; then desk_cfg "$1" 2>/dev/null || true; return 0; fi
   node "$DESK_ENV_MJS" get "$1" 2>/dev/null || true
 }
 # A §3 row as yes|ask|no|never|stop; empty without desk-env, which reads as not granted.
 cfg_perm() {
   [[ -n "$SLUG" && -r "$DESK_ENV_MJS" ]] || return 0
+  if [[ -n "$HAVE_DESK_SH" ]]; then desk_perm "$1" 2>/dev/null || true; return 0; fi
   node "$DESK_ENV_MJS" perm "$1" 2>/dev/null || true
 }
 # First word of a row ('KAN "Voice PA"; Task, Bug' -> KAN); `none` reads as empty.

@@ -233,18 +233,19 @@ AGENTS=OK or AGENTS=BLOCKED — AGENTS=OK only if every one of these is a subage
 $CHECKS"
   # The json result carries the reply, its cost and its turns. With no result line (a rejected model,
   # a timeout) the raw output stands in for the reply, so its message still shows, and the cost is
-  # unknown, never zero. pass.mjs reads the [preflight] cost line.
-  read_raw() { # cost | reply
+  # unknown, never zero. pass.mjs reads the [preflight] cost line. One node run reads all three: the
+  # cost line, then yes or no for the usage limit, then the reply.
+  read_raw() {
     printf '%s\n' "$RAW" | node -e '
       let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
         let r = null;
         try { const d = JSON.parse(s); if (d?.type === "result") r = d; } catch {}
         for (const l of r ? [] : s.split("\n")) { try { const d = JSON.parse(l); if (d?.type === "result") r = d; } catch {} }
         const n = (v) => (typeof v === "number" && Number.isFinite(v) ? v : "unknown");
-        if (process.argv[1] === "cost") console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
-        else if (process.argv[1] === "limit") console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
-        else process.stdout.write(r && typeof r.result === "string" ? r.result : s);
-      });' "$1" || true
+        console.log(`cost=${n(r?.total_cost_usd)} turns=${n(r?.num_turns)}`);
+        console.log(r?.api_error_status === 429 || r?.api_error === "usage_limit_reached" || /usage_limit_reached|hit your [a-z0-9 -]*limit/i.test(r ? String(r.result ?? "") : s) ? "yes" : "no");
+        process.stdout.write(r && typeof r.result === "string" ? r.result : s);
+      });' || true
   }
   # One preflight call: its raw output, recorded for the bench, then its cost, reply and limit.
   preflight_call() {
@@ -268,9 +269,10 @@ $CHECKS"
       --effort "${CALL_EFFORT_ARGS[1]:-}" --tools "${TOOL_ARGS[1]:-}" --agent-names "$AGENT_NAMES" \
       --gate "tracker=$TRACKER" --gate "codex-review=$CODEX_PERM" --gate "jira=$HAVE_JIRA" --gate "codex=$HAVE_CODEX" \
       ${REC_ARGS[@]+"${REC_ARGS[@]}"} >/dev/null 2>&1 || echo "  note: the preflight call could not be recorded for the bench" >&2
-    PRE_COST="$(read_raw cost)"
-    RESULT="$(read_raw reply)"
-    PRE_LIMIT="$(read_raw limit)"
+    PARSED="$(read_raw)"
+    PRE_COST="${PARSED%%$'\n'*}"; PARSED="${PARSED#*$'\n'}"
+    PRE_LIMIT="${PARSED%%$'\n'*}"; RESULT=""
+    case "$PARSED" in *$'\n'*) RESULT="${PARSED#*$'\n'}" ;; esac  # an empty reply leaves no line after the limit
   }
   # Two calls' "cost=<usd> turns=<n>" added up; either part unknown in one call is unknown in the sum.
   sum_cost() {

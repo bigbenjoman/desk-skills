@@ -1,4 +1,5 @@
 // suite: worker tools (each headless claude -p call is offered only the tools it uses, and a batch's workers share one system prompt)
+// budget: 45 DS-943 (about 30 whole spawn-worker.sh runs, each a dozen node starts; 34-37 s on CI)
 // covers: desk/bin/worker-tools.mjs desk/bin/spawn-worker.sh desk/bin/desk-env.sh agents/** skills/**/*.md
 // The worker's --tools list matches what the worker contract and the skills it loads name, in both
 // directions; spawn-worker.sh passes it to the worker and its preflight, and passes nothing with the

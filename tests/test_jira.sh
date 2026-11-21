@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # suite: desk-jira against a local stub
+# budget: 215 DS-943 (about 200 desk-jira runs, each bash, node and curl against a stub server; 160-208 s on CI before DS-943's cut)
 # Tests for bin/desk-jira against a local stub. Scratch HOME only.
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034

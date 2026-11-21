@@ -1,4 +1,5 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
+// budget: 95 DS-943 (dozens of desk-q runs, each a node start reading seven fixture repos; 38-71 s on CI)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
 import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
