@@ -72,7 +72,7 @@ import { readAsks } from './asks.mjs';
 import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merge-log.mjs';
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
-import { PAGE_RESUMES, uploadPause } from './upload-queue.mjs';
+import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -731,6 +731,33 @@ export function loadRepos(now = Date.now(), word = null) {
   const machine = { running: machineRunning([...all, ...others]), cap: machineCap(), others };
   for (const r of all) r.machine = machine;
   return all;
+}
+
+// What loadRepos reads, as one string of modification times and sizes, so an open screen rereads only
+// once it changes: the repos' configs, and each batch's queue folder and state folder with every entry
+// in it. A folder's own time moves as an entry in it is added, removed or replaced. Logs (logs/, any
+// *.log) and the read-only clones (ref/) are left out: workers write them all the time.
+const UNSTAMPED = new Set(['logs', 'ref']);
+function stampOf(path, depth, out) {
+  let st;
+  try { st = statSync(path); } catch { out.push(`${path} -`); return; }
+  out.push(`${path} ${st.mtimeMs} ${st.size}`);
+  if (!depth || !st.isDirectory()) return;
+  let names = [];
+  try { names = readdirSync(path).sort(); } catch { /* stamped by its own time */ }
+  for (const n of names) if (!UNSTAMPED.has(n) && !n.endsWith('.log')) stampOf(join(path, n), depth - 1, out);
+}
+export function stateStamp(configRoot = deskConfigRoot()) {
+  const out = [];
+  const repos = join(configRoot, 'repos');
+  stampOf(repos, 2, out);
+  let slugs = [];
+  try { slugs = readdirSync(repos).sort(); } catch { /* no repo set up */ }
+  for (const slug of slugs) {
+    for (const b of listBatches(slug)) { stampOf(dirname(b.queue), 1, out); stampOf(b.state, 1, out); }
+  }
+  stampOf(uploadQueueFile(), 0, out);
+  return out.join('\n');
 }
 
 // A batch's names, as loadBatch gives them: its repo's for the standing batch, else its own with its base.
@@ -3891,6 +3918,8 @@ function jsonCommand(repos, argv, now) {
 // ---- the interactive screen --------------------------------------------------------------------
 
 export const REFRESH_MS = 2000;
+// The longest an open screen goes without rereading the queues while nothing it stamps changes.
+export const REREAD_MS = 30 * 1000;
 const LOG_LINES = 40;
 const MOVE_KEYS = 'shift+↑↓ move · t top · b bottom · + − workers';
 // The question before the supervisor goes off, in the terminal's own text colour with its keys bold.
@@ -4057,8 +4086,8 @@ const placeOf = (v) => (v.kind === 'timeline' || v.kind === 'days'
 // The full-screen view is a place (every repo, a repo, an epic, a ticket) and, for every place but a
 // ticket, a view of it: Queue, Timeline, By day or Epics. Tab, 1–4, w and a click on the tab line change the view
 // and keep the place; Enter, Esc and a click on the breadcrumb change the place and keep the view.
-// ↑↓ select, : takes a command, q quits. Rereads the queues every REFRESH_MS, keeping the selection
-// on the same repo or ticket.
+// ↑↓ select, : takes a command, q quits. Redraws every REFRESH_MS, rereading the queues when their
+// files changed (stateStamp) or REREAD_MS has passed, keeping the selection on the same repo or ticket.
 export function interactive({
   input = process.stdin, output = process.stdout, start = { kind: 'overview', all: false },
   opener = systemOpener, exit = (c) => process.exit(c), refreshMs = REFRESH_MS, clock = Date.now,
@@ -4071,9 +4100,18 @@ export function interactive({
   // Once loaded, the scope is the repo's slug, which names its standing batch (always listed) whichever
   // named batches come and go. A scoped reread that still fails reads every repo, which says what is gone.
   let scope = word;
-  const reload = () => {
+  const load = () => {
     if (scope == null) return loadOrRefuse(clock());
     try { return loadOrRefuse(clock(), scope); } catch { scope = null; return loadOrRefuse(clock()); }
+  };
+  // `lastRead`: the state stamp and the time of the last reread that did not fail, null after one that
+  // did. The stamp is taken first, so a write made during the reread brings the next.
+  let lastRead = null;
+  const reload = (stamp = stateStamp()) => {
+    lastRead = null;
+    const out = load();
+    lastRead = { stamp, at: clock() };
+    return out;
   };
   let repos = reload();
   if (scope != null) scope = repos[0].slug;
@@ -4801,8 +4839,13 @@ export function interactive({
   input.resume?.();
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
+  // Every tick redraws; the queues are reread only once the state stamp has changed, or REREAD_MS has
+  // passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
   timer = setInterval(() => {
-    try { repos = reload(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+    try {
+      const stamp = stateStamp();
+      if (lastRead == null || stamp !== lastRead.stamp || clock() - lastRead.at >= REREAD_MS) repos = reload(stamp);
+    } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
   }, refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
