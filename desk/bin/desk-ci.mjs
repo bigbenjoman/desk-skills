@@ -224,6 +224,24 @@ const yamlScalar = (s) => {
 };
 // A YAML value as a label set when written as a list, else as one string.
 const yamlValue = (s) => (/^\[[\s\S]*\]$/.test(s.trim()) ? flowItems(s).map(yamlScalar) : yamlScalar(s));
+// A key's value with a flow sequence that runs on over the lines below it read through to its end.
+// The closing bracket may sit at the key's own indent, outside its block: GitHub has parsed the file,
+// so a sequence still open after the block closes there.
+const flowValue = (value = '', block = []) => {
+  if (!/^\[/.test(value.trim()) || /\]$/.test(value.trim())) return value;
+  const joined = [value, ...block.filter((l) => !l.blank && !l.scalar).map((l) => l.text)].join(' ').trim();
+  return /\]$/.test(joined) ? joined : `${joined}]`;
+};
+// Whether a flow match at `at` in a `matrix:` line is one of the matrix's own axes: one mapping deep,
+// in no list. A key inside an include or exclude entry is one value, not an axis.
+const isFlowAxis = (text, at) => {
+  let braces = 0;
+  let brackets = 0;
+  for (const c of text.slice(text.indexOf(':') + 1, at + 1)) {
+    if (c === '{') braces++; else if (c === '}') braces--; else if (c === '[') brackets++; else if (c === ']') brackets--;
+  }
+  return braces === 1 && brackets === 0;
+};
 
 // The values matrix.<key> can take, or null when the matrix is computed and cannot be read here. A
 // key directly under `matrix:` lists its values; one in an include or exclude entry is one value.
@@ -238,15 +256,21 @@ function matrixValues(job, key) {
   const axisIndent = mi >= 0 ? blockAfter(lines, mi).find((l) => !l.blank && !l.scalar)?.indent : undefined;
   lines.forEach((l, idx) => {
     if (l.scalar) return;
-    for (const m of l.text.matchAll(flow)) { found = true; vals.push(yamlValue(m[1])); }
     const kv = keyOf(l);
+    for (const m of l.text.matchAll(flow)) {
+      found = true;
+      const v = yamlValue(m[1]);
+      if (kv?.key === 'matrix' && Array.isArray(v) && isFlowAxis(l.text, m.index)) vals.push(...flowItems(m[1]).map(yamlValue)); else vals.push(v);
+    }
     if (!kv || kv.key !== key) return;
     found = true;
     const axis = l.indent === axisIndent && !/^-\s/.test(l.text);
-    const items = blockAfter(lines, idx).filter((b) => !b.blank).map((b) => b.text.replace(/^-\s*/, ''));
+    const block = blockAfter(lines, idx);
+    const items = block.filter((b) => !b.blank).map((b) => b.text.replace(/^-\s*/, ''));
     if (kv.value) {
-      const v = yamlValue(kv.value);
-      if (axis && Array.isArray(v)) vals.push(...flowItems(kv.value).map(yamlValue)); else vals.push(v);
+      const value = flowValue(kv.value, block);
+      const v = yamlValue(value);
+      if (axis && Array.isArray(v)) vals.push(...flowItems(value).map(yamlValue)); else vals.push(v);
     } else if (axis) vals.push(...items.map(yamlValue));
     else vals.push(items.map(yamlScalar));
   });
@@ -374,7 +398,7 @@ function runsOnChoices(job) {
   const sub = mapping(ro.block);
   if (sub.group) return { group: true, sets: [] };
   const src = sub.labels ?? ro;
-  const value = /^[|>]/.test(src.value) ? src.block.map((l) => l.text).join(' ') : src.value;
+  const value = /^[|>]/.test(src.value) ? src.block.map((l) => l.text).join(' ') : flowValue(src.value, src.block);
   const items = value ? (/^\[[\s\S]*\]$/.test(value.trim()) ? flowItems(value) : [value])
     : src.block.filter((l) => !l.blank && /^-(\s|$)/.test(l.text)).map((l) => l.text.replace(/^-\s*/, ''));
   const single = items.length === 1 && !/^\[/.test(value?.trim() ?? '');
@@ -419,8 +443,29 @@ export function runnersOf(job, awsLabels = []) {
 
 // Whether runs-on can resolve to a self-hosted runner the repo has not declared as an AWS runner: a
 // self-hosted or custom label, a runner group, or a value read from somewhere this file does not fix.
-export function canResolveSelfHosted(job, awsLabels = []) {
-  return runnersOf(job, awsLabels).kinds.has('self-hosted');
+// A repo that declares no AWS runner labels is read as it was before .github/desk-ci.yml existed, so
+// its ci-lint output does not change: every quoted literal in an expression is a possible label.
+function canResolveSelfHosted(job, awsLabels) {
+  if (awsLabels.length) return runnersOf(job, awsLabels).kinds.has('self-hosted');
+  const ro = job.keys['runs-on'];
+  if (!ro) return false;
+  const text = textOf(ro);
+  if (/(^|\n)\s*group\s*:/.test(text)) return true;
+  const cands = [];
+  let unknown = false;
+  const rest = text.replace(/\$\{\{([\s\S]*?)\}\}/g, (_, expr) => {
+    const e = expr
+      .replace(/[\w.[\]-]+\s*[!=]=\s*'[^']*'/g, '')
+      .replace(/'[^']*'\s*[!=]=\s*[\w.[\]-]+/g, '');
+    for (const m of e.matchAll(/'([^']*)'/g)) cands.push(...tokens(m[1]));
+    for (const m of e.replace(/'[^']*'/g, '').matchAll(/\b(matrix|inputs|vars|env|needs|steps|github|jobs)\.([\w-]+)/g)) {
+      const vals = m[1] === 'matrix' ? matrixValues(job, m[2]) : null;
+      if (vals) cands.push(...vals.flat().flatMap(tokens)); else unknown = true;
+    }
+    return ' ';
+  });
+  cands.push(...tokens(rest.replace(/(^|\n)\s*labels\s*:/g, ' ')));
+  return unknown || cands.some((c) => !HOSTED_LABEL.test(c));
 }
 
 // ---- .github/desk-ci.yml ----
@@ -437,7 +482,7 @@ export function parseCiConfig(text) {
     const kv = l.indent === 0 ? keyOf(l) : null;
     if (!kv || !(kv.key in out)) return;
     const items = kv.value
-      ? flowItems(kv.value).map((v) => ({ value: yamlScalar(v), line: l.n }))
+      ? flowItems(flowValue(kv.value, blockAfter(lines, idx))).map((v) => ({ value: yamlScalar(v), line: l.n }))
       : blockAfter(lines, idx).filter((b) => !b.blank && /^-(\s|$)/.test(b.text)).map((b) => ({ value: yamlScalar(b.text.replace(/^-\s*/, '')), line: b.n }));
     out[kv.key].push(...items.filter((x) => x.value));
   });
@@ -468,12 +513,11 @@ export function lint(text, { awsLabels = [], hostedWorkflow = false } = {}) {
   const wf = parseWorkflow(text);
   const out = [];
   for (const job of wf.jobs) {
-    const { kinds } = runnersOf(job, awsLabels);
     const ro = job.keys['runs-on'];
-    if (hostedWorkflow && [...kinds].some((k) => k !== 'hosted')) {
+    if (hostedWorkflow && [...runnersOf(job, awsLabels).kinds].some((k) => k !== 'hosted')) {
       out.push({ job: job.id, line: ro.line.n, problem: `is in a workflow listed under hosted-workflows in ${CI_CONFIG} but runs-on can pick a runner that is not GitHub-hosted` });
     }
-    if (!kinds.has('self-hosted')) continue;
+    if (!canResolveSelfHosted(job, awsLabels)) continue;
     const hits = [...secretHits(job.lines), ...inheritedEnv(wf), ...environmentHits(job), ...idTokenHits(job, wf),
       ...aliasHits(job.lines), ...inheritedAliases(wf)];
     for (const h of hits) out.push({ job: job.id, line: h.line.n, problem: `can run self-hosted but receives ${h.why}` });

@@ -289,6 +289,30 @@ t('Forewatt ci-runners-smoke.yml:78, matrix label plus suffix', linted(smoke('fo
 t('a matrix label the repo has not declared is reported', linted(smoke('forewatt-linux-x64'), FW), 'smoke@8 smoke@9');
 t('a vars value in the label itself is still a label source',
   linted(secretJob(`\${{ fromJSON(format('["self-hosted","voicepa-linux-arm64{0}"]', vars.SUFFIX)) }}`), VPA), 'j@5 j@9');
+const inlineMatrix = (matrix) => wf(`  m:
+    strategy:
+      matrix: ${matrix}
+    runs-on: \${{ matrix.label }}
+    steps:
+      - run: npm test
+        env:
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+`);
+t('an inline matrix axis is one leg per value, so its bare self-hosted leg is reported',
+  linted(inlineMatrix('{ label: [self-hosted, voicepa-linux-arm64] }'), VPA), 'm@7 m@11');
+t('an inline include entry is one label set', linted(inlineMatrix('{ include: [{ label: [self-hosted, voicepa-linux-arm64] }] }'), VPA), '');
+
+// A flow list may run on over several lines, its closing bracket at the key's own indent.
+const multiline = (labels) => secretJob(`[\n${labels.map((l) => `      ${l}`).join(',\n')}\n    ]`);
+t('a runs-on list over several lines on a hosted label lints clean', linted(multiline(['ubuntu-latest'])) + linted(multiline(['ubuntu-latest']), VPA), '');
+t('a runs-on list over several lines on a declared label lints clean', linted(multiline(['self-hosted', 'voicepa-linux-arm64']), VPA), '');
+const multiCfg = parseCiConfig('aws-runner-labels: [\n  voicepa-linux-arm64,\n  self-hosted\n]\nhosted-workflows: [\n  release.yml\n]\n');
+t('a config list over several lines is read whole', `${multiCfg.awsLabels} ${multiCfg.hostedWorkflows} ${multiCfg.findings.length}`, 'voicepa-linux-arm64 release.yml 1');
+
+// AC9: with no AWS labels declared, an expression reads as it always has: a quoted literal counts.
+const tagged = secretJob(`\${{ startsWith(github.ref, 'refs/tags') && 'macos-latest' || 'ubuntu-latest' }}`);
+t('AC9 a quoted literal in an expression is a label when nothing is declared', linted(tagged), 'j@5 j@9');
+t('the same expression with labels declared picks only hosted labels', linted(tagged, VPA), '');
 
 // AC13: the Dependabot branch is needed only where runs-on can pick an undeclared self-hosted label.
 t('AC13 no Dependabot branch on a declared AWS label', linted(noSecret, VPA), '');

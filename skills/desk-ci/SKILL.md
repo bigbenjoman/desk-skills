@@ -86,9 +86,11 @@ For every job whose `runs-on` **can resolve** to a self-hosted runner, `ci-lint`
 "Can resolve" means any label set other than GitHub-hosted image labels (`ubuntu-*`, `macos-*`,
 `windows-*`) or the repo's declared AWS runner labels (below): a bare `self-hosted` or any other
 custom label, a runner `group:`, a matrix entry holding one, or a value read from `vars`, `inputs`,
-`env` or `needs` that the file does not fix. A `${{ }}` expression is read for every label set it can
-pick, through `&&`, `||`, `fromJSON` and `format`; a value only compared (`vars.X == 'on'`) is not a
-label source. Each finding names the job and the line:
+`env` or `needs` that the file does not fix. Where the repo declares AWS runner labels, a `${{ }}`
+expression is read for every label set it can pick, through `&&`, `||`, `fromJSON` and `format`, and a
+value only compared (`vars.X == 'on'`) is not a label source. Where it declares none, every quoted
+literal in an expression counts as a label it may pick, as it always has. Each finding names the job
+and the line:
 
 ```
 <file>:<line>  <job>  can run self-hosted but receives secret DEPLOY_KEY
