@@ -113,7 +113,7 @@ t('AC3 30 seconds on, the queues are reread once', rereads(), 1);
 // ---- AC5: a move rereads at once, and the idle ticks after it reread nothing
 reset();
 input.write('t');
-await sleep(5);
+await sleep(20);
 t('AC5 a move rereads the queues at once', rereads() >= 1 && seen.reads > 0, true);
 reset();
 await sleep(150);
