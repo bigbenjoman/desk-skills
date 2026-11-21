@@ -120,6 +120,28 @@ const state16 = join(tmp, 'state16');
 postMergeScan({ state: state16, queue: { tickets: { 'T-M': { merged_at: iso(NOW - 10 * H), pr_status: { pr: 8, base: 'main', merge_commit: EPIC } } } }, log, runs: () => [], branch: 'main', now: NOW });
 t('a recorded merge commit that is not on the default branch is not read as one: the scan says so', readPostMerge(state16).find((r) => r.kind === 'scan')?.why, 'default-branch runs not read: #8: no merge commit on the default branch');
 
+// A merge-commit promotion: main reaches the child's own epic-branch commit through the merge, but the
+// child's code landed on main with the promotion's merge commit, so that is where its runs are read.
+const repo2 = join(tmp, 'repo2');
+const g2 = (args, when) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-C', repo2, ...args],
+  { encoding: 'utf8', env: { ...process.env, ...(when ? { GIT_AUTHOR_DATE: `@${when / 1000} +0000`, GIT_COMMITTER_DATE: `@${when / 1000} +0000` } : {}) } });
+execFileSync('git', ['init', '-q', '-b', 'main', repo2]);
+const c2 = (subject, when) => { writeFileSync(join(repo2, 'f'), String(n++)); g2(['add', 'f']); g2(['commit', '-q', '-m', subject], when); return g2(['rev-parse', 'HEAD']).trim(); };
+c2('base', NOW - 40 * H);
+g2(['checkout', '-q', '-b', 'epic']);
+const kOwn = c2('feat: K (#7)', NOW - 30 * H);
+c2('Revert "feat: Z (#3)"', NOW - 29 * H);
+g2(['checkout', '-q', 'main']);
+g2(['merge', '-q', '--no-ff', '-m', 'Merge pull request #50 from o/epic', 'epic'], NOW - 20 * H);
+const kPromo = g2(['rev-parse', 'HEAD']).trim();
+const log2 = (since) => gitLog(repo2, 'main', since);
+t('the log reaches the child\'s own commit, not marked as main\'s own', log2(iso(NOW - 41 * H)).find((c) => c.sha === kOwn)?.first, false);
+const asked17 = [];
+postMergeScan({ state: join(tmp, 'state17'), queue: { promotion: { pr: 50, merged_at: iso(NOW - 20 * H), merge_commit: kPromo }, tickets: { 'T-K': { merged_at: iso(NOW - 30 * H), pr_status: { pr: 7, base: 'epic', merge_commit: kOwn } } } }, log: log2, runs: (sha) => { asked17.push(sha); return []; }, branch: 'main', now: NOW });
+t('so the runs are read on the promotion\'s merge commit', asked17.join(), kPromo);
+const r18 = postMergeScan({ state: join(tmp, 'state18'), queue: { tickets: { 'T-Z': { merged_at: iso(NOW - 35 * H), result: { pr: 3 } } } }, log: log2, runs: () => [], now: NOW });
+t('a revert inside a merged branch is still read', r18.written.filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-Z');
+
 // A busy default branch: 1,200 runs in the window, two of them on the watched merge's commit. The API is
 // asked for that commit's runs only, so the watch reads them whole and records the failure.
 const busy = Array.from({ length: 1200 }, (_, i) => ({ id: 5000 + i, name: 'CI', html_url: `https://example.com/r/${5000 + i}`, conclusion: 'failure', created_at: iso(NOW - 30 * H + i * 1000), head_sha: i % 600 === 7 ? SHA_B : 'f'.repeat(40), head_branch: 'main' }));

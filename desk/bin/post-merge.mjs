@@ -59,7 +59,9 @@ const SHA40 = /^[0-9a-f]{40}$/;
 // The commit that put merge `m`'s code on the default branch, among `commits` (the default branch's,
 // since the watch began), and when it landed: its own merge commit, else its promotion PR's, else the
 // commit whose subject lands either PR. -> { sha, at } or null.
-function landing(m, commits) {
+// Only the default branch's own commits count (`first` false marks one a merged side branch brought in).
+function landing(m, all) {
+  const commits = all.filter((c) => c.first !== false);
   const on = (sha) => (sha && commits.some((c) => c.sha === sha) ? sha : null);
   const by = (pr) => (pr == null ? null : commits.find((c) => landedPr(c.subject) === Number(pr))?.sha ?? null);
   const p = m.promotion;
@@ -86,7 +88,7 @@ export const mergedPr = (t) => {
 
 const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}` : r.kind === 'red_main' ? `${r.ticket}|red_main|${r.run?.id}` : null);
 
-// The records a scan finds. `commits` are [{sha, at, subject}] from the default branch; `runs` are
+// The records a scan finds. `commits` are [{sha, at, subject, first}] from the default branch; `runs` are
 // [{id, name, url, conclusion, created_at, sha}], each on the commit `sha` it was read for, or null
 // when none could be read. A merge's `sha` and `landed_at` are where and when its code reached the
 // default branch: a run on that commit failing within RED_HOURS of then is the merge's.
@@ -165,10 +167,14 @@ export function postMergeScan({ state, queue, log, runs, branch = null, now = Da
 
 function firstLine(e) { return String(e?.stderr || e?.message || e).trim().split('\n')[0]; }
 
-// The default branch's commits since `since`, from `ref` in the repo at `cwd`.
+// The default branch's commits since `since`, from `ref` in the repo at `cwd`: every commit it reaches,
+// so a revert inside a merged PR's branch is read, each marked `first` when it is on the branch's own
+// first-parent line (a commit that landed there, not one a merge brought in).
 export function gitLog(cwd, ref, since) {
-  const out = execFileSync('git', ['-C', cwd, 'log', ref, `--since=@${Math.floor(Date.parse(since) / 1000)}`,'--format=%H%x09%cI%x09%s'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  return out.split('\n').filter(Boolean).map((l) => { const [sha, at, ...s] = l.split('\t'); return { sha, at, subject: s.join('\t') }; });
+  const read = (...a) => execFileSync('git', ['-C', cwd, 'log', ref, ...a, `--since=@${Math.floor(Date.parse(since) / 1000)}`, '--format=%H%x09%cI%x09%s'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+    .split('\n').filter(Boolean).map((l) => { const [sha, at, ...s] = l.split('\t'); return { sha, at, subject: s.join('\t') }; });
+  const first = new Set(read('--first-parent').map((c) => c.sha));
+  return read().map((c) => ({ ...c, first: first.has(c.sha) }));
 }
 
 // The default branch's workflow runs on GitHub on commit `sha`. A merge commit has a few runs, so one
