@@ -57,10 +57,11 @@ cross-vendor verification that did not happen.
 
 **Finders must stay read-only.** They inherit Edit and Write, and one will sometimes implement a fix
 mid-round, even in a file the PR did not touch, so the review attests a tree nobody pushed. Check
-`desk-env tree-status --run <run>` after every round, as `/desk-review` does; a dirty tree is an
-aborted round: save the stray diff, restore, re-run, and say in the review that a round was
-discarded. It leaves out this ticket's own resume file and the review's scratch files, so printing
-nothing is a clean round.
+`desk-env tree-status --run <run>` after every round, as `/desk-review` does, `<run>` the id that
+round's `/desk-review` picked (the one in its `desk-review-results-<run>.json`); any other review
+command runs plain `desk-env tree-status`. A dirty tree is an aborted round: save the stray diff,
+restore, re-run, and say in the review that a round was discarded. It leaves out this ticket's own
+resume file and, with `--run`, that review's scratch files, so printing nothing is a clean round.
 
 **Three rounds, then stop.** Review, fix, re-review has no natural end: every fix is new code a
 finder can find something in. The branch has been read whole once by round 2, so from round 2 a
