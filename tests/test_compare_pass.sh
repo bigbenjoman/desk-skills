@@ -280,7 +280,7 @@ order old '' "$T/order-old"
 check "DS-960 a base whose suites mint no SID_SUFFIX runs one after the other" '[ $rc = 0 ] && [ "$out" = "start end start end start end start end " ]'
 
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
-# The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
+# The whole replay takes over 1000 CPU seconds, so a pull request replays one small suite instead; a main
 # push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
 if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
   out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>/dev/null); rc=$?
