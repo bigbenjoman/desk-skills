@@ -60,7 +60,8 @@ has the query, the jq, and why each part is written as it is. The two rules that
 
 **Round.** Count our marker reviews already on the PR (the sweep query returns `rounds`; for one PR,
 `gh pr view <n> --json reviews` and count bodies starting with the marker). The round about to run
-is that count + 1; a branch with no PR is round 1. **A caller running its own loop before the PR
+is that count + 1; a branch with no PR is round 1. An accepted re-verdict (`phase-7-post.md`, the
+one exception) repeats the round of the verdict before it at the same SHA, so it is not counted. **A caller running its own loop before the PR
 exists** (desk-ticket Stage 4b) passes the loop's round and, from round 2, the SHA the previous round
 reviewed: use those instead, or the fix range never happens there. Phase 3 needs it. **An autopilot
 review try whose briefing has a "Targeted" section** reads only what a base move changed under a

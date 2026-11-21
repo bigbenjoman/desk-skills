@@ -14,10 +14,15 @@
 
 q init t
 # T-1: a requeued round whose log names PR 2 while the queue still holds round one's PR 1.
-q add T-1; q set T-1 state=running branch=fix/T-1 session_id=gone result.pr=1
+q add T-1; q set T-1 state=running branch=fix/T-1 session_id=gone result.pr=1 "worktree=$T/wt/T-1"
 say "AUTOPILOT_IMAGES: $T/state/images/T-1/" "AUTOPILOT_DONE: pr=2 jira=none" > "$T/state/logs/T-1.log"
+# DS-833: its worktree root holds a desk-review round's results file, and another JSON file.
+mkdir -p "$T/wt/T-1"; echo '{"sha":"abc1234","round":1,"gaps":1}' > "$T/wt/T-1/desk-review-results-abc1234-k3q9xz.json"; echo '{}' > "$T/wt/T-1/other.json"
+mkdir -p "$T/wt/T-1/desk-review-results-not-a-file.json"; ln -s "$T/wt/T-1/other.json" "$T/wt/T-1/desk-review-results-a-link.json"
 # T-2: a log with screenshots and no AUTOPILOT_DONE yet, so the stored PR is all there is.
-q add T-2; q set T-2 state=running branch=fix/T-2 session_id=gone result.pr=5
+q add T-2; q set T-2 state=running branch=fix/T-2 session_id=gone result.pr=5 "worktree=$T/wt/T-2"
+# Its worktree is there and holds no results file, only another JSON file.
+mkdir -p "$T/wt/T-2"; echo '{}' > "$T/wt/T-2/other.json"
 say "AUTOPILOT_IMAGES: $T/state/images/T-2/" > "$T/state/logs/T-2.log"
 for k in T-1 T-2 T-3; do mkdir -p "$T/state/images/$k"; : > "$T/state/images/$k/after-desktop.png"; done
 # I-1 and I-2: finished workers that captured nothing, naming a directory that is missing or empty.
@@ -32,6 +37,9 @@ check "the log's PR wins over the stored one"           'grep -qx "2 $T/state/im
 check "nothing goes to the stored PR when the log has one" '! grep -q "^1 " "$T/uploads"'
 check "the stored PR is used when the log has none"     'grep -qx "5 $T/state/images/T-2/" "$T/uploads"'
 check "the finished round records the log's PR"         '[ "$(field T-1 result.pr)" = 2 ]'
+check "DS-833 AC3 an exited worker's review results file is kept under the state folder for its ticket" 'grep -q "\"gaps\":1" "$T/state/reviews/T-1/desk-review-results-abc1234-k3q9xz.json" && [ ! -e "$T/state/reviews/T-1/other.json" ]'
+check "DS-833 a directory or a link named like a results file is not copied, and the pass still records the worker" '[ ! -e "$T/state/reviews/T-1/desk-review-results-not-a-file.json" ] && [ ! -e "$T/state/reviews/T-1/desk-review-results-a-link.json" ] && [ "$(field T-1 state)" = "\"done\"" ]'
+check "DS-833 AC3 a worker with no results file keeps no reviews folder" '[ ! -e "$T/state/reviews/T-2" ]'
 check "DS-193 AC1 a missing image directory runs no upload and reports nothing" '! grep -q "^11 " "$T/uploads" && ! echo "$out" | grep -q "I-1: image" && [ "$(field I-1 images_uploaded)" = "\"none\"" ] && [ "$(field I-1 state)" = "\"done\"" ]'
 check "DS-193 AC2 a directory with no image runs no upload and reports nothing" '! grep -q "^12 " "$T/uploads" && ! echo "$out" | grep -q "I-2: image" && [ "$(field I-2 images_uploaded)" = "\"none\"" ] && [ "$(field I-2 state)" = "\"done\"" ]'
 check "DS-193 AC3 a directory with screenshots still uploads and is reported" 'echo "$out" | grep -q "T-1 images → #2" && [ "$(field T-1 images_uploaded)" = true ]'

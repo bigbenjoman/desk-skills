@@ -16,7 +16,7 @@ import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt,
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
   roundStage, resumeCheck, workerResumePath, answersSince, renderLastRound, renderNoResume } from './handoff.mjs';
-import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps } from './harvest.mjs';
+import { workerMarkers, readLog, prBodyIn, FOLLOW_ON_MAX, followOnPending, sameStep, settleSteps, keepReviewResults } from './harvest.mjs';
 import { linkRequests, linkCall, linkCommand, linkMade, linkThere, KEY as LINK_KEY } from './link-requests.mjs';
 import { RECOMMENDS_MARK, parkRecommends, takeable, recommendedAnswer, pushPark, prTitleIn, mergedNaming } from './recoveries.mjs';
 import { samePark, answered } from './decider.mjs';
@@ -3021,6 +3021,8 @@ function recordWorkerHead(t) {
   if (!existsSync(wt)) return;
   const head = shOut('git', ['-C', wt, 'rev-parse', 'HEAD']);
   if (head.ok && /^[0-9a-f]{40}$/.test(head.out) && head.out !== t.worker_head?.sha) q('set', t.key, `worker_head=${JSON.stringify({ sha: head.out, at: PASS_AT })}`);
+  // The review rounds it ran outlive its session, for a later worker's accepted re-verdict.
+  keepReviewResults(wt, STATE, t.key);
 }
 
 // A fix try is queued against its PR as it was then, and may wait passes for a slot: just before it
