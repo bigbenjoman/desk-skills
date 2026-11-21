@@ -17,6 +17,12 @@ export AUTOPILOT_LOCK_QUEUE=off
 # shellcheck disable=SC2034  # read by the caller
 SH="${BASH:-bash}"
 # The CPU budget a suite's header sets: the N of the first `# budget: N <ticket>` line (`//` in .mjs)
-# in its first ten lines, or nothing where it has none or N is not a whole number. run.sh budgets by
-# it, and test_lint.sh checks the same line.
-budget_of(){ head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:' | grep -oE '^(#|//) budget: [0-9]+( |$)' | grep -oE '[0-9]+'; }
+# in its first ten lines, or nothing where it has none or N is not a whole number. A suite that does
+# more off a pull request (a main push or a local run) can give that its own figure as
+# `# budget: N (main M) <ticket>`: then M is its budget unless GITHUB_EVENT_NAME is pull_request, or
+# $2 is `pr`. run.sh budgets by it, and test_lint.sh checks the same line.
+budget_of(){ local l n m
+  l=$(head -n 10 "$1" | grep -m 1 -E '^(#|//) budget:') || return 1
+  n=$(printf '%s\n' "$l" | grep -oE '^(#|//) budget: [0-9]+( |$)' | grep -oE '[0-9]+') || return 1
+  m=$(printf '%s\n' "$l" | grep -oE '^(#|//) budget: [0-9]+ \(main [0-9]+\)( |$)' | grep -oE '\(main [0-9]+' | grep -oE '[0-9]+')
+  if [ -n "$m" ] && [ "${2:-}" != pr ] && [ "${GITHUB_EVENT_NAME:-}" != pull_request ]; then echo "$m"; else echo "$n"; fi; }

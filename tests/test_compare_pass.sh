@@ -6,6 +6,7 @@
 # the base's case. Then the real pass suite against itself lists nothing: all of it, or on a pull
 # request only test_pass_other_repo.sh. Scratch dirs only.
 # covers: tests/test_pass*.sh
+# budget: 60 (main 1500) DS-942 a pull request's smoke replay ran 28 CPU s, a main push's full one 1004
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u

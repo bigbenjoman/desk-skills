@@ -39,6 +39,8 @@ printf 'echo compare >> "$RUNS"\nif [ -e "$FLAG.c" ]; then echo "ok compare"; el
 printf 'echo pass >> "$RUNS"; echo "ok pass"\n' > "$R/test_pass.sh"
 # A suite whose budget line gives it no CPU seconds at all, so any run is over it.
 printf '# budget: 0 DS-1 a fixture\ni=0; while [ $i -lt 100000 ]; do i=$((i + 1)); done; echo "ok over"\n' > "$R/test_over.sh"
+# One whose pull-request budget is 0 and whose main one (a push or a local run) is 1000.
+printf '# budget: 0 (main 1000) DS-942 a fixture\ni=0; while [ $i -lt 100000 ]; do i=$((i + 1)); done; echo "ok split"\n' > "$R/test_split.sh"
 
 # The stub desk-env prints $CAP for test-cap, and exits 3 (unset) without it.
 STUB="$T/stub"; mkdir -p "$STUB"
@@ -140,6 +142,15 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   check "DS-927 AC5 $at without DESK_SUITE_BUDGETS (a local run) no budget is checked" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -qE "^::|over budget"'
   out=$(DESK_SUITE_BUDGETS=fail "$B" "$R/run.sh" --no-hook-test test_one.sh 2>&1); rc=$?
   check "DS-927 AC5 $at a budget mode that is neither warn nor enforce is refused" '[ $rc -eq 2 ]'
+  # A `(main M)` budget: M off a pull request, N on one.
+  for e in push ''; do
+    out=$(GITHUB_EVENT_NAME="$e" DESK_SUITE_BUDGETS=enforce DESK_SUITE_BUDGETS_TODAY=2026-12-08 "$B" "$R/run.sh" --no-hook-test -j 1 test_split.sh 2>&1); rc=$?
+    check "DS-942 AC1 $at enforce from the date, event '$e': a suite within its main budget passes and is not listed over budget" \
+      '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -qE "^::|over budget"'
+  done
+  out=$(GITHUB_EVENT_NAME=pull_request DESK_SUITE_BUDGETS=enforce DESK_SUITE_BUDGETS_TODAY=2026-12-08 "$B" "$R/run.sh" --no-hook-test -j 1 test_split.sh 2>&1); rc=$?
+  check "DS-942 AC2 $at enforce from the date, on a pull request: the same suite is held to its pull-request budget and fails" \
+    '[ $rc -ne 0 ] && printf "%s\n" "$out" | grep -qxE "::error::test_split\.sh used [0-9]+\.[0-9]{3} CPU seconds, over its budget of 0" && printf "%s\n" "$out" | grep -qx "failed suites: test_split.sh"'
   dur="$T/dur$v.json"; rm -f "$dur"
   out=$(DESK_SUITE_DURATIONS="$dur" "$B" "$R/run.sh" --no-hook-test -j 2 test_over.sh test_one.sh 2>&1); rc=$?
   check "DS-927 AC1 $at DESK_SUITE_DURATIONS gets each suite's seconds and CPU seconds, by file, as JSON" \
