@@ -3965,7 +3965,7 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
   const none = repos.filter((r) => !repos.some((x) => x.slug === r.slug && hasBatch(x)));
   const parts = overviewParts(repos, { all, now, avail, cap, gate, perWorker, checkin });
   return envelope('home', now, { queues: queueAges(list, now), usage: inputAge(usage.reading?.at, now), levers: inputAge(levers.builtAt, now), memory: inputAge(now, now) }, {
-    needs_you: { count: ok.reduce((a, r) => a + needs.get(r).shown, 0), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
+    needs_you: { count: String(ok.reduce((a, r) => a + needs.get(r).shown, 0)), put_off: ok.reduce((a, r) => a + needs.get(r).putOff, 0), oldest_at: isoOf(oldestNeed(ok, needs)) },
     machine: { running, cap: cap ?? null, room: headroom({ running, cap, avail, gate, perWorker }), avail_gib: avail },
     levers: leversJson(levers, now),
     usage: usageJson(usage),
