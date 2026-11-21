@@ -115,7 +115,7 @@ try {
   t('AC1 and reports each in one piece, in name order', [Object.keys(j3.blocks), /FAIL b broke\nb says why/.test(j3.blocks['test_b.sh'] ?? ''), /b says why/.test(j3.blocks['test_a.sh'] + j3.blocks['test_c.sh'])], [['test_a.sh', 'test_b.sh', 'test_c.sh'], true, false]);
   t('AC1 a failure still fails the run and names its suite', [j3.status, /^failed suites: test_b\.sh$/m.test(j3.stdout), /^FAILURES above \(5 checks passed\)$/m.test(j3.stdout)], [1, true, true]);
   const j1 = runJ(['-j', '1'], false);
-  // test_b.sh runs twice: a failed suite gets one retry (DS-926).
+  // test_b.sh runs twice: a failed suite gets one retry.
   t('AC2 run.sh -j 1 runs them one after another, in the same order', [j1.log, Object.keys(j1.blocks), j1.status, /^failed suites: test_b\.sh$/m.test(j1.stdout)], [['start a', 'end a', 'start b', 'end b', 'start b', 'end b', 'start c', 'end c'], ['test_a.sh', 'test_b.sh', 'test_c.sh'], 1, true]);
   t('-j takes -jN too, and refuses a count that is not a whole number from 1', [runJ(['-j2', 'test_c.sh'], false).status, ...['0', 'x', ''].map((n) => spawnSync('bash', [join(S, 'run.sh'), '-j', n], { encoding: 'utf8' }).status)], [0, 2, 2, 2]);
   // A TERM to run.sh -j stops the running suites before run.sh exits: a lock held around it is never
