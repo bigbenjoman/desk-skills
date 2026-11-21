@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { incidentalGlobs, outOfScope, triagedScope, changedFiles, batchScopeTotals } from '../desk/bin/scope-report.mjs';
 import { LOCKFILES } from '../desk/bin/test-scope.mjs';
+import { scopeRecords, joinTickets, measure, proposeK, run, RULE, K_CAP } from '../desk/bin/scope-precision.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -63,6 +64,58 @@ const changed = changedFiles(repo, 'origin/main');
 t('diff names both sides of a rename and not the base\'s commits', S([...changed].sort()), '["a.js","new.js","old.js"]');
 t('end to end: the rename is reported', S(outOfScope(changed, triagedScope(dir, 'T-1'), lock).sort()), '["new.js","old.js"]');
 t('no such worktree is null', changedFiles(join(dir, 'nope'), 'origin/main'), null);
+
+// Scope precision: the triage records joined with the files of the merged PRs that name their key.
+const st = join(dir, 'state');
+mkdirSync(join(st, 'triage'), { recursive: true }); mkdirSync(join(st, 'batches/E-1/triage'), { recursive: true });
+writeFileSync(join(st, 'triage', 'T-1.json'), JSON.stringify({ files_in_scope: ['./a.js', 'a.js', 'lib/'] }));
+writeFileSync(join(st, 'triage', 'T-1.challenge.json'), JSON.stringify({ files_in_scope: ['x.js'] }));
+writeFileSync(join(st, 'triage', 'T-3.json'), '{not json');
+writeFileSync(join(st, 'batches/E-1/triage', 'T-1.json'), JSON.stringify({ files_in_scope: ['batch.js'] }));
+writeFileSync(join(st, 'batches/E-1/triage', 'T-2.json'), JSON.stringify({ files_in_scope: ['b.js'] }));
+const recs = scopeRecords(st);
+t('records: the standing batch wins, a named batch adds, ./ and repeats folded, challenges and bad JSON skipped',
+  S([...recs]), '[["T-1",["a.js","lib/"]],["T-2",["b.js"]]]');
+t('records: no state folder is none', scopeRecords(join(dir, 'nope')).size, 0);
+
+const joined = joinTickets(new Map([['T-1', ['a.js']], ['T-12', ['c.js']], ['T-2', ['b.js']]]), [
+  { headRefName: 'feat/T-12-x', title: 'feat: T-12 x', files: ['c.js'] },
+  { headRefName: 'feat/T-1-y', title: 'feat: y', files: ['a.js', 'd.js'] },
+  { headRefName: 'fix/z', title: 'fix(x): T-1 follow-up', files: ['./e.js', 'a.js'] },
+]);
+t('join: a key is matched whole, by branch or title, its PRs\' files unioned, and an unmerged key dropped',
+  S(joined), '[{"key":"T-1","named":["a.js"],"changed":["a.js","d.js","e.js"]},{"key":"T-12","named":["c.js"],"changed":["c.js"]}]');
+
+const m = measure([
+  { key: 'A-1', named: ['hot.js', 'lib/', 'cold.js'], changed: ['hot.js', 'lib/x.js', 'other.js'] },
+  { key: 'A-2', named: ['hot.js', 'cold.js'], changed: ['hot.js'] },
+  { key: 'A-3', named: ['cold.js'], changed: ['cold.js', 'hot.js'] },
+], 2);
+t('measure: overall counts', S({ ...m, files: undefined }), '{"tickets":3,"named":6,"hits":4,"changed":6,"covered":4}');
+t('measure: the most-named files, most named first, each with the tickets that changed it',
+  S(m.files), '[{"file":"cold.js","named":3,"hits":1,"changed":1},{"file":"hot.js","named":2,"hits":2,"changed":3}]');
+t('measure: a directory entry is changed by a file under it', S(measure(
+  [{ key: 'A-1', named: ['lib/'], changed: ['lib/x.js', 'lib/y.js'] }]).files), '[{"file":"lib/","named":1,"hits":1,"changed":1}]');
+
+t('k: 80% changed is 1', proposeK(4, 5), 1);
+t('k: just under 80% is 2', proposeK(79, 100), 2);
+t('k: half is 2', proposeK(1, 2), 2);
+t('k: 40% is 3', proposeK(2, 5), 3);
+t('k: the cap is the default row\'s long-file k', K_CAP, 3);
+t('k: rare is capped', proposeK(1, 10), K_CAP);
+t('k: never changed is the cap', proposeK(0, 4), K_CAP);
+
+const out = run(['o/r', 'o/s'], {
+  days: 30, now: Date.parse('2026-11-21T12:00:00Z'),
+  records: (r) => (r === 'o/r' ? new Map([['R-1', ['hot.js', 'cold.js']], ['R-2', ['hot.js']]]) : new Map()),
+  prs: (r, since) => (r === 'o/r' && since === '2026-10-22' ? [{ headRefName: 'feat/R-1', title: '', files: ['hot.js'] }, { headRefName: 'feat/R-2', title: '', files: ['hot.js', 'x.js'] }] : []),
+}).split('\n');
+t('run: each repo\'s precision and recall overall', out.filter((l) => /^ {2}precision/.test(l)).join('|'),
+  '  precision 67% (2 of 3 named files changed), recall 67% (2 of 3 changed files named)|  precision n/a (0 of 0 named files changed), recall n/a (0 of 0 changed files named)');
+t('run: each most-named file\'s counts', out.filter((l) => /^ {4}/.test(l)).join('|'), '    hot.js: 2  2  100%  100%|    cold.js: 1  0  0%  n/a');
+t('run: it ends with a k per file and a hot-serial list for every repo', out.slice(out.findIndex((l) => l.startsWith('Proposed'))).slice(1).join('|'),
+  'o/r:|  hot.js: k=1 (2 of 2 naming tickets changed it)|  cold.js: k=3 (0 of 1 naming tickets changed it)|  hot-serial: hot.js|o/s:|  hot-serial: none');
+t('run: the rule is printed beside the numbers', out.some((l) => l.startsWith('Proposed') && l.includes(RULE)), true);
 
 rmSync(dir, { recursive: true, force: true });
 console.log(fails ? `${fails} FAILED` : 'all passed');
