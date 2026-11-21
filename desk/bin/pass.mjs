@@ -66,7 +66,7 @@ import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
 import { INTAKE_EVERY_MS, MAX_TRIAGE, landedOn, unpromotedBase, isProgress, holdsFor } from './intake.mjs';
 import { heldPutOff, outAt, followGateHeld } from './needs-you.mjs';
-import { borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
+import { batchLabel, borrowSetting, borrowedLine, otherBatches, otherQueues, machineCap, repoCap, takeBorrowLock, writeBeat, parseNext, queueLive } from './borrow.mjs';
 import { listBatches, prState as batchPrState } from './batches.mjs';
 import { postMergeWatch } from './post-merge.mjs';
 import { evaluateDue } from './levers-evaluate.mjs';
@@ -1866,14 +1866,39 @@ const runningKeys = new Set(running.map((r) => r.key));
 const FILE_BUDGET = E.fileBudget();
 const budgetAppendOnly = appendOnlyFrom(() => E.configValues('append-only-paths')).globs.map(globToRegExp);
 const budgetSerial = FILE_BUDGET.serial.map(globToRegExp);
+const scopeFiles = (rec) => {
+  const files = rec?.files_in_scope;
+  return [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f)));
+};
 const scopeOf = new Map();
 const budgetFiles = (key) => {
-  if (!scopeOf.has(key)) {
-    const files = triageRec(key)?.files_in_scope;
-    scopeOf.set(key, [...new Set(Array.isArray(files) ? files.map((f) => String(f).replace(/^\.\//, '')) : [])].filter((f) => f && !budgetAppendOnly.some((re) => re.test(f))));
-  }
+  if (!scopeOf.has(key)) scopeOf.set(key, scopeFiles(triageRec(key)));
   return scopeOf.get(key);
 };
+// The tickets running in this repo's other batches fill places too, each as { key, batch, files } from
+// its batch's queue and triage record; a review try there fills none, as here. A queue that does not
+// read counts nothing, and is named in the report.
+// Read here for the ready list, and again from the queues read under the borrow lock before any spawn.
+const elsewhereRunning = [];
+const budgetUnread = [];
+let budgetSlug = null;
+try { budgetSlug = E.repoSlug(); } catch { /* outside a repo there are no other batches */ }
+const countElsewhere = (queues) => {
+  elsewhereRunning.length = 0;
+  budgetUnread.length = 0;
+  for (const o of budgetSlug == null ? [] : queues) {
+    if (o.slug !== budgetSlug) continue;
+    if (o.error) { budgetUnread.push(o.error); continue; }
+    const triageDir = join(E.batchPaths(budgetSlug, o.batch).state, 'triage');
+    for (const t of Object.values(o.q.tickets ?? {})) {
+      if (t?.state !== 'running' || !t.key || reviewOnlyTry(t)) continue;
+      let rec = null;
+      try { rec = JSON.parse(readFileSync(join(triageDir, `${t.key}.json`), 'utf8')); } catch { /* no record: names no file */ }
+      elsewhereRunning.push({ key: t.key, batch: o.batch, files: scopeFiles(rec) });
+    }
+  }
+};
+countElsewhere(otherQueues({ self: QUEUE_FILE }));
 // A file's length on the batch base, read once a pass; one the base does not have is 0 lines. Each ref's
 // tree is listed once a pass (one git call, not one per file), and each blob's length is kept across
 // passes by its id in LINE_COUNTS_FILE, so a pass reads only a blob it has not counted.
@@ -1949,15 +1974,17 @@ const placesFor = (f) => {
 };
 // A review try changes no file, so it neither waits on a file's places nor fills one.
 const reviewKeys = new Set(running.filter(reviewOnlyTry).map((r) => r.key));
-// Each file of r's at its budget: the file, its places and the running tickets that fill them.
+// Each file of r's at its budget: the file, its places, the running tickets of this batch that fill
+// them (`by`) and those of the repo's other batches (`elsewhere`, { key, batch }).
 const budgetHolds = (r) => {
   const holds = [];
   if (reviewOnlyTry(r)) return holds;
   for (const f of budgetFiles(r.key)) {
     const by = [...runningKeys].filter((k) => k !== r.key && !reviewKeys.has(k) && budgetFiles(k).includes(f));
-    if (!by.length) continue;
+    const elsewhere = elsewhereRunning.filter((o) => o.key !== r.key && !runningKeys.has(o.key) && o.files.includes(f)).map(({ key, batch }) => ({ key, batch }));
+    if (!by.length && !elsewhere.length) continue;
     const k = placesFor(f);
-    if (by.length >= k) holds.push({ file: f, k, by });
+    if (by.length + elsewhere.length >= k) holds.push({ file: f, k, by, elsewhere });
   }
   return holds;
 };
@@ -2056,6 +2083,9 @@ if ((BORROW.on || MACHINE_CAP != null || SIBLINGS) && concurrency > 0 && lockWan
 }
 // Read under the lock when it was taken; without it the count may race another pass, and says so.
 const otherRepos = MACHINE_CAP != null || borrowLock || SIBLINGS ? otherQueues({ self: QUEUE_FILE }) : [];
+// The per-file budget counts the other batches' running tickets from this read too, so a ticket another
+// batch started while this pass waited for the lock holds its files here.
+if (MACHINE_CAP != null || borrowLock || SIBLINGS) countElsewhere(otherRepos);
 if (borrowLock && BORROW.on) others = otherBatches({ self: QUEUE_FILE, queues: otherRepos });
 const SLOTS_SNAP = {
   borrowOn: BORROW.on, concurrency, cap: E.concurrencyLimits().cap, running: running.length, spawnable: spawnable.length,
@@ -3701,7 +3731,7 @@ runPhase({
   name: 'report',
   snapshot: () => ({
     ...baseSnapshot(), report, baseLines, maintLines: MAINT.lines, dateLines, linkLines, epicLines,
-    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, conflictRecordBad: conflictRecord.bad,
+    incidentalBad, appendOnlyBad, fileBudgetBad: FILE_BUDGET.bad, budgetUnread: [...budgetUnread], conflictRecordBad: conflictRecord.bad,
     conflicts: [...conflictsBy].map(([f, times]) => ({ file: f, configured: configuredPlaces(f), now: placesFor(f), recent: recentCount(times, PASS_MS) })),
     unreadableQueues: [...unreadableQueues], portLeaseLines: [...portLeaseLines], concurrency, eligible: eligible.length, queueBin: join(SHOWN_BIN, 'queue.mjs'),
   }),
@@ -5057,7 +5087,9 @@ runPhase({
       base: BASE, source: SOURCE, promotion: qx.promotion,
       overrides: readDecisions(STATE).overrides, overridesSeen: seenRead('overrides-reported.json', JSON.parse, []),
       reviewClash, reviewSeen: reviewClash ? seenRead('review-rows-reported.txt', (x) => x, '') : '',
-      blocked, heldBack: heldBack.map((r) => ({ key: r.key, holds: budgetHolds(r) })),
+      blocked, heldBack: heldBack.map((r) => ({
+        key: r.key, holds: budgetHolds(r).map((h) => ({ ...h, elsewhere: h.elsewhere.map((o) => ({ key: o.key, label: batchLabel(o.batch) })) })),
+      })),
       resumeRows: Object.values(qNow.tickets).filter((r) => r.state === 'triaged').map((r) => ({
         key: r.key, resume: r.resume, resume_why: r.resume_why, toResume: toResume(r), rebootWait: r.resume === 'reboot' ? rebootReady(r).wait ?? null : null,
       })),
@@ -5164,7 +5196,7 @@ if (!DRY) {
   const holdWhy = !MAINT.hold && (held === PACE_HELD || USAGE_HOLD || usageStop) ? 'usage' : held ? null : lowMemory ? 'memory' : repoUnlocked ? 'lock' : null;
   const collisions = heldBack.map((r) => {
     const holds = budgetHolds(r);
-    return { key: r.key, with: [...new Set(holds.flatMap((h) => h.by))], files: holds.map((h) => h.file) };
+    return { key: r.key, with: [...new Set(holds.flatMap((h) => [...h.by, ...h.elsewhere.map((o) => o.key)]))], files: holds.map((h) => h.file) };
   });
   let batch = null;
   try { batch = E.batchName(); } catch { /* the standing batch */ }
