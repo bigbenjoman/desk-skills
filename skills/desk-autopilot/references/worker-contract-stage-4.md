@@ -192,8 +192,8 @@ finders read-only, and when and how to call `codex`. Read that section before th
 - **A P0 you cannot fix**: park, naming the finding and its `file:line`. Do not push a branch
   carrying a P0 you have understood and left.
 - **Do not defer a P2.** A deferral keeps the verdict off clean, and a review gate that reads the
-  deferred count fails on any non-zero value, so a deferred finding is a PR that can never merge.
-  Carrying is not deferring: it exists only from round 2, only for a P2, and leaves the counts.
+  deferred count fails on any non-zero value, so a deferred finding never merges.
+  Carrying is not deferring: only a P2 is carried, from round 2 or when split, and it leaves the counts.
   Cost the fix before calling it out of scope: a "restructuring" is often ~30 lines. Fix it where it
   stands. **A fix that grows** (into a file, not its own spec, your diff does not touch)
   is a scope call: take it per `ask-or-take.md` where §3 `autopilot-judgement` is `yes`, else park

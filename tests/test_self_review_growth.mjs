@@ -33,8 +33,8 @@ const checks = [
     (s) => s.take.includes('at most one more file and about 20 lines, none under a Merge holds glob, widens past the size')],
   ['AC2 past its size it files a follow-up and has the pass link it',
     (s) => s.take.includes('**Split** otherwise: file one follow-up ticket') && s.take.includes('`AUTOPILOT_LINK: <follow-up> relates-to <TICKET>`')],
-  ['AC2 a round-1 P2 split is carried at round 2, not parked',
-    (s) => s.take.includes('a round-1 P2 stays open into round 2, which carries it')],
+  ['DS-648 AC1 a round-1 P2 split is carried on round 1 with its follow-up, not parked',
+    (s) => s.take.includes('the follow-up\'s key in its `follow_up` (desk-review\'s results). A P2 so split is carried on round 1 too, so it needs no round 2 to carry it.')],
   ['AC2 a P0 or P1 too big to widen goes to a fix try, not a park',
     (s) => s.take.includes('A P0 or P1 is never carried: it is handed on as a round-3 P0 or P1 is (*Round 3, a P0 or P1*)')
       && s.stage4.includes('**Where config §3 `autopilot-judgement` is `yes`, do not park: it goes to a fix try.**')],
@@ -54,7 +54,8 @@ for (const [name, ok] of checks) {
   t(name, ok(now), true);
   t(`negative control: the text before this rule fails: ${name}`, ok(before), false);
 }
-t('the old rule is gone', now.stage4.includes('is the user\'s call to widen the PR or split it out'), false);
+t('DS-648 a round-1 split P2 no longer parks', now.take.includes('no round 2 to carry it; and'), false);
+t('the old rule is gone',now.stage4.includes('is the user\'s call to widen the PR or split it out'), false);
 t('a fix needing someone else\'s decision still parks, in a sentence of its own', now.stage4.includes('naming it. A fix needing someone else\'s decision parks.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
