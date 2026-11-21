@@ -14,7 +14,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { WINDOWS, WINDOW_LABELS, newestReading, stateDirs, usageDir, probeLog, windowUse } from './usage-pace.mjs';
-import { takeBorrowLock, tryBorrowLock } from './borrow.mjs';
+import { tryBorrowLock } from './borrow.mjs';
+import { sleepSync } from './dir-lock.mjs';
 import { apiRefusal, resetText, usageLimit } from './usage-limit.mjs';
 import { loginEnv } from './logins.mjs';
 import { claudeLogins, loginKey } from './claude-logins.mjs';
@@ -95,20 +96,28 @@ export function probeEnv(env = process.env, login = null) {
   return { ...(login ? loginEnv(login, env) : rest), FORCE_PROMPT_CACHING_5M: '1' };
 }
 
+// The machine-wide gate on a login's probe start, which desk-q's probe and a pass's (probeShared) both
+// pass through: under the probe lock, write `now` as the login's start stamp unless a probe of it
+// started under PROBE_GAP_MS ago.  -> { mine: true } | { mine: false, started } (that probe's start)
+//   | { mine: false, held: true, holder } (the lock is busy) | { mine: false, why } (it cannot be made)
+function claimProbeStart({ dir, lockDir, login, now }) {
+  const lock = tryBorrowLock({ dir: lockDir, name: PROBE_LOCK });
+  if (!lock.ok) return { mine: false, ...(lock.held ? { held: true, holder: lock.holder } : { why: lock.why }) };
+  try {
+    const started = lastProbeAt(dir, login);
+    if (started != null && now - started < PROBE_GAP_MS) return { mine: false, started };
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(probeStamp(dir, login), String(now));
+    return { mine: true };
+  } finally { lock.release(); }
+}
+
 // Start one probe, unless another desk-q started one on the same login in the last PROBE_GAP_MS. The
 // start time is read and written under a lock, so two windows reaching a probe together start one
 // between them. `done` is called when it exits.  -> { ran: true } | { ran: false, why }
 export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 'claude', env = process.env, login = null, now = Date.now(), done = () => {} } = {}) {
-  const lock = await takeBorrowLock({ dir: lockDir, name: PROBE_LOCK, waitMs: 0 });
-  if (!lock.ok) return { ran: false, why: 'another desk-q is starting one' };
-  const stamp = probeStamp(dir, login);
-  try {
-    let last = 0;
-    try { last = Number(readFileSync(stamp, 'utf8').trim()) || 0; } catch { /* never ran */ }
-    if (now - last < PROBE_GAP_MS) return { ran: false, why: 'one started under a minute ago' };
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(stamp, String(now));
-  } finally { lock.release(); }
+  const claim = claimProbeStart({ dir, lockDir, login, now });
+  if (!claim.mine) return { ran: false, why: claim.started != null ? 'one started under a minute ago' : 'another desk-q is starting one' };
   // Written beside the last output and moved over it at exit, so the last reading stays while it runs.
   const out = loginProbeLog(dir, login);
   const part = `${out}.part`;
@@ -135,19 +144,24 @@ export async function probe({ dir = usageDir(), lockDir = E.lockDir(), claude = 
 // `refused` is the API turning the call away with HTTP 401 or 403 (usage-limit.mjs apiRefusal), which
 // no reset time lifts.
 //   -> { ok: true } | { ok: false, limit: { type, resetsAt } | null, refused: { status, why } | null, why }
-// The login's start stamp is written as the call starts, so a pass that finds it waits for this answer
-// (probeShared) rather than one written before it.
 export function probeNow({ dir = usageDir(), claude = 'claude', env = process.env, login = null, timeoutMs = 120_000 } = {}) {
-  try { mkdirSync(dir, { recursive: true }); writeFileSync(probeStamp(dir, login), String(Date.now())); } catch { /* unstamped */ }
-  return runProbe({ dir, claude, env, login, timeoutMs });
+  const answer = runProbe({ dir, claude, env, login, timeoutMs });
+  try { writeFileSync(probeStamp(dir, login), String(Date.now())); } catch { /* unstamped */ }
+  return answer;
 }
 
+// The call itself, its output kept as the login's probe log. The log is written beside it and moved
+// over it whole, so a pass waiting on this probe (probeShared) never reads it half written.
 function runProbe({ dir, claude, env, login, timeoutMs }) {
   const r = spawnSync(claude, PROBE_ARGS, { env: probeEnv(env, login), encoding: 'utf8', timeout: timeoutMs, stdio: ['ignore', 'pipe', 'pipe'] });
   const out = r.stdout ?? '';
   try {
     mkdirSync(dir, { recursive: true });
-    if (out) writeFileSync(loginProbeLog(dir, login), out);
+    if (out) {
+      const log = loginProbeLog(dir, login), part = `${log}.${process.pid}.part`;
+      writeFileSync(part, out);
+      renameSync(part, log);
+    }
   } catch { /* the answer stands without the reading */ }
   return probeAnswer(out, r, claude);
 }
@@ -169,7 +183,6 @@ function probeAnswer(out, r, claude) {
   return { ok: false, limit, refused, why };
 }
 
-const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 const loginName = (login) => (login?.configDir ? login.name : 'default');
 
 // The answer to the probe of a login that started at `since`: its probe log, once written at or after
@@ -192,23 +205,12 @@ export function probeShared({ dir = usageDir(), lockDir = E.lockDir(), claude = 
   const until = Date.now() + timeoutMs;
   let started;
   for (;;) {
-    const lock = tryBorrowLock({ dir: lockDir, name: PROBE_LOCK });
-    if (!lock.ok && !lock.held) return probeNow({ dir, claude, env, login, timeoutMs });
-    if (lock.ok) {
-      let mine = false;
-      try {
-        started = lastProbeAt(dir, login);
-        const now = Date.now();
-        if (started == null || now - started >= PROBE_GAP_MS) {
-          mkdirSync(dir, { recursive: true });
-          writeFileSync(probeStamp(dir, login), String(now));
-          mine = true;
-        }
-      } catch { mine = true; } finally { lock.release(); }
-      if (mine) return runProbe({ dir, claude, env, login, timeoutMs: Math.max(1, until - Date.now()) });
-      break;
-    }
-    if (Date.now() >= until) return { ok: false, limit: null, refused: null, why: `the usage probe lock stayed held by pid ${lock.holder ?? '?'} for ${Math.round(timeoutMs / 1000)}s` };
+    let claim;
+    try { claim = claimProbeStart({ dir, lockDir, login, now: Date.now() }); } catch { claim = { mine: true }; }
+    if (claim.why) return probeNow({ dir, claude, env, login, timeoutMs });
+    if (claim.mine) return runProbe({ dir, claude, env, login, timeoutMs: Math.max(1, until - Date.now()) });
+    if (!claim.held) { started = claim.started; break; }
+    if (Date.now() >= until) return { ok: false, limit: null, refused: null, why: `the usage probe lock stayed held by pid ${claim.holder ?? '?'} for ${Math.round(timeoutMs / 1000)}s` };
     sleepSync(Math.min(pollMs, 100));
   }
   for (;;) {
