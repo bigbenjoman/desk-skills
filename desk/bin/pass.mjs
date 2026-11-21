@@ -164,8 +164,9 @@ const BY_AT = process.argv.indexOf('--by');
 const PASS_BY = BY_AT < 0 ? 'session' : process.argv[BY_AT + 1];
 if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor or session, not "${PASS_BY ?? ''}"`);
 const PASS_AT = new Date().toISOString();
-// --woken: a worker's exit started this pass, not the interval (supervisor.mjs). It counts no quiet pass
-// toward WEDGE_PASSES, so extra passes never stop a quiet worker sooner than the interval would.
+// --woken: the supervisor ran this pass between intervals, for a worker's exit, before a quiet pass is
+// due (supervisor.mjs). It counts none toward WEDGE_PASSES, so extra passes never stop a quiet worker
+// sooner than the interval would.
 const WOKEN = process.argv.includes('--woken');
 
 if (!existsSync(QUEUE_FILE)) {

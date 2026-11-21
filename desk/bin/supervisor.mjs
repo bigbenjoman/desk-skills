@@ -57,7 +57,9 @@
 // A worker's exit wakes a tick too: spawn-worker.sh renames <KEY>.<ts>.json into <repo state>/exits,
 // which launchd watches (WatchPaths, at most one tick per 20s) or a systemd path unit does. A tick
 // deletes the exit files its passes have seen, runs another round when exits landed while one ran, and
-// runs nothing when it finds none within a minute of deleting some, since that deletion woke it.
+// runs nothing when it finds none within a minute of deleting some, since that deletion woke it. One
+// tick at a time runs woken rounds (supervisor.tick.lock), each at least 20s after the last, and a
+// round's passes count a quiet pass only once an interval has passed since the last that did.
 //
 // After intake, each tick runs repo-templates.mjs check, which at most hourly records in the standing
 // batch's templates.json which of the repo's committed copies of desk's templates are behind them.
@@ -450,14 +452,23 @@ function exitFiles(dir) {
     try { return [{ file: join(dir, n), at: statSync(join(dir, n)).mtimeMs }]; } catch { return []; }
   });
 }
+// <repo state>/supervisor.wake, { consumed, round, counted }: when a tick last deleted exit files, last
+// started a round, and last started one whose passes counted a quiet pass. Unreadable reads as never.
+const readWake = () => { try { return JSON.parse(readFileSync(wakeFile(), 'utf8')) ?? {}; } catch { return {}; } };
+const wakeAt = (k) => Date.parse(readWake()[k] ?? '') || 0;
+const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify({ ...readWake(), [k]: new Date(ms).toISOString() })}\n`); } catch { /* the next tick runs as if never */ } };
 // Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
 // runs nothing. A file that cannot be deleted stays and wakes nothing again.
 function consumeExits(files) {
   let gone = 0;
   for (const f of files) { try { rmSync(f.file); gone += 1; } catch { /* left for the next tick */ } }
-  if (gone) { try { writeFileSync(wakeFile(), `${new Date().toISOString()}\n`); } catch { /* the next wake runs a round */ } }
+  if (gone) noteWake('consumed', Date.now());
 }
-const lastConsumed = () => { try { return Date.parse(readFileSync(wakeFile(), 'utf8').trim()) || 0; } catch { return 0; } };
+// A round's passes count a quiet pass once an interval has passed since the last round that did, whatever
+// started it, so exits never bring a quiet worker's wedge limit sooner, nor an exit file left behind
+// stop it coming. The slack covers a tick starting a moment early.
+const COUNT_SLACK_MS = 5000;
+const countDueMs = () => (Number(installedInterval(E.repoSlug())) || DEFAULT_INTERVAL) * 1000 - COUNT_SLACK_MS;
 
 // The repo's tick lock: one tick at a time runs rounds for exits. -> whether this process holds it.
 const TICK_LOCK_WAIT_MS = 30 * 60 * 1000;
@@ -472,30 +483,37 @@ function takeTickLock(wait) {
     sleep(1000);
   }
 }
-// Whether this round's passes were woken by an exit, not the interval: pass.mjs --woken counts no quiet
-// pass for them, so a busy batch's exits never bring a quiet worker's wedge limit sooner.
+// Whether this round runs between intervals (an exit woke it), before its quiet pass is due: pass.mjs
+// --woken then counts no quiet pass.
 let wokenRound = false;
+// Whether this round ran a pass for any batch: only a round that did has counted its quiet pass.
+let passedRound = false;
 
 // One tick: a round of every batch, and another while workers exited after the last round started and
 // before it ended, so their exits are not left for the next interval. A round whose pass was skipped for
 // a lock consumes nothing: the run holding it sees the exits when its own round ends. A tick woken by an
-// exit while another tick runs rounds waits for it, then runs only for exits that one left.
+// exit while another tick runs rounds waits for it, then runs only for exits that one left. Every woken
+// round starts WAKE_GAP_MS after the last round any tick started, so a burst runs at most two.
 function interval() {
   const exits = exitsDir();
   const woken = exitFiles(exits).length > 0;
-  if (!woken && Date.now() - lastConsumed() < WAKE_QUIET_MS) return;
+  if (!woken && Date.now() - wakeAt('consumed') < WAKE_QUIET_MS) return;
   // An interval's tick that finds the lock held runs as it always has; it takes the lock when free, so a
   // woken tick waits for its round.
   const held = takeTickLock(woken);
   if (woken && !held) return;
   try {
+    if (woken) sleep(wakeAt('round') + WAKE_GAP_MS - Date.now());
     if (woken && !exitFiles(exits).length) return;
     // Pinned once: a round enters each batch in turn, which would read as a pin to the next round.
     const named = batchPinned();
     for (let round = 1; ; round += 1) {
       const start = Date.now();
-      wokenRound = round > 1 || exitFiles(exits).length > 0;
+      wokenRound = start - wakeAt('counted') < countDueMs();
+      noteWake('round', start);
+      passedRound = false;
       if (!intervalRound(named)) return;
+      if (!wokenRound && passedRound) noteWake('counted', start);
       const left = exitFiles(exits);
       consumeExits(left.filter((f) => f.at < start));
       if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
@@ -757,6 +775,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // The pass reads its time from it, so a read it records is at most the interval before the pass the
   // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
   env.DESK_PASS_AT = startedAt;
+  passedRound = true;
   const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(wokenRound ? ['--woken'] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });

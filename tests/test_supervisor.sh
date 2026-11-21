@@ -55,10 +55,17 @@ cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
 import { appendFileSync, readFileSync, existsSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { spawn } from 'node:child_process';
 import * as E from './desk-env.mjs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
 // exit.during: a worker exits while this pass runs, once.
 if (existsSync('$T/exit.during')) { rmSync('$T/exit.during'); mkdirSync(E.exitsDir(), { recursive: true }); writeFileSync(\`\${E.exitsDir()}/B.2.json\`, '{}\\n'); }
+// exit.burst: ten workers exit over a second from now, the first while this pass runs, once.
+if (existsSync('$T/exit.burst')) {
+  rmSync('$T/exit.burst'); writeFileSync(\`\${E.exitsDir()}/A.b1.json\`, '{}\\n');
+  const more = "const fs = require('fs'); let i = 1; const t = setInterval(() => { i += 1; fs.writeFileSync(process.argv[1] + '/A.b' + i + '.json', '{}'); if (i === 10) clearInterval(t); }, 100);";
+  spawn(process.execPath, ['-e', more, E.exitsDir()], { detached: true, stdio: 'ignore' }).unref();
+}
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 let base;
 try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
@@ -249,29 +256,39 @@ check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
 # old <file>: an exit file written before any round now starts. No gap between rounds here but where set.
 old(){ printf '{}\n' > "$EX/$1"; touch -t 202001010000 "$EX/$1"; }
 export DESK_WAKE_GAP_MS=0
+WAKE="$T/state/supervisor.wake"
+rm -f "$WAKE"
 before=$(count "$T/pass.calls")
 old A.1.json; printf '{}\n' > "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC1: a tick runs a pass and deletes the exit file it saw, not one still being written" '[ "$(count "$T/pass.calls")" = $((before + 1)) ] && [ ! -e "$EX/A.1.json" ] && [ -e "$EX/.A.9.tmp" ]'
-check "DS-695: a pass an exit woke is told so, and counts no quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- " --woken")" = 1 ]'
+check "DS-695: the first pass in an interval counts a quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
 rm -f "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
-# Ten exits within a second, while a pass that takes no time runs: the gap folds them into one round.
-old A.10.json
-( for i in 1 2 3 4 5 6 7 8 9 10; do printf '{}\n' > "$EX/A.b$i.json"; sleep 0.1; done ) & BURST=$!
-out=$(DESK_WAKE_GAP_MS=3000 tick); wait "$BURST"
+# Ten exits over a second, from inside a pass that takes no time: the gap folds them into one round.
+rm -f "$WAKE"; old A.10.json; touch "$T/exit.burst"
+out=$(DESK_WAKE_GAP_MS=3000 tick)
 check "DS-695 AC2: ten exits in a burst run at most two passes, and every file goes" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
-rm -f "$T/state/supervisor.wake"
+check "DS-695: a pass an exit adds within the interval counts no quiet pass" '[ "$(tail -1 "$T/pass.args" | grep -c -- " --woken")" = 1 ]'
+# Two more exits of the burst, each starting its own tick (as a systemd path unit does): the first waits
+# out the gap from the burst's last round and passes both; the second then finds nothing left.
+printf '{}\n' > "$EX/G.2.json"; (DESK_WAKE_GAP_MS=3000 tick >/dev/null) & T2=$!
+sleep 0.5; printf '{}\n' > "$EX/G.3.json"; (DESK_WAKE_GAP_MS=3000 tick >/dev/null) & T3=$!
+wait "$T2" "$T3"
+check "DS-695 AC2: separate ticks within one burst run one more pass between them, no more" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ -z "$(ls -A "$EX")" ]'
+rm -f "$WAKE"
 # A tick holding the repo's tick lock: one woken meanwhile waits for it, then runs only for what it left.
-HOLDER=$(sh -c 'sleep 2 >/dev/null 2>&1 & echo $!')
+HOLDER=$(sh -c 'sleep 4 >/dev/null 2>&1 & echo $!')
 printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.tick.lock"
-old A.11.json; ( sleep 1; rm -f "$EX/A.11.json" ) &
+old A.11.json; ( sleep 2; rm -f "$EX/A.11.json" ) &
 out=$(tick); wait
-check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
+check "DS-695 AC2: a tick woken while another runs its rounds waits, and passes nothing that one consumed" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$T/state/supervisor.tick.lock" ]'
+# An interval after the last counted pass, a pass counts whatever woke it: an exit file never stops it.
+old A.12.json; printf '{"counted":"2020-01-01T00:00:00.000Z"}\n' > "$WAKE"
 out=$(tick)
-check "DS-695: a tick the interval started is not told it was woken" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
-before=$((before + 3))
+check "DS-695: once an interval has passed, the pass counts a quiet pass though an exit woke it" '[ "$(count "$T/pass.calls")" = $((before + 5)) ] && [ "$(tail -1 "$T/pass.args" | grep -c -- "--woken")" = 0 ]'
+before=$((before + 4))
 old A.3.json; touch "$T/exit.during"
 out=$(tick)
 check "DS-695 AC2: an exit landing while the pass runs gets one more round, no more, and both files go" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
