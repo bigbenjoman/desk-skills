@@ -87,6 +87,7 @@ import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOff
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
   tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
+import { decideTicketless } from './pass/ticketless-prs.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
@@ -4999,6 +5000,40 @@ runSteps({
       return syncLedger({ n: a.pr, repo: GH_REPO, ledger: a.ledger, gh });
     },
   },
+  report,
+});
+
+// ---- ticketless PRs --------------------------------------------------------
+// The open PRs into the base that a desk session opened and no ticket in any of the repo's batches owns:
+// pass/ticketless-prs.mjs decideTicketless, recorded as `ticketless_prs` for needs-you.
+runPhase({
+  name: 'ticketless PRs',
+  snapshot: () => {
+    const qx = queue();
+    let handle = null;
+    try { handle = E.githubHandle() || null; } catch { /* unread: nothing is listed or dropped */ }
+    const tickets = [...Object.values(qx.tickets)];
+    const heads = qx.base ? [qx.base] : [];
+    if (REPO_SLUG != null) {
+      for (const b of listBatches(REPO_SLUG)) {
+        if (resolve(b.queue) === resolve(QUEUE_FILE) || !existsSync(b.queue)) continue;
+        try {
+          const o = readQueue(b.queue);
+          tickets.push(...Object.values(o.tickets ?? {}));
+          if (o.base) heads.push(o.base);
+        } catch { /* an unreadable batch owns nothing it can show */ }
+      }
+    }
+    let prs = null;
+    if (handle) {
+      const r = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--state', 'open', '--base', DEFAULT_BRANCH, '--author', handle, '--limit', '200',
+        '--json', 'number,title,headRefName,baseRefName,body,createdAt,author']);
+      try { prs = r.ok ? JSON.parse(r.out || '[]') : null; } catch { prs = null; }
+    }
+    return { prs, tickets, heads, base: DEFAULT_BRANCH, handle, recorded: qx.ticketless_prs ?? null, dry: DRY };
+  },
+  decide: decideTicketless,
+  handlers: { ...OUT_HANDLERS, 'set-batch': (a) => q('set-batch', ...a.fields) },
   report,
 });
 
