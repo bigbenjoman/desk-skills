@@ -160,6 +160,8 @@ export function* decideAdvance(s) {
   } else if (pausedOnLimit) {
     // Waiting for the reset is not a stall.
     if (t.idle_passes) yield set(t.key, 'idle_passes=0');
+  } else if (s.woken) {
+    // A pass another worker's exit woke counts no quiet pass: six still take six intervals.
   } else {
     const idle = (t.idle_passes ?? 0) + 1;
     const stall = idle >= WEDGE_PASSES && !done && !handoff && !reboot;
