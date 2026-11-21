@@ -58,8 +58,9 @@ Your settings are an **allow-list**: anything not named here is refused.
   tests and §4 Storybook (`desk-env cmds storybook-cmd`; never bare, even at the root), and `nolock` for everything else (build, codegen, dev server), which only changes
   directory. §4 Codegen (e.g. `pnpm prisma generate`) is how you regenerate code; with no such row,
   a ticket that needs a regeneration parks naming the command. Each row's items come from
-  `desk-env cmds <row>`, for `test-cmd`, `integration-cmd`, `typecheck-cmd`, `e2e-cmd`, `lint-cmd`,
-  `build-cmd`, `codegen-cmd`, `merged-tree-check-cmd` and `dev-cmd`. Each §4 Pre-push checks item
+  `desk-env cmds test-cmd`, `desk-env cmds integration-cmd`, `desk-env cmds typecheck-cmd`,
+  `desk-env cmds e2e-cmd`, `desk-env cmds lint-cmd`, `desk-env cmds build-cmd`,
+  `desk-env cmds codegen-cmd`, `desk-env cmds merged-tree-check-cmd` and `desk-env cmds dev-cmd`. Each §4 Pre-push checks item
   (`desk-env cmds pre-push-checks`) runs the same way, one at a time, as well as through the pre-push script.
   An environment prefix (`PORT=3008 <§4 Dev server>`) is refused; pass the port as an argument in
   whatever form the §4 Dev server row gives (e.g. `-- --port 3008`).
@@ -98,8 +99,7 @@ Your settings are an **allow-list**: anything not named here is refused.
   (as given, or its real path) takes the read and local-write subcommands (`add`, `commit`,
   `restore`, …) under the same refusals, and never `push`. `git rm` and `git mv` are allowed for tracked files in your
   worktree. prettier, tsx and `prisma generate` run as `./node_modules/.bin/<tool>`; eslint,
-  biome, oxlint, stylelint so under `with-lock.sh tsc`, at the root or a §4 item's `--cwd <DIR>`;
-  never `..`. Suites, typechecks and
+  biome, oxlint, stylelint so under `with-lock.sh tsc`; never `..`. Suites, typechecks and
   migrations run only as their §4 rows.
 - **A force-push the person approved once**: where your prompt names one, exactly
   `git push --force-with-lease=<branch>:<sha> origin <branch>` as written there, and no other form.
