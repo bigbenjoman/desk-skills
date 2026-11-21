@@ -7,6 +7,7 @@
 #   ./install.sh --check   reports dependencies and any skill ~/.claude/skills cannot reach, changes nothing
 #   ./install.sh --any-branch   installs a checkout that is off the default branch or behind origin
 #   ./install.sh --rollback     makes the release before the current one current, installs nothing
+#   ./install.sh --uninstall-ui stops the desk app's server and removes its launchd job, nothing else
 #   ./install.sh --accept=<id,...> --decline=<id,...>   answers the prompts named, with or without a
 #                               terminal; each prompt's id is shown in the Skipped list (and below)
 #
@@ -52,15 +53,17 @@ PROMPT_IDS="codex-call retire-skills desk-jira hook-script hook-attribution hook
 CHECK_ONLY=0
 ANY_BRANCH=0
 ROLLBACK=0
+UNINSTALL_UI=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) YES=1 ;;
     --check) CHECK_ONLY=1 ;;
     --any-branch) ANY_BRANCH=1 ;;
     --rollback) ROLLBACK=1 ;;
+    --uninstall-ui) UNINSTALL_UI=1 ;;
     --accept=*) ACCEPT="$ACCEPT,${arg#--accept=}," ;;
     --decline=*) DECLINE="$DECLINE,${arg#--decline=}," ;;
-    -h|--help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; printf '\nPrompt ids: %s\n' "$PROMPT_IDS skill-<name>"; exit 0 ;;
     *) echo "unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -76,6 +79,18 @@ refresh_pristine() {
   done
 }
 
+# After a rollback to a release older than the desk-ui server, its launchd job would restart a script
+# that is no longer there every few seconds: unload it and remove its plist, as --uninstall-ui does.
+ui_after_rollback() {
+  local plist="$HOME/Library/LaunchAgents/com.desk-skills.ui.plist"
+  [ -f "$DESKDIR/bin/desk-ui.mjs" ] && return 0
+  [ -f "$plist" ] || return 0
+  # Not loaded (a failed bootstrap, a port clash, an ssh session) fails the bootout; the plist still goes.
+  launchctl bootout "gui/$(id -u)/com.desk-skills.ui" >/dev/null 2>&1 || true
+  rm -f "$plist"
+  echo "  desk-ui: removed com.desk-skills.ui: the release now current has no desk-ui server"
+}
+
 # --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
 # hold the release now current. Then it moves what runs onto it.
 if [ "$ROLLBACK" = 1 ]; then
@@ -83,7 +98,14 @@ if [ "$ROLLBACK" = 1 ]; then
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
   if [ -f "$DESKDIR/current/release-files" ]; then refresh_pristine "$DESKDIR/current" < "$DESKDIR/current/release-files"; fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
+  ui_after_rollback
   exit 0
+fi
+
+# --uninstall-ui unloads the desk-ui server's launchd job and removes its plist. No queue or state file changes.
+if [ "$UNINSTALL_UI" = 1 ]; then
+  DESK_HOME="$DESKDIR" node "$SRC/desk/bin/desk-ui.mjs" uninstall
+  exit $?
 fi
 
 case "$(uname -s)" in
@@ -1371,6 +1393,25 @@ if [ -f "$SRC/vendor/sources.json" ]; then
     ok "checked ${age} day(s) ago; next check after 30 days (or run /desk-update)"
   fi
 fi
+
+# ---------------------------------------------------------------------------------------------
+section "desk-ui server  -> 127.0.0.1:4823 (launchd com.desk-skills.ui)"
+
+# Writes ~/.config/desk/ui-token if missing and (re)loads the job on the release just installed. It
+# never moves to another port: when another process holds 4823 the server is not started, and the
+# rest of the install carries on.
+install_desk_ui() {
+  local out
+  if [ "$OS" != mac ]; then
+    note "skipped: the desk app's server runs under macOS launchd only"
+  elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-ui.mjs" install 2>&1)"; then
+    ok "$out"
+    wrote "desk-ui  ~/Library/LaunchAgents/com.desk-skills.ui.plist, ~/.config/desk/ui-token (./install.sh --uninstall-ui removes the job)"
+  else
+    warn "the desk-ui server was not started"; show_err "$out"
+  fi
+}
+install_desk_ui
 
 # ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"

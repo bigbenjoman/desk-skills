@@ -471,6 +471,9 @@ export function machineProfile() {
   if (machineCache === undefined) machineCache = M.readProfile(machineProfilePath());
   return machineCache;
 }
+// A long-lived process (desk-ui's server) drops what it read so the next read sees edits since.
+// Config files are re-read by their stat stamp already; this drops the machine profile and any pin.
+export function forgetReads() { machineCache = undefined; snapshot = null; }
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
   const p = machineProfile();
@@ -1634,15 +1637,18 @@ export function harmSample() {
 export const uuid = () => randomUUID();
 
 // Probe by connecting, which works the same on Linux and macOS and needs no ss/lsof.
-export function portInUse(port, timeoutMs = 400) {
-  const probe = (host) => new Promise((res) => {
+// Whether anything accepts a connection on host:port (a listener on the wildcard address counts).
+export function probePort(port, host, timeoutMs = 400) {
+  return new Promise((res) => {
     const s = net.connect({ port, host });
     const done = (v) => { s.destroy(); res(v); };
     s.setTimeout(timeoutMs, () => done(false));
     s.once('connect', () => done(true));
     s.once('error', () => done(false));
   });
-  return Promise.all([probe('127.0.0.1'), probe('::1')]).then((r) => r.some(Boolean));
+}
+export function portInUse(port, timeoutMs = 400) {
+  return Promise.all([probePort(port, '127.0.0.1', timeoutMs), probePort(port, '::1', timeoutMs)]).then((r) => r.some(Boolean));
 }
 
 // ---- the session's permission mode ---------------------------------------------------------
