@@ -183,18 +183,19 @@ export function lockWaiters({ procs, holders }) {
   return procs.filter((p) => lockRole(p, { procs, holders }) === 'wait').length;
 }
 
-// How many of the runs waiting on or holding the test lock work inside one of `dirs` (a repo's main
-// checkout and worktrees directory), as {waiting, held}: `held` from lockHolderRuns. Null when ps or the
-// processes' working directories cannot be read, so whose the queue is is unknown.
-export function lockRunsIn(dirs, { procs, holders, cwds, held = [] }) {
+// The runs holding or waiting on the test lock, counted by the repo each works in, as a Map of name to
+// count: `repos` is [{name, dirs}] (each repo's main checkout and worktrees directory), and a run in
+// none of them counts under `other`. `held` from lockHolderRuns. Null when ps or the processes' working
+// directories cannot be read, so whose runs they are is unknown.
+export function lockRunsByRepo(repos, { procs, holders, cwds, held = [] }) {
   if (!procs || !cwds) return null;
-  const ins = dirs.filter(Boolean).map(insideOf);
-  const inside = (cwd) => !!cwd && ins.some((f) => f(cwd));
-  const cwdOf = (pid) => cwds.find((c) => c.pid === pid)?.cwd ?? null;
-  return {
-    waiting: procs.filter((p) => lockRole(p, { procs, holders }) === 'wait' && inside(cwdOf(p.pid))).length,
-    held: held.filter((r) => inside(r.cwd)).length,
-  };
+  const ins = repos.map((r) => ({ name: r.name, in: r.dirs.filter(Boolean).map(insideOf) }));
+  const repoOf = (cwd) => (cwd && ins.find((r) => r.in.some((f) => f(cwd)))?.name) || 'other';
+  const counts = new Map();
+  const add = (cwd) => { const n = repoOf(cwd); counts.set(n, (counts.get(n) ?? 0) + 1); };
+  for (const p of procs) if (lockRole(p, { procs, holders }) === 'wait') add(cwds.find((c) => c.pid === p.pid)?.cwd ?? null);
+  for (const r of held) add(r.cwd);
+  return counts;
 }
 
 // ps's elapsed time, [[dd-]hh:]mm:ss, in whole seconds; null when it does not read as one.
@@ -240,19 +241,33 @@ export function holdersText(runs) {
   }).join('; ');
 }
 
-// Whether the test lock's queue is deep enough to hold new work: `waiting` runs at or over `slots` x
-// `factor`. `waiting` null is a queue not read, which holds nothing. `held` (lockHolderRuns) names who
-// holds the lock, so a batch held behind it shows what it waits on. `mine` (lockRunsIn) is the reading
-// repo's own share: a deep queue `holds` that repo only while one of its runs waits on or holds the
-// lock, so another repo's queue never stalls it. `mine` null (unread) or left out holds on depth alone.
-export function lockQueue({ waiting, slots, factor, held = [], mine }) {
+// How many suite-bound workers repo `self` may start this pass on the test lock (`room`), and whether
+// it is held (`holds`, no room). The hold point `at` is `slots` x `factor`; the queue is `deep` with
+// `waiting` runs at or over it. Deep, each active repo (one with a run holding or waiting on the lock,
+// `self` always counted) gets share = ceil(at / active) runs, and `self` may start share - own, own its
+// runs in `counts` (lockRunsByRepo). Below the hold, at - waiting may start, so a pass cannot overshoot
+// it. `counts` null (unread) gives no room while deep. `waiting` null is a queue not read, which holds
+// nothing. `held` (lockHolderRuns) names who holds the lock, so a batch held behind it shows what it
+// waits on.
+export function lockQueue({ waiting, slots, factor, held = [], counts, self }) {
   const at = slots * factor;
-  if (waiting == null) return { deep: false, holds: false, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
+  if (waiting == null) return { deep: false, holds: false, room: Infinity, unread: true, waiting: null, at, line: 'test lock queue: not read (ps could not be read), so workers start as they would without it' };
   const deep = waiting >= at;
-  const holds = deep && (mine == null || mine.waiting + mine.held > 0);
-  const own = mine === undefined ? '' : mine === null ? ", whose runs they are unknown (working directories could not be read)" : `, ${mine.waiting} of them this repo's`;
+  let room = Math.max(0, at - waiting), share = null, own = null, byRepo = '';
+  if (counts == null) {
+    if (deep) room = 0;
+    byRepo = '; whose runs they are is unknown (working directories could not be read)';
+  } else {
+    own = counts.get(self) ?? 0;
+    const active = new Set([...counts.keys(), self]).size;
+    share = Math.ceil(at / active);
+    if (deep) room = Math.max(0, share - own);
+    const each = [...counts].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0])).map(([n, c]) => `${n} ${c}`).join(', ');
+    byRepo = `; runs by repo: ${each || 'none'}`;
+    if (deep) byRepo += `; this repo's share ceil(${at} / ${active}) = ${share}, ${own} its own`;
+  }
   const by = held.length ? `; held by ${holdersText(held)}` : '';
-  return { deep, holds, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${own}${by}` };
+  return { deep, holds: room <= 0, room, share, own, unread: false, waiting, at, line: `test lock queue: ${waiting} run(s) waiting on its ${slots} slot(s), ${deep ? 'at or over' : 'under'} the hold at ${slots} x ${factor} = ${at}${byRepo}${by}` };
 }
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.

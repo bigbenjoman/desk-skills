@@ -62,13 +62,19 @@ and on WSL its figure counts page cache; neither it nor `vmmem` is a reason to s
 line; a count below the user's with `avail` above it reads "memory did not lower it", and goes back
 to the user's number.
 
-**The test lock's queue holds spawns too.** Each pass counts the runs waiting on the test lock
-machine-wide (`with-lock.sh test` and `tsc`, from every repo and session). While that count is at least
-the machine profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile), the pass
-holds new local workers, fix tries, base workers, handoffs to 4b and resumes of a worker or a requeued
-round last at Stage 4 or 4b, and its STALLED line names the queue depth. A resume at any other stage
-goes ahead. Where ps
-cannot be read, the pass starts workers as it would without the gate, and says the queue was not read.
+**The test lock's queue holds spawns too, by each repo's share.** Each pass counts the runs waiting on
+the test lock machine-wide (`with-lock.sh test` and `tsc`, from every repo and session), and the runs
+holding or waiting by repo: a run is a repo's when it works in that repo's main checkout or worktrees
+directory, and runs in no configured repo count as one, `other`. The hold point is the machine
+profile's `test-lock-slots` × `test-lock-queue-factor` (1 × 2 with no profile). At or over it, each repo
+with a run on the lock, this one always counted, gets a share of ceil(hold / active repos), and the pass
+starts at most its share less its own runs; below it, at most the hold less the runs waiting. That room
+covers new local workers, fix tries, handoffs to 4b and resumes of a worker or a requeued round last at
+Stage 4 or 4b; the ones past it are held, as is a base worker while there is no room, and the STALLED
+line names the queue depth, each repo's runs and the share. A resume at any other stage goes ahead. So
+one busy repo's queue holds that repo, not every other. Where ps cannot be read, the pass starts workers
+as it would without the gate, and says the queue was not read; where the runs' working directories
+cannot be read, a deep queue holds every repo.
 
 **A worker count the user set is theirs.** When the user names a count (or 0 to pause new spawns),
 record it as theirs with `set-batch concurrency=<n> concurrency_by=user`; the queue keeps their
