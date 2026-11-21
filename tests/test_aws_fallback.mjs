@@ -43,7 +43,7 @@ const repoRoutes = (repo, { config = LABELS, variable = null, queued = [], inPro
 const ENV = { [WATCHED_VAR]: 'acme/app', FALLBACK_TOKEN: 'tok', GITHUB_REPOSITORY: 'acme/desk-skills' };
 const ISSUE_WRITES = { 'POST repos/acme/desk-skills/issues': { number: 7 } };
 // The desk-skills issues opened since a fallback variable's updated_at.
-const issuesSince = (at, issues) => ({ [`repos/acme/desk-skills/issues?state=all&per_page=100&since=${encodeURIComponent(at)}`]: issues });
+const issuesSince = (at, issues, page = 1) => ({ [`repos/acme/desk-skills/issues?state=all&sort=created&direction=desc&per_page=100&page=${page}&since=${encodeURIComponent(at)}`]: issues });
 const runWatch = (routes, env = ENV, writes = ISSUE_WRITES, issueRoutes = {}) => {
   const f = fakeApi(routes, writes);
   const issues = fakeApi(issueRoutes, writes);
@@ -82,7 +82,7 @@ const slow = runWatch({ ...stuckRoutes, 'repos/acme/app/actions/runs/20': () => 
 t('AC1 a run is re-run only once its cancel has finished', [polls, slow.writes.includes('POST repos/acme/app/actions/runs/20/rerun-failed-jobs')], [3, true]);
 const stuckRun = runWatch({ ...stuckRoutes, 'repos/acme/app/actions/runs/20': { status: 'in_progress' } });
 t('AC1 a run that never finishes cancelling is not re-run, the issue names it in a comment, and the run fails', [stuckRun.writes.includes('POST repos/acme/app/actions/runs/20/rerun-failed-jobs'), stuckRun.issues, stuckRun.code], [false, [
-  stuckRun.issues[0], 'POST repos/acme/desk-skills/issues/7/comments {"body":"Left cancelled, not re-run: 20. Re-run them by hand."}',
+  stuckRun.issues[0], 'POST repos/acme/desk-skills/issues/7/comments {"body":"Not re-run (the cancel or the re-run failed, or the cancel had not finished; the watchdog\'s log says which): 20. Cancel and re-run them by hand."}',
 ], 1]);
 
 // ---- AC2: every AWS job started within 15 minutes ---------------------------------------------
@@ -101,6 +101,9 @@ for (const [why, issues] of [['no issue opened since it went on', []], ['only an
   const body = missing.issues.length === 1 ? JSON.parse(missing.issues[0].replace(/^POST \S+ /, '')) : {};
   t(`AC3 on already, ${why}: still left on, and one issue opens saying since when`, [missing.writes, missing.issues.length, body.title, body.body?.includes(`on since ${ago(30)}`), missing.code], [[], 1, 'AWS fallback on for acme/app', true, 0]);
 }
+const busy = Array.from({ length: 100 }, (_, i) => ({ number: 100 + i, title: `PR ${i}`, pull_request: {}, created_at: ago(1) }));
+const paged = runWatch(onRoutes, ENV, ISSUE_WRITES, { ...issuesSince(ago(30), busy), ...issuesSince(ago(30), opened(29), 2) });
+t('AC3 on already, its issue on the second page of a busy repo: no second issue', [paged.issues, paged.code], [[], 0]);
 const unread = runWatch(onRoutes);
 t('AC3 on already, the issues cannot be read: nothing opened or written, and the run fails', [unread.writes, unread.issues, unread.code], [[], [], 1]);
 

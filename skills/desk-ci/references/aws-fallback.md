@@ -18,7 +18,7 @@ the AWS runner labels the repo's `.github/desk-ci.yml` declares (*A repo's AWS r
 
 | The repo | The watchdog |
 |---|---|
-| a job queued on a declared label for over 15 minutes | sets `DESK_AWS_FALLBACK` to `on`, opens an issue `AWS fallback on for <repo>` in desk-skills naming the repo, the time and the oldest queued job, then cancels every run with a job queued on a declared label and re-runs its cancelled jobs (only those, so a job that passed does not run twice); a comment on the issue names any run left cancelled, to re-run by hand |
+| a job queued on a declared label for over 15 minutes | sets `DESK_AWS_FALLBACK` to `on`, opens an issue `AWS fallback on for <repo>` in desk-skills naming the repo, the time and the oldest queued job, then cancels every run with a job queued on a declared label and re-runs its cancelled jobs (only those, so a job that passed does not run twice); a comment on the issue names any run not re-run, to cancel and re-run by hand |
 | every job on a declared label started within 15 minutes | changes nothing |
 | its fallback already on | leaves it on and opens no second issue; it opens one only when none was opened since the fallback went on (the first failed to open, or someone turned it on by hand) |
 | declares no AWS runner labels | changes nothing |

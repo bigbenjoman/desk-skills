@@ -7,7 +7,7 @@
 // .github/desk-ci.yml declares at its default branch. A repo with a job queued on one of them for over
 // 15 minutes gets its fallback turned on, an issue in this repo naming it, the time and the oldest
 // queued job, and then every run with a job queued on one cancelled and its cancelled jobs re-run; a
-// comment on the issue names any run left cancelled. A repo whose fallback is on already is left as
+// comment on the issue names any run not re-run. A repo whose fallback is on already is left as
 // it is, and gets an issue only when none was opened since the fallback went on. One that declares no
 // labels, or whose file cannot be read, is never changed. FALLBACK_TOKEN reads and writes the watched
 // repos; GH_TOKEN opens the issue in GITHUB_REPOSITORY. Exit 1 when a repo could not be read or fully
@@ -27,6 +27,7 @@ export const WATCHED_VAR = 'DESK_AWS_WATCHED_REPOS';
 const WATCHDOG = 'aws-fallback-watch.yml';
 const HOME_REPO = 'bigbenjoman/desk-skills';
 export const STUCK_MS = 15 * 60e3;
+const ISSUE_PAGES = 20;
 const CANCEL_POLLS = 20;
 const POLL_MS = 3000;
 const REPO = /^[\w.-]+\/[\w.-]+$/;
@@ -110,7 +111,7 @@ export function fallbackIssue({ repo, at, job, runs }) {
     title: issueTitle(repo),
     body: `${repo}'s AWS runners stopped taking jobs, so the watchdog turned its AWS fallback on at ${at}: its CI runs on GitHub-hosted runners until you turn it off.\n\n`
       + `Oldest queued job: **${job.name}** on ${(job.labels ?? []).join(', ')}, queued since ${since}: ${job.html_url ?? `run ${job.run_id}`}\n\n`
-      + `Runs being cancelled and their cancelled jobs re-run: ${runs.join(', ') || 'none'}. A comment here names any left cancelled.\n\n`
+      + `Runs being cancelled and their cancelled jobs re-run: ${runs.join(', ') || 'none'}. A comment here names any not re-run.\n\n`
       + offHint(repo),
   };
 }
@@ -127,11 +128,16 @@ function openIssue(issueApi, home, repo, issue, log) {
 // A fallback that is on already: opens an issue only when none was opened since it went on (the
 // watchdog's own failed to open, or someone turned it on by hand). -> true when nothing is missing.
 function ensureIssue(issueApi, home, repo, cur, log) {
+  // Issues and PRs come newest first, so page on until one was opened before the fallback went on.
+  const after = cur.updatedAt ? Date.parse(cur.updatedAt) : -Infinity;
+  const since = cur.updatedAt ? `&since=${encodeURIComponent(cur.updatedAt)}` : '';
   try {
-    const since = cur.updatedAt ? `&since=${encodeURIComponent(cur.updatedAt)}` : '';
-    const issues = issueApi(`repos/${home}/issues?state=all&per_page=100${since}`) ?? [];
-    const opened = issues.some((i) => i.title === issueTitle(repo) && !i.pull_request && (!cur.updatedAt || Date.parse(i.created_at) >= Date.parse(cur.updatedAt)));
-    if (opened) return true;
+    for (let page = 1; page <= ISSUE_PAGES; page++) {
+      const issues = issueApi(`repos/${home}/issues?state=all&sort=created&direction=desc&per_page=100&page=${page}${since}`) ?? [];
+      if (issues.some((i) => i.title === issueTitle(repo) && !i.pull_request && Date.parse(i.created_at) >= after)) return true;
+      if (issues.length < 100 || Date.parse(issues.at(-1).created_at) < after) break;
+      if (page === ISSUE_PAGES) { log(`${repo}: over ${ISSUE_PAGES * 100} issues in ${home} since its fallback went on, none checked further`); return false; }
+    }
   } catch (e) { log(`${repo}: cannot read ${home}'s issues: ${msg(e)}`); return false; }
   const body = `${repo}'s AWS fallback has been on since ${cur.updatedAt ?? 'an unknown time'}, and no issue said so: its CI runs on GitHub-hosted runners until you turn it off.\n\n${offHint(repo)}`;
   return openIssue(issueApi, home, repo, { title: issueTitle(repo), body }, log) != null;
@@ -166,7 +172,7 @@ function watchRepo({ api, issueApi, home, repo, now, sleep, log }) {
   const left = runs.filter((id) => !restart(api, repo, id, sleep, log));
   if (left.length && n != null) {
     try {
-      issueApi(`repos/${home}/issues/${n}/comments`, { method: 'POST', body: { body: `Left cancelled, not re-run: ${left.join(', ')}. Re-run them by hand.` } });
+      issueApi(`repos/${home}/issues/${n}/comments`, { method: 'POST', body: { body: `Not re-run (the cancel or the re-run failed, or the cancel had not finished; the watchdog's log says which): ${left.join(', ')}. Cancel and re-run them by hand.` } });
     } catch (e) { log(`${repo}: could not comment on issue #${n}: ${msg(e)}`); }
   }
   return n != null && !left.length;
