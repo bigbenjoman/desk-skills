@@ -1261,7 +1261,11 @@ X3Q="$DESK_HOME/repos/acme__third"; X3S="$HOME/.desk-autopilot/acme__third"
 mkdir -p "$XBQ" "$XBS/triage" "$X3Q" "$X3S/triage"
 # xb <state> [fix]: XB-1's queue, its one ticket XO-1 in that state (a review try with `fix`); XO-1's
 # triage record names src/big.ts.
-xb(){ printf '{"tickets":{"XO-1":{"key":"XO-1","state":"%s"%s}}}\n' "$1" "${2:+,\"fix\":{\"kind\":\"rereview\",\"try\":1,\"of\":2,\"pr\":9,\"head\":\"aaa\",\"what\":\"review its head\",\"at\":\"T0\",\"started\":\"T0\"}}" > "$XBQ/queue.json"; }
+xb(){
+  local fix=''
+  if [ -n "${2:-}" ]; then fix=',"fix":{"kind":"rereview","try":1,"of":2,"pr":9,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'; fi
+  printf '{"tickets":{"XO-1":{"key":"XO-1","state":"%s"%s}}}\n' "$1" "$fix" > "$XBQ/queue.json"
+}
 printf '{"files_in_scope":["src/big.ts"]}\n' > "$XBS/triage/XO-1.json"
 fbq xba '1'; xb running
 fbt XA-1 triaged src/big.ts; fbt XA-2 triaged src/solo.ts
@@ -1270,7 +1274,7 @@ check "DS-664 AC1 a ticket naming a file at its budget once another batch's runn
   '! spawned XA-1 && spawned XA-2 && [ "$(field XA-1 state)" = "\"triaged\"" ] && echo "$out" | grep "^held back by a collision:" | grep -qF "XA-1 (src/big.ts has 1 running of its 1: XO-1 in batch XB-1)"'
 check "DS-664 the metrics line names the other batch's ticket among those filling the file" \
   'tail -n 1 "$T/state-xba/passes.jsonl" | jq -e "(.collisions | map(select(.key == \"XA-1\")) == [{\"key\":\"XA-1\",\"with\":[\"XO-1\"],\"files\":[\"src/big.ts\"]}])" >/dev/null'
-xb done
+xb 'done'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-664 AC2 once the other batch's ticket stops running, the held ticket starts" 'spawned XA-1'
 xb running fix; fbq xbr '1'; fbt XR-1 triaged src/big.ts
