@@ -3,12 +3,12 @@
 // newest completed run, what stays unknown, the record's `since`, and the text the driver, the pass and
 // the repair worker read.
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { scratch } from './scratch.mjs';
 
-process.env.DESK_AUTOPILOT_STATE ??= mkdtempSync(join(tmpdir(), 'base-red-'));
+process.env.DESK_AUTOPILOT_STATE ??= scratch('base-red-');
 const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
 const E = await import('../desk/bin/desk-env.mjs');
 
@@ -85,7 +85,7 @@ test('the last merges are this driver\'s own: another batch\'s merges into anoth
 });
 
 test('AC6 a record no driver has rewritten for STALE_MS, or kept for another branch, is not current', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'base-red-live-'));
+  const dir = scratch('base-red-live-');
   const now = Date.parse('2026-11-21T12:00:00Z');
   const put = (r) => writeFileSync(join(dir, 'base-red.json'), JSON.stringify({ branch: 'main', checks: [{ name: 'tests' }], ...r }));
   put({ at: new Date(now - 60_000).toISOString() });
@@ -147,7 +147,7 @@ test('AC3 the repair ticket names the failing run and the last merges, and triag
 });
 
 test('AC3 the repair key is a ticket id for the branch the driver merges into, an exported DESK_DEFAULT_BRANCH included', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'base-red-kind-'));
+  const dir = scratch('base-red-kind-');
   const cfg = join(dir, 'config.md');
   writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `DS-[0-9]+` |\n| Other work id patterns | `none` |\n');
   const kind = (id, env = {}) => {
