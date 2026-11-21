@@ -110,7 +110,7 @@ if that exits 1. `<path> exists` with no `file` reads as a file only for an abso
 | `git push origin <branch> succeeds` | `git push origin fix/ABC-42-totals succeeds` |
 | `base contains <branch>` | `base contains main` |
 | `pr <n> reviewed by <login> at head` | `pr 812 reviewed by octocat at head` |
-| `file <path> exists` | `file $DESK_STATE/approvals/ABC-42.json exists` |
+| `file <path> exists` | `file docs/exports/ABC-42.csv exists` |
 | `ticket <KEY> in <repo> batch` | `ticket ABC-43 in acme/web batch` |
 | `check "<name>" on pr <n> passes` | `check "e2e" on pr 812 passes` |
 | `commit <sha> on <branch>` | `commit 4f2a9c1 on main` |
