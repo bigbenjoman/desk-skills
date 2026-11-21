@@ -79,6 +79,17 @@ refresh_pristine() {
   done
 }
 
+# After a rollback to a release older than the desk-ui server, its launchd job would restart a script
+# that is no longer there every few seconds: unload it and remove its plist, as --uninstall-ui does.
+ui_after_rollback() {
+  local plist="$HOME/Library/LaunchAgents/com.desk-skills.ui.plist"
+  [ -f "$DESKDIR/bin/desk-ui.mjs" ] && return 0
+  [ -f "$plist" ] || return 0
+  launchctl bootout "gui/$(id -u)/com.desk-skills.ui" >/dev/null 2>&1
+  rm -f "$plist"
+  echo "  desk-ui: removed com.desk-skills.ui: the release now current has no desk-ui server"
+}
+
 # --rollback touches only ~/.claude/desk/current, installed.json and the pristine copies, which then
 # hold the release now current. Then it moves what runs onto it.
 if [ "$ROLLBACK" = 1 ]; then
@@ -86,6 +97,7 @@ if [ "$ROLLBACK" = 1 ]; then
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" rollback || exit 1
   if [ -f "$DESKDIR/current/release-files" ]; then refresh_pristine "$DESKDIR/current" < "$DESKDIR/current/release-files"; fi
   DESK_HOME="$DESKDIR" node "$DESKDIR/bin/installed.mjs" restart | sed 's/^/  /'
+  ui_after_rollback
   exit 0
 fi
 
@@ -1385,15 +1397,20 @@ fi
 section "desk-ui server  -> 127.0.0.1:4823 (launchd com.desk-skills.ui)"
 
 # Writes ~/.config/desk/ui-token if missing and (re)loads the job on the release just installed. It
-# never moves to another port: when another process holds 4823 the server is not started.
-if [ "$OS" != mac ]; then
-  note "skipped: the desk app's server runs under macOS launchd only"
-elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-ui.mjs" install 2>&1)"; then
-  ok "$out"
-  wrote "desk-ui  ~/Library/LaunchAgents/com.desk-skills.ui.plist, ~/.config/desk/ui-token (./install.sh --uninstall-ui removes the job)"
-else
-  warn "the desk-ui server was not started"; show_err "$out"
-fi
+# never moves to another port: when another process holds 4823 the server is not started, and the
+# rest of the install carries on.
+install_desk_ui() {
+  local out
+  if [ "$OS" != mac ]; then
+    note "skipped: the desk app's server runs under macOS launchd only"
+  elif out="$(DESK_HOME="$DESKDIR" node "$DESKDIR/bin/desk-ui.mjs" install 2>&1)"; then
+    ok "$out"
+    wrote "desk-ui  ~/Library/LaunchAgents/com.desk-skills.ui.plist, ~/.config/desk/ui-token (./install.sh --uninstall-ui removes the job)"
+  else
+    warn "the desk-ui server was not started"; show_err "$out"
+  fi
+}
+install_desk_ui
 
 # ---------------------------------------------------------------------------------------------
 section "Running autopilot  -> onto the code just installed"

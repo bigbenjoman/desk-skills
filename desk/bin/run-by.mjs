@@ -39,6 +39,22 @@ const ready = () => (backend() === 'systemd' ? (systemdReady() ? null : NO_SYSTE
 // whether it is loaded. supervisor.mjs installs under this label and desk-q reads it once per refresh.
 export const supervisorLabel = (slug) => `com.desk-skills.supervisor.${slug}`;
 export const launchdDomain = () => `gui/${process.getuid()}`;
+export const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
+// A launchd job as plist XML: what supervisor.mjs and desk-ui.mjs write to ~/Library/LaunchAgents.
+const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function plistValue(v, pad) {
+  if (typeof v === 'boolean') return `${pad}<${v}/>`;
+  if (typeof v === 'number') return `${pad}<integer>${v}</integer>`;
+  if (Array.isArray(v)) return `${pad}<array>\n${v.map((x) => plistValue(x, `${pad}\t`)).join('\n')}\n${pad}</array>`;
+  if (v && typeof v === 'object') {
+    const rows = Object.entries(v).map(([k, x]) => `${pad}\t<key>${xml(k)}</key>\n${plistValue(x, `${pad}\t`)}`);
+    return `${pad}<dict>\n${rows.join('\n')}\n${pad}</dict>`;
+  }
+  return `${pad}<string>${xml(v)}</string>`;
+}
+export function plist(job) {
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
+}
 export const systemctl = (...args) => spawnSync('systemctl', ['--user', ...args], { encoding: 'utf8' });
 // `exit` is a loaded agent's last run's exit, as { code, why } with launchctl's name for the code
 // where it prints one (systemd's Result), when that was not 0 and the agent is not running now; otherwise null.

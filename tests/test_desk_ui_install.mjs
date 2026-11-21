@@ -3,7 +3,7 @@
 // desk-ui.mjs install and install.sh --uninstall-ui on a throwaway HOME with a fake launchctl, which
 // starts and stops the server itself on a test-only port. Nothing touches your real launchd,
 // ~/.claude, ~/.config/desk or state.
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { connect, createServer } from 'node:net';
@@ -99,10 +99,44 @@ t('AC10 the token file stays', readFileSync(TOKEN, 'utf8'), token);
 const twice = spawnSync('bash', [join(ROOT, 'install.sh'), '--uninstall-ui'], { env, encoding: 'utf8', timeout: 30000 });
 t('uninstalling again says it was not installed', [twice.status, /was not installed/.test(twice.stdout)], [0, true]);
 
-// install.sh runs the install on macOS and warns, without stopping the rest, when it refuses.
-const sh = readFileSync(join(ROOT, 'install.sh'), 'utf8');
-t('install.sh runs desk-ui.mjs install on macOS', /elif out="\$\(DESK_HOME="\$DESKDIR" node "\$DESKDIR\/bin\/desk-ui\.mjs" install 2>&1\)"; then/.test(sh), true);
 t('install.sh --help lists --uninstall-ui', spawnSync('bash', [join(ROOT, 'install.sh'), '--help'], { env, encoding: 'utf8' }).stdout.includes('--uninstall-ui'), true);
+
+// install.sh's own functions, taken from it and run with its output helpers stubbed: the install step
+// on macOS, and what --rollback does about the job. DESKDIR's bin is this checkout's desk/bin.
+const DESKDIR = join(T, 'deskdir');
+mkdirSync(DESKDIR, { recursive: true });
+symlinkSync(join(ROOT, 'desk', 'bin'), join(DESKDIR, 'bin'));
+const shFn = (name, more = {}) => {
+  const r = spawnSync('bash', ['-c', `eval "$(sed -n '/^${name}() {$/,/^}$/p' "$1")"
+note(){ echo "note: $*"; }; ok(){ echo "ok: $*"; }; warn(){ echo "warn: $*"; }; wrote(){ echo "wrote: $*"; }; show_err(){ echo "err: $*"; }
+declare -F ${name} >/dev/null || { echo "no ${name} in install.sh"; exit 9; }
+${name}`, 'sh', join(ROOT, 'install.sh')], { env: { ...env, DESKDIR, OS: 'mac', ...more }, encoding: 'utf8', timeout: 30000 });
+  return { code: r.status, out: r.stdout + r.stderr };
+};
+clearCalls();
+const offMac = shFn('install_desk_ui', { OS: 'linux' });
+t('install.sh skips the server off macOS', [offMac.code, /^note: skipped/m.test(offMac.out), calls().length], [0, true, 0]);
+const onMac = shFn('install_desk_ui');
+t('install.sh loads the server on macOS', [onMac.code, /^ok: desk-ui: com\.desk-skills\.ui loaded and answering/m.test(onMac.out), calls().includes(`bootstrap gui/${UID} ${PLIST}`), existsSync(PLIST)], [0, true, true, true]);
+t('and it answers', await answers(PORT), true);
+spawnSync(join(T, 'bin', 'launchctl'), ['bootout', `gui/${UID}/com.desk-skills.ui`]); // stop ours; its plist stays
+const holder2 = createServer().listen(PORT, '127.0.0.1');
+await new Promise((r) => holder2.once('listening', r));
+clearCalls();
+const shClash = shFn('install_desk_ui');
+t('AC8 install.sh warns naming the port and carries on with the rest of the install', [shClash.code, /^warn: the desk-ui server was not started/m.test(shClash.out), shClash.out.includes(`port ${PORT}`)], [0, true, true]);
+t('AC8 and never starts the server', calls().filter((c) => c.startsWith('bootstrap')).length, 0);
+await new Promise((r) => holder2.close(r));
+
+// --rollback: onto a release with the server the job stays; onto one without it, the job goes.
+clearCalls();
+const keep = shFn('ui_after_rollback');
+t('a rollback onto a release with desk-ui leaves the job', [keep.code, existsSync(PLIST), calls().length], [0, true, 0]);
+const OLD = join(T, 'olddesk');
+mkdirSync(join(OLD, 'bin'), { recursive: true });
+const gone = shFn('ui_after_rollback', { DESKDIR: OLD });
+t('a rollback onto a release without desk-ui unloads the job and removes its plist', [gone.code, calls().includes(`bootout gui/${UID}/com.desk-skills.ui`), existsSync(PLIST), /removed com\.desk-skills\.ui/.test(gone.out)], [0, true, false, true]);
+t('and changes no queue or state file', state(), before);
 
 console.log(fails ? `\n${fails} failed` : '\nall passed');
 process.exit(fails ? 1 : 0);

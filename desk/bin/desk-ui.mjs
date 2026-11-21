@@ -19,20 +19,19 @@ import { createServer } from 'node:http';
 import { connect } from 'node:net';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
 import { userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as E from './desk-env.mjs';
 import { AGENTS, runningVersion } from './installed.mjs';
-import { platform } from './run-by.mjs';
+import { launchctl, launchdDomain as domain, platform, plist } from './run-by.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const PORT = 4823;
-export const HOST = '127.0.0.1';
-export const LABEL = 'com.desk-skills.ui';
-export const COOKIE = 'desk_ui';
-export const LOAD_HEADER = 'x-desk-load';
+const PORT = 4823;
+const HOST = '127.0.0.1';
+const LABEL = 'com.desk-skills.ui';
+const COOKIE = 'desk_ui';
+const LOAD_HEADER = 'x-desk-load';
 const SESSION_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 32;
 const MAX_BODY = 4096;
@@ -42,8 +41,8 @@ export function port() {
   const p = Number(process.env.DESK_UI_TEST_PORT);
   return testHome() && Number.isInteger(p) && p > 0 && p < 65536 ? p : PORT;
 }
-export const tokenFile = () => join(E.deskConfigRoot(), 'ui-token');
-export const plistFile = () => join(AGENTS, `${LABEL}.plist`);
+const tokenFile = () => join(E.deskConfigRoot(), 'ui-token');
+const plistFile = () => join(AGENTS, `${LABEL}.plist`);
 const logDir = () => join(E.HOME, '.desk-autopilot', 'ui');
 const version = () => { try { return runningVersion() ?? 'unknown'; } catch { return 'unknown'; } };
 
@@ -67,7 +66,7 @@ function cookiesOf(req) {
 }
 const readToken = () => { try { return readFileSync(tokenFile(), 'utf8').trim() || null; } catch { return null; } };
 
-export function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
+function makeServer({ p = port(), log = (line) => console.log(line) } = {}) {
   const origin = `http://${HOST}:${p}`;
   const hosts = new Set([`${HOST}:${p}`, `localhost:${p}`]);
   const sessions = new Map(); // session id -> { load, expires }
@@ -99,6 +98,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
   async function snapshot() {
     const Q = await import('./desk-q.mjs');
     const now = Date.now();
+    E.forgetReads(); // this process outlives edits to the machine profile and configs
     const { lines, generated_at, inputs, ...body } = Q.homeJson(Q.loadRepos(now), { all: true, now });
     // The revision moves with desk's state, not with the clock or free memory.
     const key = JSON.stringify({ needs: body.needs_you, running: body.machine?.running, cap: body.machine?.cap,
@@ -168,7 +168,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
 // ---- the port --------------------------------------------------------------------------------
 
 // Whether anything accepts a connection on 127.0.0.1:<p>: a listener on the wildcard address counts.
-export function portTaken(p = port(), timeoutMs = 1000) {
+function portTaken(p = port(), timeoutMs = 1000) {
   return new Promise((resolve) => {
     const sock = connect({ host: HOST, port: p });
     const done = (v) => { sock.destroy(); resolve(v); };
@@ -180,13 +180,17 @@ export function portTaken(p = port(), timeoutMs = 1000) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const takenMessage = (p) => `desk-ui: port ${p} on ${HOST} is in use by another process, so the server was not started. It never moves to another port: free port ${p}, then run install.sh again.`;
 // A configured repo whose dev-server and worker ports reach this one.
-const claimOn = (p) => { try { return E.repoPortClaims().find((c) => c.port <= p && p <= c.last) ?? null; } catch { return null; } };
+const claimOn = (p) => { try { return E.portClashes({ port: p, last: p }, E.repoPortClaims())[0] ?? null; } catch { return null; } };
+const claimMessage = (p, c) => `desk-ui: port ${p} is inside ${c.slug}'s dev-server ports (${c.port}-${c.last}), so the server was not started. It never moves to another port: move that repo's §3b Preferred dev-server port with /desk-setup, then run install.sh again.`;
 
 async function serve() {
   const host = process.env.DESK_UI_HOST ?? HOST;
   if (host !== HOST) { console.error(`desk-ui: refusing to bind ${host}: the server binds ${HOST} only.`); process.exit(2); }
   const p = port();
   if (await portTaken(p)) { console.error(`desk-ui: port ${p} on ${HOST} is in use by another process; not serving.`); process.exit(3); }
+  // Checked on every start, not only at install: a repo's ports can move onto 4823 after it.
+  const claim = claimOn(p);
+  if (claim) { console.error(claimMessage(p, claim)); process.exit(3); }
   const server = makeServer({ p });
   server.on('error', (e) => { console.error(e.code === 'EADDRINUSE' ? `desk-ui: port ${p} on ${HOST} is in use by another process; not serving.` : `desk-ui: ${e.message}`); process.exit(3); });
   server.listen(p, HOST, () => console.log(`${new Date().toISOString()} desk-ui ${version()} listening on http://${HOST}:${p}`));
@@ -197,21 +201,7 @@ async function serve() {
 
 // ---- launchd ---------------------------------------------------------------------------------
 
-const domain = () => `gui/${process.getuid()}`;
-const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = () => launchctl('print', `${domain()}/${LABEL}`).status === 0;
-const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function plistValue(v, pad) {
-  if (typeof v === 'boolean') return `${pad}<${v}/>`;
-  if (typeof v === 'number') return `${pad}<integer>${v}</integer>`;
-  if (Array.isArray(v)) return `${pad}<array>\n${v.map((x) => plistValue(x, `${pad}\t`)).join('\n')}\n${pad}</array>`;
-  if (v && typeof v === 'object') {
-    const rows = Object.entries(v).map(([k, x]) => `${pad}\t<key>${xml(k)}</key>\n${plistValue(x, `${pad}\t`)}`);
-    return `${pad}<dict>\n${rows.join('\n')}\n${pad}</dict>`;
-  }
-  return `${pad}<string>${xml(v)}</string>`;
-}
-const plist = (job) => `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
 
 // The token file: 32 random bytes, readable only by this user. An existing one is kept.
 function ensureToken() {
@@ -232,7 +222,7 @@ async function install() {
   for (let i = 0; taken && i < 10; i++) { await sleep(300); taken = await portTaken(p); }
   if (taken) { console.error(takenMessage(p)); return 3; }
   const claim = claimOn(p);
-  if (claim) { console.error(`desk-ui: port ${p} is inside ${claim.slug}'s dev-server ports (${claim.port}-${claim.last}), so the server was not started. It never moves to another port: move that repo's §3b Preferred dev-server port with /desk-setup, then run install.sh again.`); return 3; }
+  if (claim) { console.error(claimMessage(p, claim)); return 3; }
   const env = { PATH: process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin' };
   for (const k of ['DESK_HOME', 'DESK_CONFIG_ROOT']) if (process.env[k]) env[k] = process.env[k];
   // Loaded from a release folder, the job runs through ~/.claude/desk/bin, so a restart loads the current release.

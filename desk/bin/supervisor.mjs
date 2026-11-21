@@ -82,7 +82,7 @@ import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
 import { readInstalled, oldCode, lockVersion, AGENTS, plistPath, unitDir, unitPath, readUnit, restartDriver } from './installed.mjs';
-import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl } from './run-by.mjs';
+import { supervisorLabel, launchdDomain, supervisorLoaded, backend, systemctl, launchctl, plist } from './run-by.mjs';
 import { notify as show } from './notify.mjs';
 import { limitName, resetText } from './usage-limit.mjs';
 import { lastBeat, writeBeat } from './borrow.mjs';
@@ -101,7 +101,6 @@ const label = supervisorLabel;
 const domain = launchdDomain;
 
 // ---- launchd ---------------------------------------------------------------------------------
-const launchctl = (...args) => spawnSync('launchctl', args, { encoding: 'utf8' });
 const loaded = supervisorLoaded;
 // The installed agent's interval in seconds: '?' for a plist or timer without one, null when not installed.
 function installedInterval(slug) {
@@ -111,21 +110,6 @@ function installedInterval(slug) {
   }
   return existsSync(plistPath(slug))
     ? (/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(readFileSync(plistPath(slug), 'utf8'))?.[1] ?? '?') : null;
-}
-
-const xml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-function plistValue(v, pad) {
-  if (typeof v === 'boolean') return `${pad}<${v}/>`;
-  if (typeof v === 'number') return `${pad}<integer>${v}</integer>`;
-  if (Array.isArray(v)) return `${pad}<array>\n${v.map((x) => plistValue(x, `${pad}\t`)).join('\n')}\n${pad}</array>`;
-  if (v && typeof v === 'object') {
-    const rows = Object.entries(v).map(([k, x]) => `${pad}\t<key>${xml(k)}</key>\n${plistValue(x, `${pad}\t`)}`);
-    return `${pad}<dict>\n${rows.join('\n')}\n${pad}</dict>`;
-  }
-  return `${pad}<string>${xml(v)}</string>`;
-}
-function plist(job) {
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0">\n${plistValue(job, '')}\n</plist>\n`;
 }
 
 // ---- systemd -----------------------------------------------------------------------------------

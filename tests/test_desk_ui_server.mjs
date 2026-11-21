@@ -91,6 +91,10 @@ t('AC2 it gives the machine\'s running workers and cap', [s.machine?.running, s.
 t('AC2 it gives the time and revision it was built at', [!Number.isNaN(Date.parse(s.at)), Number.isInteger(s.rev) && s.rev >= 1], [true, true]);
 const again = JSON.parse((await call('GET', '/api/snapshot', { headers: { Cookie: cookie, 'X-Desk-Load': load } })).text);
 t('AC2 an unchanged state keeps its revision', again.rev, s.rev);
+// The server outlives edits to the machine profile: the next snapshot reads the new cap.
+writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 12` | x |\n');
+const edited = JSON.parse((await call('GET', '/api/snapshot', { headers: { Cookie: cookie, 'X-Desk-Load': load } })).text);
+t('AC2 a machine profile edit reaches the next snapshot, with a new revision', [edited.machine?.cap, edited.rev > s.rev], [12, true]);
 const shadowed = await call('GET', '/api/snapshot', { headers: { Cookie: `desk_ui=${'0'.repeat(64)}; ${cookie}`, 'X-Desk-Load': load } });
 t('a junk desk_ui cookie from another port sent first does not sign the window out', shadowed.status, 200);
 
@@ -151,7 +155,14 @@ const holder = createServer().listen(PORT, '127.0.0.1');
 await new Promise((r) => holder.once('listening', r));
 const taken = spawnSync('node', [BIN, 'serve'], { env, encoding: 'utf8', timeout: 10000 });
 t('a taken port exits non-zero naming it', [taken.status, taken.stderr.includes(`port ${PORT}`)], [3, true]);
-holder.close();
+await new Promise((r) => holder.close(r));
+// A port inside a configured repo's dev-server and worker ports: checked on every start, not only at install.
+const CLASH = join(T, 'config-clash');
+mkdirSync(join(CLASH, 'repos', 'acme__clash'), { recursive: true });
+writeFileSync(join(CLASH, 'repos', 'acme__clash', 'config.md'),
+  `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${PORT - 1}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n`);
+const inClaim = spawnSync('node', [BIN, 'serve'], { env: { ...env, DESK_CONFIG_ROOT: CLASH }, encoding: 'utf8', timeout: 10000 });
+t('a port inside a repo\'s dev-server ports exits naming the repo, and serves nothing', [inClaim.status, inClaim.stderr.includes('inside acme__clash\'s dev-server ports'), inClaim.stdout.includes('listening')], [3, true, false]);
 const realHome = spawnSync('node', ['--input-type=module', '-e', `const m = await import(${JSON.stringify(BIN)}); console.log(m.port());`],
   { env: { ...env, HOME: userInfo().homedir, DESK_UI_TEST_PORT: '4999' }, encoding: 'utf8' });
 t('DESK_UI_TEST_PORT is ignored under your own HOME', realHome.stdout.trim(), '4823');
