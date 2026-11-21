@@ -522,12 +522,10 @@ export DESK_WORKER_SETTINGS="$SETTINGS"
 # marks the ticket failed: { session, code, at }. A reboot ends the shell that writes it too, so none is.
 export DESK_EXIT_FILE="$STATE/workers/$TICKET.exit.json" DESK_EXIT_SID="$SID"
 rm -f "$DESK_EXIT_FILE"
-# The same record, renamed into the repo's exits folder (whichever batch this is: supervisor.mjs
-# exitsDir), wakes the supervisor's next pass. Written to a dot-named file first, so the rename is the one
-# change a tick reads. A folder it cannot write leaves the supervisor's interval to find the exit.
-REPO_STATE="${STATE%/}"
-case "${REPO_STATE##*/batches/}" in "$REPO_STATE"|*/*) ;; *) REPO_STATE="${REPO_STATE%/batches/*}" ;; esac
-export DESK_EXITS_DIR="$REPO_STATE/exits" DESK_EXIT_KEY="$TICKET"
+# The same record, renamed into $DESK_EXITS_DIR (desk-env paths), wakes the supervisor's next pass.
+# Written to a dot-named file first, so the rename is the one change a tick reads. A folder it cannot
+# write leaves the supervisor's interval to find the exit.
+export DESK_EXIT_KEY="$TICKET"
 mkdir -p "$DESK_EXITS_DIR" 2>/dev/null || true
 # A supervisor's tick deletes the files it has seen; with none installed, nothing older than a day is kept.
 find "$DESK_EXITS_DIR" -type f -mtime +0 -delete 2>/dev/null || true
