@@ -308,9 +308,16 @@ const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map(
 const { splitRow } = M;
 
 // This repo's config, through parseConfigFile's cache, so an edit by hand or by another process
-// is read on the next call.
+// is read on the next call. Inside withSnapshot every read gets the one parse taken at its start.
+let snapshot = null;
 function parseConfig() {
-  return parseConfigFile(configPathOrNull());
+  return snapshot ?? parseConfigFile(configPathOrNull());
+}
+// One command that answers many rows at once (`get --json`, `config`) reads them all from one parse,
+// so an edit landing mid-command cannot pair one version's row with another's.
+function withSnapshot(fn) {
+  snapshot = parseConfig();
+  try { return fn(); } finally { snapshot = null; }
 }
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
@@ -2218,7 +2225,7 @@ if (isMain) {
       case 'get': {
         if (!args.includes('--json')) { printRead(cmd, args[0]); break; }
         let out;
-        try { out = getJson(args); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
+        try { out = withSnapshot(() => getJson(args)); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         const { noConfig, ...shown } = out;
         console.log(JSON.stringify(shown, null, 2));
         // exitCode, not exit: a pipe on macOS is written asynchronously, and exit would cut the JSON short.
@@ -2339,16 +2346,18 @@ if (isMain) {
           try { v = READS[cmd](id); v = v == null ? '!' : `=${v}`; } catch { v = ''; }
           out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v)}`);
         };
-        for (const id of Object.keys(CONFIG_ROWS)) {
-          if (id !== 'default-branch') put('G', 'get', id);
-          put('L', 'list', id);
-        }
-        for (const id of Object.keys(PERMISSION_KEYS)) {
-          put('P', 'perm', id);
-          put('U', 'perm-or-unset', id);
-        }
-        put('B', 'budget', 'worker');
-        put('B', 'budget', 'batch');
+        withSnapshot(() => {
+          for (const id of Object.keys(CONFIG_ROWS)) {
+            if (id !== 'default-branch') put('G', 'get', id);
+            put('L', 'list', id);
+          }
+          for (const id of Object.keys(PERMISSION_KEYS)) {
+            put('P', 'perm', id);
+            put('U', 'perm-or-unset', id);
+          }
+          put('B', 'budget', 'worker');
+          put('B', 'budget', 'batch');
+        });
         console.log(out.join('\n'));
         break;
       }

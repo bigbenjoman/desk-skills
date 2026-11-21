@@ -5,7 +5,8 @@
 import fs, { mkdirSync, writeFileSync, rmSync, utimesSync, statSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -85,6 +86,20 @@ const after = new Date(Date.now() + 10000);
 utimesSync(own, after, after);
 t('AC2 own config: an edit is read on the next call', E.configValue('dev-port'), '3600');
 delete process.env.DESK_CONFIG;
+
+// One `get --json` answers every row from the parse it started with. The preload rewrites the config
+// on the second stat of it, which only a command that re-reads the file per row ever makes.
+const snap = join(T, 'snap', 'config.md');
+mkdirSync(dirname(snap), { recursive: true });
+writeFileSync(snap, body(3700));
+const hook = join(T, 'edit-mid-command.mjs'), stats = join(T, 'snap-stats');
+writeFileSync(hook, `import fs from 'node:fs';\nimport { syncBuiltinESMExports } from 'node:module';\nconst real = fs.statSync;\nlet n = 0;\n` +
+  `fs.statSync = function (p, ...rest) {\n  if (p === ${JSON.stringify(snap)}) {\n    fs.writeFileSync(${JSON.stringify(stats)}, String(++n));\n` +
+  `    if (n === 2) { fs.writeFileSync(p, ${JSON.stringify(body(4700))}); const t = new Date(Date.now() + 20000); fs.utimesSync(p, t, t); }\n  }\n  return real.call(this, p, ...rest);\n};\nsyncBuiltinESMExports();\n`);
+const got = JSON.parse(execFileSync(process.execPath, ['--import', pathToFileURL(hook).href, join(BIN, 'desk-env.mjs'), 'get', '--json', 'gh-repo', 'dev-port'],
+  { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: snap } }));
+t('one get --json stats the config once', realRead(stats, 'utf8'), '1');
+t('one get --json reads every row from the version it started with', got.rows['dev-port']?.value, '3700');
 
 fs.readFileSync = realRead;
 syncBuiltinESMExports();
