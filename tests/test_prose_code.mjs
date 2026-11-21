@@ -95,7 +95,7 @@ t('DS-886 AC1 the results file\'s refuted_by is a generated region naming every 
 const holds = readFileSync(join(R, 'skills/desk-autopilot/references/order-and-holds.md'), 'utf8');
 t('DS-886 AC3 the order-and-holds ordering rule is a region equal to plan-batch\'s sentences', regionIn(holds, 'spawn-order'), `${SPAWN_ORDER_RULE}\n${KEEP_ORDER_RULE}`);
 const outside = regions(holds).found.reduceRight((s, r) => s.slice(0, r.from) + s.slice(r.to), holds);
-t('DS-886 AC3 and holds no other ordering rule', ['gate the most', 'fewest planned', 'keep-order'].filter((p) => outside.includes(p)), []);
+t('DS-886 AC3 and holds no other ordering rule', ['gate the most', 'fewest planned', 'keep-order'].filter((p) => outside.includes(p)).join(', '), '');
 t('DS-886 regions that are what the code says pass, and a marker in a fenced block is no region', lines('regions.md'), '');
 const gemini = { 'refuted-by': { vendors: [...VENDORS, 'gemini'] } };
 const stale = check([join(F, 'regions.md')], { values: gemini });
@@ -113,8 +113,8 @@ t('DS-886 AC7 the report names the unknown region', found('region-unknown.md')[0
 t('DS-886 region findings are never held by the baseline', gate(found('region-edited.md'), found('region-edited.md').map(({ file, kind, value, context }) => ({ file, kind, value, context }))).fresh.length, 1);
 const treeFiles = markdownFiles(DEFAULT_PATHS.map((p) => join(R, p)));
 t('DS-886 AC8 regenerating every region in the skills and agents changes no file',
-  treeFiles.filter((p) => regenerate(readFileSync(p, 'utf8')).text !== readFileSync(p, 'utf8')).map((p) => p.slice(R.length + 1)), []);
-t('DS-886 AC8 each registered region is used in the tree', Object.keys(REGIONS).filter((n) => !treeFiles.some((p) => regions(readFileSync(p, 'utf8')).found.some((r) => r.name === n))), []);
+  treeFiles.filter((p) => regenerate(readFileSync(p, 'utf8')).text !== readFileSync(p, 'utf8')).map((p) => p.slice(R.length + 1)).join(', '), '');
+t('DS-886 AC8 each registered region is used in the tree', Object.keys(REGIONS).filter((n) => !treeFiles.some((p) => regions(readFileSync(p, 'utf8')).found.some((r) => r.name === n))).join(', '), '');
 const facts = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_facts.mjs'), ...args], { cwd: R, encoding: 'utf8' });
 t('DS-886 AC8 the regenerate command in check mode passes the real tree', facts().status, 0);
 const tmp = mkdtempSync(join(tmpdir(), 'prose-facts-'));
