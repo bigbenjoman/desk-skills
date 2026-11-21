@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { scratch } from './scratch.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } from '../desk/bin/spawn-order.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -672,6 +673,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-847 AC1 a ticket gating three others, named after two gating none, is seeded before them', hub.seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
   t('DS-847 AC6 the plan lists the spawn order with each ticket\'s transitive dependents count',
     ['  1. SO-3  gates 3, 1 planned file(s)', '  2. SO-4  gates 1, 1 planned file(s)', '  3. SO-1  gates 0, 1 planned file(s)', '  6. SO-6  gates 0, 1 planned file(s)'].map((l) => hub.msg.includes(`\n${l}`)).join(' '), 'true true true true');
+  t('DS-886 AC2 the plan prints the spawn-order rule sentence above the order', hub.msg.includes(`\nSPAWN ORDER — ${SPAWN_ORDER_RULE}\n  1. SO-3  gates 3`), true);
   const all = ['SO-1', 'SO-2', 'SO-3', 'SO-4', 'SO-5', 'SO-6'];
   t('DS-847 AC1 tickets already queued in the order named (an epic\'s admitted children) are reordered too',
     seed(all, [], Object.fromEntries(all.map((k) => [k, {}]))).seeded, 'SO-3 SO-4 SO-1 SO-2 SO-5 SO-6');
@@ -688,7 +690,7 @@ t('DS-525 AC1 the archive line says the driver was stopped', (a.log ?? []).join(
   t('DS-847 AC5 --keep-order seeds the order named', kept.seeded, 'SO-1 SO-2 SO-3 SO-4 SO-5 SO-6');
   t('DS-847 AC5 --keep-order keeps a larger ticket named first ahead', seed(['SO-11', 'SO-12'], ['--keep-order']).seeded, 'SO-11 SO-12');
   t('DS-847 AC5 --keep-order still puts a blocker first', seed(['SO-31', 'SO-32'], ['--keep-order']).seeded, 'SO-32 SO-31');
-  t('DS-847 AC5 and the plan says the order named is kept', kept.msg.includes('\nSPAWN ORDER — as named (--keep-order)'), true);
+  t('DS-847 AC5 and the plan says the order named is kept', kept.msg.includes(`\nSPAWN ORDER — ${KEEP_ORDER_RULE}\n  1. SO-1`), true);
 }
 
 // The standing batch is never archived, even with a promotion that would archive a named one.

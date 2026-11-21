@@ -23,12 +23,17 @@ append-only-paths`) covers is not counted, by `plan-batch` or by `queue.mjs admi
 each only add strings to one locale file run side by side. A row that is not a list of path globs
 reads as `none`, and the pass report names it.
 
-**Spawn order is not a merge chain**: `plan-batch` seeds the queue blockers first, then the tickets
-that gate the most others (through any chain of holds), then, among tickets that gate none, the fewest
-planned files, then the order named, and prints it as SPAWN ORDER; `pass.mjs` spawns in queue order.
-Tickets already queued (an epic's children, admitted before its plan seeds them) are put in that
-order too (`queue.mjs order`), apart from one the user placed with `queue.mjs move`.
-`--keep-order` keeps the order named, blockers still first. If the user asks for a literal chain that would idle a gate,
+**Spawn order is not a merge chain**: `plan-batch` seeds the queue in spawn order and prints it as
+SPAWN ORDER under the rule it applies:
+
+<!-- facts: spawn-order -->
+Blockers start first, then the tickets that gate the most others (directly or through any chain of holds), then, among tickets that gate none, the fewest planned files, then the order named.
+With --keep-order, tickets start in the order named, blockers still first.
+<!-- /facts -->
+
+`pass.mjs` spawns in queue order. Tickets already queued (an epic's children, admitted before its
+plan seeds them) are put in that order too (`queue.mjs order`), apart from one the user placed with
+`queue.mjs move`. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
 up to that file's per-file budget (`concurrency-and-memory.md`). A ticket added mid-batch is not

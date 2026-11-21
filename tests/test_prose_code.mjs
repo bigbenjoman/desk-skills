@@ -1,9 +1,11 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
-// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
+// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
 // the check must name the bad one and pass the good one. Then the real skills and agents tree, against
 // the baseline, in-process and under two seconds.
 import childProcess from 'node:child_process';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { syncBuiltinESMExports } from 'node:module';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,6 +82,49 @@ t('AC10 an opt-out with no reason is named, in prose and in shell, and opts noth
   lines('opt-out.md'), `3 opt-out ${OPT_OUT}, 3 subcommand frobnicate, 5 subcommand vanish, 8 opt-out ${OPT_OUT}, 8 subcommand evaporate, 12 subcommand melt`);
 t('AC10 the report names the line', found('opt-out.md')[0].message, 'the opt-out on line 3 gives no reason');
 t('AC11 the reasoned lines are the ones opted out', [...optOuts('a `x` <!-- prose-ok: why -->\n\n```bash\nnode q.mjs   # prose-ok: why\n```\n').optedOut].sort().join(' '), '1 4');
+
+// ---- DS-886: generated regions --------------------------------------------------------------------
+const { regions, regenerate, REGIONS, WRITE } = await import('./prose_facts.mjs');
+const { VENDORS } = await import('../skills/desk-review/bin/verdict.mjs');
+const { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } = await import('../desk/bin/spawn-order.mjs');
+const regionIn = (text, name) => { const r = regions(text).found.find((x) => x.name === name); return r && text.slice(r.from, r.to).trim(); };
+const review = readFileSync(join(R, 'skills/desk-review/SKILL.md'), 'utf8');
+const vendorsText = regionIn(review, 'refuted-by') ?? '';
+t('DS-886 AC1 the results file\'s refuted_by is a generated region naming every vendor verdict.mjs accepts',
+  [VENDORS.join(' '), VENDORS.every((v) => vendorsText.includes(`\`${v}\``)), vendorsText.includes('absent when `UNREFUTED`')].join(' '), 'claude codex true true');
+const holds = readFileSync(join(R, 'skills/desk-autopilot/references/order-and-holds.md'), 'utf8');
+t('DS-886 AC3 the order-and-holds ordering rule is a region equal to plan-batch\'s sentences', regionIn(holds, 'spawn-order'), `${SPAWN_ORDER_RULE}\n${KEEP_ORDER_RULE}`);
+const outside = regions(holds).found.reduceRight((s, r) => s.slice(0, r.from) + s.slice(r.to), holds);
+t('DS-886 AC3 and holds no other ordering rule', ['gate the most', 'fewest planned', 'keep-order'].filter((p) => outside.includes(p)), []);
+t('DS-886 regions that are what the code says pass, and a marker in a fenced block is no region', lines('regions.md'), '');
+const gemini = { 'refuted-by': { vendors: [...VENDORS, 'gemini'] } };
+const stale = check([join(F, 'regions.md')], { values: gemini });
+t('DS-886 AC4 a vendor added to the verdict code fails the unregenerated region, naming it and the regenerate command',
+  stale.map((x) => `${x.line} ${x.kind} ${x.value}`).join(', ') + ` ${stale[0]?.message.includes(WRITE)}`, '3 region refuted-by true');
+t('DS-886 AC4 the command is node tests/prose_facts.mjs --write', WRITE, 'node tests/prose_facts.mjs --write');
+const reworded = check([join(F, 'regions.md')], { values: { 'spawn-order': { rule: 'Smallest first.', keep: KEEP_ORDER_RULE } } });
+t('DS-886 AC5 a changed spawn-order rule fails the order-and-holds region, naming it and the command',
+  reworded.map((x) => `${x.line} ${x.value}`).join(', ') + ` ${reworded[0]?.message.includes(WRITE)}`, '7 spawn-order true');
+t('DS-886 AC6 a region edited by hand fails, naming it', lines('region-edited.md'), '3 region refuted-by');
+t('DS-886 AC6 the report names the file, the line and the region', report(found('region-edited.md')[0]).startsWith(
+  'tests/fixtures/prose-code/region-edited.md:3: the generated region refuted-by is not what the code says'), true);
+t('DS-886 AC7 a region the registry does not know fails naming it; so does one never closed', lines('region-unknown.md'), '3 region no-such-region, 5 region refuted-by');
+t('DS-886 AC7 the report names the unknown region', found('region-unknown.md')[0].message, 'the generated region no-such-region is not one tests/prose_facts.mjs knows: add it to REGIONS or remove its markers');
+t('DS-886 region findings are never held by the baseline', gate(found('region-edited.md'), found('region-edited.md').map(({ file, kind, value, context }) => ({ file, kind, value, context }))).fresh.length, 1);
+const treeFiles = markdownFiles(DEFAULT_PATHS.map((p) => join(R, p)));
+t('DS-886 AC8 regenerating every region in the skills and agents changes no file',
+  treeFiles.filter((p) => regenerate(readFileSync(p, 'utf8')).text !== readFileSync(p, 'utf8')).map((p) => p.slice(R.length + 1)), []);
+t('DS-886 AC8 each registered region is used in the tree', Object.keys(REGIONS).filter((n) => !treeFiles.some((p) => regions(readFileSync(p, 'utf8')).found.some((r) => r.name === n))), []);
+const facts = (...args) => childProcess.spawnSync(process.execPath, [join(R, 'tests/prose_facts.mjs'), ...args], { cwd: R, encoding: 'utf8' });
+t('DS-886 AC8 the regenerate command in check mode passes the real tree', facts().status, 0);
+const tmp = mkdtempSync(join(tmpdir(), 'prose-facts-'));
+const edited = readFileSync(join(F, 'region-edited.md'), 'utf8');
+writeFileSync(join(tmp, 'a.md'), edited);
+const before = facts(join(tmp, 'a.md'));
+const written = facts('--write', join(tmp, 'a.md'));
+t('DS-886 the command names the region, then --write restores it and touches nothing around it',
+  [before.status, written.status, readFileSync(join(tmp, 'a.md'), 'utf8') === edited.replace('`claude`, `codex` or `gemini`', '`claude` or `codex`')].join(' '), '1 0 true');
+rmSync(tmp, { recursive: true, force: true });
 
 // ---- AC9: main's drift is held by the baseline ----------------------------------------------------
 const baseline = readBaseline();
