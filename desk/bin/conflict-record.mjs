@@ -83,7 +83,7 @@ export function loweredBy(times, k, now) {
 // An entry a batch base's sync from the default branch recorded (its ticket `base-<branch>`, no PR).
 // A stale base meets the same conflict again on every default-branch commit, so these say the base
 // is out of sync, which its own report line says, and nothing about tickets colliding on the file.
-const fromBaseSync =(e) => e.pr == null && typeof e.ticket === 'string' && e.ticket.startsWith('base-');
+const fromBaseSync = (e) => e.pr == null && typeof e.ticket === 'string' && e.ticket.startsWith('base-');
 
 // The record's ticket-PR conflicts by file: Map file -> [ms]. Base syncs lower no file's places.
 export function conflictTimes(entries) {
