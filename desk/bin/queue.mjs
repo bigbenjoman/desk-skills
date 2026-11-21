@@ -323,8 +323,10 @@ function requeue(q, key, { handedBack = false } = {}) {
   const undrafted = t.approved === true && t.result?.pr != null
     ? `; PR #${t.result.pr} left draft when it was approved: put it back (gh pr ready ${t.result.pr} --repo ${ghRepo()} --undo) before the merge driver merges it`
     : '';
-  const repointed = handedBack ? '' : repointRequeued(t, key);
   const moved = rotateRound(key, { answers: true });
+  // After the round's files move, which can throw: from here only the queue write can fail, and a requeue
+  // run again after it finds the worktree on the PR's branch and records it.
+  const repointed = handedBack ? '' : repointRequeued(t, key);
   // A ticket whose sessions handed off starts again at the stage the last handoff named, in its
   // worktree, rather than at Stage 0 (pass.mjs spawnHandoff). `handoff_stage=null` first starts it over.
   const fromStage = t.handoff_stage ?? null;
@@ -775,9 +777,8 @@ if (cmd === 'requeue' && args[0] && existsSync(QUEUE)) {
 if (['handback', 'requeue', 'step-done', 'reject'].includes(cmd) && args[0] && existsSync(QUEUE)) {
   const t = readQueue(QUEUE).tickets?.[args[0]];
   if (t?.worktree && existsSync(t.worktree) && (cmd === 'handback' || ownPr(t) != null)) {
-    const found = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree });
     // A requeue moves only to its recorded PR: one found by naming the ticket may be another's.
-    const pr = cmd === 'handback' || found?.recorded ? found : null;
+    const pr = openPrOf({ key: args[0], pr: ownPr(t), repo: hereRepo(), worktree: t.worktree, naming: cmd === 'handback' });
     prePr = { key: args[0], worktree: t.worktree, branch: t.branch, recordedPr: ownPr(t), pr, fetchError: fetchPrHead({ worktree: t.worktree, pr }) };
   }
 }
@@ -1203,9 +1204,10 @@ switch (cmd) {
     const t = ticket(q, key);
     if (!spinePark(t)) throw new Error(`${key} is not a feature spine parked for approval (state ${t.state})`);
     const pr = t.result?.pr;
+    // After the requeue, which may re-point the ticket to its PR's branch: the note names the one its worker is on.
+    const msg = requeue(q, key);
     const text = `The person sent this spine's acceptance specs back: ${note}` +
       (pr != null ? `\nYour PR #${pr} on ${t.branch} stays open and in draft: fix the specs on that branch and push, rather than opening another PR.` : '');
-    const msg = requeue(q, key);
     saveAnswer(stateDir(), key, text, new Date().toISOString());
     console.log(`${key} sent back with the note in its briefing; ${msg}`);
     break;

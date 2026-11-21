@@ -196,6 +196,10 @@ t('RQ AC1 the line says it was re-pointed', /re-pointed to its open PR #861's ta
 // AUTOPILOT_BRANCH), and setup-worktree.sh hands out a kept worktree only when it is on that branch.
 t('RQ AC2 the ticket goes to a worker on B, in a worktree already on B', `${queued().state} ${handoffTarget({ worktree: rq1, branch: queued().branch })}`, 'triaged null');
 
+// A requeue whose queue write was lost after the worktree moved: run again, it records the PR's branch.
+queue(rq1, parkedB({ draft_pr: 861 }));
+t('a requeue run again after a lost queue write records the branch the worktree moved to', `${requeue().status} ${queued().branch} ${git(rq1, 'branch', '--show-current')}`, '0 task/K-1-pr task/K-1-pr');
+
 // RQ AC3: A holds a commit B lacks: nothing moves, the requeue still goes through and names the commit.
 const rq3 = fixture({ extra: true });
 const shaRq3 = git(rq3, 'rev-parse', '--short', 'HEAD');
@@ -221,6 +225,15 @@ const rq5 = fixture();
 prs([], view(PR));
 queue(rq5, parkedB({ draft_pr: 861, park: { question: 'awaiting the backfill', since: new Date().toISOString(), session_step: { step: 'run the backfill' } } }));
 t('step-done re-points as requeue does', `${requeue('step-done').status} ${queued().branch} ${git(rq5, 'branch', '--show-current')}`, '0 task/K-1-pr task/K-1-pr');
+
+// reject re-points too, and the note it leaves in the briefing names the branch the worker is put on.
+const rq6 = fixture();
+prs([], view(PR));
+queue(rq6, parkedB({ result: { pr: 861 }, park: { question: 'spine awaiting approval: the specs', since: new Date().toISOString() } }));
+const rr6 = spawnSync(process.execPath, [join(BIN, 'queue.mjs'), 'reject', 'K-1', 'cover the refund path'], { env, encoding: 'utf8' });
+const brief6 = readFileSync(join(state, 'briefings', 'K-1.md'), 'utf8').split('acceptance specs back: cover the refund path').pop();
+t('reject re-points as requeue does', `${rr6.status} ${queued().branch} ${git(rq6, 'branch', '--show-current')}`, '0 task/K-1-pr task/K-1-pr');
+t('reject\'s note names the PR\'s branch, not the old one', `${brief6.includes('PR #861 on task/K-1-pr stays open')} ${brief6.includes('task/K-1-old')}`, 'true false');
 
 console.log(fails ? `${fails} failed` : 'all passed');
 process.exit(fails ? 1 : 0);
