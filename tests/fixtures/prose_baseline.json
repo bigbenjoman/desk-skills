@@ -11,7 +11,6 @@
 {"file":"skills/desk-autopilot/references/check-in-digest.md","kind":"script","value":"install.sh","context":"install.sh"},
 {"file":"skills/desk-autopilot/references/check-in-digest.md","kind":"state-path","value":"passes.jsonl","context":"<state>/passes.jsonl"},
 {"file":"skills/desk-autopilot/references/check-in-digest.md","kind":"state-path","value":"closed-out/<KEY>.json","context":"<state>/closed-out/<KEY>.json"},
-{"file":"skills/desk-autopilot/references/check-in-digest.md","kind":"state-path","value":"decisions.jsonl","context":"~/.desk-autopilot/<slug>/decisions.jsonl"},
 {"file":"skills/desk-autopilot/references/commands.md","kind":"state-path","value":"logs/ABC-123.log","context":"node ~/.claude/desk/bin/harvest.mjs <state>/logs/ABC-123.log"},
 {"file":"skills/desk-autopilot/references/design-snapshot.md","kind":"script","value":"support.js","context":"support.js"},
 {"file":"skills/desk-autopilot/references/design-snapshot.md","kind":"state-path","value":"designs/<TICKET>/","context":"out_dir: <state>/designs/<TICKET>/"},

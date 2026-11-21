@@ -155,7 +155,7 @@ node ~/.claude/desk/bin/digest.mjs ask-again <slug> <TICKET>
   choice, or put it back to the person if it cannot be.
 - **Lever changes.** Each adopt or revert the levers controller makes (the daily evaluation, or a
   hard trip) is a call taken in category `engineering`, logged in the repo's own decision log
-  (`~/.desk-autopilot/<slug>/decisions.jsonl`), and asks nothing. The page's `Levers` section,
+  (the one `decisions.mjs` writes in its state folder), and asks nothing. The page's `Levers` section,
   machine-wide like `Maintenance` and left out when no lever changed state since the last digest,
   has one line per change in any repo's lever log: the lever, the repo, the mechanism metric's change
   and the cost per ticket's with their 90% intervals, the tickets per arm and the guardrails, or for
