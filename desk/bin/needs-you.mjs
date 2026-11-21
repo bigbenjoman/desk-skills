@@ -1487,7 +1487,7 @@ function itemOf(r, x, reads = null, finds = reads) {
     const actions = [['requeue', 'its worker gave up; requeue sends it back for a new worker to start again'], ['not-now']];
     // With no reason of its own recorded, its need is its park in plain words, not the raw question.
     const said = String(t.failed?.why ?? '').trim() ? '' : parkNeed(parkText(r, t));
-    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), rawNeed: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
+    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), rawNeed: said ? `worker stopped: ${one(parkText(r, t))}` : needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is
