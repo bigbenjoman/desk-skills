@@ -772,6 +772,18 @@ function uploadShots(t, prNo, imgDir) {
   try { waiting = UQ.isQueued(UQ.readUploadQueue(), QUEUE_FILE, t.key); } catch { /* reported by the pump */ }
   if (waiting) report.advanced.push(`${t.key} images → #${prNo} wait in the machine's upload queue: ${uploadStop ?? 'part are uploaded, at the most the pace allows, and a later pass uploads the rest'}`);
 }
+// The screenshots in `dir` that are one half of a before-<view>/after-<view> pair whose two files are
+// byte for byte the same (desk-pr screenshots.md names them so). [] where a file cannot be read.
+function samePairs(dir, shots) {
+  const out = [];
+  for (const f of shots) {
+    const m = /^before-(.+)$/i.exec(f);
+    const pair = m && shots.find((g) => g.toLowerCase() === `after-${m[1]}`.toLowerCase());
+    if (!pair) continue;
+    try { if (readFileSync(join(dir, f)).equals(readFileSync(join(dir, pair)))) out.push(f, pair); } catch { /* read as changed */ }
+  }
+  return out;
+}
 // What the uploader's run for t's PR #prNo ended with, recorded on t; `before` is the body's cells
 // when its job joined the queue (null where unread).
 function recordUpload(t, prNo, imgDir, run, before) {
@@ -790,13 +802,14 @@ function recordUpload(t, prNo, imgDir, run, before) {
     report.advanced.push(`${t.key} #${prNo} evidence complete — still draft`);
   } else if (doneLine || /uploaded, but found no/.test(up)) {
     // The assets now exist on GitHub but the body is not finished (placeholders left, or none
-    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true —
-    // keep the full output, and put it in front of the user.
+    // matched). Re-uploading would duplicate them, so mark it partial — never uploaded=true — and
+    // keep the full output. A shortfall is desk's to settle, never a person's: the cells left go to
+    // the undraft step, which says what fills each.
     save();
     q('set', t.key, 'images_uploaded=partial', ...ended);
     // The cells left go to whatever fills them at the undraft step, which says if nothing can.
     if (Number(doneLine?.[2]) > 0) report.advanced.push(`${t.key} images → #${prNo}, ${doneLine[2]} cell(s) left for the undraft step (tags saved in ${saved})`);
-    else report.waiting.push(`${t.key}: image upload to PR #${prNo} is INCOMPLETE — ${tail}. Its tags are saved in ${saved}; do not re-upload.`);
+    else report.advanced.push(`${t.key}: image upload to PR #${prNo} placed no image: none of its files matches a cell in the body — ${tail}. Its tags are saved in ${saved}, nothing is re-uploaded, and any cell left goes to the undraft step`);
   } else if (run.code === 2) {
     save();
     q('set', t.key, `upload_crash=${JSON.stringify({ pr: Number(prNo), dir: imgDir, tries: was?.tries ?? 0, log: saved, busy: true })}`);
@@ -955,6 +968,7 @@ const ADVANCE_HANDLERS = {
     return m?.call === 'done' ? { ...m, grant: E.mergeGrant(queue()).why } : m;
   },
   shots: (a) => { try { return readdirSync(a.dir); } catch { return []; } },
+  'same-pairs': (a) => samePairs(a.dir, a.shots),
   cells: (a) => cellsFor(a.pr, a.shots),
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
