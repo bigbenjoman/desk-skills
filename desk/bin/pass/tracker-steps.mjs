@@ -16,15 +16,16 @@
 //   now          the time, as an ISO string
 //
 // Actions, beside set and report, with what their handlers give back:
-//   { type: 'post-once', key, mark, body }   → { ok, posted, out }: the comment, unless one holding mark is there
+//   { type: 'post-once', key, mark, body }   → { ok, posted, read, out }: the comment, unless one holding mark
+//                                              is there; read false when the comments could not be read
 //   { type: 'status', key }                  → { ok, status, out }: the ticket's status name
 //   { type: 'transitions', key }             → { ok, list: [{ id, to }], out }
 //   { type: 'transition', key, id }          → { ok, out }
 import { set, say } from './shared.mjs';
+import { isNone } from '../desk-env.mjs';
 
 export const cloudMark = (key) => `(${key}/desk-autopilot cloud PR)`;
 const same = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
-const isNone = (v) => /^none$/i.test(String(v ?? '').trim());
 
 export function* decideTrackerSteps(s) {
   for (const t of Object.values(s.tickets)) {
