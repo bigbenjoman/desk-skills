@@ -949,7 +949,7 @@ in seconds and without replaying a suite. A base given as a
 commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
 (the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
 `compare_pass.sh`, `compare_pass.mjs` and `suite_env.sh`, and a later comparison against it replays
-only the head. A base replay that was interrupted or in which a pass crashed is not cached, a
+only the head. A base replay that was interrupted, in which a pass crashed or a suite failed a check, is not cached, a
 directory base never is, and `PASS_CMP_CACHE=0` replays both trees. `test_compare_pass.sh` replays
 every pass suite against itself only on a main push and the nightly run; a pull request and a local
 run replay `test_pass_other_repo.sh` alone, unless `PASS_CMP_FULL=1` opts the run in.

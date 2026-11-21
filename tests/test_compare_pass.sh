@@ -298,11 +298,15 @@ check "DS-963 AC5 a base replay in which a pass crashed is not cached" '[ $rc = 
 cp "$T/field/desk/bin/pass.mjs" "$T/crepo/desk/bin/pass.mjs"; echo 'kill -TERM $$' >> "$T/crepo/tests/test_pass.sh"; commit stopped
 ccmp HEAD HEAD~2; ccmp HEAD HEAD~2
 check "DS-963 AC5 a base replay that was stopped is not cached" 'replayed'
+# A base suite that fails a check, as one does on a machine that lacks a tool it uses.
+cp "$T/base/tests/test_pass.sh" "$T/crepo/tests/test_pass.sh"; echo 'echo "FAIL a tool this machine lacks"' >> "$T/crepo/tests/test_pass.sh"; commit failing
+ccmp HEAD HEAD~3; ccmp HEAD HEAD~3
+check "DS-963 a base replay in which a suite failed a check is not cached" 'replayed'
 rm -rf "$CD"; mkdir -p "$CD"
 for i in 1 2 3 4 5; do touch -t "20200101000$i" "$CD/old$i.tar"; done
-ccmp HEAD~3 HEAD~2
+ccmp HEAD~4 HEAD~3
 check "DS-963 AC8 a sixth entry removes the oldest, keeping 5" '[ "$(entries)" = 5 ] && [ ! -e "$CD/old1.tar" ] && [ -e "$CD/old2.tar" ]'
-ccmp HEAD~3 HEAD~2
+ccmp HEAD~4 HEAD~3
 check "DS-963 AC8 the entry just written is the one kept" '! replayed'
 # A cached base's run an hour and 5 seconds before the head's: a deadline worked out 2 hours on, where
 # the head works out 1, reads 5 seconds apart, and is still a difference; a time the run made, a fixed

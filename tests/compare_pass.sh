@@ -80,13 +80,14 @@ side(){ mkdir -p "$W/rec/$1"
     echo "compare_pass: $s on the $1" >&2
     (cd "$W/$1" && PATH="$W/shim:$PATH" PASS_CMP_OUT="$W/rec/$1/$s" PASS_CMP_SUITE_LOG="$W/rec/$1/$s.log" \
       "$SH" "tests/$s" > "$W/rec/$1/$s.log" 2>&1 < /dev/null)
-    [ $? -lt 128 ] || stopped=1
+    # A suite stopped, or failing a check (perhaps for want of a tool here), leaves the base uncached.
+    st=$?; [ $st = 0 ] && ! grep -q '^FAIL ' "$W/rec/$1/$s.log" || unclean=1
     mkdir -p "$W/rec/$1/$s"
   done; }
 
 # The cache key: everything the base's recording depends on besides the base tree itself, as the
 # recorder and suite_env.sh come from this checkout rather than the base.
-C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=; stopped=
+C="${XDG_CACHE_HOME:-$HOME/.cache}/desk-skills/compare-pass"; key=; hit=; unclean=
 if [ "${PASS_CMP_CACHE:-1}" != 0 ] && [ ! -d "$base" ]; then
   key=$({ echo "$base"; "$NODE" --version; git --version; echo "$BASH_VERSION"
     printf '%s\n' "${suites[@]}" | sort; cat "$S/compare_pass.sh" "$S/compare_pass.mjs" "$S/suite_env.sh"
@@ -104,8 +105,8 @@ if [ -n "$key" ] && [ -f "$C/$key.tar" ] && mkdir -p "$W/cached" && tar -xf "$C/
 else
   side base
 fi
-# A base replay that ran whole with no pass crashing is cached; the oldest entries past 5 go.
-if [ -n "$key" ] && [ -z "$hit" ] && [ -z "$stopped" ] && "$NODE" "$S/compare_pass.mjs" clean "$W/rec/base" \
+# A base replay whose suites all passed, with no pass crashing, is cached; the oldest entries past 5 go.
+if [ -n "$key" ] && [ -z "$hit" ] && [ -z "$unclean" ] && "$NODE" "$S/compare_pass.mjs" clean "$W/rec/base" \
   && mkdir -p "$C" 2>/dev/null; then
   printf '%s\n' "$W/base" "$(cd "$W/base" && pwd -P)" "$W" "$(cd "$W" && pwd -P)" > "$W/roots"
   tar -cf "$C/.$key.$$" -C "$W" rec/base roots 2>/dev/null && mv -f "$C/.$key.$$" "$C/$key.tar"
@@ -114,10 +115,11 @@ if [ -n "$key" ] && [ -z "$hit" ] && [ -z "$stopped" ] && "$NODE" "$S/compare_pa
 fi
 side head
 # A cached base ran long before the head, which the diff is told so it matches times by run only.
-"$NODE" "$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; rc=$?
+dargs=("$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W")
+"$NODE" "${dargs[@]}"; rc=$?
 if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
   trap - EXIT
   echo "compare_pass: kept the recordings and both trees in $W; list them again with:" >&2
-  { printf '  node'; printf ' %q' "$S/compare_pass.mjs" diff ${hit:+"--base-cached"} "$brec" "$W/rec/head" "${broots[@]}" "$W/head" "$W"; echo; } >&2
+  { printf '  node'; printf ' %q' "${dargs[@]}"; echo; } >&2
 fi
 exit $rc
