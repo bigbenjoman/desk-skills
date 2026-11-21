@@ -25,16 +25,18 @@ const env = { HOME: H, DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T,
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH', 'DESK_BATCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'DESK_SUBSCRIPTION', 'COLORFGBG', 'COLORTERM', 'NO_COLOR', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'DESK_AUTOPILOT_WORKER']) delete process.env[k];
 Object.assign(process.env, env);
-const WORK = join(H, '.claude-logins', 'work'), SPARE = join(H, '.claude-logins', 'spare');
-for (const d of [env.DESK_LOCK_DIR, env.DESK_USAGE_DIR, join(H, '.claude'), WORK, SPARE, join(H, '.codex')]) mkdirSync(d, { recursive: true });
+// Each Claude account has a folder of its own, pinned to it (DS-528): ~/.claude is the person's own.
+const PERSONAL = join(H, '.claude-logins', 'personal'), WORK = join(H, '.claude-logins', 'work'), SPARE = join(H, '.claude-logins', 'spare');
+for (const d of [env.DESK_LOCK_DIR, env.DESK_USAGE_DIR, join(H, '.claude'), PERSONAL, WORK, SPARE, join(H, '.codex')]) mkdirSync(d, { recursive: true });
+process.env.CLAUDE_CONFIG_DIR = PERSONAL;
 writeFileSync(env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 const account = (path, email, plan) => writeFileSync(path, JSON.stringify({ oauthAccount: { emailAddress: email, planDisplayName: plan } }));
-account(join(H, '.claude.json'), 'me@example.test', 'Ultra');
+account(join(PERSONAL, '.claude.json'), 'me@example.test', 'Ultra');
 account(join(WORK, '.claude.json'), 'work@example.test', 'Max 5x');
 account(join(SPARE, '.claude.json'), 'spare@example.test', 'Pro');
-writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n'
-  + '| `claude` | `personal` | `~/.claude` | `default` |\n| `claude` | `work` | `~/.claude-logins/work` | `unused` |\n'
-  + '| `claude` | `spare` | `~/.claude-logins/spare` | `unused` |\n| `codex` | `codexmain` | `~/.codex` | `default` |\n');
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n'
+  + '| `claude` | `personal` | `~/.claude-logins/personal` | `me@example.test` | `default` |\n| `claude` | `work` | `~/.claude-logins/work` | `work@example.test` | `unused` |\n'
+  + '| `claude` | `spare` | `~/.claude-logins/spare` | `spare@example.test` | `unused` |\n| `codex` | `codexmain` | `~/.codex` | `-` | `default` |\n');
 
 // forewatt follows the default: its config has no Subscription row yet.
 const CONFIG = join(env.DESK_CONFIG_ROOT, 'repos', 'acme__forewatt', 'config.md');
@@ -179,7 +181,7 @@ t('and u has nothing to undo', S.frame().includes('Nothing to undo.'), true);
 S.done();
 
 // ---- a pick of an off subscription: Not saved, saying it is off, the row unchanged
-writeFileSync(env.DESK_SUBSCRIPTIONS, readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8').replace('| `~/.claude-logins/spare` | `unused` |', '| `~/.claude-logins/spare` | `off` |'));
+writeFileSync(env.DESK_SUBSCRIPTIONS, readFileSync(env.DESK_SUBSCRIPTIONS, 'utf8').replace('| `~/.claude-logins/spare` | `spare@example.test` | `unused` |', '| `~/.claude-logins/spare` | `spare@example.test` | `off` |'));
 before = configText();
 S = await usage();
 await S.press('\r', '4');

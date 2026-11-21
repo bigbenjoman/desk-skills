@@ -155,6 +155,12 @@ const runsOn = (name) => h6.find((l) => l.startsWith(`  ${name} `))?.slice(2).sp
 t('AC6 each repo\'s RUNS ON holds its subscription\'s email', ['solo', 'voicepa', 'studia'].map(runsOn).join(' '), 'ben.lavender@me.com ben@voicepa.ai ben@studia.io');
 t('AC6 RUNS ON lines up under its head', h6.find((l) => l.startsWith('  solo '))?.indexOf('ben.lavender@me.com'), head().indexOf('RUNS ON'));
 
+// ---- DS-533 AC23: with accounts pinned, the default is named by its pin, whatever its folder is signed in to now
+writeFileSync(env.DESK_SUBSCRIPTIONS, '| Tool | Name | Folder | Account | Rule |\n|---|---|---|---|---|\n'
+  + '| `claude` | `work` | `~/.claude-logins/work` | `pinned@example.test` | `default` |\n| `claude` | `spare` | `~/.claude-logins/spare` | `ben@studia.io` | `unused` |\n');
+t('DS-533 AC23 the Claude line names the default by its pin', lines()[0].startsWith('Claude  pinned@example.test  '), true);
+subscriptions(CLAUDE);
+
 // ---- AC7: too narrow for every column: DONE and MERGING go before RUNS ON
 const widths = Array.from({ length: 140 }, (_, i) => 200 - i);
 const heads = widths.map((width) => head({ width }));
