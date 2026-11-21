@@ -730,6 +730,9 @@ rm -f "$T/promos.fails"
 # merged only before it, which still promotes nothing of it.
 printf '%s\n' '[{"number":871,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-11-02T09:00:00Z"}]' > "$T/promos.json"
 check "DS-947 AC1 a promotion PR merged after it reads as merged, its code on main" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":871,\"state\":\"merged\"}" ]'
+# The next slice's promotion PR, opened from the same branch into main once 871 merged, hides nothing.
+printf '%s\n' '[{"number":871,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-11-02T09:00:00Z"},{"number":872,"state":"open","headRefName":"epic/L3","baseRefName":"main","isDraft":true,"statusCheckRollup":[]}]' > "$T/promos.json"
+check "DS-947 AC1 an open next-slice promotion PR does not hide the merged one" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":871,\"state\":\"merged\"}" ]'
 printf '%s\n' '[{"number":870,"state":"merged","headRefName":"epic/L3","baseRefName":"main","mergedAt":"2026-10-30T09:00:00Z"}]' > "$T/promos.json"
 check "DS-947 AC3 one merged only before it is still no promotion PR" '[ "$(unpromoted L-3)" = "{\"branch\":\"epic/L3\",\"pr\":null,\"state\":\"none\"}" ]'
 # DS-947 AC2: read against a batch base, a squash promotion into main lands it once the base holds its

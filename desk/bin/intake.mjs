@@ -189,8 +189,8 @@ export function landedOn(key, base, via = base) {
 // Where ticket `key`'s code waits when landedOn finds it merged only into another branch: { branch, pr,
 // state }, `branch` the latest branch other than `base` a PR naming it merged into, and the open PR from
 // that branch into `base` as `pr` (its number, null for none) and `state`: none, draft, red (the latest
-// run of a check failed, as gate.mjs reads a rollup) or open; with none open, one from that branch merged
-// into `base` after it is `merged`, its code on `base` already. null when no PR naming it merged
+// run of a check failed, as gate.mjs reads a rollup) or open; one from that branch merged into `base`
+// after it is `merged`, its code on `base` already, whatever is open after it. null when no PR naming it merged
 // elsewhere, or GitHub cannot be read.
 export function unpromotedBase(key, base) {
   let repo;
@@ -200,14 +200,15 @@ export function unpromotedBase(key, base) {
   const away = prs.filter((p) => p.baseRefName && p.baseRefName !== base)
     .sort((a, b) => (Date.parse(b.mergedAt) || 0) - (Date.parse(a.mergedAt) || 0))[0];
   if (!away) return null;
+  // A merged promotion is read first: a feature batch opens its next slice's promotion PR, from the same
+  // branch into the same base, as soon as one merges, so an open one does not mean this code waits.
+  const done = promotionsAfter(repo, away.baseRefName, base, away.mergedAt);
+  if (!done) return null;
+  if (done[0]) return { branch: away.baseRefName, pr: done[0].number, state: 'merged' };
   const open = ghPrList(repo, ['--state', 'open', '--head', away.baseRefName, '--base', base, '--json', 'number,isDraft,statusCheckRollup']);
   if (!open) return null;
   const p = open[0];
-  if (!p) {
-    const done = promotionsAfter(repo, away.baseRefName, base, away.mergedAt);
-    if (!done) return null;
-    return done[0] ? { branch: away.baseRefName, pr: done[0].number, state: 'merged' } : { branch: away.baseRefName, pr: null, state: 'none' };
-  }
+  if (!p) return { branch: away.baseRefName, pr: null, state: 'none' };
   const red = latestPerCheck(normaliseRollup(p.statusCheckRollup)).some((c) => FAILED.has(c.conclusion));
   return { branch: away.baseRefName, pr: p.number, state: p.isDraft ? 'draft' : red ? 'red' : 'open' };
 }
