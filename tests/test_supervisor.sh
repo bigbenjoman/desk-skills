@@ -267,6 +267,11 @@ check "DS-695: the first pass in an interval counts a quiet pass" '[ "$(tail -1 
 rm -f "$EX/.A.9.tmp"
 out=$(tick)
 check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
+# The tick intake push starts (DS-207) runs though it lands in that quiet window, and takes the push's lines.
+printf 'intake: admitted ACME-9\n' > "$T/state/intake.pushed"
+out=$(tick)
+check "DS-695: a tick intake push starts runs inside the quiet window after a deletion" '[ "$(count "$T/pass.calls")" = $((before + 2)) ] && [ ! -e "$T/state/intake.pushed" ]'
+before=$((before + 1))
 # Ten exits over a second, from inside a pass that takes no time: the gap folds them into one round.
 rm -f "$WAKE" "$COUNTED"; old A.10.json; touch "$T/exit.burst"
 out=$(DESK_WAKE_GAP_MS=3000 tick)
@@ -588,6 +593,7 @@ export const intakeQuery = () => 'project = ACME';
 export const prOpen = () => true;
 export const handedByIntake = () => [];
 export const takePushed = () => [];
+export const pushWaiting = () => false;
 if (process.argv[2] === 'run') { appendFileSync('$T/intake.calls', 'run\n'); console.log(JSON.stringify({ lines: ['intake: nothing new'] })); }
 EOF
 # gh answers each PR's state from $T/gh/<n>, OPEN where there is none.

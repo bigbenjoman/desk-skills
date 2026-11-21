@@ -87,7 +87,7 @@ import { readQueue, describeCrash, isHeld, spinePark, IDLE_RECHECK_MS, RUN_RECHE
 import { listBatches, batchPinned, alive, orchestratorHolder } from './batches.mjs';
 import { tryLockFile, unlockFile, writeTextAtomic } from './dir-lock.mjs';
 import { archiveCheck } from './batch.mjs';
-import { intakeQuery, prOpen, handedByIntake, takePushed } from './intake.mjs';
+import { intakeQuery, prOpen, handedByIntake, takePushed, pushWaiting } from './intake.mjs';
 import { actOnPlan } from './epic-plan.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { postMergeDue } from './post-merge.mjs';
@@ -509,7 +509,8 @@ function takeTickLock(wait) {
 function interval() {
   const exits = exitsDir();
   const woken = exitFiles(exits).length > 0;
-  if (!woken && Date.now() - wakeAt('consumed') < WAKE_QUIET_MS) return;
+  // A push's lines waiting mean intake push started this tick, which runs whenever it lands.
+  if (!woken && !pushWaiting(E.stateDir()) && Date.now() - wakeAt('consumed') < WAKE_QUIET_MS) return;
   // An interval's tick that finds the lock held runs as it always has; it takes the lock when free, so a
   // woken tick waits for its round.
   const held = takeTickLock(woken);
