@@ -58,8 +58,9 @@ function call(method, path, { headers = {}, body } = {}) {
   });
 }
 const ORIGIN = `http://127.0.0.1:${PORT}`;
+// origin null sends no Origin header; undefined would fall back to the default, the right Origin.
 const exchange = (token, origin = ORIGIN) => call('POST', '/api/auth/exchange',
-  { headers: { ...(origin === undefined ? {} : { Origin: origin }), 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+  { headers: { ...(origin === null ? {} : { Origin: origin }), 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
 const noState = (r) => !/acme__widgets|needs_you|"repos"|WID-/.test(r.text);
 
 // ---- AC5: the token file's token signs in
@@ -107,7 +108,7 @@ const viaLocalhost = await call('GET', '/api/snapshot', { headers: { Host: `loca
 t('AC3 Host localhost on the port is answered', viaLocalhost.status, 200);
 
 // ---- AC4: a POST from any other Origin is refused; no response carries a CORS header
-for (const origin of ['http://evil.example', `http://localhost:${PORT}`, `http://127.0.0.1:${PORT + 1}`, 'null', undefined]) {
+for (const origin of ['http://evil.example', `http://localhost:${PORT}`, `http://127.0.0.1:${PORT + 1}`, 'null', null]) {
   const r = await exchange(TOKEN, origin);
   t(`AC4 a POST with Origin ${origin ?? '(none)'} is refused, with no cookie`, [r.status, r.headers['set-cookie'] ?? null, noState(r)], [403, null, true]);
 }
