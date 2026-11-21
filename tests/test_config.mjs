@@ -2,9 +2,9 @@
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { cellItems, configRows } from '../desk/bin/desk-env.mjs';
+import { cellItems, configRows, PATH_VARS } from '../desk/bin/desk-env.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -443,14 +443,27 @@ t('git-author blank is unset', gitAuthor(''), 'exit 3');
 t('git-author none is unset', gitAuthor('`none`'), 'exit 3');
 t('git-author with no email is refused', gitAuthor('`Ben Lavender`'), 'exit 4');
 t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 4');
-// #750: outside a configured repo `paths` refuses, but `paths --machine` prints desk's machine paths.
+// #750: outside a configured repo `paths` prints the machine paths, reports the per-repo ones unset
+// and still exits 4; `paths --machine` prints only the machine paths.
 {
   const none = { ...process.env, DESK_CONFIG: '', DESK_REPO_DIR: T, DESK_REPO_ROOT: '', DESK_MACHINE: join(T, 'none.md'), HOME: T };
-  delete none.DESK_CONFIG; delete none.DESK_REPO_ROOT;
-  let code = 0; try { execFileSync('node', [BIN, 'paths'], { stdio: 'ignore', env: none }); } catch (e) { code = e.status; }
-  t('#750 paths outside a configured repo still refuses', code, 4);
+  delete none.DESK_CONFIG; delete none.DESK_REPO_ROOT; delete none.DESK_SKILLS_DIR;
+  const r = spawnSync('node', [BIN, 'paths'], { encoding: 'utf8', env: none });
+  const machine = ['DESK_HOME', 'DESK_BIN', 'DESK_RUN_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR', 'DESK_IS_WSL'];
+  t('DS-858 AC5 paths outside a configured repo still exits 4', r.status, 4);
+  t('DS-858 AC4 paths there prints every machine path with its value', machine.every((k) => new RegExp(`^${k}='[^']+'$`, 'm').test(r.stdout)), true);
+  t('DS-858 AC4 DESK_SKILLS_DIR is the default under HOME', r.stdout.includes(`DESK_SKILLS_DIR='${join(T, '.agents', 'skills')}'`), true);
+  const perRepo = ['DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_SLUG', 'DESK_DEFAULT_BRANCH', 'DESK_STATE', 'DESK_DEV_PORT'];
+  t('DS-858 AC5 each per-repo path is reported unset, none given a value', perRepo.every((k) => r.stdout.includes(`# ${k} unset: no repo config`) && !r.stdout.includes(`${k}=`)), true);
+  t('DS-858 AC5 paths there says no repo config was found', /no repo config found/.test(r.stderr), true);
   const m = execFileSync('node', [BIN, 'paths', '--machine'], { encoding: 'utf8', env: none });
   t('#750 paths --machine prints the machine paths there', ['DESK_HOME', 'DESK_BIN', 'DESK_SKILLS_DIR', 'DESK_LOCK_DIR'].every((k) => m.includes(`${k}=`)) && !m.includes('DESK_REPO_ROOT='), true);
+  const c = join(T, 'paths.md');
+  writeFileSync(c, `${P2}| Primary repo root | \`${repoDir}\` | |\n`);
+  const inRepo = spawnSync('node', [BIN, 'paths'], { encoding: 'utf8', env: { ...none, DESK_CONFIG: c, DESK_REPO_OVERRIDE: 'acme/widgets' } });
+  t('DS-858 AC6 paths inside a configured repo exits 0', inRepo.status, 0);
+  t('DS-858 AC6 and prints every path with a value', PATH_VARS.every((k) => new RegExp(`^${k}='[^']+'$`, 'm').test(inRepo.stdout)) && !inRepo.stdout.includes('unset'), true);
+  t('DS-858 AC6 DESK_REPO_ROOT is the configured root', inRepo.stdout.includes(`DESK_REPO_ROOT='${repoDir}'`), true);
 }
 // #746: a skill reads the config's rows through `desk-env show`: headings and tables, not the prose,
 // and not the §3c rule ledger unless asked for by name.

@@ -50,7 +50,9 @@
 //                                             desk-env.sh's desk_load_config
 //   node desk-env.mjs ids                     print every id, the row it maps to, and its value
 //   node desk-env.mjs paths [--machine]       print KEY=value lines for the shell (--machine: only the ones
-//                                             no repo is needed for, DESK_SKILLS_DIR among them)
+//                                             no repo is needed for, DESK_SKILLS_DIR among them). Outside
+//                                             a configured repo: the machine ones, `# KEY unset` for the
+//                                             rest, and exit 4
 //   node desk-env.mjs take-batch [args...]    print, for desk_take_batch to eval, `export DESK_BATCH=` when
 //                                             the args named one, then DESK_ARGS=( the args without it )
 //   node desk-env.mjs identity                print GITHUB_HANDLE= and JIRA_NAME= (fails if unset)
@@ -2368,9 +2370,19 @@ if (isMain) {
       case 'paths': {
         // --machine: only the entries no repo is needed for, so a caller outside a configured repo
         // can still find desk's own directories.
+        // Outside a configured repo, the bare form prints the machine paths too, and each per-repo one
+        // as an unset comment rather than a fallback guessed without a repo, then still exits 4.
         const keys = args[0] === '--machine' ? MACHINE_PATHS : Object.keys(PATHS);
-        const lines = keys.map((k) => [k, PATHS[k]()]);
-        for (const [k, v] of lines) console.log(`${k}=${shellQuote(v)}`);
+        let noRepo = null;
+        if (keys.some((k) => !MACHINE_PATHS.includes(k))) {
+          try { repoRoot(); } catch (e) { if (!(e instanceof DeskConfigError)) throw e; noRepo = e; }
+        }
+        const lines = keys.map((k) => [k, noRepo && !MACHINE_PATHS.includes(k) ? null : PATHS[k]()]);
+        for (const [k, v] of lines) console.log(v == null ? `# ${k} unset: no repo config` : `${k}=${shellQuote(v)}`);
+        if (noRepo) {
+          console.error(`desk-env paths: no repo config found, so only the machine paths are set. ${noRepo.message}`);
+          process.exit(4);
+        }
         break;
       }
       case 'take-batch': {
