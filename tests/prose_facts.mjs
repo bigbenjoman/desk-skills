@@ -20,12 +20,14 @@ import { DEFAULT_PATHS, FACTS_OPEN, FACTS_CLOSE } from './prose_scan.mjs';
 import { VENDORS } from '../skills/desk-review/bin/verdict.mjs';
 import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE } from '../desk/bin/spawn-order.mjs';
 import { pushNothing } from '../desk/bin/fix-tries.mjs';
+import { KNOWN_UNTRACKED } from '../desk/bin/desk-env.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const WRITE = 'node tests/prose_facts.mjs --write';
 
 const code = (v) => `\`${v}\``;
-const either = (vs) => (vs.length < 2 ? vs.map(code).join('') : `${vs.slice(0, -1).map(code).join(', ')} or ${code(vs.at(-1))}`);
+const list = (vs, word) => (vs.length < 2 ? vs.join('') : `${vs.slice(0, -1).join(', ')} ${word} ${vs.at(-1)}`);
+const either = (vs) => list(vs.map(code), 'or');
 
 // name: { from: () => the values, read from the code; render: (values) => the region's text }.
 export const REGIONS = {
@@ -42,6 +44,11 @@ export const REGIONS = {
   'push-nothing': {
     from: () => ({ text: pushNothing(true) }),
     render: ({ text }) => text,
+  },
+  // The files desk skills leave untracked in a worktree, which `desk-env tree-status` leaves out.
+  'known-untracked': {
+    from: () => ({ files: KNOWN_UNTRACKED }),
+    render: ({ files }) => list(files.map((f) => `${f.by}'s ${f.what} ${code(f.path)}`), 'and'),
   },
 };
 

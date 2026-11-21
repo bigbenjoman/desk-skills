@@ -129,11 +129,10 @@ confident false verdict. If the ref is missing the search could not run: no find
   PREMISES` (Phase 6) like any other, so the unread source shows rather than reading as a clean
   pass, and it fits the codex call's "only FINDING blocks".
 
-**After the round, `git status --porcelain`.** The tree was clean at Phase 0, so anything listed now,
-other than this skill's own scratch files (`desk-review-codex-brief-<run>.txt`, any
-`desk-review-<seat>-brief-<run>.txt`, `desk-review-results-<run>.json` and `desk-review.md`, written
-by name, and `/desk-ticket`'s untracked `.claude/desk-ticket-<TICKET>.json`, read with
-`--untracked-files=all` as Phase 0 does), is a finder's edit: save the
+**After the round, `desk-env tree-status --run <run>`.** The tree was clean at Phase 0, so anything
+it prints is a finder's edit. It leaves out what Phase 0's check does, and this run's own scratch
+files (`desk-review-codex-brief-<run>.txt`, any `desk-review-<seat>-brief-<run>.txt`,
+`desk-review-results-<run>.json` and `desk-review.md`, written by name). Save the
 stray diff to the scratchpad, restore with `git checkout -- <paths>`, re-run that finder, and say in
 the report that a round was discarded. Otherwise the refutation confirms findings about code nobody
 pushed.

@@ -518,10 +518,9 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
   const repos = configuredRepos(root);
   const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
   const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${esc(n)}(?![\\w-])`, 'i').test(text));
+  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${escapeRe(n)}(?![\\w-])`, 'i').test(text));
   for (const d of calls) {
-    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(esc).join('|')})(?![\\w-])`, 'gi');
+    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(escapeRe).join('|')})(?![\\w-])`, 'gi');
     if (selfNames.length && named(d.chose.replace(fromSelf, ''), selfNames)) continue;
     const hits = repos.filter((r) => r.slug !== self.slug && !selfNames.some((n) => n.toLowerCase() === r.ghRepo.toLowerCase()) && named(d.chose, namesOf(r.slug, r.ghRepo)));
     if (hits.length !== 1) continue;
@@ -2021,13 +2020,33 @@ const printRead = (cmd, id) => {
   process.stdout.write(out);
 };
 
+// The files desk skills leave untracked in a worktree and never commit, each with the skill that writes
+// it. `<TICKET>` stands for any one path segment. tree-status leaves them out of git status.
+export const KNOWN_UNTRACKED = Object.freeze([
+  Object.freeze({ path: '.claude/desk-ticket-<TICKET>.json', by: 'desk-ticket', what: 'resume file' }),
+]);
+// The scratch files one desk-review run writes at the worktree root, `<run>` that run's id and `<seat>`
+// a role; `tree-status --run <run>` leaves out the ones carrying that id.
+const REVIEW_SCRATCH = Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) => (/^<[A-Za-z]+>$/.test(p) ? fill(p) : escapeRe(p))).join('')}$`);
+
+// The lines of `git status --porcelain --untracked-files=all` output that are changes: every line but an
+// untracked known file, or with `run`, an untracked scratch file of that review run.
+export function treeStatus(porcelain, { run } = {}) {
+  const known = KNOWN_UNTRACKED.map((k) => templateRe(k.path, () => '[^/]+'));
+  if (run) known.push(...REVIEW_SCRATCH.map((s) => templateRe(s, (p) => (p === '<run>' ? escapeRe(run) : '[^/]+'))));
+  return porcelain.split('\n').filter((l) => l && !(l.startsWith('?? ') && known.some((re) => re.test(l.slice(3)))));
+}
+
 // ---- CLI -----------------------------------------------------------------------------------
 // The subcommands the CLI handles: any other is refused with this usage. tests/test_desk_env_commands.mjs
 // holds the switch below equal to it.
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot', 'tree-status']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2677,6 +2696,19 @@ if (isMain) {
         const lease = previewSlotArgs(label, wait);
         if (!lease) { console.log('no preview slot to take: §4 Vercel names no team'); process.exit(0); }
         process.exit((await import('./leases.mjs')).leaseCli(lease, { env: { machineValue, testLockSlots, psRows } }));
+      }
+      case 'tree-status': {
+        // tree-status [--run <run>]: this tree's changes, as `git status --porcelain --untracked-files=all`
+        // prints them, without KNOWN_UNTRACKED (and that review run's scratch files). Exit 0 and nothing
+        // printed is a clean tree; 1 lists the changes; 3 is not a git work tree.
+        const i = args.indexOf('--run');
+        const run = i < 0 ? null : args[i + 1];
+        if ((i >= 0 && !run) || args.length !== (i < 0 ? 0 : 2)) { console.error('usage: desk-env tree-status [--run <run>]'); process.exit(2); }
+        const r = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], { encoding: 'utf8', maxBuffer: 64 << 20 });
+        if (r.status !== 0) { console.error(`desk-env tree-status: ${(r.stderr || 'git status failed').trim()}`); process.exit(3); }
+        const changes = treeStatus(r.stdout, { run });
+        if (changes.length) { console.log(changes.join('\n')); process.exit(1); }
+        break;
       }
       default:
         console.error(deskEnvUsage());
