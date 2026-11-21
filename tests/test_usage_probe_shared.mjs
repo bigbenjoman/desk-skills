@@ -90,5 +90,21 @@ t('AC5 the pass probes the login', `${calls().join()} ${r5.ok} ${r5.shared ?? fa
 const at = Number(readFileSync(join(USAGE, 'probe.b.at'), 'utf8'));
 t('AC5 and writes its start stamp, before the answer', at >= before && at < Date.now() - 900, true);
 
+// ---- A pass with no reading joins a probe of its login still running (started under a minute ago, no
+// log since), and otherwise probes at most once per PROBE_EVERY_MS from the last start
+const { noReadingProbeDue, PROBE_EVERY_MS } = await import(MOD);
+const due = () => noReadingProbeDue({ dir: USAGE, login: B });
+reset();
+t('no reading: never probed, so it probes', due(), true);
+stamp(B, Date.now() - 20000);
+t('no reading: a probe started 20s ago and still running is joined, not skipped', due(), true);
+writeFileSync(log(B), OK_LOG);
+t('no reading: one started 20s ago that has logged its answer is not repeated', due(), false);
+stamp(B, Date.now() - 120000);
+rmSync(log(B));
+t('no reading: one started 2 minutes ago is not repeated', due(), false);
+stamp(B, Date.now() - PROBE_EVERY_MS - 1000);
+t('no reading: one older than PROBE_EVERY_MS is', due(), true);
+
 console.log(fails ? `${fails} FAILED` : 'all usage probe shared checks passed');
 process.exit(fails ? 1 : 0);

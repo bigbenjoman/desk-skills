@@ -88,6 +88,14 @@ export function allReadingsText(claude, codex, now) {
 
 // A probe is due only with no worker running on what it reads and no reading in the last PROBE_EVERY_MS.
 export const probeDue = ({ running, reading, now }) => running === 0 && (reading?.at == null || now - reading.at > PROBE_EVERY_MS);
+// With no reading for a login at all, a pass probes it at most once per PROBE_EVERY_MS from the last
+// probe's start, except that one started under PROBE_GAP_MS ago with no log written since is still
+// running: the pass joins it (probeShared) and judges on its answer, rather than pacing blind.
+export const noReadingProbeDue = ({ dir = usageDir(), login = null, now = Date.now() } = {}) => {
+  const started = lastProbeAt(dir, login);
+  if (started == null || now - started > PROBE_EVERY_MS) return true;
+  return now - started < PROBE_GAP_MS && !loggedSince(dir, login, started);
+};
 
 // The probe's environment: the caller's without ANTHROPIC_API_KEY, in the login's folder when given one,
 // on the 5-minute prompt cache, as a one-request call never reads a cache an hour later.
@@ -187,14 +195,17 @@ function probeAnswer(out, r, claude) {
 
 const loginName = (login) => (login?.configDir ? login.name : 'default');
 
+// Whether the login's probe log was written at or after `since`. A filesystem that keeps mtimes to the
+// second is compared to the second.
+function loggedSince(dir, login, since) {
+  try { return statSync(loginProbeLog(dir, login)).mtimeMs >= Math.floor(since / 1000) * 1000; } catch { return false; }
+}
+
 // The answer to the probe of a login that started at `since`: its probe log, once written at or after
-// then. A filesystem that keeps mtimes to the second is compared to the second.  -> answer | null
+// then.  -> answer | null
 function answerSince(dir, login, since) {
-  const log = loginProbeLog(dir, login);
-  try {
-    if (statSync(log).mtimeMs < Math.floor(since / 1000) * 1000) return null;
-    return probeAnswer(readFileSync(log, 'utf8'), null);
-  } catch { return null; }
+  if (!loggedSince(dir, login, since)) return null;
+  try { return probeAnswer(readFileSync(loginProbeLog(dir, login), 'utf8'), null); } catch { return null; }
 }
 
 // probeNow behind the same machine-wide lock and per-login start stamp desk-q's probe takes (probe,
