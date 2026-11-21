@@ -3525,6 +3525,57 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('#756 no PR held now, no item: a merged one, or one green at the head its hold read', N.collect({ word: 'green756' }).items.filter((i) => i.kind === 'base-red').length, 0);
 }
 
+// ---- DS-959 AC9: the end of the lease trial is one machine item, whose answer sets lease-kinds
+{
+  const DAY = 86_400_000;
+  const dir = join(T, 'leases-trial');
+  mkdirSync(dir, { recursive: true });
+  const machine = join(T, 'machine-trial.md');
+  writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
+  const was = { dir: process.env.DESK_LEASE_DIR, machine: process.env.DESK_MACHINE };
+  Object.assign(process.env, { DESK_LEASE_DIR: dir, DESK_MACHINE: machine });
+  const now = Date.now(), start = now - 8 * DAY;
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const day = (t) => { const d = new Date(t); return { dow: DOW[d.getDay()], d: d.getDate(), m: MON[d.getMonth()] }; };
+  const [s0, s7] = [day(start), day(start + 7 * DAY)];
+  const span = s0.m === s7.m ? `${s0.d} to ${s7.d} ${s7.m}` : `${s0.d} ${s0.m} to ${s7.d} ${s7.m}`;
+  const on = (n) => `${day(start + n * DAY + 3600_000).dow} ${day(start + n * DAY + 3600_000).d}`;
+  const refuse = (kind, t) => JSON.stringify({ at: new Date(t).toISOString(), event: 'would-refuse', kind, key: 'suite', units: 2, label: 'a', holders: [{ kind, label: 'b' }] });
+  const log = (...extra) => writeFileSync(join(dir, 'leases.log.jsonl'), `${[JSON.stringify({ at: new Date(start).toISOString(), event: 'grant', kind: 'port' }),
+    refuse('mem', start + 3 * DAY + 3600_000), refuse('mem', start + 5 * DAY + 3600_000), refuse('mem', start + 5 * DAY + 7200_000), ...extra].join('\n')}\n`);
+  log();
+  const trialItems = (at = now) => NY.collect({ now: at, reads: null }).items.filter((i) => i.kind === 'lease-trial');
+  t('DS-959 AC9 before 7 days have passed there is no item', trialItems(start + 6 * DAY).length, 0);
+  const items = trialItems();
+  const i = items[0];
+  t('DS-959 AC9 7 days in with every kind on trial: one machine item, listed under the first batch the home screen shows',
+    `${items.length} ${i?.repoLevel} ${i?.r.slug === NY.leaseTrialHome(NY.collect({ now, reads: null }).scope)}`, '1 true true');
+  t('DS-959 AC9 it asks whether to turn the kinds on, for the trial\'s dates', i?.need,
+    `Leases finished their 7-day trial (${span}). Turn them on, so a second session is turned away from a port, test slot, build or merge someone else holds, instead of let through?`);
+  t('DS-959 AC9 it counts each kind\'s clashes over the trial, and says how a kind goes back on trial', i?.note,
+    `Clashes caught: port 0, slot 0, preview-build 0, merge 0, mem 3 (${on(3)} and ${on(5)}; desk-env lease list --clashes shows them). Any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow`);
+  t('DS-959 AC9 the recommended answer turns on the kinds with no clashes; the others turn all on or keep the trial',
+    i?.actions.map(([a, why, note]) => `${a}:${why ? 'recommended' : 'other'}`).join(' '), 'on-clean:recommended on-all:other keep:other');
+  t('DS-959 AC9 the recommendation names what stays on trial', i?.actions[0][1],
+    'turn on the 4 with no clashes: nothing they would refuse happened all week, so turning them on blocks nothing that works today. mem stays on trial while its 3 clashes are looked at');
+  const r = N.record({ word: i.r.word, ticket: 'lease-trial', action: 'on-clean', now });
+  const row = readFileSync(machine, 'utf8').split('\n').find((l) => l.includes('lease-kinds')) ?? '';
+  t('DS-959 AC9 answering sets lease-kinds in the machine profile', `${r.ok} ${row.includes('`port=on,slot=on,preview-build=on,merge=on,mem=shadow`')}`, 'true true');
+  t('DS-959 AC9 and says what stays on trial', r.line.replace(/^\S+ lease-trial: /, ''),
+    'lease-kinds is now port=on,slot=on,preview-build=on,merge=on,mem=shadow; mem stays on trial for 7 more days. To put one back on trial: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow');
+  const restarted = readFileSync(join(dir, 'leases.log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
+  t('DS-959 AC9 the answer restarts the trial for the kind left on it, so no item until 7 more days pass',
+    `${restarted.event} ${trialItems(Date.parse(restarted.at) + DAY).length} ${trialItems(Date.parse(restarted.at) + 7 * DAY + 1).length}`, 'trial 0 1');
+  log();
+  const listed = () => /\blease-trial\b/.test(cli('list', '--no-settle').out);
+  t('DS-959 AC9 the list command shows it while mem is on trial', listed(), true);
+  writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `port=on slot=on preview-build=on merge=on mem=on` | x |\n');
+  // The profile is read once a process, so a fresh one reads the row just written.
+  t('DS-959 AC9 with no kind in shadow there is no item', listed(), false);
+  Object.assign(process.env, { DESK_LEASE_DIR: was.dir ?? '', DESK_MACHINE: was.machine });
+  if (was.dir == null) delete process.env.DESK_LEASE_DIR;
+}
+
 // ---- DS-929 AC1: every in-process collect and refresh above ran on injected repos and reads, and started
 // no gh, git, desk-jira or launchctl process.
 t('DS-929 AC1 no collect or refresh on the stubs started a gh, git, desk-jira or launchctl process', startedOnStubs.join(' | '), '');

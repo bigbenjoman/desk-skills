@@ -48,7 +48,7 @@ comes back as a new `plan` item naming why), `triage`
 (an unmerged PR only the user's step on GitHub moves; one closed unmerged recommends `drop`),
 `worktree` (no worker spawns into its worktree until it is clean), `usage` (a usage limit holds the batch:
 one item, `usage-limit`, that lifts by itself or sooner after a subscription
-switch), `base-push` (approve the sync) or `follow` (try it first: `references/follow.md`); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
+switch), `base-push` (approve the sync), `lease-trial` (the machine's lease trial has ended: `on-clean`, `on-all` or `keep` sets which lease kinds turn on) or `follow` (try it first: `references/follow.md`); `config`, `templates`: run `/desk-update`. Action 1 is the recommendation when it says `recommended`. A `pr` item stuck on a step
 outside GitHub has none: its need names the step, and it leaves once its check is green.
 
 ## 2. Ask, four at a time

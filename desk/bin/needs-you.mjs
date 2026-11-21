@@ -73,7 +73,9 @@
 // machine's: a browser profile's GitHub login failing, which every repo's screenshot uploads with it wait on
 // (done records nothing; the next pass checks again). `upload-page` is the machine's too: the upload queue
 // paused because the uploader found no comment composer on GitHub's PR page, a desk fault every repo's
-// screenshot uploads wait on (done records nothing; an upload after desk is installed again clears it). `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
+// screenshot uploads wait on (done records nothing; an upload after desk is installed again clears it).
+// `lease-trial` is the machine's too: the lease trial has run its days with a kind still in shadow, and
+// on-clean, on-all or keep sets the profile's lease-kinds row and restarts the trial for what stays in shadow. `step:<KEY>` is the repo's too: a step only the person takes, which every ticket
 // it names, in any of the repo's batches, waits on to merge (done records nothing; the pass reads the step from Jira).
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
@@ -93,14 +95,14 @@
 // (show the person) on anything it refuses.
 import { existsSync, realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dragCells, evidenceRecord, missingShots, parseEvidenceRow, ticketShots } from './evidence.mjs';
 import { cellPlan, parseVerdict, reviewStep, RUNNER_FIX, UPLOAD_CRASHED } from './undraft.mjs';
 import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, personReviewFix, reviewGaps as reviewGapLines, stuckFindings } from './fix-tries.mjs';
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
-import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
+import { deskHome, expandHome, machineValue, psRows, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
@@ -118,6 +120,8 @@ import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queue
 import { followOnPending, postMergeOwed } from './harvest.mjs';
 import { followKind, checkOf, settled, FOLLOW_WAIT_MS, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 import { promotionRef } from './promotion.mjs';
+import { kindMode, readLog, restartTrial, trialOf, TRIAL_DAYS } from './leases.mjs';
+import { LEASE_KINDS } from './machine.mjs';
 import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
@@ -1338,6 +1342,81 @@ function pageItems(batches, { home = false } = {}) {
     since: timeOf(p.at) } }];
 }
 
+// ---- the end of the lease trial (leases.mjs trialOf): one item for the machine --------------------
+// Once a trial has run TRIAL_DAYS and a kind is still in shadow, the person decides which kinds turn
+// on, with each kind's clashes over the trial. It is listed under the first batch desk-q's home screen
+// shows (leaseTrialHome), whose row desk-q counts it in. Each answer sets the machine profile's
+// lease-kinds row and restarts the trial for the kinds left in shadow, so it asks again after another
+// TRIAL_DAYS while any is; there is no not-now, since keep is that.
+const LEASE_TRIAL = 'lease-trial';
+const LEASE_ENV = { machineValue, psRows };
+// The trial's facts once it has ended with a kind still in shadow, else null (no log, a log or
+// profile that cannot be read, the trial still running, or no kind in shadow).
+export function leaseTrialAsk(now = Date.now()) {
+  let log, modes;
+  try { log = readLog(); modes = Object.fromEntries(LEASE_KINDS.map((k) => [k, kindMode(k, LEASE_ENV).mode])); } catch { return null; }
+  const trial = trialOf(log);
+  const shadow = LEASE_KINDS.filter((k) => modes[k] === 'shadow');
+  if (!trial || now < trial.ends || !shadow.length) return null;
+  const caught = Object.fromEntries(shadow.map((k) => [k, log.clashes.filter((e) => e.kind === k && Date.parse(e.at) >= trial.start && Date.parse(e.at) <= now)]));
+  return { trial, modes, shadow, caught };
+}
+// The repo the trial's item is listed and counted under: the first readable batch of `shown`, in the
+// home screen's order. -> its slug, or null.
+export const leaseTrialHome = (shown) => shown.find((b) => !b.error && b.q)?.slug ?? null;
+// The lease-kinds row with `on` kinds set on and every other kind as it is now.
+const leaseRow = (modes, on) => LEASE_KINDS.map((k) => `${k}=${on.includes(k) ? 'on' : modes[k]}`).join(',');
+// Each answer: the kinds it turns on. -> { <action>: kinds }.
+function trialChoices(a) {
+  const clean = a.shadow.filter((k) => !a.caught[k].length);
+  return { 'on-clean': clean, 'on-all': a.shadow, keep: [] };
+}
+function leaseTrialItems(repos, scope, now) {
+  const a = leaseTrialAsk(now);
+  const slug = a && leaseTrialHome(shownRepos(repos, false));
+  if (!slug || !scope.some((b) => b.slug === slug && !b.error && b.q)) return [];
+  const r = scope.find((b) => b.slug === slug && b.batch == null && !b.error && b.q) ?? scope.find((b) => b.slug === slug && !b.error && b.q);
+  const dm = (t) => dayAndTime(t).split(' ').slice(1, 3);
+  const [d1, m1] = dm(a.trial.start), [d2, m2] = dm(a.trial.ends);
+  const span = m1 === m2 ? `${d1} to ${d2} ${m2}` : `${d1} ${m1} to ${d2} ${m2}`;
+  const n = (k) => a.caught[k].length;
+  const days = (k) => andList([...new Set(a.caught[k].map((e) => dayAndTime(Date.parse(e.at)).split(' ').slice(0, 2).join(' ')))]);
+  const counts = a.shadow.map((k) => `${k} ${n(k)}${n(k) ? ` (${days(k)}; desk-env lease list --clashes shows them)` : ''}`).join(', ');
+  const { 'on-clean': clean } = trialChoices(a);
+  const dirty = a.shadow.filter((k) => n(k));
+  const total = dirty.reduce((x, k) => x + n(k), 0);
+  const all = a.shadow.length;
+  const caughtWords = `${andList(dirty)} would have refused ${total} request${total === 1 ? '' : 's'} this week instead of letting ${total === 1 ? 'it' : 'them'} through`;
+  const onAll = `turn all ${all} on`;
+  const keep = ['keep', null, `keep all ${all} on trial for ${TRIAL_DAYS} more days: changes nothing. Pick this if this week was quieter than usual`];
+  const actions = !dirty.length
+    ? [['on-all', `${onAll}: nothing they would refuse happened all week, so turning them on blocks nothing that works today`], keep]
+    : !clean.length
+      ? [['keep', `keep all ${all} on trial for ${TRIAL_DAYS} more days: every kind caught a clash, so turning one on would turn away work that runs today`], ['on-all', null, `${onAll}: ${caughtWords}`]]
+      : [['on-clean', `turn on the ${clean.length} with no clashes: nothing they would refuse happened all week, so turning them on blocks nothing that works today. ${andList(dirty)} ${dirty.length === 1 ? 'stays' : 'stay'} on trial while ${dirty.length === 1 ? 'its' : 'their'} ${total} clash${total === 1 ? ' is' : 'es are'} looked at`],
+        ['on-all', null, `${onAll}: ${caughtWords}`], keep];
+  const first = actions[0][0] === 'keep' ? a.shadow : trialChoices(a)[actions[0][0]];
+  const back = leaseRow(a.modes, first).replace(`${first[0]}=on`, `${first[0]}=shadow`);
+  return [{ r, dir: deskHome(), t: { key: LEASE_TRIAL }, item: { kind: LEASE_TRIAL, repoLevel: true,
+    need: `Leases finished their ${TRIAL_DAYS}-day trial (${span}). Turn them on, so a second session is turned away from a port, test slot, build or merge someone else holds, instead of let through?`,
+    note: `Clashes caught: ${counts}. Any kind goes back to trial with one command: desk-env machine set lease-kinds=${back}`,
+    actions, since: a.trial.ends } }];
+}
+// Records an answer to the trial's item: lease-kinds set in the machine profile, then the trial restarted.
+function leaseTrialAnswer(verb, now, say) {
+  const a = leaseTrialAsk(now);
+  if (!a) return say(false, 'the lease trial is not waiting on an answer now, so nothing was recorded.');
+  const on = trialChoices(a)[verb];
+  const row = leaseRow(a.modes, on);
+  if (on.length) {
+    const set = spawnSync(process.execPath, [fileURLToPath(new URL('./desk-env.mjs', import.meta.url)), 'machine', 'set', `lease-kinds=${row}`, '--reason', `the lease trial's day-${TRIAL_DAYS} answer: ${verb}`], { encoding: 'utf8' });
+    if (set.status !== 0) return say(false, `lease-kinds was not set (${one(set.stderr || set.stdout)}), so nothing was recorded.`);
+  }
+  try { restartTrial(`answered ${verb}`); } catch (e) { return say(false, `${on.length ? `lease-kinds is now ${row}, but ` : ''}the trial could not be restarted (${one(e.message)}).`); }
+  const left = a.shadow.filter((k) => !on.includes(k));
+  return say(true, `${on.length ? `lease-kinds is now ${row}` : 'lease-kinds is unchanged'}; ${left.length ? `${andList(left)} ${left.length === 1 ? 'stays' : 'stay'} on trial for ${TRIAL_DAYS} more days` : 'no kind is on trial now'}.${on.length ? ` To put one back on trial: desk-env machine set lease-kinds=${row.replace(`${on[0]}=on`, `${on[0]}=shadow`)}` : ''}`);
+}
+
 // ---- what a session handed the person (asks.mjs): one item an ask, on the repo's standing batch ----
 const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
@@ -1722,6 +1801,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of stalledItems(inScope, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of leaseTrialItems(repos, inScope, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
@@ -1863,7 +1943,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket === LEASE_TRIAL || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2198,6 +2278,7 @@ function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
   if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
   if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
+  if (i.kind === LEASE_TRIAL) return leaseTrialAnswer(verb, now, say);
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
   if (i.kind === TEMPLATES) {
