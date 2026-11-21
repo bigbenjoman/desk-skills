@@ -1,7 +1,7 @@
 // suite: pass metrics (one line per pass, the collision warning over a series of lines)
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES } from '../desk/bin/pass-metrics.mjs';
+import { heldCounts, collisionStep, warningText, appendMetrics, readWarnings, metricsPath, STREAK_PASSES, parseSetupSteps, setupMedians, setupMediansText } from '../desk/bin/pass-metrics.mjs';
 import { checkin } from '../desk/bin/digest.mjs';
 import { scratch } from './scratch.mjs';
 let fails = 0;
@@ -57,6 +57,20 @@ t('AC5 the next check-in does not list it again', readFileSync(d2.page, 'utf8').
 appendMetrics(state, { ...idle, at: '2026-11-17T08:04:00.000Z', warned_at: '2026-11-17T08:06:00.000Z', warning: warningText(idle, 10) });
 const d3 = await checkin({ times: ['08:00', '17:00'], now: new Date('2026-11-17T17:05:00'), dir, list: [{ slug: 'acme__widgets', batch: null, state, queue }], checkJira: () => null, promote: () => null });
 t('AC4 a warning written after a check-in its pass began before is listed in the next one', readFileSync(d3.page, 'utf8').includes('H-1 (behind R-1 on src/a.ts)'), true);
+// DS-698: setup-worktree.sh's steps line, and a repo's medians per step over its new worktrees.
+t('DS-698 AC1 the steps line reads as seconds per step', JSON.stringify(parseSetupSteps('[setup-worktree] done\n[setup-worktree] steps=config:1,checkout:3,install:40\n[setup-worktree] worktree=/w')), '{"config":1,"checkout":3,"install":40}');
+t('DS-698 output with no steps line reads as null', parseSetupSteps('[setup-worktree] worktree=/w'), null);
+const sm = join(root, 'state', 'setup__medians');
+appendMetrics(sm, { at: '2026-11-20T09:00:00.000Z', setup: [{ key: 'A-1', kept: false, steps: { checkout: 2, install: 30 } }, { key: 'A-2', kept: true, steps: { checkout: 1 } }] });
+appendMetrics(sm, { at: '2026-11-21T09:00:00.000Z', setup: [{ key: 'A-3', kept: false, steps: { checkout: 4, install: 90 } }, { key: 'A-4', kept: false, steps: { checkout: 3, install: 70 } }] });
+appendMetrics(sm, { at: '2026-11-21T10:00:00.000Z', setup: [] });
+const med = setupMedians(sm);
+t('DS-698 medians are over new worktrees only, kept ones counted apart', JSON.stringify([med.new, med.kept]), '[3,1]');
+t('DS-698 the median per step', JSON.stringify(med.steps), '{"checkout":{"median":3,"max":4,"n":3},"install":{"median":70,"max":90,"n":3}}');
+t('DS-698 the median total', med.total, 73);
+t('DS-698 the report names the repo, the span and each step', setupMediansText('setup__medians', med).split('\n')[0], 'setup__medians: 3 new worktree setups, 2026-11-20 to 2026-11-21, median total 73s (1 kept, not counted)');
+t('DS-698 a repo with no setups says so', setupMediansText('x', setupMedians(join(root, 'state', 'none'))), 'x: no new worktree setups recorded');
+
 const bad = join(root, 'bad');
 mkdirSync(metricsPath(bad), { recursive: true });
 t('AC3 a metrics file that cannot be written says why, and throws nothing', appendMetrics(bad, idle).ok, false);

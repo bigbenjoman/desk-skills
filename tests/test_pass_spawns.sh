@@ -61,7 +61,7 @@ X1Q="$DESK_HOME/repos/acme__widgets/batches/X-1/queue.json"; X1S="$HOME/.desk-au
 STQ="$DESK_HOME/repos/acme__widgets/queue.json"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-setup"
-mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
+mkdir -p "$T/wt/\$2"; echo "[setup-worktree] steps=config:1,checkout:2,install:41"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
 cat > "$T/desk/bin/spawn-worker.sh" <<EOF
 if [ "\$3" = preflight ]; then echo "[preflight] pass"; else node "$B/desk-env.mjs" paths | grep -E '^DESK_(QUEUE|STATE)=' > "$T/x1-spawn"; echo "[spawn] ticket=\$1"; fi
@@ -75,6 +75,8 @@ check "DS-303 AC3 pass.mjs --batch X-1 spawns X-1's ticket" '[ "$(x1field X-9 st
 check "DS-303 AC3 the worktree setup it starts acts on X-1" '[ "$(cat "$T/x1-setup" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the worker it starts acts on X-1" '[ "$(cat "$T/x1-spawn" 2>/dev/null)" = "$want" ]'
 check "DS-303 AC3 the pass keeps its own state in X-1's folder" '[ -d "$X1S/logs" ]'
+check "DS-698 AC1 the pass's metrics line carries each setup step's duration for the ticket it spawned" \
+  'tail -n 1 "$X1S/passes.jsonl" | jq -e ".setup == [{\"key\":\"X-9\",\"kept\":false,\"steps\":{\"config\":1,\"checkout\":2,\"install\":41}}]" >/dev/null'
 
 # ---- DS-124: cloud workers
 # A ticket plan-batch placed in the cloud starts as one `claude --cloud` session, run through script
