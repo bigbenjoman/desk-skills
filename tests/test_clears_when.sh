@@ -616,6 +616,6 @@ rows=$(CW="$B/clears-when.mjs" node -e '
   });')
 check "each form's example reads" '[ "$(head -1 <<< "$rows")" = "{\"bad\":[]}" ]'
 check "Ask or take carries each form beside its example" 'while IFS= read -r row; do grep -qxF "  $row" "$contract" || exit 1; done < <(tail -n +2 <<< "$rows")'
-check "and the worker contract's core sends the worker to that table, and to --check" 'grep -qF "table of forms is written, and run \`node ~/.claude/desk/bin/clears-when.mjs --check" "$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"'
+check "and the worker contract's core sends the worker to that table, and to --check" 'grep -qF "table of forms" "$S/../skills/desk-autopilot/references/autopilot-worker-contract.md" && grep -qF "shows, and run \`clears-when.mjs --check\` on it first." "$S/../skills/desk-autopilot/references/autopilot-worker-contract.md"'
 
 echo "clears-when: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]
