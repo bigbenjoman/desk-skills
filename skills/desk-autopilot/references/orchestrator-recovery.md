@@ -40,7 +40,7 @@ How to resume, by what was parked:
 
 | Parked on | Resume by |
 |---|---|
-| a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass |
+| a Stage 3 unknown (state still `triaged`, open questions above 0) | answer every question; the count reaching 0 makes it eligible at the next pass. One a linked design frame answers, read through this session's design connector and write into the ticket's Design section first (`desk-admit` §2) |
 | triage lane C, or lane D parked on its design (only in Figma, or a canvas not on the base) | **never requeued for a headless worker** (a lane D whose canvas is then saved on the base is triaged and planned again, and runs): it goes to an interactive `desk-ticket` session. Only if the user rules the lane itself wrong: `queue.mjs set <TICKET> lane=<A, B or E>`, answer its triage unknowns with `answer.mjs`, then `queue.mjs requeue <TICKET>` |
 | a worker's `AUTOPILOT_PARK` on a single remaining step (a Jira comment, the PR, the review post) | finish that step yourself from the worker's printed payload, then record it done on its PR: `queue.mjs finish <TICKET> --pr <n>` (refused unless the PR is open or merged, on the ticket's branch, into the batch's base) |
 | a worker's `AUTOPILOT_PARK` whose only blocker is a red check §4 Check builds names (`desk-env list check-builds`): someone to run its build | not the person's. The pass records one done at harvest when its draft PR is red on such checks alone, and its undraft step runs the build. One still parked on lane A, B, D or E: requeue it, as its worker finishes DONE on that check (worker contract Stage 5 file) |

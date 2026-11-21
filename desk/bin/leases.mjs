@@ -320,7 +320,8 @@ export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), 
     if (l) {
       if (l.pool !== p.pool || l.key !== p.key) throw usage(`lease ${id} is ${l.kind} ${l.key}, not ${req.kind} ${p.key}`);
       const was = l.owner;
-      Object.assign(l, { owner, ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
+      // A renew that names a label gives the lease that label (a preview build's push becomes its build).
+      Object.assign(l, { owner, ttl: req.ttl, ...(req.relabel ? { label: req.label } : {}), renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
       log({ event: 'renew', ...brief(l), ...(JSON.stringify(was) !== JSON.stringify(owner) ? { was } : {}), ttl: l.ttl, expires: l.expires });
       return { code: EXIT_OK, lease: l, why: `renewed ${l.kind} ${l.key} (lease ${id}) until ${l.expires}` };
     }
@@ -503,7 +504,7 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       const s = sizing(opt, sub);
       if (opt.wait != null && !/^\d+(\.\d+)?$/.test(opt.wait)) throw usage(`--wait is a number of seconds, not "${opt.wait}"`);
       if (problem) err(`desk-env lease: the machine profile's ${problem}`);
-      const req = { kind, key, ...s, wait: opt.wait == null ? 0 : Number(opt.wait), pid: requestedOwner(opt, kind, env) };
+      const req = { kind, key, ...s, wait: opt.wait == null ? 0 : Number(opt.wait), pid: requestedOwner(opt, kind, env), relabel: opt.label != null };
       const r = sub === 'acquire' ? acquire(req, { env, dir, caps }) : renew(id, req, { env, dir, caps });
       if (sub === 'acquire' && r.lease) out(r.lease.id);
       if (r.why) (r.code === EXIT_OK && sub === 'renew' ? out : err)(r.why);

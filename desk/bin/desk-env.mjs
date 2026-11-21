@@ -129,6 +129,10 @@
 //                                             remove one login from the rules, leaving its folder and sign-in;
 //                                             a folder under the logins folder is not found again; refused
 //                                             while a repo's Subscription row runs on it
+//   node desk-env.mjs preview-slot [--wait <s>] <label>
+//                                             take the preview-build slot for §4 Vercel's team before a push
+//                                             that starts a preview build, waiting up to <s> (default 600)
+//                                             for the one in flight; nothing to take with no team (exit 0)
 //   node desk-env.mjs subscription [--json]   print the Claude subscription this repo's work runs on as
 //                                             SUBSCRIPTION=, LOGIN=, FOLDER=, CONFIG_DIR= and SOURCE=:
 //                                             DESK_SUBSCRIPTION, then config §3b Subscription (`row`), then
@@ -862,6 +866,23 @@ function configValuesIn(parsed, id) {
   }
   return items;
 }
+// The preview-build slot (leases.mjs preview-build, one pool per §4 Vercel team, sized by the machine's
+// preview-build-slots row, default 1): a push that starts a preview build takes it first, so builds on
+// a shared builder never run at once and kill each other. It has no owner, since the build runs on
+// Vercel after the pusher exits, and lapses after PREVIEW_TTL_S, about one build. Null where §4 Vercel
+// names no team (unset, TODO or none): nothing to take.
+export const PREVIEW_TTL_S = 600;
+export function previewTeam() {
+  let v;
+  try { v = configValues('vercel'); } catch { return null; }
+  const team = [].concat(v ?? [])[0];
+  return !team || isNone(v) || /^TODO\b/.test(String(team)) ? null : String(team).trim();
+}
+export function previewSlotArgs(label, wait) {
+  const team = previewTeam();
+  return team && ['acquire', 'preview-build', team, '--ttl', String(PREVIEW_TTL_S), '--wait', String(wait), '--no-owner', '--label', label];
+}
+
 export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) : /^none$/i.test(String(v ?? '').trim()));
 // §4 Command prefix, '' with the row unset or `none`.
 export function commandPrefix() {
@@ -2164,7 +2185,7 @@ const printRead = (cmd, id) => {
 export const DESK_ENV_COMMANDS = Object.freeze(['where', 'list', 'cmds', 'required-fields', 'get', 'review-cmd', 'verdict-logins',
   'levers', 'lines', 'batch-base', 'ticket-kind', 'branch-check', 'perm-or-unset', 'perm', 'config', 'merge-grant', 'key', 'model',
   'effort', 'budget', 'ids', 'paths', 'take-batch', 'identity', 'git-author', 'mem', 'heavy', 'test-scope', 'workspace-test',
-  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease']);
+  'baseline', 'uuid', 'default-mode', 'unanswered', 'show', 'drift', 'add-row', 'port-in-use', 'ports', 'machine', 'costs', 'logins', 'subscription', 'lease', 'preview-slot']);
 const deskEnvUsage = () => `usage: desk-env.mjs ${DESK_ENV_COMMANDS.join('|')}`;
 
 const isMain = (() => {
@@ -2795,6 +2816,18 @@ if (isMain) {
       }
       case 'lease':
         process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
+      case 'preview-slot': {
+        // preview-slot [--wait <seconds>] <label>: take the preview-build slot before a push, waiting
+        // for the build in flight (default PREVIEW_TTL_S). Exit 0 taken or nothing to take, 3 refused, 75
+        // gave up waiting, as `lease acquire`.
+        const i = args.indexOf('--wait');
+        const wait = i < 0 ? PREVIEW_TTL_S : Number(args[i + 1]);
+        if (!Number.isInteger(wait) || wait < 0) { console.error('usage: desk-env preview-slot [--wait <seconds>] <label>'); process.exit(2); }
+        const label = args.filter((_, k) => i < 0 || (k !== i && k !== i + 1)).join(' ').trim() || 'a push';
+        const lease = previewSlotArgs(label, wait);
+        if (!lease) { console.log('no preview slot to take: §4 Vercel names no team'); process.exit(0); }
+        process.exit((await import('./leases.mjs')).leaseCli(lease, { env: { machineValue, testLockSlots, psRows } }));
+      }
       default:
         console.error(deskEnvUsage());
         process.exit(2);

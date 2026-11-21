@@ -910,8 +910,10 @@ bash tests/run.sh
 It also checks every shell script's and `.mjs` file's syntax, and runs `shellcheck -S warning` on
 every shell script when shellcheck is installed (it says when it is not). On macOS,
 `/bin/bash tests/run.sh` tests bash 3.2. `bash tests/run.sh test_jira.sh test_gate.mjs` runs only
-those suites, and `bash tests/related.sh` only the ones your branch's change reaches (every suite
-when that cannot be decided). `bash tests/run.sh -j 3` runs up to three suites at once, the longest
+those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
+chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
+it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
+set). `bash tests/run.sh -j 3` runs up to three suites at once, the longest
 in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
@@ -962,9 +964,11 @@ them from there, never from `pass.mjs`. The batch base sync and its baseline che
 
 CI (`.github/workflows/`): a pull request runs, on Linux, the suites its change reaches
 (`node tests/scope_sections.mjs --base origin/main` shows which, and why), plus the syntax and
-shellcheck pass and a bash 3.2 check of the shell scripts involved. A change it cannot place (a
-file no suite names, a test helper, `desk-env.mjs`, `install.sh`, CI itself, a deletion) runs every
-suite. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
+shellcheck pass and a bash 3.2 check of the shell scripts involved. Test helpers and fixtures,
+`install.sh` and `desk-config.md` run the suites that name them. A change that only adds exports to
+`desk-env.mjs` runs the suites that use those exports. A change it cannot place runs every suite:
+a file no suite names, `tests/run.sh`, `scope_sections.mjs`, any other change to `desk-env.mjs`,
+CI itself, or a deletion. Every push to main runs every suite on Linux, and on macOS under `/bin/bash` 3.2 in four
 shards (the `macOS` workflow, not a required check), and the same workflow runs those shards on
 Linux under Node 24 (pull requests and the Linux `tests` run use Node 22); its nightly run only runs
 the suite when no macOS run on main passed in the last 24 hours. While the Linux run is red, or the macOS lane is red,

@@ -1,5 +1,5 @@
 // suite: pass phase: report (base drift, the report's lines, the groups and the verdict)
-import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf } from '../desk/bin/pass/report.mjs';
+import { driftCandidates, decideDrift, decideReportOpening, blockedOf, decidePutOffRefresh, decideReportLines, decideGroups, verdictOf, decideVerdict, decideVerdictLines, heldWhyOf, crashVerdict } from '../desk/bin/pass/report.mjs';
 import { inputsHash, questionKey, lookup } from '../desk/bin/not-now.mjs';
 import { HELD_PREFIX } from '../desk/bin/batch-state.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
@@ -280,6 +280,19 @@ const vsnap = (tickets, fields = {}) => {
   });
   t('AC4 each decision returns its actions', j(out?.map((acts) => acts.length)), '[1,2,2,5,1,1,5]');
   t('AC4 and starts no process and writes no file on the way', j([threw, calls]), '[null,[]]');
+}
+
+// ---- a crash's verdict
+{
+  const crash = 'pass.mjs crashed: desk: config §4 "Evidence workflow" mixes none with other items';
+  const r = { ...emptyReport(), spawned: ['C-1 port=3201 model=default', 'C-2 port=3202 model=default'], parked: ['C-3: needs a fixture'] };
+  const got = crashVerdict(crash, r);
+  t('DS-843 AC1 a crash after spawning says so under the message and names each ticket it spawned', got.message,
+    `${crash}\nbefore it stopped, this pass spawned:\n  C-1 port=3201 model=default\n  C-2 port=3202 model=default\nbefore it stopped, this pass parked:\n  C-3: needs a fixture`);
+  t('DS-843 AC2 the JSON fields list the spawned tickets under a top-level `spawned`, and parks apart from the decider\'s `parked`', j(got.fields),
+    j({ spawned: ['C-1 port=3201 model=default', 'C-2 port=3202 model=default'], parked_this_pass: ['C-3: needs a fixture'] }));
+  t('DS-843 AC3 a crash before anything was done is the message alone, with no fields', j(crashVerdict(crash, emptyReport())), j({ message: crash, fields: {} }));
+  t('DS-843 AC3 and so is one before the report exists', j(crashVerdict(crash, null)), j({ message: crash, fields: {} }));
 }
 
 if (fails) { console.log(`${fails} failed`); process.exit(1); }

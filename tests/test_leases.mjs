@@ -43,6 +43,27 @@ const deskEnv = (dir, args) => {
   const r = spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), 'lease', ...args], { encoding: 'utf8', cwd: S, env: env({ DESK_LEASE_DIR: dir }) });
   return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
 };
+// desk-env preview-slot: the preview-build slot for §4 Vercel's team, taken before a push.
+{
+  const conf = (vercel) => { const c = join(S, `conf-${n++}.md`); writeFileSync(c, `## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | ${vercel} |\n`); return c; };
+  const slot = (dir, config, args) => {
+    const r = spawnSync(process.execPath, [join(root, 'desk/bin/desk-env.mjs'), 'preview-slot', ...args], { encoding: 'utf8', cwd: S, env: env({ DESK_LEASE_DIR: dir, DESK_CONFIG: config }) });
+    return { code: r.status, out: r.stdout.trim(), err: r.stderr.trim() };
+  };
+  const d = fresh(); const team = conf('`acme` `web: prj_1`');
+  const first = slot(d, team, ['K-1', 'push']);
+  t('a push takes the preview slot for the §4 Vercel team, with no owner', [first.code, JSON.parse(readFileSync(join(d, 'leases.json'), 'utf8')).leases.map((l) => [l.kind, l.key, l.owner, l.label, l.ttl])], [0, [['preview-build', 'acme', null, 'K-1 push', 600]]]);
+  t('a second push while that build runs is refused when it will not wait', slot(d, team, ['--wait', '0', 'K-2']).code, 3);
+  t('with §4 Vercel none there is nothing to take', [slot(fresh(), conf('`none`'), ['K-3']).code, slot(fresh(), conf('`none`'), ['K-3']).out], [0, 'no preview slot to take: §4 Vercel names no team']);
+  t('a --wait that is not a whole number is a usage error', slot(fresh(), team, ['--wait', 'soon', 'K-4']).code, 2);
+  const r = fresh(); const id = slot(r, team, ['K-5']).out;
+  const label = () => JSON.parse(readFileSync(join(r, 'leases.json'), 'utf8')).leases[0].label;
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner']);
+  const kept = label();
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner', '--label', 'the build of K-5']);
+  t('a renew keeps its label unless it names one, which it then takes', [kept, label()], ['K-5', 'the build of K-5']);
+}
+
 const cliAsync = (dir, args) => new Promise((resolve) => {
   const c = spawn(process.execPath, [join(root, 'desk/bin/leases.mjs'), ...args], { env: env({ DESK_LEASE_DIR: dir }) });
   let out = ''; let err = '';
