@@ -5,7 +5,8 @@
 //
 //   review-threads.mjs query      the GraphQL query the payload answers
 //   review-threads.mjs read --handle <§1 GitHub handle[,§4 Review account]> --clean "<§4 Clean review verdict>" < payload.json
-//   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> < payload.json
+//   review-threads.mjs verdict --handle <handle> --clean "<row>" --base <base branch> --pr <n> [--ticket <KEY>] < payload.json
+//     (the review-reuse lever is read from KEY's pin in the queue; with no pin, or no KEY, the row)
 //   review-threads.mjs approved --clean "<row>" < payload.json   (approvedAt)
 //
 // prints one JSON line: { decision, head, verdict, resolve: [thread], left: [thread] }, where a thread is
@@ -28,7 +29,8 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { latestReview, verdictAt, verdictAtHead, reviewCarries, carryComment, markerClean } from './undraft.mjs';
-import { pairs, leverOn } from './desk-env.mjs';
+import { pairs, queueFile } from './desk-env.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { LOCAL_MARKERS } from '../templates/scripts/desk/review-gate.mjs';
 import { loginIn } from './gate.mjs';
 
@@ -168,7 +170,10 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
     const head = payload?.data?.repository?.pullRequest?.headRefOid;
     // Fetched only for a verdict at an older head, as the pass does before it asks the same thing, and
     // carried as the pass carries it: under the review-reuse lever, only while what it rests on holds.
-    const reuse = leverOn('review-reuse');
+    // The lever is the ticket's pin, as the pass reads it; a mangled pin reads no verdict.
+    let ticket = null;
+    if (at('--ticket')) { try { ticket = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets?.[at('--ticket')] ?? null; } catch { /* no queue: the row */ } }
+    const reuse = leverOnFor('review-reuse', ticket);
     const carry = (sha, body) => git(['fetch', '-q', 'origin', base, `pull/${at('--pr')}/head`]).ok && reviewCarries({ reuse, from: sha, head, base: `origin/${base}`, body, git });
     r = readVerdict(payload, { handle: at('--handle'), clean: at('--clean'), carry });
   } catch { /* unreadable: null */ }
@@ -180,5 +185,5 @@ if (!isMain) { /* imported */ } else if (a[0] === 'query') {
   if (!r) { console.error('review-threads: no pull request in the payload'); process.exit(1); }
   console.log(JSON.stringify(r));
 } else {
-  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
+  console.error('usage: review-threads.mjs query | read --handle <login> --clean "<row>" < payload.json | verdict --handle <login> --clean "<row>" --base <branch> --pr <n> [--ticket <KEY>] < payload.json | approved --clean "<row>" < payload.json'); process.exit(2);
 }

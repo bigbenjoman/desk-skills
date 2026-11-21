@@ -9,7 +9,9 @@
 //       own PR merged, with its ticket done (or in no tracker), is recorded done, and a worktree held for
 //       changes since committed and pushed is released, each with a line saying so. A draft whose
 //       review left requirement gaps quotes each gap from that review on GitHub, and a PR under a
-//       person's merge hold reads its files and checks there, to say once the hold's step is done
+//       person's merge hold reads its files and checks there, to say once the hold's step is done.
+//       --no-settle skips that settling, so it writes nothing; --json prints the list as data
+//       (listItems): each item's question, actions, `cause` and how many held tickets wait behind it
 //   needs-you.mjs record <repo> <TICKET> <action> ["<text>"]
 //       resume "<answer>"   answer it (digest.mjs answer), then requeue it, or mark it answered and
 //                           name the session to ask. On a lane C or D session item whose step the
@@ -108,7 +110,7 @@ import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
-import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, passesPaused } from './desk-q.mjs';
+import { gateHeldAt, loadRepos, shownRepos, holdOf, holdShown, heldDraft, heldAsks, resolveRepo, resumeOf, needsSession, queueRun, checkoutOf, timeOf, needsRows, needText, prWhy, andList, capital, keysOf, triageOf, laneOf, usageHoldOf, stuckOf, behindPrs, worktreeBusy,worktreeBusyText, busyPark, outsideOf, JIRA_CATEGORY, personStepOf, inputAge, mtimeOf, passesPaused } from './desk-q.mjs';
 import { answer, override, readDecisions, openQuestions, PRODUCTION_BROKEN } from './digest.mjs';
 import { addPutOff, putOffEntry, notNowPath, readRegister, lookup, changedLine, questionKey } from './not-now.mjs';
 import { batchHolding, listBatches, otherRunningBatches, finishedOnRecord, queuedCopies, copiesElsewhere, copyWhere } from './batches.mjs';
@@ -1483,11 +1485,11 @@ function itemOf(r, x, reads = null, finds = reads) {
     const answerWhy = 'say whether it can start without the tickets outside; the next pass can then start it';
     const need = `held by ${andList(outside.map(holdWords))}, outside this batch`;
     if (notYours.length) {
-      return shipped({ kind: 'held', need, actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
+      return shipped({ kind: 'held', need, outside: outside.map((o) => o.key), actions: [['not-now', `${notYours.join('; ')}. So ${notYours.length === 1 ? 'it is' : 'they are'} not yours to queue here; not-now puts this off until a blocker moves`],
         ['admit', null, admitWhy], ['answer', null, answerWhy]] });
     }
     const admit = free.length ? [['admit', admitWhy]] : [];
-    return shipped({ kind: 'held', need,
+    return shipped({ kind: 'held', need, outside: outside.map((o) => o.key),
       actions: [...admit, admit.length ? ['answer', null, answerWhy] : ['answer', answerWhy], ['not-now']] });
   }
   // A held ticket with a question of its own is asked that question, below.
@@ -1514,7 +1516,7 @@ function itemOf(r, x, reads = null, finds = reads) {
     if (triagePark(t)) return { kind: 'session', need, note, actions: withDrop(r, t, [['open', 'parked at triage: it needs splitting or its links fixing, which a requeue cannot do'], SESSION_DONE, ['not-now']]) };
     const { taken, overrides } = readDecisions(r.stateDir);
     const overridden = new Set(overrides.map((o) => o.override_of));
-    const offer = taken.filter((d) => d.ticket === t.key && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
+    const offer = taken.filter((d) => d.ticket === t.key && !d.lever && !overridden.has(d.id)).slice(-DECISIONS_SHOWN).reverse()
       .map((d) => [`override ${d.id}`, null, `took "${cut(one(d.chose), 40)}" on "${cut(one(d.question), 60)}"`]);
     // A step only the person or another account takes: nothing a worker does moves it, so no action is
     // the recommendation, and resume reads its PR on GitHub before it requeues (record).
@@ -1741,6 +1743,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
     const item = r && !r.error ? templatesItem(r, templatesRecord(slug)) : null;
     if (item) repoItem(r, { key: TEMPLATES }, item, item.since);
   }
+  for (const i of items) i.cause = causeOf(i);
   // Heads of one batch with tickets waiting behind them go in build order (its queue's), as a fork's do.
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
@@ -1786,6 +1789,46 @@ export function listText(c, now = Date.now()) {
   const n = new Set(repos.map((r) => r.slug)).size;
   lines.push(`${c.items.length} item${c.items.length === 1 ? '' : 's'} in ${n} repo${n === 1 ? '' : 's'}.${putOffLine(c)}`);
   return lines.join('\n');
+}
+
+// What an item waits on, as a key items with the same cause share, so one answer can settle them all:
+// the approval, check or gate holding a PR, the tickets outside the batch holding a ticket, the step
+// only the person takes, a usage hold or a subscription that is off. Null where the item is its own,
+// as a failing check or a skipped draft is: each PR's is cleared on its own branch.
+const PR_CAUSES = { trigger: (w) => [w.base ?? '', ...[...w.names].sort()].join('|'), gate: (w) => one(w.text),
+  behind: (w) => w.base ?? '', green: () => '', running: () => '', hold: (w) => one(w.why ?? w.text) };
+export function causeOf(i) {
+  const at = (...parts) => [i.r.slug, ...parts].join(':');
+  if (i.kind === 'usage') return at('usage');
+  if (i.kind === 'subscription-off') return at('subscription-off', i.r.q?.subscription_off?.email ?? '');
+  if (i.kind === 'parked' && i.personOnly) return at('person-step', one(i.personOnly));
+  if (i.outside?.length) return at('outside', [...i.outside].sort().join('|'));
+  if (i.kind !== 'pr') return null;
+  const w = prWhy(i.r, i.t) ?? {};
+  const ask = approvalAsk(i.t, w);
+  if (ask && !ask.left.length) return at('approval', ask.cause.why);
+  return PR_CAUSES[w.code] ? at(`pr-${w.code}`, PR_CAUSES[w.code](w)) : null;
+}
+
+// One item as data: what listText prints for it, with its key, its cause and how many held tickets wait
+// behind it. `id` is stable while the item is the same item: its batch, key and kind.
+function itemJson(i, now) {
+  const ticket = i.ticket ?? (i.repoLevel || i.t.key.includes(':') ? null : i.t.key);
+  return { id: `${i.r.word}:${i.t.key}:${i.kind}`, cause: i.cause ?? null, kind: i.kind, repo: i.r.repo, batch: i.r.word, key: i.t.key, ticket,
+    ...(({ as_of, age_s }) => ({ since: as_of, waited_s: age_s }))(inputAge(i.since, now)),
+    question: i.need, note: i.note || null, behind: i.behind ?? 0, production_broken: !!i.broken, repo_level: !!i.repoLevel,
+    actions: i.actions.map(([action, why, note]) => ({ action, recommended: why != null, why: why ?? null, note: note ?? null })) };
+}
+
+// The list as data, what `list --json` prints. With `settle` it first settles what has shipped, as list
+// does (refresh), and `settled` holds the lines that says; without it, it writes nothing.
+export function listItems({ word = null, settle = false, now = Date.now(), repos = null, reads = READS } = {}) {
+  const settled = settle ? refresh({ word, now, ...(repos ? { repos } : {}), reads }) : [];
+  const c = collect({ word, now, repos: settle || !repos ? loadRepos(now) : repos, reads });
+  const batches = [...new Set(c.scope.filter((x) => !x.error && x.q))];
+  return { v: 1, generated_at: new Date(now).toISOString(), settled: settle, settled_lines: settled,
+    inputs: { queues: batches.map((b) => ({ batch: b.word, ...inputAge(mtimeOf(b.queuePath), now) })) },
+    scope: c.named ? c.named.name : null, count: c.items.length, put_off: c.putOff, items: c.items.map((i) => itemJson(i, now)) };
 }
 
 // A queue.mjs command run from the named repo's checkout, so the permissions and GitHub repo it reads
@@ -1863,11 +1906,10 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
   const putOff = () => addPutOff(putOffEntry({ ...putOffKey(r, x.t, item), ticket, at: new Date(now).toISOString(), actions: verbsOf(item) }), r.stateDir);
   // A fix for the ticket's next worker, then the requeue that spawns it: written first so the spawn
   // reads it, and taken back if the requeue is refused. null once both are made, else what refused.
-  // With the failure-class lever on in its repo, the fix records its class first (failure-class.mjs);
-  // the person sent it, so a class that waits does not hold it.
+  // The fix records its class first (failure-class.mjs); the person sent it, so a class that waits
+  // does not hold it.
   const sendFix = (fix) => {
-    const lever = (() => { try { return parseLevers(repoConfigValues(r.slug, 'levers')).on.includes('failure-class'); } catch { return false; } })();
-    const classed = lever ? (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t)) : {};
+    const classed = (({ class: c, class_rule }) => ({ class: c, class_rule }))(fixClass(fix, x.t));
     const f = queueCmd(r, ['set', ticket, `fix=${JSON.stringify({ ...fix, ...classed, at: new Date(now).toISOString() })}`]);
     if (!f.ok) return `its fix was refused: ${f.out}`;
     const q = queueCmd(r, ['requeue', ticket]);
@@ -2226,9 +2268,11 @@ export function run(argv, { reads } = {}) {
   const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
   const at = reads === undefined ? {} : { reads };
   try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null, ...at });
-      lines.push([...settled, listText(collect({ word: rest[0] ?? null, ...at }))].join('\n'));
+    const words = rest.filter((a) => !['--json', '--no-settle'].includes(a));
+    if (cmd === 'list' && words.length <= 1 && !words.some((a) => a.startsWith('--'))) {
+      const word = words[0] ?? null, settle = !rest.includes('--no-settle');
+      if (rest.includes('--json')) lines.push(JSON.stringify(listItems({ word, settle, ...at }), null, 2));
+      else lines.push([...(settle ? refresh({ word, ...at }) : []), listText(collect({ word, ...at }))].join('\n'));
     }
     else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
     else if (cmd === 'record' && rest.length >= 3) {
@@ -2248,7 +2292,7 @@ export function run(argv, { reads } = {}) {
       const res = ask({ word: rest[0], text: rest[1] });
       lines.push(res.line);
       if (!res.ok) return end(EXIT.SHOW_PERSON);
-    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [--json] [--no-settle] [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
   } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
   return end(0);
 }

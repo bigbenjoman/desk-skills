@@ -199,6 +199,9 @@ const preflightOnly = (text) => text.split('\n').every((l) => {
 // A cloud worker writes no log here and nothing reports its tokens or cost: its row is its session
 // URL and its wall time from session start to PR (`cloud`), and its usage stays null. Its one session
 // starts at Stage 0 with no model or effort passed, which is what startFields gives for nothing.
+// A log's place in a ticket's round order: `.round<n>` by n, the current log last.
+export const logRound = (f) => { const m = String(f).match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
+
 // A review try on its PR runs here and logs here: those runs are added to the same row, their
 // usage the row's usage, with the cloud session kept first (`cloud: true`, no cost).
 export function ticketCost(stateDir, ticket) {
@@ -214,8 +217,7 @@ export function ticketCost(stateDir, ticket) {
 }
 
 function localCost(stateDir, ticket) {
-  const round = (f) => { const m = f.match(/\.log\.round(\d+)(\.gz)?$/); return m ? Number(m[1]) : Infinity; };
-  const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => round(a) - round(b));
+  const logs = workerLogs(stateDir, ticket.key, ticket.added_at).sort((a, b) => logRound(a) - logRound(b));
   if (!logs.length) return null;
   const total = { input: 0, output: 0, cost: 0, ms: 0 };
   const preflight = { n: 0, cost: 0, unknown: 0 };

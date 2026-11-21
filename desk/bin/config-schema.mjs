@@ -144,15 +144,29 @@ export function parseWorkerLocation(raw) {
   throw new DeskConfigError(`desk: config §3b "Worker location" is "${raw}" — want \`local\` or \`cloud\`. Refusing to guess.`);
 }
 
-// Config §3b "Phase 0 levers": the Phase 0 changes switched on, one name per backtick span (a span may
-// hold several, split on commas and spaces). No row, an unset row or `none` is every lever off, and so
-// is no config at all: off is the side that changes nothing. A name desk does not know is kept in
-// `unknown`, for the caller to name, and is never on.
-//   -> { on: [lever], unknown: [name] }
+// Config §3b "Phase 0 levers": names, one per backtick span (a span may hold several, split on commas
+// and spaces). Each lever named is pinned on for every ticket, outside any trial; `auto` beside them
+// hands every lever not named to desk's trials; `none` alone is every lever off and no trials. No row,
+// an unset row and no config at all read as `none`: off is the side that changes nothing. `none` beside
+// any other name is invalid, and reads as `none`. A name desk does not know is kept in `unknown`, for
+// the caller to name, and is never on.
+//   leverRow -> { on: [lever], unknown: [name], auto, invalid: message | null }
+//   parseLevers -> { on, unknown }
 export const LEVERS = Object.freeze(['codex', 'effort', 'failure-class', 'memory', 'preflight', 'review-reuse', 'wrappers']);
+export const LEVERS_AUTO = 'auto';
+export const leverWords = (items) => [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter(Boolean))];
+export function leverRow(items) {
+  const words = leverWords(items);
+  const names = words.filter((x) => !isNone(x) && x !== LEVERS_AUTO);
+  const unknown = names.filter((n) => !LEVERS.includes(n));
+  if (words.some((x) => isNone(x)) && words.length > 1) {
+    return { on: [], unknown, auto: false, invalid: `\`none\` cannot sit beside another name ("${(items ?? []).join(' ')}"); every lever is read as off` };
+  }
+  return { on: names.filter((n) => LEVERS.includes(n)), unknown, auto: words.includes(LEVERS_AUTO), invalid: null };
+}
 export function parseLevers(items) {
-  const names = [...new Set((items ?? []).flatMap((x) => String(x).toLowerCase().split(/[\s,]+/)).filter((x) => x && !isNone(x)))];
-  return { on: names.filter((n) => LEVERS.includes(n)), unknown: names.filter((n) => !LEVERS.includes(n)) };
+  const { on, unknown } = leverRow(items);
+  return { on, unknown };
 }
 
 // Config §3b "Worker effort": `<start>=<effort>` pairs, read only with the effort lever on. A start is

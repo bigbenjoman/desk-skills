@@ -94,9 +94,8 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 ## Phases
 
 Each phase's rules are in its own file under `references/`. **Read a phase's file when the review
-reaches it.** The phases overlap, so some are read together: Phase 3 dispatches Bea (Phase 5) in the
-same message as the finders, and its codex cold call follows Phase 4's quoting rules, so read all
-three at Phase 3.
+reaches it.** Some phases are read together: Phase 3 dispatches Bea (Phase 5) in the
+same message as the finders, and its codex cold call follows Phase 4's quoting rules.
 
 | # | Phase | Read at its start |
 |---|---|---|
@@ -106,7 +105,7 @@ three at Phase 3.
 | 3 | Find | `references/phase-3-find.md`, with `references/phase-5-requirements.md` and `references/phase-4-refute.md` |
 | 4 | Refute | `references/phase-4-refute.md` |
 | 5 | Requirements | `references/phase-5-requirements.md` (dispatched at Phase 3) |
-| 6 | Report | `references/phase-6-report.md` |
+| 6 | Report | `references/phase-6-report.md`; also at each round's end (findings line) |
 | 7 | Post | `references/phase-7-post.md`, after *The verdict* below |
 
 **A phase file you cannot read stops the review.** If the file for the phase you are starting is

@@ -142,7 +142,8 @@ export function decideReportLines(s) {
   if (hold) wait(hold);
   const fresh = [];
   for (const e of s.overrides) {
-    if (s.overridesSeen.includes(e.id)) continue;
+    // A lever's override is applied by the override itself (lever-changes.mjs): no ticket waits on it.
+    if (s.overridesSeen.includes(e.id) || e.lever) continue;
     fresh.push(e.id);
     wait(`${e.ticket}: decision overridden — "${e.question}" is now "${e.chose}" (was "${e.was}"), by ${e.by} at ${e.at}`, e.ticket);
   }

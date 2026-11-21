@@ -6,7 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import * as E from './desk-env.mjs';
 import { readQueue, prStatusOf } from './batch-state.mjs';
-import { archivedOf } from './queue-store.mjs';
+import { archivedOf, everyTicket } from './queue-store.mjs';
 
 // The named batches' folders under a standing batch's queue or state folder `dir`, sorted. A name that
 // is not a safe id, `.done` included, is not a batch.
@@ -25,6 +25,29 @@ export function listBatches(slug = E.repoSlug()) {
   const dir = dirname(standing.queue);
   const names = namedBatches(dir).filter((n) => existsSync(join(dir, E.BATCHES_DIR, n, 'queue.json')));
   return [{ name: null, ...standing }, ...names.map((name) => ({ name, ...E.batchPaths(slug, name) }))];
+}
+
+// The archived named batches: batch.mjs moves a batch's queue folder and its state folder into
+// batches/.done/ under the same name, so a batch archived inside the window still counts.
+export function archivedBatches({ queueRoot, stateRoot }) {
+  const qdone = join(queueRoot, E.BATCHES_DIR, '.done');
+  let names = [];
+  try { names = readdirSync(qdone, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return []; }
+  return names.filter((n) => existsSync(join(qdone, n, 'queue.json')))
+    .map((n) => ({ name: `${n} (archived)`, queue: join(qdone, n, 'queue.json'), state: join(stateRoot, E.BATCHES_DIR, '.done', n) }));
+}
+// Every batch of the repo, archived named ones last.
+export const allBatches = (slug) => {
+  const standing = E.batchPaths(slug);
+  return [...listBatches(slug), ...archivedBatches({ queueRoot: dirname(standing.queue), stateRoot: standing.state })];
+};
+
+// Every queue ticket of the repo's batches, archived ones included (a pass archives every done ticket
+// whose PR merged, queue-store.mjs archiveDone), each with its key.
+export function repoTickets(slug, batches = allBatches(slug)) {
+  return batches.flatMap((b) => {
+    try { return Object.entries(everyTicket(readQueue(b.queue))).map(([key, t]) => ({ ...t, key: t?.key ?? key })); } catch { return []; }
+  });
 }
 
 // The batch whose queue holds `key`: its entry from listBatches, or null when none does. A key in two

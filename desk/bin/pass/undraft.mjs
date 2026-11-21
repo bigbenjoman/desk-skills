@@ -141,7 +141,7 @@ export function* decideRenames(snap) {
 //   evidenceErrors, buildErrors   why §4 Evidence workflow and §4 Check builds do not parse, or null
 //   fixRowErrors  the rows the fix tries read that do not parse (none parse: no checks fix this pass)
 //   clearsRows    what a person clears, as fix-tries.mjs splitFailing reads it
-//   failureClass  whether the failure-class lever is on
+//   failureClass  whether the failure-class lever is on, or (t) -> that for ticket t (its lever pin)
 //   gatedByReviewer(s)   whether a failing reviewer check holds the PR red only on its review gate
 //   reviewerMismatch     whether the reviewer check fails only because its gate counts another account
 //   reads         the readers undraftCall and the fix tries call as they need them (pass.mjs's):
@@ -171,6 +171,8 @@ export function* decideUndraft(snap) {
       { ...passCfg, passAt: snap.at, spine, ...reads.driver(n, head), built: (h) => reads.built(n, h), behind, evidenceRun: (h) => reads.evidenceRun(n, h), missingShots: (body) => reads.missingShots(body, t), shotDir: reads.shotDir(t),
         waived: (names) => s.head === head && !!reads.waived?.(n, head, s.checks, names) });
     if (!c) continue;
+    // A verdict carried to this head is recorded there (findings.mjs recordCarry), with no round run.
+    if (c.carried && !snap.dry) yield { type: 'record-carry', key: t.key, t, head, from: c.carried, reviews: v.reviews };
     // A person who put it back to draft holds it, whatever the call: no undraft, no rerun or check
     // build, and no review or fix worker. The events are read only where the record cannot settle it
     // and the call would act.
@@ -212,7 +214,7 @@ export function* decideUndraft(snap) {
       const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head) };
       const driver = reads.driver(n, head);
       const changed = yield { type: 'pr-files', key: t.key, pr: n, head };
-      rf = draftChecksFix(t, { pr: n, head, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { ...ctx, classRerun: { perm: cfg.rerun, ...driver, classes: snap.failureClass, changed } });
+      rf = draftChecksFix(t, { pr: n, head, failing: [...c.failing, ...(c.state ?? [])], checks: s.checks }, { ...ctx, classRerun: { perm: cfg.rerun, ...driver, classes: typeof snap.failureClass === 'function' ? snap.failureClass(t) : snap.failureClass, changed } });
     } else if (c.call === 'review') rf = reviewTry(t, { pr: n, head, why: c.why, base: snap.base, baseMerge, targeted: c.targeted });
     else if (c.call === 'conflict') {
       const files = yield { type: 'conflict-files', key: t.key, branch: t.branch };

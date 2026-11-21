@@ -61,6 +61,10 @@ export function attachArchive(q, file) {
 
 // The archived tickets behind queue `q`, by key ({} for a queue read without them).
 export const archivedOf = (q) => (q?.[ARCHIVED] ? q[ARCHIVED]() : {});
+// Every ticket of queue `q` by key, its archived ones included, for a reader that enumerates tickets
+// (Object.values on q.tickets sees only the live ones). A ticket in both, after a crash between the
+// archive's write and the queue's, is the live copy.
+export const everyTicket = (q) => ({ ...archivedOf(q), ...(q?.tickets ?? {}) });
 // Whether `key` is archived and not live in queue `q`.
 export const isArchived = (q, key) => !!q?.tickets && !Object.hasOwn(q.tickets, key) && Object.hasOwn(archivedOf(q), key);
 

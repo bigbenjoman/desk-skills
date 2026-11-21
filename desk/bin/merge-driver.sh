@@ -404,10 +404,10 @@ feedback(){
     | node "$THREADS" read --handle "$VERDICT_BY" --clean "$CLEAN_ROW" 2>/dev/null
 }
 # Whether a clean review stands at the head, as review-threads.mjs readVerdict says (one JSON line).
-# Nothing when GitHub could not be read.
-head_verdict(){ # head_verdict <n> [<base>]
+# Nothing when GitHub could not be read. <key> is the PR's ticket, whose pin gives the review-reuse lever.
+head_verdict(){ # head_verdict <n> [<base>] [<key>]
   gh api graphql -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F n="$1" -f query="$THREADS_QUERY" 2>/dev/null \
-    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" 2>/dev/null
+    | node "$THREADS" verdict --handle "$VERDICT_BY" --clean "$CLEAN_ROW" --base "${2:-$BASE_BRANCH}" --pr "$1" ${3:+--ticket "$3"} 2>/dev/null
 }
 # Prints true once GitHub has resolved the thread.
 resolve_thread(){
@@ -503,13 +503,11 @@ NODE
   local merged known
   known=$(node --input-type=module - "$DESK_QUEUE" "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/queue-store.mjs" <<'NODE'
 import { readFileSync } from 'node:fs';
-const { readArchive } = await import(process.argv[3]);
-let q = {};
-try { q = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
+const { attachArchive, everyTicket } = await import(process.argv[3]);
+const q = { tickets: {} };
+try { q.tickets = JSON.parse(readFileSync(process.argv[2], 'utf8')).tickets || {}; } catch { /* no queue: nothing recorded */ }
 // Done tickets whose PR merged move to the archive beside the queue (queue-store.mjs), live ones first.
-let a = {};
-try { a = readArchive(process.argv[2]).tickets; } catch { /* unreadable archive */ }
-for (const [k, t] of Object.entries({ ...a, ...q })) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
+for (const [k, t] of Object.entries(everyTicket(attachArchive(q, process.argv[2])))) if (t && t.merged_at) console.log(`${t.pr_status?.pr ?? t.result?.pr ?? '?'}\tfalse\t${k}\tqueue`);
 NODE
 ) || known=""
   # One merged-PR listing for every predecessor at once, not one per predecessor per loop. A listing gh
@@ -1122,7 +1120,7 @@ EOF_RESOLVE
   if [ -n "$REVIEW_HOLD" ] && [ -n "$external_ok" ]; then
     log "#$n its review at ${sha:0:9} is the outside reviewer's: $external_ok passed there, so no desk verdict is needed at that head"
   elif [ -n "$REVIEW_HOLD" ]; then
-    verdict=$(head_verdict "$n" "$want")
+    verdict=$(head_verdict "$n" "$want" "$key")
     if [ -z "$verdict" ]; then log "#$n could not read its review verdict — not merging it this loop"; return 1; fi
     if [ "$(printf '%s' "$verdict" | jq -r --arg sha "$sha" '.clean == true and .head == $sha')" != true ]; then
       disarm "$n" "$g"
