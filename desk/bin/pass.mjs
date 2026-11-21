@@ -38,7 +38,7 @@ import * as UQ from './upload-queue.mjs';
 import { renderLedger, syncLedger } from './ledger.mjs';
 import { limitName } from './usage-limit.mjs';
 import { probeNow, probeDue, loginProbeLog, usageDir, lastProbeAt, PROBE_EVERY_MS } from './usage-probe.mjs';
-import { claimedPorts } from './port-claims.mjs';
+import { passClaims } from './port-claims.mjs';
 import { handToWorker, pickPort, spawnedPid, workerLabel } from './port-lease.mjs';
 import { readRegistry, workerLoginDir, loginOf, loginKey } from './claude-logins.mjs';
 import { checkLogin, readSubscriptions, repoSubscription, signInCommand } from './logins.mjs';
@@ -2449,7 +2449,10 @@ let leaseBatch;
 try { leaseBatch = E.batchName(); } catch { leaseBatch = null; }
 async function freePort(own = null, key = own?.key ?? BASE_FIX_KEY) {
   const now = queue();
-  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claimedPorts()]);
+  // A lapsed claim it drops, or a claims file it cannot read, goes in the report's port lines.
+  const claims = passClaims({ drop: !DRY });
+  for (const l of claims.lines) portLeaseLines.add(l);
+  const taken = new Set([...Object.values(now.tickets).filter((r) => r.key !== own?.key).map((r) => Number(r.port)).filter(Boolean), Number(now.base_fix?.port) || 0, ...otherQueuePorts(), ...claims.ports]);
   const p = await pickPort({ env: E, taken, inUse: (n) => E.portInUse(n), own: own?.port, floor: E.workerPortFloor(), repo: GH_REPO, batch: leaseBatch, key, take: !DRY });
   for (const l of p.notes) portLeaseLines.add(l);
   portLeases.set(key, p.lease ? { port: p.port, id: p.lease } : null);
