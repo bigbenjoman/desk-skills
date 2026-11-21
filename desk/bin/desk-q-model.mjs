@@ -1,3 +1,4 @@
+// @ts-check
 // desk-q's model: everything desk-q does without a terminal. It reads the repo configs, each repo's
 // queue.json, its orchestrator heartbeats and its triage records, and builds every view from them: the
 // screens' lines (the *Parts functions, drawn by desk-q.mjs or printed as plain text), the same views as
@@ -3826,20 +3827,102 @@ function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () =
 // ---- --json: the same views as data ------------------------------------------------------------
 // Each view's figures, read by the same functions its screen draws them with, beside the screen's
 // plain lines (`lines`). Every input carries its age, as levers-view.mjs's view.json does.
+// The typedefs below are the views' JSON as desk-ui reads it; CI's type check holds the code to them.
+
+/** @typedef {{ as_of: string | null, age_s: number | null }} InputAge */
+/** @typedef {InputAge & { batch: string }} QueueAge */
+/** @typedef {{ kind: string, [k: string]: unknown }} RowOpen */
+/** @typedef {{ head: string[], rows: { id: string | null, line: string, open: RowOpen | null }[], foot: string[] }} PlainLines */
+/**
+ * Every view's envelope: the format version, the view's name, when it was built, each input's age and
+ * the screen's plain lines.
+ * @template {string} V
+ * @template I
+ * @typedef {{ v: number, view: V, generated_at: string, inputs: I, lines: PlainLines }} JsonEnvelope
+ */
+/** @typedef {{ utilization: number, resetsAt: number }} UsageWindow */
+/** @typedef {{ five_hour: UsageWindow | null, seven_day: UsageWindow | null, at: number | null, none: string[] }} UsageReading */
+/** @typedef {{ reading: UsageReading, running: number, held: boolean, held_by: string[] }} UsageFigures */
+/** @typedef {{ id: string, slug: string, name: string }} RepoIdentity */
+/**
+ * @typedef {RepoIdentity & { error: null, live: boolean, last_pass_at: string | null, last_pass: string,
+ *   running: number, ready: number, merging: number, waiting: number, needs_you: number, put_off: number, done: number,
+ *   workers: { running: number, allowed: number, cap: number, ready_no_slot: number },
+ *   all_done_by: string, wait_cause: string | null }} RepoFigures
+ */
+/** @typedef {RepoIdentity & { error: string }} RepoFault */
+/**
+ * @typedef {{ state: string, text: string, fault: string | null, page: string | null, built: InputAge,
+ *   figures: Record<string, unknown> | null }} LeversFigures
+ */
+/**
+ * @typedef {JsonEnvelope<'home', { queues: QueueAge[], usage: InputAge, levers: InputAge, memory: InputAge }> & {
+ *   needs_you: { count: number, put_off: number, oldest_at: string | null },
+ *   machine: { running: number, cap: number | null, room: number, avail_gib: number },
+ *   levers: LeversFigures, usage: UsageFigures, repos: (RepoFigures | RepoFault)[], no_batch: string[] }} HomeView
+ */
+/**
+ * @typedef {{ key: string, group: string | null, state: string | null, pos: number | null, placed: boolean,
+ *   lane: string | null, pr: number | null, line: string }} RepoTicket
+ */
+/**
+ * @typedef {JsonEnvelope<'repo', { queues: QueueAge[], usage: InputAge }> & {
+ *   repo: RepoFigures | (RepoIdentity & { error: string | null }), tickets: RepoTicket[], usage: UsageFigures }} RepoView
+ */
+/**
+ * @typedef {JsonEnvelope<'ticket', { queues: QueueAge[] }> & { ticket: { key: string, repo: string, state: string | null,
+ *   group: string | null, pos: number | null, lane: string | null, stage: number | string | null, pr: number | null } }} TicketView
+ */
+/**
+ * @typedef {{ tool: string, label: string | null, plan: string | null, default: boolean, pinned: string[],
+ *   workers: number | null, reading: UsageReading | null, read: InputAge, limit: { type: string, at: number | null } | null }} UsageLogin
+ */
+/**
+ * @typedef {JsonEnvelope<'usage', { usage: (InputAge & { login: string | null })[] }> & {
+ *   logins: UsageLogin[], following: string[] }} UsageView
+ */
+/**
+ * @typedef {{ name: string, total: number | null, by: Record<string, number>, credits: number,
+ *   cantRead: { account?: string, supplier?: string, text?: string } | null, free: boolean, freePlan: boolean,
+ *   reads: { supplier: string, at: string | number | null, failedAt: string | number | null }[] }} CostName
+ */
+/**
+ * @typedef {{ period: string, total: number, suppliers: { supplier: string, total: number }[], names: CostName[],
+ *   shared: number | null, credits: number }} CostCharges
+ */
+/**
+ * @typedef {JsonEnvelope<'costs', { costs: (InputAge & { supplier: string })[] }> & {
+ *   name: string | null, charges: CostCharges | { period: string, name: CostName | null } | null }} CostsView
+ */
 
 export const JSON_VERSION = 1;
 const JSON_VIEWS = ['home', 'repo', 'ticket', 'usage', 'costs'];
 const msOf = (t) => (typeof t === 'number' ? (Number.isFinite(t) ? t : null) : t == null ? null : ((n) => (Number.isNaN(n) ? null : n))(Date.parse(t)));
 const isoOf = (t) => ((ms) => (ms == null ? null : new Date(ms).toISOString()))(msOf(t));
 // When an input was read, and how many seconds old that is now.
+/** @type {(t: number | string | null | undefined, now: number) => InputAge} */
 export const inputAge = (t, now) => ((ms) => ({ as_of: isoOf(ms), age_s: ms == null ? null : Math.max(0, Math.round((now - ms) / 1000)) }))(msOf(t));
 export const mtimeOf = (f) => { try { return statSync(f).mtimeMs; } catch { return null; } };
+/** @type {(s: any) => PlainLines} */
 const plainParts = (s) => ({ head: s.head.map(textOf), rows: s.rows.map((x) => ({ id: x.id ?? null, line: textOf(x), open: x.open ?? null })), foot: s.foot.map(textOf) });
+/**
+ * @template {string} V
+ * @template I
+ * @template B
+ * @param {V} view
+ * @param {number} now
+ * @param {I} inputs
+ * @param {B} body
+ * @param {any} parts
+ * @returns {JsonEnvelope<V, I> & B}
+ */
 const envelope = (view, now, inputs, body, parts) => ({ v: JSON_VERSION, view, generated_at: new Date(now).toISOString(), inputs, ...body, lines: plainParts(parts) });
 // Each batch's queue, by its file's last write.
+/** @type {(list: any[], now: number) => QueueAge[]} */
 const queueAges = (list, now) => list.flatMap((r) => r.batches ?? [r]).filter((b) => b.queuePath).map((b) => ({ batch: b.word ?? b.name, ...inputAge(mtimeOf(b.queuePath), now) }));
 
 // A repo row's figures, each the home table's column of the same name.
+/** @returns {RepoFigures | RepoFault} */
 function repoFigures(r, needs, now, checkin) {
   const id = { id: r.id, slug: r.slug, name: r.name };
   if (r.error) return { ...id, error: r.error };
@@ -3852,6 +3935,7 @@ function repoFigures(r, needs, now, checkin) {
 
 // The Levers line's figures: `state` is the line's (`fault`, `unbuilt`, `stale`, else the view's own),
 // `figures` the view.json line it reads, `text` the line as home shows it.
+/** @returns {LeversFigures} */
 export function leversJson(p, now) {
   const fault = leversFault(p);
   const state = fault ? 'fault' : !p.page ? 'unbuilt' : p.stale ? 'stale' : p.view.line.state;
@@ -3859,8 +3943,10 @@ export function leversJson(p, now) {
     page: p.page ? p.file : null, built: inputAge(p.builtAt, now), figures: p.view?.line ?? null };
 }
 
+/** @type {(u: ReturnType<typeof usageOf>) => UsageFigures} */
 const usageJson = (u) => ({ reading: u.reading, running: u.running, held: u.held, held_by: u.heldBy });
 
+/** @returns {HomeView} */
 export function homeJson(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), checkin = false } = {}) {
   const shown = shownRepos(repos, all), list = byRepo(shown);
   const ok = list.filter((r) => !r.error);
@@ -3881,6 +3967,7 @@ export function homeJson(repos, { all = false, now = Date.now(), avail = availab
 }
 
 // One repo's or batch's Queue: its home figures, and each ticket row under the group the screen shows it in.
+/** @returns {RepoView} */
 export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
   const usage = usageOf(repos, now, [r]);
   const parts = repoParts(r, { now, usage, title: true });
@@ -3897,6 +3984,7 @@ export function repoJson(repos, r, { now = Date.now(), checkin = false } = {}) {
   return envelope('repo', now, { queues: queueAges([r], now), usage: inputAge(usage.reading?.at, now) }, { repo, tickets, usage: usageJson(usage) }, parts);
 }
 
+/** @returns {TicketView} */
 export function ticketJson(r, key, { now = Date.now() } = {}) {
   const x = [...(r.rows ?? []), ...(r.prs ?? [])].find((y) => y.t.key === key);
   const t = x?.t ?? r.q?.tickets?.[key] ?? null;
@@ -3905,6 +3993,7 @@ export function ticketJson(r, key, { now = Date.now() } = {}) {
 }
 
 // Every Claude and Codex login on this computer, as the Usage view lists them.
+/** @returns {UsageView} */
 export function usageViewJson(repos, { now = Date.now() } = {}) {
   const u = usageTable(repos, now);
   const login = (x) => ({ tool: x.tool, label: loginLabel(x.login), plan: x.plan ?? null, default: !!x.use?.isDefault, pinned: x.use?.pinned ?? [],
@@ -3914,6 +4003,7 @@ export function usageViewJson(repos, { now = Date.now() } = {}) {
 }
 
 // This month's charges by name, or one name's by supplier, from the cost cache.
+/** @returns {CostsView} */
 export function costsJson(repos, v, { now = Date.now(), costs = readCosts(costsPath()), cache = readCache() } = {}) {
   const c = costs.exists && costs.entries.length ? chargesByName({ cache: forCosts(cache, costs), names: [...new Set(costs.entries.map((e) => e.name))] }) : null;
   const inputs = { costs: SUPPLIERS.filter((s) => cache?.[s]).map((s) => ({ supplier: s, ...inputAge(cache[s].at, now) })) };

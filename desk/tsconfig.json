@@ -1,0 +1,19 @@
+{
+  // The type check CI's `types` job runs (.github/workflows/tests.yml). desk stays plain .mjs: tsc
+  // reads the JSDoc types and emits nothing. Only the files that start with `// @ts-check` are
+  // checked; the modules they import give their types and are not checked themselves.
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "target": "es2024",
+    "lib": ["es2024", "esnext.collection"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "types": ["node"],
+    "strict": false,
+    "skipLibCheck": true,
+    "maxNodeModuleJsDepth": 0
+  },
+  "files": ["bin/desk-q-model.mjs", "bin/desk-env.mjs"]
+}
