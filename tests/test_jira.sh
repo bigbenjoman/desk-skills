@@ -584,7 +584,9 @@ lint "$LD/codeblock.md" customfield_10208=M
 check "DS-667 AC3 lint: a real {code} block stays code, and the sections after it are still read" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
 clean | awk '{ print } /^Reviewers see/ { print "{code}}"; print "Whether to decide the rest: TBD"; print "{code}"; print "{code}"; print "x"; print "{{code}" }' > "$LD/bracecode.md"
 lint "$LD/bracecode.md" customfield_10208=M
-check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+# A line starting {code makes desk-jira read the draft as wiki, so its ## headings draw a rendering
+# advisory: assert on what the tags hide, as AC3 does, not on an empty output.
+check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
