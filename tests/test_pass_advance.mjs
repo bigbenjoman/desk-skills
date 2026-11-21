@@ -34,7 +34,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the
 // action), else from what the pass reads when nothing is there.
 const READS = {
-  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
+  'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], 'same-pairs': [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
   'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null, approval: { approve: null, missing: null }, 'pr-owner': null,
 };
@@ -113,6 +113,20 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
   t('nor is one on its own branch that another account opened', types(advance({ ...snap(ticket('D'), log()), logins: 'me' }, { 'pr-owner': ownerOf('fix/D', 'alice') })).includes('done'), false);
   t('its own PR is recorded done as before', types(advance({ ...snap(ticket('D'), log()), logins: 'me,me-bot' }, { 'pr-owner': ownerOf('fix/D', 'Me-Bot') })).includes('done'), true);
   t('a PR whose owner could not be read is recorded done, the fix tries checking it again', types(advance({ ...snap(ticket('D'), log()), logins: 'me' })).includes('done'), true);
+}
+
+// Before/after pairs whose two files are the same show no change: nothing to upload, and the ticket
+// records none, with no upload and nothing for the person.
+{
+  const DONE = 'AUTOPILOT_DONE: pr=12 jira=Done';
+  const h = `AUTOPILOT_IMAGES: /state/images/D/\n${DONE}`;
+  const log = () => logOf('D', h, [said('AUTOPILOT_IMAGES: /state/images/D/'), said(DONE), RESULT]);
+  const pairs = ['before-desktop.png', 'after-desktop.png', 'before-mobile.png', 'after-mobile.png'];
+  const same = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs });
+  t('identical before/after pairs record images_uploaded=none', sets(same).includes('images_uploaded=none'), true);
+  t('and nothing is uploaded or put to the person', j([types(same).includes('upload'), lines(same, 'waiting').length]), j([false, 0]));
+  const one = advance(snap(ticket('D'), log()), { shots: pairs, 'same-pairs': pairs.slice(0, 2) });
+  t('a changed pair beside them is uploaded as before', j([types(one).includes('upload'), sets(one).includes('images_uploaded=none')]), j([true, false]));
 }
 
 // The cases tests/test_pass_workers.sh runs end to end, decided here.
