@@ -3577,7 +3577,11 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   writeFileSync(machine, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
   const was = { dir: process.env.DESK_LEASE_DIR, machine: process.env.DESK_MACHINE };
   Object.assign(process.env, { DESK_LEASE_DIR: dir, DESK_MACHINE: machine });
-  const now = Date.now(), start = now - 8 * DAY;
+  // The trial's clock is the latest local noon, so each clash an hour or two after its day's start
+  // stays on that day whatever time the suite runs; never ahead of the real clock, which list reads.
+  const noon = new Date(); noon.setHours(12, 0, 0, 0);
+  if (noon.getTime() > Date.now()) noon.setDate(noon.getDate() - 1);
+  const now = noon.getTime(), start = now - 8 * DAY;
   const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const day = (t) => { const d = new Date(t); return { dow: DOW[d.getDay()], d: d.getDate(), m: MON[d.getMonth()] }; };
   const [s0, s7] = [day(start), day(start + 7 * DAY)];
