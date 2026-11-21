@@ -131,6 +131,21 @@ if (a[0] === 'auth') {
   console.log(JSON.stringify({ loggedIn: true, email: (process.env.CLAUDE_CONFIG_DIR ?? 'default').split('/').pop() + '@example.com' }));
   process.exit(0);
 }
+// The model list (model-list.mjs): the initialize control request on stdin, answered with the models
+// this login offers and no turn, as the real CLI does. nosuchalias and no-such-model are not among them.
+if (a.includes('--input-format')) {
+  fs.appendFileSync(T + '/calls.log', 'claude model-list\n');
+  let s = '';
+  process.stdin.on('data', (d) => {
+    s += d;
+    const req = s.split('\n').map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((d) => d?.type === 'control_request');
+    if (!req) return;
+    console.log(JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: req.request_id,
+      response: { models: ['default', 'opus', 'sonnet', 'haiku'].map((value) => ({ value, displayName: value, description: '' })) } } }));
+    process.exit(0);
+  });
+  return;
+}
 const prompt = at('-p') ?? '';
 const onLogin = (what) => fs.appendFileSync(T + '/logins.log', what + ' ' + (process.env.CLAUDE_CONFIG_DIR ?? 'default') + '\n');
 // --model, as the real CLI takes it: a model it does not know fails the call before any turn.

@@ -73,6 +73,7 @@ import { latest as latestMerge, readLog as readMergeLog, shortSha } from './merg
 import { agentVersion, lockVersion, oldCode, readInstalled } from './installed.mjs';
 import { pageState, refresh as refreshLevers, whereOf } from './levers-refresh.mjs';
 import { PAGE_RESUMES, uploadPause, uploadQueueFile } from './upload-queue.mjs';
+import { newBuild, oneBuild } from './build-memo.mjs';
 
 export { LIVE_MS };
 // Each state reads as a glyph and a word, so it holds without colour. The screen draws five, named
@@ -3769,7 +3770,10 @@ function scopeWord(argv) {
   return first && !['costs', ...SHIPS, 'days', 'levers'].includes(first.toLowerCase()) && verb !== 'workers' ? first : null;
 }
 
-export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
+// One build: each git, launchctl and ps question it asks runs once (build-memo.mjs).
+export const run = (argv, opts) => oneBuild(() => runView(argv, opts));
+
+function runView(argv, { now = Date.now(), opener = systemOpener, rebuild = () => refreshLevers(), say = (s) => console.log(s) } = {}) {
   if (argv.includes('--help')) return 'usage: desk-q [--plain] [--all] | desk-q [--plain] <repo> [show <KEY>] | desk-q ships|days [<repo>] | desk-q costs [<repo>]\n'
     + '       desk-q <repo> up|down|top|bottom <KEY> | desk-q <repo> move <KEY> <n> | desk-q <repo> workers <n>\n'
     + '       desk-q <repo> supervisor [on|off] | desk-q levers [--plain]\n'
@@ -3788,8 +3792,11 @@ export function run(argv, { now = Date.now(), opener = systemOpener, rebuild = (
   if (v.kind === 'costs') return v.name !== undefined ? supplierScreen(repos, v.name, { now, label: v.label ?? v.name }) : costsScreen(repos, { now });
   if (isWrite(v)) {
     const said = apply(repos, v);
-    const after = loadOrRefuse(now, word);
-    return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    // The change read back in a build of its own, so nothing the first build remembered is shown.
+    return newBuild(() => {
+      const after = loadOrRefuse(now, word);
+      return `${said}\n\n${repoScreen(after.find((x) => x.id === v.slug), { now, usage: usageOf(after, now, after.filter((x) => x.id === v.slug)) })}`;
+    });
   }
   const r = v.kind === 'repo' ? repoPlace(repos, v.slug) : repos.find((x) => x.id === v.slug);
   return v.kind === 'repo' ? repoScreen(r, { now, usage: usageOf(repos, now, [r]) }) : ticketScreen(r, v.key, { now });
@@ -4252,12 +4259,15 @@ export function interactive({
   }
 
   // Rebuilds the screen from disk, then writes it.
+  // One build, joined by the refresh's reread where it made one (build-memo.mjs).
   function draw() {
-    if (done) return;
-    try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
-    try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
-    crumbs = crumbParts();
-    frame();
+    oneBuild(() => {
+      if (done) return;
+      try { widen(); } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
+      try { screen = build(); } catch (e) { screen = { head: [`Could not draw this screen: ${describeCrash(e)}`], rows: [], foot: [], keys: 'esc back · q quit' }; }
+      crumbs = crumbParts();
+      frame();
+    });
   }
 
   // Writes the screen last built, reading nothing: all a change of selection, window or command line
@@ -4704,7 +4714,7 @@ export function interactive({
   // A change, then the queues reread so the screen shows it; the message stays until the next view.
   function act(v) {
     try { widen(v.kind === 'workers'); msg = apply(repos, v); } catch (e) { msg = e instanceof Usage ? e.message : describeCrash(e); }
-    try { repos = reload(); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
+    try { repos = newBuild(reload); } catch (e) { msg = `${msg} Could not reread the queues: ${describeCrash(e)}`; }
   }
 
   function runCommand(line) {
@@ -4841,15 +4851,15 @@ export function interactive({
   input.resume?.();
   output.on?.('resize', draw);
   output.write(ENTER_SCREEN);
-  // Every tick redraws; the queues are reread only once the state stamp has changed, or REREAD_MS has
-  // passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
-  timer = setInterval(() => {
+  // Every tick redraws, as one build; the queues are reread only once the state stamp has changed, or
+  // REREAD_MS has passed, so a heartbeat ageing past LIVE_MS or a countdown still moves.
+  timer = setInterval(() => oneBuild(() => {
     try {
       const stamp = stateStamp();
       if (lastRead == null || stamp !== lastRead.stamp || clock() - lastRead.at >= REREAD_MS) repos = reload(stamp);
     } catch (e) { msg = `Could not reread the queues: ${describeCrash(e)}`; }
     draw();
-  }, refreshMs);
+  }), refreshMs);
   // Only while this screen is open: the usage probe, for each login no worker keeps fresh (probesDue),
   // and the cost cache's reading, workers or not.
   probeTimer = setInterval(() => {
@@ -4872,14 +4882,15 @@ if (isMain) {
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
-    let start = null;
-    const word = scopeWord(argv);
-    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
+    // The screen's first load, its own reload and its first draw are one build (build-memo.mjs).
+    const ui = oneBuild(() => {
+      const word = scopeWord(argv);
+      if (!process.stdin.isTTY || !process.stdout.isTTY || ['--plain', '--help', '--json'].some((f) => argv.includes(f))) return null;
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now(), word), argv);
-    }
-    if (start && !isCommand(start)) {
-      const ui = interactive({ start, word });
+      const start = target(loadOrRefuse(Date.now(), word), argv);
+      return start && !isCommand(start) ? interactive({ start, word }) : null;
+    });
+    if (ui) {
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

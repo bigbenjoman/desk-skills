@@ -1,6 +1,6 @@
 // suite: preflight skip (with the lever on, a preflight is skipped on a passed fingerprint and otherwise runs at low effort)
 // budget: 80 DS-943 (about 50 whole spawn-worker.sh preflights, each a dozen node starts; 50-81 s on CI before DS-943's cuts)
-// covers: desk/bin/preflight-fingerprint.mjs desk/bin/spawn-worker.sh desk/bin/preflight-record.mjs
+// covers: desk/bin/preflight-fingerprint.mjs desk/bin/spawn-worker.sh desk/bin/preflight-record.mjs desk/bin/model-list.mjs
 // A stub claude on PATH answers the version and account reads from files, and each -p call as the
 // $T/reply file says, recording its argv. A scratch desk home links the real desk/bin beside its own
 // installed.json. Scratch HOME and repo only.
@@ -72,6 +72,7 @@ say('account', '{"loggedIn":true,"email":"a@example.com"}');
 const GOOD = 'W_IN=OK\nW_OUT=BLOCKED\nTOOL1=OK\nAGENTS=OK\nDENY=BLOCKED\nDENY2=BLOCKED\nESCAPE=BLOCKED\nCODEX=BLOCKED\nMODEL_OK';
 const result = (text, more = {}) => JSON.stringify({ type: 'result', result: text, total_cost_usd: 0.1, num_turns: 3, ...more });
 say('reply', result(GOOD));
+say('models', '{"value":"default"},{"value":"opus"}');
 const stub = join(T, 'stub', 'claude');
 writeFileSync(stub, `#!/usr/bin/env bash
 if [ "$1" = --version ]; then cat "${T}/version"; exit 0; fi
@@ -81,6 +82,8 @@ printf '%s' "$*" | tr '\\n' ' ' >> "${T}/calls"
 echo >> "${T}/calls"
 # While $T/write-w-in exists, the session really writes the W_IN file the prompt names.
 if [ -e "${T}/write-w-in" ]; then f=$(printf '%s' "$*" | grep -oE '[^ ]*/\\.preflight\\.tmp' | head -1); [ -n "$f" ] && echo x > "$f"; fi
+# The model list (model-list.mjs): the initialize response, naming each model in $T/models, and no turn.
+case "$*" in *--input-format*) printf '{"type":"control_response","response":{"subtype":"success","request_id":"desk-model-list","response":{"models":[%s]}}}\\n' "$(cat "${T}/models")"; exit 0 ;; esac
 # $T/reply.first, while it exists, answers one call in place of $T/reply.
 if [ -e "${T}/reply.first" ]; then cat "${T}/reply.first"; rm -f "${T}/reply.first"; else cat "${T}/reply"; fi
 `);
@@ -195,10 +198,20 @@ r = preflight(off);
 t('AC4 lever off: a matching record is not skipped on', ran(r), RAN);
 t('AC4 lever off: no --effort', r.calls.some((c) => c.includes('--effort')), false);
 t('AC4 lever off: nothing is recorded', [r.passed, existsSync(record)], [true, false]);
-const noEffortFinder = preflight({ ...off, AUTOPILOT_FINDER_MODEL: 'opus' });
-t('AC4 lever off: the finder check has no --effort', [noEffortFinder.calls.length, noEffortFinder.calls.some((c) => c.includes('--effort'))], [2, false]);
+// haiku is not in the stub's list, so the one-word probe runs and its own call is checked.
+const noEffortFinder = preflight({ ...off, AUTOPILOT_FINDER_MODEL: 'haiku' });
+t('AC4 lever off: the finder check has no --effort',
+  [noEffortFinder.calls.length, noEffortFinder.calls.filter((c) => c.includes('MODEL_OK')).length, noEffortFinder.calls.some((c) => c.includes('--effort'))], [3, 1, false]);
 const finder = preflight({ AUTOPILOT_FINDER_MODEL: 'opus' });
-t('lever on: the finder check runs at low effort too', [finder.calls.length, finder.calls.every((c) => /--effort low( |$)/.test(c))], [2, true]);
+t('DS-696 AC1 a finder model the CLI lists is read from its list: no model turn is spent on it',
+  [finder.passed, finder.calls.length, /--input-format stream-json/.test(finder.calls[1] ?? ''), finder.calls.some((c) => c.includes('MODEL_OK'))], [true, 2, true, false]);
+const unlisted = preflight({ AUTOPILOT_FINDER_MODEL: 'haiku', AUTOPILOT_TEXT_MODEL: 'claude-haiku-5-5' });
+t('DS-696 a model the CLI does not list gets the one-word probe, at low effort, after one list read',
+  [unlisted.passed, unlisted.calls.length, unlisted.calls.filter((c) => c.includes('--input-format')).length, unlisted.calls.filter((c) => c.includes('MODEL_OK')).every((c) => /--effort low( |$)/.test(c))], [true, 4, 1, true]);
+say('models', '');
+const noList = preflight({ AUTOPILOT_FINDER_MODEL: 'opus' });
+t('DS-696 a CLI that gives no list keeps the probe', [noList.passed, noList.calls.length, noList.calls.some((c) => c.includes('MODEL_OK'))], [true, 3, true]);
+say('models', '{"value":"default"},{"value":"opus"}');
 
 t('first and last pass on the same inputs agree', (preflight(), readFileSync(record, 'utf8')) === first, true);
 
