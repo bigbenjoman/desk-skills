@@ -474,7 +474,8 @@ export function machineProfile() {
   return machineCache;
 }
 // A long-lived process (desk-ui's server) drops what it read so the next read sees edits since.
-export function forgetReads() { machineCache = undefined; cache = null; }
+// Config files are re-read by their stat stamp already; this drops the machine profile and any pin.
+export function forgetReads() { machineCache = undefined; snapshot = null; }
 // A profile value by key (hardware or sizing), or null.
 export function machineValue(key) {
   const p = machineProfile();
