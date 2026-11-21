@@ -22,7 +22,7 @@ import * as E from './desk-env.mjs';
 import { runOnce } from './build-memo.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
+export const supervisorMjs = () => process.env.DESK_SUPERVISOR_MJS || join(HERE, 'supervisor.mjs');
 export const platform = () => process.env.DESK_PLATFORM || process.platform;
 const ROW = () => E.CONFIG_ROWS['batches-run-by'].row;
 export const VALUES = ['supervisor', 'session'];

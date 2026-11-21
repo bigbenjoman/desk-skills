@@ -1411,6 +1411,69 @@ check "DS-507 AC3: the template recommends 1" 'grep -q "^| Triage concurrency | 
 check "DS-507 AC1: the desk-admit skill starts more than 3 tickets in the background and waits for the notification" \
   'grep -q "^\*\*With more than 3 tickets, start the call in the background\*\* (\`run_in_background\`" "$SK" && grep -q "and wait for its notification" "$SK"'
 
+# ---- push: a producer's ticket, admitted now (intake.mjs push) -----------------------------------
+# DESK_SUPERVISOR_MJS is a fake that logs each tick push starts, except where a case runs the real tick:
+# the copy in $T/bin, whose pass is the fake one (run-by.mjs is a link, so its default is the repo's own).
+# DESK_PLATFORM names no supervisor backend, so push starts the tick itself rather than through launchd.
+keyrow(){ printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n' >> "$T/cfg/repos/acme__widgets/config.md"; }
+printf "import { appendFileSync } from 'node:fs';\nappendFileSync('%s/wake.calls', 'tick\\\\n');\n" "$T" > "$T/fakes/supervisor.mjs"
+push(){ (cd "$T/repo" && DESK_PLATFORM=none DESK_SUPERVISOR_MJS="${WAKE-$T/fakes/supervisor.mjs}" node "$T/bin/intake.mjs" push "$@" 2>&1); }
+config yes; keyrow; running_batch; ungate
+rec PU-1 A
+out=$(WAKE="$T/bin/supervisor.mjs" push PU-1); rc=$?
+check "push AC1: a clean lane A ticket is admitted into the batch, and the output names it" '[ $rc -eq 0 ] && [ "$(qget tickets.PU-1.state)" = triaged ] && grep -q "^intake: admitted PU-1 by push into batch b1 (lane A, size S)$" <<< "$out"'
+check "push AC1: the register records it as admitted by push" '[ "$(jget "$T/state/intake.json" tickets.PU-1.outcome)" = admitted ] && [ "$(jget "$T/state/intake.json" tickets.PU-1.by)" = push ]'
+for _ in $(seq 1 120); do grep -A1 "intake: admitted PU-1 by push" "$T/state/supervisor.log" 2>/dev/null | grep -q "^no change this pass$" && break; sleep 0.5; done
+for _ in $(seq 1 40); do [ -e "$T/state/supervisor.lock" ] || break; sleep 0.25; done
+check "push AC2: a supervisor tick starts at once, and its pass report lists the ticket" 'grep -q "started a supervisor tick now" <<< "$out" && grep -A1 "intake: admitted PU-1 by push into batch b1" "$T/state/supervisor.log" | grep -q "^no change this pass$" && [ ! -e "$T/state/intake.pushed" ]'
+n=$(count "$T/triage.calls")
+# PB-1, not PL-1: DS-506's case above admitted PL-1, so the register already holds it.
+rec PC-1 C; rec PB-1 A '"lint":[{"severity":"blocking","rule":"ac","message":"no acceptance criteria"}]'; rec PQ-1 A '"unknowns":["which plan tier?"]'; rec PX-1 A '"size":"XL"'
+for k in PC-1 PB-1 PQ-1 PX-1; do out=$(push "$k"); eval "rc_${k//-/_}=$?"; eval "out_${k//-/_}=\$out"; done
+check "push AC3: a lane C ticket is not admitted, is handed to the digest as intake hands it, and push exits 11 with the reason" \
+  '[ "$rc_PC_1" -eq 11 ] && [ "$(qget tickets.PC-1)" = undefined ] && [ "$(handed PC-1)" = "handed: lane C: needs a plan" ] && grep -q "handed PC-1 to the digest: lane C: needs a plan" <<< "$out_PC_1"'
+check "push AC3: so are a blocking lint finding, open questions and size XL" \
+  '[ "$rc_PB_1$rc_PQ_1$rc_PX_1" = 111111 ] && [ "$(handed PB-1)" = "handed: lint (blocking): no acceptance criteria" ] && [ "$(handed PQ-1)" = "handed: open question(s): which plan tier?" ] && [ "$(handed PX-1)" = "handed: size XL: it needs splitting before a worker takes it" ]'
+check "push AC3: no tick is started for a ticket not admitted" '[ "$(count "$T/wake.calls")" = 0 ]'
+n=$(count "$T/triage.calls")
+out=$(push PU-1); rc=$?
+check "push AC4: a ticket already in the queue changes nothing, says so, and exits 0" '[ $rc -eq 0 ] && grep -q "^intake: PU-1 is already in batch b1 (triaged): nothing changed$" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ]'
+out=$(push PC-1); rc=$?
+check "push AC4: a ticket already in the register changes nothing, says so, and exits 0" '[ $rc -eq 0 ] && grep -q "^intake: PC-1 is already in the intake register (handed: lane C: needs a plan): nothing changed$" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ]'
+printf '{"version":1,"batch":"b0","supervised":false,"concurrency":2,"tickets":{"R":{"key":"R","state":"running"}}}\n' > "$DESK_QUEUE"
+rec PU-6 A; out=$(push PU-6); rc=$?
+check "push AC6: a batch not handed over admits nothing, and push exits 11 naming why, as intake reports it" '[ $rc -eq 11 ] && grep -q "^intake: admits nothing while batch b0 is not handed over" <<< "$out" && [ "$(count "$T/triage.calls")" = "$n" ]'
+printf '{"version":1,"batch":"b0","supervised":true,"base":"feat/x","concurrency":2,"tickets":{"R":{"key":"R","state":"running"}}}\n' > "$DESK_QUEUE"
+out=$(push PU-6); rc=$?
+check "push AC6: so does a batch on a base" '[ $rc -eq 11 ] && grep -q "^intake: admits nothing while batch b0 runs on base feat/x" <<< "$out" && [ "$(qget tickets.PU-6)" = undefined ]'
+rm -f "$DESK_QUEUE"
+rec PU-5 A; out=$(push PU-5); rc=$?
+# The tick push starts is a detached process: its line in wake.calls may land after push returns.
+for _ in $(seq 1 80); do [ "$(count "$T/wake.calls")" = 1 ] && break; sleep 0.25; done
+check "push AC5: with no live batch, a standing batch is started for it as intake starts one" \
+  '[ $rc -eq 0 ] && [[ "$(qget batch)" == standing-* ]] && [ "$(qget supervised)" = true ] && [ "$(qget tickets.PU-5.state)" = triaged ] && grep -q "^intake: started standing batch standing-.*, handed to the supervisor$" <<< "$out" && [ "$(count "$T/wake.calls")" = 1 ]'
+running_batch
+for perm in ask no; do
+  config "$perm"; keyrow; rec PU-7 A; out=$(push PU-7); rc=$?
+  check "push AC7: with autopilot-workers $perm, nothing is admitted and push names the row" '[ $rc -eq 11 ] && grep -q "needs config §3 autopilot-workers to be \"yes\" (it is \"$perm\")" <<< "$out" && [ "$(qget tickets.PU-7)" = undefined ]'
+done
+config yes; keyrow
+j=$(count "$T/jira.calls"); n=$(count "$T/triage.calls")
+out=$(push pu-8); rc=$?
+check "push AC8: a key not matching the ticket key pattern is refused before any Jira call" '[ $rc -eq 11 ] && grep -q "does not match §4 Ticket key pattern" <<< "$out" && [ "$(count "$T/jira.calls")" = "$j" ] && [ "$(count "$T/triage.calls")" = "$n" ]'
+# A push while standing intake triages the same ticket waits for intake's lock, then finds it admitted.
+rec PU-9 A; search PU-9; gate PU-9 release '^PU-9$'
+intake > "$T/intake9.out" & ipid=$!
+for _ in $(seq 1 120); do grep -q "^start PU-9 " "$T/triage.events" 2>/dev/null && break; sleep 0.25; done
+(DESK_PUSH_WAIT_MS=60000 push PU-9 > "$T/push9.out"; echo $? > "$T/push9.rc") & ppid=$!
+for _ in $(seq 1 120); do grep -q "^intake: PU-9 waits for another intake to end" "$T/push9.out" 2>/dev/null && break; sleep 0.25; done
+release PU-9; wait "$ipid" "$ppid"; ungate; out=$(cat "$T/push9.out")
+check "push AC9: a push and an intake reaching one ticket triage and admit it once" \
+  'grep -q "^intake: PU-9 waits for another intake to end (pid [0-9]*)$" <<< "$out" && [ "$(grep -cx PU-9 "$T/triage.calls")" = 1 ] && [ "$(qget tickets.PU-9.admitted_by)" = intake ] && [ "$(cat "$T/push9.rc")" = 0 ] && grep -q "^intake: PU-9 is already in batch b1 (triaged): nothing changed$" <<< "$out"'
+SUP="$S/../skills/desk-autopilot/references/supervisor.md"
+check "push AC10: the autopilot skill names push as the contract: the command, its exits and what a producer does first" \
+  'grep -q "^#### Raising a ticket from an event: push$" "$SUP" && grep -q "intake.mjs push <KEY>" "$SUP" && grep -q "^| 10 | " "$SUP" && grep -q "^| 11 | " "$SUP" && grep -q "lint-clean" "$SUP" && grep -q "Raising a ticket from an event: push" "$S/../skills/desk-autopilot/SKILL.md"'
+
 out=$(cat "$T/gate.timeouts" 2>/dev/null)
 check "no triage gate timed out: each case ran in the order its gates set" '[ -z "$out" ]'
 
