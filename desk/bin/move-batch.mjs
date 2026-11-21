@@ -25,21 +25,25 @@ import * as E from './desk-env.mjs';
 import { readQueue, crashShowsPerson, describeCrash, Refusal } from './batch-state.mjs';
 import { readCloseouts } from './closeout.mjs';
 import { slotFor, onlyKeptTriage } from './batches.mjs';
-import { tryLockFile } from './dir-lock.mjs';
+import { lockPid, unlock, alive, tryLockFile } from './dir-lock.mjs';
 import { writeQueueFile, archivePath } from './queue-store.mjs';
+import { auditsIn } from './levers-audit.mjs';
 
 crashShowsPerson((e) => console.error(`move-batch: ${describeCrash(e)}`));
 
 // What stays with the standing slot: its named batches, the locks this move holds, the supervisor
-// agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot) and
-// the repo's asks (asks.mjs).
+// agent's own log (launchd writes it for the repo), intake's register (intake admits into the slot),
+// the repo's asks (asks.mjs), and the levers' repo-level records with their locks: the lever log
+// (lever-log.mjs), the blind audits and their queue (levers-audit.mjs) and the evaluations with their
+// evidence (levers-evaluate.mjs). Each is kept once per repo, not per batch, and read from this folder.
 const STAYS = [E.BATCHES_DIR, 'ref', 'orchestrator.lock', 'supervisor.lock', 'supervisor.agent.log', 'intake.json', 'asks.json'];
+const REPO_LEVEL = ['levers.jsonl', 'audit.jsonl', 'audit-queue.json', 'lever-evals.jsonl', 'levers-evidence'];
+const stays = (f) => STAYS.includes(f) || REPO_LEVEL.some((n) => f === n || f.startsWith(`${n}.lock`));
 // How long a stopped merge driver has to let go of its lock.
 const DRIVER_WAIT_MS = Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) > 0 ? Number(process.env.DESK_MOVE_DRIVER_WAIT_MS) : 30_000;
 
 const refuse = (msg) => { throw new Refusal(msg); };
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 // The live process other than this one holding a `{pid}` lock file, or null.
 const holder = (file) => {
   try { const { pid } = JSON.parse(readFileSync(file, 'utf8')); return pid && pid !== process.pid && alive(pid) ? pid : null; } catch { return null; }
@@ -75,16 +79,14 @@ const queueLock = `${from.queue}.lock`;
 const passHolder = tryLockFile(passLock, { by: 'move-batch.mjs' });
 const busy = passHolder === true ? holder(join(from.state, 'supervisor.lock')) : (passHolder ?? '?');
 if (busy) refuse(`a pass is running in the standing batch (pid ${busy}): run this again once it finishes. Nothing was moved`);
-const lockPid = () => { try { return Number(readFileSync(join(queueLock, 'pid'), 'utf8').trim()) || null; } catch { return null; } };
-process.on('exit', () => {
-  if (lockPid() === process.pid) rmSync(queueLock, { recursive: true, force: true });
-});
+process.on('exit', () => unlock(queueLock));
 
-// queue.mjs's lock, taken the way it takes it: one mkdir, never over a lock that is there. A lock a
-// dead writer left is cleared by queue.mjs's next write, under its own clearing lock.
+// queue.mjs's lock (dir-lock.mjs), taken with the same mkdir but refused at once rather than waited
+// for, and never over a lock that is there. A lock a dead writer left is cleared by queue.mjs's next
+// write, under dir-lock.mjs's clearing lock.
 try { mkdirSync(queueLock); } catch (e) {
   if (e.code !== 'EEXIST') throw e;
-  const pid = lockPid();
+  const pid = lockPid(queueLock);
   refuse(`${pid && !alive(pid) ? `a queue write that has exited (pid ${pid}) left ${queueLock}: the next queue.mjs write clears it` : `a queue write holds ${queueLock}${pid ? ` (pid ${pid})` : ''}`}: run this again in a moment. Nothing was moved`);
 }
 writeFileSync(join(queueLock, 'pid'), `${process.pid}\n`);
@@ -123,6 +125,15 @@ for (const t of images) t.images_dir = join(to.state, E.expandHome(t.images_dir)
 // A close-out note names the queue it was written for, and a pass applies only its own queue's.
 const notes = readCloseouts(from.state).filter((n) => n.queue === from.queue).map((n) => ({ file: n.file, was: readFileSync(n.file, 'utf8') }));
 
+// A blind audit spawned from this folder reads its log and exit record from it, and the repo's audit
+// queue stays here while its logs and workers move: one running or not yet recorded would be recorded
+// with no findings. Only this batch's pass spawns one into this folder, and its lock is held, so none
+// starts after the check.
+const inAudit = auditsIn(slug, from.state);
+if (!inAudit) refuse(`the repo's audit queue (${join(from.state, 'audit-queue.json')}) does not read, so a blind audit reading its log from the standing slot cannot be ruled out: run this again once a pass has rewritten it. Nothing was moved`);
+const audits = inAudit.map((i) => i.ticket);
+if (audits.length) refuse(`the blind audit of ${audits.join(', ')} is running or not yet recorded, and its log is read from the standing slot: run this again once a pass has recorded it. Nothing was moved`);
+
 const driver = E.mergeDriverHolder(from.state);
 if (driver === 'starting') refuse('the merge driver is starting: run this again in a minute. Nothing was moved');
 if (driver) {
@@ -149,7 +160,7 @@ try {
   }
   for (const n of notes) writeFileSync(n.file, `${JSON.stringify({ ...JSON.parse(n.was), queue: to.queue })}\n`);
   for (const f of readdirSync(from.state)) {
-    if (STAYS.includes(f)) continue;
+    if (stays(f)) continue;
     renameSync(join(from.state, f), join(to.state, f));
     moved.push(f);
   }

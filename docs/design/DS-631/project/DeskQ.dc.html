@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Levers · opened from desk-q</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;700&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#F9FAFB}
+.muted{color:#6B7280}
+.mono{font-family:'JetBrains Mono',ui-monospace,monospace}
+.card{background:#FFFFFF;border:1px solid #E5E7EB;border-radius:8px}
+.term{background:#282C34;color:#ABB2BF;border-radius:8px;font:12.5px/1.4 Menlo,'JetBrains Mono',ui-monospace,monospace;padding:10px 12px;overflow-x:auto}
+.tl{white-space:pre;min-height:1.4em}
+.pill{display:inline-flex;align-items:center;height:24px;padding:0 10px;border-radius:999px;font-size:12px;font-weight:600}
+h2{margin:0;font-size:17px;font-weight:600}
+h3{margin:0;font-size:15px;font-weight:600}
+p{margin:0}
+ul{margin:0;padding-left:18px}
+li{margin:2px 0}
+</style>
+</helmet>
+<div style="font-family:Inter,system-ui,sans-serif;color:#111827;background:#F9FAFB;min-height:100%;box-sizing:border-box;padding:32px 24px 64px">
+<div style="max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:28px">
+
+<header style="display:flex;flex-direction:column;gap:6px">
+<h1 style="margin:0;font-size:28px;font-weight:700;letter-spacing:-.01em">Opening Levers from desk-q</h1>
+<p class="muted" style="font-size:15px;max-width:860px">Levers is a page in your browser. desk-q's home screen gets one Levers line under the workers line; clicking it, or pressing <b class="mono" style="color:#111827">v</b>, opens the page. Every terminal below is desk-q's own output at 110×36, drawn by its source with the change applied.</p>
+</header>
+
+<section aria-labelledby="opt-h" style="display:flex;flex-direction:column;gap:16px">
+<h2 id="opt-h">Two places it could live</h2>
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px;border:2px solid #111827">
+<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>A · A Levers line on the home screen</h3><span class="pill" style="background:#111827;color:#F9FAFB">Recommended</span></div>
+<div class="term"><div class="tl"><span style="font-weight:700">desk-q</span><span style="color:#9e9e9e"> · </span>07:44</div>
+<div class="tl"><span style="color:#282c34;background:#abb2bf">1 Queue</span>  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage</div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#d08be3;font-weight:700">◆ 35 tickets need you</span><span style="color:#9e9e9e">  oldest </span>11d 19h<span style="color:#9e9e9e"> │ studia-web </span><span style="font-weight:700">16</span><span style="color:#9e9e9e"> · ai-agents </span><span style="font-weight:700">16</span><span style="color:#9e9e9e"> · studia-zendesk </span><span style="font-weight:700">3</span></div>
+<div class="tl"><span style="color:#98c379">● 14 workers running</span><span style="color:#9e9e9e"> │ machine cap </span><span style="font-weight:700">30</span><span style="color:#9e9e9e"> · room for </span><span style="font-weight:700">6 more</span><span style="color:#9e9e9e"> │ </span><span style="font-weight:700">24.7 GiB</span><span style="color:#9e9e9e"> free</span></div>
+<div class="tl"><span style="color:#98c379">▼ Levers 4.1% cheaper per ticket</span><span style="color:#9e9e9e"> │ kept </span><span style="font-weight:700">3</span><span style="color:#9e9e9e"> · testing </span><span style="font-weight:700">2</span><span style="color:#9e9e9e"> · </span><span style="color:#d08be3;font-weight:700">1 needs you</span><span style="color:#9e9e9e"> │ </span><span style="text-decoration:underline">Open Levers ↗</span></div>
+<div class="tl"> </div>
+<div class="tl"><span style="font-weight:700">  REPO            LAST PASS                RUN  READY  WAIT        NEEDS YOU  ALL DONE BY   WORKERS</span></div>
+<div class="tl"><span style="background:#303030">› desk-skills     </span><span style="color:#98c379;background:#303030">● supervisor · 2m ago      8</span><span style="color:#61afef;background:#303030">     30</span><span style="color:#e5c07b;background:#303030">    22</span><span style="color:#9e9e9e;background:#303030">   0 (+1 put off)</span><span style="background:#303030">  no date yet   9 of 30 · cap 30  </span></div>
+<div class="tl">  studia-zendesk  <span style="color:#98c379">● supervisor · 2m ago   </span><span style="color:#9e9e9e">   0      0</span><span style="color:#e5c07b">    15</span><span style="color:#d08be3">   3 (+2 put off)</span>  no date yet   0 of 11 · cap 30</div>
+<div class="tl">  studia-web      <span style="color:#98c379">● supervisor · 2m ago   </span><span style="color:#9e9e9e">   0      0</span><span style="color:#e5c07b">    58</span><span style="color:#d08be3">  16 (+1 put off)</span>  no date yet   0 of 3 · cap 3</div>
+<div class="tl">  ai-agents       <span style="color:#98c379">● supervisor · 2m ago      5</span><span style="color:#61afef">      9</span><span style="color:#e5c07b">    29</span><span style="color:#d08be3">  16 (+6 put off)</span>  Mon 07:19     5 of 3 · cap 8</div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#9e9e9e">note</span>  <span style="color:#9e9e9e">  desk-skills    </span>26 ready with no free slot: they start as its running workers finish.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#9e9e9e">  ai-agents      </span>9 ready with no free slot: they start as its running workers finish.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#d08be3">◆ needs you      </span><span style="font-weight:700">/desk-needs-you</span>, in a Claude session, asks you about all 35.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#9e9e9e">  dates          </span>Tickets that need your answer have no date · c: date them as if answered at the next</div>
+<div class="tl">                       check-in</div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#9e9e9e">Claude  </span>default  <span style="color:#9e9e9e">7d </span><span style="color:#98c379">███</span><span style="color:#4e4e4e">███████</span><span style="color:#98c379"> 31%</span> Thu 18:00<span style="color:#9e9e9e">  │ +2 standby</span></div>
+<div class="tl"><span style="color:#9e9e9e">Codex   </span>default  <span style="color:#9e9e9e">7d </span><span style="color:#98c379">███</span><span style="color:#4e4e4e">███████</span><span style="color:#98c379"> 26%</span> Mon 09:25</div>
+<div class="tl"><span style="color:#9e9e9e">move  </span><span style="font-weight:700">↑↓</span> select · <span style="font-weight:700">enter</span> open · <span style="font-weight:700">←→ or 1–6</span> view</div>
+<div class="tl"><span style="color:#9e9e9e">act   </span><span style="font-weight:700">a</span> all repos · <span style="font-weight:700">c</span> parked dates · <span style="font-weight:700">s</span> supervisor · <span style="font-weight:700">v</span> levers · <span style="font-weight:700">:</span> command · <span style="font-weight:700">q</span> quit</div></div>
+<ul style="font-size:14px;line-height:1.5">
+<li><b>The answer is on the home screen.</b> Most days the line is all you need; open the page when it says something changed.</li>
+<li><b>"Open Levers ↗" is underlined like a link</b>, so leaving the terminal for the browser is expected.</li>
+<li>It follows the workers line's pattern: the headline in colour, grey labels, bright figures, "needs you" in magenta.</li>
+</ul>
+</article>
+
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:12px">
+<h3>B · A 7th tab</h3>
+<div class="term"><div class="tl"><span style="font-weight:700">desk-q</span><span style="color:#9e9e9e"> · </span>07:42</div>
+<div class="tl"><span style="color:#282c34;background:#abb2bf">1 Queue</span>  2 Timeline  3 By day  4 Epics  5 Costs  6 Usage  7 Levers ↗</div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#d08be3;font-weight:700">◆ 35 tickets need you</span><span style="color:#9e9e9e">  oldest </span>11d 19h<span style="color:#9e9e9e"> │ studia-web </span><span style="font-weight:700">16</span><span style="color:#9e9e9e"> · ai-agents </span><span style="font-weight:700">16</span><span style="color:#9e9e9e"> · studia-zendesk </span><span style="font-weight:700">3</span></div>
+<div class="tl"><span style="color:#98c379">● 14 workers running</span><span style="color:#9e9e9e"> │ machine cap </span><span style="font-weight:700">30</span><span style="color:#9e9e9e"> · room for </span><span style="font-weight:700">6 more</span><span style="color:#9e9e9e"> │ </span><span style="font-weight:700">24.6 GiB</span><span style="color:#9e9e9e"> free</span></div>
+<div class="tl"> </div>
+<div class="tl"><span style="font-weight:700">  REPO            LAST PASS                RUN  READY  WAIT        NEEDS YOU  ALL DONE BY   WORKERS</span></div>
+<div class="tl"><span style="background:#303030">› desk-skills     </span><span style="color:#98c379;background:#303030">● supervisor · 1m ago      8</span><span style="color:#61afef;background:#303030">     30</span><span style="color:#e5c07b;background:#303030">    22</span><span style="color:#9e9e9e;background:#303030">   0 (+1 put off)</span><span style="background:#303030">  no date yet   9 of 30 · cap 30  </span></div>
+<div class="tl">  studia-zendesk  <span style="color:#98c379">● supervisor · 1m ago   </span><span style="color:#9e9e9e">   0      0</span><span style="color:#e5c07b">    15</span><span style="color:#d08be3">   3 (+2 put off)</span>  no date yet   0 of 11 · cap 30</div>
+<div class="tl">  studia-web      <span style="color:#98c379">● supervisor · 1m ago   </span><span style="color:#9e9e9e">   0      0</span><span style="color:#e5c07b">    58</span><span style="color:#d08be3">  16 (+1 put off)</span>  no date yet   0 of 3 · cap 3</div>
+<div class="tl">  ai-agents       <span style="color:#98c379">● supervisor · 1m ago      5</span><span style="color:#61afef">      9</span><span style="color:#e5c07b">    29</span><span style="color:#d08be3">  16 (+6 put off)</span>  Mon 07:17     5 of 3 · cap 8</div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#9e9e9e">note</span>  <span style="color:#9e9e9e">  desk-skills    </span>26 ready with no free slot: they start as its running workers finish.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#9e9e9e">  ai-agents      </span>9 ready with no free slot: they start as its running workers finish.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#d08be3">◆ needs you      </span><span style="font-weight:700">/desk-needs-you</span>, in a Claude session, asks you about all 35.</div>
+<div class="tl"><span style="color:#9e9e9e">    </span>  <span style="color:#9e9e9e">  dates          </span>Tickets that need your answer have no date · c: date them as if answered at the next</div>
+<div class="tl">                       check-in</div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"> </div>
+<div class="tl"><span style="color:#9e9e9e">Claude  </span>default  <span style="color:#9e9e9e">7d </span><span style="color:#98c379">███</span><span style="color:#4e4e4e">███████</span><span style="color:#98c379"> 31%</span> Thu 18:00<span style="color:#9e9e9e">  │ +2 standby</span></div>
+<div class="tl"><span style="color:#9e9e9e">Codex   </span>default  <span style="color:#9e9e9e">7d </span><span style="color:#98c379">███</span><span style="color:#4e4e4e">███████</span><span style="color:#98c379"> 26%</span> Mon 09:25</div>
+<div class="tl"><span style="font-weight:700">↑↓</span> select · <span style="font-weight:700">enter</span> open · <span style="font-weight:700">←→</span> or 1–7 view · <span style="font-weight:700">a</span> all repos · <span style="font-weight:700">c</span> parked dates · <span style="font-weight:700">s</span> supervisor · <span style="font-weight:700">:</span> command · <span style="font-weight:700">q</span> quit</div></div>
+<ul style="font-size:14px;line-height:1.5">
+<li>Easy to find, beside Costs and Usage.</li>
+<li><b>A tab promises a view in the terminal.</b> Pressing 7, or → from Usage, would open the browser instead.</li>
+<li>It says nothing until you open it.</li>
+<li>Epics and tickets have fewer tabs, so "7" would mean different things in different places.</li>
+</ul>
+<p class="muted" style="font-size:13px"><b style="color:#374151">Choose B if</b> Levers later becomes a view drawn in the terminal. Both read the same view.json, so switching later is cheap.</p>
+</article>
+</section>
+
+<section aria-labelledby="st-h" style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 id="st-h">The Levers line in each state</h2><p class="muted" style="font-size:13px">Always one line, in the same place. The link is always last.</p></div>
+<div class="card" style="overflow:hidden"><table style="width:100%;border-collapse:collapse;font-size:14px"><tbody>
+<tr><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;width:180px"><b>Today</b><br><span class="muted" style="font-size:12px">No trials yet (real)</span></td><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;"><div class="term"><div class="tl"><span style="color:#9e9e9e">○ Levers not running yet │ repos on auto </span><span style="font-weight:700">0 of 4</span><span style="color:#9e9e9e"> · preflight pinned in </span><span style="font-weight:700">desk-skills</span><span style="color:#9e9e9e"> │ </span><span style="text-decoration:underline">Open Levers ↗</span></div></div></td></tr>
+<tr><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;width:180px"><b>Too early</b><br><span class="muted" style="font-size:12px">Below the minimum sample</span></td><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;"><div class="term"><div class="tl"><span style="color:#9e9e9e">○ Levers too early to say │ testing </span><span style="font-weight:700">2</span><span style="color:#9e9e9e"> · smaller arm </span><span style="font-weight:700">18 of 30</span><span style="color:#9e9e9e"> tickets │ </span><span style="text-decoration:underline">Open Levers ↗</span></div></div></td></tr>
+<tr><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;width:180px"><b>Working</b><br><span class="muted" style="font-size:12px">Trials running, nothing waiting</span></td><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;"><div class="term"><div class="tl"><span style="color:#98c379">▼ Levers 4.1% cheaper per ticket</span><span style="color:#9e9e9e"> │ kept </span><span style="font-weight:700">3</span><span style="color:#9e9e9e"> · testing </span><span style="font-weight:700">2</span><span style="color:#9e9e9e"> │ </span><span style="text-decoration:underline">Open Levers ↗</span></div></div></td></tr>
+<tr><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;width:180px"><b>Needs you</b><br><span class="muted" style="font-size:12px">A frozen lever or a decision</span></td><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;"><div class="term"><div class="tl"><span style="color:#98c379">▼ Levers 4.1% cheaper per ticket</span><span style="color:#9e9e9e"> │ kept </span><span style="font-weight:700">3</span><span style="color:#9e9e9e"> · testing </span><span style="font-weight:700">2</span><span style="color:#9e9e9e"> · </span><span style="color:#d08be3;font-weight:700">1 needs you</span><span style="color:#9e9e9e"> │ </span><span style="text-decoration:underline">Open Levers ↗</span></div></div></td></tr>
+<tr><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;vertical-align:top;width:180px"><b>Stale</b><br><span class="muted" style="font-size:12px">Page over 10 minutes old</span></td><td style="padding:12px 16px;border-bottom:1px solid #F0F1F3;"><div class="term"><div class="tl"><span style="color:#e5c07b">● Levers page built 3h ago</span><span style="color:#9e9e9e"> │ the supervisor may be stopped │ </span><span style="text-decoration:underline">Rebuild and open ↗</span></div></div></td></tr>
+<tr><td style="padding:12px 16px;vertical-align:top;width:180px"><b>Broken</b><br><span class="muted" style="font-size:12px">Last build failed</span></td><td style="padding:12px 16px;"><div class="term"><div class="tl"><span style="color:#f07c84">● Levers couldn&#x27;t update</span><span style="color:#9e9e9e"> │ studia-web lever-evals.jsonl line 214 │ </span><span style="text-decoration:underline">Open the last good page ↗</span></div></div></td></tr>
+</tbody></table></div>
+</section>
+
+<section aria-labelledby="fl-h" style="display:flex;flex-direction:column;gap:12px">
+<div style="display:flex;flex-direction:column;gap:4px"><h2 id="fl-h">What happens when you click it</h2><p class="muted" style="font-size:13px">desk-q stays open and prints what happened where its messages go, above the keys.</p></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:16px">
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><h3>1 · Page is fresh</h3><p class="muted" style="font-size:13px">Opens straight away in your default browser.</p><div class="term"><div class="tl">Opened Levers in your browser. Built 08:07.</div></div></article>
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><h3>2 · Page is over 10 minutes old</h3><p class="muted" style="font-size:13px">Rebuilds first, then opens.</p><div class="term"><div class="tl">Updating Levers…</div><div class="tl">Opened Levers in your browser. Built just now.</div></div></article>
+<article class="card" style="padding:16px;display:flex;flex-direction:column;gap:10px"><h3>3 · Rebuild fails</h3><p class="muted" style="font-size:13px">Opens the last good page, which shows its own age.</p><div class="term"><div class="tl">Couldn't update Levers: studia-web lever-evals.jsonl line 214.</div><div class="tl">Opened the last good page, built 05:12.</div></div></article>
+</div>
+</section>
+
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":1280,"height":2500}}'>
+class Component extends DCLogic {
+renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

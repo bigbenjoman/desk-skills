@@ -121,6 +121,11 @@ if (a[0] === 'agents') {
   console.log(JSON.stringify(live));
   process.exit(0);
 }
+// The version spawn-worker.sh records on each start's spawn line: not a call, so not logged.
+if (a[0] === '--version') {
+  console.log('2.1.0 (Claude Code)');
+  process.exit(0);
+}
 // The sign-in check: each config folder is its own account.
 if (a[0] === 'auth') {
   console.log(JSON.stringify({ loggedIn: true, email: (process.env.CLAUDE_CONFIG_DIR ?? 'default').split('/').pop() + '@example.com' }));

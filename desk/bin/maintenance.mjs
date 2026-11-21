@@ -178,7 +178,9 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. -> {ok, old, new, commits, restarted} | {ok: false, why, old}
+// untracked files in its way block it. `merges` counts main's own commits since the old head (first
+// parent only), so a PR merged with a merge commit is one however many commits its branch held.
+// -> {ok, old, new, merges, restarted} | {ok: false, why, old}
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -190,11 +192,11 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   const pull = to ? git('merge', '--ff-only', '-q', to) : git('pull', '--ff-only', '-q', 'origin', 'main');
   if (!pull.ok) return { ok: false, old, why: `git ${to ? 'merge' : 'pull'} --ff-only failed in ${dir}: ${said(pull)}` };
   const head = git('rev-parse', 'HEAD').out;
-  const commits = old === head ? 0 : Number(git('rev-list', '--count', `${old}..${head}`).out) || 0;
+  const merges = old === head ? 0 : Number(git('rev-list', '--first-parent', '--count', `${old}..${head}`).out) || 0;
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, commits, restarted: restartedDrivers(inst.out) };
+  return { ok: true, old, new: head, merges, restarted: restartedDrivers(inst.out) };
 }
 
 // The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
@@ -380,8 +382,8 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
     const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
     const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
-    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
-    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
+    record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.merges} merge(s) to main), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
+    lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.merges} merge(s) to main) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };
   } finally { lock.release(); }
 }
@@ -490,9 +492,9 @@ function step(s, { dir, at, running, stop, selfQueue }) {
       note(`desk-skills update failed in the maintenance window, so the computer was not restarted: ${u.why}`);
       return finish(`desk-skills update failed (${u.why}), so no restart`);
     }
-    log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.commits} commit(s)), pulled fast-forward and installed`);
-    lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.commits} commit(s)) and installed`);
-    save({ phase: 'checking', update: { old: u.old, new: u.new, commits: u.commits } });
+    log(`update: desk-skills ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main), pulled fast-forward and installed`);
+    lines.push(`maintenance: desk-skills updated ${short(u.old)} -> ${short(u.new)} (${u.merges} merge(s) to main) and installed`);
+    save({ phase: 'checking', update: { old: u.old, new: u.new, merges: u.merges } });
   }
 
   if (s.phase === 'checking') {

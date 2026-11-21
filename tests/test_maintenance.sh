@@ -130,7 +130,7 @@ check "AC2 its session is kept and it is queued to resume"  '[ "$(field M-0 sess
 check "AC2 the report names it"                             'grep -q "^maintenance: drained for 30 min, the 30 min limit: stopped M-0 (pid [0-9]*), each with its session kept" <<< "$out"'
 check "AC3 desk-skills is pulled fast-forward"              '[ "$(srchead)" = "$new" ]'
 check "AC3 and installed"                                   '[ "$(calls install)" = 1 ]'
-check "AC3 the log records the old and new commit"          'mlog | grep -q "update: desk-skills ${old:0:12} -> ${new:0:12} (1 commit(s)), pulled fast-forward and installed"'
+check "AC3 the log records the old and new commit"          'mlog | grep -q "update: desk-skills ${old:0:12} -> ${new:0:12} (1 merge(s) to main), pulled fast-forward and installed"'
 check "AC5 the log records the reboot check summary"        'mlog | grep -q "reboot check: summary: dirty=0 unpushed=0 heavy=0 filevault=off; no blocker"'
 check "AC7 ask: no restart"                                 '[ "$(calls restart)" = 0 ]'
 check "AC7 ask: spawning resumes in the same pass"          '[ "$(field M-1 state)" = running ] && grep -q "M-0 resumed after the maintenance window" <<< "$out"'

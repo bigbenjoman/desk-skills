@@ -59,6 +59,7 @@ import { HOME, lockDir, otherRepoEnv, repoConfigDir, slugOf } from './desk-env.m
 import * as Q from './bench-quota.mjs';
 import { loadPlans } from './bench-report.mjs';
 import { endpointArms, providersPath } from './bench-endpoint.mjs';
+import { seededRandom } from './seeded-random.mjs';
 
 const HERE = dirname(realpathSync(fileURLToPath(import.meta.url)));
 const USAGE = 'usage: bench.mjs --tasks <file.json> --arm <name>[=<model>[:<effort>]] [--arm …] --max-budget-usd <usd> [--total-budget-usd <usd>] [--out <dir>] [--timeout <seconds>] [--seed <n>] [--plans <file>] [--providers <file>]';
@@ -121,8 +122,7 @@ const runFiles = (task) => task.hidden_tests.run ?? task.hidden_tests.files;
 // The arms in this task's order: a shuffle seeded by the run's seed and the task, so a seed repeats
 // its order and the first arm differs from task to task.
 export function armOrder(arms, seed, taskId) {
-  let s = createHash('sha256').update(`${seed}:${taskId}`).digest().readUInt32LE(0);
-  const next = () => { s = (s + 0x6d2b79f5) >>> 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x ^= x + Math.imul(x ^ (x >>> 7), 61 | x); return ((x ^ (x >>> 14)) >>> 0) / 2 ** 32; };
+  const next = seededRandom(createHash('sha256').update(`${seed}:${taskId}`).digest().readUInt32LE(0));
   const a = [...arms];
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(next() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;

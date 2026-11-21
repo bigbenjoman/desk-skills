@@ -13,6 +13,9 @@
 //   node verdict.mjs --method <results.json>   prints the PR body's line on how the review ran
 //   node verdict.mjs --accepted <results.json> prints the review body's accepted-gaps section, if any
 //   node verdict.mjs --post-merge <results.json> prints the review body's after-the-merge section, if any
+//   node verdict.mjs --findings <results.json> --reviewer <self|pr>
+//                                              prints the round's AUTOPILOT_FINDINGS line, once its
+//                                              fixes are in, for the pass to record (desk/bin/findings.mjs)
 //   node verdict.mjs --check <body.md> <head>  exit 0 when the repo's review gate (its own
 //                                              scripts/desk/review-gate.mjs, else desk's) reads the
 //                                              body's verdict at that full head SHA; 1 naming why not
@@ -56,6 +59,10 @@
 // merge is a gap, and refused here. The items go on a marker line of their own after the accepted line,
 // as JSON, for the autopilot pass to keep as follow-on steps once the PR merges (pass.mjs). Like the
 // accepted line it never decides clean.
+//
+// A finding the reviewer fixed once the round was read is "fixed": true, set after the fix commits and
+// before --findings runs. It never changes the counts: they attest the reviewed SHA, fixed or not. Only
+// a counted finding can be fixed, never a carried, deferred, rejected or premise one.
 //
 // "rests_on", when given, lists the repo-relative paths the seats read and the changed files, and from
 // round 2 the previous round's list too, since a fix-range round reads only part of what its verdict
@@ -111,7 +118,7 @@ const POST_MERGE = ['gap', 'needs', 'step']
 const POST_MERGE_NEEDS =['production', 'staging', 'deployed', 'device', 'third-party']
 const POST_MERGE_STEP_MAX = 300
 const SEAT = ['role', 'agent', 'vendor', 'status', 'reason', 'note', 'fallback']
-const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried', 'follow_up']
+const FINDING = ['id', 'seat', 'severity', 'where', 'title', 'result', 'refuted_by', 'duplicate_of', 'deferred', 'carried', 'fixed', 'follow_up']
 // A follow-up ticket's key, as a tracker key is written: ABC-123.
 const FOLLOW_UP = /^[A-Z][A-Z0-9_]*-\d+$/
 const SEVERITIES = ['P0', 'P1', 'P2', 'PREMISE']
@@ -210,6 +217,11 @@ export function tally(r) {
     if (!SEVERITIES.includes(f.severity)) no(`${name}: severity must be one of ${SEVERITIES.join(', ')}`)
     if (f.deferred != null && typeof f.deferred !== 'boolean') no(`${name}: deferred must be true or false`)
     if (f.carried != null && typeof f.carried !== 'boolean') no(`${name}: carried must be true or false`)
+    if (f.fixed != null && typeof f.fixed !== 'boolean') no(`${name}: fixed must be true or false`)
+    if (f.fixed) {
+      if (f.carried || f.deferred) no(`${name}: a ${f.carried ? 'carried' : 'deferred'} finding is left unfixed, so it is not fixed`)
+      if (f.severity === 'PREMISE' || f.result === 'REJECTED') no(`${name}: only an outstanding finding can be fixed`)
+    }
     if (f.follow_up != null && !FOLLOW_UP.test(String(f.follow_up))) no(`${name}: follow_up must be the follow-up ticket's key, e.g. ABC-123 (${JSON.stringify(f.follow_up)})`)
     if (f.carried) {
       const at = f.where ? ` at ${f.where}` : ''
@@ -236,6 +248,7 @@ export function tally(r) {
   const RANK = { P0: 0, P1: 1, P2: 2 }
   const counted = (f) => f.result === 'CONFIRMED' || f.result === 'UNREFUTED'
   const carried = []
+  let fixed = 0
   for (const f of r.findings) {
     if (f.severity === 'PREMISE' || f.result === 'REJECTED') continue
     if (f.result === 'DUPLICATE') {
@@ -249,7 +262,10 @@ export function tally(r) {
     // A carried P2 leaves the blocking counts, so a verdict whose only outstanding findings are
     // carried reads clean to every gate, including one committed before carrying existed.
     if (f.carried) carried.push(f)
-    else n[f.severity.toLowerCase()]++
+    else {
+      n[f.severity.toLowerCase()]++
+      if (f.fixed) fixed++
+    }
     if (f.result === 'UNREFUTED') n.unrefuted++
     if (f.deferred) n.deferred++
   }
@@ -278,8 +294,10 @@ export function tally(r) {
   const fallback = [...seats.values()]
     .filter((s) => s.fallback === true || (NAMED_SEATS.includes(s.role) && s.agent === 'general-purpose'))
     .map((s) => s.role)
+  const refuters = [...new Set(r.findings.filter((f) => f.severity !== 'PREMISE' && f.refuted_by != null).map((f) => f.refuted_by))]
   return { sha, round: r.round, since: fixRange ? r.since : null, n, carried, accepted,
-    postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })), restsOn, targeted,
+    postMerge: postMerge.map((p) => ({ gap: p.gap.trim(), needs: p.needs, step: p.step.trim() })), restsOn, targeted, fixed,
+    refuterVendor: refuters.length > 1 ? 'mixed' : refuters[0] ?? null,
     vendor: cross ? 'codex-cross' : 'same-vendor', died, skipped, fallback, codex: r.codex ?? null,
     codexRead: [...seats.values()].some((s) => s.vendor === 'codex' && s.status === 'ran') }
 }
@@ -355,6 +373,19 @@ export function methodLine(r) {
   const t = tally(r)
   const roles = t.fallback.length ? ` (${t.fallback.join(', ')})` : ''
   return `desk-review: ${plural(t.round, 'round')}, last at \`${t.sha.slice(0, 7)}\` · ${how(t)} · fallback seats: ${t.fallback.length}${roles}`
+}
+
+// Who ran a round: desk-ticket's Stage 4b self-review, a review of the PR, or the blind audit.
+const REVIEWERS = ['self', 'pr', 'audit']
+
+// The round's findings as one marker line the pass records in the ticket's findings file: the counts
+// the verdict attests, how many of them the round then fixed, whether it carried a clean review past a
+// base move (a targeted round), and who refuted (claude, codex, mixed, or null with nothing refuted).
+export function findingsLine(r, reviewer) {
+  if (!REVIEWERS.includes(reviewer)) no(`--reviewer must be one of ${REVIEWERS.join(', ')}`)
+  const t = tally(r)
+  return `AUTOPILOT_FINDINGS: ${JSON.stringify({ round: t.round, reviewer, head: t.sha, p0: t.n.p0, p1: t.n.p1, p2: t.n.p2,
+    fixed: t.fixed, carried: !!t.targeted, refuter_vendor: t.refuterVendor })}`
 }
 
 // The PR body's section for the carried findings, file:line each, or '' when none are carried.
@@ -445,10 +476,16 @@ if (isMain && process.argv[2] === '--check') {
 } else if (isMain) {
   try {
     const args = process.argv.slice(2)
-    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection, '--post-merge': postMergeSection }
+    let reviewer = null
+    if (args[0] === '--findings') {
+      const at = args.indexOf('--reviewer')
+      if (at < 0) no('usage: verdict.mjs --findings <results.json> --reviewer <self|pr>')
+      reviewer = args.splice(at, 2)[1] ?? ''
+    }
+    const modes = { '--carried': carriedSection, '--method': methodLine, '--accepted': acceptedSection, '--post-merge': postMergeSection, '--findings': (r) => findingsLine(r, reviewer) }
     const mode = Object.hasOwn(modes, args[0] ?? '') ? args[0] : null
     const [file, ...rest] = mode ? args.slice(1) : args
-    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge] <results.json>')
+    if (!file || rest.length) no('usage: verdict.mjs [--carried | --method | --accepted | --post-merge | --findings … --reviewer <self|pr>] <results.json>')
     let r
     try { r = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { no(`cannot read ${file}: ${e.message}`) }
     const out = mode ? modes[mode](r) : render(r)

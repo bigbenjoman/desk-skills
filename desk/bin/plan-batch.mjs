@@ -15,7 +15,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { laneUnchecked, lanePark, needsPersonLane, designGap, designPark, sizePark, labelPark, stepLabel, blockerHold, startWithout, EXIT, crashShowsPerson, describeCrash, readTriage, readJsonOrRefuse } from './batch-state.mjs';
-import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, leverOn, ghRepo,
+import { stateDir, runBin, queueFile, jiraName, githubHandle, configValue, configValues, isNone, batchBase, permission, ticketKind, SAFE_ID, workerLocation, workerBudget, levers, ghRepo,
   repoPlacement, admitInRepo, personStepLabels, personInputLabels } from './desk-env.mjs';
 import { decisionEntry, appendDecisions } from './decisions.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
@@ -23,6 +23,7 @@ import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder } from './spawn-order.mjs';
 
 const AS_JSON = process.argv.includes('--json');
@@ -476,8 +477,13 @@ let location;
 let budget;
 try { location = workerLocation(); budget = location === 'cloud' ? workerBudget() : null; } catch (e) { refuse(e.message); }
 const featureBatch = feature?.on ? { spine: feature.spine, owners: feature.plan?.owners } : null;
-const effort = location === 'cloud' && leverOn('effort');
-const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort })]));
+// The effort lever is read per ticket: from the pin of one already in the queue (an epic's child,
+// seeded before its plan), else from the row, which `queue.mjs add` pins it with.
+let pinned = {};
+try { pinned = JSON.parse(readFileSync(queueFile(), 'utf8')).tickets ?? {}; } catch { /* no queue yet: every ticket reads the row */ }
+const rowLevers = levers();
+const effortFor = (k) => { try { return location === 'cloud' && leverOnFor('effort', pinned[k], rowLevers); } catch (e) { return refuse(e.message); } };
+const placed = Object.fromEntries(records.map((r) => [r.ticket, placement(r, location, { feature: featureRole(featureBatch, r.ticket), effort: effortFor(r.ticket) })]));
 
 say(`\nBATCH PLAN — ${records.length} ticket(s)\n${'='.repeat(60)}`);
 if (location === 'cloud') {

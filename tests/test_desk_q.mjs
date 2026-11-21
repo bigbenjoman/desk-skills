@@ -1,4 +1,5 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
+// budget: 95 DS-943 (dozens of desk-q runs, each a node start reading seven fixture repos; 38-71 s on CI)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
 import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
@@ -94,6 +95,8 @@ function put(T, env, name, r) {
 
 const W = world();
 const lines = (s) => s.split('\n');
+// The text of each amber note tagged `▲ <tag>` in the rendered lines, its tag stripped.
+const notesIn = (ls, tag) => ls.filter((l) => new RegExp(`^(note| {4}) {2}▲ ${tag} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${tag} +`), ''));
 const rowOf = (out, name) => lines(out).find((l) => l.startsWith(`  ${name} `));
 
 // ---- AC1: live batches first, then the quiet one that needs you, then the no-batch line
@@ -319,15 +322,16 @@ const { PassThrough } = await import('node:stream');
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 const ANSI = /\x1b\[[0-9;?]*[A-Za-z]/g;
 
-function screen(start, columns = 80, clock = Date.now, M = Q, word = null) {
+// `opts` is passed on to interactive (its `word`, `leversWith`, …).
+function screen(start, columns = 80, clock = Date.now, M = Q, opts = {}) {
   const input = new PassThrough();
   const modes = [];
   Object.assign(input, { isTTY: true, setRawMode: (b) => modes.push(b) });
   // `resize` holds the screen's resize listener, so a test can change `columns` and call it.
   const output = { buf: '', columns, rows: 24, write(s) { this.buf += s; }, on(e, f) { if (e === 'resize') this.resize = f; }, removeListener() {} };
   const codes = [], opened = [];
-  const ui = M.interactive({ input, output, start, word, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
-    loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })) });
+  const ui = M.interactive({ input, output, start, exit: (c) => codes.push(c), opener: (u) => opened.push(u), refreshMs: start?.refreshMs ?? 600000, clock, probeWith: async () => ({ ran: false }),
+    loginsWith: (args, done) => setImmediate(() => done({ code: 0, out: '{"logins":[]}', err: '' })), ...opts });
   const frame = () => output.buf.split('\x1b[H').at(-1).replace(ANSI, '').split('\r\n');
   return {
     input, output, modes, codes, opened, ui, frame,
@@ -1557,9 +1561,9 @@ Rs.ui.finish(0);
 // on the One Dark window, the selected row and black. The band's text is the window's colour on red.
 const sgrOf = (bufs) => new Set(bufs.flatMap((b) => [...b.matchAll(/\x1b\[([0-9;]+)m/g)].map((m) => m[1])));
 const RESETS = ['0', '22', '23', '24', '27', '39', '49', '22;39', '22;27;39'];
-// The foreground each code draws text in, bold alone in the default colour; reverse video and
-// backgrounds are not text colours.
-const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && !c.startsWith('1;7;'));
+// The foreground each code draws text in, bold alone in the default colour; reverse video, underline
+// and backgrounds are not text colours.
+const textCodes = (codes) => [...codes].filter((c) => !RESETS.includes(c) && !c.startsWith('48;') && c !== '7' && c !== '4' && !c.startsWith('1;7;'));
 const textFg = (c) => fgOf(c === '1' ? '39' : c.replace(/^1;/, ''));
 const drawn215 = sgrOf([S215, Rs, Sy].map((s) => s.output.buf));
 const sel215 = grey256(Number([...drawn215].find((c) => c.startsWith('48;5;'))?.split(';')[2]));
@@ -1847,7 +1851,7 @@ for (const n of loaded219) writeFileSync(join(I.env.HOME, 'Library', 'LaunchAgen
   `<plist><dict><key>EnvironmentVariables</key><dict><key>DESK_AGENT_VERSION</key><string>${behind219.includes(n) ? 'old1' : 'new1'}</string></dict></dict></plist>\n`);
 const names219 = ['np', 'moved', 'err', 'err1', 'both', 'alone', 'drv', 'drv2', 'drv3', 'old', 'cant', 'land', 'wait', 'reloaded', 'unreloaded', 'drvold', 'drvnew'];
 const ov219 = Q.overview(Q.loadRepos(NOW).filter((r) => names219.includes(r.name)), { now: NOW, avail: 30 });
-const notesOf = (name) => lines(ov219).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
+const notesOf = (name) => notesIn(lines(ov219), name);
 const cell219 = (name) => (rowOf(ov219, name) ?? '').slice(2).replace(/^\S+ +/, '').split(/ {2,}/)[0];
 const needs219 = lines(ov219).findIndex((l) => l.startsWith('◆ '));
 const bandAt219 = (text) => lines(ov219).indexOf(` ✕ ${text}`);
@@ -1862,12 +1866,13 @@ t('DS-219 AC3 a session running passes beside the loaded supervisor: ▲ supervi
 t('DS-219 AC4 a merge driver that died, never started, or whose retry died too: one note with the reason from its log',
   `${notesOf('drv').join(' / ').replace(/\d\d:\d\d/, 'HH:MM')} | ${notesOf('drv2').join(' / ')} | ${notesOf('drv3').join(' / ')}`,
   'the merge driver stopped at HH:MM: gh is signed out. Run gh auth login. | the merge driver could not start: spawn EACCES. | the merge driver stopped: no PR for DL-1.');
+// old and unreloaded both run old code, so their notes fold into one.
 t('DS-219 AC5 a supervisor on old desk code: one note to run ./install.sh in desk-skills',
-  notesOf('old').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+  `${notesOf('old').length} ${notesOf('desk code').join(' / ')}`, '0 the supervisors of old and unreloaded run old desk code. Run ./install.sh in desk-skills.');
 t('DS-512 AC1 an agent reloaded at the installed commit, whose last pass recorded itself as old code: no note',
   notesOf('reloaded').length, 0);
-t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note',
-  notesOf('unreloaded').join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+t('DS-512 AC2 an agent install.sh did not reload, whose last record reads as current: the supervisor note names it',
+  `${notesOf('unreloaded').length} ${/ and unreloaded run old desk code/.test(notesOf('desk code').join(' / '))}`, '0 true');
 t('DS-512 AC3 / DS-666 AC3 a driver whose lock names another version: the merge driver note says it moves by itself, with no install to run',
   notesOf('drvold').join(' / '), 'the merge driver runs old desk code. It moves to the installed code when it next waits between loops.');
 t('DS-512 AC4 / DS-666 AC4 a driver whose lock names the installed version, whatever its last record says: no note',
@@ -2329,7 +2334,7 @@ put454('solo', 5820, null, mem454, 185);
 put454('one', 5830, null, mem454, 185);
 put454('two', 5840, null, mem454, 185);
 const ov454 = Q.overview(Q.loadRepos(NOW).filter((r) => ['cap3', 'mixed', 'solo', 'one', 'two'].includes(r.repo)), { now: NOW, avail: 30 });
-const notes454 = (name) => lines(ov454).filter((l) => new RegExp(`^(note| {4}) {2}▲ ${name} +`).test(l)).map((l) => l.replace(new RegExp(`^(note| {4}) {2}▲ ${name} +`), ''));
+const notes454 = (name) => notesIn(lines(ov454), name);
 const cap3notes = notes454('cap3');
 t('DS-454 AC1 three batches held by the repo\'s shared cap: one note, timed from the repo\'s latest progress',
   `${cap3notes.length} ${cap3notes[0]?.startsWith("nothing started or merged for 3h 5m. Last pass: the repo's shared cap: repo workers: 0 of the §3b cap of 0 running — ")}`, '1 true');
@@ -2428,6 +2433,172 @@ const denseStates = Object.values(dense.tickets).map((x) => Q.shownState(dense, 
 t('a 30-ticket transitively held chain reads every state in well under a second', quick(Date.now() - denseStart, 0), true);
 t('a 30-ticket transitively held chain waits behind its running head', denseStates.slice(1).every((k) => k === 'waiting'), true);
 
+// ---- DS-654: home's Levers line, and v, a click and `desk-q levers` opening the page ---------------
+// The page's files under the screen's HOME: view.json holding `line`, built `age` minutes before NOW,
+// index.html unless `page` is false, and build.json with `failed` where given.
+const LV = join(I.env.HOME, '.desk-autopilot', 'levers');
+const WHERE = 'studia-web lever-evals.jsonl line 214';
+const FAILED654 = { at: minsAgo(1), error: { file: '/x/acme__studia-web/lever-evals.jsonl', line: 214, message: 'Unexpected token' }, where: WHERE };
+function levers654({ line = null, age = 5, page = true, pageAge = null, failed = null } = {}) {
+  rmSync(LV, { recursive: true, force: true });
+  mkdirSync(LV, { recursive: true });
+  if (line) writeFileSync(join(LV, 'view.json'), JSON.stringify({ v: 1, generated_at: minsAgo(age), repos: [], line }));
+  if (page) writeFileSync(join(LV, 'index.html'), '<!doctype html>');
+  if (page && pageAge != null) utimesSync(join(LV, 'index.html'), new Date(minsAgo(pageAge)), new Date(minsAgo(pageAge)));
+  writeFileSync(join(LV, 'build.json'), JSON.stringify({ v: 1, attempted_at: minsAgo(failed ? 1 : age), ...(failed ? { failed } : {}) }));
+}
+const TODAY654 = { state: 'today', on_auto: 0, repos: 4, pinned: [{ lever: 'preflight', repo: 'desk-skills' }], needs_you: 0 };
+const WORKING654 = { state: 'working', on_auto: 1, repos: 4, pinned: [], cheaper_pct: 4.1, kept: 3, testing: 2, needs_you: 0 };
+const at654 = (m) => new Date(NOW - m * 60000).toTimeString().slice(0, 5);
+// Home's Levers line, drawn: as plain text, and as written with its SGR codes.
+async function leversLine654(opts) {
+  levers654(opts);
+  const s = screen({ kind: 'overview', all: false }, 200, () => NOW);
+  await sleep(20);
+  s.ui.finish(0);
+  const raw = lastFrame(s).find((l) => /^[○●▼▲] Levers /.test(l.replace(ANSI, ''))) ?? '';
+  return { text: raw.replace(ANSI, ''), raw, under: lines(lastFrame(s).map((l) => l.replace(ANSI, '')).join('\n')) };
+}
+let L654 = await leversLine654({ line: TODAY654 });
+t('DS-654 AC5 today: the line under the workers line', `${L654.text} | ${/^● \d+ workers? running/.test(L654.under[L654.under.indexOf(L654.text) - 1] ?? '')}`,
+  '○ Levers not running yet │ repos on auto 0 of 4 · preflight pinned in desk-skills │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: { state: 'early', on_auto: 1, repos: 4, pinned: [], testing: 2, smaller_arm: { n: 18, min: 30 } } });
+t('DS-654 AC6 too early', L654.text, '○ Levers too early to say │ testing 2 · smaller arm 18 of 30 tickets │ Open Levers ↗');
+L654 = await leversLine654({ line: WORKING654 });
+t('DS-654 AC7 working: the headline in the workers line\'s running colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;108m▼ Levers 4.1% cheaper per ticket\x1b[39m')}`,
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗ | true');
+t('DS-654 AC11 the link is underlined, and the underline ends with it', `${L654.raw.endsWith('\x1b[4mOpen Levers ↗\x1b[24m')} ${L654.raw.split('\x1b[4m').length}`, 'true 2');
+L654 = await leversLine654({ line: { ...WORKING654, state: 'needs_you', needs_you: 1 } });
+t('DS-654 AC8 one lever needs you, in the needs-you magenta', `${L654.text} | ${L654.raw.includes('\x1b[1;38;5;176m1 needs you\x1b[22;39m')}`,
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 · 1 needs you │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: WORKING654, age: 180 });
+t('DS-654 AC9 a page built 3 hours ago, the headline in the warning colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;180m● Levers page built 3h ago\x1b[39m')}`,
+  '● Levers page built 3h ago │ the supervisor may be stopped │ Rebuild and open ↗ | true');
+t('DS-654 AC11 every state\'s link ends its underline', L654.raw.endsWith('\x1b[4mRebuild and open ↗\x1b[24m'), true);
+L654 = await leversLine654({ line: WORKING654, age: 180, failed: FAILED654 });
+t('DS-654 AC10 a last build that failed, the headline in red', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;210m● Levers couldn\'t update\x1b[39m')}`,
+  `● Levers couldn't update │ ${WHERE} │ Open the last good page ↗ | true`);
+L654 = await leversLine654({ line: { ...WORKING654, cheaper_pct: -2.3 } });
+t('DS-654 AC19 dearer than the baseline, the headline in the warning colour', `${L654.text} | ${L654.raw.startsWith('\x1b[38;5;180m▲ Levers 2.3% dearer per ticket\x1b[39m')}`,
+  '▲ Levers 2.3% dearer per ticket │ kept 3 · testing 2 │ Open Levers ↗ | true');
+L654 = await leversLine654({ line: null, page: false });
+t('DS-654 no page built yet', L654.text, '○ Levers page not built yet │ Build and open ↗');
+// A page just past the 10-minute rebuild, waiting for the next supervisor tick, is no fault.
+L654 = await leversLine654({ line: WORKING654, age: 15 });
+t('DS-654 a page 15 minutes old reads as current, not as a stopped supervisor', L654.text, '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers ↗');
+
+// v, a click, and the rebuild when the page is due. `rebuilt` is what the stub rebuild leaves. The stub
+// finishes only once the screen has been read while it rebuilds, never on a timer: a draw of home's whole
+// fixture world on a loaded machine can outlast any fixed wait.
+async function press654(opts, { rebuilt = null, how = 'v' } = {}) {
+  levers654(opts);
+  const calls = [];
+  let finish = null;
+  const s = screen({ kind: 'overview', all: false }, 200, () => NOW, Q, { leversWith: (done) => { calls.push(1); finish = () => { if (rebuilt) levers654(rebuilt); done(); }; } });
+  await sleep(20);
+  const keys = s.frame().some((l) => /(^|· )v levers( ·|$)/.test(l));
+  if (how === 'v') await s.press('v');
+  else await s.click(10, s.frame().findIndex((l) => /^[○●▼▲] Levers /.test(l)) + 1);
+  const during = s.frame().some((l) => l === 'Updating Levers…');
+  finish?.();
+  await sleep(rebuilt ? 200 : 20);
+  const said = s.frame().filter((l) => /Levers|last good page|press v again/.test(l) && !/^[○●▼▲] Levers /.test(l)).join(' ');
+  const codes = s.codes.length;
+  s.ui.finish(0);
+  return { keys, during, said, opened: s.opened, calls: calls.length, codes };
+}
+let P654 = await press654({ line: WORKING654 });
+t('DS-654 AC12 home\'s key hint includes v levers', P654.keys, true);
+t('DS-654 AC13 v on a page built 5 minutes ago opens it, no rebuild, desk-q stays open', `${P654.said} | ${P654.opened.join()} ${P654.calls} ${P654.codes}`,
+  `Opened Levers in your browser. Built ${at654(5)}. | ${join(LV, 'index.html')} 0 0`);
+P654 = await press654({ line: WORKING654 }, { how: 'click' });
+t('DS-654 AC14 a click on the Levers line opens it as v does', `${P654.said} | ${P654.opened.join()} ${P654.calls}`, `Opened Levers in your browser. Built ${at654(5)}. | ${join(LV, 'index.html')} 0`);
+P654 = await press654({ line: WORKING654, age: 180 }, { rebuilt: { line: WORKING654, age: 0 } });
+t('DS-654 AC15 a page 3 hours old: Updating Levers… while it rebuilds, then the rebuilt page opens', `${P654.during} ${P654.calls} | ${P654.said} | ${P654.opened.length}`,
+  'true 1 | Opened Levers in your browser. Built just now. | 1');
+P654 = await press654({ line: WORKING654, age: 180 }, { rebuilt: { line: WORKING654, age: 180, failed: FAILED654 } });
+t('DS-654 AC16 a rebuild that fails opens the last good page and says so', `${P654.said} | ${P654.opened.length}`,
+  `Couldn't update Levers: ${WHERE}. Opened the last good page, built ${at654(180)}. | 1`);
+// levers-view build rewrites view.json but not the page: a page older than its view is that old, and is rebuilt first.
+P654 = await press654({ line: WORKING654, age: 1, pageAge: 180 }, { rebuilt: { line: WORKING654, age: 0 } });
+t('DS-709 a fresh view.json over a 3-hour-old page: v rebuilds it before opening', `${P654.calls} | ${P654.said}`, '1 | Opened Levers in your browser. Built just now.');
+P654 = await press654({ line: null, page: false }, { rebuilt: { line: null, page: false, failed: FAILED654 } });
+t('DS-654 AC20 no page ever built and the build fails: no browser, and what to do', `${P654.said} | ${P654.opened.length}`,
+  `Couldn't build Levers: ${WHERE}. There's no earlier page to open. Fix that line, then press v again. | 0`);
+
+// `desk-q levers` in a terminal, and with --plain.
+const run654 = (argv, opts, rebuilt = null) => {
+  levers654(opts);
+  const opened = [], said = [];
+  const out = Q.run(argv, { now: NOW, opener: (u) => opened.push(u), rebuild: () => { if (rebuilt) levers654(rebuilt); }, say: (x) => said.push(x) });
+  return `${[...said, out].join(' ')} | ${opened.length}`;
+};
+t('DS-654 AC17 desk-q levers opens the page as v does and prints the same message', run654(['levers'], { line: WORKING654 }), `Opened Levers in your browser. Built ${at654(5)}. | 1`);
+t('DS-654 AC17 and rebuilds an old page first, saying so', run654(['levers'], { line: WORKING654, age: 180 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
+t('DS-654 AC17 a page over 10 minutes old is rebuilt first too', run654(['levers'], { line: WORKING654, age: 15 }, { line: WORKING654, age: 0 }), 'Updating Levers… Opened Levers in your browser. Built just now. | 1');
+t('DS-654 AC18 desk-q levers --plain prints the line without its arrow, then the page\'s path', run654(['levers', '--plain'], { line: WORKING654 }),
+  `▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers\n${join(LV, 'index.html')} | 0`);
+
+// ---- DS-701: desk-q --json, the same views as data
+// Home's JSON and its plain screen for this process's fixture world, read at one clock and one
+// free-memory figure, so the two differ only if the JSON counts differently.
+const home701 = (opts = {}) => ({ json: Q.homeJson(Q.loadRepos(NOW), { now: NOW, avail: 30, ...opts }), plain: Q.overview(Q.loadRepos(NOW), { now: NOW, avail: 30, ...opts }) });
+// Every repo row's counts, the header's needs-you count and the machine line, as the JSON has them,
+// against the screen: each mismatch named, or '' when they agree.
+function disagrees701({ json, plain }) {
+  const L = lines(plain), bad = [];
+  for (const r of json.repos.filter((x) => !x.error)) {
+    const row = L.find((l) => l.startsWith(`  ${r.name} `)) ?? '';
+    const rest = row.slice(row.indexOf(r.last_pass) + r.last_pass.length).trim().replace(/\s+/g, ' ');
+    const want = [r.running, r.ready, r.merging, r.waiting, `${r.needs_you}${r.put_off ? ` (+${r.put_off} put off)` : ''}`, r.done].join(' ');
+    if (!row.includes(r.last_pass) || !rest.startsWith(`${want} `)) bad.push(`${r.name} row "${rest}" vs ${want}`);
+    if (!row.includes(`${r.workers.running} of ${r.workers.allowed} · cap ${r.workers.cap}`)) bad.push(`${r.name} workers`);
+  }
+  const n = json.needs_you.count;
+  if (!L.some((l) => l.startsWith(n ? `◆ ${n} ticket${n === 1 ? ' needs' : 's need'} you` : '◆ nothing needs you'))) bad.push(`needs you ${n}`);
+  const m = json.machine;
+  // The merge-driver count beside the workers is not one of the JSON's machine figures.
+  if (!L.map((l) => l.replace(/ · ▸ \d+ merge drivers? running/, '')).includes(`● ${m.running} worker${m.running === 1 ? '' : 's'} running │ machine cap ${m.cap} · room for ${m.room} more │ ${m.avail_gib.toFixed(1)} GiB free`)) bad.push('machine line');
+  const named = json.repos.map((r) => r.name).sort().join(), shown = L.filter((l) => /^ {2}\S/.test(l) && json.repos.some((r) => l.startsWith(`  ${r.name} `))).length;
+  if (shown !== json.repos.length) bad.push(`rows ${named}`);
+  return bad.join('; ');
+}
+levers654({ line: WORKING654 });
+const H701 = home701(), A701 = home701({ all: true });
+t('DS-701 AC1 home JSON counts equal the screen', `${disagrees701(H701)} | ${H701.json.repos.length > 0}`, ' | true');
+t('DS-701 AC1 and with --all', `${disagrees701(A701)} | ${A701.json.repos.length >= H701.json.repos.length}`, ' | true');
+t('DS-701 AC1 every repo row of the screen is in the JSON', lines(H701.plain).filter((l) => /^ {2}\S+ +(●|▲|■|✕|queue unreadable)/.test(l)).length, H701.json.repos.length);
+t('DS-701 the plain lines are the screen, byte for byte', [...H701.json.lines.head, ...H701.json.lines.rows.map((r) => r.line), ...H701.json.lines.foot].join('\n'), H701.plain);
+t('DS-701 every input carries its age', `${H701.json.v} ${H701.json.view} ${H701.json.inputs.queues.every((x) => typeof x.age_s === 'number' && x.as_of)} ${H701.json.inputs.levers.age_s}`, `1 home true ${5 * 60}`);
+// The Levers block reads the same view.json the line does, in each of its states.
+const leversAgree701 = (line) => {
+  levers654({ line });
+  const { json, plain } = home701();
+  const shown = lines(plain).find((l) => /^[○●▼▲] Levers /.test(l));
+  return `${json.levers.state} | ${shown === `${json.levers.text} ↗`} | ${JSON.stringify(json.levers.figures) === JSON.stringify(line)}`;
+};
+t('DS-701 AC4 working: the levers block is the Levers line and its figures', leversAgree701(WORKING654), 'working | true | true');
+t('DS-701 AC4 the figures are the line\'s', (({ levers: l }) => `${l.text} | ${l.figures.cheaper_pct} ${l.figures.kept} ${l.figures.testing}`)(home701().json),
+  '▼ Levers 4.1% cheaper per ticket │ kept 3 · testing 2 │ Open Levers | 4.1 3 2');
+t('DS-701 AC4 today', leversAgree701(TODAY654), 'today | true | true');
+t('DS-701 AC4 too early', leversAgree701({ state: 'early', on_auto: 1, repos: 4, pinned: [], testing: 2, smaller_arm: { n: 18, min: 30 } }), 'early | true | true');
+levers654({ line: WORKING654, age: 180 });
+t('DS-701 AC4 a stale page says so, with its age', (({ levers: l }) => `${l.state} ${l.built.age_s} ${l.figures.kept}`)(home701().json), `stale ${180 * 60} 3`);
+rmSync(LV, { recursive: true, force: true });
+t('DS-701 AC4 with no page, no figures', (({ levers: l }) => `${l.state} ${l.page} ${l.figures}`)(home701().json), 'unbuilt null null');
+
+// The command line: each view parses, and a wrong one refuses saying which views there are.
+const J701 = (...args) => { const r = W.run('--json', ...args); try { return { code: r.code, j: JSON.parse(r.out) }; } catch { return { code: r.code, err: r.err.trim(), out: r.out }; } };
+const repo701 = J701('repo', 'voicepa');
+t('DS-701 desk-q --json repo: each ticket under its group, in spawn order', `${repo701.code} ${repo701.j?.tickets.map((x) => `${x.key}:${x.group}:${x.pos}`).join()}`, '0 VPL-1:running:1,VPL-2:running:2,VPL-3:waiting:3');
+t('DS-701 desk-q --json repo: the repo\'s home figures', `${repo701.j?.repo.running} ${repo701.j?.repo.waiting} ${repo701.j?.repo.done}`, '2 1 3');
+const tk701 = J701('ticket', 'vo', 'VPL-3');
+t('DS-701 desk-q --json ticket', `${tk701.code} ${tk701.j?.ticket.key} ${tk701.j?.ticket.group} ${tk701.j?.lines.head.length > 0}`, '0 VPL-3 waiting true');
+t('DS-701 desk-q --json home from the command line', (({ code, j }) => `${code} ${j?.view} ${Array.isArray(j?.repos)} ${j?.no_batch.length >= 0}`)(J701('home')), '0 home true true');
+t('DS-701 desk-q --json usage and costs parse', ['usage', 'costs'].map((v) => (({ code, j }) => `${code} ${j?.view}`)(J701(v))).join(), '0 usage,0 costs');
+t('DS-701 an unknown view refuses, naming the views', (({ code, err }) => `${code} ${err}`)(J701('levers')), '1 Which view? desk-q --json home [--all] | repo <repo> | ticket <repo> <KEY> | usage | costs [<repo>].');
+t('DS-701 a ticket not in the queue refuses as show does', (({ code, err }) => `${code} ${err}`)(J701('ticket', 'voicepa', 'VPL-99')), "1 VPL-99 isn't in voicepa's queue.");
+
 // DS-792: `desk-q voicepa` in a terminal draws voicepa beside pr-ninja's dense held chain without
 // walking it, and reads every repo once it goes home.
 {
@@ -2445,7 +2616,7 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   S0.ui.finish(0);
   writeFileSync(pn, JSON.stringify({ version: 1, batch: 'pn', concurrency: 2, tickets: chain }));
   const at = Date.now();
-  const S = screen({ kind: 'repo', slug: 'acme__voicepa' }, 120, Date.now, Q, 'voicepa');
+  const S = screen({ kind: 'repo', slug: 'acme__voicepa' }, 120, Date.now, Q, { word: 'voicepa' });
   const ms = Date.now() - at;
   await sleep(20);
   t('DS-792 AC1 desk-q <repo> in a terminal draws the named repo beside a dense batch, as quickly as beside a small one',
@@ -2462,7 +2633,7 @@ t('a 30-ticket transitively held chain waits behind its running head', denseStat
   const named = join(dirname(qPath(I, 'voicepa')), 'batches', 'x792');
   mkdirSync(named, { recursive: true });
   writeFileSync(join(named, 'queue.json'), JSON.stringify({ version: 1, batch: 'x792', concurrency: 1, tickets: { 'VPL-79': { key: 'VPL-79', state: 'triaged', open_questions: 0 } } }));
-  const N = screen({ kind: 'repo', slug: 'acme__voicepa:x792', refreshMs: 50 }, 120, Date.now, Q, 'voicepa:x792');
+  const N = screen({ kind: 'repo', slug: 'acme__voicepa:x792', refreshMs: 50 }, 120, Date.now, Q, { word: 'voicepa:x792' });
   await sleep(20);
   const before = N.frame().some((l) => l.includes('VPL-79'));
   rmSync(named, { recursive: true, force: true });
@@ -2575,6 +2746,61 @@ try {
   // The stopped-driver note is one of the overview's health notes; the Queue shows no running segment.
   t('DS-935 AC3 a stopped merge driver: the stopped note shows and no running segment does',
     `${/▲ stop +the merge driver stopped at \d\d:\d\d: gh is signed out/.test(W935.run('--plain').out)} ${W935.run('--plain', 'stop').out.includes('merge driver up')}`, 'true false');
+}
+
+// ---- DS-944: the old desk code notes show once per repo, and once naming every repo that needs the install.
+{
+  const none944 = { voicepa: null, 'desk-skills': null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null };
+  const sup944 = (name, port) => ({ port, conc: '2 / 3', beat: 1, runBy: 'supervisor', queue: { batch: name, concurrency: 2, supervised: true, tickets: { [`${name.toUpperCase()}-1`]: run215 } } });
+  // A world of supervised repos, each `{ port, batches, agent, driver }`: its named batches beside the
+  // standing one, the code its agent loaded, and the code each batch's live driver runs (a batch left
+  // out has no driver; `stopped` is one that failed). install.sh installed new1.
+  const make944 = (repos) => {
+    const W = world({ ...none944, ...Object.fromEntries(Object.entries(repos).map(([n, r]) => [n, sup944(n, r.port)])) });
+    writeFileSync(join(W.env.DESK_HOME, 'installed.json'), JSON.stringify({ commit: 'new1' }));
+    mkdirSync(join(W.env.HOME, 'Library', 'LaunchAgents'), { recursive: true });
+    for (const [name, r] of Object.entries(repos)) {
+      const slug = `acme__${name}`;
+      writeFileSync(join(W.env.HOME, 'Library', 'LaunchAgents', `com.desk-skills.supervisor.${slug}.plist`),
+        `<plist><dict><key>EnvironmentVariables</key><dict><key>DESK_AGENT_VERSION</key><string>${r.agent}</string></dict></dict></plist>\n`);
+      for (const b of r.batches ?? []) {
+        const q = join(W.env.DESK_HOME, 'repos', slug, 'batches', b, 'queue.json');
+        const s = join(W.env.HOME, '.desk-autopilot', slug, 'batches', b, 'orchestrators');
+        mkdirSync(dirname(q), { recursive: true });
+        mkdirSync(s, { recursive: true });
+        writeFileSync(q, JSON.stringify({ version: 1, batch: b, concurrency: 2, supervised: true, tickets: { [`${b}-1`]: { key: `${b}-1`, ...run215 } } }));
+        writeFileSync(join(s, 'q.json'), JSON.stringify({ queue: q, batch: b, pid: 1, at: minsAgo(1) }));
+      }
+      for (const [b, v] of Object.entries(r.driver ?? {})) {
+        const state = join(W.env.HOME, '.desk-autopilot', slug, ...(b === 'standing' ? [] : ['batches', b]));
+        if (v === 'stopped') {
+          writeFileSync(join(state, 'supervisor.json'), JSON.stringify({ driver: { pid: null, started: minsAgo(20), from: 0, failures: 1, notified: false, code: 1, reason: 'FAIL: no ready batch PRs' } }));
+          writeFileSync(join(state, 'merge-driver.log'), 'FAIL: no ready batch PRs\nmerge driver exited 1\n');
+          continue;
+        }
+        mkdirSync(join(state, 'merge-driver.lock.d'), { recursive: true });
+        writeFileSync(join(state, 'merge-driver.lock.d', 'pid'), `${process.pid}\n`);
+        writeFileSync(join(state, 'merge-driver.lock.d', 'version'), `${v}\n`);
+      }
+    }
+    W.loaded(...Object.keys(repos));
+    return lines(W.run('--plain').out);
+  };
+  const four = make944({ stw: { port: 5900, batches: ['b1', 'b2', 'b3'], agent: 'old1', driver: { standing: 'old1', b1: 'old1', b2: 'old1', b3: 'stopped' } } });
+  const stw = notesIn(four, 'stw');
+  t('DS-944 AC1 a repo with four supervised batches on old desk code: one supervisor note',
+    stw.filter((n) => n.startsWith('the supervisor runs old desk code')).join(' / '), 'the supervisor runs old desk code. Run ./install.sh in desk-skills.');
+  t('DS-944 AC2 the same repo\'s merge drivers on old desk code: one merge driver note',
+    stw.filter((n) => n.startsWith('the merge driver runs old desk code')).length, 1);
+  t('DS-944 AC4 a batch whose merge driver stopped keeps its own note beside the old code ones',
+    `${stw.filter((n) => /^the merge driver stopped at \d\d:\d\d: no ready batch PRs\.$/.test(n)).length} ${stw.length}`, '1 3');
+  const three = make944({ sa: { port: 5910, agent: 'old1', driver: { standing: 'old1' } }, sb: { port: 5920, batches: ['b1'], agent: 'old1', driver: { standing: 'old1', b1: 'old1' } },
+    sc: { port: 5930, agent: 'old1' } });
+  t('DS-944 AC3 three repos whose supervisors run old desk code: one note names them all and says to run ./install.sh once',
+    `${notesIn(three, 'desk code').join(' / ')} | ${three.filter((l) => /^(note| {4}) {2}▲ s[abc] /.test(l)).length}`,
+    'the supervisors of sa, sb and sc run old desk code. Run ./install.sh in desk-skills. / the merge drivers of sa and sb run old desk code. Each moves to the installed code when it next waits between loops. | 0');
+  const fresh = make944({ up: { port: 5940, batches: ['b1', 'b2'], agent: 'new1', driver: { standing: 'new1', b1: 'new1' } } });
+  t('DS-944 AC5 no repo on old desk code: no old code note', fresh.some((l) => l.includes('old desk code')), false);
 }
 
 // ---- DS-937: a ticket page says who merged or armed its PR at which head, from the merge log

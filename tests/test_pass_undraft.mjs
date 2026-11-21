@@ -40,7 +40,7 @@ const undraftSnap = (drafts, fields = {}) => ({
 // The runner with stub handlers: each read answers from `answers` (a value, or a function of the action).
 const READS = { 'pr-close': { ok: true, out: '' }, 'pr-reopen': { ok: true, out: '' }, fetch: true, 'child-renames': [], events: { hold: null }, 'pr-view': null, 'pr-files': [], 'conflict-files': null, 'base-at': null, ready: { ok: true, out: '' }, comment: { ok: true, out: '' } };
 const RECS = ['cancel', 'build', 'rebuilt', 'evidence'];
-const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'note', 'undraft-error', 'evidence-failures'];
+const WRITES = ['set', 'report', 'out', 'set-batch', 'apply-fix', 'take', 'gate-hold', 'upload', 'rerun-draft', 'carried', 'record-carry', 'note', 'undraft-error', 'evidence-failures'];
 function drive(decide, s, answers = {}) {
   const handlers = Object.fromEntries([...Object.keys(READS), ...RECS, ...WRITES].map((type) => [type, (a) => {
     if (Object.hasOwn(answers, type)) return typeof answers[type] === 'function' ? answers[type](a) : answers[type];

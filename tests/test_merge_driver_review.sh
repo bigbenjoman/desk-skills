@@ -123,16 +123,24 @@ check "DS-433: one its own commits moved past is held for a review" '! grep -q "
 # With the review-reuse lever on, the same clean merge carries only while the base moved none
 # of the files the review rests on, and the PR says so once. moved.txt is what the base changed.
 { cat "$T/config-rv.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `review-reuse` |\n'; } > "$T/config-rv-reuse.md"
+# The merge driver reads the lever from the ticket's pin: T-211 is pinned with it.
+PIN_RV='levers={"set":["review-reuse"],"at":"2026-11-14T00:00:00Z"}'
 vp 211 "$RA" "$CLEAN" '<!-- desk-review:rests-on v=1 files=["own.txt"] -->'
-rv_prs reuse "211|fix/T-211|$RB|fix: T-211 base merged|"
+rv_prs reuse "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 "$PIN_RV"
 RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
 check "DS-448 AC2: lever on, a base merge over unrelated files carries the review, and the PR names the range" '[ "$(merged)" = 211 ] && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} is carried to ${RB:0:9}, not reviewed there" && [ "$(grep -c "pr comment 211" "$T/gh.log")" = 1 ] && grep "pr comment 211" "$T/gh.log" | grep -q "which no review has read"'
 vp 211 "$RA" "$CLEAN" '<!-- desk-review:rests-on v=1 files=["moved.txt","own.txt"] -->'
-rv_prs reuse2 "211|fix/T-211|$RB|fix: T-211 base merged|"
+rv_prs reuse2 "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 "$PIN_RV"
 RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
 check "DS-448 AC8: lever on, a clean merge over a recorded file is held for a review" '[ -z "$(merged)" ] && echo "$out" | grep -q "#211 green at ${RB:0:9}, HELD with no clean review at its head"'
+# The row reads review-reuse, and T-211 is pinned without it: the merge driver reads the lever
+# off for it, so the clean merge of main carries the review as with the lever off.
+vp 211 "$RA" "$CLEAN" '<!-- desk-review:rests-on v=1 files=["moved.txt","own.txt"] -->'
+rv_prs reuse4 "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 'levers={"set":[],"at":"2026-11-14T00:00:00Z"}'
+RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
+check "DS-639 the merge driver reads a ticket pinned without the lever as off, whatever the row" '[ "$(merged)" = 211 ] && echo "$out" | grep -q "#211 its clean review at ${RA:0:9} holds at ${RB:0:9}: only clean merges of main and empty commits came since"'
 vp 211 "$RA" "$CLEAN"
-rv_prs reuse3 "211|fix/T-211|$RB|fix: T-211 base merged|"
+rv_prs reuse3 "211|fix/T-211|$RB|fix: T-211 base merged|"; q set T-211 "$PIN_RV"
 RV_CONFIG="$T/config-rv-reuse.md"; rvloop; rvloop; RV_CONFIG=""
 check "DS-448: lever on, a review that records no files is held for a review" '[ -z "$(merged)" ] && echo "$out" | grep -q "#211 green at ${RB:0:9}, HELD"'
 

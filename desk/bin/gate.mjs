@@ -82,6 +82,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 import { ASK_TERMS } from './decisions.mjs';
+import { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS, parseHolds, ROUTINE_MARK, NO_REASON } from './config-schema.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 // How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
@@ -344,33 +345,11 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   return { state, reasons, failing, pending, running, succeeded, untriggered: never };
 }
 
-// §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
-// `<glob>#<key>` holds a JSON file only when the PR changes that key (dotted for a nested one), so
-// `package.json#scripts` holds a PR that edits the scripts but not one that only bumps versions.
-// `glob` is the item as written, for reporting; `path` is the part matched against file names.
-// `<why>; desk runs: <command>` names the routine that clears the hold (null when none is named):
-// the merge driver runs it before merging where §3 merge-hold-routine is yes.
-export const ROUTINE_MARK = '; desk runs: ';
-// The reasons desk writes itself, for a hold item with none and for the hold `gate.mjs pr` makes when
-// it cannot read the PR's files: neither names a check an agent could run, so both are a person's.
-export const NO_REASON = '(no reason given in §4 Merge holds)';
+// The §4 Merge holds grammar (parseHolds, ROUTINE_MARK, NO_REASON) is the config schema's
+// (config-schema.mjs). The other reason desk writes itself, for the hold `gate.mjs pr` makes when it
+// cannot read the PR's files: like NO_REASON it names no check an agent could run, so it is a person's.
+export { parseHolds, ROUTINE_MARK, NO_REASON };
 export const UNREAD_FILES = 'the PR file list is unreadable, so §4 Merge holds cannot be checked';
-export function parseHolds(items) {
-  if (!items) return [];
-  return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
-    const i = x.indexOf(': ');
-    const glob = (i < 0 ? x : x.slice(0, i)).trim();
-    let why = i < 0 ? NO_REASON : x.slice(i + 2).trim();
-    let routine = null;
-    const m = why.indexOf(ROUTINE_MARK);
-    if (m >= 0) {
-      routine = why.slice(m + ROUTINE_MARK.length).trim() || null;
-      why = why.slice(0, m).trim() || NO_REASON;
-    }
-    const k = glob.indexOf('#');
-    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why, routine };
-  });
-}
 
 // A hold's step is a person's when its reason names one of the ask categories (decisions.mjs
 // ASK_TERMS: money, legal, production data and credentials, customer copy, a fact only the person
@@ -521,66 +500,8 @@ export const promotionHolds = (tickets, since = null) => (tickets ?? [])
   .filter((t) => t?.promotion_hold && t.merged_at && (since == null || Date.parse(t.merged_at) > Date.parse(since)))
   .map((t) => `${t.key}${t.result?.pr != null ? ` (#${t.result.pr})` : ''}: ${t.promotion_hold}`);
 
-// §4 Known flaky checks items: `<check>: <glob> [<glob>…]`, split on the last `: ` so a check name may
-// hold one. The globs are the paths whose change can make that check fail for real: a PR touching one
-// never has the check waived. `<check>: <file> > <test>` names one test in a check instead, split on
-// the first ` > `: that check is waived only when each of its failure annotations names a listed test,
-// and the test's file is its path. An item with no check, no glob, or no file or test is an error.
-export function parseFlaky(items) {
-  const flaky = [];
-  const errors = [];
-  for (const x of items || []) {
-    if (!x || /^none$/i.test(x.trim())) continue;
-    const gt = x.indexOf(' > ');
-    if (gt >= 0) {
-      const head = x.slice(0, gt);
-      const j = head.lastIndexOf(': ');
-      const name = j < 0 ? '' : head.slice(0, j).trim();
-      const file = j < 0 ? '' : head.slice(j + 2).trim();
-      const title = x.slice(gt + 3).trim();
-      if (!name || !file || /\s/.test(file) || !title) errors.push(`\`${x}\``);
-      else flaky.push({ name, paths: [file], test: { file, title } });
-      continue;
-    }
-    const i = x.lastIndexOf(': ');
-    const name = i < 0 ? '' : x.slice(0, i).trim();
-    const paths = i < 0 ? [] : x.slice(i + 2).trim().split(/\s+/).filter(Boolean);
-    if (!name || !paths.length) errors.push(`\`${x}\``);
-    else flaky.push({ name, paths });
-  }
-  return { flaky, errors };
-}
-
-// §4 State checks items: checks that read the PR's state (its reviews, approvals, title or another
-// gate over those) rather than its code, so a rerun reads the same state and fails the same way. Each
-// is `<check>` or `<check>: <kind>`, split on the last `: `: kind `verdict` reads the desk-review
-// verdict at the head (a review worker posts a fresh one), `approval` reads a person's approval at
-// the head (only a person clears it); a bare check reads other state, such as the title or an
-// aggregate gate failing because of one of the others. A one-word tail that is no kind is an error,
-// never a guess. Unset is desk-gate.yml's two state jobs; `none` names none.
-// `<check>: external <login>` is a gate that reads the review of an outside reviewer, such as a review
-// bot posting from its own account: kind `external`, with `login` that account. desk posts no review
-// for it; the pass waits for that reviewer at the head and sends its findings to a fix worker.
-export const STATE_KINDS = ['verdict', 'approval'];
-export const DEFAULT_STATE_CHECKS = [{ name: 'desk-review verdict', kind: 'verdict' }, { name: 'protected-path approval', kind: 'approval' }];
-export function parseStateChecks(items) {
-  if (items == null) return { checks: DEFAULT_STATE_CHECKS, errors: [] };
-  const checks = [];
-  const errors = [];
-  for (const x of items) {
-    if (!x || /^none$/i.test(x.trim())) continue;
-    const i = x.lastIndexOf(': ');
-    const tail = i < 0 ? '' : x.slice(i + 2).trim();
-    const ext = /^external\s+(\S+)$/.exec(tail);
-    if (ext) { const name = x.slice(0, i).trim(); if (name) checks.push({ name, kind: 'external', login: ext[1] }); else errors.push(`\`${x}\``); continue; }
-    if (/^external$/.test(tail)) { errors.push(`\`${x}\` (external names the reviewer's login: \`<check>: external <login>\`)`); continue; }
-    const kind = STATE_KINDS.includes(tail) ? tail : null;
-    const name = (kind ? x.slice(0, i) : x).trim();
-    if (!name || (!kind && /^[a-z]+$/.test(tail))) errors.push(`\`${x}\``);
-    else checks.push({ name, kind });
-  }
-  return { checks, errors };
-}
+// The §4 Known flaky checks and §4 State checks grammars are the config schema's (config-schema.mjs).
+export { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS };
 // The §4 State check of kind external that passed at the head ({ name, login }), or null: every one of
 // its runs there completed with success. It reads that outside reviewer's review at the head, so its
 // pass is the head's review, and nothing waits on desk's own verdict there.

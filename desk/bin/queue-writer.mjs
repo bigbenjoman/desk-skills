@@ -8,7 +8,6 @@
 // value stays and the field is named.
 import { readFileSync } from 'node:fs';
 import { lock, unlock } from './dir-lock.mjs';
-import { leverOn } from './desk-env.mjs';
 import { parkClass } from './failure-class.mjs';
 import { versionOf, writeQueueFile, mergeQueue, archiveDone, attachArchive, same } from './queue-store.mjs';
 
@@ -38,8 +37,8 @@ export function coerce(v) {
   return v === 'null' ? null : v === 'true' ? true : v === 'false' ? false : /^-?\d+$/.test(v) ? Number(v) : v;
 }
 
-// A new park, with its failure class (failure-class.mjs parkClass) while the failure-class lever is on.
-export const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...(leverOn('failure-class') ? parkClass(question) : {}) });
+// A new park, with its failure class (failure-class.mjs parkClass) whether or not the lever is on.
+export const newPark = (question, since = new Date().toISOString()) => ({ question, since, ...parkClass(question) });
 
 // pass.mjs spawns eligible tickets in `.tickets` key order. A ticket's place in that order is its
 // position among the unfinished tickets; done and failed ones keep their slots and are never counted.

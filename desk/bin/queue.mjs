@@ -16,11 +16,11 @@ import { prNames } from './recoveries.mjs';
 import { spineMerger } from './spine-check.mjs';
 import { isSpineOf, ownsSpecsOf } from './pass/shared.mjs';
 import { parseClearsWhen, describeCond, CLEARS_WHEN_FORMS, runCheck, ownDraftWhy, withQuestion } from './clears-when.mjs';
-import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory } from './desk-q-eta.mjs';
+import { recordMerge, recordEstimateMerge, ghMergedPrs, describe as describeHistory, sizeOf } from './desk-q-eta.mjs';
 import { LIVE_MS, beatFile, parseNext } from './borrow.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
 import { queueFile, stateDir, skillsDir, concurrencyLimits, SAFE_ID, BRANCH_NAME, PRODUCTION_BRANCH, configValue, configValues, repoRoot, rotateRound, sessionDefaultMode, DONTASK_WARNING,
-  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation, leverOn } from './desk-env.mjs';
+  ghRepo, githubHandle, ticketKind, permission, permissionKey, memStatusLine, repoSlug, worktreesDir, personStepLabels, personInputLabels, workerLocation } from './desk-env.mjs';
 import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
@@ -31,6 +31,8 @@ import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions
 import { SESSION_ID, transcriptOf, claimQuestion } from './claims.mjs';
 import { projectsDirs, readRegistry } from './claude-logins.mjs';
 import { belongsElsewhere, useTicketBatch, listBatches, finished, otherRunningBatches, ownRows } from './batches.mjs';
+import { assignPin } from './levers-auto.mjs';
+import { leverOnFor } from './lever-pin.mjs';
 import { QUEUE_COMMANDS, unknownQueueCommand } from './queue-commands.mjs';
 
 crashShowsPerson((e) => console.error(`queue: ${e?.message ?? e}`));
@@ -67,6 +69,13 @@ const TICKET_CMDS = ['hold', 'set', 'park', 'clears-when', 'requeue', 'handback'
 const QUEUE = queueFile();
 // The park a hold writes (queue.mjs hold, admit --hold): released once every blocker's PR merges.
 const heldPark = (blockers) => newPark(`held by orchestrator: blocked by ${blockers.join(', ')} — starts once their PRs merge`);
+// A ticket's levers pin as it enters the queue (levers-auto.mjs), saying why when its repo could not
+// be assigned trial arms.
+const admissionPin = (key, size) => {
+  const { pin, warning } = assignPin(key, { size });
+  if (warning) console.error(warning);
+  return pin;
+};
 
 // The starting concurrency is config §3b "Autopilot worker concurrency" (`<default> / <cap>`); the
 // orchestrator's ladder changes it per pass with set-batch, and pass.mjs never exceeds the cap. A
@@ -493,7 +502,9 @@ const spineHolds = (q, key) => [
 // q's spine and plan holds when `holdSpine` is set. `outside`, its blockers in no batch, are held too
 // and recorded as held_outside: pass.mjs lifts each once it is Done and on the batch's base. `mergeAfter`, the person's steps in no
 // batch, hold nothing until its PR is ready: recorded as merge_after, they hold only its merge.
-function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false }) {
+// `pin` is its levers pin (lever-pin.mjs), drawn as it is admitted (levers-auto.mjs) unless it carries
+// one already.
+function admitInto(q, key, r, { state, by = null, holds = [], outside = [], mergeAfter = [], holdSpine = false, pin }) {
   if (holdSpine) holds.unshift(...spineHolds(q, key).filter((k) => !holds.includes(k)));
   const size = String(r.size ?? '').toUpperCase();
   // A ticket labelled as the person's step is theirs whatever its lane or size: no worker takes it.
@@ -518,11 +529,14 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     }
   }
   for (const k of outside) if (!holds.includes(k)) holds.push(k);
-  // Config §3b "Worker location", applied as plan-batch applies it to each ticket it seeds.
+  // Config §3b "Worker location", applied as plan-batch applies it to each ticket it seeds, the effort
+  // lever read from the ticket's pin (the row where it has none), as plan-batch reads it. The row is
+  // read before the pin is drawn, so a bad row refuses the admit before any trial arm is drawn.
   const location = workerLocation();
+  if (pin === undefined) pin = admissionPin(key, r.size);
   const placed = placement(r, location, {
     feature: featureRole(q.feature === true ? { spine: q.spine, owners: q.owners } : null, key),
-    effort: location === 'cloud' && leverOn('effort'),
+    effort: location === 'cloud' && leverOnFor('effort', { key, levers: pin }),
   });
   // A held park would let a release send a ticket parked for its own reason to a worker. A lane, size,
   // design or person's-step park keeps its holds in held_by beside it instead, unreleased, and requeue
@@ -536,6 +550,7 @@ function admitInto(q, key, r, { state, by = null, holds = [], outside = [], merg
     ...(outside.length ? { held_outside: outside.join('|') } : {}),
     ...(mergeAfter.length ? { merge_after: mergeAfter.join('|') } : {}),
     ...(by ? { admitted_by: by } : {}),
+    ...(pin ? { levers: pin } : {}),
     ...(placed.where === 'cloud' ? { location: 'cloud' } : {}),
     added_at: new Date().toISOString(),
   };
@@ -706,7 +721,7 @@ function transfer(q, key, to) {
     else (local.has(p) ? stays : theirs).push(p);
   }
   if (theirs.length) throw new Error(`${key} is held behind ${theirs.join(', ')}, which ${theirs.length === 1 ? 'is not a blocker' : 'are not blockers'} of it in Jira, so ${batchWord(dest)} could not keep the hold: release it first. Nothing was moved`);
-  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true });
+  const said = admitInto(tq, key, r, { state: dest.state, by: t.admitted_by ?? null, holds, outside, mergeAfter, holdSpine: true, pin: t.levers ?? null });
   const removed = dropStaleWorktree(key, baseOf(q));
   // Its triage record goes with it: admit and every pass read a ticket's record from their own batch.
   mkdirSync(join(dest.state, 'triage'), { recursive: true });
@@ -844,7 +859,7 @@ switch (cmd) {
       key, type, lane, state: 'queued',
       worktree: null, branch: null, database: null, port: null,
       session_id: null, pid: null, base_sha: null, stage: null,
-      park: null, log: null, result: null,
+      park: null, log: null, result: null, levers: admissionPin(key, sizeOf(stateDir(), key)),
       added_at: new Date().toISOString(),
     };
     save(q);

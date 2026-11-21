@@ -31,6 +31,7 @@ import { listBatches, onlyKeptTriage, finished, prState, prMergedAt, lastPromoti
 import { readHanded, handItems, dropHanded } from './decider.mjs';
 import { admissionRefusal } from './gate.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
+import { auditsIn } from './levers-audit.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DONE_DIR = '.done';
@@ -143,6 +144,11 @@ function holder(b) {
   if (sup) return `a supervisor run (pid ${sup})`;
   if (E.mergeDriverHolder(b.state)) return 'its merge driver';
   if (existsSync(`${b.queue}.lock`)) return 'a queue write';
+  // A blind audit its pass spawned reads its log and exit record from the batch's folder until a pass
+  // records it (levers-audit.mjs auditsIn).
+  const audits = auditsIn(E.repoSlug(), b.state);
+  if (!audits) return 'the repo\'s audit queue, which does not read';
+  if (audits.length) return `the blind audit of ${audits.map((i) => i.ticket).join(', ')}, not yet recorded`;
   return null;
 }
 
