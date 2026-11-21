@@ -666,6 +666,101 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
+// `desk-env get --json`: typed rows with where each value came from, its default and its type errors.
+{
+  const bare = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
+  const jenv = (cfg, extra = {}) => ({ ...bare, HOME: T, DESK_CONFIG_ROOT: join(T, 'cfg-870'), DESK_MACHINE: join(T, 'none.md'), DESK_CONFIG: cfg, ...extra });
+  const node = (env, args, cwd = T) => spawnSync('node', [BIN, ...args], { encoding: 'utf8', env, cwd });
+  const getJson = (env, ...a) => {
+    const r = node(env, ['get', '--json', ...a]);
+    let json = null; try { json = JSON.parse(r.stdout); } catch { /* not JSON */ }
+    return { code: r.status, json, out: r.stdout, err: r.stderr.trim() };
+  };
+  const c = join(T, 'json.md');
+  writeFileSync(c, `${P4}| Tracker | \`jira\` |\n| Required checks | \`Lint\` \`Unit tests\` |\n| Local services | \`Typesense on port 8108\` |\n`
+    + `| Append-only paths | \`TODO\` |\n\n${B3}| Autopilot worker concurrency | \`2 / 3\` | \`TODO\` |\n`);
+  let r = getJson(jenv(c), 'tracker', 'required-checks');
+  const tr = r.json?.rows?.tracker, rc = r.json?.rows?.['required-checks'];
+  t('DS-870 AC1 prints one JSON object and exits 0', `${r.code} ${!!r.json}`, '0 true');
+  t('DS-870 AC1 Tracker reads jira, set, from the repo', JSON.stringify([tr?.value, tr?.set, tr?.source]), '["jira",true,"repo"]');
+  t('DS-870 AC1 Required checks gives both checks as items, set, from the repo', JSON.stringify([rc?.items, rc?.set, rc?.source]), '[["Lint","Unit tests"],true,"repo"]');
+  r = getJson(jenv(c), 'local-services');
+  const ls = r.json?.rows?.['local-services'];
+  t('DS-870 AC2 a row with a type error prints the JSON and exits 4', `${r.code} ${!!r.json}`, '4 true');
+  t('DS-870 AC2 the error names the item and the form the type expects', ls?.errors?.length === 1 && ls.errors[0].item === 'Typesense on port 8108' && ls.errors[0].error.includes('`<service> [:<port>]`'), true);
+  writeFileSync(join(T, 'machine-870.md'), '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
+  const cc = getJson(jenv(c, { DESK_MACHINE: join(T, 'machine-870.md') }), 'concurrency').json?.rows?.concurrency;
+  t('DS-870 AC3 a TODO row the machine profile sets reads the profile, source machine', JSON.stringify([cc?.value, cc?.set, cc?.source]), '["5 / 10",true,"machine"]');
+  r = getJson(jenv(c), '--section', '4');
+  const four = Object.keys(CONFIG_ROWS).filter((id) => CONFIG_ROWS[id].section === '4');
+  t('DS-870 AC4 --section 4 gives every §4 row desk-env reads, and only those', JSON.stringify(Object.keys(r.json?.rows ?? {})), JSON.stringify(four));
+  t('DS-870 AC4 and every row it gives is a §4 row', Object.values(r.json?.rows ?? {}).every((x) => x.section === '4'), true);
+  r = getJson(jenv(c), '--section', '3c');
+  t('DS-870 AC5 --section 3c exits 2 and prints no rows', `${r.code} ${r.out === ''}`, '2 true');
+  t('DS-870 AC5 saying the ledger is read by desk-setup alone', /§3c.*\/desk-setup alone/.test(r.err), true);
+  r = getJson(jenv(c), 'tracker', 'no-such-row');
+  t('DS-870 AC6 an unknown id exits 2 naming it', `${r.code} ${r.out === ''} ${r.err.includes('"no-such-row"')}`, '2 true true');
+  const nowhere = scratch('desk-norepo-870-');
+  r = node({ ...bare, HOME: nowhere, DESK_CONFIG_ROOT: join(nowhere, 'cfg'), DESK_MACHINE: join(nowhere, 'none.md') }, ['get', '--json', 'tracker'], nowhere);
+  t('DS-870 AC7 outside any configured repo it exits 3, printing nothing', `${r.status} ${r.stdout === ''}`, '3 true');
+  rmSync(nowhere, { recursive: true, force: true });
+  writeFileSync(c, `${P4}| Local services | \`TODO\` |\n| Append-only paths | \`TODO\` |\n`);
+  r = getJson(jenv(c), 'local-services', 'append-only-paths');
+  const fields = (x) => JSON.stringify([x?.set, x?.source, x?.value, x?.items, x?.default]);
+  t('DS-870 AC11 an unset row is not set, source unset, with a null value', fields(r.json?.rows?.['local-services']), '[false,"unset",null,null,null]');
+  t('DS-870 AC11 the schema default is reported in its own field, never as the value', fields(r.json?.rows?.['append-only-paths']), '[false,"unset",null,null,["none"]]');
+
+  // The parity sweeps: a config holding every row desk-env reads, each set to TODO, its example or none,
+  // read through `get --json` and through `desk-env config`, which snapshots every get, list and perm
+  // read in one process. A snapshot value is `=` and what the read printed, `!` where it exits 3, and
+  // empty where it threw.
+  const snapshot = (env) => {
+    const out = {};
+    for (const m of node(env, ['config']).stdout.matchAll(/_DESK_([GLPU])_(\w+)='((?:[^']|'\\'')*)'/g)) out[`${m[1]} ${m[2].replaceAll('_', '-')}`] = m[3].replaceAll("'\\''", "'");
+    return out;
+  };
+  const span = (v) => [].concat(v).map((x) => `\`${x}\``).join(' ');
+  const valueRows = ROWS.filter((e) => CONFIG_ROWS[e.id]);
+  const configOf = (pick) => [...new Set(valueRows.map((e) => e.section))].map((s) => {
+    const es = valueRows.filter((e) => e.section === s);
+    const rows = es.filter((e) => e.kind !== 'table').map((e) => `| ${e.label} | ${span(pick(e))} |`);
+    const tables = es.filter((e) => e.kind === 'table').map((e) => `\n### ${e.label}\n\n| Ask | Detail |\n|---|---|\n`
+      + [].concat(pick(e)).map((x) => { const [a, ...d] = String(x).split(': '); return `| \`${a}\` | ${d.length ? `\`${d.join(': ')}\`` : ''} |`; }).join('\n'));
+    return `## ${s}. Rows\n\n| Field | Value |\n|---|---|\n${rows.join('\n')}\n${tables.join('\n')}\n`;
+  }).join('\n');
+  for (const [name, pick] of [['TODO', () => 'TODO'], ['its example', (e) => e.example], ['none', () => 'none']]) {
+    const f = join(T, `sweep-${name.replace(/\W/g, '')}.md`);
+    writeFileSync(f, configOf(pick));
+    const env = jenv(f);
+    const json = getJson(env, ...valueRows.map((e) => e.id)).json?.rows ?? {};
+    const snap = snapshot(env);
+    const db = node(env, ['get', 'default-branch']);
+    snap['G default-branch'] = db.status === 3 ? '!' : `=${db.stdout}`;
+    const getBad = [], listBad = [];
+    for (const e of valueRows) {
+      const j = json[e.id], g = snap[`G ${e.id}`], l = snap[`L ${e.id}`];
+      if (!j || (g === '!' ? j.value !== null || j.set : g !== `=${j.value}\n`)) getBad.push(`${e.id}: get ${JSON.stringify(g)}, json ${JSON.stringify(j && [j.value, j.set])}`);
+      const listed = l === '!' ? j?.items === null : l === '' ? j?.items === null && j.errors.some((x) => x.fatal) : l === `=${(j?.items ?? []).map((x) => `${x}\n`).join('')}` && j?.items !== null;
+      if (!listed) listBad.push(`${e.id}: list ${JSON.stringify(l)}, json ${JSON.stringify(j && [j.items, j.errors])}`);
+    }
+    t(`DS-870 AC8 every row set to ${name} reads through get --json as through get (${valueRows.length} rows)`, getBad.join(' / '), '');
+    t(`DS-870 AC9 every row set to ${name} reads through get --json as through list`, listBad.join(' / '), '');
+  }
+  const permRows = ROWS.filter((e) => e.kind === 'perm');
+  for (const v of ['yes', 'no', 'TODO']) {
+    const f = join(T, `perms-${v}.md`);
+    writeFileSync(f, `## 3. Permissions\n\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n${permRows.map((e) => `| \`${e.id}\` | c | \`yes\` | \`${v}\` |`).join('\n')}\n`);
+    const env = jenv(f);
+    const json = getJson(env, '--section', '3').json?.rows ?? {};
+    const snap = snapshot(env);
+    const bad = permRows.filter((e) => {
+      const j = json[e.id];
+      return !j || snap[`P ${e.id}`] !== `=${j.value}\n` || (snap[`U ${e.id}`] === '!') === j.set;
+    }).map((e) => `${e.id}: perm ${JSON.stringify(snap[`P ${e.id}`])} unset ${snap[`U ${e.id}`] === '!'}, json ${JSON.stringify(json[e.id] && [json[e.id].value, json[e.id].set])}`);
+    t(`DS-870 AC10 every permission set to ${v} reads through get --json as through perm (${permRows.length} keys)`, bad.join(' / '), '');
+  }
+}
+
 rmSync(T, { recursive: true, force: true });
 
 console.log(fails ? `${fails} FAILED` : 'config: all checks passed');

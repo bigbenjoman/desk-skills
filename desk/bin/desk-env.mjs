@@ -25,6 +25,11 @@
 //   node desk-env.mjs get <config id>         print the value (CONFIG_ROWS; first item), exit 3 if unset;
 //                                             default-branch honours a batch base (DESK_DEFAULT_BRANCH);
 //                                             review-asks prints every ask, one per line
+//   node desk-env.mjs get --json [--section <n>] [<id>...]
+//                                             print the named rows (config or permission ids), or every row
+//                                             of a section, as one JSON object (readRow): exit 4 after
+//                                             printing where a row has a type error, 2 for an unknown id or
+//                                             section (§3c included), 3 with no repo config
 //   node desk-env.mjs batch-base              print the queue's batch base branch, exit 3 if none is set
 //   node desk-env.mjs levers [<lever>]        what is on and where each lever's state comes from (pinned,
 //                                             auto or off), the freeze, unknown names; exit 1 on an invalid
@@ -168,7 +173,7 @@ import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
   permValues, permValue, requiredFieldsIn, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, LEVERS_AUTO, leverRow, leverWords, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf, parseRow, rowErrors,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -1945,14 +1950,96 @@ function logRowChange(row, LL) {
   }
 }
 
+// ---- the row reader ----------------------------------------------------------------------------
+// One row as `get --json` reports it; `get` prints its value and `list` its items, so the three agree.
+//   { id, section, label, kind, type,
+//     set      whether the environment, the repo config or the machine profile gave the value
+//     source   'environment' | 'repo' | 'machine', or where nothing did, 'default' for a row whose
+//              reader still answers (default-branch, suite-weight) and 'unset' for one that does not
+//     value    what `get` prints (`perm` for a permission), null where it exits 3
+//     items    what `list` prints, null where it exits 3 or refuses the row; null for a permission
+//     parsed   the value as the row's type reads it, null where value is null or errors is not empty
+//     default  the schema's default, never substituted into value; null where it has none
+//     errors   [{ item, error, fatal }]: each item that does not fit the type, and list's refusal (fatal) }
+const ROW_ENTRY = new Map(ROWS.map((e) => [e.id, e]));
+const rowHead = (e) => ({ id: e.id, section: e.section, label: e.label, kind: e.kind, type: e.type });
+export const readableIds = () => [...Object.keys(CONFIG_ROWS), ...Object.keys(PERMISSION_KEYS)];
+export function readRow(id) {
+  if (PERMISSION_KEYS[id]) return permRow(id);
+  return valueRow(id);
+}
+function permRow(id) {
+  const parsed = parseConfig();
+  const e = ROW_ENTRY.get(id);
+  const raw = parsed.sections?.['3']?.byKey[norm(e.label)]?.value;
+  const set = !unset(raw);
+  const errors = set ? rowErrors(e, [raw]) : [];
+  return { ...rowHead(e), set, source: set ? 'repo' : 'unset', value: permissionIn(parsed, id), items: null,
+    parsed: set && !errors.length ? parseRow(e, [raw]).value : null, default: null, errors };
+}
+// Where a config id's value comes from, as configValue (and defaultBranch) resolve it.
+function valueSource(parsed, id) {
+  if (id === 'default-branch' && (!unset(process.env.DESK_DEFAULT_BRANCH) || (batchName() && batchBase() != null))) return 'environment';
+  if (id === 'suite-weight') { const w = suiteWeightIn(parsed, configRepoRoot(parsed)); return w.committed || w.row ? 'repo' : 'default'; }
+  const own = repoValueIn(parsed, id);
+  if (own != null) return id === 'memory-ceiling' && machineLimited(own).limited ? 'machine' : 'repo';
+  if (MACHINE_FALLBACK[id] && machineValue(MACHINE_FALLBACK[id]) != null) return 'machine';
+  return id === 'default-branch' ? 'default' : 'unset';
+}
+// A config id's row; throws for an id CONFIG_ROWS lacks, as configValue does. list's refusal is kept
+// in `refused` for the list wrapper to throw, so `get` still prints the first item of a row it refuses.
+function valueRow(id) {
+  // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks
+  // for <default> gets the branch its batch targets, not the config row.
+  const value = expandHome(id === 'default-branch' ? defaultBranch() : configValue(id)) ?? null;
+  let items = null, refused = null;
+  try { items = configValues(id)?.map(expandHome) ?? null; } catch (e) { if (!(e instanceof DeskConfigError)) throw e; refused = e; }
+  const parsed = parseConfig();
+  const e = ROW_ENTRY.get(id);
+  const source = valueSource(parsed, id);
+  const read = items ?? (value == null ? null : [value]);
+  const errors = refused ? [{ item: null, error: refused.message, fatal: true }] : read ? rowErrors(e, read) : [];
+  const row = { ...rowHead(e), set: ['environment', 'repo', 'machine'].includes(source), source, value, items,
+    parsed: read && !errors.length ? parseRow(e, read).value : null, default: e.default ?? null, errors };
+  return Object.defineProperty(row, 'refused', { value: refused });
+}
+
+// `get --json`: the rows of the named ids and sections, in that order, each once. A bad request
+// throws a GetJsonUsage (exit 2) before any row is read; no config throws NoRepoConfigError (exit 3).
+export class GetJsonUsage extends Error {}
+export const SECTIONS = Object.freeze([...new Set(ROWS.map((e) => e.section))]);
+export function getJson(args) {
+  const ids = [], sections = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--json') continue;
+    if (args[i] === '--section') { sections.push(String(args[++i] ?? '').replace(/^§/, '').toLowerCase()); continue; }
+    ids.push(args[i]);
+  }
+  if (!ids.length && !sections.length) throw new GetJsonUsage('usage: desk-env.mjs get --json [--section <n>] [<id>...]');
+  for (const s of sections) {
+    if (s === '3c') throw new GetJsonUsage('desk-env get --json: §3c, the harness rule ledger, is read by /desk-setup alone; it has no rows here');
+    if (!SECTIONS.includes(s)) throw new GetJsonUsage(`desk-env get --json: unknown section "${s}" (known: ${SECTIONS.join(', ')})`);
+  }
+  const known = readableIds();
+  const unknown = ids.filter((id) => !known.includes(id));
+  if (unknown.length) throw new GetJsonUsage(`desk-env get --json: unknown config id ${unknown.map((id) => `"${id}"`).join(', ')} (desk-env ids lists them)`);
+  const parsed = parseConfig();
+  if (!parsed.exists) throw new NoRepoConfigError(`desk: no repo config found at ${configPathHint()}, so no row can be read. Run inside the repo, or /desk-setup.`);
+  const want = [...new Set([...ids, ...known.filter((id) => sections.includes(ROW_ENTRY.get(id).section))])];
+  const rows = Object.fromEntries(want.map((id) => { const { id: _, ...r } = readRow(id); return [id, r]; }));
+  return { config: parsed.path, rows };
+}
+
 // What `get`, `list`, `perm`, `perm-or-unset` and `budget` print for one id, or null where they exit
 // 3. The CLI cases print it and `config` snapshots it, so desk-env.sh's readers answer as they do.
 const line = (v) => (v == null ? null : `${v}\n`);
 const READS = {
-  // default-branch honours a batch's base (inherited as DESK_DEFAULT_BRANCH), so a worker that asks
-  // for <default> gets the branch its batch targets, not the config row.
-  get: (id) => line(expandHome(id === 'default-branch' ? defaultBranch() : configValue(id))),
-  list: (id) => configValues(id)?.map((x) => line(expandHome(x))).join('') ?? null,
+  get: (id) => line(valueRow(id).value),
+  list: (id) => {
+    const r = valueRow(id);
+    if (r.refused) throw r.refused;
+    return r.items?.map(line).join('') ?? null;
+  },
   perm: (id) => line(permission(id)),
   'perm-or-unset': (id) => line(permissionOrUnset(id)),
   budget: (which) => {
@@ -2040,9 +2127,15 @@ if (isMain) {
         console.log(JSON.stringify(requiredFields(args[0] ?? '')));
         break;
       }
-      case 'get':
-        printRead(cmd, args[0]);
+      case 'get': {
+        if (!args.includes('--json')) { printRead(cmd, args[0]); break; }
+        let out;
+        try { out = getJson(args); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
+        console.log(JSON.stringify(out, null, 2));
+        // exitCode, not exit: a pipe on macOS is written asynchronously, and exit would cut the JSON short.
+        if (Object.values(out.rows).some((r) => r.errors.length)) process.exitCode = 4;
         break;
+      }
       case 'review-cmd': {
         const { run } = reviewRows();
         if (run == null) process.exit(3);

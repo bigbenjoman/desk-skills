@@ -482,6 +482,20 @@ export function parseRow(entry, items) {
   return ok(values);
 }
 
+// Every item of a row that does not fit its entry's type, where parseRow stops at the first:
+// -> [{ item, error, fatal }], empty when the row parses. A list row's items are checked one by one;
+// any other row, or a list whose `none` does not stand alone, is checked as parseRow checks it, its
+// error naming the first item of a value row and no item (null) of a cell.
+export function rowErrors(entry, items) {
+  const all = [].concat(items ?? []).map((x) => String(x).trim());
+  const type = TYPES[entry.type];
+  if (type.cell || (entry.kind !== 'list' && entry.kind !== 'table') || mixesNone(all) || isNone(all)) {
+    const r = parseRow(entry, all);
+    return r.error ? [{ item: type.cell || mixesNone(all) ? null : all[0] ?? '', error: r.error, fatal: r.fatal }] : [];
+  }
+  return all.flatMap((item) => { const r = type.parse(item); return r.error ? [{ item, error: r.error, fatal: r.fatal }] : []; });
+}
+
 // ---- the rows ----------------------------------------------------------------------------------
 const v = (id, section, label, type, example, extra) => ({ id, section, label, kind: 'value', type, example, ...extra });
 const l = (id, section, label, type, example, extra) => ({ id, section, label, kind: 'list', type, example, ...extra });
