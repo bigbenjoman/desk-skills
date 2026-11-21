@@ -1256,10 +1256,11 @@ check "DS-755 AC10 a row split over two code spans is 1 for every file, and the 
 
 # ---- DS-575: admitted tickets naming one file start in queue order within its budget, and none is asked
 # about. RK-182, RK-147 and RK-181 all name desk/bin/desk-q.mjs (budget 1), queued in that order, not
-# key order; admission recorded each one's collides_with. RK-90 and RK-91 share no file with anything.
+# key order; collides_with is each one's two others, both ways as admission records it. RK-90 and RK-91
+# share no file with anything.
 fbq rk '1'
 fbt RK-182 triaged desk/bin/desk-q.mjs; fbt RK-147 triaged desk/bin/desk-q.mjs; fbt RK-181 triaged desk/bin/desk-q.mjs src/a.ts
-q set RK-147 collides_with=RK-182; q set RK-181 'collides_with=RK-182|RK-147'
+q set RK-182 'collides_with=RK-147|RK-181'; q set RK-147 'collides_with=RK-182|RK-181'; q set RK-181 'collides_with=RK-182|RK-147'
 fbt RK-90 triaged src/solo.ts; fbt RK-91 triaged src/other.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-575 AC1 of three naming one file with a budget of 1, only the first in queue order starts and the others wait, held by it" \
