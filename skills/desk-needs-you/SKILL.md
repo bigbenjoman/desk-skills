@@ -12,7 +12,7 @@ argument-hint: "[<repo>]"
 # desk-needs-you
 
 One script gives every item and records every answer. **Read nothing else**: no queue, worker log,
-briefing or digest page, and do not load `desk-autopilot` or its references.
+briefing or digest page, and not `desk-autopilot`.
 
 ## 1. Collect
 
@@ -21,7 +21,7 @@ node ~/.claude/desk/bin/needs-you.mjs list
 node ~/.claude/desk/bin/needs-you.mjs list <repo>
 ```
 
-Use the second form when the user named a repo. `list` first settles what finished outside desk (a
+Use the second for a named repo. `list` first settles what finished outside desk (a
 merged PR, a pushed worktree), a line each: show them. If it then prints `Nothing needs you…`, say
 that line and stop.
 
@@ -56,9 +56,8 @@ outside GitHub has none: its need names the step, and it leaves once its check i
 Call `AskUserQuestion` with **at most four questions**, taking items in list order. For each one:
 
 - **header**: the ticket key.
-- **question**: `<repo> <TICKET>: <what is needed>`, in one line and plain words. A park's need is
-  its worker's question already put in plain words, without the steps it did not reach. Never add a
-  lane letter, config key, stage or AC number to it, or to a reason.
+- **question**: `<repo> <TICKET>: <what is needed>`, in one line, as worded: add no lane letter,
+  config key, stage or AC number.
 - **options**: the recommendation first, labelled `(Recommended)` with its reason as the
   description, then the other actions. With none, label none and say what would settle it. At most four options; free-text "Other" is always added.
 - For `resume`, `answer` and `reject`, the answer text is recorded. Where the question
@@ -80,8 +79,8 @@ node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> <action> "<text>"
 node ~/.claude/desk/bin/needs-you.mjs record <repo> <TICKET> override <id> "<choice>"
 ```
 
-Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override` and `move`. Each prints one
-line on what it recorded.
+Leave `"<text>"` off for every action but `answer`, `resume`, `reject`, `override` and `move`. Each
+prints what it recorded.
 
 - **`MESSAGE <name>: <text>`** on the next line: a live session runs that batch, so the ticket was
   answered but not requeued. `SendMessage` that text to the session named `<name>`. If that name is
@@ -102,7 +101,7 @@ Never run `queue.mjs`, `answer.mjs` or `digest.mjs` yourself, or edit a queue: `
 
 ## 4. Until nothing is left
 
-Once every listed item has been asked, run `list` again (with the same repo, if one was named). Ask
+Once every listed item is asked, run `list` again (with the same repo, if one was named): ask
 only tickets not asked yet this run. Stop when none are left.
 
 ## 5. End
@@ -114,5 +113,4 @@ node ~/.claude/desk/bin/needs-you.mjs left
 node ~/.claude/desk/bin/needs-you.mjs left <repo>
 ```
 
-Print its output last: the desk-q count still left, then how to resume each repo whose passes
-stopped.
+Print its output last: the desk-q count still left, then how to resume each stopped repo.
