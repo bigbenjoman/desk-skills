@@ -112,12 +112,14 @@ for p in "121:$SHA21" "122:$SHA22" "123:$SHA23" "124:$SHA24"; do for f in reruns
 : > "$T/merges.log"
 tloop(){ out=$(DESK_CONFIG="$T/config-test.md" MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-21 T-22 T-23 T-24" 2>&1); rc=$?; }
 tloop
-check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -q "#121 green but for WAIVED \"Integration\" at b11111111"'
-check "#831: a listed test beside a failure in another test of that check is not waived" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (AssertionError: expected 3 to be 4)"'
+check "#831: a check red only on its listed test, after two reruns, is waived" '[ $rc -eq 0 ] && echo "$out" | grep -qF "#121 green but for WAIVED \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") at b11111111"'
+check "#831: a listed test beside a failure in another test of that check is not waived, naming that test" 'echo "$out" | grep -qF "#122 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list (tests/orders.test.ts > totals an order: AssertionError: expected 3 to be 4)"'
 check "#831: a PR changing the listed test'\''s file is not waived" 'echo "$out" | grep -qF "#123 the waiver for \"Integration\" does not apply: the diff touches tests/orders.test.ts (tests/orders.test.ts, for \"Integration\")"'
 check "#831: a check whose failures name no test is never waived" 'echo "$out" | grep -qF "#124 the waiver for \"Integration\" does not apply: it failed in a test §4 Known flaky checks does not list, or its failures name no test"'
 tloop
 check "#831: the waived PR merges pinned to its head, and only it" '[ "$(merged)" = 121 ] && grep -qx "121 main $SHA21" "$T/merges.log"'
+check "DS-820 AC1: the WAIVED log names the check and the test" 'echo "$out" | grep -qF "#121 WAIVED \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") at b11111111"'
+check "DS-820 AC7: the waiver ticket names the test" 'grep -qF "create Bug Flaky check \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order\") waived to merge PR #121 " "$T/jira.log" && grep -qF -- "- Test: \`tests/orders.test.ts > retries a timed-out order\` in \`Integration\`" "$T/jira-body.md"'
 
 # ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
 : > "$FAKE_SLEEPS"; touch "$T/gh.signedout"

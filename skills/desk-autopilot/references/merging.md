@@ -74,8 +74,8 @@ flaky checks (`` `<check>: <glob> [<glob>…]` ``, or `` `<check>: <test file> >
 test in a check that runs others) is merged by the driver, pinned to its head, once
 each of them is still red after the driver's two reruns at that head, the PR's files touch none of
 the globs the row gives for that check, and nothing else in the gate is red or pending. It logs
-`WAIVED <check>`, and once merged files a ticket naming the check, the PR, the head SHA and the
-failing run (`desk-jira create`, under §3 `jira-create`). Where it cannot file one (§3 not `yes`,
+`WAIVED <check>` (with the listed test it waived, for a per-test item), and once merged files a
+ticket naming the check, any such test, the PR, the head SHA and the failing run (`desk-jira create`, under §3 `jira-create`). Where it cannot file one (§3 not `yes`,
 Tracker `none`, or `create` refused), its log names the body file under `<state>/merge-driver/`:
 put that under `WAITING ON YOU`. It never waives:
 

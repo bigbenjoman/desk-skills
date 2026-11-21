@@ -602,7 +602,8 @@ EOF_STALE
 }
 
 # waivable <n> <sha> <gate json> <key> -> 0 when the red head may merge on the written waiver (header),
-# with WAIVED set to its check names, quoted and comma-joined. Otherwise says why and returns 1.
+# with WAIVED set to its check names, quoted and comma-joined, then any listed tests it waives in
+# brackets. Otherwise says why and returns 1.
 # Only reruns GitHub accepted count, and the last must have had its cooldown to report.
 WAIVED=""
 waivable(){
@@ -636,7 +637,8 @@ $checks
 EOF_WAIVE
   last=$(cat "$SD/cooldown-$1" 2>/dev/null || echo 0)
   if [ $(( $(date +%s) - last )) -lt "$RERUN_COOLDOWN" ]; then log "#$1 $short is a known flaky check: waiting out the last rerun's cooldown before reading it as still red"; return 1; fi
-  WAIVED="$short"
+  # A check listed by its tests names the tests it is waived for, so the log and the ticket say which.
+  WAIVED="$short$(printf '%s' "$w" | jq -r '(.tests // []) | if length > 0 then " (test" + (if length > 1 then "s " else " " end) + (map("\"\(.file) > \(.title)\"") | join(", ")) + ")" else "" end')"
 }
 
 # flaky_ticket <n> <sha> <gate json> <key> <waived checks>: once a waived PR has merged, the ticket that
@@ -654,6 +656,7 @@ flaky_ticket(){
     "The merge driver merged [PR #\($n)](https://github.com/\($repo)/pull/\($n)) (\($key)) at head `\($sha)` past a red check named in config §4 Known flaky checks. It was still red after two reruns and the PR touched none of the paths the row gives for it. This ticket is the cost of that waiver: make the check pass reliably, so nothing is merged past it again.",
     "",
     "- Check: \(.waiver.checks | map("`\(.)`") | join(", "))",
+    ((.waiver.tests // [])[] | "- Test: `\(.file) > \(.title)` in `\(.check)`"),
     "- PR: https://github.com/\($repo)/pull/\($n)",
     "- Head SHA: `\($sha)`",
     "- Failing run: \(if (.waiver.runs | length) > 0 then (.waiver.runs | map(run) | join(", ")) else "(no run id reported)" end)",
