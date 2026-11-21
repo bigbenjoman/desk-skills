@@ -84,10 +84,9 @@ export function archivable(q, key) {
   const own = Number(t.pr_status?.pr) === Number(t.result.pr) ? t.pr_status : null;
   const closed = own?.state === 'CLOSED';
   // merged_at stays from an earlier PR once a ticket is requeued (batch-state.mjs ownPr), so it archives
-  // the ticket only while its current PR is not read open, and, with that PR unread, only when no spawn
-  // kept an earlier PR (merged_pr) that the current one is later than.
-  const kept = [].concat(t.merged_pr ?? []).filter((x) => x != null).map((x) => Number(typeof x === 'object' ? x.pr : x));
-  const merged = !!t.merged_at && (own ? own.state !== 'OPEN' : !kept.length || kept.includes(Number(t.result.pr)));
+  // the ticket only while its current PR is read and not open, or while no PR status was read at all. A
+  // status naming another PR leaves the current one unread: the ticket stays live until a pass reads it.
+  const merged = !!t.merged_at && (own ? own.state !== 'OPEN' : t.pr_status?.pr == null);
   if (!merged && !closed) return false;
   // A PR the pass still owes a reopen (its retry was refused) is kept whatever its stored state, which a
   // failed reopen leaves as last read (OPEN): the next pass retries it.
