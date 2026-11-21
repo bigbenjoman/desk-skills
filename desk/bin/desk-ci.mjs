@@ -23,6 +23,9 @@
 // protection saves and restores branch protection and rulesets, pins required checks to the GitHub
 // Actions app and makes the default workflow token read-only. Every write is gated on config §3
 // ci-protection and printed as a plan first.
+//   node desk-ci.mjs aws-fallback off --repo owner/name | status [--repo owner/name]
+// aws-fallback turns a repo's AWS fallback off, or shows whether it is on, since when, and when the
+// watchdog last ran (aws-fallback.mjs).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -518,7 +521,7 @@ function runnerOf(set, aws) {
 }
 
 // The declared AWS labels and each one's on-demand twin, which the same runners carry.
-const awsSet = (labels = []) => new Set(labels.flatMap((l) => [l.toLowerCase(), `${l.toLowerCase()}-on-demand`]));
+export const awsSet = (labels = []) => new Set(labels.flatMap((l) => [l.toLowerCase(), `${l.toLowerCase()}-on-demand`]));
 
 // The runners runs-on can pick, of 'hosted', 'aws' and 'self-hosted', and the AWS labels among them.
 export function runnersOf(job, awsLabels = []) {
@@ -1593,13 +1596,15 @@ export function stable(v) {
   return JSON.stringify(v ?? null);
 }
 
-function ghCall(path, { method = 'GET', body } = {}) {
+// One `gh api` call, as GH_TOKEN `token` when one is given. -> the parsed JSON, or null for no body.
+// A failure throws with `status`, the HTTP code gh reported, and `body`, the JSON it answered.
+export function ghCall(path, { method = 'GET', body, token } = {}) {
   const args = ['api', '-H', 'Accept: application/vnd.github+json', '-X', method, path];
   if (body !== undefined) args.push('--input', '-');
   try {
     const out = execFileSync('gh', args, {
       encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, input: body === undefined ? undefined : JSON.stringify(body),
-      stdio: [body === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      stdio: [body === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], env: token ? { ...process.env, GH_TOKEN: token } : process.env,
     });
     return out.trim() ? JSON.parse(out) : null;
   } catch (e) {
@@ -2153,8 +2158,12 @@ if (isMain) {
       process.exit(runBatchRed(rest));
     } else if (cmd === 'protection') {
       process.exit(runProtection(rest));
+    } else if (cmd === 'aws-fallback' && ['off', 'status'].includes(rest[0])) {
+      // Not awaited: aws-fallback.mjs imports this file, and a top-level await here would leave this
+      // module evaluating while that one waits for it, so Node exits 13 with nothing run.
+      import('./aws-fallback.mjs').then((m) => process.exit(m.cli(rest))).catch((e) => { console.error(e.message); process.exit(2); });
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token | aws-fallback off --repo owner/name | aws-fallback status [--repo owner/name]');
     }
   } catch (e) {
     console.error(e.message);

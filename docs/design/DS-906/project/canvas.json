@@ -1,0 +1,23 @@
+{
+  "v": 3,
+  "createdOnFiles": {"v": 1, "at": "2026-11-21T16:30:00Z"},
+  "title": "desk-q Leases redesign",
+  "launch": {"view": "canvas"},
+  "pages": [],
+  "boards": {
+    "Main.dc.html": {"x": 0, "y": 0, "w": 920, "h": 860, "title": "1 · Today: the Leases section"},
+    "Healthy.dc.html": {"x": 1000, "y": 0, "w": 920, "h": 860, "title": "2 · Proposed: nothing wrong, nothing shown"},
+    "Stuck.dc.html": {"x": 0, "y": 980, "w": 920, "h": 860, "title": "3 · Proposed: a lease is stuck"},
+    "Clash.dc.html": {"x": 1000, "y": 980, "w": 920, "h": 860, "title": "4 · Proposed: a clash during the trial"},
+    "Ticket.dc.html": {"x": 0, "y": 1960, "w": 920, "h": 860, "title": "5 · Proposed: a ticket's port on its screen"},
+    "Verdict.dc.html": {"x": 1000, "y": 1960, "w": 920, "h": 860, "title": "6 · Proposed: the day-7 decision in /desk-needs-you"}
+  },
+  "order": ["Main.dc.html", "Healthy.dc.html", "Stuck.dc.html", "Clash.dc.html", "Ticket.dc.html", "Verdict.dc.html"],
+  "notes": {
+    "title": {"x": 0, "y": -300, "text": "desk-q Leases: from a section to signals", "kind": "title1", "maxW": 1920},
+    "rule": {"x": 2000, "y": 0, "w": 420, "fill": "orange", "size": "m", "text": "THE RULE FOR THE BUILDER\n\nA lease reaches the Queue screen only when a person can act on it or must decide something.\n\n• Healthy leases: nothing. The Leases section is removed from the Queue view (desk-q.mjs leaseLines and its call in overviewParts).\n• A stuck (overdue) lease: one ▲ note in the existing notes list, tagged with the holder's repo, carrying the force-release command. Board 3.\n• A would-refuse during the trial: one grey note naming who clashed with whom. Board 4.\n• An unreadable lease store: one ▲ note, tag 'leases', with desk-env lease reset --reason <why>.\n• Trial end: one /desk-needs-you item. Board 6.\n• A running ticket's port: a Port row on its ticket screen. Board 5.\n\ndesk-env lease list stays the full table."},
+    "copy": {"x": 2000, "y": 980, "w": 420, "fill": "blue", "size": "m", "text": "COPY RULES\n\n• Say 'stopped checking in', not 'renew' or 'overdue'.\n• Name the ticket (DS-796), never the pid or lease label.\n• The command is the last thing on the note, on its own wrapped line, in bold.\n• 'Trial' replaces 'shadow' wherever a person reads it.\n• Times are local clock times (14:02), ages as desk-q already words them (1h 12m)."},
+    "edge": {"x": 2000, "y": 1960, "w": 420, "fill": "green", "size": "m", "text": "STATES TO TEST\n\n• 0 leases, 1, 40: Queue screen looks identical (board 2).\n• 2 stuck leases in one repo: two notes, each with its own command.\n• A stuck slot lease (no ticket): name what it runs, e.g. 'A test run in DS-945's worktree'.\n• Clashes on 3 kinds today: one note per kind, not per clash.\n• A kind already on (not trial): its refusals are not notes; the refused worker waits and its row says so.\n• Narrow terminal (80 cols): notes wrap under the text column like today."}
+  },
+  "designSystems": []
+}

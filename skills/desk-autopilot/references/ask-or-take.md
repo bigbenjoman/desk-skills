@@ -31,6 +31,15 @@ settle it:
 A value only the user holds stays a question, with its routes offered (*Asking*); a step you can
 check is not one of them.
 
+**A question is in plain words.** At most two short sentences: what is blocked, and what the person
+must do or choose ("SV-4017 needs two AWS packages added to Merl, and workers can't install
+packages (worker-dependency-install). Add them yourself, or let workers install them?"). No stage number or AC number: say
+which step, which requirement. A park on a step your config does not grant still names its §3 key,
+as the worker contract says, since needs-you finds the parks a config change would clear by that key.
+A worker's park may also open `lane C: ` where a rule asks for it, and ends with its
+`Not reached: …` list: needs-you (`park-words.mjs`) puts the key and desk's other terms in plain
+words and leaves that list out, which the worker log keeps.
+
 **Do not re-ask what the user put off.** An answer of "not now" puts the question in the repo's
 register, `<state>/not-now.jsonl` (`not-now.mjs`), with the date and the inputs it depends on: the
 ticket, a PR head SHA, config rows, an external value it read, whatever the question names. A
