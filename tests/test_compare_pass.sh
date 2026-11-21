@@ -97,8 +97,8 @@ cmp "$T/port1" "$T/port3"
 check "DS-819 AC1 two ports where the base had one is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head port <PORT2>"'
 
 # A pass drops the stale leases an earlier pass left, on ports that pass picked from what was free then,
-# and picks this run's ports from what is free now: test_pass_spawns.sh's DS-755 runs, where one replay
-# found the lowest port busy and the other did not.
+# and picks this run's ports from what is free now, so which stale port a ticket
+# of this run shares differs between replays.
 stale(){ printf 'ports: dropped the stale lease on port %s held by o/r standing %s (pid 4242): its owner exited' "$1" "$2"; }
 fieldtree lease1 'port: 47704' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47704 model=default"
 fieldtree lease2 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47705 model=default"
