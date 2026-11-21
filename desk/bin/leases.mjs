@@ -265,8 +265,14 @@ function ownerOf(req, starts) {
   return { pid: req.pid, start };
 }
 
+// The live ownerless lease in pool `p` that a request with no owner and the same label already holds:
+// one PR's preview builds take one unit however many pushes or reruns start them.
+const sameHolder = (store, req, p) => (req.pid == null && req.label && req.label !== 'unlabelled'
+  ? store.leases.find((l) => l.pool === p.pool && l.owner === null && l.label === req.label) : null);
+
 // One try at a lease. req: { kind, key, units, ttl, label, pid (null: no owner), final, waited };
-// a refused try is logged only when `final` (a refuse with no wait, else gave-up). `env` is
+// a refused try is logged only when `final` (a refuse with no wait, else gave-up). An ownerless
+// request whose label a live ownerless lease of the pool holds renews that lease instead. `env` is
 // desk-env's exports. -> { lease, shadow? } or { refused: why }.
 export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now, mode = kindMode(req.kind, env).mode }) {
   const p = poolOf(req.kind, req.key, caps);
@@ -275,6 +281,12 @@ export function tryAcquire(req, { env, dir = leaseDir(), caps = capacities(env),
     const t = now();
     const starts = ownerStarts(store, env, req.pid == null ? [] : [req.pid]);
     sweep(store, log, starts, t);
+    const l = sameHolder(store, req, p);
+    if (l) {
+      Object.assign(l, { ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
+      log({ event: 'renew', ...brief(l), ttl: l.ttl, expires: l.expires });
+      return { lease: l };
+    }
     return place(store, log, req, p, ownerOf(req, starts), t, { mode, final: req.final, waited: req.waited });
   });
 }
@@ -302,8 +314,9 @@ export function acquire(req, { env, dir = leaseDir(), caps = capacities(env), no
 }
 
 // Renews lease `id` for its new or same owner (`req.pid`): a fresh TTL from now, the owner changed to
-// `req.pid`. A lease the store does not hold is re-created under the same id where its key is free,
-// and refused (or in shadow granted) where another owner holds it. -> { code, lease?, why }.
+// `req.pid`, and the label changed to `req.label` where one is given. A lease the store does not hold
+// is re-created under the same id where its key is free, and refused (or in shadow granted) where
+// another owner holds it. -> { code, lease?, why }.
 export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), now = Date.now }) {
   const { mode } = kindMode(req.kind, env);
   if (mode === 'off') {
@@ -320,11 +333,11 @@ export function renew(id, req, { env, dir = leaseDir(), caps = capacities(env), 
     if (l) {
       if (l.pool !== p.pool || l.key !== p.key) throw usage(`lease ${id} is ${l.kind} ${l.key}, not ${req.kind} ${p.key}`);
       const was = l.owner;
-      Object.assign(l, { owner, ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
+      Object.assign(l, { owner, ...(req.label ? { label: req.label } : {}), ttl: req.ttl, renewed: new Date(t).toISOString(), expires: new Date(t + req.ttl * 1000).toISOString() });
       log({ event: 'renew', ...brief(l), ...(JSON.stringify(was) !== JSON.stringify(owner) ? { was } : {}), ttl: l.ttl, expires: l.expires });
       return { code: EXIT_OK, lease: l, why: `renewed ${l.kind} ${l.key} (lease ${id}) until ${l.expires}` };
     }
-    const r = place(store, log, req, p, owner, t, { mode, final: true, id, event: 're-create' });
+    const r = place(store, log, { ...req, label: req.label || 'unlabelled' }, p, owner, t, { mode, final: true, id, event: 're-create' });
     if (r.refused) return { code: EXIT_REFUSED, why: `refused: lease ${id} was gone, and ${r.refused}` };
     return { code: EXIT_OK, lease: r.lease, why: `re-created ${r.lease.kind} ${r.lease.key} (lease ${id}), which the store no longer held${r.shadow ? `; shadow: on would refuse: ${r.shadow}` : ''}` };
   });
@@ -443,14 +456,14 @@ function requestedOwner(opt, kind, env) {
   }
   return ownerPid(opt.pid);
 }
-// The --ttl, --units and --label an acquire or renew takes.
+// The --ttl, --units and --label an acquire or renew takes; a renew with no --label keeps its label.
 function sizing(opt, sub) {
   if (opt.ttl == null) throw usage(`${sub} needs --ttl <seconds>`);
   const ttl = whole(opt.ttl);
   if (!ttl) throw usage(`--ttl is a whole number of seconds, 1 or more, not "${opt.ttl}"`);
   const units = opt.units == null ? 1 : whole(opt.units);
   if (!units) throw usage(`--units is a whole number, 1 or more, not "${opt.units}"`);
-  return { ttl, units, label: String(opt.label ?? '').trim() || 'unlabelled' };
+  return { ttl, units, label: String(opt.label ?? '').trim() || (sub === 'renew' ? null : 'unlabelled') };
 }
 
 // The CLI: prints what happened and returns the exit code. `env` is desk-env's exports.
@@ -469,7 +482,8 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       if (opt.wait != null && !/^\d+(\.\d+)?$/.test(opt.wait)) throw usage(`--wait is a number of seconds, not "${opt.wait}"`);
       if (problem) err(`desk-env lease: the machine profile's ${problem}`);
       const req = { kind, key, ...s, wait: opt.wait == null ? 0 : Number(opt.wait), pid: requestedOwner(opt, kind, env) };
-      const r = sub === 'acquire' ? acquire(req, { env, dir, caps }) : renew(id, req, { env, dir, caps });
+      const onWait = (why) => err(`desk-env lease: waiting for ${poolOf(kind, key, caps).one}: ${why}`);
+      const r = sub === 'acquire' ? acquire(req, { env, dir, caps, onWait }) : renew(id, req, { env, dir, caps });
       if (sub === 'acquire' && r.lease) out(r.lease.id);
       if (r.why) (r.code === EXIT_OK && sub === 'renew' ? out : err)(r.why);
       return r.code;

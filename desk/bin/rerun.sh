@@ -4,7 +4,8 @@
 #   RERUN_PERM=<§3 ci-rerun> rerun.sh <driver state dir> <owner/repo> <n> <sha>   with the gate JSON on stdin,
 #   { "gate": { "pending": [...], "failedRuns": [...], "full": <rerun every job of failedRuns, not only failed ones>, "failedJobs": [{ runId, jobId, name, why? }],
 #               "failing": [{ name, runId }], "reasons": [...], "stateFailing": [{ name, kind, why, rerunWith? }] } }
-# RERUN_PERM unset reruns nothing, as `no` does. A check in stateFailing (§4 State checks) is logged and
+# RERUN_PERM unset reruns nothing, as `no` does. PREVIEW_TEAM (§4 Vercel's team, unset for none) gates a
+# preview check's rerun on that team's preview-build lease (preview_lease). A check in stateFailing (§4 State checks) is logged and
 # never rerun here: only the rest of `failing` counts. (merge-driver.sh stale_approval reruns an approval
 # or verdict one whose run predates the head's approval or clean verdict, once per head, before this is called.)
 #
@@ -13,6 +14,24 @@
 # fix-tries.mjs holds the same two numbers for the pass.
 RERUNS_MAX=2; RERUN_COOLDOWN=720
 reruns_at(){ grep -cxF "$3" "$SD/reruns${4:+-$4}-$1-$2" 2>/dev/null || true; }   # reruns_at <n> <sha> <check> [ok]
+RERUN_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# A rerun of a preview check starts a preview build. Where PREVIEW_TEAM (§4 Vercel's team) is set, it
+# first takes a unit of that team's preview-build lease, labelled with the PR, or waits for a later
+# loop while every unit is held. A lease the broker cannot give (an unreadable store) is logged and the
+# rerun goes ahead without one. -> 0 to rerun, 1 to wait.
+PREVIEW_CHECK='(^|[^[:alnum:]])(vercel|netlify|preview)([^[:alnum:]]|$)'
+preview_lease(){ # preview_lease <n> <names>
+  local said rc
+  [ -n "${PREVIEW_TEAM:-}" ] || return 0
+  printf '%s\n' "$2" | grep -qiE "$PREVIEW_CHECK" || return 0
+  said=$(node "$RERUN_BIN/desk-env.mjs" lease acquire preview-build "$PREVIEW_TEAM" --ttl 1200 --no-owner --label "$REPO#$1" 2>&1 >/dev/null); rc=$?
+  case "$rc" in
+    0) case "$said" in shadow:*) log "#$1 preview build for $PREVIEW_TEAM: $said";; esac; return 0 ;;
+    3) log "#$1 red + completed, but waits on the preview build for $PREVIEW_TEAM before rerunning: ${said#refused: }"; return 1 ;;
+    *) log "#$1 could not take a preview-build lease for $PREVIEW_TEAM (exit $rc: $(printf '%s' "$said" | head -1)) — rerunning without it"; return 0 ;;
+  esac
+}
 
 rerun(){ # rerun <n> <sha> <gate json>
   local g="$3" full pend ids jobs jid names rid name cnt cd_file now last all_ok=1 ok="" st states
@@ -43,6 +62,7 @@ $names
 EOF_NAMES
   cd_file="$SD/cooldown-$1"; now=$(date +%s); last=$(cat "$cd_file" 2>/dev/null || echo 0)
   if [ $((now - last)) -lt "$RERUN_COOLDOWN" ]; then log "#$1 red, cooling down ($(( (RERUN_COOLDOWN - (now - last)) / 60 ))m left)"; return; fi
+  preview_lease "$1" "$names" || return
   # gate.full reruns every job of each run, so a job that reads other jobs' results reads the new ones.
   full=$(printf '%s' "$g" | jq -r '.gate.full // false')
   for rid in $ids; do

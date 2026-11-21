@@ -1,5 +1,5 @@
 // suite: leases (desk-env lease: acquire, refuse, wait, release, list, a lease lapsing when its owner exits or its time is up, shadow and off kinds, renew, Claude-session owners, force-release and reset)
-// covers: desk/bin/leases.mjs desk/bin/dir-lock.mjs
+// covers: desk/bin/leases.mjs desk/bin/dir-lock.mjs skills/desk-pr/SKILL.md skills/desk-pr/references/opening.md skills/desk-autopilot/references/worker-contract-stage-5.md skills/desk-autopilot/references/merging.md
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.
 // Every kind is on unless a case says otherwise (with no lease-kinds row, every kind is shadow).
@@ -106,7 +106,8 @@ try {
     const r = cli(d, ['acquire', 'port', '4101', '--ttl', '900', '--wait', '4', '--pid', String(b.pid)]);
     t('AC4: exits 75', r.code, 75);
     t('AC4: after the 4 seconds', Date.now() - t0 >= 4000, true);
-    t('AC4: says it gave up, naming the holder', r.err.startsWith('gave up after 4s waiting: port 4101 is held by holder'), true);
+    t('AC4: says what it waits for first', r.err.split('\n')[0].startsWith('desk-env lease: waiting for port 4101: port 4101 is held by holder'), true);
+    t('AC4: says it gave up, naming the holder', r.err.split('\n').at(-1).startsWith('gave up after 4s waiting: port 4101 is held by holder'), true);
     t('AC4: it holds nothing', json(d).map((l) => l.owner.pid === b.pid), [false]);
     t('AC4: the log records it gave up', log(d).map((e) => e.event), ['grant', 'gave-up']);
   }
@@ -482,6 +483,86 @@ try {
     t('a kind set on and also to an unknown mode reads as shadow', kindMode('port', { machineValue: () => 'port=on port=maybe' }).mode, 'shadow');
     t('and so does one set to a mode that is not a word', kindMode('port', { machineValue: () => 'port=on port=on!' }).mode, 'shadow');
     t('DS-908 AC17: the entries it does not know are named', r.err, 'desk-env lease: the machine profile\'s `lease-kinds` names entries it does not know: "sockets=on", "slot=maybe": want <kind>=<mode> entries, kinds port, slot, preview-build, merge, mem and modes off, shadow, on');
+  }
+
+  // ---- DS-912: a PR's preview build takes a unit of its Vercel team's preview-build lease.
+  const pb = (d, team, label, extra = [], env2 = {}) => cli(d, ['acquire', 'preview-build', team, '--ttl', '1200', '--no-owner', '--label', label, ...extra], env2);
+
+  // AC4: the unit outlives the command that took it, labelled with the PR, for 1200 seconds.
+  {
+    const d = fresh();
+    const id = pb(d, 'acme', 'acme/web@feat/DS-1-x').out;
+    const re = cli(d, ['renew', id, 'preview-build', 'acme', '--ttl', '1200', '--no-owner', '--label', 'acme/web#41']);
+    t('DS-912 AC4: renew after opening puts the PR number on the unit', `${re.code} ${json(d).map((l) => `${l.id === id} ${l.label} ${l.owner} ${l.ttl}`)}`, '0 true acme/web#41 null 1200');
+    t('DS-912 AC4: after the command exits it is still live, expiring 1200 seconds on', (() => { const [l] = json(d); return Date.parse(l.expires) - Date.parse(l.renewed); })(), 1_200_000);
+    const keep = cli(d, ['renew', id, 'preview-build', 'acme', '--ttl', '1200', '--no-owner']);
+    t('DS-912: a renew with no --label keeps the label', `${keep.code} ${json(d).map((l) => l.label)}`, '0 acme/web#41');
+    age(d, id, 1201);
+    t('DS-912 AC4: and lapses once its 1200 seconds pass', json(d), []);
+  }
+
+  // A PR's later push or rerun renews its own unit rather than taking a second.
+  {
+    const d = fresh();
+    const id = pb(d, 'acme', 'acme/web#41').out;
+    const again = pb(d, 'acme', 'acme/web#41', ['--wait', '2']);
+    t('DS-912: the same PR again gets its own unit back at once', `${again.code} ${again.out === id} ${again.err}`, '0 true ');
+    t('DS-912: still one unit held', json(d).length, 1);
+    t('DS-912: the log records a renew, not a second grant', log(d).map((e) => e.event), ['grant', 'renew']);
+  }
+
+  // AC5, AC10: with every unit held, the next PR on that team waits, saying what it waits for.
+  {
+    const d = fresh();
+    const two = machineWith({ 'lease-kinds': ALL_ON, 'preview-build-slots': '2' });
+    const got = ['acme/web#1', 'acme/docs#2', 'acme/web#3'].map((l) => pb(d, 'acme', l, ['--wait', '1'], { DESK_MACHINE: two }));
+    t('DS-912 AC5: two units held, the third waits and gives up', got.map((r) => r.code), [0, 0, 75]);
+    t('DS-912 AC5: it says it waits on the preview build, naming both holders', got[2].err.split('\n')[0].startsWith('desk-env lease: waiting for the preview-build slot for acme: all 2 preview-build slots for acme are held: acme/web#1 (no owner') && got[2].err.includes('acme/docs#2 (no owner'), true);
+    const one = fresh();
+    pb(one, 'acme', 'acme/web#5');
+    const other = pb(one, 'acme', 'acme/api#6', ['--wait', '1']);
+    t('DS-912 AC10: two repos on the same team with one unit: the second waits', `${other.code} ${other.err.includes('the preview-build slot for acme is held by acme/web#5')}`, '75 true');
+  }
+
+  // AC9: repos on different teams never wait on each other.
+  {
+    const d = fresh();
+    t('DS-912 AC9: one unit each for two teams', [pb(d, 'acme', 'acme/web#1'), pb(d, 'globex', 'globex/site#1', ['--wait', '1'])].map((r) => r.code), [0, 0]);
+  }
+
+  // AC7, AC8: off takes nothing; shadow grants, logging a would-refuse naming both PRs.
+  {
+    const d = fresh();
+    const off = machineWith({ 'lease-kinds': 'preview-build=off' });
+    const r = pb(d, 'acme', 'acme/web#1', ['--wait', '1'], { DESK_MACHINE: off });
+    t('DS-912 AC7: off takes nothing and does not wait', `${r.code} ${r.out} ${existsSync(join(d, 'leases.json'))}`, '0  false');
+    const sh = machineWith({ 'lease-kinds': 'preview-build=shadow' });
+    pb(d, 'acme', 'acme/web#1', [], { DESK_MACHINE: sh });
+    const t0 = Date.now();
+    const s = pb(d, 'acme', 'acme/web#2', ['--wait', '5'], { DESK_MACHINE: sh });
+    t('DS-912 AC8: shadow grants at once', `${s.code} ${Date.now() - t0 < 4000}`, '0 true');
+    const w = log(d).find((e) => e.event === 'would-refuse');
+    t('DS-912 AC8: the would-refuse names both PRs', `${w?.label} ${w?.holders?.map((h) => h.label)}`, 'acme/web#2 acme/web#1');
+  }
+
+  // AC1, AC2, AC6, AC7, AC8: the skill steps that open a PR and push to it name the lease, by mode.
+  {
+    const pr = readFileSync(join(root, 'skills/desk-pr/SKILL.md'), 'utf8');
+    const sec = pr.slice(pr.indexOf('### Before opening the PR, and before every push to it'), pr.indexOf('## 5. Stacked PRs'));
+    const has = (s) => sec.includes(s);
+    t('DS-912: desk-pr has the lease step', sec.length > 100, true);
+    t('DS-912 AC6: no §4 Vercel takes no lease', has('**§4 Vercel is `none` or unset**: no lease. Open and push as before.'), true);
+    t('DS-912 AC7: off opens and pushes as before', has('desk-env lease mode preview-build') && has('**`off`**: no lease. Open and push as before.'), true);
+    t('DS-912 AC1 AC2: on waits, and says it waits on the preview build', has('desk-env lease acquire preview-build <team> --ttl 1200 --no-owner --wait 100 --label "<label>"') && has('say you are waiting on the preview build'), true);
+    t('DS-912 AC8: shadow never waits and logs a would-refuse', has('**`shadow`**: it never waits') && has('would-refuse naming every holder'), true);
+    t('DS-912 AC4: the PR number goes on the unit after opening', has('desk-env lease renew <lease id> preview-build <team> --ttl 1200 --no-owner --label "<§0 GitHub repo>#<PR number>"'), true);
+    const open = readFileSync(join(root, 'skills/desk-pr/references/opening.md'), 'utf8');
+    const at = open.indexOf('### Open it');
+    t('DS-912 AC1: opening takes the lease before gh pr create', open.indexOf('first take the preview-build lease', at) > at && open.indexOf('first take the preview-build lease', at) < open.indexOf('gh pr create --repo', at), true);
+    const s5 = readFileSync(join(root, 'skills/desk-autopilot/references/worker-contract-stage-5.md'), 'utf8');
+    t('DS-912 AC2: a worker\'s push takes the lease first', s5.includes('**A push to your open PR, and opening it, takes the preview-build lease first**'), true);
+    const merging = readFileSync(join(root, 'skills/desk-autopilot/references/merging.md'), 'utf8');
+    t('DS-912: merging.md states the lease, not the prose cap', merging.includes('takes a unit of its Vercel team\'s preview-build lease first') && !merging.includes('One preview build at a time'), true);
   }
 } finally {
   for (const c of owners) c.kill();

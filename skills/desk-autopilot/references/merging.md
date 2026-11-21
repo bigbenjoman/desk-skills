@@ -285,7 +285,7 @@ key pattern, §4 Other work id patterns, or the Tracker-`none` forms), and `--de
 exits 1 naming the holder's pid. Two things it must get right or it makes the problem worse: **never
 retrigger a run that is not `completed`** (per-PR `cancel-in-progress` kills the run in flight, and a
 loop that re-reads too soon after a rerun sees the stale `completed` and fires again, starving the PR
-forever) and **only one PR may be building a preview at a time** (see the preview-build cap below).
+forever) and **no preview build starts without its team's preview-build lease** (see below).
 
 - **Merge on green as defined, not on the checks you like.** A red check is advisory only when §4
   Advisory checks names it, and waivable only by the driver under §4 Known flaky checks (above),
@@ -385,16 +385,25 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   its own, one per head (`fix-tries.mjs` `conflictFix`): tries of another kind leave a conflict its own. A new head it leaves with no review of its
   own is a stale review, so it goes to a review worker as above. Such a draft reaches WAITING ON YOU
   only once its tries are spent, as `STUCK` with what the last try reported.
-- **One preview build at a time, where PRs deploy previews (§4 Vercel set). Two is already too
-  many.** A shared preview builder can OOM concurrent builds against each other: seven triggered
-  together have given one `Ready` and six `Error` (exit 137), and **two** PRs opening a minute apart
-  have killed *both* builds. A monorepo PR can trigger several previews at once (an app, docs, a
-  component catalogue), so two PRs can be four-plus concurrent builds. Stagger PR creation and
-  serialise every retrigger. Where this applies, it, not review or CI, caps how fast a batch can
-  merge, and it is what a red preview-deploy check almost always means. Where config §3
-  `read-vercel` allows, read the build log before treating it as broken code:
-  `vercel inspect --logs <url> --scope <team slug from §4 Vercel>`, looking for exit 137 or
-  "Out of Memory".
+- **Every preview build takes a unit of its Vercel team's preview-build lease first, where PRs
+  deploy previews (§4 Vercel set).** A shared preview builder can OOM concurrent builds against each
+  other: seven triggered together have given one `Ready` and six `Error` (exit 137), and **two** PRs
+  opening a minute apart have killed *both* builds. The lease is keyed on the team (the first item
+  `desk-env list vercel` prints), not the project, so it spans every repo, batch and session on this
+  computer whose builds share that builder, and a PR takes one unit for every preview it triggers (a
+  monorepo PR's app, docs and catalogue count once). Its size is the machine profile's
+  `preview-build-slots` row (default 1), and its mode the `preview-build` entry of `lease-kinds`
+  (`desk-env lease mode preview-build`): `off` takes nothing, `shadow` takes it without waiting and
+  logs a would-refuse, `on` waits. A worker or session takes it before opening its PR and before
+  every push to it (`desk-pr` §4 *Before opening the PR, and before every push to it*). The merge
+  driver takes it before rerunning a red check whose name says it is a preview (Vercel, Netlify or
+  preview), labelled `<repo>#<n>`; while every unit is held it reruns nothing and logs that the PR
+  waits on the preview build, then tries again next loop. A unit has no owner: the build outlives what
+  started it, so the unit lives until it is released or its 1200 seconds pass (`desk-env lease list`).
+  Where this applies, it, not review or CI, caps how fast a batch can merge, and it is what a red
+  preview-deploy check almost always means. Where config §3 `read-vercel` allows, read the build log
+  before treating it as broken code: `vercel inspect --logs <url> --scope <team slug from §4
+  Vercel>`, looking for exit 137 or "Out of Memory".
 
 **Act, do not watch.** The failure this stage exists to prevent is a green PR sitting unmerged while
 the orchestrator reports on it. If a PR can be merged, merge it before writing the next status
