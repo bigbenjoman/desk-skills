@@ -566,14 +566,17 @@ function writeWithBackup(path, text) {
 // Exact lookup by logical id. Unset (missing row, blank, TODO) is null. The first item only: use
 // configValues for rows that hold a list (Required checks, Env files, several commands).
 export function configValue(id) {
-  if (id === 'suite-weight') return suiteWeightIn(parseConfig(), configRepoRoot(parseConfig())).value;
-  return configValueIn(parseConfig(), id);
+  const parsed = parseConfig();
+  if (id === 'suite-weight') return suiteWeightIn(parsed, configRepoRoot(parsed)).value;
+  return configValueIn(parsed, id);
 }
 
-// The main checkout a config's repo settings live in: its §2 Primary repo root, else the cwd's checkout.
-const configRepoRoot = (parsed) => {
+// The main checkout a config's repo settings live in: its §2 Primary repo root, else (with `cwd`,
+// for the cwd's own repo) the cwd's checkout, else null.
+const configRepoRoot = (parsed, { cwd = true } = {}) => {
   const row = configValueIn(parsed, 'repo-root');
-  return row ? expandHome(row) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
+  if (row) return expandHome(row);
+  return cwd ? git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null : null;
 };
 
 // §4 Suite weight describes the repo's suites, so the repo's committed settings carry it, as
@@ -2383,8 +2386,7 @@ if (isMain) {
           const config = configPathOrNull();
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
           const parsed = parseConfigFile(config);
-          const rootRow = configValueIn(parsed, 'repo-root');
-          const root = rootRow ? expandHome(rootRow) : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || process.cwd();
+          const root = configRepoRoot(parsed) || process.cwd();
           const gaps = appSetupGaps(parsed, root, dir);
           for (const l of appGapLines(gaps, dir)) console.log(l);
           process.exitCode = gaps.length ? 1 : 0;
@@ -2396,10 +2398,9 @@ if (isMain) {
         let drift = false;
         for (const { slug, config } of repos) {
           if (!config || !existsSync(config)) throw new DeskConfigError(`desk-env drift: no config at ${configPathHint()}: run /desk-setup`);
-          // A repo's settings live in its main checkout (§2 Primary repo root); this repo's, failing that, in the cwd's.
-          const rootRow = configValueIn(parseConfigFile(config), 'repo-root');
-          const root = rootRow ? expandHome(rootRow) : slug ? null : git(currentRepo().dir, 'rev-parse', '--show-toplevel') || null;
-          const premerge = configValuesIn(parseConfigFile(config), 'pre-merge-steps');
+          const parsed = parseConfigFile(config);
+          const root = configRepoRoot(parsed, { cwd: !slug });
+          const premerge = configValuesIn(parsed, 'pre-merge-steps');
           const jobKeyed = root && premerge && !isNone(premerge) ? jobKeyedPremerge(premerge, root) : [];
           const lines = driftLines({ ...configDrift({ config, root }), jobKeyed });
           if (lines[0] !== 'no drift') drift = true;
