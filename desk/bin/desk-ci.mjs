@@ -23,6 +23,9 @@
 // protection saves and restores branch protection and rulesets, pins required checks to the GitHub
 // Actions app and makes the default workflow token read-only. Every write is gated on config §3
 // ci-protection and printed as a plan first.
+//   node desk-ci.mjs aws-fallback off --repo owner/name | status [--repo owner/name]
+// aws-fallback turns a repo's AWS fallback off, or shows whether it is on, since when, and when the
+// watchdog last ran (aws-fallback.mjs).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, statSync, realpathSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
@@ -2153,8 +2156,10 @@ if (isMain) {
       process.exit(runBatchRed(rest));
     } else if (cmd === 'protection') {
       process.exit(runProtection(rest));
+    } else if (cmd === 'aws-fallback' && ['off', 'status'].includes(rest[0])) {
+      process.exit((await import('./aws-fallback.mjs')).cli(rest));
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token | aws-fallback off --repo owner/name | aws-fallback status [--repo owner/name] [--home owner/name]');
     }
   } catch (e) {
     console.error(e.message);

@@ -12,7 +12,9 @@ description: >-
   or to make the default workflow token read-only ("/desk-ci protection snapshot|restore|pin|token").
   Also when asking which jobs a batch's child PRs into a batch base could skip ("/desk-ci profile"):
   proposes a light profile for those PRs and a full one for the rest, with an estimated saving.
-argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token"
+  Also when a repo's AWS runners stopped taking jobs and its CI fell back to GitHub-hosted runners
+  ("is the AWS fallback on?", "put voicepa back on AWS", "/desk-ci aws-fallback status|off").
+argument-hint: "classify | ci-lint | profile [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] | batch-red [--prs a,b] | protection snapshot|restore <file>|pin|token | aws-fallback status|off [--repo owner/name]"
 ---
 
 # desk-ci
@@ -27,8 +29,9 @@ land on a self-hosted runner.
 
 **Core principle: show the proposal, change nothing.** This skill reads workflows and CI history,
 and prints; its only writes are `measure`'s report and `protection snapshot`'s file under
-`.handoffs/`, and the protection writes below, each shown first and gated on config §3
-`ci-protection`. It never edits `.github/`, opens a PR, or changes runner settings, in this repo or any other. Writing
+`.handoffs/`, the protection writes below, each shown first and gated on config §3
+`ci-protection`, and `aws-fallback off`, which the user runs to put a repo back on its AWS runners.
+It never edits `.github/`, opens a PR, or changes runner settings, in this repo or any other. Writing
 the workflow changes a proposal implies is separate work, done only after the user has read the
 proposal and said which placements to take.
 
@@ -139,6 +142,7 @@ beyond this file.
 | Running `measure`, or `batch-red` against its baseline | *measure*, *batch-red* | `references/measure.md` |
 | Running `profile`, or acting on its plan or its saving | *profile* | `references/profile.md` |
 | Any `protection` command: `snapshot`, `restore`, `pin` or `token` | *protection* | `references/protection.md` |
+| `aws-fallback status` or `off`, or an `aws-fallback` issue the watchdog opened | *aws-fallback* | `references/aws-fallback.md` |
 
 **A reference file you cannot read stops the command.** If the file a step names is missing or
 empty, stop and name it by its full path; never run the command from memory or an earlier copy of
