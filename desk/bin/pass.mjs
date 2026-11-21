@@ -959,6 +959,10 @@ const ADVANCE_HANDLERS = {
   upload: (a, s) => uploadShots(s.t, a.pr, a.dir),
   'open-question': (a) => openQuestion(STATE, a.key),
   'worker-head': (a, s) => recordWorkerHead(s.t),
+  // The branch and author of the PR a worker's DONE marker names, or null when GitHub cannot be read.
+  'pr-owner': (a) => {
+    try { const v = JSON.parse(sh('gh', ['pr', 'view', String(a.pr), '--repo', GH_REPO, '--json', 'headRefName,author'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] })); return { pr: a.pr, branch: v?.headRefName ?? null, author: v?.author?.login ?? null }; } catch { return null; }
+  },
   done: (a, s) => recordDone(s.t, { log: s.log.path, h: s.log.h, pr: a.pr, summary: a.summary, line: a.line, sets: a.sets }),
   'settle-links': (a, s) => settleLinks(s.t, s.log.path),
   'park-links': (a, s) => parkLinks(s.t, a.needs, a.pr),
@@ -997,7 +1001,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
       const log = advanceLog(t);
       return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
         upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
-        read: { branch: READ_BRANCH, checkout: READ_CHECKOUT } };
+        read: { branch: READ_BRANCH, checkout: READ_CHECKOUT }, logins: conflictHandle };
     },
     decide: decideAdvance,
     handlers: ADVANCE_HANDLERS,
@@ -3749,7 +3753,7 @@ const prStates = {};
 // as pr_status. `head_at` is when the head commit was committed, as GitHub holds it: desk-q's STARTS
 // counts a Merging row's age from it, so a restart or a migration does not reset it and a new head does.
 function readPrStatus(n) {
-  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  const raw = sh('gh', ['pr', 'view', String(n), '--repo', GH_REPO, '--json', 'state,url,mergedAt,isDraft,reviewDecision,reviews,mergeable,mergeStateStatus,headRefOid,headRefName,baseRefName,baseRefOid,author,statusCheckRollup,commits,mergeCommit'], { tolerant: true, stdio: ['ignore', 'pipe', 'ignore'] });
   let v;
   try { v = JSON.parse(raw); } catch { return null; }
   if (!v?.state) return null;
@@ -3767,7 +3771,7 @@ function readPrStatus(n) {
     pr: n, state: v.state, url: v.url ?? null, merged_at: time(v.mergedAt), merge_commit: v.mergeCommit?.oid ?? null,
     isDraft: v.isDraft ?? null, reviewDecision: v.reviewDecision || null, approvals, mergeable: v.mergeable ?? null,
     mergeState: v.mergeStateStatus ?? null, head: v.headRefOid ?? null, head_at: time(headCommit?.committedDate),
-    base: v.baseRefName ?? null, branch: v.headRefName ?? null, base_head: v.baseRefOid ?? null,
+    base: v.baseRefName ?? null, branch: v.headRefName ?? null, author: v.author?.login ?? null, base_head: v.baseRefOid ?? null,
     checks, at: new Date().toISOString(),
   };
 }
@@ -3871,7 +3875,7 @@ const undrafted = [];
 const reopens = [];
 runSteps({
   name: 'PR status',
-  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT }),
+  snapshot: () => ({ ...phaseSnapshot({ tickets: qNow.tickets, registry: REGISTRY, now: Date.now() }), dry: DRY, passAt: PASS_AT, logins: conflictHandle }),
   decide: decidePrStatus,
   handlers: {
     ...OUT_HANDLERS,
@@ -3880,6 +3884,8 @@ runSteps({
       q('set', a.key, `fix.finished=${a.at}`); t.fix.finished = a.at;
       if (a.fixTries) { t.fix_tries = a.fixTries; q('set', a.key, `fix_tries=${JSON.stringify(a.fixTries)}`); }
     },
+    // A ticket whose PR is not its own parks, and the steps after this one in the pass see it parked.
+    park: (a) => { q('park', a.key, a.question); const t = qNow.tickets[a.key]; if (t) Object.assign(t, { state: 'parked', park: { question: a.question } }); },
     'read-pr': (a) => {
       const s = readPrStatus(a.pr);
       return s && withErrors(withUntriggered(withHistory(s, a.was)), a.was);

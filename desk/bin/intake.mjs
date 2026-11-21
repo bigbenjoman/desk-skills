@@ -79,7 +79,7 @@ import { readUsage } from './usage-probe.mjs';
 import { loginOf } from './claude-logins.mjs';
 import { EXIT, designGap, designPark, needsPersonLane, unreadCanvases, readQueue as readQueueAt, keyPattern, labelPark, personStepPark, blockerHold, startWithout, sizePark } from './batch-state.mjs';
 import { backend, supervisorLoaded, supervisorLabel, launchdDomain, systemctl, supervisorMjs } from './run-by.mjs';
-import { FAILED, normaliseRollup, latestPerCheck } from './gate.mjs';
+import { FAILED, normaliseRollup, latestPerCheck, loginIn } from './gate.mjs';
 import { belongsElsewhere, liveBatch, finished, prOpen, listBatches, slotFor, promotedEpicBatch, batchEnv } from './batches.mjs';
 import { startEpic, clearAbandoned, elapsed, triageDone, triageRun } from './epic-plan.mjs';
 import { triageCalls, decisionEntry, appendDecisions } from './decisions.mjs';
@@ -158,6 +158,30 @@ const prsNamingKey = (repo, state, key, fields) => {
   return ghPrList(repo, ['--state', state, '--search', key, '--json', `number,title,headRefName,${fields}`])
     ?.filter((p) => names.test(`${p?.title ?? ''} ${p?.headRefName ?? ''}`)) ?? null;
 };
+// The PRs naming ticket `key` that an account other than desk's opened (`logins`, the §1 GitHub handle
+// and its review account, comma-joined), open or merged: one naming it in its title or head branch, or
+// an open one naming it in its body (an epic roll-up listing it). [{ number, author, state }], or null
+// when GitHub cannot be read. With desk's account unset no PR can be told apart from its own: none is
+// read. A merged PR that only mentions it in its body is not taken as its work.
+function othersPrs(key) {
+  const logins = E.verdictLogins();
+  if (!String(logins ?? '').trim()) return [];
+  const names = new RegExp(keyPattern(key));
+  const prs = ghPrList(E.ghRepo(), ['--state', 'all', '--search', key, '--json', 'number,title,headRefName,body,state,author']);
+  if (!prs) return null;
+  return prs.filter((p) => ['OPEN', 'MERGED'].includes(p?.state) && p.author?.login && !loginIn(p.author.login, logins))
+    .filter((p) => names.test(`${p.title ?? ''} ${p.headRefName ?? ''}`) || (p.state === 'OPEN' && names.test(p.body ?? '')))
+    .map((p) => ({ number: p.number, author: p.author.login, state: p.state }));
+}
+// How admit says ticket `key` is another person's, from othersPrs: { refuse } while one is open, { done }
+// once only merged ones are left, or null when there is none.
+function othersWork(prs) {
+  if (!prs?.length) return null;
+  const by = (list) => [...new Set(list.map((p) => p.author))].map((a) => `${a} in ${list.filter((p) => p.author === a).map((p) => `#${p.number}`).join(', ')}`).join('; ');
+  const open = prs.filter((p) => p.state === 'OPEN');
+  return open.length ? { refuse: `already in progress by ${by(open)}` } : { done: `already done by ${by(prs)} (merged)` };
+}
+
 // The PRs from `head` merged into `base` at or after `since`, with `fields` (mergedAt among them), or null
 // when GitHub cannot be read.
 const promotionsAfter = (repo, head, base, since, fields = 'number,mergedAt') =>
@@ -610,7 +634,22 @@ async function intake({ state, query, reg, now }) {
   // once; one reopened since is taken as any other.
   const open = [];
   for (const i of found.filter((x) => isNew(x.key))) {
-    if (!doneInSearch(i)) { open.push(i); continue; }
+    if (!doneInSearch(i)) {
+      // Another person's open PR for it is theirs to finish: handed to the digest, never triaged here.
+      // One their merged PR already did is said once, as a done one is below.
+      if (reg.tickets[i.key]?.outcome === 'done' && reg.tickets[i.key].theirs) continue;
+      const prs = othersPrs(i.key);
+      if (prs == null) { lines.push(`intake: ${i.key} not admitted: whether another person already has a PR for it could not be read; the next intake tries again`); continue; }
+      const theirs = othersWork(prs);
+      if (theirs?.refuse) { hand(i.key, theirs.refuse); continue; }
+      if (theirs?.done) {
+        reg.tickets[i.key] = { at: now.toISOString(), outcome: 'done', theirs: true, text: `${theirs.done}: nothing triaged or admitted` };
+        writeIntake(state, reg);
+        lines.push(`intake: ${i.key} ${reg.tickets[i.key].text}`);
+        continue;
+      }
+      open.push(i); continue;
+    }
     if (reg.tickets[i.key]?.outcome === 'done') continue;
     const text = `already done in Jira (${doneInSearch(i)}): nothing triaged or admitted`;
     reg.tickets[i.key] = { at: now.toISOString(), outcome: 'done', text };
@@ -839,6 +878,11 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     }
     const jira = readJira(key);
     if (jira.done) { say(`${key} is already done in Jira (${jira.done}): nothing triaged or admitted`); continue; }
+    const prs = othersPrs(key);
+    if (prs == null) { refuse(key, 'whether another person already has a PR for it could not be read from GitHub: run /desk-admit again'); continue; }
+    const theirs = othersWork(prs);
+    if (theirs?.refuse) { refuse(key, theirs.refuse); continue; }
+    if (theirs?.done) { say(`${key} is ${theirs.done}: nothing triaged or admitted`); continue; }
     links[key] = { blockers: jira.blockers, epic: jira.epic };
   }
   // Whether `key` needs no triage, being in another batch: asked when its turn comes, since an epic
