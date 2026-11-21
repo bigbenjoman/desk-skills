@@ -122,13 +122,13 @@ report() { o="$OUT/$1.out"; read -r rc took cpu runs rc1 <"$OUT/$1.done"
   grep -E "checks passed|^SKIP" "$o"; checks_in "$o"
   total=$((total + c)); echo "ok: $c"; echo "took: $took s"; echo "cpu: $(secs "$cpu") s"
   cpu_all=$((cpu_all + cpu)); ran="$ran${ran:+,}\"${name[$1]}\""
-  why_failed "$o" "$rc"
+  why_failed "$o" "$rc"; bad=$why
   if [ "${runs:-1}" -gt 1 ]; then
-    if [ -z "$why" ]; then echo "retried: failed its first run, passed its retry"; flaked="$flaked ${name[$1]}"; fi
+    if [ -z "$bad" ]; then echo "retried: failed its first run, passed its retry"; flaked="$flaked ${name[$1]}"; fi
     echo "-- first run"; show_failure "$o"1 "$rc1"
-    [ -z "$why" ] || echo "-- retry"
+    [ -z "$bad" ] || echo "-- retry"
   fi
-  [ -z "$why" ] || { show_failure "$o" "$rc"; fail=1; failed="$failed ${name[$1]}"; }; }
+  [ -z "$bad" ] || { show_failure "$o" "$rc"; fail=1; failed="$failed ${name[$1]}"; }; }
 # Every tests/test_*.sh and tests/test_*.mjs is a suite, run in name order, so adding one needs no
 # edit here. Its label is the first `# suite: <label>` (`// suite: <label>` in .mjs) line in its
 # first ten lines, or the file name without one.
