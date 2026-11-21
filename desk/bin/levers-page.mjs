@@ -60,6 +60,7 @@ const WHAT = Object.freeze({
   'review-reuse': 'Keeps review notes after a rebase instead of reviewing it all again',
   codex: 'Has Codex review pull requests instead of Claude',
   effort: 'Uses less thinking on simple steps',
+  ledger: 'Records every queue change in a ticket log beside queue.json',
 });
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -351,7 +352,7 @@ function leverRows(v) {
     let next;
     if (status === 'pinned') next = `Pinned by hand in ${l.cells.filter((c) => c.state === 'pinned').map((c) => c.repo).join(', ')}, so this is a before-and-after, not a test.`;
     else if (status === 'error') { const e = l.cells.find((c) => c.error)?.error; next = `Couldn’t read ${basename(e?.file)}${e?.line ? ` line ${e.line}` : ''}.`; }
-    else if (reg && !reg.trialled) next = 'Tested one at a time with blind reviews, once desk starts trialling it.';
+    else if (reg && !reg.trialled) next = reg.layer === 'quality-risk' ? 'Tested one at a time with blind reviews, once desk starts trialling it.' : 'Not trialled: on only where a repo’s levers row names it.';
     else next = anyAuto ? 'Testing starts with the next tickets desk admits.' : 'Testing starts when a repo is set to auto.';
     const decided = status === 'kept' && main ? keptAt(v, l.lever, main.repo) : null;
     return { lever: l.lever, layer: l.layer, cells: l.cells, status, main, next, decided, i, rank: order[status] };

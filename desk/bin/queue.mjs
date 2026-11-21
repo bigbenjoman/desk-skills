@@ -25,6 +25,7 @@ import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
+import { LEDGER_BY_ENV } from './queue-ledger.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -106,8 +107,9 @@ function lock(dir = LOCK) {
 
 // Every command saves at most once, so the lock goes with the save: approve's gh call after it, or
 // reject's briefing write, never keeps another writer waiting. Each save is one version higher than
-// the queue it read (queue-store.mjs).
-const writeQueue = writeQueueFile;
+// the queue it read (queue-store.mjs), and the ticket ledger names this command as its writer, or the
+// process it runs for (queue-ledger.mjs LEDGER_BY_ENV: the pass).
+const writeQueue = (file, q) => writeQueueFile(file, q, { by: process.env[LEDGER_BY_ENV] || `queue.mjs ${cmd}` });
 function save(q) {
   writeQueue(QUEUE, q);
   unlock();

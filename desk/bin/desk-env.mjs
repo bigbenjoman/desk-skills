@@ -302,17 +302,23 @@ export class NoRepoConfigError extends DeskConfigError {}
 // second column) because §2's Notes and §3's Recommended columns also carry backticks, and taking
 // the wrong one would read the suggestion as the user's answer. The row id is the "Key" column
 // where the table has one, otherwise the first column.
-let cache = null;
 // `<section>/<heading>` of every table id, as tableLines normalises a `###` heading.
 const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map((r) => `${r.section}/${norm(r.row)}`));
 
 const { splitRow } = M;
 
+// This repo's config, through parseConfigFile's cache, so an edit by hand or by another process
+// is read on the next call. A desk-env command run from the shell pins the first parse it reads for
+// the rest of the run (pinConfig), so every row one command prints comes from one version of the
+// file; only a write of the config in that run drops the pin.
+let pinned = false, snapshot = null;
 function parseConfig() {
-  if (cache) return cache;
-  cache = parseConfigFile(configPathOrNull());
-  return cache;
+  if (snapshot) return snapshot;
+  const parsed = parseConfigFile(configPathOrNull());
+  if (pinned) snapshot = parsed;
+  return parsed;
 }
+const pinConfig = () => { pinned = true; };
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
 // header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
@@ -345,13 +351,32 @@ export function declaredRows(text) {
 }
 const settingCol = (header) => ['your setting', 'value', 'setting'].map((n) => header.indexOf(n)).find((i) => i >= 0) ?? 1;
 
+// A config file's parse, by path, kept while its inode, size and modification time are unchanged:
+// desk-q reads many rows of every repo's config on each refresh. A missing file is not kept.
+const parsedFiles = new Map();
+const fileStamp = (st) => `${st.ino}:${st.size}:${st.mtimeNs}`;
+
 // Any config file, not only this repo's: `ports` reads every repo's to keep dev ports apart.
+// The result is shared between callers: read it, never change it.
 function parseConfigFile(path) {
+  let st = null;
+  if (path) try { st = statSync(path, { bigint: true }); } catch { /* missing: parsed below as absent */ }
+  if (!st) { parsedFiles.delete(path); return parseConfigText(path, null); }
+  const stamp = fileStamp(st);
+  const hit = parsedFiles.get(path);
+  if (hit?.stamp === stamp) return hit.parsed;
+  const parsed = parseConfigText(path, readFileSync(path, 'utf8'));
+  if (parsedFiles.size > 64) parsedFiles.clear();
+  parsedFiles.set(path, { stamp, parsed });
+  return parsed;
+}
+
+function parseConfigText(path, text) {
   // `rows`: every declared row, in order, for `drift`.
   // `tables`: the cells of every row of a table id's `###` table (TABLE_IDS), by section and heading.
-  const parsed = { path, exists: !!path && existsSync(path), sections: {}, rows: [], tables: {} };
+  const parsed = { path, exists: text != null, sections: {}, rows: [], tables: {} };
   if (!parsed.exists) return parsed;
-  const table = tableLines(readFileSync(path, 'utf8'));
+  const table = tableLines(text);
   for (const section of table.sections) parsed.sections[section] ??= { byKey: {}, byName: {} };
   for (const { section, sub, header, cells, label, declared } of table.rows) {
     if (TABLE_IDS.has(`${section}/${sub}`)) { (parsed.tables[`${section}/${sub}`] ??= []).push(cells); continue; }
@@ -1888,7 +1913,7 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
+  snapshot = null;
   return { section: sec, label: t.label, line };
 }
 
@@ -1906,7 +1931,7 @@ function setRowValue(config, section, row, value) {
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
-  cache = null;
+  snapshot = null;
   return true;
 }
 
@@ -2171,6 +2196,7 @@ if (isMain) {
     process.exit(4);
   }
   if (!DESK_ENV_COMMANDS.includes(cmd)) { console.error(deskEnvUsage()); process.exit(2); }
+  pinConfig();
   try {
     switch (cmd) {
       case 'where': {

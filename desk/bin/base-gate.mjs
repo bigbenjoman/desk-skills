@@ -110,7 +110,7 @@ function gate() {
     if (s.reason === 'check') treeCheck = s.check;
     failures.push(s.reason === 'conflict' ? `merging ${SOURCE} into ${BASE} conflicts (${s.files.join(', ')}): the pass hands it to a conflict fix worker where §3 lets one resolve it`
       : s.reason === 'check' ? `merging ${SOURCE} into ${BASE} fails §4 Merged-tree check (${s.check.command}), nothing pushed: the pass hands it to a fix worker where §3 lets one`
-      : s.reason === 'permission' ? `${BASE} is ${s.merged} commit(s) behind ${SOURCE} and config §3 ${key} is "${perm}", so it was not synced${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
+      : s.reason === 'permission' ? `${s.recreate ? `${BASE} is missing on origin (merged into ${SOURCE}, then deleted)` : `${BASE} is ${s.merged} commit(s) behind ${SOURCE}`} and config §3 ${key} is "${perm}", so it was not ${s.recreate ? 'recreated' : 'synced'}${perm === 'ask' ? ': run passes with AUTOPILOT_BASE_PUSH_APPROVED=1' : ''}`
         : `syncing ${BASE}: ${s.why}`);
     return;
   }
