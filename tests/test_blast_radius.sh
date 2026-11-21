@@ -134,8 +134,8 @@ rec KAN-65 surface src/s65a,src/s65b,src/s65c; rec KAN-66 surface src/s66
 plan KAN-65 KAN-66 KAN-62 KAN-64 KAN-63
 check "a ticket that gates others is spawned first, however late it is named; then the fewest planned files" '[ "$(seeded)" = "KAN-63 KAN-66 KAN-62 KAN-64 KAN-65" ]'
 check "the plan shows the spawn order with what each gates" \
-  'printf "%s\n" "$out" | grep -q "^SPAWN ORDER — the tickets that gate the most others first" && printf "%s\n" "$out" | grep -q "^  1\. KAN-63  gates 2, 1 planned file(s)$" && printf "%s\n" "$out" | grep -q "^  5\. KAN-65  gates 0, 3 planned file(s)$"'
+  'printf "%s\n" "$out" | grep -q "^SPAWN ORDER — Blockers start first, then the tickets that gate the most others" && printf "%s\n" "$out" | grep -q "^  1\. KAN-63  gates 2, 1 planned file(s)$" && printf "%s\n" "$out" | grep -q "^  5\. KAN-65  gates 0, 3 planned file(s)$"'
 plan --keep-order KAN-65 KAN-66 KAN-62 KAN-64 KAN-63
-check "--keep-order keeps the order named, blockers still first" '[ "$(seeded)" = "KAN-65 KAN-66 KAN-63 KAN-62 KAN-64" ] && printf "%s\n" "$out" | grep -q "^SPAWN ORDER — as named (--keep-order)"'
+check "--keep-order keeps the order named, blockers still first" '[ "$(seeded)" = "KAN-65 KAN-66 KAN-63 KAN-62 KAN-64" ] && printf "%s\n" "$out" | grep -q "^SPAWN ORDER — With --keep-order, tickets start in the order named"'
 
 echo "blast radius: $PASS passed, $FAIL failed"; [ "$FAIL" -eq 0 ]

@@ -23,6 +23,7 @@ import { SIZES, queueEpic } from './desk-q-eta.mjs';
 import { belongsElsewhere } from './batches.mjs';
 import { perTicketDb } from './health.mjs';
 import { appendOnlyFrom, sharedFiles } from './scope-report.mjs';
+import { SPAWN_ORDER_RULE, KEEP_ORDER_RULE, bySpawnOrder } from './spawn-order.mjs';
 
 const AS_JSON = process.argv.includes('--json');
 // --keep-order: spawn in the order the tickets were named (blockers still first), not by what they gate.
@@ -450,13 +451,9 @@ const gates = (() => {
   return out;
 })();
 const filesOf = (r) => (Array.isArray(r.files_in_scope) ? r.files_in_scope.length : 0);
-// Spawn order starts the tickets that gate the most others first, so a late hub never leaves worker
-// slots idle while its dependents wait; among tickets that gate none, the one with fewer planned files
-// first; then the order named. --keep-order keeps the named order. Blockers always start before what
-// they block (topo). The merge order puts the larger blast radius first; the holds keep the two
-// consistent where it matters.
-const order = topo(KEEP_ORDER ? ours : ours.slice().sort((a, b) => gates[b.ticket] - gates[a.ticket]
-  || (gates[a.ticket] === 0 && gates[b.ticket] === 0 ? filesOf(a) - filesOf(b) : 0) || named(a) - named(b)));
+// Spawn order is SPAWN_ORDER_RULE (KEEP_ORDER_RULE with --keep-order); topo puts blockers first. The
+// merge order puts the larger blast radius first; the holds keep the two consistent where it matters.
+const order = topo(KEEP_ORDER ? ours : ours.slice().sort(bySpawnOrder(gates, filesOf, named)));
 const merging = topo(admitted.slice().sort((a, b) => radius(a) - radius(b) || named(a) - named(b)));
 
 // What a ticket that needs a database will actually get.
@@ -603,7 +600,7 @@ if (appendOnly.bad) say(`\ncollisions: ${appendOnly.bad} — read as none`);
 
 const spawning = order.filter((r) => admitted.includes(r));
 if (spawning.length > 1) {
-  say(`\nSPAWN ORDER — ${KEEP_ORDER ? 'as named (--keep-order), blockers first' : 'the tickets that gate the most others first, then the fewest planned files, then as named; blockers first'}:`);
+  say(`\nSPAWN ORDER — ${KEEP_ORDER ? KEEP_ORDER_RULE : SPAWN_ORDER_RULE}`);
   spawning.forEach((r, i) => say(`  ${i + 1}. ${r.ticket}  gates ${gates[r.ticket] ?? 0}, ${filesOf(r)} planned file(s)`));
 }
 if (merging.length) {
@@ -632,9 +629,8 @@ const unsized = here.filter((r) => laneOk(r) && !r.size).map((r) => r.ticket);
 if (unsized.length) say(`\n! no size on ${unsized.length} ticket(s): ${unsized.join(', ')} — they run on their lane; size them (desk-jira's scale) so anything L or bigger is split`);
 if (otherLinks) say(`\n! ${otherLinks} Jira link(s) of another type ignored — only Blocks ("is blocked by") is honoured`);
 
-// Seed the queue in spawn order (`order`: blockers first, then what each gates, then planned files,
-// then as named). A ticket that collides with another is marked so the spawn loop will not run them
-// together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
+// Seed the queue in spawn order (`order`). A ticket that collides with another is marked so the spawn
+// loop will not run them together. Park precedence: lane, size, cycle, then the dependency hold. A lane, size or design park
 // keeps its blockers in held_by beside it, so nothing releases it while its own park stands.
 // In feature mode nothing is seeded until the spine is filed and planned and the owner table is
 // settled: seeded without them, every child would start with nothing held behind the spine.
