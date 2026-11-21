@@ -282,8 +282,10 @@ const computedInclude = (lines) => {
     }
   }
   // A YAML alias (`*name`) or merge key (`<<:`) brings in entries written elsewhere in the file, which
-  // this matrix's own text cannot show, so it is read as unreadable too. A `*` in a quoted string is text.
-  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(flow.replace(/'[^']*'|"(?:[^"\\]|\\.)*"/g, "''"))) return true;
+  // this matrix's own text cannot show, so it is read as unreadable too. A `*` in a quoted string is
+  // text; a quote opens a string only where a value starts, so the apostrophe in `don't` opens none.
+  const unquoted = flow.replace(/(^|[\s,[{:-])(?:'(?:[^']|'')*'|"(?:[^"\\]|\\.)*")/g, "$1''");
+  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(unquoted)) return true;
   if (flow.startsWith('{')) {
     const text = `matrix: ${flow}`;
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
