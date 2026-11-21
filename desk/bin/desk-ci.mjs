@@ -271,17 +271,15 @@ const computedInclude = (lines) => {
   const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
   if (mi < 0) return false;
   const kv = keyOf(lines[mi]);
-  if (kv.value) {
-    // A flow mapping may run on over the lines after it: read it through to its closing brace.
-    let text = lines[mi].text;
-    for (const l of lines.slice(mi + 1)) {
-      if (nesting(text).braces <= 0) break;
-      if (!l.blank && !l.scalar) text += ` ${l.text}`;
-    }
+  const block = blockAfter(lines, mi);
+  // A flow mapping, on the `matrix:` line or below it, over one line or several: read it as one text.
+  const flow = [kv.value, ...block.filter((l) => !l.blank).map((l) => l.text)].join(' ').trim();
+  if (flow.startsWith('{')) {
+    const text = `matrix: ${flow}`;
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
       .some((m) => isFlowAxis(text, m.index) && computedFlow(text.slice(m.index + m[0].length)));
   }
-  const block = blockAfter(lines, mi);
+  if (kv.value) return false;
   const axisIndent = block.find((l) => !l.blank && !l.scalar)?.indent;
   return block.some((l, j) => {
     if (l.indent !== axisIndent || /^-\s/.test(l.text) || keyOf(l)?.key !== 'include') return false;
