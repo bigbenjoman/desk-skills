@@ -182,7 +182,10 @@ const TERMS = [
   [new RegExp(String.raw`${OPEN}requeu(?:e|ing)\s+(it|this|them)\b`, 'gi'), (m, o) => `${/^requeuing/i.test(m) ? 'sending' : 'send'} ${o} back to a worker`],
   [new RegExp(String.raw`${OPEN}requeued${CLOSE}`, 'gi'), 'sent back to a worker'],
   [new RegExp(String.raw`${OPEN}requeu(?:e|ing)${CLOSE}`, 'gi'), (m) => (/^requeuing/i.test(m) ? 'sending it back to a worker' : 'send it back to a worker')],
-  [new RegExp(String.raw`${OPEN}the spine(?: check)?${CLOSE}`, 'gi'), 'the acceptance-spec check'],
+  // "The spine" alone is the feature's acceptance specs (an epic plan drafts "the spine and owner
+  // table"), not its check.
+  [new RegExp(String.raw`${OPEN}the spine check${CLOSE}`, 'gi'), 'the acceptance-spec check'],
+  [new RegExp(String.raw`${OPEN}the spine${CLOSE}`, 'gi'), 'the acceptance specs'],
   [new RegExp(String.raw`${OPEN}spine(?= (?:check|review|park))`, 'gi'), 'acceptance-spec'],
   // Any other config row: "§4 Package manager" is the config's Package manager.
   [/(?:\bconfig\s+)?§\s?\d+b?\s+/g, "the desk config's "],

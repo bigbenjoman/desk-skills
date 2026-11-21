@@ -95,7 +95,8 @@ function put(name, r) {
     (r.handle ? `## 1. Who you are\n\n| Field | Value |\n|---|---|\n| GitHub handle | \`${r.handle}\` |\n\n` : '') +
     `## 2. Paths\n\n| Field | Value |\n|---|---|\n| Primary repo root | \`${root}\` |\n\n` +
     `## 3. Permissions\n\n| Key | Action | Recommended | Your setting |\n|---|---|---|---|\n| \`pr-ready\` | Undraft | \`ask\` | \`${r.prReady ?? 'no'}\` |\n` +
-    `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n\n` +
+    `| \`autopilot-merge\` | The merge driver merges | \`ask\` | \`${r.merge ?? 'no'}\` |\n| \`pr-merge-green\` | Merge a green PR | \`ask\` | \`${r.merge ?? 'no'}\` |\n` +
+    Object.entries(r.rows ?? {}).map(([k, v]) => `| \`${k}\` | ${k} | \`ask\` | \`${v}\` |\n`).join('') + '\n' +
     `## 3b. Cost and autonomy\n\n| Field | Recommended | Your setting |\n|---|---|---|\n| Preferred dev-server port | \`3000\` | \`${r.port}\` |\n| Autopilot worker concurrency | \`2 / 3\` | \`2 / 3\` |\n` +
     `| Batches run by | \`supervisor\` | \`${r.supervised ? 'supervisor' : 'session'}\` |\n` +
     (r.required ? `\n## 4. Repo\n\n| Field | Value |\n|---|---|\n| Required checks | ${r.required.map((c) => `\`${c}\``).join(', ')} |\n` : '') +
@@ -722,7 +723,9 @@ put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {
   'K-11': { state: 'failed', lane: 'A' },
   // DS-806: the SV-4017 park from 2026-11-19, as its ticket quotes it.
   'K-10': parked('A', 2, 'K-10 needs two new Merl dependencies and worker-dependency-install is not granted. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and requeue. Not reached: Merl\'s pipeline tools and tests (AC1–AC4), Stage 4 verify, 4b self-review, push, draft PR, review post, Jira comment, Jira transition to Review/QA.'),
-}, triage: { 'K-5': { lane: 'B' } } });
+}, triage: { 'K-5': { lane: 'B' } },
+  // SV-4017's repo sets the row it parked on to no: an unset one would make it the repo's unset-row item.
+  rows: { 'worker-dependency-install': 'no' } });
 mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks'), { recursive: true });
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-4.json'), JSON.stringify({ question: 'Please take it out of the autopilot queue: lane C' }));
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.json'), JSON.stringify({ question: 'Ben runs this step: there is no worker work left' }));
@@ -860,7 +863,8 @@ const behindP = { state: 'parked', lane: 'A', held_by: 'P-1', park: { question: 
 put('omicron', { port: 4555, beat: 1, supervised: true, tickets: { 'P-1': { ...parked('epic', 5, planQ), type: 'Epic' }, 'P-2': behindP, 'P-3': behindP } });
 const om = N.collect({ word: 'omicron' }).items;
 t('DS-351 AC2 the plan is one needs-you item, of kind plan, its children waiting', om.map((i) => `${i.t.key} ${i.kind}`).join(), 'P-1 plan');
-t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === `${planQ} (2 tickets wait behind this)`} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
+// DS-806: in plain words, "the spine" being the feature's acceptance specs.
+t('DS-351 AC2 its need is the plan park, and its recommendation is to answer it', `${om[0]?.need === `${planQ.replace('the spine', 'the acceptance specs')} (2 tickets wait behind this)`} ${om[0]?.actions.map(([a]) => a).join()}`, 'true answer,not-now');
 t('DS-351 AC2 an answer to it is recorded on the epic', `${N.record({ word: 'omicron', ticket: 'P-1', action: 'answer', text: 'start' }).ok} ${answers().at(-1)?.args.join(' ')}`, 'true P-1 --all start');
 
 // ---- DS-375: a PR stuck after its fix tries is read against its checks now, names the step its run
@@ -1068,7 +1072,7 @@ writeFileSync(join(dpWt('P-2'), 'notes.txt'), 'x');
 const dp = Object.fromEntries(N.collect({ word: 'dropper' }).items.map((i) => [i.t.key, i]));
 const dpActs = (k) => dp[k]?.actions.map(([a, why]) => `${a}${why ? '*' : ''}`).join();
 t('DS-556 AC3 a park saying it has no worker work recommends drop first, and resume stays on offer', `${dp['P-1']?.kind} ${dpActs('P-1')}`, 'parked drop*,resume,not-now');
-t('DS-556 AC3 the resume it displaced keeps its reason as a note', /^lane A: /.test(dp['P-1']?.actions[1][2] ?? ''), true);
+t('DS-556 AC3 the resume it displaced keeps its reason as a note', dp['P-1']?.actions[1][2], 'a worker finishes it once it has your answer');
 t('DS-556 any other park offers drop before not-now, unrecommended', dpActs('P-2'), 'resume*,drop,not-now');
 t('DS-556 AC3 a session park saying it has no worker work recommends drop first', `${dp['P-3']?.kind} ${dpActs('P-3')}`, 'session drop*,open,done,not-now');
 t('DS-556 any other session park offers drop too', dpActs('P-4'), 'open*,done,drop,not-now');
@@ -1724,7 +1728,7 @@ const grT2 = queueOf('grantee').tickets['GR-2'];
 t('DS-390 AC5 an answer that approves nothing records no grant', `${gr2.ok} ${grT2.state} ${grT2.grant ?? null}`, 'true triaged null');
 const grI3 = N.collect({ word: 'grantee' }).items.find((i) => i.t.key === 'GR-3');
 t('DS-390 AC3 a park on a step no worker is allowed is a session item, offering open, done, drop and not-now, never resume',
-  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${/never allowed aws/.test(grI3?.actions[0][1] ?? '')}`, 'session open,done,drop,not-now true');
+  `${grI3?.kind} ${grI3?.actions.map((a) => a[0]).join()} ${grI3?.actions[0][1]}`, "session open,done,drop,not-now a worker can't run aws commands, so it needs you");
 const gr3 = N.record({ word: 'grantee', ticket: 'GR-3', action: 'resume', text: 'Yes, read it yourself' });
 t('DS-390 AC3 an answer approving it is not requeued to a worker', `${gr3.ok} ${queueOf('grantee').tickets['GR-3'].state} ${queueOf('grantee').tickets['GR-3'].grant ?? null}`, 'false parked null');
 t('DS-390 AC3 open names the session and says why', /not requeued \(a step no worker is allowed\).*\/desk-ticket GR-3/.test(N.record({ word: 'grantee', ticket: 'GR-3', action: 'open' }).line), true);

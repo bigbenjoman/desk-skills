@@ -37,6 +37,10 @@ const SPINE = parkWords('lane C/D: the spine check failed on AC2 and AC5; §4 St
 t('AC4 the spine, an AC list and a § row are put in plain words', SPINE,
   "plan- or design-first work: the acceptance-spec check failed on the ticket's requirements; the desk config's Staging is none, so approve the specs as they are?");
 t('AC4 no internal term is left', JARGON.test(SPINE), false);
+// An epic's plan park drafts "the spine": its acceptance specs, never the check on them.
+t('AC4 the spine on its own is the acceptance specs, not their check',
+  plainTerms('the spine and owner table for P-1 are drafted; the spine check passed'),
+  'the acceptance specs and owner table for P-1 are drafted; the acceptance-spec check passed');
 
 // Grants: every config grant has its words, one written bare, and one the config does not define.
 const { GRANT_WORDS } = await import(join(BIN, 'park-words.mjs'));
