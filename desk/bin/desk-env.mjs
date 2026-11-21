@@ -848,6 +848,7 @@ export function commandItemProblem(cmd) {
 }
 
 // env -> config -> fallback. Identity-shaped values have no fallback and fail loudly.
+/** @param {{ env?: string, id?: string, fallback?: any, identity?: boolean }} opts */
 export function resolve({ env, id, fallback, identity = false }) {
   const fromEnv = env ? process.env[env] : undefined;
   if (!unset(fromEnv)) return expandHome(fromEnv);
@@ -1011,6 +1012,7 @@ export function codexReview() {
 
 // Which tier a ticket's worker runs on, from its triage: a lane A or E ticket sized XS or S is
 // `standard`; lane B, size M and an unsized ticket are `high`.
+/** @param {{ lane?: string | null, size?: string | null }} [triage] */
 export function modelTier({ lane, size } = {}) {
   return ['A', 'E'].includes(String(lane ?? '').toUpperCase()) && ['XS', 'S'].includes(String(size ?? '').toUpperCase())
     ? 'standard' : 'high';
@@ -2116,7 +2118,7 @@ function valueRow(id) {
   const read = fromRow ? items : value == null ? null : [value];
   const checked = read ? checkRow(e, read) : { value: null, errors: [] };
   const errors = [...(refused ? [{ item: null, error: refused.message, fatal: true }] : []), ...checked.errors];
-  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source, value, items,
+  return { ...rowHead(e), set: source !== 'default' && source !== 'unset', source: /** @type {ConfigRowJson['source']} */ (source), value, items,
     parsed: errors.length ? null : checked.value, default: e.default ?? null, errors };
 }
 
@@ -2205,6 +2207,7 @@ const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) 
 
 // The lines of `git status --porcelain --untracked-files=all` output that are changes: every line but an
 // untracked known file, or with `run`, an untracked scratch file of that review run.
+/** @param {string} porcelain @param {{ run?: string }} [opts] */
 export function treeStatus(porcelain, { run } = {}) {
   const known = KNOWN_UNTRACKED.map((k) => templateRe(k.path, () => '[^/]+'));
   if (run) known.push(...REVIEW_SCRATCH.map((s) => templateRe(s, (p) => (p === '<run>' ? escapeRe(run) : '[^/]+'))));

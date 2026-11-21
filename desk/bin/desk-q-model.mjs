@@ -923,6 +923,7 @@ const lineLogin = () => { const own = ownLogin(); return own?.configDir && other
 // True when the subscriptions file pins Claude folders to accounts; false with none, or one unreadable.
 const pinnedFile = () => { try { return multiAccount(readSubscriptions(subscriptionsPath())); } catch { return false; } };
 const pinnedOwn = (own) => !!own && !own.configDir && pinnedFile();
+/** @param {any[]} repos @param {{ now?: number }} [opts] */
 export function probesDue(repos, { now } = {}) {
   const own = ownLogin();
   const others = otherLogins(own);
@@ -1832,7 +1833,7 @@ const AWS_SERVICE = {
 };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 // "2027-03-31" -> "31 Mar 2027"; anything else as it is.
-const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[m[2] - 1]} ${m[1]}` : String(s ?? ''); };
+const ymdText = (s) => { const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(s ?? ''); return m ? `${Number(m[3])} ${MONTHS[Number(m[2]) - 1]} ${m[1]}` : String(s ?? ''); };
 
 // A name's AWS lines for `period`, its profiles' merged by service, largest use first and tax last.
 const awsLinesOf = (cache, name, period) => [...(awsByName(cache?.aws, period)[name]?.lines ?? [])]
@@ -1851,6 +1852,7 @@ function awsParts(lines, mine) {
   const most = (k, f = usd) => Math.max(f(sum(k) / 100).length, ...lines.map((l) => f(l[k]).length));
   const uw = Math.max(9, most('used') + 3), kw = Math.max(11, most('credits', neg) + 3), aw = Math.max(11, most('charged') + 3);
   const lead = (l) => [[`  ${pad(l.plain, ww)}`, null], [pad(l.own, nw), GREY]];
+  /** @type {any[]} */
   const out = [''];
   if (!credited) {
     out.push(bold(`  ${pad('SERVICE', ww)}${pad('AWS NAME', nw)}${rpad('CHARGED', aw)}`),
@@ -2248,7 +2250,7 @@ function usageTable(repos, now, checked = null) {
   const listed = claudeLogins();
   const gone = multi ? readSubscriptions(subscriptionsPath()).logins.filter((l) => l.tool === 'claude' && l.account && !listed.some((o) => o.dir === l.dir)) : [];
   const claude = [...listed, ...gone].map((l) => ({ tool: 'claude', login: l, plan: accountOf(l).plan, reading: readUsage({ dirs, login: l, now }), out: holdOut(repos, l, now),
-    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi }));
+    workers: runningOn(repos, l), check: checkOf(l), use: useOf(l), multi, limit: null }));
   const codex = codexLogins().map((l) => codexReading(l, now)).map((x) => ({ tool: 'codex', login: x.login, plan: accountOf(x.login).plan, reading: x.claude,
     out: x.until != null ? { at: x.until, type: x.reading.five_hour?.limited ? 'five_hour' : 'seven_day' } : null, workers: null, check: checkOf(x.login), use: useOf(x.login) }));
   // One login of a tool is its default, whatever the file says.
@@ -2604,6 +2606,7 @@ function quietNotes(shown) {
 // Each old desk code note, keyed by the batch it shows under. The supervisor agent runs per repo, so
 // each kind (supervisor, merge driver) is one note on the first batch of a repo that has it, and where
 // several repos have it, one note naming them all, on the first one's batch.
+/** @type {[kind: string, one: string, many: (repos: string) => string, fix: string | null][]} */
 const OLD_CODE = [
   ['supervisor', 'the supervisor runs old desk code. ', (repos) => `the supervisors of ${repos} run old desk code. `, 'Run ./install.sh in desk-skills.'],
   // The supervisor restarts its driver on the installed code by itself, so the driver's note has no fix.
@@ -2707,12 +2710,13 @@ function runsOnOf(claude) {
 // then DONE goes, then MERGING, whose counts move into the notes, then RUNS ON (`runsW` wide, or none).
 // DONE counts merged tickets only. NEEDS YOU is needsCount's, the count /desk-needs-you lists, with any
 // put off after it, and widens to fit.
+/** @type {[head: string, group: string, width: number][]} */
 const NUM_COLS = [['RUN', 'running', 4], ['READY', 'ready', 7], ['MERGING', 'merging', 9], ['WAIT', 'waiting', 6], ['NEEDS YOU', 'needs', 11], ['DONE', 'done', 6]];
 const needsCell = ({ shown, putOff }) => `${shown}${putOff ? ` (+${putOff} put off)` : ''}`;
 function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   const ok = list.filter((r) => !r.error);
   const needsW = Math.max(11, ...ok.map((r) => needsCell(needs.get(r)).length + 2));
-  const numCols = NUM_COLS.map((c) => (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
+  const numCols = NUM_COLS.map((c) => /** @type {typeof c} */ (c[1] === 'needs' ? [c[0], c[1], needsW] : c));
   const workers = (r, slot) => `  ${r.workers == null ? '—' : `${workersRunning(r)} of ${r.workers}`} · cap ${r.cap}${slot && unslotted(r) > 0 ? ` · ${unslotted(r)} ready with no free slot` : ''}${slot && triagingText(r) ? ` · ${triagingText(r)}` : ''}`;
   const lastFit = Math.max(24, ...ok.map((r) => lastPass(r, now)[0].length + 2)), qdFit = Math.max(12, ...ok.map((r) => queueDone(r, now, checkin).length));
   const wide = { lastW: LAST_W, qdW: QD_W, drop: [], runsW }, fit = { lastW: lastFit, qdW: qdFit, slot: false, runsW };
@@ -2724,6 +2728,7 @@ function homeLayout(list, w, width, now, checkin, needs, runsW = null) {
   return { ...l, cols: numCols.filter(([h]) => !l.drop.includes(h)), workers: (r) => workers(r, l.slot) };
 }
 
+/** @param {any[]} repos @param {{ all?: boolean, now?: number, avail?: number, cap?: number | null, gate?: number, perWorker?: number, interactive?: boolean, checkin?: boolean, width?: number | null, badge?: string, pinUsage?: boolean, costs?: any, cache?: any }} [opts] */
 function overviewParts(repos, { all = false, now = Date.now(), avail = availableGiB(), cap = machineCap(), gate = gateGiB(repos), perWorker = workerGB(), interactive = false, checkin = false, width = null, badge = '', pinUsage = false, costs, cache } = {}) {
   // One row per repo, adding up its batches on screen.
   const shown = shownRepos(repos, all), list = byRepo(shown);
@@ -3001,6 +3006,7 @@ const NO_RUNNER_MS = 10 * MINUTE;
 const checkFailed = (c) => c.status === 'completed' && FAILED.has(c.conclusion);
 const startedMs = (c) => Date.parse(c.started ?? '') || null;
 // "tests (macos-latest)" waits for a macOS runner; a check with no runner label is named itself.
+/** @type {[RegExp, string][]} */
 const OS_NAMES = [[/macos/i, 'macOS'], [/windows/i, 'Windows'], [/ubuntu|linux/i, 'Linux']];
 const runnerOf = (name) => {
   const m = /\(([^)]*)\)\s*$/.exec(name);
@@ -3192,7 +3198,9 @@ function repoParts(r, { now = Date.now(), width = null, checkin = false, epic = 
     // A session's asks need the person with no batch yet: each is a row, as in a batch's Queue.
     const nc = needsCount(r), nw = width == null ? NEED_W : Math.max(NEED_MIN, Math.min(NEED_W, width - ROW_LEAD - TITLE_MIN));
     const tw = width == null ? 60 : Math.max(1, width - ROW_LEAD - nw);
-    const groups = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]].filter(([, , xs]) => xs.length);
+    /** @type {[name: string, k: string, xs: any[]][]} */
+    const both = [['Needs you', 'needs', nc.items], ['Put off', PUT_OFF, nc.offItems]];
+    const groups = both.filter(([, , xs]) => xs.length);
     if (!groups.length) return { head: [setUp, '', 'Nothing to show until a batch starts. Run /desk-autopilot in that repo to start one.'], ...none };
     const rows = groups.flatMap(([name, k, xs]) => [segRow(null, [[`  ${name}`, k === PUT_OFF ? GREY : BOLD], [` · ${xs.length}`, GREY]], null), ...xs.map(itemRowOf(r, k, { now, nw, tw }))]);
     return { head: [...(title ? [`desk-q › ${r.name} · ${clock(now)}`] : []), setUp, '', bold(`  ${rpad('#', 4)}  ${pad('TICKET', 10)}${pad('STATE', STATE_W)}${pad('WHAT IT NEEDS', nw)}${pad('STARTS', 13)}${pad('SHIPS', 14)}TITLE`)],
