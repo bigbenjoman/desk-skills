@@ -1366,8 +1366,11 @@ export function ticketKind(key) {
     let b = null;
     try { b = batchBase(); } catch { /* no usable base */ }
     if (b && k === baseFixKey(b)) return { ok: true, kind: 'base' };
-    // The repair of a red base the batch merges into: its batch base, else §0 Default branch.
-    if (k === baseRedKey(b ?? configValue('default-branch') ?? 'main')) return { ok: true, kind: 'base-red' };
+    // The repair of a red base the batch merges into: its batch base, or the default branch as the merge
+    // driver reads it (defaultBranch, so an exported DESK_DEFAULT_BRANCH counts).
+    let d = null;
+    try { d = defaultBranch(); } catch { /* no usable base */ }
+    if ([b, d].some((x) => x && k === baseRedKey(x))) return { ok: true, kind: 'base-red' };
   }
   // A merged ticket's blind audit (levers-audit.mjs), worked under `audit.<its key>`.
   if (k.startsWith('audit.')) {

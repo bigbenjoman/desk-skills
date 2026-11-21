@@ -3,12 +3,13 @@
 // newest completed run, what stays unknown, the record's `since`, and the text the driver, the pass and
 // the repair worker read.
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 process.env.DESK_AUTOPILOT_STATE ??= mkdtempSync(join(tmpdir(), 'base-red-'));
-const { baseState, lastMerges, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK } = await import('../desk/bin/base-red.mjs');
+const { baseState, lastMerges, liveBaseRed, nextRecord, holdLine, batchLine, repairTicket, repairTriage, WALK, STALE_MS } = await import('../desk/bin/base-red.mjs');
 
 let pass = 0;
 const test = (name, fn) => { fn(); pass++; console.log(`ok   ${name}`); };
@@ -74,6 +75,27 @@ test('the last merges are the repo\'s merged events, newest first', () => {
   assert.deepEqual(lastMerges(ev, 'acme/w'), [{ pr: 2, ticket: null, sha: 's2', at: 't2' }, { pr: 1, ticket: 'A-1', sha: 's1', at: 't1' }]);
 });
 
+test('the last merges are this driver\'s own: another batch\'s merges into another branch are not blamed', () => {
+  const ev = [
+    { repo: 'acme/w', pr: '1', event: 'merged', by: 'merge-driver acme__w' },
+    { repo: 'acme/w', pr: '3', event: 'merged', by: 'merge-driver acme__w/batches/E-1' },
+  ];
+  assert.deepEqual(lastMerges(ev, 'acme/w', 'merge-driver acme__w').map((m) => m.pr), [1]);
+});
+
+test('AC6 a record no driver has rewritten for STALE_MS, or kept for another branch, is not current', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'base-red-live-'));
+  const now = Date.parse('2026-11-21T12:00:00Z');
+  const put = (r) => writeFileSync(join(dir, 'base-red.json'), JSON.stringify({ branch: 'main', checks: [{ name: 'tests' }], ...r }));
+  put({ at: new Date(now - 60_000).toISOString() });
+  assert.equal(liveBaseRed(dir, { branch: 'main', now })?.branch, 'main');
+  assert.equal(liveBaseRed(dir, { branch: 'develop', now }), null);
+  put({ at: new Date(now - STALE_MS - 1).toISOString() });
+  assert.equal(liveBaseRed(dir, { branch: 'main', now }), null);
+  put({ at: 'not a time' });
+  assert.equal(liveBaseRed(dir, { now }), null);
+});
+
 test('the record keeps the red spell\'s first read as since, and is dropped once green', () => {
   const red = { state: 'red', sha: sha('a'), checks: [{ name: 'tests', sha: sha('a'), url: null }] };
   const first = nextRecord(null, red, { branch: 'main', merges: [], at: 'T1' });
@@ -104,6 +126,18 @@ test('AC3 the repair ticket names the failing run and the last merges, and triag
   assert.match(t, /- PR #12 \(A-1\) at cccccccccccc, merged T0/);
   const r = repairTriage(rec);
   assert.deepEqual([r.ticket, r.lane, r.size, r.branch], ['base-red-main', 'A', 'S', 'fix/base-red-main']);
+});
+
+test('AC3 the repair key is a ticket id for the branch the driver merges into, an exported DESK_DEFAULT_BRANCH included', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'base-red-kind-'));
+  const cfg = join(dir, 'config.md');
+  writeFileSync(cfg, '## 0. Repo\n| Field | Value |\n|---|---|\n| GitHub repo | `acme/widgets` |\n| Default branch | `main` |\n\n## 4. Toolchain\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `DS-[0-9]+` |\n| Other work id patterns | `none` |\n');
+  const kind = (id, env = {}) => {
+    const r = spawnSync('node', [join(import.meta.dirname, '..', 'desk', 'bin', 'desk-env.mjs'), 'ticket-kind', id], { env: { ...process.env, DESK_DEFAULT_BRANCH: '', DESK_CONFIG: cfg, DESK_REPO_OVERRIDE: 'acme/widgets', DESK_QUEUE: join(dir, 'no-queue.json'), ...env }, encoding: 'utf8' });
+    return r.status === 0 ? r.stdout.trim() : `exit ${r.status}`;
+  };
+  assert.deepEqual([kind('base-red-main'), kind('base-red-develop')], ['base-red', 'exit 2']);
+  assert.deepEqual([kind('base-red-develop', { DESK_DEFAULT_BRANCH: 'develop' }), kind('base-red-main', { DESK_DEFAULT_BRANCH: 'develop' })], ['base-red', 'exit 2']);
 });
 
 console.log(`base-red: ${pass} passed, 0 failed`);

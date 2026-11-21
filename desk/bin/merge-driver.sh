@@ -1255,6 +1255,23 @@ while true; do
   ready=$(printf '%s\n' "$list" | awk -F'\t' '$2 == "false" { print $1 "\t" $3 "\t-" }')
   epic=$(epic_pr </dev/null)
   [ -n "$epic" ] && ready="${ready:+$ready$'\n'}$epic"
+
+  # The base is read every loop, PRs ready or not, so the record the pass reports from is current: a
+  # red base takes no merge but its repair ticket's PR, which may be none this loop. A base whose runs
+  # cannot be read merges as before.
+  fixkey=""
+  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" --by "$MERGER" 2>/dev/null </dev/null); then
+    case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
+      red)
+        log "$(printf '%s' "$base_state" | jq -r .line)"
+        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key) ;;
+      green|none) ;;
+      *) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
+    esac
+  else
+    log "base state unknown on $BASE_BRANCH (base-red.mjs could not read it) — merging as before"
+  fi
+
   if [ -z "$ready" ]; then
     # A driver started on the wrong base lists nothing and would say only that, forever: name the batch
     # PRs open on any other base, so the mismatch shows in the log.
@@ -1264,20 +1281,9 @@ while true; do
     pause 60; continue
   fi
 
-  # A red base takes no merge but its repair ticket's PR, which may be none this loop. A base whose runs
-  # cannot be read merges as before.
-  if base_state=$(node "$DESK_RUN_BIN/base-red.mjs" check --branch "$BASE_BRANCH" --repo "$REPO" --state "$DESK_STATE" 2>/dev/null </dev/null); then
-    case "$(printf '%s' "$base_state" | jq -r '.state // empty' 2>/dev/null)" in
-      red)
-        log "$(printf '%s' "$base_state" | jq -r .line)"
-        fixkey=$(printf '%s' "$base_state" | jq -r .repair_key)
-        ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
-        if [ -z "$ready" ]; then pause 120; continue; fi ;;
-      green|none) ;;
-      *) log "base state unknown on $BASE_BRANCH ($(printf '%s' "$base_state" | jq -r '.why // "unread"' 2>/dev/null)) — merging as before" ;;
-    esac
-  else
-    log "base state unknown on $BASE_BRANCH (base-red.mjs could not read it) — merging as before"
+  if [ -n "$fixkey" ]; then
+    ready=$(printf '%s\n' "$ready" | awk -F'\t' -v k="$fixkey" '$2 == k')
+    if [ -z "$ready" ]; then pause 120; continue; fi
   fi
 
   REPAIRS=$(repaired_prs "$(printf '%s\n' "$list" | cut -f1 | paste -sd ' ' -)" </dev/null)

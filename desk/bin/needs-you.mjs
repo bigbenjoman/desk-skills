@@ -102,6 +102,7 @@ import { conflictTriesMade, gapsFix, lastTrySaid, instructionFix, personGapsIn, 
 import { approvalFiles, evaluateGate, globToRegExp, holdNeedsPerson, FAILED, latestPerCheck, loginIn, normaliseRollup } from './gate.mjs';
 import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseLevers, releaseCommand, repoPermission, repoPermissionUnset, repoVerdictLogins, isNone, fullMatch, personStepLabels, personInputLabels, repoPortClaims, PERMISSION_KEYS } from './desk-env.mjs';
 import { fixClass } from './failure-class.mjs';
+import { liveBaseRed, MERGES_SHOWN } from './base-red.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
 import { landedPr } from './post-merge.mjs';
@@ -1059,9 +1060,11 @@ function promotionItems(r) {
 // the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
 // desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
 // each hold clears once its check passes there, and the item goes with the last.
+// A base the merge driver holds on (base-red.mjs) is the batch's, reported by the pass once and repaired
+// by its own ticket, so it is not one of the person's items.
 const BASE_RED = 'base-red:';
-const BASE_RED_MERGES = 3;
 function baseRedItems(r) {
+  if (r.stateDir && liveBaseRed(r.stateDir)) return [];
   const tickets = Object.values(r.q?.tickets ?? {});
   // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
   // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
@@ -1077,7 +1080,7 @@ function baseRedItems(r) {
   const base = r.q.base ?? 'the default branch';
   const checks = [...new Set(held.flatMap((x) => x.live))].sort();
   const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
-  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
+  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, MERGES_SHOWN)
     .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
   const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
   return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,

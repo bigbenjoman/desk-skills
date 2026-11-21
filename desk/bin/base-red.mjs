@@ -4,14 +4,14 @@
 // repair ticket's PR; the pass reads the record the driver keeps and reports it once for the batch, and
 // starts the repair ticket where config allows (pass.mjs).
 //
-//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>]
+//   base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>]
 //       one JSON line, { state: red | green | unknown | none, checks?, why?, line? }, exit 0. It keeps
 //       <state>/base-red.json while the base is red, removes it once it is green or nothing is required,
 //       and leaves it as it was when the base could not be read.
 //
 // The record, <state>/base-red.json:
 //   { branch, sha, checks: [{ name, sha, url }], merges: [{ pr, ticket, sha, at }], repair_key, since, at }
-// `merges` are the last MERGES_SHOWN merges the merge log holds for the repo, newest first, and `since`
+// `merges` are the last MERGES_SHOWN merges the merge log holds for the repo by `--by`, newest first, and `since`
 // when this red spell was first read.
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
@@ -30,6 +30,17 @@ const short = (sha) => String(sha ?? '?').slice(0, 12);
 
 export function readBaseRed(state) {
   try { const r = JSON.parse(readFileSync(baseRedPath(state), 'utf8')); return r && typeof r === 'object' && Array.isArray(r.checks) ? r : null; } catch { return null; }
+}
+// A running driver rewrites the record every loop it reads the base red, so one older than this was
+// left by a driver that has stopped, and says nothing about the base now.
+export const STALE_MS = 30 * 60 * 1000;
+// The record while it is current: written within STALE_MS of `now`, and for `branch` where one is given
+// (the base this batch merges into now). Else null, as for no record.
+export function liveBaseRed(state, { branch = null, now = Date.now() } = {}) {
+  const r = readBaseRed(state);
+  if (!r || (branch != null && r.branch !== branch)) return null;
+  const at = Date.parse(r.at);
+  return Number.isFinite(at) && now - at <= STALE_MS ? r : null;
 }
 
 // Where a required check stands on `branch`: each one's newest completed run, read commit by commit down
@@ -63,10 +74,12 @@ export function baseState({ required, branch, read }) {
   return { state: 'green' };
 }
 
-// The last merges the merge log holds for `repo`, newest first.
-export function lastMerges(events, repo, n = MERGES_SHOWN) {
+// The last merges the merge log holds for `repo` by merger `by`, newest first. The log names no target
+// branch, so `by` (the driver merging into this base, merge-driver.sh MERGER) is what keeps out merges
+// other batches made into other branches; with no `by`, every merger's.
+export function lastMerges(events, repo, by = null, n = MERGES_SHOWN) {
   const lc = String(repo).toLowerCase();
-  return events.filter((e) => e.event === 'merged' && String(e.repo).toLowerCase() === lc).slice(-n).reverse()
+  return events.filter((e) => e.event === 'merged' && String(e.repo).toLowerCase() === lc && (by == null || e.by === by)).slice(-n).reverse()
     .map((e) => ({ pr: Number(e.pr), ticket: e.ticket ?? null, sha: e.sha ?? null, at: e.at ?? null }));
 }
 
@@ -143,7 +156,7 @@ if (isMain) {
   const args = process.argv.slice(2);
   const flag = (name) => { const i = args.indexOf(name); return i < 0 ? null : args[i + 1] ?? ''; };
   if (args[0] !== 'check' || !flag('--branch')) {
-    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>]');
+    console.error('usage: base-red.mjs check --branch <name> [--repo <owner/name>] [--state <dir>] [--by <merger>]');
     process.exit(2);
   }
   const branch = flag('--branch');
@@ -153,7 +166,7 @@ if (isMain) {
   const s = baseState({ required, branch, read: ghRead(repo) });
   const path = baseRedPath(state);
   if (s.state === 'red') {
-    const rec = nextRecord(readBaseRed(state), s, { branch, merges: lastMerges(readLog(), repo), at: new Date().toISOString() });
+    const rec = nextRecord(readBaseRed(state), s, { branch, merges: lastMerges(readLog(), repo, flag('--by')), at: new Date().toISOString() });
     mkdirSync(state, { recursive: true });
     writeFileSync(path, `${JSON.stringify(rec, null, 2)}\n`);
     console.log(JSON.stringify({ ...s, repair_key: rec.repair_key, line: holdLine(rec) }));

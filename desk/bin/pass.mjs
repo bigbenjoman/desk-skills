@@ -61,7 +61,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
-import { readBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
+import { liveBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -1714,7 +1714,7 @@ const linkLines = [];
 // one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
 // allows. A repair ticket in the queue is the one, and so is one archived after merging in this red
 // spell: none is admitted beside it, nor a second once it merged with the base still red.
-const BASE_RED = readBaseRed(STATE);
+const BASE_RED = liveBaseRed(STATE, { branch: DEFAULT_BRANCH });
 let baseRedRepair = null;
 if (BASE_RED) {
   const key = BASE_RED.repair_key;
@@ -1730,6 +1730,9 @@ if (BASE_RED) {
     mkdirSync(join(STATE, 'triage'), { recursive: true });
     writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
     writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+    // An earlier red spell's repair left its log under the same key, whose AUTOPILOT_DONE would keep
+    // this one from spawning: moved aside, as a requeue does.
+    E.rotateRound(key);
     const r = qTry(['admit', key, '--by', 'base-red']);
     baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
   }
