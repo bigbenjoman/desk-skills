@@ -54,9 +54,11 @@ cp "$B/supervisor.mjs" "$B/installed.mjs" "$T/bin/"
 # The fake pass reads its batch's base as the real one does, so a base it inherited is refused here too.
 # verdict.<batch>.json (standing for the standing batch), where it exists, is that batch's own verdict.
 cat > "$T/bin/pass.mjs" <<EOF
-import { appendFileSync, readFileSync, existsSync } from 'node:fs';
+import { appendFileSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 import * as E from './desk-env.mjs';
 appendFileSync('$T/pass.calls', \`\${process.env.AUTOPILOT_USER_APPROVED ?? '-'} \${process.env.AUTOPILOT_BASE_PUSH_APPROVED ?? '-'}\\n\`);
+// exit.during: a worker exits while this pass runs, once.
+if (existsSync('$T/exit.during')) { rmSync('$T/exit.during'); writeFileSync('$T/state/exits/B.2.json', '{}\\n'); }
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
 let base;
 try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
@@ -138,6 +140,8 @@ check "the agent runs a tick of this supervisor" 'grep -q "<string>$T/bin/superv
 check "the agent works in the repo root" 'grep -A1 "<key>WorkingDirectory</key>" "$PL" | grep -q "$T/repo"'
 check "the agent leaves the merge driver running" 'grep -A1 "<key>AbandonProcessGroup</key>" "$PL" | grep -q "<true/>"'
 check "install bootstraps the agent" 'grep -q "^bootstrap gui/[0-9]* $PL$" "$T/launchctl.calls"'
+EX="$T/state/exits"
+check "DS-695: install makes the exits folder, and the agent ticks when it changes, at most every 20s" '[ -d "$EX" ] && grep -A2 "<key>WatchPaths</key>" "$PL" | grep -qF "<string>$EX</string>" && grep -A1 "<key>ThrottleInterval</key>" "$PL" | grep -q "<integer>20</integer>"'
 out=$(sup install)
 check "an unchanged install does not reload" '[ "$(grep -c "^bootstrap" "$T/launchctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
 out=$(sup install --interval 300)
@@ -240,6 +244,33 @@ for lock in supervisor.lock orchestrator.lock; do
   rm -f "$T/state/$lock"
 done
 check "a finished run releases its lock" '[ ! -f "$T/state/supervisor.lock" ]'
+
+# ---- DS-695: a worker's exit file wakes a tick, which consumes it -----------------------------------
+# old <file>: an exit file written before any round now starts.
+old(){ printf '{}\n' > "$EX/$1"; touch -t 202001010000 "$EX/$1"; }
+before=$(count "$T/pass.calls")
+old A.1.json; printf '{}\n' > "$EX/.A.9.tmp"
+out=$(tick)
+check "DS-695 AC1: a tick runs a pass and deletes the exit file it saw, not one still being written" '[ "$(count "$T/pass.calls")" = $((before + 1)) ] && [ ! -e "$EX/A.1.json" ] && [ -e "$EX/.A.9.tmp" ]'
+rm -f "$EX/.A.9.tmp"
+out=$(tick)
+check "DS-695 AC2: the wake that deletion causes runs no pass" '[ "$(count "$T/pass.calls")" = $((before + 1)) ]'
+old A.3.json; touch "$T/exit.during"
+out=$(tick)
+check "DS-695 AC2: an exit landing while the pass runs gets one more round, no more, and both files go" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -z "$(ls -A "$EX")" ]'
+sleep 30 & HOLDER=$!
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$T/state/supervisor.lock"
+old A.4.json
+out=$(tick)
+check "DS-695: a tick whose pass is skipped for a lock leaves the exit for the run holding it" '[ "$(count "$T/pass.calls")" = $((before + 3)) ] && [ -e "$EX/A.4.json" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$T/state/supervisor.lock"
+out=$(tick)
+check "DS-695: the next tick passes and consumes it" '[ "$(count "$T/pass.calls")" = $((before + 4)) ] && [ ! -e "$EX/A.4.json" ]'
+old A.5.json; chmod 555 "$EX"
+out=$(tick); out=$(tick)
+chmod 755 "$EX"
+check "DS-695 AC3: an exits folder that cannot be written to still gets a pass every tick, one round each" '[ "$(count "$T/pass.calls")" = $((before + 6)) ] && [ -e "$EX/A.5.json" ]'
+rm -f "$EX/A.5.json" "$T/state/supervisor.wake"
 
 # ---- AC6 and AC7: one notification per new push, and nothing else pushed ---------------------
 check "no notification while nothing needs the person" '[ "$(count "$T/notify.calls")" = 0 ]'
@@ -686,13 +717,15 @@ check "#735 AC1: install on Linux exits 0 and writes no launchd agent" '[ $rc -e
 check "#735 AC1: the service runs a tick of this supervisor in the repo root" 'grep -qxF "ExecStart=\"$(node -p process.execPath)\" \"$T/bin/supervisor.mjs\" tick" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
 check "#735 AC1: the service leaves the merge driver running and passes the repo on" 'grep -qx "KillMode=process" "$SV" && grep -qxF "Environment=\"DESK_REPO_DIR=$T/repo\"" "$SV"'
 check "#735 AC1: the timer runs it at once and every 180s by default" 'grep -qx "OnActiveSec=0" "$TM" && grep -qx "OnUnitActiveSec=180s" "$TM" && grep -qx "WantedBy=timers.target" "$TM"'
-check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735 AC1: install reloads systemd and enables the timer now" 'grep -qx -- "--user daemon-reload" "$T/systemctl.calls" && grep -qx -- "--user enable --now com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
+PU="$UD/com.desk-skills.supervisor.acme__widgets.path"
+check "DS-695: the path unit runs the service whenever the exits folder changes" '[ -d "$T/lstate/exits" ] && grep -qxF "PathChanged=$T/lstate/exits" "$PU" && grep -qx "Unit=com.desk-skills.supervisor.acme__widgets.service" "$PU" && grep -qx "WantedBy=paths.target" "$PU"'
 check "#735 AC1: with lingering off, install says ticks stop at logout and how to keep them" 'grep -q "loginctl enable-linger" <<< "$out"'
 check "DS-838 AC3: on plain Linux, install says nothing about WSL" '! grep -q "WSL" <<< "$out"'
 out=$(sup install)
 check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
 out=$(sup install --interval 300)
-check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
 out=$(sup status); rc=$?
 check "#735 AC2: status names the timer as loaded, with its interval" '[ $rc -eq 0 ] && grep -q "installed (every 300s), loaded" <<< "$out"'
 agent(){ node --input-type=module -e "import { supervisorAgent } from '$T/bin/run-by.mjs'; console.log(JSON.stringify(supervisorAgent('acme__widgets')))"; }
@@ -737,7 +770,7 @@ fi
 waitlines "$T/driver.calls" "$(started)"
 
 out=$(sup uninstall); rc=$?
-check "#735 AC4: uninstall disables the timer and removes both units" '[ $rc -eq 0 ] && grep -qx -- "--user disable --now com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls" && [ ! -f "$SV" ] && [ ! -f "$TM" ] && [ ! -f "$T/active" ]'
+check "#735 AC4: uninstall disables the timer and removes the units" '[ $rc -eq 0 ] && grep -qx -- "--user disable --now com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls" && [ ! -f "$SV" ] && [ ! -f "$TM" ] && [ ! -f "$PU" ] && [ ! -f "$T/active" ]'
 out=$(sup status); rc=$?
 check "#735 AC4: status then says not installed" '[ $rc -eq 1 ] && grep -q "not installed" <<< "$out"'
 unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin

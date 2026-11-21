@@ -10,8 +10,10 @@ hold, that is in the core or in the file the core's reference table names.
 `supervisor.mjs` runs passes from launchd on macOS, or a systemd user timer on Linux, with no model in
 the loop, so a batch keeps moving while no session is open and after a reboot. `install` (run inside the
 repo, once per repo) writes the agent `com.desk-skills.supervisor.<slug>` (on Linux, that name's
-`.service` and `.timer` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
-and every 3 minutes (`--interval <s>` to change it). On Linux, ticks stop at logout unless lingering is
+`.service`, `.timer` and `.path` in `~/.config/systemd/user`, enabled with `systemctl --user`): a tick at login
+and every 3 minutes (`--interval <s>` to change it), and within seconds of a worker exiting: the worker's
+exit file in `<state>/exits` wakes a tick (at most one per 20 seconds on macOS), which deletes the exit
+files its passes saw. On Linux, ticks stop at logout unless lingering is
 on (`loginctl enable-linger`), and install says when it is off. On WSL, ticks run only while WSL is up,
 and lingering does not keep it up: WSL stops once every terminal closes. Keep a terminal open, or add a
 Windows Task Scheduler entry at logon that runs `wsl.exe --exec sleep infinity` (with `-d <distro>` if
