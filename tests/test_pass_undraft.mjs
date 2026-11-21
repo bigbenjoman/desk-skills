@@ -65,6 +65,24 @@ const acts = (as) => as.filter((a) => ACTS.has(a.type)).map((a) => a.type);
   t('and its record reads ready', JSON.parse(sets(actions).find((f) => f.startsWith('undraft='))?.slice(8) ?? '{}').call, 'ready');
 }
 
+// A draft's review round whose gaps only widen a broad AC an earlier try worked, past triage's files: the
+// pass reads the PR's files and triage's scope, and puts the scope question rather than a fix try.
+{
+  const BROAD1 = 'AC2: "an avatar wherever a person shows" — src/list.tsx:4 shows a name with no avatar';
+  const gapReview = review(`${marker(ALL_ZERO.replace('gaps=0', 'gaps=1'))}\n\n### Requirement gaps\n- AC2: "an avatar wherever a person shows" — src/card.tsx:9 shows a name with no avatar\n`);
+  const tried = ticket('A', { fix_tries: [{ try: 1, head: 'b'.repeat(40), kind: 'review', gaps: [BROAD1] }] });
+  const asked = [];
+  const wide = (files) => undraftSnap([{ t: tried, s: status() }], {
+    cfg: { ...undraftSnap([]).cfg, judgement: 'yes' },
+    reads: { ...undraftSnap([]).reads, prFiles: (n, head) => { asked.push(`${n}@${head === HEAD}`); return files; }, scope: (key) => ({ files: key === 'A' ? ['src/avatar.tsx'] : null, title: 'Show the avatar on the people list' }) },
+  });
+  const run = (files) => drive(decideUndraft, wide(files), { 'pr-view': view([gapReview]) }).actions.find((a) => a.type === 'apply-fix')?.fix;
+  const past = run(['src/avatar.tsx', 'src/card.tsx']);
+  t('a widening round past triage\'s files is the person\'s scope question, not a fix try', j([past?.call, /^review gaps only you can settle: PERSON'S CALL: AC2 reads wider than the title \("Show the avatar on the people list"\)/.test(past?.why ?? '')]), j(['stuck', true]));
+  t('the PR\'s files are read for that PR at its head', asked[0], '701@true');
+  t('a change inside triage\'s files is not asked the scope question', run(['src/avatar.tsx'])?.why?.startsWith('review gaps only you can settle'), false);
+}
+
 // #831: the draft path reads §4 Known flaky checks as the merge driver does, from the error_notes the pass
 // kept on the PR's checks: red only on a listed test, the draft leaves draft; any other failure holds it.
 {

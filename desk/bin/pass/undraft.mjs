@@ -207,7 +207,10 @@ export function* decideUndraft(snap) {
     let rf = null;
     if (hold || gated) rf = null;
     else if (gateFix) rf = gateFix;
-    else if (c.call === 'findings') rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement });
+    else if (c.call === 'findings') {
+      const tri = reads.scope?.(t.key) ?? {};
+      rf = reviewFix(t, { pr: n, head, verdict: c.verdict, body: c.review, comments }, { judgement: cfg.judgement, files: () => reads.prFiles?.(n, head) ?? null, scope: tri.files, title: tri.title });
+    }
     else if (c.call === 'checks' && !snap.fixRowErrors.length) {
       const ctx = { repo: snap.repo, base: snap.base, ...snap.clearsRows, stateChecks: cfg.stateChecks, builds: [], ...reads.baseReads(head) };
       const driver = reads.driver(n, head);

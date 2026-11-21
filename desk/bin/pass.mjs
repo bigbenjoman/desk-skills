@@ -11,7 +11,7 @@ import { createHash } from 'node:crypto';
 import { uptime } from 'node:os';
 import * as E from './desk-env.mjs';
 import { tryLockFile, filePid, writeJsonAtomic } from './dir-lock.mjs';
-import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr } from './batch-state.mjs';
+import { batchSettled, batchConcurrency, waitingOnMerge, waitingOnPark, isHeld, heldBehindOf, holdsAmong, triagePark, holdsKept, HELD_PREFIX, stoppedHold, dateHeld, badLabelText, localDay, spinePark, planPark, leftPark, SPINE_APPROVAL_PREFIX, SPINE_SPECS_PREFIX, EXIT, crashShowsPerson, describeCrash, readQueue, Refusal, openQuestion, parkApprove, approvalText, needsSession, keyPattern, epicBatch, epicDue, childDone, waitingOnRead, LIVE_READ, prParkWaits, passLeaseGrant, withLeaseInput, leaseRefusedBrief, failedWhy, shippedSet, mergedTailPr, mergedTailSteps, gitHold, gitHeld, personStep, personStepPark, IDLE_RECHECK_MS, doneOnPr, readTriage } from './batch-state.mjs';
 import { checkSpine, spineMerger, checkChild, ownedIds, ownedSpecs, specFilesAt, specsCommand, runSpecs, EXPECTED_FAIL, CHILD_SPECS_PREFIX } from './spine-check.mjs';
 import { ANSWER_HEAD, SIBLING_HEAD, collectAnswers, capBriefing, capNotes, MAX_BRIEF, MAX_NOTES, BRIEF_CUT } from './briefing.mjs';
 import { HANDOFF_STAGES, handoffStage, handoffPath, readHandoff, replaceUnreadable, handoffTarget, branchCommits, renderHandoff,
@@ -4097,6 +4097,7 @@ runSteps({
         return { behind: x.behind, reopen: again ? {} : x.reopen };
       },
       baseMoves, driver: driverReruns, built: (n, head) => buildRecord(BUILD_DIR, n, head), waived: waivedAt,
+      prFiles, scope: triageScope,
       evidenceRun: (n, head) => evidenceRecord(EVIDENCE_DIR, n, head, viewRun),
       missingShots: (body, t) => missingShots(body, ticketShots(t, STATE)), shotDir: (t) => ticketShotDir(t, STATE),
       baseReads, reviewComments,
@@ -4346,6 +4347,11 @@ function humanSeen(n) {
 // The reads fix-tries.mjs's calls make for ready PR s of ticket t, each run only when a call makes it:
 // fixCall's ctx, the head against the base (baseMerge, and moves() read afresh for the verdict try), a
 // review's inline comments, and the verdict at the head.
+// What a review fix try weighs a widening round against (fix-tries.mjs widening): the files triage
+// planned for the ticket and its title, from its triage record; {} where it cannot be read.
+function triageScope(key) {
+  try { const r = readTriage(STATE, key); return { files: Array.isArray(r?.files_in_scope) ? r.files_in_scope : null, title: r?.summary ?? null }; } catch { return {}; }
+}
 function fixReads(t, s, dirty, dirtyFiles) {
   const n = s.pr;
   const { baseMerge, behind } = baseMoves(t, s.head);
@@ -4363,6 +4369,8 @@ function fixReads(t, s, dirty, dirtyFiles) {
     ctx,
     baseMerge,
     moves: () => baseMoves(t, s.head),
+    prFiles: () => prFiles(n, s.head),
+    scope: () => triageScope(t.key),
     comments: (id) => {
       const r = reviewComments(id);
       if (r.error) out.push(`fix tries: PR #${n} (${t.key}): its review's inline comments could not be read (${r.error}), so only its body's findings count`);

@@ -583,10 +583,43 @@ export function reviewFix(t, review, opts = {}) {
   const findings = [...listed, ...inline.map(({ sev, text }) => ({ sev, text }))];
   const gaps = codeGaps ? allGaps.filter((g) => !personsCall(g)) : [];
   if (counts ? !findings.length : !gaps.length && !taken.length) return null;
+  // Before survivors: a gap repeating an earlier one's words at new sites reads to survivors as the same gap.
+  const wide = !findings.length && !taken.length ? widening(done, gaps, opts) : null;
+  if (wide) return { call: 'stuck', why: `${PERSON_GAPS}${scopeQuestion(wide, opts.title)}` };
   const survived = survivors(done, findings, [...gaps, ...taken.map((x) => x.gap)]);
   if (survived.length) return { call: 'stuck', why: `${after} — ${SURVIVED}${[...survived, ...personGaps].join('; ')}` };
   const verdict = Object.entries(review.verdict).map(([k, x]) => `${k}=${x}`).join(' ');
   return { call: 'requeue', fix: { try: made + 1, of: made + room, pr: review.pr, head: review.head, kind: 'review', what: `review not clean: ${what}`, verdict, findings, ...(gaps.length ? { gaps } : {}), ...(taken.length ? { taken } : {}), ...(personGaps.length ? { person_gaps: personGaps } : {}) } };
+}
+
+// The criterion a gap names (`AC<n>`), or null, and every file:line it names.
+const gapAc = (g) => /\bAC\s?(\d+)\b/i.exec(plain(g))?.[1] ?? null;
+const sitesIn = (text) => [...String(text).matchAll(new RegExp(AT.source, 'g'))].map((m) => m[0].replace(/^\((?![^)]*\))/, ''));
+// A round whose open gaps are all new sites of criteria an earlier try's gaps already named (each gap
+// naming its criterion and file:line sites, none of them an earlier gap's), on a change that already
+// touches files triage did not list: a broad criterion ("every X") that each round widens, so another
+// try only finds the next sites. -> { acs, outside } or null. opts.files() gives the PR's files (null
+// unread) and opts.scope triage's files_in_scope.
+function widening(done, gaps, opts) {
+  if (!gaps.length || typeof opts.files !== 'function' || !Array.isArray(opts.scope) || !opts.scope.length) return null;
+  const earlier = (done ?? []).filter(isReviewTry).flatMap((x) => x.gaps ?? []);
+  const worked = new Set(earlier.map(gapAc).filter(Boolean));
+  const seen = new Set(earlier.flatMap(sitesIn));
+  const fresh = (g) => { const at = sitesIn(g); return at.length > 0 && at.every((x) => !seen.has(x)); };
+  if (gaps.some((g) => !worked.has(gapAc(g)) || !fresh(g))) return null;
+  const acs = [...new Set(gaps.map(gapAc))];
+  const files = opts.files();
+  if (!Array.isArray(files)) return null;
+  const scope = new Set(opts.scope);
+  const outside = files.filter((f) => !scope.has(f));
+  return outside.length ? { acs, outside } : null;
+}
+// The one scope question a widening round puts to the person, with the recommended default.
+function scopeQuestion({ acs, outside }, title) {
+  const named = acs.map((a) => `AC${a}`).join(' and ');
+  const it = acs.length === 1 ? 'it' : 'them';
+  const files = `${outside.slice(0, 5).join(', ')}${outside.length > 5 ? `, and ${outside.length - 5} more` : ''}`;
+  return `PERSON'S CALL: ${named} read${acs.length === 1 ? 's' : ''} wider than the title${title ? ` ("${title}")` : ''}: this round's gaps are all new sites of ${it}, after an earlier try already worked ${it}, and the change touches ${outside.length} file(s) triage did not list (${files}). Fix only what the title names and file the rest as a follow-up? (recommended)`;
 }
 
 // A ready PR's review whose only open items are gaps it tags as the person's call, as the stuck call
