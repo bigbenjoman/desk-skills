@@ -14,8 +14,9 @@ asked-for work. Precedence: batch: the queue's `budget_usd`, `AUTOPILOT_BATCH_BU
 `none`; per worker: `AUTOPILOT_BUDGET_USD`, config, `25`. A malformed value holds spawns (batch,
 under `STALLED`) or fails the preflight (per worker); fix the value, never strip it. A worker whose
 session stops at the per-worker budget, often with its work done but not committed, is not failed: the
-next pass queues it (`resume=budget`) and resumes it once in its own session with $5 more
-(`AUTOPILOT_BUDGET_USD`), told to commit, push and finish its stage. It waits like any spawn while the
+next pass queues it (`resume=budget`) and resumes it once in its own session with $5 more (that run's
+`AUTOPILOT_BUDGET_USD` is 5: the cap counts only a resumed run's own spend), told to commit, push and
+finish its stage. It waits like any spawn while the
 batch budget is spent, and the report says so. A second stop in that session parks it, naming the
 budget and whether its worktree holds uncommitted work.
 

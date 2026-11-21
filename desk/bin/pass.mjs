@@ -2573,9 +2573,10 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
-  // A budget stop's resume runs with the budget raised once (spawn-worker.sh reads AUTOPILOT_BUDGET_USD).
-  const wb = budget ? readWorkerBudget() : null;
-  const budgetEnv = wb?.usd ? { AUTOPILOT_BUDGET_USD: String(wb.usd + BUDGET_RESUME_USD) } : {};
+  // A budget stop's resume runs on BUDGET_RESUME_USD alone (spawn-worker.sh reads AUTOPILOT_BUDGET_USD):
+  // --max-budget-usd counts only the resumed run's spend, not the totals restored from earlier runs, so
+  // that cap is the $5 more, and the per-worker budget plus $5 would allow the whole budget again.
+  const budgetEnv = budget ? { AUTOPILOT_BUDGET_USD: String(BUDGET_RESUME_USD) } : {};
   const prompt = `Your previous run of this session ${usage || budget ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     (budget
@@ -2595,7 +2596,7 @@ async function resumeKilled(t) {
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
   report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot'
-    : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more${wb?.usd ? ` ($${wb.usd + BUDGET_RESUME_USD})` : ''} to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
+    : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }

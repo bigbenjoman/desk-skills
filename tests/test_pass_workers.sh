@@ -578,7 +578,7 @@ budget_event(){ node -e 'console.log(JSON.stringify({ type: "result", subtype: p
 killed B-1 sess-b1; budget_event >> "$T/state-k/logs/B-1.log"; echo change > "$T/wt/B-1/new.txt"; git -C "$T/wt/B-1" init -q
 out=$(AUTOPILOT_BUDGET_USD=25 node "$B/pass.mjs" 2>&1)
 check "DS-849 AC1 a worker stopped at the per-worker budget is resumed once in its own session, not failed" \
-  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes budget=30$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = "\"sess-b1\"" ] && [ "$(field B-1 resumes)" = 0 ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more (\$30)"'
+  'spawned_for B-1 | grep -q "^B-1 sess-b1 .*resume=yes budget=5$" && [ "$(field B-1 state)" = "\"running\"" ] && [ "$(field B-1 budget_resumed)" = "\"sess-b1\"" ] && [ "$(field B-1 resumes)" = 0 ] && echo "$out" | grep -q "B-1 resumed once after it stopped at the per-worker budget, with \$5 more to commit, push and finish its stage"'
 check "DS-849 AC1 with \$5 more, told to commit, push and finish its stage" \
   'grep -q "spend it on committing your work, pushing it and finishing the stage you were in" "$T/resume-prompt-B-1"'
 # Its resumed session ends on the budget too.
