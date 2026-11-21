@@ -85,6 +85,7 @@ import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
 import { decideReopen, decideRenames, decideUndraft, decideRelease, undraftWrite } from './pass/undraft.mjs';
 import { decideBaseGate } from './pass/base-gate.mjs';
 import { decideFollowSteps, followAwaits } from './pass/follow-steps.mjs';
+import { decideTrackerSteps } from './pass/tracker-steps.mjs';
 import { startFollow, readFollow, failedRun, followComment, FOLLOW_TIMEOUT_MS } from './follow-steps.mjs';
 
 // The verdict is the exit code (EXIT): 0 something spawned, 10 nothing can spawn yet and nothing needs
@@ -789,8 +790,8 @@ const resumeRefusal = (t, why) => resumeRefusalOf(RESUME, t, why);
 
 // A cloud session (cloud-worker.mjs) writes no log here: its result is the PR it opened, on the branch
 // it was told to use or with the key in its title. Once one shows, the ticket is done on that PR's
-// branch, which the merge driver matches it by. Its tracker steps are left undone: the session has no
-// tracker access, and the report says so.
+// branch, which the merge driver matches it by. The session has no tracker access, so the tracker steps
+// a local worker's Stage 8 makes are made here, on its behalf (tracker_steps=due, below).
 function advanceCloud(t) {
   const c = t.cloud ?? {};
   // A session whose details were not recorded after it started has only `started` (spawnCloud).
@@ -806,8 +807,8 @@ function advanceCloud(t) {
   const cloud = { ...c, pr_at: pr.createdAt };
   const wall = wallTime(cloudWall(cloud) ?? 0);
   q('set', t.key, 'state=done', 'handoff_stage=null', `branch=${pr.headRefName}`, `cloud=${JSON.stringify(cloud)}`,
-    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`);
-  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; tracker not updated: the session has no tracker access)`);
+    `result.pr=${pr.number}`, `result.summary=cloud session opened PR #${pr.number} in ${wall}`, 'tracker_steps=due');
+  report.done.push(`${t.key}: PR #${pr.number} from cloud session ${where} in ${wall} (tokens and cost not reported for cloud; its tracker steps are made by the pass)`);
 }
 
 // §4 Check builds, read here for a park that waits only on one (buildPark) and below for the undraft step.
@@ -3340,6 +3341,16 @@ runSteps({
   report,
 });
 
+// One ticket comment made by the pass, posted once: none is posted where one holding `mark` is there.
+// -> { ok, posted, read, out }: `read` false when the comments could not be read, `out` desk-jira's last line.
+function postOnce(key, mark, body) {
+  const seen = shOut('desk-jira', ['comments', key]);
+  if (!seen.ok) return { ok: false, read: false, out: lastLine(seen.out) };
+  if (seen.out.includes(mark)) return { ok: true, posted: false };
+  const r = shOut('desk-jira', ['comment', key, body]);
+  return r.ok ? { ok: true, posted: true } : { ok: false, read: true, out: lastLine(r.out) };
+}
+
 // ---- follow-on comments --------------------------------------------------
 // A park recorded done because it waited only on who merges its PR (mergeParkOf) never reached its
 // worker's Stage 8 comment, so its follow-on is posted on the ticket here, as that comment would have
@@ -3365,15 +3376,41 @@ for (const t of Object.values(queue().tickets)) {
     report.waiting.push(`${t.key}: its follow-on for after PR #${pr} merges is not on the ticket: config §3 ${E.permissionKey('jira-comment')} is "${perm}". Post it with desk-jira comment ${t.key} and this text: ${body}`);
     continue;
   }
-  const seen = shOut('desk-jira', ['comments', t.key]);
-  if (!seen.ok) { report.failed.push(`${t.key}: follow-on comment not posted, its comments could not be read (${seen.out.split('\n').pop()}): tried again next pass`); continue; }
-  if (!seen.out.includes(mark)) {
-    const r = shOut('desk-jira', ['comment', t.key, body]);
-    if (!r.ok) { report.failed.push(`${t.key}: follow-on comment not posted (${r.out.split('\n').pop()}): tried again next pass`); continue; }
-  }
+  const posted = postOnce(t.key, mark, body);
+  if (!posted.ok) { report.failed.push(`${t.key}: follow-on comment not posted${posted.read === false ? `, its comments could not be read (${posted.out})` : ` (${posted.out})`}: tried again next pass`); continue; }
   q('set', t.key, `follow_on_comment=${new Date().toISOString()}`);
   report.advanced.push(`${t.key} follow-on for after PR #${pr} merges → ticket comment`);
 }
+
+// ---- a cloud ticket's tracker steps ---------------------------------------
+// The decision is pass/tracker-steps.mjs decideTrackerSteps: the steps a cloud session could not make.
+runSteps({
+  name: 'tracker steps',
+  snapshot: () => ({
+    tickets: queue().tickets, dry: DRY, repo: GH_REPO, now: new Date().toISOString(),
+    tracker: new Set(Object.keys(queue().tickets).filter((k) => { const kind = E.ticketKind(k); return onJira && kind.ok && kind.kind === 'tracker'; })),
+    comment: E.permission('jira-comment'), commentRow: E.permissionKey('jira-comment'),
+    move: E.permission('jira-transition'), moveRow: E.permissionKey('jira-transition'),
+    review: String(E.configValue('review-state') ?? '').trim(), done: String(E.configValue('done-state') ?? '').trim(),
+  }),
+  decide: decideTrackerSteps,
+  handlers: {
+    ...PHASE_HANDLERS,
+    'post-once': (a) => postOnce(a.key, a.mark, a.body),
+    status: (a) => {
+      const r = shOut('desk-jira', ['get', a.key, '--json']);
+      let status = null;
+      try { status = JSON.parse(r.out)?.fields?.status?.name ?? null; } catch { /* unread */ }
+      return { ok: r.ok, status, out: lastLine(r.out) };
+    },
+    transitions: (a) => {
+      const r = shOut('desk-jira', ['transitions', a.key]);
+      return { ok: r.ok, out: lastLine(r.out), list: r.ok ? r.out.split('\n').map((l) => l.split('\t')).filter((c) => c.length >= 3).map((c) => ({ id: c[0], to: c[2].replace(/^-> /, '').trim() })) : [] };
+    },
+    transition: (a) => { const r = shOut('desk-jira', ['transition', a.key, a.id]); return { ok: r.ok, out: lastLine(r.out) }; },
+  },
+  report,
+});
 
 // ---- outside blockers ----------------------------------------------------
 // The decision is pass/parks.mjs decideOutsideBlockers. Of the tickets the blocker links read above
