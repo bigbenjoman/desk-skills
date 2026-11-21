@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { writeJsonAtomic } from './dir-lock.mjs';
 import { followOnPending, postMergeUnmade } from './harvest.mjs';
+import { ledgerOn, missedLine, recordWrite } from './queue-ledger.mjs';
 
 export const versionOf = (q) => {
   const n = Number(q?.version);
@@ -19,10 +20,24 @@ export const versionOf = (q) => {
 };
 
 // Writes queue `q` to `file` as the version after the one it was read as. -> the version written.
-export function writeQueueFile(file, q) {
+// With the ledger lever on, it then appends to the ticket ledger what the write changed from the file
+// it replaced (queue-ledger.mjs recordWrite), naming `by` as the writer; `archived` holds the tickets
+// the write moved to the archive. `onLedger(result)` hears the append's outcome; by default a missed
+// append is printed to stderr. `record: false` is a writer that records its write itself (move-batch).
+export function writeQueueFile(file, q, { by, archived, record = true, onLedger = reportMissed(file) } = {}) {
+  const on = record && ledgerOn();
+  const before = on ? readQueueAt(file) : null;
   q.version = versionOf(q) + 1;
   writeJsonAtomic(file, q);
+  if (on) onLedger(recordWrite(file, before, q, { by, archived }));
   return q.version;
+}
+
+export const reportMissed = (file) => (r) => { const l = missedLine(r, file); if (l) console.error(l); };
+
+// Queue `file` as plain JSON, for the log to compare a write with: null when there is none or it does not read.
+export function readQueueAt(file) {
+  try { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null; } catch { return null; }
 }
 
 export const archivePath = (file) => join(dirname(file), `${basename(file).replace(/\.json$/, '')}.archive.json`);
