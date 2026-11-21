@@ -719,6 +719,8 @@ put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {
   'K-7': parked('D', 15, 'Lane D, its canvas is saved on main, but the empty state is not on it: which board?'),
   'K-8': parked('A', 5, 'lane C, build it in an interactive desk-ticket session'),
   'K-9': { state: 'failed', lane: 'A' },
+  // DS-806: the SV-4017 park from 2026-11-19, as its ticket quotes it.
+  'K-10': parked('A', 2, 'K-10 needs two new Merl dependencies and worker-dependency-install is not granted. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and requeue. Not reached: Merl\'s pipeline tools and tests (AC1–AC4), Stage 4 verify, 4b self-review, push, draft PR, review post, Jira comment, Jira transition to Review/QA.'),
 }, triage: { 'K-5': { lane: 'B' } } });
 mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks'), { recursive: true });
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-4.json'), JSON.stringify({ question: 'Please take it out of the autopilot queue: lane C' }));
@@ -732,6 +734,10 @@ t('DS-322 AC1 a park naming lane C offers open, not resume', `${firstOf('K-1')} 
 t('DS-322 AC1 a lane D park without a saved canvas offers open, not resume', `${firstOf('K-2')} ${offers('K-2')}`, `open (${SESSION_REASON}) open,done,drop,not-now`);
 t('DS-322 AC1 a park opening "lane C" on a lane A ticket gives the session reason (DS-806: in plain words)', firstOf('K-8'), `open (${SESSION_REASON})`);
 t('DS-806 AC1 a lane C park\'s need names no lane letter', kappa['K-1']?.need, 'Demoted to plan-first work, build it in an interactive desk-ticket session');
+t('DS-806 AC1 AC3 AC4 the SV-4017 park is listed in plain words, without its not-reached list', kappa['K-10']?.need,
+  "K-10 needs two new Merl dependencies and workers can't install packages. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and send it back to a worker.");
+t('DS-806 AC3 the queue keeps the raw question, not-reached list and all', /Not reached: Merl's pipeline tools/.test(kappa['K-10']?.t.park.question), true);
+t('DS-806 AC2 its resume reason is plain words', firstOf('K-10'), 'resume (a worker finishes it once it has your answer)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
 t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, `stopped drop,open,not-now ${SESSION_REASON}`);
