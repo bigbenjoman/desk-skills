@@ -3681,7 +3681,7 @@ runSteps({
     ...EPIC_HANDLERS,
     'epic-merged': (a, s) => epicMerged(s.q, a.key),
     'other-repo': (a) => inOtherRepo(a.key),
-    landed: (a) => landedOn(a.key, DEFAULT_BRANCH),
+    landed: (a) => landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT),
     unpromoted: (a) => unpromotedBase(a.key, a.into),
   },
   report,
@@ -3693,7 +3693,7 @@ runSteps({
   name: 'merge holds',
   snapshot: () => holdsSnapshot(personLabels()),
   decide: decideMergeHolds,
-  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH) === true },
+  handlers: { ...EPIC_HANDLERS, 'landed-here': (a) => inOtherRepo(a.key) || landedOn(a.key, DEFAULT_BRANCH, REPO_DEFAULT) === true },
   report,
 });
 
