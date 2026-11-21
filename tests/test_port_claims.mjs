@@ -1,5 +1,5 @@
 // suite: port claims (ports a peer session claimed at handshake)
-// port-claims.mjs records the dev-server ports a peer's handshake claimed, machine-wide: claimedPorts
+// port-claims.mjs records the dev-server ports a peer's handshake claimed, machine-wide: passClaims
 // holds each claimer's last claim until it is released or lapses, a new claim replaces the claimer's
 // last, and the CLI refuses a range it cannot read.
 import { appendFileSync } from 'node:fs';
@@ -21,7 +21,8 @@ const t = (name, got, want) => {
 const path = process.env.DESK_PORT_CLAIMS;
 const NOW = Date.parse('2026-11-20T10:00:00Z');
 const H = 3600 * 1000;
-const ports = (now = NOW) => [...P.claimedPorts(now, path)].sort((a, b) => a - b).join(',');
+const sorted = (s) => [...s].sort((a, b) => a - b).join(',');
+const ports = (now = NOW) => sorted(P.passClaims({ now, path, drop: false }).ports);
 
 t('#823 nothing claimed holds no port', ports(), '');
 P.claim({ from: 3001, to: 3003, by: 'peer A', now: NOW, path });
@@ -38,6 +39,32 @@ t('#823 --hours sets when it lapses', [ports(NOW + H - 1).includes('5000'), port
 appendFileSync(path, '{"by": "torn');
 P.claim({ from: 6000, to: 6000, by: 'peer E', now: NOW, path });
 t('#823 a torn last line is skipped, and the claim after it still holds', ports(NOW + 4000), '3005,3006,5000,5001,6000');
+// DS-825: what a pass reads. A claim that lapsed unrenewed is dropped once and said; a peer that
+// renewed between the pass's read and its drop keeps its new claim; an unreadable file is named.
+const pc = join(T, 'pass.jsonl');
+P.claim({ from: 7000, to: 7001, by: 'peer F', hours: 1, now: NOW, path: pc });
+P.claim({ from: 7100, to: 7100, by: 'peer G', now: NOW, path: pc });
+const r1 = P.passClaims({ now: NOW + 2 * H, path: pc });
+t('DS-825 AC3 a lapsed claim no longer blocks, and the pass says it dropped it', [sorted(r1.ports), r1.lines],
+  ['7100', [`ports: dropped peer F's claim on 7000-7001, which lapsed unrenewed at ${new Date(NOW + H).toISOString()}, so its session is taken as gone`]]);
+t('DS-825 AC3 a claim dropped once is not said again', P.passClaims({ now: NOW + 2 * H, path: pc }).lines, []);
+P.claim({ from: 7200, to: 7200, by: 'peer H', hours: 1, now: NOW, path: pc });
+const lapsedAt = new Date(NOW).toISOString();
+P.claim({ from: 7300, to: 7300, by: 'peer H', now: NOW + 2 * H, path: pc });
+appendFileSync(pc, `\n${JSON.stringify({ at: new Date(NOW + 2 * H).toISOString(), by: 'peer H', event: 'lapse', of: lapsedAt })}\n`);
+t('DS-825 a drop naming a claim since renewed leaves the new claim in force', sorted(P.passClaims({ now: NOW + 2 * H, path: pc, drop: false }).ports), '7100,7300');
+P.claim({ from: 7400, to: 7400, by: 'peer I', hours: 1, now: NOW, path: pc });
+const twice = [1, 2].map(() => P.passClaims({ now: NOW + 3 * H, path: pc, drop: false }).lines.filter((l) => l.includes('peer I')).length);
+t('DS-825 without drop (a dry run), a lapsed claim is said but not recorded', twice, [1, 1]);
+const r2 = P.passClaims({ now: NOW, path: join(T, 'none.jsonl') });
+t('DS-825 AC4 a missing file holds no port, and is named', [r2.ports.size, r2.lines], [0, [`ports: there is no port claims file ${join(T, 'none.jsonl')}, so no peer has claimed a port`]]);
+const r3 = P.passClaims({ now: NOW, path: T });
+t('DS-825 AC4 a file that cannot be read holds no port, and is named', [r3.ports.size, r3.lines], [0, [`ports: the port claims file ${T} cannot be read (EISDIR), so no peer's claimed ports were skipped`]]);
+appendFileSync(pc, '{"by": "torn');
+const r4 = P.passClaims({ now: NOW + 2 * H, path: pc, drop: false });
+t('DS-825 AC4 lines that do not parse are counted and named, and the rest still hold', [sorted(r4.ports), r4.lines[0]],
+  ['7100,7300', `ports: 1 line(s) of the port claims file ${pc} do not parse and were skipped: a claim on one of them is not honoured until it is fixed or removed`]);
+
 t('#823 parseRange reads one port and a range', [P.parseRange('3001'), P.parseRange('3001-3004')], [{ from: 3001, to: 3001 }, { from: 3001, to: 3004 }]);
 t('#823 and refuses what it cannot read', ['abc', '3004-3001', '70000', `3000-${3000 + P.MAX_PORTS}`].map((r) => Boolean(P.parseRange(r).error)), [true, true, true, true]);
 
