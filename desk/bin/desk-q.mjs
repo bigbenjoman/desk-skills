@@ -4882,14 +4882,15 @@ if (isMain) {
   try {
     // A terminal on both ends gets the screen; anything piped, --plain and a change typed in the
     // shell get the plain output.
-    let start = null;
-    const word = scopeWord(argv);
-    if (process.stdin.isTTY && process.stdout.isTTY && !['--plain', '--help', '--json'].some((f) => argv.includes(f))) {
+    // The screen's first load, its own reload and its first draw are one build (build-memo.mjs).
+    const ui = oneBuild(() => {
+      const word = scopeWord(argv);
+      if (!process.stdin.isTTY || !process.stdout.isTTY || ['--plain', '--help', '--json'].some((f) => argv.includes(f))) return null;
       checkFlags(argv);
-      start = target(loadOrRefuse(Date.now(), word), argv);
-    }
-    if (start && !isCommand(start)) {
-      const ui = interactive({ start, word });
+      const start = target(loadOrRefuse(Date.now(), word), argv);
+      return start && !isCommand(start) ? interactive({ start, word }) : null;
+    });
+    if (ui) {
       process.on('SIGTERM', () => ui.finish(143));
       process.on('SIGHUP', () => ui.finish(129));
     } else console.log(run(argv));

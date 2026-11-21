@@ -170,7 +170,7 @@ import { homedir, platform, totalmem, freemem, release } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import net from 'node:net';
 import * as M from './machine.mjs';
-import { runOnce, outOrNull } from './build-memo.mjs';
+import { remember, runOnce, outOrNull } from './build-memo.mjs';
 import * as TS from './test-scope.mjs';
 import { jobKeyedPremerge } from './workflow-yaml.mjs';
 import {
@@ -1495,7 +1495,7 @@ export function parsePs(text, columns) {
 // Every process, read whole from one `ps`. Throws when ps cannot be read, rather than giving a
 // partial or empty list. `env` adds to ps's environment (e.g. TZ and LC_ALL for lstart).
 export function psRows(columns, env = {}) {
-  const r = runOnce('ps', ['-ww', '-axo', columns], { env, maxBuffer: PS_MAX_BUFFER });
+  const r = remember(['ps', columns, env], () => spawnSync('ps', ['-ww', '-axo', columns], { encoding: 'utf8', maxBuffer: PS_MAX_BUFFER, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] }));
   if (r.error || r.status !== 0) {
     const why = r.error?.code ?? r.error?.message ?? (`${r.stderr ?? ''}`.trim().split('\n').pop() || `exit ${r.status ?? r.signal}`);
     throw new Error(`ps could not be read (${why})`);

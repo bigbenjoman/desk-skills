@@ -16,15 +16,18 @@ export function newBuild(fn) {
   try { return fn(); } finally { memo = outer; }
 }
 
-// spawnSync's result for `bin args`, its output as text. `env` adds to this process's environment.
-export function runOnce(bin, args = [], { env = null, maxBuffer } = {}) {
-  const run = () => spawnSync(bin, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
-    ...(env ? { env: { ...process.env, ...env } } : {}), ...(maxBuffer ? { maxBuffer } : {}) });
+// run()'s result, remembered in the open build under `key` (any JSON value naming the command), a
+// failure included; outside a build run() runs every time.
+export function remember(key, run) {
   if (!memo) return run();
-  const key = JSON.stringify([bin, args, env]);
-  if (!memo.has(key)) memo.set(key, run());
-  return memo.get(key);
+  const k = JSON.stringify(key);
+  if (!memo.has(k)) memo.set(k, run());
+  return memo.get(k);
 }
+
+// spawnSync's result for `bin args`, its output as text. `env` adds to this process's environment.
+export const runOnce = (bin, args = [], { env = null } = {}) => remember([bin, args, env], () => spawnSync(bin, args,
+  { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env: { ...process.env, ...env } } : {}) }));
 
 // stdout trimmed, or null when the command could not start or exited non-zero.
 export const outOrNull = (r) => (r.error || r.status !== 0 ? null : String(r.stdout ?? '').trim());

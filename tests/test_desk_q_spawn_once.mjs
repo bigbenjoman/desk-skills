@@ -27,8 +27,9 @@ Object.assign(process.env, { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome
   DESK_PLATFORM: 'darwin', DESK_SKILLS_DIR: join(T, 'skills'), DESK_REPO_DIR: T, PATH: `${BIN}${delimiter}${process.env.PATH}` });
 writeFileSync(process.env.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 10` | x |\n');
 
-// Four repos, every batch handed to the supervisor with a ticket running. alpha has a named batch as
-// well as its standing one, so two batches read one supervisor label.
+// Four repos, every batch handed to the supervisor with a ticket running. alpha (loaded) and gamma
+// (not loaded) each have a named batch as well as their standing one, so two batches read one
+// supervisor label: alpha's print succeeds, gamma's fails.
 const label = (name) => `com.desk-skills.supervisor.acme__${name}`;
 const queue = (file, batch, key) => {
   mkdirSync(dirname(file), { recursive: true });
@@ -43,9 +44,12 @@ const queue = (file, batch, key) => {
   queue(join(process.env.DESK_HOME, 'repos', slug, 'queue.json'), name, `${name.toUpperCase()}-1`);
 });
 queue(join(process.env.DESK_HOME, 'repos', 'acme__alpha', 'batches', 'epic', 'queue.json'), 'epic', 'ALPHA-2');
+queue(join(process.env.DESK_HOME, 'repos', 'acme__gamma', 'batches', 'epic', 'queue.json'), 'epic', 'GAMMA-2');
 writeFileSync(LOADED, `${label('alpha')}\n${label('beta')}\n`);
 
 const { run } = await import('../desk/bin/desk-q.mjs');
+const { READS } = await import('../desk/bin/needs-you.mjs');
+const { oneBuild } = await import('../desk/bin/build-memo.mjs');
 const calls = () => (existsSync(CALLS) ? readFileSync(CALLS, 'utf8').split('\n').filter(Boolean) : []);
 const repeated = (cs) => [...new Set(cs.filter((c, i) => cs.indexOf(c) !== i))];
 const prints = (cs, name) => cs.filter((c) => c.startsWith('launchctl\t') && c.endsWith(`/${label(name)}`)).length;
@@ -55,13 +59,22 @@ rmSync(CALLS, { force: true });
 const first = run(['--plain']);
 const one = calls();
 t('the home view was built', /alpha/.test(first) && /delta/.test(first), true);
-t('AC1 launchctl print ran once for each of the four labels, alpha\'s two batches included',
+t('AC1 launchctl print ran once for each of the four labels, alpha\'s and gamma\'s two batches included',
   ['alpha', 'beta', 'gamma', 'delta'].map((n) => prints(one, n)), [1, 1, 1, 1]);
 t('AC2 no command ran twice in one build, in the same directory with the same arguments', repeated(one), []);
 t('AC2 the build asked git something', one.some((c) => c.startsWith('git\t')), true);
-// gamma and delta are not loaded, so their print fails, and DESK_REPO_DIR is no git checkout, so its git reads fail.
+// gamma is not loaded and both its batches ask for its print, which fails: it runs once.
 t('AC4 a failed launchctl print was asked again and not rerun', prints(one, 'gamma'), 1);
-t('AC4 a failed git read was asked again and not rerun', one.filter((c) => c.startsWith(`git\t-C ${T} `)).length > 0 && repeated(one).length === 0, true);
+
+// T is no git checkout, so `git -C T rev-parse HEAD` fails: asked twice in one build it runs once and
+// both answers are the failure; asked twice outside a build it runs twice.
+const headOfT = (cs) => cs.filter((c) => c === `git\t-C ${T} rev-parse HEAD`).length;
+rmSync(CALLS, { force: true });
+const inBuild = oneBuild(() => [READS.git(T, ['rev-parse', 'HEAD']), READS.git(T, ['rev-parse', 'HEAD'])]);
+t('AC4 a failed git read asked twice in one build: both fail, it ran once', [inBuild, headOfT(calls())], [[null, null], 1]);
+rmSync(CALLS, { force: true });
+READS.git(T, ['rev-parse', 'HEAD']); READS.git(T, ['rev-parse', 'HEAD']);
+t('outside a build the same git read runs each time', headOfT(calls()), 2);
 
 // ---- AC3: the next build reads afresh -----------------------------------------------------------
 writeFileSync(LOADED, `${label('beta')}\n`);
@@ -69,6 +82,9 @@ rmSync(CALLS, { force: true });
 const second = run(['--plain']);
 const two = calls();
 t('AC3 the next build asks launchctl again', ['alpha', 'beta', 'gamma', 'delta'].map((n) => prints(two, n)), [1, 1, 1, 1]);
-t('AC3 the next build shows alpha\'s supervisor turned off', second !== first, true);
+// A line naming the repo that says its supervisor is off (the pass cell, or the band's "supervisor on" fix).
+const offFor = (screen, name) => screen.split('\n').some((l) => l.includes(name) && /supervisor (is )?off|supervisor on/.test(l));
+t('the first build shows gamma\'s supervisor off and alpha\'s not', [offFor(first, 'gamma'), offFor(first, 'alpha')], [true, false]);
+t('AC3 the next build shows alpha\'s supervisor turned off', offFor(second, 'alpha'), true);
 
 process.exit(fails ? 1 : 0);
