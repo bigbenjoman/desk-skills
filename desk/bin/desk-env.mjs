@@ -308,17 +308,17 @@ const TABLE_IDS = new Set(Object.values(CONFIG_ROWS).filter((r) => r.table).map(
 const { splitRow } = M;
 
 // This repo's config, through parseConfigFile's cache, so an edit by hand or by another process
-// is read on the next call. Inside withSnapshot every read gets the one parse taken at its start.
-let snapshot = null;
+// is read on the next call. A desk-env command run from the shell pins the first parse it reads for
+// the rest of the run (pinConfig), so every row one command prints comes from one version of the
+// file; only a write of the config in that run drops the pin.
+let pinned = false, snapshot = null;
 function parseConfig() {
-  return snapshot ?? parseConfigFile(configPathOrNull());
+  if (snapshot) return snapshot;
+  const parsed = parseConfigFile(configPathOrNull());
+  if (pinned) snapshot = parsed;
+  return parsed;
 }
-// One command that answers many rows at once (`get --json`, `config`) reads them all from one parse,
-// so an edit landing mid-command cannot pair one version's row with another's.
-function withSnapshot(fn) {
-  snapshot = parseConfig();
-  try { return fn(); } finally { snapshot = null; }
-}
+const pinConfig = () => { pinned = true; };
 
 // Every table row of a config file's text, in order: the line it is on, its section, its table's
 // header (normalised) and the header's line, its cells and its label. `declared` marks a row of a
@@ -1908,6 +1908,7 @@ export function addTemplateRow({ config, section, row, value, note = '', templat
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
+  snapshot = null;
   return { section: sec, label: t.label, line };
 }
 
@@ -1925,6 +1926,7 @@ function setRowValue(config, section, row, value) {
   const tmp = `${config}.tmp-${process.pid}`;
   writeFileSync(tmp, lines.join('\n'));
   renameSync(tmp, config);
+  snapshot = null;
   return true;
 }
 
@@ -2189,6 +2191,7 @@ if (isMain) {
     process.exit(4);
   }
   if (!DESK_ENV_COMMANDS.includes(cmd)) { console.error(deskEnvUsage()); process.exit(2); }
+  pinConfig();
   try {
     switch (cmd) {
       case 'where': {
@@ -2225,7 +2228,7 @@ if (isMain) {
       case 'get': {
         if (!args.includes('--json')) { printRead(cmd, args[0]); break; }
         let out;
-        try { out = withSnapshot(() => getJson(args)); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
+        try { out = getJson(args); } catch (e) { if (!(e instanceof GetJsonUsage)) throw e; console.error(e.message); process.exit(2); }
         const { noConfig, ...shown } = out;
         console.log(JSON.stringify(shown, null, 2));
         // exitCode, not exit: a pipe on macOS is written asynchronously, and exit would cut the JSON short.
@@ -2346,18 +2349,16 @@ if (isMain) {
           try { v = READS[cmd](id); v = v == null ? '!' : `=${v}`; } catch { v = ''; }
           out.push(`_DESK_${kind}_${id.replaceAll('-', '_')}=${shellQuote(v)}`);
         };
-        withSnapshot(() => {
-          for (const id of Object.keys(CONFIG_ROWS)) {
-            if (id !== 'default-branch') put('G', 'get', id);
-            put('L', 'list', id);
-          }
-          for (const id of Object.keys(PERMISSION_KEYS)) {
-            put('P', 'perm', id);
-            put('U', 'perm-or-unset', id);
-          }
-          put('B', 'budget', 'worker');
-          put('B', 'budget', 'batch');
-        });
+        for (const id of Object.keys(CONFIG_ROWS)) {
+          if (id !== 'default-branch') put('G', 'get', id);
+          put('L', 'list', id);
+        }
+        for (const id of Object.keys(PERMISSION_KEYS)) {
+          put('P', 'perm', id);
+          put('U', 'perm-or-unset', id);
+        }
+        put('B', 'budget', 'worker');
+        put('B', 'budget', 'batch');
         console.log(out.join('\n'));
         break;
       }
