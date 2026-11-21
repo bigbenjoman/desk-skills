@@ -55,12 +55,15 @@ const BASE_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'n
 
 const digest = (s) => createHash('sha256').update(String(s)).digest();
 const same = (a, b) => typeof a === 'string' && typeof b === 'string' && timingSafeEqual(digest(a), digest(b));
-function cookieOf(req) {
+// Every desk_ui value the request carries: another 127.0.0.1 port can set one with a longer Path, which
+// the browser sends first.
+function cookiesOf(req) {
+  const out = [];
   for (const part of String(req.headers.cookie ?? '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0 && part.slice(0, i).trim() === COOKIE) return part.slice(i + 1).trim();
+    if (i > 0 && part.slice(0, i).trim() === COOKIE) out.push(part.slice(i + 1).trim());
   }
-  return null;
+  return out;
 }
 const readToken = () => { try { return readFileSync(tokenFile(), 'utf8').trim() || null; } catch { return null; } };
 
@@ -78,11 +81,11 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
   const refuse = (res, status, code, message) => send(res, status, { error: { code, message } });
 
   function session(req) {
-    const sid = cookieOf(req);
-    if (!sid) return null;
+    const sids = cookiesOf(req).slice(0, 8);
+    if (!sids.length) return null;
     for (const [id, s] of sessions) {
       if (s.expires <= Date.now()) { sessions.delete(id); continue; }
-      if (same(id, sid)) return s;
+      if (sids.some((sid) => same(id, sid))) return s;
     }
     return null;
   }
@@ -137,7 +140,7 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
       if (!s || !same(String(req.headers[LOAD_HEADER] ?? ''), s.load)) return refuse(res, 401, 'unauthorized', 'Not signed in.');
       if (!reading) return refuse(res, 405, 'method', 'Not allowed.');
       if (path === '/api/snapshot') {
-        try { return send(res, 200, await snapshot()); } catch (e) { return refuse(res, 500, 'read', `Could not read desk's state: ${e.message}`); }
+        try { return send(res, 200, await snapshot()); } catch (e) { console.error(`desk-ui: snapshot: ${e.message}`); return refuse(res, 500, 'read', "Could not read desk's state; see the server log."); }
       }
       if (path === '/api/meta') return send(res, 200, { version: version(), nodeVersion: process.version, shell: 'electron', port: p });
       return refuse(res, 404, 'not_found', 'No such route.');
@@ -151,10 +154,13 @@ export function makeServer({ p = port(), log = (line) => console.log(line) } = {
   }
 
   // One line per request: method, path and status only, never a header, a query or a body.
-  return createServer((req, res) => {
+  const server = createServer((req, res) => {
     res.on('finish', () => log(`${new Date().toISOString()} ${req.method} ${String(req.url ?? '').split('?')[0].slice(0, 200)} ${res.statusCode}`));
     handle(req, res).catch(() => { if (!res.headersSent) refuse(res, 500, 'internal', 'Something went wrong.'); else res.destroy(); });
   });
+  server.headersTimeout = 10_000;
+  server.requestTimeout = 10_000;
+  return server;
 }
 
 // ---- the port --------------------------------------------------------------------------------

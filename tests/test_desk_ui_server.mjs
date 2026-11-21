@@ -91,6 +91,8 @@ t('AC2 it gives the machine\'s running workers and cap', [s.machine?.running, s.
 t('AC2 it gives the time and revision it was built at', [!Number.isNaN(Date.parse(s.at)), Number.isInteger(s.rev) && s.rev >= 1], [true, true]);
 const again = JSON.parse((await call('GET', '/api/snapshot', { headers: { Cookie: cookie, 'X-Desk-Load': load } })).text);
 t('AC2 an unchanged state keeps its revision', again.rev, s.rev);
+const shadowed = await call('GET', '/api/snapshot', { headers: { Cookie: `desk_ui=${'0'.repeat(64)}; ${cookie}`, 'X-Desk-Load': load } });
+t('a junk desk_ui cookie from another port sent first does not sign the window out', shadowed.status, 200);
 
 // ---- AC3: any other Host is refused
 for (const host of ['evil.example', `evil.example:${PORT}`, `127.0.0.1:${PORT + 1}`, `localhost.evil.example:${PORT}`, '']) {
