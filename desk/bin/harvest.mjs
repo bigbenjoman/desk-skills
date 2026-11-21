@@ -2,9 +2,32 @@
 // Read a worker's stream-json log and print what the orchestrator needs: the
 // AUTOPILOT_* markers and the final result. Never print the whole log — that is
 // how the orchestrator's context stops being O(1).
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync, realpathSync, readdirSync, mkdirSync, openSync, closeSync, writeFileSync, constants } from 'node:fs';
+import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+
+// A desk-review round's results file, as a worker leaves it at its worktree root (desk-review's core,
+// *The verdict*): kept past the worker's session under <state>/reviews/<KEY>/, by the pass once the
+// worker has exited (keepReviewResults), so a later worker can post that round's accepted re-verdict.
+const REVIEW_RESULTS = /^desk-review-results-[A-Za-z0-9-]+\.json$/;
+// Copies each results file at `worktree`'s root into <state>/reviews/<KEY>/, under its own name. A
+// worktree that is gone or unreadable keeps nothing, and a copy that fails keeps that file only: it
+// never throws, so the pass goes on to record how the worker ended.
+export function keepReviewResults(worktree, stateDir, key) {
+  let names;
+  try { names = readdirSync(worktree, { withFileTypes: true }).filter((d) => d.isFile() && REVIEW_RESULTS.test(d.name)).map((d) => d.name); } catch { return; }
+  if (!names.length) return;
+  const dir = join(stateDir, 'reviews', key);
+  try { mkdirSync(dir, { recursive: true }); } catch { return; }
+  // Opened without following a link, so a worker cannot swap a file for a link to one it may not read.
+  for (const n of names) {
+    let fd;
+    try { fd = openSync(join(worktree, n), constants.O_RDONLY | constants.O_NOFOLLOW); writeFileSync(join(dir, n), readFileSync(fd)); }
+    catch { /* that file is not kept */ }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+}
 
 // A worker log's text: a finished round is moved aside gzipped (`<KEY>.log.round<n>.gz`).
 export const readLogFile = (path) => (path.endsWith('.gz') ? gunzipSync(readFileSync(path)) : readFileSync(path)).toString('utf8');

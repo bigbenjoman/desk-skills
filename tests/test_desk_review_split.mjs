@@ -78,6 +78,7 @@ const REWRITTEN = [
   ['DS-456', 'Fix it with `! codex login`, or say', 1], // the preflight question leads with its recommended option
   ['DS-584', 'She reads the ticket and the diff, not their output.', 1], // and the calls already taken on it
   ['DS-834', 'with two exceptions**, both for claims', 1], // a finder also traces a server-set value
+  ['DS-833', 'different counts (above). `--paginate` is not optional', 1], // the landed check allows the accepted re-verdict
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

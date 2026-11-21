@@ -208,8 +208,8 @@ one `file:line` per finding (desk-pr places it).
 **The body's opening lines are computed, never written by hand**: the review and verdict
 markers, the heading, from round 2 the carried line, then the method line. A hand count is how a
 review reads clean when it is not. Once every finder and refuter has answered, write the run's
-results with Write to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
-worker: its worktree root, kept in `$DESK_STATE/reviews/<KEY>/`, then git clean):
+results with the Write tool to `<scratchpad>/desk-review-results-<run>.json` (`<run>`: Phase 3; a
+worker: at its worktree root, left in place, `phase-7-post.md`):
 
 ```json
 { "sha": "<full reviewed SHA>", "round": 1, "gaps": 0, "skipped_files": 0,
