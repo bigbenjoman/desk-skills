@@ -352,7 +352,7 @@ export function append(repoDir, events, { mode = 'shadow', by, now = () => new D
     const lead = text && !text.endsWith('\n') ? '\n' : '';
     const fd = openSync(paths.events, 'a');
     try {
-      writeSync(fd, lead + out.map((ev) => `${JSON.stringify(ev)}\n`).join(''));
+      writeAll(fd, lead + out.map((ev) => `${JSON.stringify(ev)}\n`).join(''));
       fsyncSync(fd);
     } finally { closeSync(fd); }
     if (tail.length + out.length >= snapshotEvery) snapshot(paths);
@@ -360,11 +360,17 @@ export function append(repoDir, events, { mode = 'shadow', by, now = () => new D
   } finally { unlock(paths.lock); }
 }
 
+// Writes all of `data` to `fd`: one writeSync may take only part of it.
+function writeAll(fd, data) {
+  const buf = Buffer.from(data);
+  for (let off = 0; off < buf.length;) off += writeSync(fd, buf, off, buf.length - off);
+}
+
 // Writes `data` to `file` through a temporary file fsynced before the rename, so a power cut leaves
 // the old file or the whole new one.
 function writeDurable(file, data) {
   const fd = openSync(`${file}.tmp`, 'w');
-  try { writeSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+  try { writeAll(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(`${file}.tmp`, file);
 }
 const syncDir = (dir) => { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } };
@@ -372,7 +378,8 @@ const syncDir = (dir) => { const fd = openSync(dir, 'r'); try { fsyncSync(fd); }
 // Folds the log into snapshot.json and moves the events it holds to events.<seq>.jsonl.gz, with the
 // ledger lock held. Each step leaves a log that folds the same if the next never happens, a power cut
 // included: the archive is written first, the snapshot second, both reach the disk, and the live
-// file is emptied last.
+// file is emptied last. Its rename reaches the disk before the lock is released, so no later append
+// lands in a file a power cut could swap back for the old one.
 function snapshot(paths) {
   const { base, events } = load(paths);
   if (!events.length) return;
@@ -381,4 +388,5 @@ function snapshot(paths) {
   writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, at: new Date().toISOString(), state }, null, 2)}\n`);
   syncDir(paths.dir);
   writeDurable(paths.events, '');
+  syncDir(paths.dir);
 }
