@@ -113,7 +113,7 @@ cmp "$T/lease3" "$T/lease4"
 check "DS-946 AC1 a stale lease on another of this run's ports than on the base is not reported" "$same0"
 fieldtree lease5 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47704 FB-2)\nspawned: A-1 port=47705 model=default"
 cmp "$T/lease1" "$T/lease5"
-check "DS-946 AC2 two stale leases on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head: ports: dropped the stale lease on port <PORT2> held by o/r standing FB-2" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+check "DS-946 AC2 two stale leases on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "  output base: ports: dropped the stale lease on port <LEASE2> held by o/r standing FB-2 " && echo "$out" | grep -qF "  output head: ports: dropped the stale lease on port <LEASE1> held by o/r standing FB-2 " && ! echo "$out" | grep "^  " | grep -qv "standing FB-2 "'
 fieldtree lease6 'port: 47705' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47705 model=default\nspawned: A-2 port=47705 model=default"
 fieldtree lease7 'port: 47704' "$(stale 47704 FB-1)\n$(stale 47705 FB-2)\nspawned: A-1 port=47704 model=default\nspawned: A-2 port=47706 model=default"
 cmp "$T/lease7" "$T/lease6"
