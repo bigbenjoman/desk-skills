@@ -357,7 +357,9 @@ How to turn what you find into rows:
   A Jest or Vitest suite of any size, a database-backed integration suite, or anything that has
   needed the Test worker cap, is `heavy`. Propose `light` only with a
   reason the user confirms. `light` moves the repo's suites off the test lock the heavy suites and
-  typechecks share, onto a box-wide light lock of their own.
+  typechecks share, onto a box-wide light lock of their own. Where the repo's committed
+  `.claude/settings.json` sets `env.DESK_SUITE_WEIGHT`, that value wins on every machine: propose
+  the row as it says, and `desk-env drift` names a row that disagrees.
 - **Codegen.** Always ask. The commands that regenerate code a fresh worktree or a schema change
   needs, one span each in the Build form: a `generate` script, `prisma generate` where there is a
   `schema.prisma`, an OpenAPI or GraphQL codegen step. Workers may run exactly these and nothing
