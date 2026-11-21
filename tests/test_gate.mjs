@@ -468,6 +468,8 @@ rmSync(gtmp, { recursive: true, force: true });
   t('#831 a PR changing the listed test\'s file: not waived', `${touched?.applies} ${touched?.reason}`, 'false paths');
   t('#831 a check with no failure annotation is never waived', W([])?.reason, 'tests');
   t('#831 annotations that could not be read: not waived', W(undefined)?.reason, 'annotations');
+  t('#831 as many as GitHub keeps for a step, which may have dropped another test\'s: not waived', W(Array(10).fill(listed))?.reason, 'annotations');
+  t('#831 one fewer is read as the whole list', W(Array(9).fill(listed))?.applies, true);
   t('#831 a whole-check item for the same check waives it without its annotations', W(undefined, ['src/x.ts'], [...row.flaky.slice(0, 1), { name: 'Integration', paths: ['src/integration/**'] }])?.applies, true);
   t('#831 failureNotes keeps path and title beside the line, exit-code lines aside', JSON.stringify(failureNotes([{ annotation_level: 'failure', path: 'a.ts', title: 'a > b', message: 'boom\nstack' }, { annotation_level: 'failure', message: 'Process completed with exit code 1.' }, { annotation_level: 'warning', message: 'w' }])),
     JSON.stringify([{ path: 'a.ts', title: 'a > b', message: 'boom' }]));

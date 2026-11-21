@@ -607,7 +607,7 @@ export const stateFailing = (failing, stateChecks, lineOf = () => null) => (fail
 // check is listed, none is required (branch protection enforces those, and merging past one is a
 // bypass: §3 merge-bypass is never), a check listed only by its tests failed only in those (below),
 // the PR's files touch none of their globs, and the gate passes with them set aside. `reason` says
-// which test failed: unlisted, required, annotations (unreadable), tests (with `lines`, the failures
+// which test failed: unlisted, required, annotations (unreadable, or as many as GitHub keeps), tests (with `lines`, the failures
 // no listed test names), files (unreadable), paths (with `hits`), or gate (something else keeps it red
 // or pending). The driver's two reruns come first. notes(f) is a failing check's failureNotes, or
 // undefined when they could not be read. Each failure annotation of a check listed only by its tests
@@ -627,7 +627,9 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   for (const n of names.filter((x) => !flaky.some((f) => f.name === x && !f.test))) {
     const tests = flaky.filter((f) => f.name === n).map((f) => f.test);
     const read = gate.failing.filter((f) => f.name === n).map((f) => notes(f));
-    if (read.some((x) => !Array.isArray(x))) return no('annotations', { checks: [n] });
+    // GitHub keeps only the first ANNOTATION_CAP error annotations a step makes, so a list that long may
+    // have dropped the failure of a test it does not list.
+    if (read.some((x) => !Array.isArray(x) || x.length >= ANNOTATION_CAP)) return no('annotations', { checks: [n] });
     const fails = read.flat();
     const stray = fails.filter((a) => !tests.some((t) => namesTest(a, t)));
     if (!fails.length || stray.length) return no('tests', { checks: [n], lines: stray.map((a) => a.message).slice(0, 3) });
@@ -647,6 +649,7 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
   return { applies: true, reason: null, checks: names };
 }
 
+export const ANNOTATION_CAP = 10;
 const repoPath = (p) => String(p ?? '').replace(/^(\.\/)+/, '');
 // An annotation names the test by its title: the test's name whole, or at the end after the file or a
 // describe path (` > ` or ` › `). A longer sibling (`… twice`) or a message quoting the name is not it.
@@ -718,7 +721,7 @@ export function failureLines(notes) {
 // A job's annotations as GitHub gives them, or undefined when they could not be read.
 export function jobAnnotations(repo, jobId) {
   if (!jobId) return [];
-  try { return JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations`])); }
+  try { return JSON.parse(gh(['api', `repos/${repo}/check-runs/${jobId}/annotations?per_page=100`])); }
   catch { return undefined; }
 }
 // failureLines for a job, or undefined when its annotations could not be read.

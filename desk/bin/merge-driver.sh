@@ -620,7 +620,7 @@ waivable(){
       return 1 ;;
     paths) log "#$1 the waiver for $short does not apply: the diff touches $(printf '%s' "$w" | jq -r '[.hits[] | "\(.files[0]) (\(.glob), for \"\(.check)\")"] | join("; ")')"; return 1 ;;
     files) log "#$1 the waiver for $short does not apply: the PR's file list could not be read"; return 1 ;;
-    annotations) log "#$1 the waiver for $short does not apply: its failure annotations could not be read, so nothing says which test failed"; return 1 ;;
+    annotations) log "#$1 the waiver for $short does not apply: its failure annotations could not be read in full, so nothing says which test failed"; return 1 ;;
     tests) log "#$1 the waiver for $short does not apply: it failed in a test §4 Known flaky checks does not list$(printf '%s' "$w" | jq -r 'if (.lines // []) | length > 0 then " (" + ((.lines // [])[:2] | join("; ")) + ")" else ", or its failures name no test" end')"; return 1 ;;
     gate) log "#$1 the waiver for $short does not apply: $(printf '%s' "$w" | jq -r '(.reasons // [])[:2] | join("; ")')"; return 1 ;;
     "") ;;
