@@ -455,7 +455,8 @@ export const TYPES = Object.freeze({
   'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: requiredRule(s)?.types ?? [], fields: requiredFieldsIn([s], null).need })),
-  lever: { parse(item) { const r = parseLevers([item]); return r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(r.on); } },
+  // The whole cell is checked, as `desk-env levers` reads it; the value stays one entry per span.
+  lever: cell({ parse(items) { const r = leverRow(items); return r.invalid ? fail(r.invalid) : r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(isNone(items) ? ['none'] : items.map((x) => leverRow([x]).on)); } }),
   budget: refusing((s) => parseBudget(s, 'the budget')),
   'worker-models': refusing(parseWorkerModels),
   'worker-effort': cell(refusing(parseWorkerEffort)),
