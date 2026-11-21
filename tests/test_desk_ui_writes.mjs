@@ -42,8 +42,16 @@ const SW_ROOT = repo('acme__studia-web', 3700, {
   'SV-3844': { key: 'SV-3844', state: 'queued', open_questions: 1 },
   'SV-3845': { key: 'SV-3845', state: 'parked', park: { question: 'awaiting approval: post this comment?',
     approve: { kind: 'jira-comment', target: 'SV-3845', body: 'The fix is in PR #12.' } } },
+  'SV-3846': { key: 'SV-3846', state: 'queued' },
 });
 repo('acme__desk-skills', 3800, { 'DS-1': { key: 'DS-1', state: 'queued', open_questions: 1 } });
+// DS-7 is archived done in the standing batch and parked live, awaiting approval, in batch E-1.
+const DS_HOME = join(env.DESK_HOME, 'repos', 'acme__desk-skills');
+writeFileSync(join(DS_HOME, 'queue.archive.json'), JSON.stringify({ tickets: { 'DS-7': { key: 'DS-7', state: 'done', result: { pr: 1 } } } }));
+const E1_QUEUE = join(DS_HOME, 'batches', 'E-1', 'queue.json');
+mkdirSync(dirname(E1_QUEUE), { recursive: true });
+writeFileSync(E1_QUEUE, JSON.stringify({ version: 1, batch: 'E-1', concurrency: 1, tickets: {
+  'DS-7': { key: 'DS-7', state: 'parked', park: { question: 'awaiting approval: post this comment?', approve: { kind: 'jira-comment', target: 'DS-7', body: 'Done.' } } } } }));
 
 // The stub for every allow-listed command: what it does is keyed by the ticket it names, in ctl.json.
 mkdirSync(STUBS, { recursive: true });
@@ -55,7 +63,7 @@ let c = {};
 try { c = JSON.parse(readFileSync(dir + '/ctl.json', 'utf8'))[key] ?? {}; } catch {}
 const start = Date.now();
 if (c.sleep) await new Promise((r) => setTimeout(r, c.sleep));
-appendFileSync(dir + '/calls.jsonl', JSON.stringify({ file: process.argv[1].split('/').pop(), argv, cwd: process.cwd(), start, end: Date.now() }) + '\\n');
+appendFileSync(dir + '/calls.jsonl', JSON.stringify({ file: process.argv[1].split('/').pop(), argv, cwd: process.cwd(), queue: process.env.DESK_QUEUE ?? null, start, end: Date.now() }) + '\\n');
 process.stdout.write(c.stdout ?? 'recorded\\n');
 process.stderr.write(c.stderr ?? '');
 process.exit(c.exit ?? 0);
@@ -118,8 +126,10 @@ const signed = await new Promise((resolve, reject) => {
 });
 const auth = { Origin: ORIGIN, 'Content-Type': 'application/json', Cookie: signed.cookie, 'X-Desk-Load': signed.load };
 const post = (path, body) => call('POST', path, { headers: auth, body: JSON.stringify(body) });
-const record = (repoName, key, body) => post(`/api/repos/${repoName}/tickets/${key}/record`, body);
-const answer = (repoName, key, body) => post(`/api/repos/${repoName}/tickets/${key}/answer`, body);
+// Routes name a repo by its slug; needs-you's argv names it by its name.
+const SLUG = { 'studia-web': 'acme__studia-web', 'desk-skills': 'acme__desk-skills' };
+const record = (repoName, key, body) => post(`/api/repos/${SLUG[repoName]}/tickets/${key}/record`, body);
+const answer = (repoName, key, body) => post(`/api/repos/${SLUG[repoName]}/tickets/${key}/answer`, body);
 const last = () => calls().at(-1);
 
 // ---- AC2: the record request runs needs-you's record with the text as its own argument
@@ -154,31 +164,32 @@ t('AC6 answer.mjs gets it unchanged as its last argument', [r6a.status, last()?.
 // ---- AC7: a key that is not a key, a repo not configured, or an action not offered: 400, nothing runs
 const before7 = calls().length;
 for (const [name, p, body] of [
-  ['a lower-case key', '/api/repos/studia-web/tickets/sv-3844/record', { action: 'answer', text: 'a' }],
-  ['a key with no dash', '/api/repos/studia-web/tickets/SV3844/record', { action: 'answer', text: 'a' }],
-  ['an encoded path in the key', '/api/repos/studia-web/tickets/..%2FSV-1/record', { action: 'answer', text: 'a' }],
-  ['a key with a flag in it', '/api/repos/studia-web/tickets/--approve/answer', { text: 'a' }],
+  ['a lower-case key', '/api/repos/acme__studia-web/tickets/sv-3844/record', { action: 'answer', text: 'a' }],
+  ['a key with no dash', '/api/repos/acme__studia-web/tickets/SV3844/record', { action: 'answer', text: 'a' }],
+  ['an encoded path in the key', '/api/repos/acme__studia-web/tickets/..%2FSV-1/record', { action: 'answer', text: 'a' }],
+  ['a key with a flag in it', '/api/repos/acme__studia-web/tickets/--approve/answer', { text: 'a' }],
   ['a repo that is not configured', '/api/repos/nope/tickets/SV-3844/record', { action: 'answer', text: 'a' }],
-  ['a repo named by its slug', '/api/repos/acme__studia-web/tickets/SV-3844/record', { action: 'answer', text: 'a' }],
-  ['an action the item does not offer', '/api/repos/studia-web/tickets/SV-3844/record', { action: 'drop' }],
-  ['an action with an argument', '/api/repos/studia-web/tickets/SV-3844/record', { action: 'answer --all', text: 'a' }],
-  ['a ticket in another repo', '/api/repos/desk-skills/tickets/SV-3844/record', { action: 'answer', text: 'a' }],
-  ['a ticket that needs nothing', '/api/repos/studia-web/tickets/SV-9999/record', { action: 'answer', text: 'a' }],
-  ['an answer for a ticket in no batch', '/api/repos/studia-web/tickets/SV-9999/answer', { text: 'a' }],
-  ['an approval on a ticket with nothing awaiting one', '/api/repos/studia-web/tickets/SV-3844/answer', { text: 'yes', approve: true }],
-  ['answer text that reads as a flag', '/api/repos/studia-web/tickets/SV-3845/answer', { text: '--approve' }],
-  ['text that is not a string', '/api/repos/studia-web/tickets/SV-3844/record', { action: 'answer', text: ['a', 'b'] }],
+  ['a repo named by its name, not its slug', '/api/repos/studia-web/tickets/SV-3844/record', { action: 'answer', text: 'a' }],
+  ['an answer for a ticket with no question open', '/api/repos/acme__studia-web/tickets/SV-3846/answer', { text: 'a' }],
+  ['an action the item does not offer', '/api/repos/acme__studia-web/tickets/SV-3844/record', { action: 'drop' }],
+  ['an action with an argument', '/api/repos/acme__studia-web/tickets/SV-3844/record', { action: 'answer --all', text: 'a' }],
+  ['a ticket in another repo', '/api/repos/acme__desk-skills/tickets/SV-3844/record', { action: 'answer', text: 'a' }],
+  ['a ticket that needs nothing', '/api/repos/acme__studia-web/tickets/SV-9999/record', { action: 'answer', text: 'a' }],
+  ['an answer for a ticket in no batch', '/api/repos/acme__studia-web/tickets/SV-9999/answer', { text: 'a' }],
+  ['an approval on a ticket with nothing awaiting one', '/api/repos/acme__studia-web/tickets/SV-3844/answer', { text: 'yes', approve: true }],
+  ['answer text that reads as a flag', '/api/repos/acme__studia-web/tickets/SV-3845/answer', { text: '--approve' }],
+  ['text that is not a string', '/api/repos/acme__studia-web/tickets/SV-3844/record', { action: 'answer', text: ['a', 'b'] }],
 ]) {
   const r = await post(p, body);
   t(`AC7 ${name} is refused with 400`, r.status, 400);
 }
 t('AC7 no command ran for any of them', calls().length - before7, 0);
-const notJson = await call('POST', '/api/repos/studia-web/tickets/SV-3844/record', { headers: { ...auth, 'Content-Type': 'text/plain' }, body: 'action=answer' });
+const notJson = await call('POST', '/api/repos/acme__studia-web/tickets/SV-3844/record', { headers: { ...auth, 'Content-Type': 'text/plain' }, body: 'action=answer' });
 t('a write that is not JSON is refused', notJson.status, 415);
-const asGet = await call('GET', '/api/repos/studia-web/tickets/SV-3844/record', { headers: { Cookie: auth.Cookie, 'X-Desk-Load': auth['X-Desk-Load'] } });
+const asGet = await call('GET', '/api/repos/acme__studia-web/tickets/SV-3844/record', { headers: { Cookie: auth.Cookie, 'X-Desk-Load': auth['X-Desk-Load'] } });
 t('a write route read with GET is refused', asGet.status, 405);
-const noLoad = await call('POST', '/api/repos/studia-web/tickets/SV-3844/record', { headers: { ...auth, 'X-Desk-Load': 'f'.repeat(64) }, body: JSON.stringify({ action: 'answer', text: 'a' }) });
-const foreign = await call('POST', '/api/repos/studia-web/tickets/SV-3844/record', { headers: { ...auth, Origin: 'http://evil.example' }, body: JSON.stringify({ action: 'answer', text: 'a' }) });
+const noLoad = await call('POST', '/api/repos/acme__studia-web/tickets/SV-3844/record', { headers: { ...auth, 'X-Desk-Load': 'f'.repeat(64) }, body: JSON.stringify({ action: 'answer', text: 'a' }) });
+const foreign = await call('POST', '/api/repos/acme__studia-web/tickets/SV-3844/record', { headers: { ...auth, Origin: 'http://evil.example' }, body: JSON.stringify({ action: 'answer', text: 'a' }) });
 t('a write without the per-load token, or from another Origin, is refused and runs nothing', [noLoad.status, foreign.status, calls().length - before7], [401, 403, 0]);
 
 // ---- AC8: two writes for one repo run one after the other, and answer in order
@@ -214,6 +225,17 @@ ctl({ 'SV-3845': { exit: 11, stdout: 'SV-3845: refused\n' } });
 const r11b = await answer('studia-web', 'SV-3845', { text: 'approved', approve: true });
 t('AC11 its result follows the same rules', [r11b.status, r11b.json?.stdout], [409, 'SV-3845: refused\n']);
 ctl({});
+const r11c = await answer('desk-skills', 'DS-7', { text: 'approved', approve: true });
+t('AC11 a ticket live in a named batch is approved there, not as its archived copy in the standing batch',
+  [r11c.status, last()?.argv, realpathSync(last()?.queue ?? T)], [200, ['DS-7', '--approve', 'approved'], realpathSync(E1_QUEUE)]);
+
+// ---- any text the length limit allows gets an HTTP answer, however many bytes it takes
+const wide = '漢'.repeat(2000);
+const rWide = await record('studia-web', 'SV-3844', { action: 'answer', text: wide });
+t('2,000 three-byte characters are recorded whole', [rWide.status, last()?.argv.at(-1) === wide], [200, true]);
+const ctrl = '\u0001'.repeat(2000);
+t('2,000 characters JSON escapes as \\u0001 are recorded too', (await record('studia-web', 'SV-3844', { action: 'answer', text: ctrl })).status, 200);
+t('2,001 characters are refused with 400', (await record('studia-web', 'SV-3844', { action: 'answer', text: `${wide}x` })).status, 400);
 
 // ---- AC10: one audit line per write, with the time, route, redacted command and exit code
 const AUDIT = join(env.HOME, '.desk-autopilot', 'ui', 'audit.jsonl');
@@ -221,7 +243,7 @@ const lines = readFileSync(AUDIT, 'utf8').trim().split('\n').map((l) => JSON.par
 t('AC10 one audit line per command run', lines.length, calls().length);
 const a2 = lines[0];
 t('AC10 a line holds the time, the route, the command and the exit code', [!Number.isNaN(Date.parse(a2.at)), a2.route, a2.argv, a2.exit],
-  [true, '/api/repos/studia-web/tickets/SV-3844/record', ['needs-you.mjs', 'record', 'studia-web', 'SV-3844', 'answer', '<redacted>'], 0]);
+  [true, '/api/repos/acme__studia-web/tickets/SV-3844/record', ['needs-you.mjs', 'record', 'studia-web', 'SV-3844', 'answer', '<redacted>'], 0]);
 t('AC10 an answer\'s line redacts its text and keeps its flag', lines.find((l) => l.argv.includes('--approve'))?.argv, ['answer.mjs', 'SV-3845', '--approve', '<redacted>']);
 t('AC10 the exit codes are logged as the commands gave them', lines.slice(1, 5).map((l) => l.exit), [10, 11, 3, 1]);
 const auditText = readFileSync(AUDIT, 'utf8');
