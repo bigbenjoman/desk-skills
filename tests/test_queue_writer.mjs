@@ -194,7 +194,7 @@ const other = (f, change) => { const q = read(f); change(q); q.version = version
   t('AC8 and `in` finds it', 'X' in rq.tickets, true);
   t('AC8 but listing the tickets does not', Object.keys(rq.tickets).includes('M'), false);
   t('AC8 nor does writing the queue', JSON.stringify(rq).includes('"M"'), false);
-  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,X');
+  t('AC8 its archive reads beside it', Object.keys(archivedOf(rq)).sort().join(','), 'M,Q,T,X');
   rq.tickets.Y = tk('Y', { state: 'parked', held_by: 'M', park: { question: 'held by orchestrator: blocked by M' } });
   t('AC8 a hold on an archived merged ticket is waiting on a merge, not stuck', waitingOnMerge(rq, rq.tickets.Y), true);
 

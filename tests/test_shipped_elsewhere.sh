@@ -229,15 +229,6 @@ queued DS-392 fix/DS-392-own merged_at=2026-10-31T10:53:00Z result.pr=363 \
 queued DS-393 fix/DS-393-own merged_at=2026-10-31T10:53:00Z result.pr=365 \
   'pr_status={"pr":365,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/365"}'
 jira DS-393 "In Progress" indeterminate
-# DS-395 kept this repo's own #372, then needs-you recorded it done on o/other's #372: its spawn keeps
-# both, keyed by repo and number. DS-396 is the same with its own #373 kept as a bare number.
-queued DS-395 fix/DS-395-own merged_at=2026-10-31T10:53:00Z result.pr=372 \
-  'merged_pr=[{"pr":372,"url":"https://github.com/acme/widgets/pull/372"}]' \
-  'pr_status={"pr":372,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/372"}'
-jira DS-395 "In Progress" indeterminate
-queued DS-396 fix/DS-396-own merged_at=2026-10-31T10:53:00Z result.pr=373 merged_pr=373 \
-  'pr_status={"pr":373,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/373"}'
-jira DS-396 "In Progress" indeterminate
 queued DS-394 fix/DS-394-own merged_at=2026-10-31T10:56:00.500Z result.pr=366 \
   'pr_status={"pr":366,"state":"MERGED","merged_at":"2026-10-31T10:56:00Z","url":"https://github.com/acme/renamed/pull/366"}'
 addmerged(){ node -e 'const f = process.argv[1], fs = require("fs"); const a = JSON.parse(fs.readFileSync(f, "utf8"));
@@ -257,34 +248,51 @@ check "DS-796 a repo renamed since its PR status was read: its own merged PR is 
   'spawned DS-394 && [ "$(field DS-394 state)" != "\"done\"" ] && ! grep -q "DS-394: PR #366" <<< "$out"'
 check "DS-796 another repo's PR with nothing merged here spawns, and its spawn keeps it with that repo's url" \
   'spawned DS-393 && [ "$(field DS-393 merged_pr)" = "[{\"pr\":365,\"url\":\"https://github.com/o/other/pull/365\"}]" ]'
-check "DS-796 another repo's PR of the same number does not replace this repo's kept own PR" \
-  'spawned DS-395 && [ "$(field DS-395 merged_pr)" = "[{\"pr\":372,\"url\":\"https://github.com/acme/widgets/pull/372\"},{\"pr\":372,\"url\":\"https://github.com/o/other/pull/372\"}]" ]'
-check "DS-796 nor a kept bare own number, which stays bare" \
-  'spawned DS-396 && [ "$(field DS-396 merged_pr)" = "[373,{\"pr\":373,\"url\":\"https://github.com/o/other/pull/373\"}]" ]'
 
 # DS-391's worker parks and is requeued: it still has #361 kept, so it spawns again. DS-393's worker
 # finishes on this repo's #370, whose status replaces the other repo's, and it is requeued. This repo's
 # #365 has merged from its branch since: the kept other-repo PR of that number is not this one, so #365
 # shipped it.
-q set DS-394 state=done; q set DS-395 state=done; q set DS-391 state=triaged
+q set DS-394 state=done; q set DS-391 state=triaged
 q set DS-393 state=triaged result.pr=370 'pr_status={"pr":370,"state":"OPEN","url":"https://github.com/acme/renamed/pull/370"}'
-# DS-396 is requeued with its status still naming o/other's #373, and this repo's own #373 (its kept bare
-# number) has merged from its branch since: that is its own merge, not one outside its worker.
-q set DS-396 state=triaged
 : > "$T/spawned"
-addmerged "365 fix/DS-393-own 2026-10-31T10:57:00Z" "373 fix/DS-396-own 2026-10-31T10:58:00Z"
+addmerged "365 fix/DS-393-own 2026-10-31T10:57:00Z"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a requeued ticket whose spawn kept its merged and open PRs is not shipped on its own merged one" \
   'spawned DS-391 && [ "$(field DS-391 state)" != "\"done\"" ] && ! grep -q "DS-391: PR #361" <<< "$out"'
 check "DS-796 a kept other-repo PR is still judged that repo's after the spawn: #365 here shipped it" \
   '[ "$(got DS-393 .state)" = done ] && [ "$(got DS-393 .result.pr)" = 365 ] && ! spawned DS-393'
+
+# DS-395 kept this repo's own #372, then needs-you recorded it done on o/other's #372: its spawn keeps
+# both, keyed by repo and number. DS-396 is the same with its own #373 kept as a bare number.
+q set DS-391 state=done
+queued DS-395 fix/DS-395-own merged_at=2026-10-31T10:53:00Z result.pr=372 \
+  'merged_pr=[{"pr":372,"url":"https://github.com/acme/widgets/pull/372"}]' \
+  'pr_status={"pr":372,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/372"}'
+jira DS-395 "In Progress" indeterminate
+queued DS-396 fix/DS-396-own merged_at=2026-10-31T10:53:00Z result.pr=373 merged_pr=373 \
+  'pr_status={"pr":373,"state":"MERGED","merged_at":"2026-10-31T10:53:00Z","url":"https://github.com/o/other/pull/373"}'
+jira DS-396 "In Progress" indeterminate
+: > "$T/spawned"
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-796 another repo's PR of the same number does not replace this repo's kept own PR" \
+  'spawned DS-395 && [ "$(field DS-395 merged_pr)" = "[{\"pr\":372,\"url\":\"https://github.com/acme/widgets/pull/372\"},{\"pr\":372,\"url\":\"https://github.com/o/other/pull/372\"}]" ]'
+check "DS-796 nor a kept bare own number, which stays bare" \
+  'spawned DS-396 && [ "$(field DS-396 merged_pr)" = "[373,{\"pr\":373,\"url\":\"https://github.com/o/other/pull/373\"}]" ]'
+
+# DS-396 is requeued with its status still naming o/other's #373, and this repo's own #373 (its kept bare
+# number) has merged from its branch since: that is its own merge, not one outside its worker.
+q set DS-395 state=done; q set DS-396 state=triaged
+: > "$T/spawned"
+addmerged "373 fix/DS-396-own 2026-10-31T10:58:00Z"
+out=$(node "$B/pass.mjs" 2>&1)
 check "DS-796 a kept bare own number stays this repo's when its status names another repo's PR of that number" \
   'spawned DS-396 && [ "$(field DS-396 state)" != "\"done\"" ] && ! grep -q "DS-396: PR #373" <<< "$out"'
 
 # A failed GitHub read spawns as before.
 q add DS-380 Bug A; q set DS-380 state=triaged branch=fix/DS-380-x added_at=2026-10-31T10:00:00Z
 printf '#!/bin/sh\necho "gh: HTTP 502" >&2; exit 1\n' > "$T/stub/gh"
-for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388 DS-389 DS-390 DS-391; do q set "$k" state=done; done
+for k in DS-40 DS-372 DS-374 DS-377 DS-378 DS-388 DS-389 DS-390 DS-391 DS-396; do q set "$k" state=done; done
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-404 a merged-PR search that fails spawns as before" '[ "$(field DS-380 state)" = "\"running\"" ] && spawned DS-380'
 
