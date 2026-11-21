@@ -93,15 +93,19 @@ export function parseSetupSteps(out) {
 
 const median = (xs) => quantile(xs, 0.5);
 
-// Each repo's state dirs under `root`, its standing batch first and then its named batches, keeping
-// only those with a metrics file: [{ slug, states }]. A batch pass logs under `batches/<name>/`.
+// Each repo's state dirs under `root`, its standing batch first, then its named batches, then its
+// archived ones, keeping only those with a metrics file: [{ slug, states }]. A batch pass logs under
+// `batches/<name>/`, and batch.mjs moves that folder to `batches/.done/<name>/` when it archives it.
 export function repoStates(root = join(E.HOME, '.desk-autopilot')) {
   let slugs = [];
   try { slugs = readdirSync(root).sort(); } catch { /* no autopilot state yet */ }
+  const subdirs = (d) => { try { return readdirSync(d).sort().map((n) => join(d, n)); } catch { return []; } };
   return slugs
     .map((slug) => {
       const dir = join(root, slug);
-      const states = [dir, ...namedBatches(dir).map((b) => join(dir, E.BATCHES_DIR, b))].filter((d) => existsSync(metricsPath(d)));
+      const named = namedBatches(dir).map((b) => join(dir, E.BATCHES_DIR, b));
+      const archived = subdirs(join(dir, E.BATCHES_DIR, '.done'));
+      const states = [dir, ...named, ...archived].filter((d) => existsSync(metricsPath(d)));
       return { slug, states };
     })
     .filter((r) => r.states.length);

@@ -74,10 +74,11 @@ const ar = join(root, 'ar');
 appendMetrics(join(ar, 'acme__w'), { at: '2026-11-21T09:00:00.000Z', setup: [{ key: 'B-1', kept: false, steps: { install: 10 } }] });
 appendMetrics(join(ar, 'acme__w', 'batches', 'B-9'), { at: '2026-11-20T09:00:00.000Z', setup: [{ key: 'B-2', kept: false, steps: { install: 30 } }] });
 mkdirSync(join(ar, 'empty__repo'), { recursive: true });
+appendMetrics(join(ar, 'acme__w', 'batches', '.done', 'B-5'), { at: '2026-11-19T09:00:00.000Z', setup: [{ key: 'B-3', kept: false, steps: { install: 50 } }] });
 const rs = repoStates(ar);
-t('DS-698 each repo lists its standing and named batches, and a repo with no metrics is left out', JSON.stringify(rs.map((r) => [r.slug, r.states.length])), '[["acme__w",2]]');
+t('DS-698 each repo lists its standing, named and archived batches, and a repo with no metrics is left out', JSON.stringify(rs.map((r) => [r.slug, r.states.length])), '[["acme__w",3]]');
 const am = setupMedians(rs[0].states);
-t('DS-698 a repo\'s medians cover its named batches, spanning all of them', JSON.stringify([am.new, am.steps.install.median, am.from.slice(0, 10), am.to.slice(0, 10)]), '[2,20,"2026-11-20","2026-11-21"]');
+t('DS-698 a repo\'s medians cover its named and archived batches, spanning all of them', JSON.stringify([am.new, am.steps.install.median, am.from.slice(0, 10), am.to.slice(0, 10)]), '[3,30,"2026-11-19","2026-11-21"]');
 t('DS-698 a repo with no setups says so', setupMediansText('x', setupMedians(join(root, 'state', 'none'))), 'x: no new worktree setups recorded');
 
 const bad = join(root, 'bad');
