@@ -945,7 +945,14 @@ left out, text the pass cut short compared up to the cut, and queue stamps (`upd
 when nothing differs, 1 when something does, and 2 when a run was not compared. With
 `PASS_CMP_KEEP=1` set, a run that exits 1 or 2 leaves its recordings and both trees in its scratch
 directory and prints that directory and the `compare_pass.mjs diff` command that lists them again,
-in seconds and without replaying a suite.
+in seconds and without replaying a suite. A base given as a
+commit is replayed once: its recording is cached under `${XDG_CACHE_HOME:-~/.cache}/desk-skills/compare-pass`
+(the 5 most recently used), keyed by the commit, the node, git and bash versions, the suites and
+`compare_pass.sh`, `compare_pass.mjs` and `suite_env.sh`, and a later comparison against it replays
+only the head. A base replay that was interrupted, in which a pass crashed or a suite failed a check, is not cached, a
+directory base never is, and `PASS_CMP_CACHE=0` replays both trees. `test_compare_pass.sh` replays
+every pass suite against itself only on a main push and the nightly run; a pull request and a local
+run replay `test_pass_other_repo.sh` alone, unless `PASS_CMP_FULL=1` opts the run in.
 
 `pass.mjs` moves into phase modules under `desk/bin/pass/`, one section at a time. A phase's decision
 is a pure function there: it takes a snapshot (the queue's tickets and whatever else it reads, the
