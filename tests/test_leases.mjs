@@ -587,6 +587,28 @@ try {
     const merging = readFileSync(join(root, 'skills/desk-autopilot/references/merging.md'), 'utf8');
     t('DS-912: merging.md states the lease, not the prose cap', merging.includes('takes a unit of its Vercel team\'s preview-build lease first') && !merging.includes('One preview build at a time'), true);
   }
+  // DS-959 AC10: list --clashes lists each would-refuse of the last 7 days with its kind, key, time and both labels.
+  {
+    const d = fresh();
+    mkdirSync(d, { recursive: true });
+    const ago = (h) => new Date(Date.now() - h * 3600_000).toISOString();
+    const wr = (kind, key, h, label, holders) => JSON.stringify({ at: ago(h), event: 'would-refuse', kind, key, units: 1, label, holders: holders.map((l) => ({ kind, key, label: l })) });
+    writeFileSync(join(d, 'leases.log.jsonl'), `${[
+      JSON.stringify({ at: ago(200), event: 'grant', kind: 'port', key: '3204' }),
+      wr('port', '3204', 8 * 24, 'too old', ['h']),
+      wr('port', '3204', 30, 'acme/desk-skills standing DS-806', ['acme/desk-skills standing DS-796']),
+      JSON.stringify({ at: ago(20), event: 'refuse', kind: 'slot', key: 'test' }),
+      wr('slot', 'test', 2, 'test ~/w/DS-1: bash t.sh', ['test ~/w/DS-2: bash t.sh', 'test ~/w/DS-3: bash t.sh']),
+    ].join('\n')}\n`);
+    const r = deskEnv(d, ['list', '--clashes']);
+    t('DS-959 AC10 desk-env lease list --clashes exits 0 with a header and one row per would-refuse of the last 7 days',
+      `${r.code} ${r.out.split('\n')[0]} ${r.out.split('\n').length - 1}`, '0 KIND\tKEY\tAT\tREQUESTER\tHOLDER 2');
+    const rows = r.out.split('\n').slice(1).map((l) => l.split('\t'));
+    t('DS-959 AC10 the rows, oldest first, with both labels', rows.map((x) => [x[0], x[1], Number.isFinite(Date.parse(x[2])), x[3], x[4]].join('|')).join('\n'),
+      'port|3204|true|acme/desk-skills standing DS-806|acme/desk-skills standing DS-796\nslot|test|true|test ~/w/DS-1: bash t.sh|test ~/w/DS-2: bash t.sh; test ~/w/DS-3: bash t.sh');
+    t('DS-959 --days reaches further back for a trial question that has waited', deskEnv(d, ['list', '--clashes', '--days', '9']).out.split('\n').length - 1, 3);
+    t('DS-959 AC10 with no clash in the last 7 days it says so', deskEnv(fresh(), ['list', '--clashes']).out, 'no clashes in the last 7 days');
+  }
 } finally {
   for (const c of owners) c.kill();
   rmSync(S, { recursive: true, force: true });
