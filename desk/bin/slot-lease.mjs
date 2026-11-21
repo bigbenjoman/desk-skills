@@ -4,7 +4,8 @@
 //
 //   node slot-lease.mjs mode                                  # off, shadow or on: the slot kind's mode
 //   node slot-lease.mjs take <class> --pid <owner> [--timeout <s>] -- <command...>
-//   node slot-lease.mjs holders [--light]                     # who holds the test lock, one line
+//   node slot-lease.mjs holders [--light]                     # who holds the test (or light) lock, one line
+//   node slot-lease.mjs in-slot <pid>                         # exit 0 when <pid> runs inside a test or light slot
 //
 // `take` names the lease's owner (the wrapper's own pid, which then execs into the command, or the
 // command's pid where the wrapper runs it as a child), so the lease is held for as long as the command
@@ -69,15 +70,23 @@ function take({ cls, pid, timeout, words }) {
   }
 }
 
-// Who holds the test lock (with --light, the light lock's holders too), as suite-wait.mjs's one line,
-// or nothing where nobody can be named: with-lock.sh prints it when it starts to wait on its lock files.
+// Who holds the test lock (with --light, the light lock instead), as suite-wait.mjs's one line, or
+// nothing where nobody can be named: with-lock.sh prints it when it starts to wait on its lock files.
 async function holders(rest) {
   if (rest.some((a) => a !== '--light')) { console.error('usage: slot-lease.mjs holders [--light]'); return 2; }
   const S = await import('./suite-wait.mjs');
-  const dir = E.lockDir();
-  const runs = S.lockHolderRuns({ procs: S.processList(), holders: S.lockHolders(dir, { light: rest.includes('--light') }), cwds: S.processCwds(), ages: S.processAges(), stamps: S.lockHolderStamps(dir) });
+  const dir = E.lockDir(), locks = rest.includes('--light') ? 'light' : 'test';
+  const runs = S.lockHolderRuns({ procs: S.processList(), holders: S.lockHolders(dir, { locks }), cwds: S.processCwds(), ages: S.processAges(), stamps: S.lockHolderStamps(dir, { locks }), locks });
   if (runs.length) console.log(S.holdersText(runs));
   return 0;
+}
+// Exit 0 when <pid> already runs inside a test or light lock slot (suite-wait.mjs inSlot), else 1.
+async function inSlot(rest) {
+  const pid = Number(rest[0]);
+  if (rest.length !== 1 || !Number.isInteger(pid) || pid <= 0) { console.error('usage: slot-lease.mjs in-slot <pid>'); return 2; }
+  const S = await import('./suite-wait.mjs');
+  const dir = E.lockDir();
+  return S.inSlot(pid, { procs: S.processList(), holders: S.lockHolders(dir, { locks: 'both' }), ages: S.processAges(), stamps: S.lockHolderStamps(dir, { locks: 'both' }) }) ? 0 : 1;
 }
 
 async function cli(argv) {
@@ -87,7 +96,8 @@ async function cli(argv) {
     return 0;
   }
   if (sub === 'holders') return holders(rest);
-  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | take <class> --pid <pid> [--timeout <s>] -- <command...>'); return 2; }
+  if (sub === 'in-slot') return inSlot(rest);
+  if (sub !== 'take') { console.error('usage: slot-lease.mjs mode | holders [--light] | in-slot <pid> | take <class> --pid <pid> [--timeout <s>] -- <command...>'); return 2; }
   const at = rest.indexOf('--');
   const head = at < 0 ? rest : rest.slice(0, at);
   const words = at < 0 ? [] : rest.slice(at + 1);

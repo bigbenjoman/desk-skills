@@ -14,22 +14,15 @@
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
 SH="${BASH:-bash}"
-# Whether a test or light lock holder file with-lock.sh wrote names this run: how a run called through
-# a with-lock.sh that does not export DESK_LOCK_HELD yet is still seen inside its slot, so it does not
-# wait behind itself. The wrapper execs into its command (flock) or names its child (mkdir).
-in_slot() {
-  local f w
-  for f in "${DESK_LOCK_DIR:-/tmp}"/desk-test.lock*.pid "${DESK_LOCK_DIR:-/tmp}"/desk-test.lock*.d/pid \
-           "${DESK_LOCK_DIR:-/tmp}"/desk-light.lock*.pid "${DESK_LOCK_DIR:-/tmp}"/desk-light.lock*.d/pid; do
-    [ -f "$f" ] || continue
-    for w in $(cat "$f" 2>/dev/null); do [ "$w" = "$$" ] && return 0; done
-  done
-  return 1
-}
-if [ -z "${DESK_LOCK_HELD:-}" ] && ! in_slot; then
-  root="$(cd "$T/.." && pwd -P)"
-  wl="${HOME:-}/.claude/desk/bin/with-lock.sh"
-  [ -f "$wl" ] || wl="$root/desk/bin/with-lock.sh"
+root="$(cd "$T/.." && pwd -P)"
+wl="${HOME:-}/.claude/desk/bin/with-lock.sh"
+[ -f "$wl" ] || wl="$root/desk/bin/with-lock.sh"
+# A run called through a with-lock.sh that does not export DESK_LOCK_HELD yet is still seen inside its
+# slot (a holder file or lease names it, or a flock(1) on the lock runs it), so it does not wait behind
+# itself. This repo's slot-lease.mjs asks, else the one beside the wrapper.
+lease="$root/desk/bin/slot-lease.mjs"
+[ -f "$lease" ] || lease="$(dirname "$wl")/slot-lease.mjs"
+if [ -z "${DESK_LOCK_HELD:-}" ] && ! node "$lease" in-slot "$$" 2>/dev/null; then
   if [ -f "$wl" ]; then
     wait_s="${DESK_RELATED_WAIT:-3600}"
     case "$wait_s" in ''|*[!0-9]*) echo "related: DESK_RELATED_WAIT wants a whole number of seconds, not '$wait_s'" >&2; exit 2 ;; esac

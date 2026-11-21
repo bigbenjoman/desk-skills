@@ -179,6 +179,14 @@ check "DS-924 AC3 (real wrapper) called through with-lock.sh it runs in that slo
 # A with-lock.sh installed before DS-924 exports no DESK_LOCK_HELD: the holder file naming the run is enough.
 out=$(cd "$R" && bash "$WL" test -- env -u DESK_LOCK_HELD DESK_RELATED_WAIT=5 bash tests/related.sh 2>&1); rc=$?
 check "DS-924 AC3 (real wrapper) under a wrapper that exports no marker, the holder file keeps it in its slot" '[ $rc -eq 0 ] && ran a && [[ "$out" != *"taking a test slot"* ]]'
+# That older wrapper's untimed one-slot path ran `flock <lock> <command>`, naming the run in no file: the
+# flock(1) running it as its child is enough.
+if command -v flock >/dev/null 2>&1; then
+  out=$(cd "$R" && flock "$DESK_LOCK_DIR/desk-test.lock" env -u DESK_LOCK_HELD DESK_RELATED_WAIT=5 bash tests/related.sh 2>&1); rc=$?
+  check "DS-924 AC3 run by flock(1) on the test lock, as an older wrapper did, it takes no second slot" '[ $rc -eq 0 ] && ran a && [[ "$out" != *"taking a test slot"* ]]'
+else
+  echo "skip DS-924 AC3 under flock(1): no flock here (test_gate.mjs checks inSlot's flock rule)"
+fi
 rm -f "$M" "$M.go"
 bash "$WL" test -- sh -c ": > '$M'; while [ ! -e '$M.go' ]; do sleep 0.1; done" & holder=$!
 for _ in $(seq 1 100); do [ -e "$M" ] && break; sleep 0.1; done

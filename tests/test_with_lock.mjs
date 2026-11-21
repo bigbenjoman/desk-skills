@@ -262,6 +262,12 @@ try {
       [r.status, /^with-lock\.sh: waiting for test lock \(held by pid [\d ]+\): .+, held /m.test(r.stderr)], [75, true]);
     const now = wl(env, ['test', '--timeout', '0', '--', 'true']);
     t(`DS-924 ${path} path: a 0-second wait gives up without saying it waits`, [now.status, now.stderr.includes('waiting for test lock')], [75, false]);
+    // With the test lock still held, a run waiting on the light lock is told the light lock's holder alone.
+    const hl = await hold(env, ['light']);
+    const lr = wl(env, ['light', '--timeout', '2', '--', 'true']);
+    const line = lr.stderr.split('\n').find((l) => l.startsWith('with-lock.sh: waiting for light lock')) ?? '';
+    t(`DS-924 ${path} path: a run waiting on the light lock names its holder, not the test lock's`, [lr.status, /\): .+, held /.test(line), line.split(', held ').length - 1], [75, true, 1]);
+    hl.release(); await hl.done;
     h.release(); await h.done;
   }
 } finally {
