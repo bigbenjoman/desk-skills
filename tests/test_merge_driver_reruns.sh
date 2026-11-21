@@ -144,7 +144,7 @@ for _ in 1 2; do out=$(DESK_CONFIG="$T/config-long.md" MERGE_DRIVER_ONE_LOOP=1 M
 by_hand=$(printf '%s\n' "$out" | grep -o 'file it by hand: desk-jira create .*' | head -1); by_hand=${by_hand#file it by hand: }
 (cd "$T/paste" && PATH="$T/paste-stub:$PATH" && eval "$by_hand")
 check "DS-820: a refused waiver ticket logs a command to file it by hand" '[ -n "$by_hand" ] && echo "$out" | grep -qF "#121 WAIVED: the ticket was not filed (error: Jira refused the ticket)"'
-check "DS-820: that command pastes as one summary and the body, with no stray file" '[ "$(sed -n 1p "$T/paste.args")" = 3 ] && [ "$(sed -n 3p "$T/paste.args")" = "$SD/flaky-121-$SHA25.md" ] && [ -z "$(ls -A "$T/paste")" ]'
+check "DS-820: that command pastes as one summary and the body, with no stray file" '[ "$(sed -n 1p "$T/paste.args")" = 4 ] && [ "$(sed -n 3p "$T/paste.args")" = "$SD/flaky-121-$SHA25.md" ] && [ -z "$(ls -A "$T/paste")" ]'
 check "DS-820: a summary past 255 characters is cut to 255, and the body names the whole test" 's=$(sed -n 2p "$T/paste.args"); [ ${#s} -eq 255 ] && case "$s" in "Flaky check \"Integration\" (test \"tests/orders.test.ts > retries a timed-out order"*...) true;; *) false;; esac && grep -qF -- "- Test: \`tests/orders.test.ts > $LONGNAME\` in \`Integration\`" "$SD/flaky-121-$SHA25.md"'
 
 # ---- DS-225 AC2: gh signed out stops the driver, saying so -------------------------------------
