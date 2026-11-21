@@ -100,16 +100,40 @@ const nonFastForward = (out) => /non-fast-forward|fetch first|\[rejected\]/i.tes
 //    | { ok: false, reason: 'conflict', files, merged } | { ok: false, reason: 'push', why }
 //    | { ok: false, reason: 'permission', merged } | { ok: false, reason: 'error', why }
 // Bring the base worktree to origin's base, with origin's <branch> fetched beside it: a reason it could
-// not, or null. Anything of its own the worktree holds is not this script's to push.
-function catchUp(path, base, branch) {
-  const f = git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
-  if (!f.ok) return `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
+// not, or null. Anything of its own the worktree holds is not this script's to push. `fetched`: the
+// caller has just fetched both.
+const fetchBoth = (path, base, branch) => git(path, ['fetch', '-q', 'origin', `refs/heads/${base}:refs/remotes/origin/${base}`, `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+const fetchFailed = (base, branch, f) => `could not fetch ${base} and ${branch} from origin: ${firstLine(f.out)}`;
+function catchUp(path, base, branch, { fetched = false } = {}) {
+  const f = fetched ? { ok: true } : fetchBoth(path, base, branch);
+  if (!f.ok) return fetchFailed(base, branch, f);
   const dirty = git(path, ['status', '--porcelain']);
   if (!dirty.ok || dirty.out) return `the base worktree ${path} has uncommitted changes: commit or discard them there`;
   const ahead = git(path, ['rev-list', '--count', `origin/${base}..HEAD`]);
   if (ahead.out !== '0') return `the base worktree ${path} holds ${ahead.out} commit(s) origin's ${base} does not: push or drop them there`;
   const ff = git(path, ['merge', '-q', '--ff-only', `origin/${base}`]);
   return ff.ok ? null : `could not fast-forward ${path} to origin/${base}: ${firstLine(ff.out)}`;
+}
+
+// A base origin no longer has: GitHub's delete-branch-on-merge removes it once a promotion PR from it
+// merges into <branch>. Asked only once fetching it has failed. -> null while origin has it (or
+// cannot be asked: the fetch's failure stands), else
+// { last, at, merged } with origin's <branch> fetched: <last> the base's last known head (origin's base
+// as last fetched, else the worktree's HEAD), <at> origin's <branch> head, and <merged> whether
+// everything the base worktree knows of is in <branch>, so recreating the base at <at> loses nothing.
+// | { error } when <branch> could not be fetched.
+function goneFromOrigin(path, base, branch) {
+  const ls = git(path, ['ls-remote', '--heads', 'origin', `refs/heads/${base}`]);
+  if (!ls.ok || ls.out) return null;
+  const f = git(path, ['fetch', '-q', 'origin', `refs/heads/${branch}:refs/remotes/origin/${branch}`]);
+  if (!f.ok) return { error: `${base} is missing on origin, and ${branch} could not be fetched to see whether it was merged: ${firstLine(f.out)}` };
+  const known = git(path, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${base}^{commit}`]);
+  const head = git(path, ['rev-parse', 'HEAD']).out;
+  const last = known.ok && known.out ? known.out : head;
+  const at = git(path, ['rev-parse', `origin/${branch}`]).out;
+  // Both must be in <branch>: a worktree HEAD beyond origin's base holds work no one pushed.
+  const unmerged = [last, head].find((sha) => !git(path, ['merge-base', '--is-ancestor', sha, `origin/${branch}`]).ok) ?? null;
+  return { last: unmerged ?? last, at, merged: !unmerged };
 }
 
 const CHECK_TIMEOUT_MS = 300_000;
@@ -203,11 +227,39 @@ export function startFromKept({ path, base, branch, kept }) {
 
 // `check` is a mergedTreeCheck function, run on each clean merge before its push; one it fails is
 // undone and comes back as { ok: false, reason: 'check', files: [], check: { command, output }, merged }.
+//
+// A base missing on origin whose last known head is already in <branch> (merged, then deleted) is
+// pushed back at origin's <branch> head before the sync, and every result after says so in
+// `recreated: { last, at }`. Without the push grant, or on a dry run, it is not recreated:
+// { ok: false, reason: 'permission', merged: 0, recreate: { last, at } } or
+// { ok: true, merged: 0, pushed: false, dry: true, recreate: { last, at } }. One whose last known
+// head is not in <branch> is never recreated: { ok: false, reason: 'missing', why, last }. A refused
+// recreation is { ok: false, reason: 'push', why, recreate: { last, at } }.
 export function syncBase({ path, base, branch, push = true, dry = false, check = null }) {
+  const fail = (why) => ({ ok: false, reason: 'error', why });
+  const f = fetchBoth(path, base, branch);
+  if (f.ok) return syncPresent({ path, base, branch, push, dry, check, fetched: true });
+  const gone = goneFromOrigin(path, base, branch);
+  if (!gone) return fail(fetchFailed(base, branch, f));
+  if (gone.error) return fail(gone.error);
+  const { last, at } = gone;
+  if (!gone.merged) {
+    return { ok: false, reason: 'missing', last, why: `${base} is missing on origin, and its last known head ${last.slice(0, 12)} is not in ${branch}, so it was not recreated: push that commit back to ${base} on origin, or end the batch` };
+  }
+  if (dry) return { ok: true, merged: 0, pushed: false, retried: false, dry: true, recreate: { last, at } };
+  if (!push) return { ok: false, reason: 'permission', merged: 0, recreate: { last, at } };
+  // <at> is origin's <branch> as it stands, which its own CI checked: no pre-push hook to run (see below).
+  const p = git(path, ['push', '-q', '--no-verify', 'origin', `${at}:refs/heads/${base}`]);
+  if (!p.ok) return { ok: false, reason: 'push', recreate: { last, at }, why: `${base} is missing on origin, and recreating it at ${branch}'s head ${at.slice(0, 12)} was refused: ${refusalLine(p.out)}` };
+  const r = syncPresent({ path, base, branch, push, dry, check });
+  return { ...r, recreated: { last, at } };
+}
+
+function syncPresent({ path, base, branch, push, dry, check, fetched = false }) {
   const fail = (why) => ({ ok: false, reason: 'error', why });
   const behind = () => Number(git(path, ['rev-list', '--count', `HEAD..origin/${branch}`]).out) || 0;
 
-  const stuck = catchUp(path, base, branch);
+  const stuck = catchUp(path, base, branch, { fetched });
   if (stuck) return fail(stuck);
   let merged = behind();
   if (!merged) return { ok: true, merged: 0, pushed: false, retried: false };

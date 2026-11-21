@@ -39,7 +39,8 @@
 //     once if none is live, and its lines go into the tick's report;
 //   - once a pass reports the batch idle, runs no pass and starts no driver until the queue changes
 //     (a new batch, or a ticket admitted or requeued into this one), a park is answered (answer.mjs),
-//     or, with anything parked, failed or held behind a blocker in no batch (held_outside),
+//     or, with anything parked, failed or held behind a blocker in no batch (held_outside), or a PR
+//     no ticket owns recorded (ticketless_prs, which only a pass drops once the PR is merged or closed),
 //     DESK_IDLE_RECHECK_MS (30 minutes) has passed since the batch went idle, so a pass sees what
 //     cleared a park, or landed a blocker, outside the queue; DESK_RUN_RECHECK_MS (2 minutes) while a
 //     park a pass settles waits on an Actions run or a PR's checks. Each idle tick refreshes the
@@ -263,6 +264,9 @@ function readState(state) {
   try { return { idle: null, notified: [], ...JSON.parse(readFileSync(stateFile(state), 'utf8')) }; } catch { return { idle: null, notified: [] }; }
 }
 const writeState = (state, s) => writeFileSync(stateFile(state), `${JSON.stringify(s, null, 2)}\n`);
+
+// Whether the batch records a PR no ticket owns (pass/ticketless-prs.mjs), which keeps its idle rechecking.
+const ticketlessHeld = (q) => Array.isArray(q.ticketless_prs) && q.ticketless_prs.length > 0;
 
 // What makes a batch the same batch: its name and every ticket's state. A new batch, or a ticket
 // admitted or requeued into an idle one, changes it.
@@ -540,11 +544,12 @@ function batchInterval(intake) {
     return isHeld(t) && String(t.held_outside ?? '').split('|').some((k) => k && by.includes(k) && !q.tickets[k]);
   };
   // A park waiting on an Actions run or a PR's checks is rechecked sooner, so it is requeued within
-  // minutes of the run finishing.
+  // minutes of the run finishing. A PR no ticket owns (ticketless_prs) is rechecked on the same timer
+  // as a park: only a pass sees it merged or closed and drops the needs-you item.
   const all = Object.values(q.tickets ?? {});
   const since = Date.now() - idleAt;
   const recheck = (all.some(waitingOnRun) && since >= RUN_RECHECK_MS)
-    || (all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) && since >= IDLE_RECHECK_MS);
+    || ((all.some((t) => (t.state === 'parked' && !isHeld(t)) || t.state === 'failed' || heldOutside(t)) || ticketlessHeld(q)) && since >= IDLE_RECHECK_MS);
   // And a post-merge scan falling due while a merged PR is still watched: only a pass runs it.
   const watchDue = postMergeDue({ state, queue: q });
   if (s.idle && s.idle === fingerprint(q) && !answeredNow && !closedOut && !recheck && !watchDue) {
@@ -722,7 +727,7 @@ function runPass(state, q, s, log, stamp, intake = []) {
   if (v.status === 'idle' && sent) {
     s.idle = fingerprint(qAfter);
     s.idle_at = startedAt;
-    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch${Object.values(qAfter.tickets ?? {}).some(waitingOnRun) ? ` (${RUN_RECHECK_MS / 60000} minutes while a park waits on an Actions run or a PR's checks)` : ''}`);
+    out.push(`supervisor: batch ${qAfter.batch ?? '?'} is idle: no merge driver, and no pass until a new batch starts, a ticket is added to this one, a park is answered, or ${IDLE_RECHECK_MS / 60000} minutes pass with anything parked, failed or held behind a blocker in no batch${ticketlessHeld(qAfter) ? ', or a PR no ticket owns still recorded' : ''}${Object.values(qAfter.tickets ?? {}).some(waitingOnRun) ? ` (${RUN_RECHECK_MS / 60000} minutes while a park waits on an Actions run or a PR's checks)` : ''}`);
   }
   writeState(state, s);
   log(out);
