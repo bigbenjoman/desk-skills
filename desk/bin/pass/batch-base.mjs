@@ -281,7 +281,10 @@ export function* decideBaseSync(s) {
       if (s.push.perm === 'ask' && s.passBy === 'supervisor') {
         // No session is there to ask, so the batch is asked once, as one needs-you item; the approval
         // it records on the queue is passed to every later pass by the supervisor.
-        if (!q.base_push_ask && !s.dry) yield setBatch(`base_push_ask=${JSON.stringify({ since: s.passAt, base: BASE, source: SOURCE })}`);
+        // A gone base's ask says so, for needs-you: approving it recreates the base rather than merging into it.
+        if ((!q.base_push_ask || !!q.base_push_ask.recreate !== gone) && !s.dry) {
+          yield setBatch(`base_push_ask=${JSON.stringify({ since: q.base_push_ask?.since ?? s.passAt, base: BASE, source: SOURCE, ...(gone ? { recreate: true } : {}) })}`);
+        }
         baseNotSynced = why;
         yield baseLine(`base sync: ${why}: asked once for the batch in /desk-needs-you (its base-push item) — ${gone ? goneNote : holdNote}`);
         if (gone) baseHold = true;
