@@ -58,6 +58,8 @@ t('AC4 a branch or package name outside backticks is left whole', plainTerms('Br
   'Branch fix/DS-604-requeue-parked needs @acme/worker-screenshots');
 t('AC4 an AC number inside a file name or path is left whole', plainTerms('Open docs/AC1.md and AC2-desktop.png, then check AC3.'),
   "Open docs/AC1.md and AC2-desktop.png, then check one of the ticket's requirements.");
+t('AC4 AC numbers joined by a slash are put in plain words', plainTerms('Check (AC1/AC4) first, then AC2/AC5.'),
+  "Check first, then the ticket's requirements.");
 t('AC4 a product\'s own stage and lanes keep their words', plainTerms('Should stage 2 of the billing migration change which lanes a driver sees?'),
   'Should stage 2 of the billing migration change which lanes a driver sees?');
 

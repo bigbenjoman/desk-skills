@@ -170,9 +170,9 @@ const TERMS = [
   [new RegExp(String.raw`\bstage\s+(\d)(b?)(?:\/9(?:\s+(?:${STAGE_NAMES})\b)?|\s+(?:${STAGE_NAMES})\b)`, 'g'), stageWords],
   [/\b4b\s+self-review\b/g, 'self-review'],
   // AC numbers: a bracketed list says nothing the person needs, so it goes; otherwise the requirement.
-  [/\s*\((?:AC\s?\d+(?:\s*(?:[–—-]|to|,|and|&)\s*(?:AC\s?)?\d+)*)\)/g, ''],
+  [/\s*\((?:AC\s?\d+(?:\s*(?:[–—/-]|to|,|and|&)\s*(?:AC\s?)?\d+)*)\)/g, ''],
   [new RegExp(String.raw`${OPEN}ACs?\s?\d+\s*(?:[–—-]|to)\s*(?:AC\s?)?\d+${NAME_END}`, 'g'), "the ticket's requirements"],
-  [new RegExp(String.raw`${OPEN}AC\s?\d+(?:\s*(?:,|and|&)\s*(?:AC\s?)?\d+)+${NAME_END}`, 'g'), "the ticket's requirements"],
+  [new RegExp(String.raw`${OPEN}AC\s?\d+(?:\s*(?:,|\/|and|&)\s*(?:AC\s?)?\d+)+${NAME_END}`, 'g'), "the ticket's requirements"],
   [new RegExp(String.raw`${OPEN}AC\s?\d+${NAME_END}`, 'g'), "one of the ticket's requirements"],
   [/\b[Ll]anes?\s+(?:C\s*\/\s*D|C or D|D or C)\b/g, 'plan- or design-first work'],
   [/\b[Ll]ane\s+C\b/g, 'plan-first work'],
