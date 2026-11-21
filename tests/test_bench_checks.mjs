@@ -12,9 +12,9 @@ const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; cons
 // The helpers: a one-line definition that prints FAIL, in JS or bash.
 const JS_T = "const t = (name, got, want) => { const ok = got === want; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}`); };";
 const SH_CHECK = 'check(){ if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fi; }';
-t('a JS helper that prints FAIL is found', [...helpersIn(JS_T)].join(','), 't');
-t('a bash helper that prints FAIL is found', [...helpersIn(SH_CHECK)].join(','), 'check');
-t('a counter named FAIL is no helper', helpersIn('PASS=0; FAIL=0\nconst FAILED = new Set([1]);').size, 0);
+t('a JS helper that prints a failure line is found', [...helpersIn(JS_T)].join(','), 't');
+t('a bash helper that prints a failure line is found', [...helpersIn(SH_CHECK)].join(','), 'check');
+t('a failure counter is no helper', helpersIn('PASS=0; FAIL=0\nconst FAILED = new Set([1]);').size, 0);
 t('a suite label is its suite: line', suiteLabel('// suite: widgets (all of them)\nimport x;', 'tests/test_w.mjs'), 'widgets (all of them)');
 t('else its file name', suiteLabel('import x;', 'tests/test_w.mjs'), 'test_w.mjs');
 t('a diff gives the merge side\'s lines', JSON.stringify([...addedLines('--- a/x\n+++ b/tests/x.mjs\n@@ -1 +1 @@\n-old\n+new\n')]), '[["tests/x.mjs",["new"]]]');
@@ -54,10 +54,10 @@ t('no helper beside the tests: none, with why', none.checks.length === 0 && /no 
 const checks = found.checks;
 const section = (label, body) => `\n== ${label}\nok: 3\ntook: 1 s\ncpu: 0.100 s${body}`;
 const RUN = `$ bash tests/run.sh 'tests/test_s.sh' 'tests/test_w.mjs'\n${section('test_s.sh', '')}${section('widgets', '\nexit 1\nFAIL added 7 two: 5 (want 4)\nok   nothing')}\n\nFAILURES above (6 checks passed)\nfailed suites: test_w.mjs\n\nexit 1\n`;
-t('AC2 a failing check is read off its FAIL line', JSON.stringify(tallyChecks(checks, RUN)), '{"passed":3,"of":4}');
+t('AC2 a failing check is read off its failure line', JSON.stringify(tallyChecks(checks, RUN)), '{"passed":3,"of":4}');
 const widgets = checks.filter((c) => c.suite === 'widgets');
 t('AC2 the arm passes two of the three JS checks', JSON.stringify(tallyChecks(widgets, RUN)), '{"passed":2,"of":3}');
-t('a suite that failed naming no check crashed: none of its checks passed',
+t('a suite that failed naming no check crashed: it passed none of them',
   JSON.stringify(tallyChecks(widgets, section('widgets', '\nexit 1\nTypeError: boom'))), '{"passed":0,"of":3}');
 t('a suite that is not in the output: its checks did not pass', JSON.stringify(tallyChecks(widgets, section('other', ''))), '{"passed":0,"of":3}');
 t('a retried suite\'s first run is not counted',

@@ -12,7 +12,7 @@ const IDENT = '[A-Za-z_$][\\w$]*';
 const DEFS = [
   new RegExp(`\\b(?:const|let|var)\\s+(${IDENT})\\s*=\\s*(?:async\\s*)?(?:\\(|function\\b|${IDENT}\\s*=>)`),
   new RegExp(`\\bfunction\\s+(${IDENT})\\s*\\(`),
-  /^\s*([A-Za-z_]\w*)\s*\(\)\s*\{/,
+  /(?:^|[\s;:])([A-Za-z_]\w*)\s*\(\)\s*\{/,
 ];
 
 // The check helpers defined on these lines: each whose definition line prints FAIL.
