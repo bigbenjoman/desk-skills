@@ -139,6 +139,18 @@ const ruleChanged = check([join(R, POST), join(R, STAGE4)], { values: { 'push-no
 t('DS-889 AC3 a push-nothing rule changed in fix-tries fails both unregenerated regions, naming each and the regenerate command',
   `${ruleChanged.map((x) => `${x.file} ${x.value}`).sort().join(', ')} ${ruleChanged.every((x) => x.message.includes(WRITE))}`, `${STAGE4} push-nothing, ${POST} push-nothing true`);
 
+// ---- DS-888: Phase 0 shows desk-env's known-untracked list -----------------------------------------
+const { KNOWN_UNTRACKED } = await import('../desk/bin/desk-env.mjs');
+const PHASE0 = 'skills/desk-review/references/phase-0-preflight.md', PHASE3 = 'skills/desk-review/references/phase-3-find.md';
+const phase0 = readFileSync(join(R, PHASE0), 'utf8');
+t('DS-888 Phase 0 shows every file desk-env leaves out as known-untracked, in a generated region',
+  KNOWN_UNTRACKED.every((k) => (regionIn(phase0, 'known-untracked') ?? '').includes(`\`${k.path}\``)), true);
+t('DS-888 Phase 0 runs desk-env tree-status and the round-end check runs it with the run id',
+  `${phase0.includes('`desk-env tree-status` must print nothing')} ${readFileSync(join(R, PHASE3), 'utf8').includes('`desk-env tree-status --run <run>`')}`, 'true true');
+const added = check([join(R, PHASE0)], { values: { 'known-untracked': { files: [...KNOWN_UNTRACKED, { path: '.desk-extra/<TICKET>.json', by: 'desk-x', what: 'notes' }] } } }).filter((x) => x.kind === 'region');
+t('DS-888 AC4 a file added to the known-untracked list fails Phase 0\'s unregenerated region, naming it and the regenerate command',
+  `${added.map((x) => `${x.file} ${x.value}`).join(', ')} ${added.every((x) => x.message.includes(WRITE))}`, `${PHASE0} known-untracked true`);
+
 // ---- AC9: main's drift is held by the baseline ----------------------------------------------------
 const baseline = readBaseline();
 const g = gate(tree, baseline);
