@@ -582,7 +582,7 @@ done
 clean | awk '{ print } /^Reviewers see/ { print "{code}"; print "Whether to decide the rest: TBD"; print "{code}" }' > "$LD/codeblock.md"
 lint "$LD/codeblock.md" customfield_10208=M
 check "DS-667 AC3 lint: a real {code} block stays code, and the sections after it are still read" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
-clean | awk '{ print } /^Reviewers see/ { print "{code}}{code}"; print "{code}if (x) {{code}" }' > "$LD/bracecode.md"
+clean | awk '{ print } /^Reviewers see/ { print "{code}}"; print "Whether to decide the rest: TBD"; print "{code}"; print "{code}"; print "x"; print "{{code}" }' > "$LD/bracecode.md"
 lint "$LD/bracecode.md" customfield_10208=M
 check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
 lint "$LD/clean.md"
