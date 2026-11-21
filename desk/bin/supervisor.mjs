@@ -265,11 +265,11 @@ function readState(state) {
 }
 const writeState = (state, s) => writeFileSync(stateFile(state), `${JSON.stringify(s, null, 2)}\n`);
 
-// What makes a batch the same batch: its name and every ticket's state. A new batch, or a ticket
-// admitted or requeued into an idle one, changes it.
 // Whether the batch records a PR no ticket owns (pass/ticketless-prs.mjs), which keeps its idle rechecking.
 const ticketlessHeld = (q) => Array.isArray(q.ticketless_prs) && q.ticketless_prs.length > 0;
 
+// What makes a batch the same batch: its name and every ticket's state. A new batch, or a ticket
+// admitted or requeued into an idle one, changes it.
 function fingerprint(q) {
   const rows = Object.values(q.tickets ?? {}).map((t) => `${t.key}=${t.state}`).sort();
   return createHash('sha1').update(JSON.stringify([q.batch ?? null, rows])).digest('hex');
