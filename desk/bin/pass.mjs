@@ -2488,20 +2488,24 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
 // was not killed: it is not counted against config §3b "Resume a killed worker (times)". Nor is one the
 // maintenance window stopped at its drain limit (resume=maintenance), or one asked to stop for a
-// planned reboot (resume=reboot), which names the restart, or that none came, as its reason.
+// planned reboot (resume=reboot), which names the restart, or that none came, as its reason. One that
+// stopped at its per-worker budget (resume=budget) resumes once on BUDGET_EXTRA_USD to commit, push
+// and finish its stage, not counted either.
+const BUDGET_EXTRA_USD = 5;
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
   const maint = t.resume === 'maintenance';
+  const budget = t.resume === 'budget';
   const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
   if (boot) t = { ...t, resume_why: boot };
-  const n = (t.resumes ?? 0) + (usage || maint || boot ? 0 : 1);
-  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : 'killed before it finished';
+  const n = (t.resumes ?? 0) + (usage || maint || boot || budget ? 0 : 1);
+  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : budget ? 'stopped at its per-worker budget' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     markFailed(t.key, `${ended}, and could not be resumed: ${why}`, { sets: ['resume=null', 'port=null', 'spawn_failed=true'] });
   };
   // The row may have changed while it waited for a slot.
-  const stop = usage || maint || boot ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
+  const stop = usage || maint || boot || budget ? null : resumeRefusal(t, t.resume_why ?? 'reboot or crash');
   if (stop?.fail) return fail(stop.fail);
   if (stop?.park) {
     q('set', t.key, 'resume=null');
@@ -2528,7 +2532,8 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
-  const prompt = `Your previous run of this session ${usage ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+  const prompt = `Your previous run of this session ${usage || budget ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
+    (budget ? `This run has a small allowance of $${BUDGET_EXTRA_USD}: commit and push what is done first, then finish your current stage and print your marker. ` : '') +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
     'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.` +
@@ -2540,11 +2545,11 @@ async function resumeKilled(t) {
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(budget ? { AUTOPILOT_BUDGET_USD: String(BUDGET_EXTRA_USD) } : {}), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : budget ? `after its per-worker budget, with $${BUDGET_EXTRA_USD} to commit, push and finish` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
@@ -2865,7 +2870,12 @@ if (baseFixResume) await resumeBaseFix(baseFixResume);
 // Untracked files do not count: setup-worktree.sh leaves its own (agent links, a disabled settings
 // file) in repos that do not ignore them. The ticket keeps its state, and the next pass looks again.
 // Commits up to the head the ticket's own last worker left (worker_head) are that worker's: with `push`
-// (the spawn about to start it) they are pushed, no force, and a refused push holds with git's words.
+// (the spawn about to start it) they are pushed, no force. A push refused because that worker rebased
+// the branch is retried with a lease on the origin tip just fetched, only when every commit origin has
+// that the head lacks is in the head by its patch (git cherry) and none is a merge (git cherry skips
+// merges, whose resolutions it cannot compare), so nothing on origin is lost; else it holds, naming the
+// exact lease push. Uncommitted changes at that head are its interrupted worker's:
+// the fix try spawns over them (fix.left_dirty names them) and its worker tests and commits them.
 // The branch is fetched first, so a stale origin ref never counts pushed commits as unpushed.
 function busyWorktree(t, { push = false } = {}) {
   if (runsInCloud(t)) return null;
@@ -2880,8 +2890,19 @@ function busyWorktree(t, { push = false } = {}) {
   if (branch && branch !== 'HEAD') git(['fetch', '-q', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`]);
   // A worktree git cannot read is not held: setup-worktree.sh says so.
   const why = gitHold(wt, git) ?? null;
+  const own = Boolean(t.worker_head?.sha) && git(['rev-parse', 'HEAD']) === t.worker_head.sha;
+  // Uncommitted changes at the head its own last worker left: that worker was interrupted mid-try.
+  if (why && own && gitHeld(why)?.wt) {
+    const files = (git(['diff', '--name-only', 'HEAD']) ?? '').split('\n').filter(Boolean);
+    if (push && !DRY) {
+      q('set', t.key, `fix.left_dirty=${JSON.stringify(files)}`);
+      t.fix.left_dirty = files;
+      report.recovered.push(`${t.key}: its worktree holds its interrupted worker's uncommitted changes (${files.slice(0, 5).join(', ')}${files.length > 5 ? ', …' : ''}): its fix try spawns over them, to test and commit them`);
+    }
+    return null;
+  }
   // Only an ahead hold (gitHeld names no worktree) can be the last worker's own commits.
-  if (!why || gitHeld(why)?.wt !== null || !t.worker_head?.sha || git(['rev-parse', 'HEAD']) !== t.worker_head.sha) return why;
+  if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
@@ -2890,8 +2911,60 @@ function busyWorktree(t, { push = false } = {}) {
     return null;
   }
   const said = pushed.out.split('\n').map((l) => l.trim()).filter((l) => /^(remote:|!|error:|fatal:)/.test(l)).slice(-3);
+  // Refused as not a fast-forward: its last worker rebased the branch. The lease is origin's tip as just
+  // fetched, and every commit there that the head lacks must be in the head: by its patch (git cherry),
+  // or, where a worker folded its fix into the rebased commit and so changed that patch, held anyway
+  // (heldAnyway).
+  const tip = git(['rev-parse', `origin/${branch}`]);
+  if (/non-fast-forward|fetch first|\(rejected\)/.test(pushed.out) && tip) {
+    const lease = `--force-with-lease=${branch}:${tip}`;
+    const merges = git(['rev-list', '--merges', `HEAD..origin/${branch}`]);
+    const missing = merges ? null : git(['cherry', 'HEAD', `origin/${branch}`]);
+    const lost = missing == null ? null : missing.split('\n').filter((l) => l.startsWith('+'));
+    const anyway = lost?.length ? heldAnyway(git, wt, branch, tip, lost) : null;
+    if (lost && (!lost.length || anyway)) {
+      const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
+      if (forced.ok) {
+        const how = anyway ? `origin's ${lost.length} commit(s) differ from it by their patch, but ${anyway}` : 'every commit origin had is in it by its patch';
+        report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: ${how}`);
+        return null;
+      }
+      return `${why}: its last worker rebased it, and the pass's git push ${lease} origin ${branch} was refused (${lastLine(forced.out)})`;
+    }
+    const has = merges ? `${merges.split('\n').filter(Boolean).length} merge commit(s) the head does not hold, whose resolutions git cherry cannot compare`
+      : lost ? `${lost.length} commit(s) the head does not hold by their patch` : 'commits git cherry could not compare';
+    return `${why}: its last worker rebased it, but origin/${branch} has ${has}, so the pass does not overwrite them. Check them, then push with git push ${lease} origin ${branch} from ${wt}`;
+  }
   return `${why}: they are its last worker's, and the pass's git push origin ${branch} was refused (${said.length ? said.join('; ') : lastLine(pushed.out)})`;
 }
+// Origin's commits on `branch` (up to `tip`, none a merge) that git cherry finds no patch for (`lost`,
+// its '+ <sha>' lines) are still the head's when either holds, and the reason, else null:
+// - each is rewritten in the head by this worktree: this worktree once held it (it is reachable from an
+//   entry of the branch's or HEAD's reflog), and a commit since the merge base keeps its author, author
+//   date and subject, as a rebase, an amend or a fixup folded into it does. A commit dropped (a reset
+//   away, a rebase that drops it) has no such commit, and one someone rewrote on origin (an amend pushed
+//   over the worker's) was never in this worktree, so either holds;
+// - the head holds their change: origin's diff from the merge base applies to it in reverse.
+const REFLOG_ENTRIES = 200;
+function heldAnyway(git, wt, branch, tip, lost) {
+  const base = git(['merge-base', 'HEAD', tip]);
+  if (!base) return null;
+  const who = (range) => (git(['log', '--no-walk=unsorted', '--format=%ae %ad %s', '--date=raw', ...range]) ?? '').split('\n').filter(Boolean);
+  const ours = new Set((git(['log', '--format=%ae %ad %s', '--date=raw', `${base}..HEAD`]) ?? '').split('\n').filter(Boolean));
+  const shas = lost.map((l) => l.slice(2).trim());
+  const theirs = who(shas);
+  const entries = [...new Set([`refs/heads/${branch}`, 'HEAD']
+    .flatMap((ref) => (git(['reflog', 'show', '--format=%H', '-n', String(REFLOG_ENTRIES), ref]) ?? '').split('\n').filter(Boolean)))];
+  const local = entries.length ? new Set((git(['rev-list', ...entries, `^${base}`]) ?? '').split('\n').filter(Boolean)) : new Set();
+  if (theirs.length === shas.length && theirs.every((x) => ours.has(x)) && shas.every((x) => local.has(x))) {
+    return `each is rewritten in it: a commit there keeps its author, author date and subject`;
+  }
+  if (shOut('sh', ['-c', 'git -C "$1" diff --binary "$2" "$3" | git -C "$1" apply --check -R --cached', 'sh', wt, base, tip]).ok) {
+    return `the head holds their change: origin's diff from ${base.slice(0, 9)} applies to it in reverse`;
+  }
+  return null;
+}
+
 // Recorded each time the pass finds a worker exited: the head its worktree was left at.
 function recordWorkerHead(t) {
   if (DRY || runsInCloud(t)) return;

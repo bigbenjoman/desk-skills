@@ -3,12 +3,12 @@
 // The real CLI against a scratch lease directory, with real child processes as owners. A reused pid is
 // a live owner whose recorded start time is a fixture, and a lease's age is set by rewriting its times.
 // Every kind is on unless a case says otherwise (with no lease-kinds row, every kind is shadow).
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { claudeAncestor, kindMode, leaseCli, listRow } from '../desk/bin/leases.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
@@ -16,7 +16,7 @@ const t = (name, got, want) => {
   const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`);
 };
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const S = mkdtempSync(join(tmpdir(), 'leases-'));
+const S = scratch('leases-');
 let n = 0;
 // A machine profile holding these Sizing rows, its path returned.
 const machineWith = (rows) => {

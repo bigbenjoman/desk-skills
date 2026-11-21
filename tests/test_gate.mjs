@@ -1,11 +1,11 @@
 // suite: gate (one definition of green)
 import { evaluateGate, normaliseRollup, parseHolds, matchHolds, promotionHolds, keyChanged, readKeyedFiles, globToRegExp, latestPerCheck, branchMatches, untriggeredChecks, staleTriggers, baseUntriggered, readWorkflows, parseStateChecks, stateFailing, parseCodeowners, codeOwnersOf, codeOwnerHolds, isCodeOwnerHold, holdKind, holdNeedsPerson, agentLast, NO_REASON, UNREAD_FILES } from '../desk/bin/gate.mjs';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { collectAnswers, capNotes, ANSWER_HEAD, SIBLING_HEAD, MAX_NOTES } from '../desk/bin/briefing.mjs';
 import { gateReviewersIn } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const cr = (name, status, conclusion, runId) => ({ name, status, conclusion, detailsUrl: runId ? `https://github.com/o/r/actions/runs/${runId}/job/1` : '' });
@@ -316,7 +316,7 @@ t('DS-503 AC3 every hold on the checks desk-setup proposes stays a person\'s', `
 t('DS-503 negative control: a check with no ask-class word is an agent\'s', kinds(['claude.md: house rules', 'e2e/**: read the dry-run comment the docs bot posts']), 'agent,agent');
 t('DS-503 AC1 desk-setup sorts each proposed hold with hold-kind and gives an agent\'s a routine', /gate\.mjs hold-kind/.test(setup) && /\*\*`agent`\*\*: .*Write it a routine/.test(setup), true);
 // The CLI desk-setup and desk-update run: items given, else the config's §4 Merge holds.
-const gtmp = mkdtempSync(join(tmpdir(), 'gate-503-'));
+const gtmp = scratch('gate-503-');
 const gconf = join(gtmp, 'config.md');
 writeFileSync(gconf, `## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Merge holds | \`${dryRun}\`, \`content/legal/**: legal copy sign-off\`, \`db/**: check the plan; desk runs: ./plan.sh\` |\n`);
 const gcli = (args) => spawnSync(process.execPath, [new URL('../desk/bin/gate.mjs', import.meta.url).pathname, 'hold-kind', ...args], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: gconf } });
@@ -407,5 +407,40 @@ rmSync(gtmp, { recursive: true, force: true });
   t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
   t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
   t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
+}
+// DS-909 AC12: with the slot kind on, a suite holds a slot lease and leaves no holder file, and the pass
+// reads the worktree as it did from the holder file with the kind off.
+{
+  const { lockHolders, lockHolderStamps, lockHolderRuns, suiteWait } = await import('../desk/bin/suite-wait.mjs');
+  const tmp = scratch('gate-leases-');
+  const was = process.env.DESK_LEASE_DIR;
+  process.env.DESK_LEASE_DIR = join(tmp, 'leases');
+  try {
+    const off = join(tmp, 'off'), on = join(tmp, 'on');
+    for (const d of [off, on, process.env.DESK_LEASE_DIR]) mkdirSync(d, { recursive: true });
+    writeFileSync(join(off, 'desk-test.lock.pid'), '200\n');
+    const wt = '/w/T-2', now = Date.now();
+    const procs = [{ pid: 200, ppid: 1, args: 'bash tests/run.sh' }, // a suite: the command with-lock.sh exec'd into
+      { pid: 210, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' }, // waits for a slot
+      { pid: 211, ppid: 210, args: 'node /h/.claude/desk/bin/slot-lease.mjs take tsc --pid 210 -- pnpm typecheck' }];
+    const read = (dir, list) => [String(suiteWait(wt,{ procs: list, cwds: list.map((p) => ({ pid: p.pid, cwd: wt })), holders: lockHolders(dir, { light: true }) })),
+      lockHolderRuns({ procs: list, holders: lockHolders(dir), cwds: [], ages: new Map([[200, 60]]), stamps: lockHolderStamps(dir), now }).map((r) => r.pid).join(',')].join(' ');
+    const lease = (key, pool, pid) => ({ id: `L-${pid}`, kind: 'slot', key, pool, units: 1, owner: { pid, start: 'x' }, label: `${key} ${wt}: bash tests/run.sh`,
+      ttl: 600, acquired: new Date(now - 30_000).toISOString(), expires: new Date(now + 570_000).toISOString() });
+    const kindOff = read(off, procs.slice(0, 1));
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('test', 'slot:heavy', 200)] }));
+    t('DS-909 AC12 a suite holding a slot lease reads as running its suite, as its holder file did', read(on, procs.slice(0, 1)), kindOff);
+    t('DS-909 AC12 and it is that suite', kindOff, 'suite 200');
+    t('DS-909 AC12 a wrapper waiting on the lease reads as waiting on the lock', suiteWait(wt, { procs: procs.slice(1), cwds: [{ pid: 210, cwd: wt }], holders: lockHolders(on, { light: true }) }), 'lock');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('browser', 'slot:browser', 200)] }));
+    t('DS-909 AC12 a browser slot lease holds no test lock', read(on, procs.slice(0, 1)), 'null ');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('light', 'slot:light', 200)] }));
+    t('DS-909 AC12 a light slot lease is its suite, though not a test lock holder', read(on, procs.slice(0, 1)), 'suite ');
+    writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), '{not json');
+    t('DS-909 AC12 an unreadable store leaves the holder files read as before', read(off, procs.slice(0, 1)), kindOff);
+  } finally {
+    if (was === undefined) delete process.env.DESK_LEASE_DIR; else process.env.DESK_LEASE_DIR = was;
+    rmSync(tmp, { recursive: true, force: true });
+  }
 }
 process.exit(fails ? 1 : 0);

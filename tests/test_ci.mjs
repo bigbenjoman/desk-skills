@@ -3,11 +3,11 @@
 // a job with none is placed self-hosted, and ci-lint fails a self-hostable job that receives a
 // secret, an environment or id-token, or whose runs-on has no Dependabot branch.
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classify, lint } from '../desk/bin/desk-ci.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -218,7 +218,7 @@ t('own workflow lints clean', linted(own), '');
 t('own nightly and red-main workflows lint clean', linted(ownWf('nightly-macos.yml')) + linted(ownWf('ci-main-red.yml')), '');
 
 // The CLI over a directory: classify lines and summary, ci-lint exit status.
-const dir = mkdtempSync(join(tmpdir(), 'desk-ci-'));
+const dir = scratch('desk-ci-');
 try {
   writeFileSync(join(dir, 'a.yml'), jobSecret);
   writeFileSync(join(dir, 'b.yaml'), tokenOnly);

@@ -28,7 +28,7 @@ export const PACE_HELD = '7-day usage ahead of pace holds every spawn';
 
 // A killed worker waiting to resume, and a session handed off to its next stage, go ahead of every new
 // ticket.
-export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot'].includes(r.resume);
+export const toResume = (r) => ['pending', 'usage', 'maintenance', 'reboot', 'budget'].includes(r.resume);
 export const toHandoff = (r) => r.handoff === 'pending';
 const goesFirst = (r) => toResume(r) || toHandoff(r);
 // A ticket linked in Jira as blocked by one held behind it (cycle_link) waits until the person says which

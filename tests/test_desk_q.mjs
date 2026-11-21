@@ -1,12 +1,12 @@
 // suite: desk-q plain output (overview, one repo, one ticket)
 // desk-q against fixture repo configs, queues, heartbeats and triage records under a throwaway HOME,
 // DESK_HOME and DESK_CONFIG_ROOT. Nothing touches your real ~/.claude, ~/.config/desk or state.
-import { mkdtempSync, mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readdirSync, readFileSync, statSync, rmSync, utimesSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { xterm256, rgbOfSgr } from './sgr_rgb.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
@@ -22,7 +22,7 @@ const quick = (ms, baseline) => ms < Math.max(QUICK_FLOOR_MS, QUICK_TIMES * base
 
 // One fixture world: seven repos by default, or `repos` to override, each { port, conc, queue, beat, triage }.
 function world(overrides = {}) {
-  const T = mkdtempSync(join(tmpdir(), 'desk-q-'));
+  const T = scratch('desk-q-');
   // macOS, with a fake launchctl: `print gui/<uid>/<label>` exits 0 for each label in bin/loaded,
   // printing bin/print-<label> where there is one.
   mkdirSync(join(T, 'bin'));
@@ -178,7 +178,7 @@ t('DS-279 AC6 a ticket held outside the batch needs you on every screen, and no 
   '[false,false,false,true,true,true,true]');
 
 // ---- AC13: nothing set up
-const E = mkdtempSync(join(tmpdir(), 'desk-q-empty-'));
+const E = scratch('desk-q-empty-');
 const none = spawnSync('node', [BIN, '--plain'], { encoding: 'utf8', env: { HOME: E, DESK_HOME: join(E, 'd'), DESK_CONFIG_ROOT: join(E, 'c'), DESK_MACHINE: join(E, 'm.md'), PATH: process.env.PATH } });
 t('AC13 no repo set up: says so, names /desk-setup, exits non-zero', none.status !== 0 && /no repo is set up/i.test(none.stderr) && /\/desk-setup/.test(none.stderr), true);
 
@@ -2268,7 +2268,7 @@ M357.ui.finish(0);
 const FIX357 = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'costs-october');
 const cost357 = { DESK_COSTS: process.env.DESK_COSTS, DESK_COST_DIR: process.env.DESK_COST_DIR };
 const home357 = async (reading) => {
-  const d = mkdtempSync(join(tmpdir(), 'desk-q-357-'));
+  const d = scratch('desk-q-357-');
   writeFileSync(join(d, 'costs.md'), readFileSync(join(FIX357, 'costs.md'), 'utf8'));
   if (reading) writeFileSync(join(d, 'cache.json'), readFileSync(join(FIX357, 'cache.json'), 'utf8'));
   Object.assign(process.env, { DESK_COSTS: join(d, 'costs.md'), DESK_COST_DIR: d });
@@ -2614,6 +2614,88 @@ try {
   t('DS-937 auto-merge its armer records failed is no longer shown as armed', mergeLine('MG-7'), null);
   t('DS-937 a merge log that cannot be read says so, and the page still shows',
     mergeLine('MG-1', { ...W937.env, DESK_MERGE_LOG: W937.T }), 'Merge     the merge log could not be read (EISDIR)');
+}
+
+// ---- DS-911: the Queue view's Leases section, read from a fixture lease directory
+{
+  const L = world({ voicepa: null, 'pr-ninja': null, pranicuk: null, forewatt: null, 'yield-index': null, 'gygg-platform': null });
+  const LEASES = join(dirname(BIN), 'leases.mjs');
+  const sleepers = [];
+  const alive = () => { const c = spawn('sleep', ['300'], { stdio: 'ignore' }); sleepers.push(c); return c.pid; };
+  const dirs = { live: join(L.T, 'leases-live'), none: join(L.T, 'leases-none'), bad: join(L.T, 'leases-bad'), lapsed: join(L.T, 'leases-lapsed') };
+  for (const d of Object.values(dirs)) mkdirSync(d, { recursive: true });
+  const take = (d, kind, key, ttl, label) => spawnSync('node', [LEASES, 'acquire', kind, key, '--ttl', String(ttl), '--label', label, '--pid', String(alive())],
+    { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d } }).stdout.trim();
+  // Makes lease `id` look taken `s` seconds ago, its expiry its TTL after that.
+  const age = (d, id, s) => {
+    const p = join(d, 'leases.json'); const st = JSON.parse(readFileSync(p, 'utf8')); const l = st.leases.find((x) => x.id === id);
+    l.acquired = new Date(Date.now() - s * 1000).toISOString(); l.expires = new Date(Date.parse(l.acquired) + l.ttl * 1000).toISOString();
+    writeFileSync(p, JSON.stringify(st));
+  };
+  const port = take(dirs.live, 'port', '4101', 900, 'voicepa worker VPL-1');
+  const merge = take(dirs.live, 'merge', 'acme/merges@main', 900, 'desk-skills merge driver');
+  const slot = take(dirs.live, 'slot', 'test', 60, 'session s-1 suite');
+  age(dirs.live, merge, 90); age(dirs.live, port, 1000); age(dirs.live, slot, 3 * 3600 + 30);
+  const refuse = (kind, h) => JSON.stringify({ at: new Date(Date.now() - h * 3600_000).toISOString(), event: 'would-refuse', kind, key: 'k', units: 1 });
+  writeFileSync(join(dirs.live, 'leases.log.jsonl'), `${[
+    ...[1, 2, 3, 4, 5].map((h) => refuse('port', h)), refuse('port', 30), refuse('port', 31), JSON.stringify({ at: new Date().toISOString(), event: 'grant', kind: 'port' }),
+    ...Array.from({ length: 8 }, (_, d) => Array.from({ length: d + 1 }, () => refuse('slot', d * 24 + 12))).flat(),
+  ].join('\n')}\n`);
+  writeFileSync(join(dirs.bad, 'leases.json'), '{ not json');
+  const kept = readFileSync(join(dirs.live, 'leases.json'), 'utf8') + readFileSync(join(dirs.live, 'leases.log.jsonl'), 'utf8');
+  const section = (d, more = {}) => {
+    const out = spawnSync(process.execPath, [BIN, '--plain'], { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d, ...more }, cwd: L.T }).stdout;
+    return { out, leases: lines(out).slice(lines(out).indexOf('Leases')).filter(Boolean) };
+  };
+  const live = section(dirs.live).leases;
+  const rowFor = (kind) => live.find((l) => l.startsWith(`  ${kind} `)) ?? '';
+  t('DS-911 AC1 the Leases section lists each lease with its kind, key, holder, age and time to expiry',
+    [/^ {2}port +4101 +voicepa worker VPL-1 \(pid \d+\) +16m +▲ overdue 1m$/, /^ {2}merge +acme\/merges@main +desk-skills merge driver \(pid \d+\) +1m +in 13m$/,
+      /^ {2}slot +test +session s-1 suite \(pid \d+\) +3h +▲ overdue 2h 59m$/].map((re, i) => re.test(rowFor(['port', 'merge', 'slot'][i]))).join(), 'true,true,true');
+  const freeLine = (id) => live[live.findIndex((l) => l.includes(id === port ? '4101' : 'test')) + 1];
+  t('DS-911 AC2 a lease past its TTL with a live owner is overdue, its next line the forced release command',
+    freeLine(port), `    to free it: desk-env lease force-release ${port} --reason <why>`);
+  t('DS-911 AC3 a slot held past its TTL by a running suite is overdue with its age and the command, not lapsed',
+    `${/ 3h +▲ overdue/.test(rowFor('slot'))} ${freeLine(slot)}`, `true     to free it: desk-env lease force-release ${slot} --reason <why>`);
+  t('DS-911 AC2 a lease within its TTL has no command line', live.some((l) => l.includes(merge)), false);
+  t('DS-911 AC4 a shadow kind with 5 would-refuse in the last 24 hours shows 5 over 24 hours',
+    live.find((l) => /^ {2}port +shadow/.test(l)), '  port           shadow  5 would-refuse in 24h · each of the last 7 days, newest first: 5 2 0 0 0 0 0');
+  t('DS-911 AC7 a kind with would-refuse on each of the last 8 days shows the last 7, leaving out the 8th',
+    live.find((l) => /^ {2}slot +shadow/.test(l)), '  slot           shadow  1 would-refuse in 24h · each of the last 7 days, newest first: 1 2 3 4 5 6 7');
+  t('DS-911 desk-q changes neither the store nor the log',
+    readFileSync(join(dirs.live, 'leases.json'), 'utf8') + readFileSync(join(dirs.live, 'leases.log.jsonl'), 'utf8') === kept, true);
+  // A lease past twice its TTL, which `desk-env lease list` would sweep, writing the store and logging the lapse.
+  age(dirs.lapsed, take(dirs.lapsed, 'port', '4102', 900, 'voicepa worker VPL-2'), 2000);
+  const snapshot = () => readdirSync(dirs.lapsed).sort().map((f) => `${f}\n${readFileSync(join(dirs.lapsed, f), 'utf8')}`).join('\n');
+  const before = snapshot();
+  t('DS-911 desk-q leaves a lapsed lease in the store for the lease commands to sweep, writing and logging nothing',
+    `${section(dirs.lapsed).leases[1]} | ${snapshot() === before}`, '  No leases are held. | true');
+  t('DS-911 AC5 no leases and no shadow conflicts: the section says no leases are held',
+    section(dirs.none).leases.join('\n'), 'Leases\n  No leases are held.\n  No shadow would-refuse in the last 7 days.');
+  const bad = section(dirs.bad);
+  t('DS-911 AC6 an unreadable store: the section says so and shows the reset command',
+    bad.leases.slice(1, 3).join('\n'), `  ▲ The lease store ${join(dirs.bad, 'leases.json')} is unreadable: ${(() => { try { JSON.parse('{ not json'); } catch (e) { return e.message; } })()}.\n    to start an empty one: desk-env lease reset --reason <why>`);
+  // Free memory and the clock move between the two runs, so numbers are masked.
+  const rest = (out) => unclocked(out.replace(/\nLeases\n[\s\S]*$/, '')).replace(/\d+(\.\d+)?/g, 'N');
+  t('DS-911 AC6 and the rest of desk-q renders as before', rest(bad.out) === rest(section(dirs.none).out) && /^ {2}desk-skills /m.test(bad.out), true);
+  // Owners are checked with ps outside Linux; a ps that fails is shown in the section and the rest still draws.
+  if (process.platform !== 'linux') {
+    const fake = join(L.T, 'failing-ps');
+    mkdirSync(fake, { recursive: true });
+    writeFileSync(join(fake, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    const noPs = section(dirs.live, { PATH: `${fake}:${process.env.PATH}` });
+    t('DS-911 AC6 a ps that fails while the owners are checked stays in the Leases section, and the rest of desk-q renders',
+      `${noPs.leases[1]} | ${/^ {2}desk-skills /m.test(noPs.out)} | ${noPs.leases.some((l) => /^ {2}slot +shadow +1 would-refuse/.test(l))}`, '  ▲ The leases could not be read: ps could not be read (exit 1). | true | true');
+  }
+  // At 80 columns a kind's row wraps rather than being cut, so every day's count shows.
+  process.env.DESK_LEASE_DIR = dirs.live;
+  const narrow = lines(Q.overview([], { now: Date.now(), avail: 30, width: 80 }).replace(ANSI, ''));
+  delete process.env.DESK_LEASE_DIR;
+  const kindRows = narrow.slice(narrow.findIndex((l) => /^ {2}port +shadow/.test(l)));
+  const slotRows = kindRows.slice(kindRows.findIndex((l) => /^ {2}slot +shadow/.test(l))).slice(0, 2);
+  t('DS-911 AC7 at 80 columns no kind row is wider, and the slot kind still shows all seven days',
+    `${kindRows.length > 2} ${kindRows.filter((l) => [...l].length > 80).length} ${/newest first: 1 2 3 4 5 6 7$/.test(slotRows.map((l) => l.trim()).join(' '))}`, 'true 0 true');
+  for (const c of sleepers) c.kill();
 }
 
 console.log(fails ? `${fails} FAILED` : 'all desk-q checks passed');

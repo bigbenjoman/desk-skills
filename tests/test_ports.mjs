@@ -1,16 +1,16 @@
 // suite: dev ports across repo configs
 // Dev ports across repo configs: a port /desk-setup proposes meets no other repo's port or worker
 // block, and a repo whose block already meets another's is flagged. Fixture configs only.
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { portClashes, proposePort, repoPortClaims } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
-const T = mkdtempSync(join(tmpdir(), 'desk-ports-'));
+const T = scratch('desk-ports-');
 const ROOT = join(T, 'desk');
 // No machine profile, so an unset concurrency row reads as 2 / 3 rather than this computer's sizing.
 process.env.DESK_MACHINE = join(T, 'none.md');

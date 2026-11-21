@@ -73,6 +73,8 @@ fails, fall back to handing over the raw markdown to paste.
 
 Arming or merging, claim it first and record it after in the merge log, as `desk-ticket` Stage 7
 says (`merge-log.mjs claim`, then `record --event armed` or `merged`, and `disarmed` when you turn auto-merge off).
+A refused claim stops the arming or merge: report the line it printed, which names who and at which
+head when another desk path already has the PR.
 
 **The title follows §5 PR title exactly** — the format (e.g. conventional commits
 `type(scope): <TICKET> description`), where the key sits, and whether CI checks it. When §4 Merge

@@ -2,18 +2,18 @@
 // upload-log.mjs on its own: a fake upload's line, and a fake stall's counting the uploads in the
 // minute and the hour before it. Then upload-images.mjs against a fake Playwright and a stub gh: each
 // file uploaded is logged, and a stall is logged as throttled for the file it was waiting on.
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { logUpload, readUploadLog, uploadsBefore } from '../desk/bin/upload-log.mjs';
 import { uploadSandbox } from './upload_harness.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => {
   const g = typeof got === 'string' ? got : JSON.stringify(got); const w = typeof want === 'string' ? want : JSON.stringify(want);
   const ok = g === w; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${g}${ok ? '' : ` (want ${w})`}`);
 };
-const T = mkdtempSync(join(tmpdir(), 'desk-upload-log-'));
+const T = scratch('desk-upload-log-');
 
 // ---- the module: a fake upload, then a fake stall ---------------------------------------------
 const log = join(T, 'unit', 'upload-log.jsonl');

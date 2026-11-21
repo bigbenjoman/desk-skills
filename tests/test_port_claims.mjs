@@ -2,13 +2,13 @@
 // port-claims.mjs records the dev-server ports a peer's handshake claimed, machine-wide: claimedPorts
 // holds each claimer's last claim until it is released or lapses, a new claim replaces the claimer's
 // last, and the CLI refuses a range it cannot read.
-import { mkdtempSync, appendFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
-const T = mkdtempSync(join(tmpdir(), 'port-claims-'));
+const T = scratch('port-claims-');
 process.env.DESK_PORT_CLAIMS = join(T, 'claims.jsonl');
 const P = await import('../desk/bin/port-claims.mjs');
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin', 'port-claims.mjs');

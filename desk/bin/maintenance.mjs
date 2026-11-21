@@ -178,7 +178,7 @@ function incomingBlock(git, dir, to) {
 
 // Fast-forward the desk-skills checkout from origin and install it, as /desk-update does: only on a
 // clean `main`. With `to`, a commit already fetched, it fast-forwards to exactly that commit and only
-// untracked files in its way block it. -> {ok, old, new, commits} | {ok: false, why, old}
+// untracked files in its way block it. -> {ok, old, new, commits, restarted} | {ok: false, why, old}
 export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   if (!dir || !existsSync(dir)) return { ok: false, why: `no desk-skills checkout (${dir ?? `${join(E.deskHome(), 'source-checkout')} names none`})` };
   const git = (...a) => run('git', ['-C', dir, ...a]);
@@ -194,7 +194,16 @@ export function updateDesk(dir = sourceCheckout(), { to = null } = {}) {
   // Main and ancestry are checked above; `to` may be a tested commit behind an origin that moved since.
   const inst = run(join(dir, 'install.sh'), ['--any-branch'], { cwd: dir, timeout: UPDATE_TIMEOUT_MS });
   if (!inst.ok) return { ok: false, old, new: head, why: `install.sh failed in ${dir}: ${said(inst)}` };
-  return { ok: true, old, new: head, commits };
+  return { ok: true, old, new: head, commits, restarted: restartedDrivers(inst.out) };
+}
+
+// The merge drivers install.sh restarted (installed.mjs restartDriver's line), as "<who> (pid <old> -> <new>)".
+// install.sh prints each line twice (its section and its summary). One left running is not named.
+function restartedDrivers(out) {
+  const found = String(out ?? '').split('\n')
+    .map((l) => /^\s*merge driver for (.+?): restarted on the new code \(pid (\d+) -> (\d+)\)/.exec(l))
+    .filter(Boolean).map(([, who, from, to]) => `${who} (pid ${from} -> ${to})`);
+  return [...new Set(found)];
 }
 
 // The reboot check's summary, and what stops an unattended restart: anything heavy still running (a
@@ -368,7 +377,9 @@ export async function autoRelease({ dir = maintDir(), at = now(), selfQueue = nu
     if (!u.ok) return blocked(u.why, to);
     delete s.blocked;
     save();
-    const reach = live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : '';
+    // A driver install.sh restarted logs "merge driver exited 143" (its SIGTERM), which is not a crash.
+    const restarted = u.restarted?.length ? `; merge driver restarted on the new code, so its log's "merge driver exited 143" is this restart: ${u.restarted.join(', ')}` : '';
+    const reach = `${live.length ? `; running workers that pick it up on their next call: ${live.join(', ')}` : ''}${restarted}`;
     record(dir, at, `release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)), main's ${RELEASE_CHECK} check passed: pulled fast-forward and installed${why}${reach}`);
     lines.push(`release: desk-skills ${short(base)} -> ${short(u.new)} (${u.commits} commit(s)) installed, main's ${RELEASE_CHECK} check passed on it${why}${reach}`);
     return { lines };

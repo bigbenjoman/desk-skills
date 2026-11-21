@@ -1,11 +1,11 @@
 // suite: config values (list items, trailing notes)
 // Config value cells: one item per backtick span, except spans inside a trailing parenthesised note.
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { cellItems, configRows } from '../desk/bin/desk-env.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const items = (cell) => cellItems(cell).join(' | ');
@@ -48,7 +48,7 @@ t('#770 an unclosed run is plain text', items('`A` (a stray ``` here)'), 'A');
 // End to end: `desk-env list` on a §4 row that carries a note.
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const BIN = join(ROOT, 'desk', 'bin', 'desk-env.mjs');
-const T = mkdtempSync(join(tmpdir(), 'desk-config-'));
+const T = scratch('desk-config-');
 const cfg = join(T, 'config.md');
 writeFileSync(cfg, '## 4. Tracker\n\n| Field | Value |\n|---|---|\n'
   + '| Other work id patterns | `BUG-[0-9]+` `P[0-9]+-M[0-9]+(-FIX)?-[0-9]+` (not `roadmap-fw-3xx`) |\n');
@@ -142,7 +142,7 @@ t('AC2 jira-comment yes reads as yes', perm('jira-comment'), 'yes');
 t('AC3 jira-comment missing reads as no', execFileSync('node', [BIN, 'perm', 'jira-comment'], { encoding: 'utf8', env: { ...process.env, DESK_CONFIG: tool, DESK_MACHINE: join(T, 'none.md'), HOME: T } }).trim(), 'no');
 
 // Outside any repo there is no config: a permission is refused unread, never read as `no`.
-const away = mkdtempSync(join(tmpdir(), 'desk-norepo-'));
+const away = scratch('desk-norepo-');
 const awayEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(DESK_|GIT_)/.test(k)));
 Object.assign(awayEnv, { HOME: away, DESK_CONFIG_ROOT: join(away, 'cfg'), DESK_MACHINE: join(away, 'none.md') });
 const outside = (args) => {
@@ -173,7 +173,8 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
 const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
-  const keys = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'].filter((k) => !omit.includes(k));
+  const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
+  const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
     + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
@@ -216,6 +217,13 @@ t('DS-395 AC4 a compound command item is named with its row', d.out.split('\n')[
 t('DS-395 AC4 and so is a compound one', d.out.split('\n')[1].startsWith(`UNLISTED §4 Related tests item "${compound}" is a compound or env-prefixed shell command`), true);
 t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n').length, 2);
 t('DS-395 AC4 and exits 1', d.code, 1);
+
+// A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
+t('a Local services item with no service name is named, where workers start services', d.out,
+  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('and `name: port` reads as its name', d.code, 1);
+t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.

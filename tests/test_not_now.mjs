@@ -1,14 +1,14 @@
 // suite: not-now register (put-off questions, matched on their inputs)
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readRegister, lookup, putOffEntry, addPutOff, clearPutOff, parseInputs, refreshInputs, notNowPath, questionKey, NOT_NOW } from '../desk/bin/not-now.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
-const dir = mkdtempSync(join(tmpdir(), 'desk-not-now-'));
+const dir = scratch('desk-not-now-');
 const Q = 'Rotate the production database password?';
 const inputs = { ticket: 'V-7', 'pr-head': 'a1b2' };
 
@@ -52,7 +52,7 @@ t('a nested value is refused', parseInputs('{"a": {"b": 1}}').ok, false);
 t('DS-337 AC1 a list of plain values is kept, joined in its order', parseInputs('{"conflict_files": ["b.ts", "a.ts", 3]}').inputs.conflict_files, 'b.ts, a.ts, 3');
 t('DS-337 a list holding an object is refused, naming it', parseInputs('{"steps": ["pr", {"x": 1}]}').why, 'inputs must be plain values or lists of them, not steps');
 {
-  const ld = mkdtempSync(join(tmpdir(), 'desk-not-now-list-'));
+  const ld = scratch('desk-not-now-list-');
   const listed = (files) => parseInputs(JSON.stringify({ conflict_files: files })).inputs;
   addPutOff(putOffEntry({ question: 'Resolve the conflict?', ticket: 'L-1', inputs: listed(['a', 'b']) }), ld);
   t('DS-337 AC1 list inputs match the register', lookup(readRegister(ld), { question: 'Resolve the conflict?', inputs: listed(['a', 'b']) }).status, 'put_off');

@@ -8,6 +8,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_CONFIG DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_DEFAULT_BRANCH DESK_SKILLS_DIR
@@ -73,6 +74,7 @@ check "desk-design render allowed under the browser lock only" 'allows "Bash($B/
 check "DS-382 desk-design compare allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/desk-design.mjs compare:*)" && ! allows "Bash(node $B/desk-design.mjs compare:*)"'
 check "DS-676 stitch-boards allowed under the browser lock only" 'allows "Bash($B/with-lock.sh browser node $B/stitch-boards.mjs:*)" && ! allows "Bash(node $B/stitch-boards.mjs:*)"'
 check "DS-339 AC1 the worker's resume file in the state dir is writable" 'allows "Edit(/$T/state/resume/fix-thing.json)" && ! allows "Edit(/$T/state/resume/**)"'
+check "its review results folder in the state dir is writable, and no other ticket's" 'allows "Edit(/$T/state/reviews/fix-thing/**)" && ! allows "Edit(/$T/state/reviews/**)"'
 check "desk-review verdict.mjs allowed by path, not node"  'allows "Bash(node $HOME/.agents/skills/desk-review/bin/verdict.mjs:*)" && allows "Bash(node ~/.agents/skills/desk-review/bin/verdict.mjs:*)" && ! allows "Bash(node:*)"'
 
 PMROW='`pnpm`' settings '`bash tests/run.sh`' '| Storybook | `apps/web: pnpm build-storybook` |'
@@ -309,7 +311,7 @@ check "jira-create yes, dry run: create and create-batch refused" '[ $rc -eq 0 ]
 # rows3 <key>=<value> ... -> a §3 table holding just those rows
 rows3(){ local kv; printf '\n## 3. Permissions\n| Key | Capability | Recommended | Your setting |\n|---|---|---|---|\n'
   for kv in "$@"; do printf '| `%s` | x | `ask` | `%s` |\n' "${kv%%=*}" "${kv#*=}"; done; }
-SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) |'
+SVC='| Local services | `typesense :8108` `mailpit` (the mail catcher) `search: 8108` |'
 : > "$T/repo/compose.yaml"; UP="docker compose -f $T/repo/compose.yaml up -d --no-recreate --no-deps"
 denied_line(){ [[ "$out" == *"CONFIG_DENIED: $1 ($2)"* ]]; }
 
@@ -327,6 +329,7 @@ check "AC3 Storybook and Python capture under the browser lock" \
 check "AC3 never outside the worktree or without the lock"  'no "$L browser node ../x.mjs" "$L browser node ./../x.mjs" "$L browser python3 /etc/x.py" "$L browser python3 ./a/../../x.py" \
       "$L browser node $T/other/shot.mjs" "$L browser python3 -c print" "node ./shot.mjs" "python3 ./shot.py" "./node_modules/.bin/playwright test"'
 check "AC5 local-services yes: compose up for a §4 entry, in the main checkout's project" 'ok "$UP typesense" "$UP mailpit"'
+check "an item written name: port is that service" '[[ "$out" != *"does not start with a compose service name"* ]] && ok "$UP search"'
 check "AC5 not the worktree's own project, another service or a recreate" 'no "docker compose up -d typesense" "docker compose up typesense" "$UP postgres" "$UP typesense postgres" \
       "$UP typesense --force-recreate" "docker compose -f compose.yaml up -d --no-recreate --no-deps typesense" "docker compose -f $W/../x.yaml up -d typesense"'
 check "AC5 down, rm and run stay refused"                  'no "docker compose down" "docker compose down -v" "docker rm -f typesense" "docker run --rm alpine" "docker compose rm typesense" "docker compose run typesense sh"'

@@ -365,11 +365,11 @@ if (mode === 'triage') {
   const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
   const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
   // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
-  const NODE_BIN_LINT = ['eslint', 'biome', 'oxlint', 'stylelint'];
+  const NODE_BIN_LINT = E.LINT_BINS;
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
-  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
+  // screenshots and review results (reviews/<KEY>/, kept so a later accepted re-verdict can re-run them). The resume file lives in the state dir because the harness write-protects the
   // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
   // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
@@ -378,6 +378,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
     `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(STATE)}/reviews/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
@@ -704,7 +705,7 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    const name = E.localServiceName(raw);
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }
