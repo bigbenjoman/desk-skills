@@ -665,7 +665,7 @@ export function triageOf(at, key) {
   return m.get(key);
 }
 // A ticket's lane: the queue's, else its triage record's `tr`.
-export const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
+const laneOf = (t, tr) => (t.lane && t.lane !== '?' ? t.lane : tr?.lane ?? '?');
 
 // How much of a worker log's end is read for its stage: a log runs to several MB, and a marker
 // further back than this is one the last pass has already put on the queue.

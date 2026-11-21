@@ -719,12 +719,15 @@ put('kappa', { port: 4000, beat: 1, supervised: true, tickets: {
   'K-7': parked('D', 15, 'Lane D, its canvas is saved on main, but the empty state is not on it: which board?'),
   'K-8': parked('A', 5, 'lane C, build it in an interactive desk-ticket session'),
   'K-9': { state: 'failed', lane: 'A' },
+  'K-11': { state: 'failed', lane: 'A' },
   // DS-806: the SV-4017 park from 2026-11-19, as its ticket quotes it.
   'K-10': parked('A', 2, 'K-10 needs two new Merl dependencies and worker-dependency-install is not granted. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and requeue. Not reached: Merl\'s pipeline tools and tests (AC1–AC4), Stage 4 verify, 4b self-review, push, draft PR, review post, Jira comment, Jira transition to Review/QA.'),
 }, triage: { 'K-5': { lane: 'B' } } });
 mkdirSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks'), { recursive: true });
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-4.json'), JSON.stringify({ question: 'Please take it out of the autopilot queue: lane C' }));
 writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-9.json'), JSON.stringify({ question: 'Ben runs this step: there is no worker work left' }));
+// DS-806: a stopped worker with no reason of its own shows its park file's question in plain words.
+writeFileSync(join(env.HOME, '.desk-autopilot', 'acme__kappa', 'parks', 'K-11.json'), JSON.stringify({ question: 'Stage 5 needs worker-screenshots, which is not granted. Allow it, or skip the screenshots? Not reached: Stage 7 PR, Jira comment.' }));
 const kappa = Object.fromEntries(N.collect({ word: 'kappa' }).items.map((i) => [i.t.key, i]));
 const firstOf = (k) => `${kappa[k]?.actions[0][0]} (${kappa[k]?.actions[0][1]})`;
 const offers = (k) => kappa[k]?.actions.map((a) => a[0]).join();
@@ -737,7 +740,9 @@ t('DS-806 AC1 a lane C park\'s need names no lane letter', kappa['K-1']?.need, '
 t('DS-806 AC1 AC3 AC4 the SV-4017 park is listed in plain words, without its not-reached list', kappa['K-10']?.need,
   "K-10 needs two new Merl dependencies and workers can't install packages. Please run `bun add --cwd apps/merl @aws-sdk/client-s3` and send it back to a worker.");
 t('DS-806 AC3 the queue keeps the raw question, not-reached list and all', /Not reached: Merl's pipeline tools/.test(kappa['K-10']?.t.park.question), true);
-t('DS-806 AC2 its resume reason is plain words', firstOf('K-10'), 'resume (a worker finishes it once it has your answer)');
+t('DS-806 AC1 AC3 AC4 a stopped worker\'s park, with no reason of its own, is listed in plain words', kappa['K-11']?.need,
+  "worker stopped: screenshots needs the setting that lets workers take screenshots, which is not granted. Allow it, or skip the screenshots?");
+t('DS-806 AC2 its resume reason is plain words, the "@aws-sdk" it names being no aws command', firstOf('K-10'), 'resume (a worker finishes it once it has your answer)');
 const { presort } = await import('../desk/bin/decider.mjs');
 t('DS-322 AC1 the decider hands the same park to a session, never a requeue', presort([{ kind: 'parked', lane: 'A', text: 'Demoted to lane C, build it in an interactive desk-ticket session' }]).hand.length, 1);
 t('DS-322 AC2 a stopped worker whose park names lane C offers open, not requeue (DS-556: asking to leave the queue, it recommends drop)', `${kappa['K-4']?.kind} ${offers('K-4')} ${kappa['K-4']?.actions[1][2]}`, `stopped drop,open,not-now ${SESSION_REASON}`);
@@ -1774,7 +1779,9 @@ put('nu', { port: 5300, beat: 1, supervised: true, tickets: {
 const nu = () => N.collect({ word: 'nu' }).items;
 t('DS-389 AC3 two parks on one unset row are one item for the repo; the others stay their own', nu().map((i) => `${i.t.key} ${i.kind}`).sort().join(), 'N-3 parked,N-4 parked,N-5 parked,unset:worker-web-read config');
 const nuRow = nu().find((i) => i.kind === 'config');
-t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("§3 worker-web-read is not set in nu's config, so desk reads it as no, and 2 tickets parked on it (N-1 and N-2). Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
+// DS-806 AC1: it says what the row lets workers do, not the row's id.
+t('DS-389 AC3 its need names the row and both tickets, and recommends done', `${nuRow?.need.startsWith("2 tickets (N-1 and N-2) parked because nu's desk config does not say whether workers may read web pages, so they can't. Answer it once with /desk-update in ")} ${nuRow?.actions.map((x) => x[0]).join()}`, 'true done,not-now');
+t('DS-806 AC2 its done reason is plain words', nuRow?.actions[0][1], 'once you have answered it, done sends all 2 tickets parked on it back to a worker');
 t('DS-389 AC3 the list shows it as one line', here('list', 'nu').out.split('\n').filter((l) => l.startsWith('nu unset:worker-web-read config')).length, 1);
 const stillUnset = N.record({ word: 'nu', ticket: 'unset:worker-web-read', action: 'done' });
 t('DS-389 AC3 done while the row is still unset requeues nothing', `${stillUnset.ok} ${queueOf('nu').tickets['N-1'].state} ${/still not set/.test(stillUnset.line)}`, 'false parked true');

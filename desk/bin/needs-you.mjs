@@ -122,7 +122,7 @@ import { saveAnswer } from './briefing.mjs';
 import { addAsk, removeAsk } from './asks.mjs';
 import { saveNamedFixtures, MAX_BYTES, NAMED_MAX_BYTES } from './live-read.mjs';
 import { prsNaming } from './recoveries.mjs';
-import { parkWords, plainTerms } from './park-words.mjs';
+import { parkWords, plainTerms, GRANT_WORDS } from './park-words.mjs';
 
 // The decisions a parked item offers to override, newest first.
 const DECISIONS_SHOWN = 3;
@@ -137,7 +137,7 @@ const triagePark = (t) => /^(size |dependency cycle:)/.test(String(t.park?.quest
 const parkText = (r, t) => String(t.park?.question ?? openQuestion(r.stateDir, t.key) ?? '');
 // A park's need as the person reads it: plain words, without the steps its worker did not reach, which
 // stay in the raw park.question the classifiers read and in the worker log (park-words.mjs).
-const parkNeed = (q) => one(parkWords(q).text);
+const parkNeed = (q) => one(parkWords(q));
 // Each action's reason is plain words too: no lane letters, grant ids or queue verbs.
 const SESSION_WHY = "it needs a plan or design agreed with you first, which a worker can't do, so it needs you";
 // Why a session park is one: a step no worker is ever allowed, or its lane.
@@ -778,8 +778,8 @@ function unsetItem(g) {
   const keys = g.parked.map((p) => p.t.key);
   const n = keys.length;
   return { kind: 'config', repoLevel: true, parked: g.parked,
-    need: `§3 ${g.key} is not set in ${g.r.repo}'s config, so desk reads it as no, and ${n === 1 ? 'a ticket' : `${n} tickets`} parked on it (${andList(keys)}). Answer it once with /desk-update in ${rootOf(g.r)}, which asks every row the config lacks; then say done, and ${n === 1 ? 'it is' : 'each is'} requeued`,
-    actions: [['done', `once the row is set, done requeues ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it`], ['not-now']] };
+    need: `${n === 1 ? 'A ticket' : `${n} tickets`} (${andList(keys)}) parked because ${g.r.repo}'s desk config does not say whether workers may ${GRANT_WORDS[g.key] ?? 'take the step they need'}, so they can't. Answer it once with /desk-update in ${rootOf(g.r)}, then say done and ${n === 1 ? 'it goes' : 'each goes'} back to a worker`,
+    actions: [['done', `once you have answered it, done sends ${n === 1 ? 'the ticket' : `all ${n} tickets`} parked on it back to a worker`], ['not-now']] };
 }
 // A committed copy of a desk template (the pre-push hook, the desk gate) the template has moved on
 // from, as the supervisor's last template check found it (repo-templates.mjs): one item for the repo.
@@ -1463,7 +1463,9 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (x.k === 'failed') {
     // A park file saying it has no worker work recommends drop over a requeue that would only park it again.
     const actions = [['requeue', 'its worker gave up; requeue sends it back for a new worker to start again'], ['not-now']];
-    return shipped({ kind: 'stopped', need: needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
+    // With no reason of its own recorded, its need is its park in plain words, not the raw question.
+    const said = String(t.failed?.why ?? '').trim() ? '' : parkNeed(parkText(r, t));
+    return shipped({ kind: 'stopped', need: said ? `worker stopped: ${said}` : needText(r, x), actions: [...(noWorkerWork(parkText(r, t)) ? withDrop(r, t, actions) : actions), ...moveAction(r)] });
   }
   // Held by open tickets outside the batch, held inside it or not, with its question on them open. A
   // blocker no batch holds is worked by nobody, so admitting it comes first when every such blocker is

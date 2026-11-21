@@ -315,7 +315,8 @@ export const needsPersonLane = (r) => r?.lane === 'C' || (r?.lane === 'D' && des
 const SHA = /^[0-9a-f]{40}$/;
 // Each needs a word saying the worker could not do it, so a park mentioning the tool in passing is not caught.
 // "needs" counts only right before the tool ("needs curl"): most questions say need somewhere.
-const NEVER = [['aws', /\baws\b/i], ['ssm', /\bssm\b/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
+// The CLI's name, not a package scope or path that holds it ("@aws-sdk/client-s3" is a dependency).
+const NEVER = [['aws', /(?<![@/\w-])aws\b(?![-/])/i], ['ssm', /(?<![@/\w-])ssm\b(?![-/])/i], ['curl', /\bcurl\b/], ['wget', /\bwget\b/], ['gh api', /\bgh api\b/],
   ['.claude/ write', /(?:^|[^\w.])\.claude\//]];
 const REFUSED = /\b(?:refus\w*|denied|den(?:y|ies)|not (?:allowed|granted|permitted)|blocked|can(?:not|'t) (?:run|use|reach|write|call))\b|\bneed(?:s|ed)? (?:the |to (?:run|use) )?(?:aws|ssm|curl|wget|gh api)\b/i;
 const FORCE_PUSH = /\bforce[- ]?push\w*|\bforce-with-lease\b/i;
