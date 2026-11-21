@@ -82,7 +82,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseWorkflow, branchEvents, checkNameOf, checkIsJob } from './desk-ci.mjs';
 import { ASK_TERMS } from './decisions.mjs';
-import { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS } from './config-schema.mjs';
+import { parseFlaky, parseStateChecks, STATE_KINDS, DEFAULT_STATE_CHECKS, parseHolds, ROUTINE_MARK, NO_REASON } from './config-schema.mjs';
 
 export const FAILED = new Set(['failure', 'error', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
 // How long a check may stay queued or running before it is taken as stuck: GitHub Actions' default
@@ -345,33 +345,11 @@ export function evaluateGate(allChecks, { required = [], advisory = [], runs = [
   return { state, reasons, failing, pending, running, succeeded, untriggered: never };
 }
 
-// §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
-// `<glob>#<key>` holds a JSON file only when the PR changes that key (dotted for a nested one), so
-// `package.json#scripts` holds a PR that edits the scripts but not one that only bumps versions.
-// `glob` is the item as written, for reporting; `path` is the part matched against file names.
-// `<why>; desk runs: <command>` names the routine that clears the hold (null when none is named):
-// the merge driver runs it before merging where §3 merge-hold-routine is yes.
-export const ROUTINE_MARK = '; desk runs: ';
-// The reasons desk writes itself, for a hold item with none and for the hold `gate.mjs pr` makes when
-// it cannot read the PR's files: neither names a check an agent could run, so both are a person's.
-export const NO_REASON = '(no reason given in §4 Merge holds)';
+// The §4 Merge holds grammar (parseHolds, ROUTINE_MARK, NO_REASON) is the config schema's
+// (config-schema.mjs). The other reason desk writes itself, for the hold `gate.mjs pr` makes when it
+// cannot read the PR's files: like NO_REASON it names no check an agent could run, so it is a person's.
+export { parseHolds, ROUTINE_MARK, NO_REASON };
 export const UNREAD_FILES = 'the PR file list is unreadable, so §4 Merge holds cannot be checked';
-export function parseHolds(items) {
-  if (!items) return [];
-  return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
-    const i = x.indexOf(': ');
-    const glob = (i < 0 ? x : x.slice(0, i)).trim();
-    let why = i < 0 ? NO_REASON : x.slice(i + 2).trim();
-    let routine = null;
-    const m = why.indexOf(ROUTINE_MARK);
-    if (m >= 0) {
-      routine = why.slice(m + ROUTINE_MARK.length).trim() || null;
-      why = why.slice(0, m).trim() || NO_REASON;
-    }
-    const k = glob.indexOf('#');
-    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why, routine };
-  });
-}
 
 // A hold's step is a person's when its reason names one of the ask categories (decisions.mjs
 // ASK_TERMS: money, legal, production data and credentials, customer copy, a fact only the person

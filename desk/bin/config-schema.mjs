@@ -376,6 +376,33 @@ export function parseLiveReads(items) {
   return { reads: checks.filter((c) => LIVE_READ_NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
 }
 
+// §4 Merge holds items: `<glob>: <why>`, split on the first `: `. A bare glob holds with no reason given.
+// `<glob>#<key>` holds a JSON file only when the PR changes that key (dotted for a nested one), so
+// `package.json#scripts` holds a PR that edits the scripts but not one that only bumps versions.
+// `glob` is the item as written, for reporting; `path` is the part matched against file names.
+// `<why>; desk runs: <command>` names the routine that clears the hold (null when none is named):
+// the merge driver runs it before merging where §3 merge-hold-routine is yes.
+// NO_REASON is the reason desk writes itself for a hold item with none: it names no check an agent
+// could run, so it is a person's. gate.mjs re-exports these.
+export const ROUTINE_MARK = '; desk runs: ';
+export const NO_REASON = '(no reason given in §4 Merge holds)';
+export function parseHolds(items) {
+  if (!items) return [];
+  return items.filter((x) => x && !/^none$/i.test(x.trim())).map((x) => {
+    const i = x.indexOf(': ');
+    const glob = (i < 0 ? x : x.slice(0, i)).trim();
+    let why = i < 0 ? NO_REASON : x.slice(i + 2).trim();
+    let routine = null;
+    const m = why.indexOf(ROUTINE_MARK);
+    if (m >= 0) {
+      routine = why.slice(m + ROUTINE_MARK.length).trim() || null;
+      why = why.slice(0, m).trim() || NO_REASON;
+    }
+    const k = glob.indexOf('#');
+    return { glob, path: k < 0 ? glob : glob.slice(0, k), key: k < 0 ? null : glob.slice(k + 1), why, routine };
+  });
+}
+
 export const TYPES = Object.freeze({
   text: matching('text', () => true),
   perm: permType(null),
@@ -417,6 +444,7 @@ export const TYPES = Object.freeze({
   'state-check': itemsOf(parseStateChecks, 'checks', `\`<check>\`, \`<check>: ${STATE_KINDS.join('|')}\` or \`<check>: external <login>\``),
   'operator-check': itemsOf(parseOperatorChecks, 'checks', '`<check>: <what fixes it>`'),
   'live-read': itemsOf(parseLiveReads, 'reads', '`<name>: <command>`, a name of letters, digits, . _ and -'),
+  'merge-hold': matching('`<glob>[#<key>]: <why>[; desk runs: <command>]`', (s) => parseHolds([s]).length > 0, (s) => parseHolds([s])[0]),
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
@@ -563,7 +591,7 @@ export const ROWS = Object.freeze([
   l('worker-workflows', '4', 'Worker workflows', 'text', ['e2e-manual.yml -f environment=staging -f suite=all']),
   l('worker-read-repos', '4', 'Worker read-only repos', 'text', ['acme/web'], dflt(['none'])),
   l('worker-measure-cmds', '4', 'Worker measuring commands', 'command', ['python3 scripts/measure_exclusions.py', 'tools: python3 measure.py'], dflt(['none'])),
-  l('merge-holds', '4', 'Merge holds', 'text', ['backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)']),
+  l('merge-holds', '4', 'Merge holds', 'merge-hold', ['backend/**: build and push Lambda images first (./scripts/build-lambda-images-local.sh)']),
   l('incidental-paths', '4', 'Incidental paths', 'text', ['pnpm-lock.yaml', 'docs/**']),
   l('append-only-paths', '4', 'Append-only paths', 'text', ['messages/*.json'], dflt(['none'])),
   v('merge-method', '4', 'Merge method', 'merge-method', 'squash'),
