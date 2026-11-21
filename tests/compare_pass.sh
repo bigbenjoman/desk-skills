@@ -8,6 +8,9 @@
 #                                                               head defaults to HEAD
 #   bash tests/compare_pass.sh --suite test_pass_spawns.sh <base> ...  only that suite (repeatable); by
 #                                                               default every tests/test_pass*.sh in the base
+#   PASS_CMP_KEEP=1 bash tests/compare_pass.sh ...              keep the recordings and both trees when a run
+#                                                               differs or was not compared, and print the
+#                                                               diff command that lists them again
 # Exit 0 when nothing differs, 1 when something does, 2 when a run was not compared (it ran on one tree
 # only, or crashed on one only) or the trees could not be built.
 set -u
@@ -16,7 +19,7 @@ suites=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --suite) [ $# -ge 2 ] || { echo "compare_pass: --suite needs a suite name" >&2; exit 2; }; suites+=("${2##*/}"); shift 2 ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     -*) echo "compare_pass: unknown option $1" >&2; exit 2 ;;
     *) break ;;
   esac
@@ -74,4 +77,10 @@ side(){ mkdir -p "$W/rec/$1"
   done; }
 side base
 side head
-"$NODE" "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"
+"$NODE" "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"; rc=$?
+if [ "${PASS_CMP_KEEP:-}" = 1 ] && [ $rc -ne 0 ]; then
+  trap - EXIT
+  echo "compare_pass: kept the recordings and both trees in $W; list them again with:" >&2
+  { printf '  node'; printf ' %q' "$S/compare_pass.mjs" diff "$W/rec/base" "$W/rec/head" "$W/base" "$W/head"; echo; } >&2
+fi
+exit $rc
