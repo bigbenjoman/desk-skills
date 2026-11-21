@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { everyTicket } from './queue-store.mjs';
 import { repoOfPr } from './pass/pr-status.mjs';
+import { ownerRepoFromUrl } from './desk-env.mjs';
 
 export const FILE = 'post-merge.jsonl';
 export const WATCH_DAYS = 14;
@@ -43,18 +44,40 @@ export function revertedPr(subject) {
 }
 
 // Every ticket in the queue with a merged PR, archived ones included (a merged ticket is archived
-// within a pass of its merge): [{ticket, pr, merged_at}]. Given `repo` (owner/name), a ticket done on
-// another repo's PR (its pr_status url names that repo) is left out: this repo's reverts and runs are
-// not its own, though its PR may have the same number as one of this repo's.
-export function mergedTickets(queue, repo = null) {
-  const here = repo ? repoOfPr(`https://github.com/${repo}/pull/`) : null;
+// within a pass of its merge): [{ticket, pr, merged_at, repo}]. `repo` is the owner/name its PR status
+// url names ('' for a url naming none), or null with no url: a ticket done on another repo's PR
+// (needs-you's elsewhereDone) keeps that PR's url, and this repo's reverts and runs are not its own,
+// though its PR may have the same number as one of this repo's.
+export function mergedTickets(queue) {
   const out = [];
   for (const [ticket, t] of Object.entries(everyTicket(queue))) {
     const pr = mergedPr(t);
-    if (here && t.pr_status?.url && repoOfPr(t.pr_status.url) !== here) continue;
-    if (pr) out.push({ ticket, pr, merged_at: t.merged_at });
+    const url = t.pr_status?.url;
+    if (pr) out.push({ ticket, pr, merged_at: t.merged_at, repo: url ? ownerRepoFromUrl(repoOfPr(url)) ?? '' : null });
   }
   return out;
+}
+
+// Whether owner/name `name` is this repo, `repo` (origin's spelling). A rename leaves origin, and every
+// PR url recorded before it, on the old name, while later PR urls name the new one, so a name spelt
+// otherwise than origin is judged by the repo GitHub resolves each to now (`resolveRepo(name)` gives
+// GitHub's url for it, following a rename). A name GitHub does not resolve is judged by its spelling,
+// and `why` says so: the scan is then incomplete, as it may have left out one of this repo's tickets.
+function repoJudge(repo, resolveRepo, why) {
+  const now = new Map();
+  const resolved = (name) => {
+    const k = name.toLowerCase();
+    if (!now.has(k)) {
+      let r = k;
+      if (resolveRepo) {
+        try { r = ownerRepoFromUrl(resolveRepo(name))?.toLowerCase() ?? ''; if (!r) throw new Error('not a repo url'); }
+        catch (e) { r = k; why.push(`${name} not looked up on GitHub, so judged by that name: ${firstLine(e)}`); }
+      }
+      now.set(k, r);
+    }
+    return now.get(k);
+  };
+  return (name) => !!name && (name.toLowerCase() === repo.toLowerCase() || resolved(name) === resolved(repo));
 }
 
 // Queue ticket `t`'s merged PR number, or null when it has none merged.
@@ -92,7 +115,7 @@ export function findRecords({ merges, commits, runs, at }) {
 
 const lastScan = (have) => Math.max(-Infinity, ...have.filter((r) => r.kind === 'scan').map((r) => Date.parse(r.at)).filter(Number.isFinite));
 // A merge a day older than the watch is still read, so a scan a day late misses nothing in it.
-const watched = (queue, now, repo = null) => mergedTickets(queue, repo).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
+const watched = (queue, now) => mergedTickets(queue).filter((m) => now - Date.parse(m.merged_at) <= (WATCH_DAYS + 1) * DAY_MS);
 
 // Whether a scan is due and has a merge to watch: the supervisor runs a pass for it on an idle batch,
 // which would otherwise run none, so the watch lasts its WATCH_DAYS after the batch's last merge.
@@ -102,23 +125,15 @@ export function postMergeDue({ state, queue, now = Date.now() }) {
 
 // One scan, if one is due: `log(sinceIso)` gives the default branch's commits and `runs(sinceIso)` its
 // runs since then, each throwing when it cannot read all of them. -> {ran, written: [records], line}
-// `repo` is the remote's spelling of this repo, which a rename leaves behind; `repoUrl()`, where given,
-// is the url GitHub gives it now, and is what a ticket's PR url is judged against. Unread, the scan
-// judges by `repo` and says so: it is then incomplete, as it may have left out this repo's own tickets.
-export function postMergeScan({ state, queue, log, runs, repo = null, repoUrl = null, now = Date.now() }) {
+// Given `repo` (origin's owner/name), a ticket whose PR url names another repo is left out
+// (repoJudge, with `resolveRepo`).
+export function postMergeScan({ state, queue, log, runs, repo = null, resolveRepo = null, now = Date.now() }) {
   const have = readPostMerge(state);
   if (now - lastScan(have) < SCAN_EVERY_MS) return { ran: false, written: [], line: null };
   const at = new Date(now).toISOString();
   const why = [];
-  let here = repo;
-  if (repo && repoUrl) {
-    try {
-      const m = /^https:\/\/github\.com\/([^/]+\/[^/]+?)\/?$/i.exec(String(repoUrl() ?? '').trim());
-      if (!m) throw new Error(`not a GitHub repo url`);
-      here = m[1];
-    } catch (e) { why.push(`repo url not read, so judged by the remote's name ${repo}: ${firstLine(e)}`); }
-  }
-  const merges = watched(queue, now, here);
+  const here = repo ? repoJudge(repo, resolveRepo, why) : null;
+  const merges = watched(queue, now).filter((m) => !here || m.repo === null || here(m.repo));
   let commits = [];
   let runList = null;
   if (merges.length) {
@@ -163,8 +178,8 @@ export function postMergeWatch({ state, queue, repo, branch, cwd }) {
   try {
     return postMergeScan({
       state, queue, repo,
-      // GitHub follows a rename, so this names the repo as its PR urls do.
-      repoUrl: () => execFileSync('gh', ['repo', 'view', repo, '--json', 'url', '--jq', '.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
+      // GitHub follows a rename, so this names a repo as its PR urls do now.
+      resolveRepo: (name) => execFileSync('gh', ['repo', 'view', name, '--json', 'url', '--jq', '.url'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
       log: (since) => {
         execFileSync('git', ['-C', cwd, 'fetch', '-q', 'origin', branch], { stdio: 'ignore' });
         return gitLog(cwd, `origin/${branch}`, since);
