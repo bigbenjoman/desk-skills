@@ -86,8 +86,8 @@ put that under `WAITING ON YOU`. It never waives:
   report the PR;
 - a check the row does not name: it stays red;
 - a check the row names only by its tests that failed in any other: each of its failure annotations
-  (exit-code lines aside) must have a listed test's file as its path and that test's name in its
-  title or message. One with no such annotation, or whose annotations could not be read, is never
+  (exit-code lines aside) must have a listed test's file as its path and a title that is that test's
+  name, or ends with it after ` > ` or ` › `. One with no such annotation, or whose annotations could not be read, is never
   waived, and the test's file counts as its path, so a PR changing it is not waived.
 
 A draft red only on checks the driver would waive gets no fix worker: it leaves draft as a green one

@@ -122,7 +122,7 @@ t('DS-323 AC3 a failed check beside a skipped one is still not green', withCheck
   t('#831 the waiver is asked about the red checks only', asked.join(' '), 'Integration');
   t('#831 one the waiver does not cover goes to a fix worker, as before', draftOf(flakyRed, wv(false))?.call, 'checks');
   t('#831 with no waiver read, as before', draftOf(flakyRed, undefined)?.call, 'checks');
-  t('#831 a required check red is never asked about', (asked.length = 0, draftOf([{ ...flakyRed[0], conclusion: 'failure' }, flakyRed[1]], wv(true))?.call), 'checks');
+  t('#831 a required check red is never asked about', `${(asked.length = 0, draftOf([{ ...flakyRed[0], conclusion: 'failure' }, flakyRed[1]], wv(true))?.call)} ${asked.length}`, 'checks 0');
   const held = draftOf(flakyRed, wv(true), 'no');
   t('#831 without pr-ready, the person is told it is red only on known flaky checks', held?.why?.startsWith('it is clean, red only on §4 Known flaky checks the merge driver waives (Integration)'), true);
 }

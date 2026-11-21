@@ -3649,13 +3649,15 @@ function withErrors(s, was) {
   const checks = s.checks.map((c) => {
     if (!c.jobId || !FAILED.has(c.conclusion)) return c;
     const found = (was?.checks ?? []).find((x) => x.jobId === c.jobId);
-    const old = found && 'error' in found && Array.isArray(found.error_notes) ? found : null;
-    const notes = old ? null : jobAnnotations(GH_REPO, c.jobId);
+    const read = found && 'error' in found && Array.isArray(found.error_notes) ? null : jobAnnotations(GH_REPO, c.jobId);
+    // A record kept from before error_notes, whose read now fails, keeps its errors without them.
+    const old = read === null || (read === undefined && found && 'error' in found) ? found : null;
+    const notes = old ? null : read;
     const errors = old ? old.errors ?? (old.error == null ? [] : [old.error]) : notes === undefined ? undefined : failureLines(notes);
     if (errors === undefined) return c;
     // The files its failure annotations point at, for the rerun a failure naming none of the PR's files gets.
     const paths = notes ? [...new Set(notes.filter((x) => x?.annotation_level === 'failure' && x.path).map((x) => String(x.path)))] : old?.error_paths ?? [];
-    return { ...c, error: old ? old.error : errors[0] ?? null, errors, error_notes: old ? old.error_notes : failureNotes(notes), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
+    return { ...c, error: old ? old.error : errors[0] ?? null, errors, ...(old ? (old.error_notes ? { error_notes: old.error_notes } : {}) : { error_notes: failureNotes(notes) }), ...(paths.length ? { error_paths: paths } : {}), ...(errors.length ? {} : logErrors(c, found)) };
   });
   return { ...s, checks };
 }

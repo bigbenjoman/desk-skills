@@ -157,7 +157,7 @@ How to turn what you find into rows:
 - **Known flaky checks.** Propose nothing; ask. Each item is a whole check with the paths whose change
   can break it for real (`` `<check>: <glob> [<glob>…]` ``), or one test inside a check that also runs
   real tests (`` `<check>: <test file> > <test name>` ``, the name as its failure annotation's title
-  or message gives it). Say that a check named only by its tests is waived only when each of its
+  ends with it). Say that a check named only by its tests is waived only when each of its
   failure annotations names a listed test, so it needs a reporter that annotates each failing test;
   a failure in any other test still holds the PR. `none` is the default.
 - **State checks.** Search the workflows for checks that read the PR's state rather than its code:

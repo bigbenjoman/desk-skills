@@ -72,7 +72,8 @@
 //     (with no diff to read, a `#<key>` hold on a listed file holds)
 //   node gate.mjs hold-kind [<item>…]             print `<kind>\t<item>` (holdKind) for each item given,
 //     else for each §4 Merge holds item
-//   node gate.mjs flaky                            print each known flaky check as `<check>\t<globs>`;
+//   node gate.mjs flaky                            print each known flaky check as `<check>\t<globs>`, and
+//     `\t<test>` after an item naming one test;
 //     exit 1 naming the row when it does not parse
 //   node gate.mjs state                            print each §4 State check as `<check>\t<kind>`;
 //     exit 1 naming the row when it does not parse
@@ -610,8 +611,8 @@ export const stateFailing = (failing, stateChecks, lineOf = () => null) => (fail
 // no listed test names), files (unreadable), paths (with `hits`), or gate (something else keeps it red
 // or pending). The driver's two reruns come first. notes(f) is a failing check's failureNotes, or
 // undefined when they could not be read. Each failure annotation of a check listed only by its tests
-// must name one of them: its path the test's file, its title or message the test's name. A check
-// with none is never waived, since nothing says which test failed.
+// must name one of them: its path the test's file, its title ending in the test's name (namesTest). A
+// check with none is never waived, since nothing says which test failed.
 export function flakyWaiver(checks, { required = [], advisory = [], runs = [], flaky = [], files = null, notes = () => undefined } = {}) {
   const gate = evaluateGate(checks, { required, advisory, runs });
   if (gate.state !== 'fail' || !gate.failing.length || !flaky.length) return null;
@@ -647,9 +648,12 @@ export function flakyWaiver(checks, { required = [], advisory = [], runs = [], f
 }
 
 const repoPath = (p) => String(p ?? '').replace(/^(\.\/)+/, '');
-const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-// The test's name as a whole: `retries a timed-out order` is not `retries a timed-out orders`.
-const namesTest = (a, t) => repoPath(a.path) === repoPath(t.file) && new RegExp(`(?<!\\w)${escRe(t.title)}(?!\\w)`).test(`${a.title ?? ''}\n${a.message ?? ''}`);
+// An annotation names the test by its title: the test's name whole, or at the end after the file or a
+// describe path (` > ` or ` › `). A longer sibling (`… twice`) or a message quoting the name is not it.
+const namesTest = (a, t) => {
+  const title = String(a.title ?? '').trim();
+  return repoPath(a.path) === repoPath(t.file) && (title === t.title || title.endsWith(` > ${t.title}`) || title.endsWith(` › ${t.title}`));
+};
 // The error_notes the pass kept on a failing check's runs (withErrors), for flakyWaiver's notes; undefined
 // where any run of it has none, so its annotations were not read.
 export const notesIn = (checks) => (f) => {
@@ -705,12 +709,12 @@ function loadStateChecks(E) {
 // GitHub adds for the step's exit code says nothing of why, and can come first. Kept long: a review
 // gate's line names its files first and asks for the approval after them, and needs-you reads all of it.
 const EXIT_LINE = /^Process completed with exit code \d+\.?$/;
-const failureNotesOf = (notes) => (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()));
+// Each failure with the file and title its annotation gives, for a §4 Known flaky checks test item.
+export const failureNotes = (notes) => (Array.isArray(notes) ? notes : []).filter((x) => x?.annotation_level === 'failure' && x.message && !EXIT_LINE.test(String(x.message).trim()))
+  .map((x) => ({ path: x.path ?? null, title: x.title ?? null, message: String(x.message).split('\n')[0].trim().slice(0, 2000) }));
 export function failureLines(notes) {
-  return failureNotesOf(notes).map((x) => String(x.message).split('\n')[0].trim().slice(0, 2000));
+  return failureNotes(notes).map((x) => x.message);
 }
-// The same failures with the file and title each annotation gives, for a §4 Known flaky checks test item.
-export const failureNotes = (notes) => failureNotesOf(notes).map((x) => ({ path: x.path ?? null, title: x.title ?? null, message: String(x.message).split('\n')[0].trim().slice(0, 2000) }));
 // A job's annotations as GitHub gives them, or undefined when they could not be read.
 export function jobAnnotations(repo, jobId) {
   if (!jobId) return [];
