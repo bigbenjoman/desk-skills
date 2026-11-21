@@ -1235,7 +1235,7 @@ export function spawnGate(row = configValue('spawn-gate')) {
 // §3b "Per-file collision budget", read by its grammar in config-schema.mjs, from this repo's row by
 // default. configValues refuses a cell mixing `none` with other spans: more than one span all the same.
 const fileBudgetSpans = () => { try { return configValues('file-budget'); } catch { return [null, null]; } };
-export const fileBudget = (row = fileBudgetSpans()) => fileBudgetOf(row);
+export function fileBudget(row = fileBudgetSpans()) { return fileBudgetOf(row); }
 
 // ---- ticket ids ------------------------------------------------------------------------------
 // A ticket id names files and directories, so it is checked for shape before anything else, then
