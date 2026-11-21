@@ -1,5 +1,5 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
-// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
+// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs desk/bin/fix-tries.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
 // covers: desk/bin/costs.mjs desk/bin/desk-lines.mjs desk/bin/leases.mjs desk/bin/logins.mjs desk/bin/quantile.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
@@ -129,6 +129,16 @@ const written = factsCli('--write', join(tmp, 'a.md'));
 t('DS-886 the command names the region, then --write restores it and touches nothing around it',
   [before.status, written.status, readFileSync(join(tmp, 'a.md'), 'utf8') === edited.replace('`claude`, `codex` or `gemini`', '`claude` or `codex`')].join(' '), '1 0 true');
 rmSync(tmp, { recursive: true, force: true });
+
+// ---- DS-889: the push-nothing rule is fix-tries' text ----------------------------------------------
+const { pushNothing } = await import('../desk/bin/fix-tries.mjs');
+const POST = 'skills/desk-review/references/phase-7-post.md', STAGE4 = 'skills/desk-autopilot/references/worker-contract-stage-4.md';
+for (const [file, what] of [[POST, "desk-review's post phase"], [STAGE4, 'the Stage 4 worker contract']]) {
+  t(`DS-889 AC4 ${what} holds the push-nothing rule and its accepted-gap exception as fix-tries renders them`, regionIn(readFileSync(join(R, file), 'utf8'), 'push-nothing'), pushNothing(true));
+}
+const ruleChanged = check([join(R, POST), join(R, STAGE4)], { values: { 'push-nothing': { text: 'If you pushed nothing, post a review anyway.' } } }).filter((x) => x.kind === 'region');
+t('DS-889 AC3 a push-nothing rule changed in fix-tries fails both unregenerated regions, naming each and the regenerate command',
+  `${ruleChanged.map((x) => `${x.file} ${x.value}`).sort().join(', ')} ${ruleChanged.every((x) => x.message.includes(WRITE))}`, `${STAGE4} push-nothing, ${POST} push-nothing true`);
 
 // ---- AC9: main's drift is held by the baseline ----------------------------------------------------
 const baseline = readBaseline();

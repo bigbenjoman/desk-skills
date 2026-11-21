@@ -20,6 +20,7 @@
 //                  config key, command: the uploader to show the person }
 //   resume         config §3b "Resume a killed worker (times)" (pass/shared.mjs resumeSetting)
 //   bootMs         when this computer last started, in ms
+//   budget         the per-worker budget (desk-env.mjs workerBudget): {usd}, {off}, or null unread
 //   read           { branch, checkout }: the live reads' branch and their clean checkout
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
@@ -50,6 +51,7 @@
 //   handoff {key, said, imgs, stopped}   queue the handed-off stage for a fresh session
 //   lifted {key, limit}            -> whether the limit on the worker's login has lifted
 //   exit-code {key}                -> the exit code spawn-worker.sh recorded, or null
+//   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
@@ -60,7 +62,7 @@ import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -343,15 +345,23 @@ export function* decideAdvance(s) {
     }
   } else {
     // Stopped at the per-worker budget, often with its work done and not yet committed: resumed once
-    // in its own session (budget_resumed names it) with a small allowance to commit, push and finish
-    // its stage. A second stop in that session parks, naming the budget and the worktree.
-    if (!wedged && t.session_id && budgetStop(log.text)) {
+    // in its own session (budget_resumed names it) with BUDGET_RESUME_USD more, not counted as a kill,
+    // to commit, push and finish its stage. A second stop in that session parks, naming the budget and
+    // what the worktree holds.
+    if (!wedged && t.session_id && budgetStop(log.text, s.budget)) {
+      const ceiling = `the per-worker budget (${s.budget?.usd ? `$${s.budget.usd}, ` : ''}${WORKER_BUDGET_ROW})`;
       if (t.budget_resumed !== t.session_id) {
-        yield* setAndSay(t.key, ['state=triaged', 'resume=budget', 'resume_why=stopped at its per-worker budget', `budget_resumed=${t.session_id}`],
-          'advanced', `${t.key} stopped at its per-worker budget: queued to resume once, to commit, push and finish its stage`);
+        yield* setAndSay(t.key, ['state=triaged', 'resume=budget', `resume_why=stopped at ${ceiling}`, `budget_resumed=${t.session_id}`],
+          'advanced', `${t.key} stopped at ${ceiling}: queued to resume once in its own session with $${BUDGET_RESUME_USD} more, to commit, push and finish its stage`);
         return;
       }
-      const why = `stopped at its per-worker budget again after one resume to finish. Its worktree ${t.worktree ?? '(none recorded)'} may hold work it did not commit: commit and push it there, or raise config §3b "Autopilot per-worker budget (USD)" and requeue it with queue.mjs requeue ${t.key}`;
+      const dirty = yield { type: 'uncommitted', key: t.key };
+      const where = t.worktree ?? '(none recorded)';
+      const left = dirty == null ? `its worktree ${where} may hold uncommitted work (git status could not be read)`
+        : dirty > 0 ? `its worktree ${where} holds uncommitted work (${dirty} changed file(s))`
+          : `its worktree ${where} holds no uncommitted work, but may hold unpushed commits on ${t.branch}`;
+      const why = `stopped at ${ceiling} again after its one resume with $${BUDGET_RESUME_USD} more, and ${left}. Commit and push it by hand, or raise the budget and requeue it with queue.mjs requeue ${t.key}`;
+      yield { type: 'decisions', key: t.key, pr: null };
       yield { type: 'park', key: t.key, question: why };
       yield say(t.key, 'parked', `${t.key}: ${why}`);
       return;

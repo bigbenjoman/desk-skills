@@ -37,6 +37,13 @@ the pass under `$DESK_STATE/reviews/<TICKET>/`. So a worker leaves every results
 `git clean`ed: the worktree's git exclude keeps it out of `git status`. A worker that finds none for the head posts nothing
 and parks naming the file: a verdict counted again without it is the re-count this rule forbids.
 
+**A fix that pushed nothing** leaves the head the last review read. A fix worker's task states the
+rule, with the exception only where it carries the person's call on the review's gaps:
+
+<!-- facts: push-nothing -->
+If you pushed nothing, post no review: the head is unchanged, so a review of it would only repeat the last one. The one exception is a gap the person accepted: post that round's verdict again at the same head, from its results file, with only the accepted gaps moved from `gaps` into `accepted`, or park naming the file where there is none.
+<!-- /facts -->
+
 **A clean run posts too**: "No P0, P1 or P2 findings at `<sha>`, N files, refuted by codex". Absence
 of a review then means *not reviewed*, unambiguously, and the next sweep's skip rule reads it.
 

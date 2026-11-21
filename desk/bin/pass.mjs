@@ -79,7 +79,7 @@ import { decideBaseSync, decideBaseline } from './pass/batch-base.mjs';
 import { registryView, phaseSnapshot, LIMIT_GRACE_MS, sameLogin, subscriptionOffWrite,
   isSpineOf, ownsSpecsOf, SPEC_RUN_MS, acceptanceSpecsOf, LINKS_HEAD, linksLine, LINKS_MADE, LINK_STEP, gateListsOf, reviewerGated,
   HANDOFF_ORDER, FROM_ZERO, resumeSetting, resumeRefusal as resumeRefusalOf, bootTime, rebootReady as rebootReadyOf, liveReadsUnparsed,
-  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry } from './pass/shared.mjs';
+  tryWhat, tryNo, mergeOid, conflictFilesIn, fixTryQuote, runsInCloud, cloudPrHere, reviewOnlyTry, BUDGET_RESUME_USD } from './pass/shared.mjs';
 import { decidePromotion, decideEpicReads, decideEpicPr, decideLedger, epicState, epicPending as epicPendingOf } from './pass/promotion-pr.mjs';
 import { decideSpawn, whyOf } from './pass/spawn-loop.mjs';
 import { decideFixTries, tryLabel } from './pass/fix-tries.mjs';
@@ -815,6 +815,9 @@ function recordUpload(t, prNo, imgDir, run, before) {
 // per ticket (pass/shared.mjs resumeSetting).
 const RESUME_ROW = E.CONFIG_ROWS['resume-killed'].row;
 const RESUME = resumeSetting(E.configValue('resume-killed'), RESUME_ROW);
+// The per-worker budget, for telling a session stopped at it (resume=budget) from any other error.
+const readWorkerBudget = () => { try { return E.workerBudget(); } catch { return null; } };
+const WORKER_BUDGET = readWorkerBudget();
 // When this computer last started, for telling a reboot from a crash. DESK_BOOT_TIME (ISO, or epoch
 // seconds) stands in for it in tests.
 const bootMs = bootTime(process.env.DESK_BOOT_TIME, Date.now(), uptime());
@@ -967,6 +970,10 @@ const ADVANCE_HANDLERS = {
   handoff: (a, s) => { handedOff(s.t, a.said, { log: s.log.path, h: s.log.h, imgs: a.imgs, stopped: a.stopped }); },
   lifted: (a, s) => lifted(a.limit, loginOf(loginDirOf(s.t))),
   'exit-code': (a, s) => exitCodeOf(a.key, s.t.session_id),
+  uncommitted: (a, s) => {
+    if (!s.t.worktree || !existsSync(s.t.worktree)) return null;
+    try { return uncommitted(s.t.worktree).length; } catch { return null; }
+  },
   fail: (a) => markFailed(a.key, a.why, { tail: a.tail }),
 };
 // A running ticket's log as the decision reads it: null where it has none yet, or runs in the cloud.
@@ -985,7 +992,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     name: 'advance',
     snapshot: () => {
       const log = advanceLog(t);
-      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs,
+      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
         upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
         read: { branch: READ_BRANCH, checkout: READ_CHECKOUT } };
     },
@@ -2535,10 +2542,10 @@ const spawnRefusal = (out) => (/\[spawn\] ticket=/.test(out) ? null : `spawn ref
 // was spawned with. A worker that exited at the usage limit (resume=usage) resumes the same way, but
 // was not killed: it is not counted against config §3b "Resume a killed worker (times)". Nor is one the
 // maintenance window stopped at its drain limit (resume=maintenance), or one asked to stop for a
-// planned reboot (resume=reboot), which names the restart, or that none came, as its reason. One that
-// stopped at its per-worker budget (resume=budget) resumes once on BUDGET_EXTRA_USD to commit, push
-// and finish its stage, not counted either.
-const BUDGET_EXTRA_USD = 5;
+// planned reboot (resume=reboot), which names the restart, or that none came, as its reason. One
+// stopped at the per-worker budget (resume=budget) resumes once, with BUDGET_RESUME_USD more and the
+// instruction to commit, push and finish its stage, not counted either; the advance step parks a
+// second stop in that session.
 async function resumeKilled(t) {
   const usage = t.resume === 'usage';
   const maint = t.resume === 'maintenance';
@@ -2546,7 +2553,8 @@ async function resumeKilled(t) {
   const boot = t.resume === 'reboot' ? rebootReady(t).why : null;
   if (boot) t = { ...t, resume_why: boot };
   const n = (t.resumes ?? 0) + (usage || maint || boot || budget ? 0 : 1);
-  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot' : budget ? 'stopped at its per-worker budget' : 'killed before it finished';
+  const ended = usage ? 'exited at the usage limit' : maint ? 'stopped for the maintenance window' : boot ? 'stopped for a planned reboot'
+    : budget ? 'stopped at the per-worker budget' : 'killed before it finished';
   // spawn_failed: no worker ran, so a requeue does not read this as the model falling short.
   const fail = (why) => {
     markFailed(t.key, `${ended}, and could not be resumed: ${why}`, { sets: ['resume=null', 'port=null', 'spawn_failed=true'] });
@@ -2579,10 +2587,15 @@ async function resumeKilled(t) {
   const port = await freePort(t);
   const briefPath = join(STATE, 'briefings', `${t.key}.md`);
   const fixtures = fixturesBrief(t.key, t.worktree, { heading: false });
+  // A budget stop's resume runs on BUDGET_RESUME_USD alone (spawn-worker.sh reads AUTOPILOT_BUDGET_USD):
+  // --max-budget-usd counts only the resumed run's spend, not the totals restored from earlier runs, so
+  // that cap is the $5 more, and the per-worker budget plus $5 would allow the whole budget again.
+  const budgetEnv = budget ? { AUTOPILOT_BUDGET_USD: String(BUDGET_RESUME_USD) } : {};
   const prompt = `Your previous run of this session ${usage || budget ? 'ended' : maint || boot ? 'was stopped before it finished' : 'was killed before it finished'} (${t.resume_why ?? 'reboot or crash'}). ` +
-    (budget ? `This run has a small allowance of $${BUDGET_EXTRA_USD}: commit and push what is done first, then finish your current stage and print your marker. ` : '') +
     `Carry on with ticket ${t.key} from where you stopped, in your worktree ${t.worktree} on branch ${t.branch}. ` +
-    'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ' +
+    (budget
+      ? `This session is resumed once, with $${BUDGET_RESUME_USD} more than the per-worker budget: spend it on committing your work, pushing it and finishing the stage you were in, nothing else. Check git status and git log first; if this runs out too, the ticket parks with your worktree as you leave it. `
+      : 'A command may have been cut off part way: check git status, git log and any server or suite you had running before you go on, and redo only what did not finish. ') +
     `Your dev-server port is ${port} — never use ${E.configValue('dev-port') ?? 'the user\'s own port'}. The worker contract in your system prompt still binds.` +
     // Fixtures saved since its briefing was written reach it here: a resumed session keeps its briefing.
     `${fixtures ? ` ${fixtures.trimEnd()}` : ''}`;
@@ -2592,12 +2605,13 @@ async function resumeKilled(t) {
     `log_bytes=${existsSync(log) ? statSync(log).size : 0}`], 'no worker was resumed; it waits to resume on the next pass')) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, t.session_id, ...(existsSync(briefPath) ? [briefPath] : [])], {
     cwd: MAIN,
-    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...(budget ? { AUTOPILOT_BUDGET_USD: String(BUDGET_EXTRA_USD) } : {}), ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
+    env: { ...process.env, ...workerEnv, AUTOPILOT_PORT: String(port), AUTOPILOT_RESUME: prompt, ...budgetEnv, ...(DRY ? { AUTOPILOT_DRY_RUN: '1' } : {}) },
   });
   const refused = spawnRefusal(spawned.out);
   if (refused) return fail(refused);
   leaseToWorker(t.key, port, spawned.out);
-  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot' : budget ? `after its per-worker budget, with $${BUDGET_EXTRA_USD} to commit, push and finish` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
+  report.spawned.push(`${t.key} resumed ${usage ? 'after the usage limit lifted' : maint ? 'after the maintenance window' : boot ? 'after its stop for a planned reboot'
+    : budget ? `once after it stopped at the per-worker budget, with $${BUDGET_RESUME_USD} more to commit, push and finish its stage` : `after it was killed (${n} of ${RESUME.limit})`} — ${t.resume_why ?? 'reboot or crash'}; session ${t.session_id} port=${port}${INHERITS ? '' : ` login=${login.name}`}; ${preflightNote(pre.cost)}`);
   runningKeys.add(t.key);
   if (reviewOnlyTry(t)) reviewKeys.add(t.key);
 }
@@ -2779,7 +2793,7 @@ async function spawnHandoff(t, pick) {
   E.rotateRound(t.key);
   const logBytes = logPreflight(t.key, pre.cost);
   if (!recordRunning(t.key, [`session_id=${sid}`, `stage=${stage}`, `port=${port}`, `log_bytes=${logBytes}`, 'idle_passes=0',
-    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
+    'handoff=null', 'last_round=null', 'cleared=null', `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null', ...fixStarted(t)],
   `no Stage ${stage} session was started; the handoff waits for the next pass`)) return undefined;
   const spawned = shOut('bash', [join(BIN, 'spawn-worker.sh'), t.key, t.worktree, sid, briefPath], {
     cwd: MAIN,
@@ -3304,7 +3318,7 @@ for (const t of spawnable) {
     // No tier at `default`: nothing ran on one, so a requeue has nothing to raise.
     `model_tier=${models.off ? 'null' : tier}`, `model=${model || 'default'}`, pick.row, 'spawn_failed=null', 'out_of_scope=null', 'usage_unrecognised=null',
     // A fresh session has not been resumed, and starts at Stage 0 rather than from a handoff.
-    'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
+    'resume=null', 'resume_why=null', 'resumes=null', 'resume_limits=null', 'budget_resumed=null', 'usage_paused=null', 'reboot_stops=null', 'reboot_stop_at=null',
     'handoff=null', 'handoff_stage=null', 'handoff_cost=null', 'images_dir=null',
     // The round the upload queue's jobs belong to: the last round's job was dropped before setup
     // (claimForSpawn), and a result of it that ends after this is not recorded (pumpUploads). A
