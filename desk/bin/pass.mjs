@@ -1373,6 +1373,7 @@ function finishPush(t) {
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
+  previewRelabel(t.branch, n);
   q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
   report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
@@ -4208,13 +4209,23 @@ function previewTeam() {
 // the team's preview-build lease as desk-pr's lease step does, without waiting: labelled with the PR,
 // or the branch before one exists. -> null to push (no team, the kind off or in shadow, a unit taken,
 // or a store the broker cannot read), or why the push waits for a later pass while every unit is held.
+// A unit taken before the PR exists is kept by its label (previewUnit.ids, on the function, since the
+// pass calls it before this line runs), for previewRelabel.
 function previewUnit(t, branch) {
   const team = previewTeam();
   if (!team) return null;
   const pr = t.result?.pr ?? t.draft_pr;
   const label = pr != null ? `${GH_REPO}#${pr}` : `${GH_REPO}@${branch}`;
   const r = shOut('node', [join(BIN, 'desk-env.mjs'), 'lease', 'acquire', 'preview-build', team, '--ttl', '1200', '--no-owner', '--label', label], { fresh: true });
+  if (r.ok && /^L-\w+$/.test(r.out) && pr == null) (previewUnit.ids ??= new Map()).set(label, r.out);
   return r.ok || r.code !== 3 ? null : `it waits on the preview build for ${team}: ${lastLine(r.out).replace(/^refused: /, '')}`;
+}
+// Right after the pass opens PR `n` from `branch`, the unit it took for the branch takes the PR's label,
+// as desk-pr's renew does, so the PR's later pushes and reruns renew that unit rather than wait behind it.
+function previewRelabel(branch, n) {
+  const id = previewUnit.ids?.get(`${GH_REPO}@${branch}`);
+  if (!id) return;
+  shOut('node', [join(BIN, 'desk-env.mjs'), 'lease', 'renew', id, 'preview-build', previewTeam(), '--ttl', '1200', '--no-owner', '--label', `${GH_REPO}#${n}`], { fresh: true });
 }
 // A draft's cancelled or timed-out runs, re-run by the merge driver's own rerun (rerun.sh), so the
 // driver and the pass keep one record, cap and cooldown per head.
