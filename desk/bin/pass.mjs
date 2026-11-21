@@ -164,6 +164,10 @@ const BY_AT = process.argv.indexOf('--by');
 const PASS_BY = BY_AT < 0 ? 'session' : process.argv[BY_AT + 1];
 if (!['supervisor', 'session'].includes(PASS_BY)) refuse(`--by wants supervisor or session, not "${PASS_BY ?? ''}"`);
 const PASS_AT = new Date().toISOString();
+// --woken: the supervisor ran this pass between intervals, for a worker's exit, before a quiet pass is
+// due (supervisor.mjs). It counts none toward WEDGE_PASSES, so extra passes never stop a quiet worker
+// sooner than the interval would.
+const WOKEN = process.argv.includes('--woken');
 
 if (!existsSync(QUEUE_FILE)) {
   refuse(`no queue at ${QUEUE_FILE} — run: node ${SHOWN_BIN}/queue.mjs init <batch-name>`);
@@ -983,7 +987,7 @@ for (const t of rows.filter((r) => r.state === 'running')) {
     name: 'advance',
     snapshot: () => {
       const log = advanceLog(t);
-      return { t, log, registry: REGISTRY, now: Date.now(), stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
+      return { t, log, registry: REGISTRY, now: Date.now(), woken: WOKEN, stateDir: STATE, resume: RESUME, bootMs, budget: WORKER_BUDGET,
         upload: { allowed: uploadPerm === 'yes' || !!process.env.DESK_UPLOAD_APPROVED, ...UPLOAD_GRANT },
         read: { branch: READ_BRANCH, checkout: READ_CHECKOUT } };
     },
@@ -2163,7 +2167,7 @@ if (BASE && SOURCE && BASE !== SOURCE) {
       queue: fresh, base: BASE, source: SOURCE, willSpawn: slots > 0 && spawnable.length > 0, frozen: spawnable.length, epicOpen: epicPr?.state === 'OPEN', sliceBad: SLICE.bad,
       behindMax: BASE_BEHIND_MAX, gateBusy, resumeHeld: (held === PACE_HELD ? null : held) ?? (lowMemory ? 'low memory' : null),
       registry: REGISTRY, fixKey: BASE_FIX_KEY, fixRoom: baseFixRoom, noFixRoom: noBaseFixRoom(), conflictPerm: E.permission('pr-conflict-unreviewed'),
-      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(),
+      push: BASE_PUSH, passBy: PASS_BY, passAt: PASS_AT, usageHold: USAGE_HOLD, repoLogin: REPO_LOGIN, baselineOn, dry: DRY, now: Date.now(), woken: WOKEN,
     }),
     decide: decideBaseSync,
     handlers: {
