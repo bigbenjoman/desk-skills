@@ -115,6 +115,15 @@ export const ENTRIES = Object.freeze({
     code: [code('desk/bin/desk-env.mjs', 'effort')],
     preconditions: [Object.freeze({ id: 'worker-location', want: 'local', why: 'effort is set on the local claude launch; a cloud worker never takes it' })],
   },
+  // The ticket ledger only records queue writes beside queue.json, which stays the truth, so it is not
+  // trialled: it is pinned on where a repo wants the log.
+  ledger: {
+    layer: 'low-risk', trialled: false,
+    mechanism: metric('missed ledger appends per pass', null),
+    trips: [],
+    code: [code('desk/bin/queue-ledger.mjs')],
+    preconditions: [],
+  },
 });
 
 // The closed list of reason codes a lever log event may carry (lever-log.mjs refuses any other), each
