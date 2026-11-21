@@ -574,6 +574,19 @@ check "DS-824 AC4 lint: no design-tool URL anywhere and no No UI line is still b
 clean | grep -v -e '^## Design' -e '^No UI' | awk '{ print } /^\* `bin\/desk-jira`/ { print ""; print "## References"; print "* https://claude.ai/design/p/1a2b" }' > "$LD/cdref.md"
 lint "$LD/cdref.md" customfield_10208=M
 check "DS-824 lint: a Claude Design link outside the Design section is not a design link" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: no design link"'
+for w in code noformat; do
+  clean | awk -v w="$w" '{ print } /^Reviewers see/ { print "The word `" w "` is text here." }' > "$LD/span.md"
+  lint "$LD/span.md" customfield_10208=M
+  check "DS-667 AC1/AC2 lint: the word $w in a code span opens no block, and every later section is read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
+done
+clean | awk '{ print } /^Reviewers see/ { print "{code}"; print "Whether to decide the rest: TBD"; print "{code}" }' > "$LD/codeblock.md"
+lint "$LD/codeblock.md" customfield_10208=M
+check "DS-667 AC3 lint: a real {code} block stays code, and the sections after it are still read" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
+clean | awk '{ print } /^Reviewers see/ { print "{code}}"; print "Whether to decide the rest: TBD"; print "{code}"; print "{code}"; print "x"; print "{{code}" }' > "$LD/bracecode.md"
+lint "$LD/bracecode.md" customfield_10208=M
+# A line starting {code makes desk-jira read the draft as wiki, so its ## headings draw a rendering
+# advisory: assert on what the tags hide, as AC3 does, not on an empty output.
+check "DS-667 lint: a {code} tag touching a lone brace of code still opens and closes its block" '[ $rc -eq 0 ] && ! printf "%s\n" "$out" | grep -q -e "leaves a decision open" -e "no acceptance criteria" -e "no design link" -e "no \"Out of scope\"" -e "no \"Verification\""'
 lint "$LD/clean.md"
 check "lint: Size unset is blocking" '[ $rc -eq 1 ] && printf "%s\n" "$out" | grep -q "^blocking: Size is unset"'
 { printf 'Size: S\n\n'; clean; } > "$LD/sized.md"
@@ -668,7 +681,8 @@ h2. Out of scope
 * None.
 EOF
 printf 'h2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Design\nhttps://claude.ai/design/p/abc123\nh2. Verification\n* none\nh2. Out of scope\n* None.\n' > "$LD/47.wiki"
-jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" '
+printf 'h2. Outcome\nThe word {{code}} is text here.\n{code}\nWhether to decide the rest: TBD\n{code}\nSo is {{noformat}}.\nh2. Acceptance criteria\n# AC1: Given a ticket, when lint runs, then it lists each finding.\nh2. Verification\n* Unit: tests/test\\_jira.sh.\nh2. Design\nNo UI.\nh2. Out of scope\n* None.\n' > "$LD/49.wiki"
+jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD/47.wiki" --rawfile d49 "$LD/49.wiki" '
   {"issues": {
     "KAN-2": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}},
     "KAN-45": {"summary": "Lint every ticket before create", "issuetype": {"name": "Story"}, "description": $d45,
@@ -679,6 +693,8 @@ jq -n --rawfile d45 "$LD/45.wiki" --rawfile d46 "$LD/46.wiki" --rawfile d47 "$LD
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"},
       "issuelinks": [{"id": "5", "type": {"name": "Blocks", "inward": "is blocked by", "outward": "blocks"}, "inwardIssue": {"key": "KAN-3"}}]},
     "KAN-47": {"summary": "a canvas", "issuetype": {"name": "Story"}, "description": $d47,
+      "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
+    "KAN-49": {"summary": "code in monospace", "issuetype": {"name": "Story"}, "description": $d49,
       "customfield_10208": {"value": "S"}, "_names": {"customfield_10208": "Size"}},
     "KAN-48": {"summary": "blocked by its own epic", "issuetype": {"name": "Story"}, "description": $d45,
       "parent": {"key": "KAN-2", "fields": {"summary": "the epic", "issuetype": {"name": "Epic", "hierarchyLevel": 1}}},
@@ -712,6 +728,8 @@ check "lint KEY: a canvas in the working tree only, not on the base, is still bl
 git -C "$A" add docs/design && git -C "$A" -c user.name=t -c user.email=t@example.com commit -q -m canvas && git -C "$A" branch -M main
 klint KAN-47
 check "lint KEY: a saved canvas not named beside the link is desk-design's advisory" '[ $rc -eq 0 ] && printf "%s\n" "$out" | grep -q "^advisory: design: .*not its saved copy docs/design/KAN-47/"'
+klint KAN-49
+check "DS-667 AC4 lint KEY: {{code}} and {{noformat}} in a stored description are text, a real {code} block stays code, and the sections after them are read" '[ $rc -eq 0 ] && [ "$out" = "ok: no findings" ]'
 klint KAN-46 Story
 check "lint KEY takes no type or fields" '[ $rc -ne 0 ] && printf "%s" "$out" | grep -q "pass no type or fields"'
 
