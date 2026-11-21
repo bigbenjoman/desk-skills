@@ -1748,13 +1748,13 @@ const invalidLine = ({ section, label, item, error }) => {
 // is never a gap: its `dev` script runs the workspace, not a second app.
 // -> [{ dir, rows: [row name] }]. None while the Dev server row is unset or `none`.
 export function devServerGaps(parsed, root) {
-  const dev = configValuesIn(parsed, 'dev-cmd');
+  const dev = driftValues(parsed, 'dev-cmd');
   if (!dev || isNone(dev)) return [];
   const served = devServed(dev);
   const pkg = (dir) => readPackage(root, dir);
   const named = new Map();
   for (const id of WORKER_COMMAND_IDS.filter((x) => x !== 'dev-cmd')) {
-    const values = configValuesIn(parsed, id);
+    const values = driftValues(parsed, id);
     if (!values || isNone(values)) continue;
     for (const item of values) {
       const { dir } = parseCommandItem(item);

@@ -272,6 +272,9 @@ t('DS-871 none beside a lever across spans is INVALID, as the whole cell is read
 d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`none\` \`search: 8108\` |\n| Pre-merge steps | \`none\` \`Migrate: run migration\` |\n`);
 t('DS-871 a row its reader refuses for none beside other items is INVALID, not an abort', `${d.code}\n${d.out}`,
   '1\nINVALID  §4 Pre-merge steps: `none` must stand alone, not beside other items (none | Migrate: run migration)\nINVALID  §4 Local services: `none` must stand alone, not beside other items (none | search: 8108)');
+d = drift(`${conf()}| Dev server | \`pnpm dev\` |\n| Lint | \`none\` \`pnpm lint\` |\n`);
+t('DS-871 a worker command row with none beside a command is INVALID, not an abort, with a Dev server set', `${d.code} ${d.out}`,
+  '1 INVALID  §4 Lint: `none` must stand alone, not beside other items (none | pnpm lint)');
 t('DS-871 a §3 value that is no permission is INVALID', drift(conf({ perms: { 'git-push': 'maybe' } })).out.startsWith('INVALID  §3 git-push: "maybe" is not'), true);
 t('DS-871 AC5 every row unset or fitting its type is no drift', drift(`${conf({ b3rows: '| Worker effort | `none` | `0=medium 4b=high` |\n| Phase 0 levers | `none` | `codex` `effort` |\n| Promotion slice size (children) | `8` | `TODO` |\n' })}| Local services | \`search: 8108\` \`mailpit :8025\` |\n| Evidence workflow | \`pr-evidence.yml\` |\n| Merge method | \`squash\` |\n`).out, 'no drift');
 
@@ -686,6 +689,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
   t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
   t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-871 Phase 0 levers is checked whole, its value still one entry per span', [JSON.stringify(parseRow(row('levers'), ['codex', 'effort']).value),
+    JSON.stringify(parseRow(row('levers'), ['none']).value), !!parseRow(row('levers'), ['none,', 'effort']).error].join(' '), '[["codex"],["effort"]] ["none"] true');
   t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
 
   // The machine profile fallback desk-env reads.
