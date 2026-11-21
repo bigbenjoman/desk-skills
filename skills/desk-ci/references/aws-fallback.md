@@ -1,6 +1,6 @@
 # desk-ci: aws-fallback
 
-Read before `aws-fallback status` or `off`, or when an `aws-fallback` issue the watchdog opened comes
+Read before `aws-fallback status` or `off`, or when an `AWS fallback on for` issue the watchdog opened comes
 up, and no other step's file with it. The overview, the placement rule and the red flags every
 command shares are in `../SKILL.md`, already loaded.
 
@@ -18,9 +18,9 @@ the AWS runner labels the repo's `.github/desk-ci.yml` declares (*A repo's AWS r
 
 | The repo | The watchdog |
 |---|---|
-| a job queued on a declared label for over 15 minutes | sets `DESK_AWS_FALLBACK` to `on`, cancels and re-runs every run with a job queued on a declared label, and opens an issue labelled `aws-fallback` in desk-skills naming the repo, the time and the oldest queued job |
+| a job queued on a declared label for over 15 minutes | sets `DESK_AWS_FALLBACK` to `on`, opens an issue `AWS fallback on for <repo>` in desk-skills naming the repo, the time and the oldest queued job, then cancels every run with a job queued on a declared label and re-runs its cancelled jobs (only those, so a job that passed does not run twice); a comment on the issue names any run left cancelled, to re-run by hand |
 | every job on a declared label started within 15 minutes | changes nothing |
-| its fallback already on | leaves it on and opens no second issue |
+| its fallback already on | leaves it on and opens no second issue; it opens one only when none was opened since the fallback went on (the first failed to open, or someone turned it on by hand) |
 | declares no AWS runner labels | changes nothing |
 | its `.github/desk-ci.yml` cannot be read (no file, or an API error) | changes nothing, names the repo and the error in the run's log, and fails the run once every repo is checked |
 

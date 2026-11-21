@@ -142,7 +142,7 @@ beyond this file.
 | Running `measure`, or `batch-red` against its baseline | *measure*, *batch-red* | `references/measure.md` |
 | Running `profile`, or acting on its plan or its saving | *profile* | `references/profile.md` |
 | Any `protection` command: `snapshot`, `restore`, `pin` or `token` | *protection* | `references/protection.md` |
-| `aws-fallback status` or `off`, or an `aws-fallback` issue the watchdog opened | *aws-fallback* | `references/aws-fallback.md` |
+| `aws-fallback status` or `off`, or an `AWS fallback on for` issue the watchdog opened | *aws-fallback* | `references/aws-fallback.md` |
 
 **A reference file you cannot read stops the command.** If the file a step names is missing or
 empty, stop and name it by its full path; never run the command from memory or an earlier copy of

@@ -521,7 +521,7 @@ function runnerOf(set, aws) {
 }
 
 // The declared AWS labels and each one's on-demand twin, which the same runners carry.
-const awsSet = (labels = []) => new Set(labels.flatMap((l) => [l.toLowerCase(), `${l.toLowerCase()}-on-demand`]));
+export const awsSet = (labels = []) => new Set(labels.flatMap((l) => [l.toLowerCase(), `${l.toLowerCase()}-on-demand`]));
 
 // The runners runs-on can pick, of 'hosted', 'aws' and 'self-hosted', and the AWS labels among them.
 export function runnersOf(job, awsLabels = []) {
@@ -1596,13 +1596,15 @@ export function stable(v) {
   return JSON.stringify(v ?? null);
 }
 
-function ghCall(path, { method = 'GET', body } = {}) {
+// One `gh api` call, as GH_TOKEN `token` when one is given. -> the parsed JSON, or null for no body.
+// A failure throws with `status`, the HTTP code gh reported, and `body`, the JSON it answered.
+export function ghCall(path, { method = 'GET', body, token } = {}) {
   const args = ['api', '-H', 'Accept: application/vnd.github+json', '-X', method, path];
   if (body !== undefined) args.push('--input', '-');
   try {
     const out = execFileSync('gh', args, {
       encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, input: body === undefined ? undefined : JSON.stringify(body),
-      stdio: [body === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      stdio: [body === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], env: token ? { ...process.env, GH_TOKEN: token } : process.env,
     });
     return out.trim() ? JSON.parse(out) : null;
   } catch (e) {
@@ -2159,7 +2161,7 @@ if (isMain) {
     } else if (cmd === 'aws-fallback' && ['off', 'status'].includes(rest[0])) {
       process.exit((await import('./aws-fallback.mjs')).cli(rest));
     } else {
-      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token | aws-fallback off --repo owner/name | aws-fallback status [--repo owner/name] [--home owner/name]');
+      throw new Error('usage: desk-ci.mjs classify|ci-lint [<workflow file or directory>...] | measure [--repo owner/name] [--days 90] [--budget 600] [--out <dir>] | batch-red [--prs a,b | --queue <file>] [--baseline <file>] | profile [<workflow file or directory>...] [--required <check>]... [--measure <file>] [--batch-prs <n>] [--default <branch>] | protection snapshot|restore <file>|pin|token | aws-fallback off --repo owner/name | aws-fallback status [--repo owner/name]');
     }
   } catch (e) {
     console.error(e.message);

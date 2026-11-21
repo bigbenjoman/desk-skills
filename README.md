@@ -230,8 +230,8 @@ printed as a plan first and applies only by that plan's id, under §3 `ci-protec
 `aws-fallback` is the other half of the AWS fallback watchdog (`.github/workflows/aws-fallback-watch.yml`,
 every 10 minutes): when a repo listed in this repo's `DESK_AWS_WATCHED_REPOS` variable has had a job
 queued on one of its declared AWS runner labels for over 15 minutes, the watchdog sets that repo's
-`DESK_AWS_FALLBACK` variable to `on`, cancels and re-runs its queued runs, and opens an issue labelled
-`aws-fallback` here. It never turns the fallback off; `aws-fallback off` does, and `aws-fallback status`
+`DESK_AWS_FALLBACK` variable to `on`, opens an issue here saying so, and cancels its queued runs and
+re-runs their cancelled jobs. It never turns the fallback off; `aws-fallback off` does, and `aws-fallback status`
 says whether each repo's fallback is on, since when, and when the watchdog last ran:
 
 ```

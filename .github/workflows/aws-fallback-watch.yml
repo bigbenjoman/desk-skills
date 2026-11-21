@@ -3,7 +3,7 @@ name: aws fallback watch
 # The AWS runner watchdog: every 10 minutes, each repo in the DESK_AWS_WATCHED_REPOS variable
 # (comma-separated owner/name) with a job queued on one of its declared AWS runner labels for over
 # 15 minutes gets its DESK_AWS_FALLBACK variable turned on, so its CI runs on GitHub-hosted runners,
-# its queued runs cancelled and re-run, and an issue here naming it (desk/bin/aws-fallback.mjs). It
+# an issue here naming it, and its queued runs cancelled and re-run (desk/bin/aws-fallback.mjs). It
 # never turns a fallback off: `desk-ci.mjs aws-fallback off` does. The DESK_AWS_FALLBACK_TOKEN secret
 # is a fine-grained token with Variables and Actions write and Contents read on the watched repos.
 on:
@@ -35,5 +35,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           FALLBACK_TOKEN: ${{ secrets.DESK_AWS_FALLBACK_TOKEN }}
           DESK_AWS_WATCHED_REPOS: ${{ vars.DESK_AWS_WATCHED_REPOS }}
-          OWNER: ${{ github.repository_owner }}
         run: node desk/bin/aws-fallback.mjs watch

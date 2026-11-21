@@ -40,10 +40,13 @@ const repoRoutes = (repo, { config = LABELS, variable = null, queued = [], inPro
   ...Object.fromEntries(Object.entries(jobs).map(([id, js]) => [`repos/${repo}/actions/runs/${id}/jobs?filter=latest&per_page=100`, { jobs: js }])),
   ...Object.fromEntries([...queued, ...inProgress].map((id) => [`repos/${repo}/actions/runs/${id}`, { id, status: runStatus }])),
 });
-const ENV = { [WATCHED_VAR]: 'acme/app', FALLBACK_TOKEN: 'tok', GITHUB_REPOSITORY: 'acme/desk-skills', OWNER: 'ben' };
-const runWatch = (routes, env = ENV, writes = { 'POST repos/acme/desk-skills/issues': { number: 7 } }) => {
+const ENV = { [WATCHED_VAR]: 'acme/app', FALLBACK_TOKEN: 'tok', GITHUB_REPOSITORY: 'acme/desk-skills' };
+const ISSUE_WRITES = { 'POST repos/acme/desk-skills/issues': { number: 7 } };
+// The desk-skills issues opened since a fallback variable's updated_at.
+const issuesSince = (at, issues) => ({ [`repos/acme/desk-skills/issues?state=all&per_page=100&since=${encodeURIComponent(at)}`]: issues });
+const runWatch = (routes, env = ENV, writes = ISSUE_WRITES, issueRoutes = {}) => {
   const f = fakeApi(routes, writes);
-  const issues = fakeApi({}, writes);
+  const issues = fakeApi(issueRoutes, writes);
   const log = [];
   const code = watch({ env, api: f.api, issueApi: issues.api, now: NOW, sleep: () => {}, log: (l) => log.push(l) });
   return { code, log, writes: f.writes(), issues: issues.writes() };
@@ -53,6 +56,7 @@ const runWatch = (routes, env = ENV, writes = { 'POST repos/acme/desk-skills/iss
 t('the watched list: owner/name each once, the rest named', watchedRepos(' acme/app, acme/app,acme/api  nope '), { repos: ['acme/app', 'acme/api'], bad: ['nope'] });
 t('an empty watched list', watchedRepos(undefined), { repos: [], bad: [] });
 t('a declared label, and its -on-demand twin, are on AWS', [onAws(['self-hosted', 'acme-linux-arm64'], ['acme-linux-arm64']), onAws(['acme-linux-arm64-on-demand'], ['acme-linux-arm64']), onAws(['ubuntu-latest'], ['acme-linux-arm64'])], [true, true, false]);
+t('labels match as ci-lint matches them: any case, spaces trimmed', [onAws([' ACME-Linux-ARM64 '], ['acme-linux-arm64']), onAws(['acme-linux-arm64'], ['Acme-Linux-Arm64'])], [true, true]);
 const q = queuedAws([job(1, 10, 5), job(2, 11, 20), job(3, 12, 30), job(4, 13, 40, { labels: ['ubuntu-latest'] }), job(5, 14, 50, { status: 'in_progress' })], ['acme-linux-arm64'], NOW);
 t('the oldest job queued on AWS over 15 minutes, and every run with a job queued on AWS', [q.oldest.id, q.runs], [3, [10, 11, 12]]);
 t('15 minutes exactly is not over', queuedAws([job(1, 10, STUCK_MS / 60e3)], ['acme-linux-arm64'], NOW).oldest, null);
@@ -60,22 +64,26 @@ t('15 minutes exactly is not over', queuedAws([job(1, 10, STUCK_MS / 60e3)], ['a
 // ---- AC1: a job queued on an AWS label for over 15 minutes -------------------------------------
 const stuckRoutes = repoRoutes('acme/app', { queued: [20], inProgress: [21], jobs: { 20: [job(1, 20, 25)], 21: [job(2, 21, 3), job(3, 21, 3, { status: 'completed', labels: ['ubuntu-latest'] })] } });
 const a1 = runWatch(stuckRoutes);
-t('AC1 the fallback is turned on, then each run with a queued AWS job is cancelled and re-run', a1.writes, [
+t('AC1 the fallback is turned on, then each run with a queued AWS job is cancelled and only its cancelled jobs re-run', a1.writes, [
   `POST repos/acme/app/actions/variables {"name":"${FALLBACK_VAR}","value":"on"}`,
-  'POST repos/acme/app/actions/runs/20/cancel', 'POST repos/acme/app/actions/runs/20/rerun',
-  'POST repos/acme/app/actions/runs/21/cancel', 'POST repos/acme/app/actions/runs/21/rerun',
+  'POST repos/acme/app/actions/runs/20/cancel', 'POST repos/acme/app/actions/runs/20/rerun-failed-jobs',
+  'POST repos/acme/app/actions/runs/21/cancel', 'POST repos/acme/app/actions/runs/21/rerun-failed-jobs',
 ]);
 const issue = a1.issues.length === 1 ? JSON.parse(a1.issues[0].replace(/^POST \S+ /, '')) : {};
-t('AC1 one issue in desk-skills, labelled and assigned', [a1.issues.length, a1.issues[0]?.split(' ')[1], issue.labels, issue.assignees], [1, 'repos/acme/desk-skills/issues', ['aws-fallback'], ['ben']]);
+t('AC1 one issue in desk-skills', [a1.issues.length, a1.issues[0]?.split(' ')[1]], [1, 'repos/acme/desk-skills/issues']);
 t('AC1 the issue names the repo, the time and the oldest queued job', [issue.title, issue.body?.includes(`turned its AWS fallback on at ${new Date(NOW).toISOString()}`), issue.body?.includes(`**job 1** on acme-linux-arm64, queued since ${ago(25)}: https://x/job/1`)], ['AWS fallback on for acme/app', true, true]);
-t('AC1 the run passes and says what it did', [a1.code, a1.log.at(-1)], [0, 'acme/app: opened issue #7']);
+t('AC1 the issue opens before any run is restarted, and the run passes', [a1.code, a1.log.indexOf('acme/app: opened issue #7') < a1.log.findIndex((l) => /run 20 cancelled/.test(l))], [0, true]);
+const noIssue = runWatch(stuckRoutes, ENV, { 'POST repos/acme/desk-skills/issues': () => { throw new Error('Validation Failed (HTTP 422)'); } });
+t('AC1 an issue that cannot open: the runs are still restarted, and the run fails', [noIssue.writes.includes('POST repos/acme/app/actions/runs/20/rerun-failed-jobs'), noIssue.code, noIssue.log.includes('acme/app: could not open its issue: Validation Failed (HTTP 422)')], [true, 1, true]);
 const patched = runWatch({ ...stuckRoutes, [`repos/acme/app/actions/variables/${FALLBACK_VAR}`]: { value: 'off', updated_at: ago(600) } });
 t('AC1 a variable set to something else is updated, not created', patched.writes[0], `PATCH repos/acme/app/actions/variables/${FALLBACK_VAR} {"name":"${FALLBACK_VAR}","value":"on"}`);
 let polls = 0;
 const slow = runWatch({ ...stuckRoutes, 'repos/acme/app/actions/runs/20': () => ({ status: ++polls > 2 ? 'completed' : 'in_progress' }) });
-t('AC1 a run is re-run only once its cancel has finished', [polls, slow.writes.includes('POST repos/acme/app/actions/runs/20/rerun')], [3, true]);
+t('AC1 a run is re-run only once its cancel has finished', [polls, slow.writes.includes('POST repos/acme/app/actions/runs/20/rerun-failed-jobs')], [3, true]);
 const stuckRun = runWatch({ ...stuckRoutes, 'repos/acme/app/actions/runs/20': { status: 'in_progress' } });
-t('AC1 a run that never finishes cancelling is not re-run, the issue still opens, and the run fails', [stuckRun.writes.includes('POST repos/acme/app/actions/runs/20/rerun'), stuckRun.issues.length, stuckRun.code], [false, 1, 1]);
+t('AC1 a run that never finishes cancelling is not re-run, the issue names it in a comment, and the run fails', [stuckRun.writes.includes('POST repos/acme/app/actions/runs/20/rerun-failed-jobs'), stuckRun.issues, stuckRun.code], [false, [
+  stuckRun.issues[0], 'POST repos/acme/desk-skills/issues/7/comments {"body":"Left cancelled, not re-run: 20. Re-run them by hand."}',
+], 1]);
 
 // ---- AC2: every AWS job started within 15 minutes ---------------------------------------------
 const a2 = runWatch(repoRoutes('acme/app', { queued: [20], jobs: { 20: [job(1, 20, 10), job(2, 20, 40, { status: 'in_progress' })] } }));
@@ -83,9 +91,18 @@ t('AC2 nothing is written and no issue opens', [a2.writes, a2.issues, a2.code], 
 t('AC2 the log says so', a2.log, ['acme/app: unchanged, no job queued on acme-linux-arm64 for over 15 minutes']);
 
 // ---- AC3: the fallback is on already -----------------------------------------------------------
-const a3 = runWatch({ ...stuckRoutes, [`repos/acme/app/actions/variables/${FALLBACK_VAR}`]: { value: 'on', updated_at: ago(30) } });
+const onRoutes = { ...stuckRoutes, [`repos/acme/app/actions/variables/${FALLBACK_VAR}`]: { value: 'on', updated_at: ago(30) } };
+const opened = (min, title = 'AWS fallback on for acme/app') => [{ number: 7, title, created_at: ago(min) }];
+const a3 = runWatch(onRoutes, ENV, ISSUE_WRITES, issuesSince(ago(30), opened(29)));
 t('AC3 it stays on: nothing written, no second issue', [a3.writes, a3.issues, a3.code], [[], [], 0]);
 t('AC3 the log says since when', a3.log, [`acme/app: AWS fallback on since ${ago(30)}, left on`]);
+for (const [why, issues] of [['no issue opened since it went on', []], ['only an older issue, or one for another repo', [...opened(40), ...opened(20, 'AWS fallback on for acme/api')]]]) {
+  const missing = runWatch(onRoutes, ENV, ISSUE_WRITES, issuesSince(ago(30), issues));
+  const body = missing.issues.length === 1 ? JSON.parse(missing.issues[0].replace(/^POST \S+ /, '')) : {};
+  t(`AC3 on already, ${why}: still left on, and one issue opens saying since when`, [missing.writes, missing.issues.length, body.title, body.body?.includes(`on since ${ago(30)}`), missing.code], [[], 1, 'AWS fallback on for acme/app', true, 0]);
+}
+const unread = runWatch(onRoutes);
+t('AC3 on already, the issues cannot be read: nothing opened or written, and the run fails', [unread.writes, unread.issues, unread.code], [[], [], 1]);
 
 // ---- AC5: no AWS runner labels declared --------------------------------------------------------
 for (const [label, config] of [['no aws-runner-labels key', 'hosted-workflows: [release.yml]\n'], ['only a bare self-hosted label', 'aws-runner-labels: [self-hosted]\n']]) {
@@ -149,7 +166,7 @@ esac
 `, { mode: 0o755 });
   const DESK_CI = join(dirname(fileURLToPath(import.meta.url)), '../desk/bin/desk-ci.mjs');
   const cli = (...args) => spawnSync(process.execPath, [DESK_CI, 'aws-fallback', ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${BIN}:${process.env.PATH}` } });
-  const s = cli('status', '--repo', 'acme/app', '--home', 'acme/desk-skills');
+  const s = cli('status', '--repo', 'acme/app');
   t('desk-ci.mjs aws-fallback status prints the repo, and fails on the unreadable watchdog runs', [s.status, s.stdout.split('\n')[0]], [1, 'acme/app: AWS fallback on since 2026-11-21T10:00:00Z']);
   // This gh answers `on` after the delete too, so off must say it is not off.
   const o = cli('off', '--repo', 'acme/app');
