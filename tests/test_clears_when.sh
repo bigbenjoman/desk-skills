@@ -532,7 +532,7 @@ cp "$T/config.md" "$T/config-vercel.md"; printf '\n## 4. Tracker, tools and team
 printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
 LD="$T/leases"; pvl(){ DESK_LEASE_DIR="$LD" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | paste -sd',' -; }
 DESK_LEASE_DIR="$LD" DESK_MACHINE="$T/machine-pv.md" node "$B/leases.mjs" acquire preview-build acme --ttl 1200 --no-owner --label acme/site#7 >/dev/null 2>&1
-pushpark P-11 A; q set P-11 result.pr=1911
+pushpark P-11 A; q set P-11 result.pr=1911; pr 1911 OPEN true
 out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
 check "DS-912 with the team's one unit held, the pass does not push, keeps the park, and says it waits on the preview build" \
   '! on_origin P-11 && [ "$(field P-11 state)" = "\"parked\"" ] && [ "$(field P-11 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-11\"}" ] && grep -q "P-11: waiting on \"git push origin feat/P-11 succeeds\" (it waits on the preview build for acme: the preview-build slot for acme is held by acme/site#7" <<< "$out"'
