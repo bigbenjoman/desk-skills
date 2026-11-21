@@ -388,7 +388,10 @@ forever) and **only one PR may be building a preview at a time** (see the previe
   (`undraft.mjs` `buildPark`), so this step builds it. A park that asks anything else stays a park.
   A PR out of draft gets the same build from its fix tries (`fix-tries.mjs` `fixCall`, which asks
   `undraft.mjs` `buildCall` about those checks alone), once no check a worker fixes is red or no
-  fix try is left.
+  fix try is left. A command that finds its image already there and builds nothing still exits 0, so
+  the checks are re-run all the same. Where `ci-rerun` is not `yes`, nothing is built or re-run, and a
+  draft red only on those checks goes to the person with the command, saying it was not built for
+  that reason (`undraft.mjs` `unbuiltCall`).
 - **A conflicted draft goes to a fix worker, not to `DRAFT`**, where §3 `pr-conflict-unreviewed`
   (no one but the user's handle has reviewed or commented) or `pr-conflict-reviewed` (someone has)
   is `yes`: it merges `<default>` in, reviews its new head and posts that review, within two tries of

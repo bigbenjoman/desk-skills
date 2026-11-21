@@ -477,14 +477,12 @@ function stuckCall(gate, checks, cfg, n) {
 // step), and nothing for a check still red after it (a plain red check).
 // A ready PR's fix tries (fix-tries.mjs fixCall) ask it about its §4 Check builds checks alone.
 export function buildCall(gate, cfg, n, head, t) {
-  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
-  const failing = gate.failing;
-  if (cfg.rerun !== 'yes' || !builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
-  const names = [...new Set(failing.map((f) => f.name))];
-  const checks = names.map((x) => `"${x}"`).join(', ');
+  const named = cfg.rerun === 'yes' ? buildsNamed(gate, cfg) : null;
+  if (!named) return null;
+  const { failing, names, checks } = named;
   const at = String(head ?? '?').slice(0, 9);
   const rec = cfg.built?.(head) ?? null;
-  const command = rec?.command ?? [...new Set(names.map((x) => builds.get(x)))].join(' && ');
+  const command = rec?.command ?? named.command;
   const runs = [...new Set(failing.map((f) => f.runId).filter(Boolean).map(String))];
   // The build needs nothing else to finish: it starts on the first pass that sees the check red.
   if (!rec) return { call: 'build', why: `${checks} red at ${at}, which §4 Check builds clears: \`${command}\` runs at the head, then the check is re-run`, command, checks: names, runs };
@@ -509,6 +507,32 @@ export function buildCall(gate, cfg, n, head, t) {
   if (toRerun) return { call: 'rebuilt', why: `its check build \`${command}\` ran at ${at}, so ${checks} is re-run`, command, checks: names, runs };
   if (!rec.reran.ok) return { call: 'person', why: `its check build \`${command}\` ran at ${at}, but the re-run of ${checks} was refused: ${rec.reran.out}`, action: `re-run ${checks} on #${n}`, lead: `its check build \`${command}\` ran, but the re-run was refused: ${rec.reran.out}`, each: { command: `re-run ${checks} on #${n}` } };
   return { call: 'person', why: `${checks} is still red at ${at} after its check build \`${command}\` ran and the check was re-run`, action: `fix ${checks} on #${n}`, lead: `still red after its check build \`${command}\` ran and the check was re-run`, each: {} };
+}
+
+// The red gate's failing checks, their quoted names and their §4 Check builds command, when that row
+// names every one of them; null otherwise.
+function buildsNamed(gate, cfg) {
+  const builds = new Map((cfg.builds ?? []).map((b) => [b.name, b.command]));
+  const failing = gate.failing;
+  if (!builds.size || !failing.length || failing.some((f) => !builds.has(f.name))) return null;
+  const names = [...new Set(failing.map((f) => f.name))];
+  return { failing, names, checks: names.map((x) => `"${x}"`).join(', '), command: [...new Set(names.map((x) => builds.get(x)))].join(' && ') };
+}
+
+// A red gate whose every failing check §4 Check builds names, while §3 ci-rerun is not yes: the pass
+// builds none and re-runs none, and no change on the branch builds it, so it is the person's, with the
+// command and why it was not built, and whatever else holds the gate. A cancelled or timed-out check
+// tested nothing, so no build is blamed for it. Null otherwise.
+export function unbuiltCall(gate, cfg, n, head) {
+  const named = cfg.rerun === 'yes' ? null : buildsNamed(gate, cfg);
+  if (!named || named.failing.some((f) => INTERRUPTED.has(f.conclusion))) return null;
+  const { names, checks, command } = named;
+  const others = (gate.reasons ?? []).filter((r) => !names.some((x) => r.includes(`"${x}"`)));
+  return {
+    call: 'person',
+    why: `${checks} red at ${String(head ?? '?').slice(0, 9)} was not built, though §4 Check builds clears it: config §3 ci-rerun is "${cfg.rerun ?? 'no'}", so the pass neither runs \`${command}\` nor re-runs the check${others.length ? `; its checks are not green besides: ${others.join('; ')}` : ''}`,
+    action: `run \`${command}\` at the head of #${n}, then re-run ${checks}`,
+  };
 }
 
 // The words a park's not-reached tail may hold after its marker: the steps the worker contract has it
@@ -808,6 +832,8 @@ export function undraftCall(t, pr, cfg) {
   // stuckCall can time out, holds it: a status or app check with no run could pend forever unseen.
   const watched = latestPerCheck(pr.checks ?? []).some((c) => c.status !== 'completed' && c.runId && gate.pending.includes(c.name));
   if (red && watched) return running();
+  const unbuilt = red ? unbuiltCall(gate, cfg, n, pr.head) : null;
+  if (unbuilt) return unbuilt;
   // §4 State checks read the PR's reviews or approvals, not its code, so no fix turns them green.
   const stateNames = new Set([VERDICT_CHECK, ...(cfg.stateChecks ?? []).map((x) => x.name)]);
   const codeRed = gate.failing.filter((f) => !stateNames.has(f.name));
