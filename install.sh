@@ -868,15 +868,19 @@ elif [ "$(cat "$PW_HOME/version" 2>/dev/null || true)" = "$PW_PIN" ] \
   ok "$PW_PIN and its Chromium"
 else
   note "installing $PW_PIN and its Chromium (a few hundred MB, once per version)"
-  mkdir -p "$PW_HOME"
   rm -f "$PW_HOME/version"
-  printf '{\n  "private": true,\n  "dependencies": { "playwright": "%s", "@playwright/mcp": "%s" }\n}\n' \
-    "$PLAYWRIGHT_VERSION" "$PLAYWRIGHT_MCP_VERSION" > "$PW_HOME/package.json"
-  if ! out="$(cd "$PW_HOME" && npm install --no-audit --no-fund --no-package-lock 2>&1)"; then
+  # The same script CI's tests workflow installs it with.
+  if out="$(bash "$SRC/desk/bin/install-playwright.sh" "$PW_HOME" "$PLAYWRIGHT_VERSION" "$PLAYWRIGHT_MCP_VERSION" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  if [ "$rc" = 3 ]; then
     warn "npm install of $PW_PIN failed in $PW_HOME; re-run ./install.sh"; show_err "$out"
-  elif ! out="$(cd "$PW_HOME" && env -u PLAYWRIGHT_SKIP_BROWSER_GC PLAYWRIGHT_BROWSERS_PATH="$PW_HOME/browsers" \
-      node node_modules/playwright/cli.js install chromium 2>&1)"; then
+  elif [ "$rc" = 4 ]; then
     warn "the Chromium download for playwright $PLAYWRIGHT_VERSION failed; re-run ./install.sh"; show_err "$out"
+  elif [ "$rc" != 0 ]; then
+    warn "installing $PW_PIN in $PW_HOME failed; re-run ./install.sh"; show_err "$out"
   else
     printf '%s\n' "$PW_PIN" > "$PW_HOME/version"
     ok "$PW_PIN and its Chromium; older builds in $PW_HOME/browsers removed"

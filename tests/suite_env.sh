@@ -4,7 +4,7 @@
 # A desk worker runs these suites with its own DESK_* environment (DESK_GH_REPO, DESK_BATCH, ...), and
 # some suites read those, so every suite starts with none: each sets what it needs itself. keep_env is
 # the exception: DESK_REQUIRE_SHELLCHECK is CI's switch that makes test_lint.sh fail without shellcheck,
-# DESK_REQUIRE_PLAYWRIGHT CI's that makes test_stitch.mjs and test_design.mjs fail without desk's
+# DESK_REQUIRE_PLAYWRIGHT CI's switch that makes test_stitch.mjs and test_design.mjs fail without desk's
 # Playwright, and DESK_COMPOSER_SMOKE opts test_pr_composer.mjs in to its live smoke test.
 keep_env=" DESK_REQUIRE_SHELLCHECK DESK_REQUIRE_PLAYWRIGHT DESK_COMPOSER_SMOKE "
 for v in $(compgen -e); do
