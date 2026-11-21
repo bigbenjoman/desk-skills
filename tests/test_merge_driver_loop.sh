@@ -257,6 +257,34 @@ check "DS-835 AC2: a refused merge is backed off, recorded failed for its ticket
   'echo "$out" | grep -q "#835 merge refused" && [ -z "$(node "$B/merge-log.mjs" show --repo acme/widgets --pr 835 --latest)" ] && [ "$(jq -r "select(.pr == \"835\") | .event" "$HOME/.desk-autopilot/merges.jsonl" | sort -u | tr "\n" " ")" = "claim failed " ] && jq -e "select(.pr == \"835\" and .event == \"failed\") | .ticket == \"T-835\"" "$HOME/.desk-autopilot/merges.jsonl" >/dev/null'
 q drop T-835
 
+# ---- DS-850: a red main takes no merge but its repair ticket's; green or unread, it merges as before --
+# main's tip R1 has Lint's run still going; its parent R0's run of the required check `test` failed.
+R1=a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1; R0=a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0
+cat > "$T/prs.json" <<EOF
+{
+  "851": { "head": "fix/T-851", "base": "main", "sha": "$SHA1", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] },
+  "852": { "head": "fix/base-red-main", "base": "main", "sha": "$SHA2", "state": "open", "draft": false, "checks": [["test", "SUCCESS"]] }
+}
+EOF
+printf '{"tip":"%s","commits":{"%s":{"parent":"%s","runs":[["test","in_progress",null]]},"%s":{"parent":null,"runs":[["test","completed","failure","https://github.com/acme/widgets/actions/runs/850"]]}}}\n' "$R1" "$R1" "$R0" "$R0" > "$T/base.json"
+: > "$T/merges.log"
+rloop(){ out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-851 base-red-main" 2>&1); rc=$?; }
+rloop; first="$out"; rloop
+check "DS-850 AC1: on a main red on a required check's latest run, nothing merges but the repair ticket's PR, and the log names the check" \
+  '[ "$(merged)" = 852 ] && echo "$first" | grep -qF "HOLDING on red main: required check \"test\" (run https://github.com/acme/widgets/actions/runs/850) failed on its latest run there" && ! echo "$first$out" | grep -q "#851 " && [ "$(jq -r ".checks[0].name" "$T/state/base-red.json")" = test ]'
+check "DS-850 AC1: the hold names the last merges desk made" 'echo "$first" | grep -qE "the last merges desk made: #[0-9]+"'
+printf '{"tip":"%s","commits":{"%s":{"parent":null,"runs":[["test","completed","success"]]}}}\n' "$R1" "$R1" > "$T/base.json"
+rloop; rloop
+check "DS-850 AC6: once the check passes on main again, merging resumes and the record goes" \
+  '[ "$(merged)" = "852 851" ] && ! echo "$out" | grep -q "HOLDING on red" && [ ! -e "$T/state/base-red.json" ]'
+jq --arg s "$SHA4" '."853" = { head: "fix/T-853", base: "main", sha: $s, state: "open", draft: false, checks: [["test", "SUCCESS"]] }' "$T/prs.json" > "$T/prs.tmp" && mv "$T/prs.tmp" "$T/prs.json"
+touch "$T/base.broken"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1); first="$out"
+out=$(MERGE_DRIVER_ONE_LOOP=1 MERGE_DRIVER_GREEN_SECS=0 bash "$B/merge-driver.sh" --tickets "T-853" 2>&1)
+check "DS-850 AC7: with main's check runs unread, the driver merges as today and logs the base state unknown" \
+  '[ "$(merged)" = "852 851 853" ] && echo "$first" | grep -qF "base state unknown on main (the tip of main could not be read) — merging as before"'
+rm -f "$T/base.broken" "$T/base.json"
+
 # ---- DS-810: the driver's lock names the release it runs from, not the installed one --------------
 # A desk home with one release, old0, holding a copy of these scripts, while installed.json names new1.
 # The PR list hook reads the lock's version while the driver holds it.

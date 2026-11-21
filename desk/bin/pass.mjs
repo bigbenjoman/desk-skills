@@ -61,6 +61,7 @@ import { fixClass, runsState, WAITING_CLASSES, keptHold } from './failure-class.
 import { leverOnFor } from './lever-pin.mjs';
 import { readThreads, THREADS_QUERY, readVerdict, localReviewSet } from './review-threads.mjs';
 import { baseFixTicket, baseFixBrief, baseFixTask, epicReviewCall, epicReviewTicket, epicReviewBrief, epicReviewTask, promotionChecksCall, promotionChecksTicket, promotionChecksBrief, promotionChecksTask, mergeTry, cleanedTry, FIX_TRIES_MAX } from './base-fix.mjs';
+import { readBaseRed, batchLine, repairTicket, repairTriage } from './base-red.mjs';
 import { processCwds, processList, lockHolders, suiteWait, dirUsers, usersText, lockWaiters, lockQueue, lockHolderRuns, lockHolderStamps, processAges } from './suite-wait.mjs';
 import { usagePace, newestReading } from './usage-pace.mjs';
 import { groupsNow, keysOf, andList } from './desk-q.mjs';
@@ -1707,6 +1708,30 @@ const linkLines = [];
     if (left.length !== cycles.length && !DRY) q('set', t.key, `cycle_link=${left.join('|') || 'null'}`);
   }
 }
+
+// ---- red base --------------------------------------------------------------
+// The base the merge driver holds on (base-red.mjs): reported once for the batch, below, and repaired by
+// one ticket of its own, admitted here so this pass can spawn it, where the base worker's push grant
+// allows. A repair ticket already in the queue is the one; none is admitted beside it.
+const BASE_RED = readBaseRed(STATE);
+let baseRedRepair = null;
+if (BASE_RED) {
+  const key = BASE_RED.repair_key;
+  const have = queue().tickets[key];
+  if (have) baseRedRepair = { key, state: have.state };
+  else if (!BASE_PUSH.ok) baseRedRepair = { off: `config §3 ${BASE_PUSH.key} is "${BASE_PUSH.perm}", so no worker is started to repair it` };
+  else if (DRY) baseRedRepair = { key, state: 'to be admitted (dry run)' };
+  else {
+    mkdirSync(join(STATE, 'tickets'), { recursive: true });
+    mkdirSync(join(STATE, 'triage'), { recursive: true });
+    writeFileSync(join(STATE, 'tickets', `${key}.md`), repairTicket(BASE_RED));
+    writeFileSync(join(STATE, 'triage', `${key}.json`), `${JSON.stringify(repairTriage(BASE_RED), null, 2)}\n`);
+    const r = qTry(['admit', key, '--by', 'base-red']);
+    baseRedRepair = r.ok ? { key, state: 'admitted to start as a slot frees' } : { off: `its repair ticket ${key} could not be admitted (${r.out.split('\n').pop()})` };
+  }
+}
+// The PRs held on it, which its one line names in place of a BASE RED line each.
+const baseRedHeld = [];
 
 // ---- spawn ---------------------------------------------------------------
 const fresh = queue();
@@ -4544,6 +4569,11 @@ function applyFix(t, n, head, c) {
     if (!DRY) q('set', t.key, `base_red=${JSON.stringify(rec)}`);
     t.base_red = rec;
   }
+  // Held on a check the red base names, it is one of the PRs the batch's red base line names.
+  if (c.call === 'held' && !c.label && BASE_RED && (c.base_red?.checks ?? []).some((x) => BASE_RED.checks.some((b) => b.name === x))) {
+    baseRedHeld.push(`#${n} (${t.key})`);
+    return;
+  }
   if (c.call === 'held') { report.waiting.push(`${t.key}: ${c.label ?? 'BASE RED'} — PR #${n}: ${c.why}`); return; }
   if (c.call === 'wait') { out.push(`undraft: PR #${n} (${t.key}) stays draft for now: ${c.why}`); return; }
   if (c.call === 'rerun') {
@@ -5054,6 +5084,7 @@ runPhase({
       })),
       register: REGISTER,
       askedAgain: askedAgain.filter((p) => !takenBack.includes(p.key)),
+      baseRed: BASE_RED ? batchLine(BASE_RED, { held: baseRedHeld, repair: baseRedRepair }) : null,
     };
   },
   decide: decideReportLines,
