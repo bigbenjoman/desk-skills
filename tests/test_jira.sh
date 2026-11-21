@@ -247,6 +247,42 @@ puts() { jq -s '[.[] | select(.method == "PUT")] | length' "$LOG"; }
 comments_sent() { jq -s '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | length' "$LOG"; }
 last_comment() { jq -sr '[.[] | select(.method == "POST" and (.path | test("/comment$")))] | last | .body | fromjson | .body' "$LOG"; }
 
+# The repo and every config row come from one desk-env.mjs run. A `node` ahead on PATH logs
+# each run; a desk-env.mjs that refuses --where sends desk-jira down the separate where/get/list/perm
+# reads, so the two paths can be compared value for value.
+mkdir -p "$T/countbin" "$T/oldenv"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/node.calls"\nexec "%s" "$@"\n' "$T" "$(command -v node)" > "$T/countbin/node"
+chmod +x "$T/countbin/node"
+cat > "$T/oldenv/desk-env.mjs" <<EOF
+import { spawnSync } from 'node:child_process';
+const a = process.argv.slice(2);
+if (a.includes('--where')) process.exit(2);
+process.exit(spawnSync(process.execPath, ['$DESK_ENV_MJS', ...a], { stdio: 'inherit' }).status ?? 1);
+EOF
+envruns() { : > "$T/node.calls"; ( cd "$1" && shift && PATH="$T/countbin:$PATH" "$J" "$@" ) >/dev/null 2>&1; grep -c 'desk-env\.mjs' "$T/node.calls"; }
+check "DS-933 AC1 where starts one desk-env process" '[ "$(envruns "$C" where)" -eq 1 ]'
+check "DS-933 AC1 a create its field rules refuse starts one desk-env process" '[ "$(envruns "$C" create Story s body.md --no-lint)" -eq 1 ]'
+check "DS-933 AC1 where outside any repo starts one desk-env process" '[ "$(envruns "$T/state" where)" -eq 1 ]'
+SLUG_P=$(mkrepo p "https://github.com/acme/parity" jira "http://127.0.0.1:$PORT"); P="$T/repos/p"
+printf '| Priority | `customfield_10207` |\n| Required fields | `Story, bug : customfield_1, customfield_2` `task:customfield_3 customfield_1,customfield_3` `Évolution: customfield_4` `no rule here` |\n| Size field | `customfield_10208` |\n| Priorities only you set | `P0` |\n' \
+  >> "$DESK_CONFIG_ROOT/repos/$SLUG_P/config.md"
+printf good-token > "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"; chmod 600 "$DESK_CONFIG_ROOT/repos/$SLUG_P/atlassian-token"
+printf 'a body' > "$P/body.md"
+mkdir -p "$T/repos/unset"; git init -q "$T/repos/unset"; git -C "$T/repos/unset" remote add origin https://github.com/acme/unset
+both() { local d="$1" one two; shift
+  one=$(cd "$d" && "$J" "$@" 2>&1; echo "rc=$?"); two=$(cd "$d" && DESK_ENV_MJS="$T/oldenv/desk-env.mjs" "$J" "$@" 2>&1; echo "rc=$?")
+  [ "$one" = "$two" ] || { printf '  one call:\n%s\n  separate reads:\n%s\n' "$one" "$two"; return 1; }; }
+for d in "$A" "$C" "$P" "$T/repos/n" "$T/repos/unset" "$T/state"; do
+  check "DS-933 AC2 where in ${d##*/} reads as the separate reads do" 'both "$d" where && both "$d" where --dir'
+done
+for ty in Story BUG task Epic ÉVOLUTION; do
+  n0=$(creates)
+  check "DS-933 AC2 create $ty in a repo of mixed rules is refused as the separate reads refuse it" 'both "$P" create "$ty" s body.md customfield_10207=P0 --no-lint && [ "$(creates)" -eq "$n0" ]'
+done
+err=$(cd "$P" && "$J" create bug s body.md customfield_10207=P0 --no-lint 2>&1)
+check "DS-933 AC2 the one call's rules are the row's rules" 'printf "%s" "$err" | grep -q "a bug needs customfield_1 " && printf "%s" "$err" | grep -q "a bug needs customfield_2 " &&
+  ! printf "%s" "$err" | grep -q customfield_3 && printf "%s" "$err" | grep -q "item \"no rule here\" is not" && printf "%s" "$err" | grep -q P0'
+
 n0=$(creates)
 err=$(cd "$C" && "$J" create Story s body.md customfield_10207=P2 2>&1); rc=$?
 check "create without a required field is refused and names it" '[ $rc -ne 0 ] && printf "%s" "$err" | grep -q "a Story needs customfield_10208 (config §4 Required fields)" && [ "$(creates)" -eq "$n0" ]'
