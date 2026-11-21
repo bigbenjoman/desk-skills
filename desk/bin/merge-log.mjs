@@ -86,9 +86,10 @@ export function claim({ repo, pr, sha, by, now = Date.now(), armedNow = ghArmed,
     // anywhere (GitHub's UI, GitHub itself, a disarm whose record was lost) releases it, and it is
     // closed in the log so it reads true from then on. Unreadable, the hold stands.
     let notArmed = false;
-    if (otherMerger(events, { repo, pr, by, now })?.event === 'armed') {
+    const held = otherMerger(events, { repo, pr, by, now });
+    if (held?.event === 'armed') {
       const armed = armedNow(repo, pr);
-      if (armed === null) return { ok: false, why: `${repo}#${pr} has auto-merge armed in the merge log, and GitHub could not be read to check it is still on: not merging` };
+      if (armed === null) return { ok: false, why: `${repo}#${pr} has auto-merge armed by ${held.by} in the merge log (${held.at}, at ${String(held.sha ?? '?').slice(0, 12)}), and GitHub could not be read to check it is still on: not merging` };
       if (!armed) {
         append({ at: new Date(now).toISOString(), repo, pr: String(pr), sha, by, event: 'disarmed', why: 'GitHub shows auto-merge off' }, path);
         notArmed = true;
