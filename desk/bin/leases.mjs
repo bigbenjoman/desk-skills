@@ -469,8 +469,8 @@ export const listRow = (l) => [l.id, l.kind, l.key, l.units, l.owner ? `pid ${l.
 const LIST_HEAD = ['ID', 'KIND', 'KEY', 'UNITS', 'OWNER', 'LABEL', 'TTL', 'ACQUIRED', 'EXPIRES'].join('\t');
 const listJson = (l) => JSON.stringify({ id: l.id, kind: l.kind, key: l.key, units: l.units, owner: l.owner, label: l.label, ttl: l.ttl, acquired: l.acquired, ...(l.renewed ? { renewed: l.renewed } : {}), expires: l.expires });
 
-// `lease list --clashes`: each would-refuse of the last CLASH_DAYS days, oldest first, with who asked
-// and who held it.
+// `lease list --clashes`: each would-refuse of the last CLASH_DAYS days (or --days), oldest first,
+// with who asked and who held it.
 const CLASH_DAYS = 7;
 const CLASH_HEAD = ['KIND', 'KEY', 'AT', 'REQUESTER', 'HOLDER'].join('\t');
 const clashRow = (e) => ({ kind: e.kind, key: e.key, at: e.at, requester: e.label ?? 'unlabelled',
@@ -481,7 +481,7 @@ export const LEASE_USAGE = `usage: desk-env lease acquire <kind> <key> --ttl <se
        desk-env lease release <lease id> [--pid <owner pid>] [--if-expires <its expires, unrenewed since>]
        ${forceReleaseCommand('<lease id>')}
        ${RESET_COMMAND}
-       desk-env lease list [--json] [--clashes]
+       desk-env lease list [--json] [--clashes [--days <n>]]
        desk-env lease mode [<kind>]
 kinds: port <number> | slot ${Object.keys(SLOTS).join('|')} | preview-build <vercel team> | merge <owner>/<repo>@<base> | mem <what for> (units in GiB)
 <owner>: --pid <pid>, --owner claude (the nearest Claude Code session above the caller), or --no-owner
@@ -585,13 +585,16 @@ export function leaseCli(args, { env, dir = leaseDir(), out = (s) => console.log
       return r.code;
     }
     if (sub === 'list') {
-      const { pos, opt } = parseArgs(rest, [], ['json', 'clashes']);
+      const { pos, opt } = parseArgs(rest, ['days'], ['json', 'clashes']);
       if (pos.length) throw usage(`list takes no arguments, not "${pos[0]}"`);
+      if (opt.days != null && !opt.clashes) throw usage('--days goes with --clashes');
       if (opt.clashes) {
+        const days = opt.days == null ? CLASH_DAYS : whole(opt.days);
+        if (!days) throw usage(`--days is a whole number of days, 1 or more, not "${opt.days}"`);
         const t = Date.now();
-        const rows = readLog({ dir }).clashes.filter((e) => t - Date.parse(e.at) < CLASH_DAYS * 86_400_000);
+        const rows = readLog({ dir }).clashes.filter((e) => t - Date.parse(e.at) < days * 86_400_000);
         if (opt.json) for (const e of rows) out(JSON.stringify(clashRow(e)));
-        else if (!rows.length) out(`no clashes in the last ${CLASH_DAYS} days`);
+        else if (!rows.length) out(`no clashes in the last ${days} days`);
         else { out(CLASH_HEAD); for (const e of rows) out(Object.values(clashRow(e)).join('\t')); }
         return EXIT_OK;
       }

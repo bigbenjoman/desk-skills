@@ -1345,7 +1345,7 @@ function pageItems(batches, { home = false } = {}) {
 // ---- the end of the lease trial (leases.mjs trialOf): one item for the machine --------------------
 // Once a trial has run TRIAL_DAYS and a kind is still in shadow, the person decides which kinds turn
 // on, with each kind's clashes over the trial. It is listed under the first batch desk-q's home screen
-// shows (leaseTrialHome), whose row desk-q counts it in. Each answer sets the machine profile's
+// shows, else the first readable batch at all (leaseTrialHome), whose row desk-q counts it in. Each answer sets the machine profile's
 // lease-kinds row and restarts the trial for the kinds left in shadow, so it asks again after another
 // TRIAL_DAYS while any is; there is no not-now, since keep is that.
 const LEASE_TRIAL = 'lease-trial';
@@ -1361,9 +1361,11 @@ export function leaseTrialAsk(now = Date.now()) {
   const caught = Object.fromEntries(shadow.map((k) => [k, log.clashes.filter((e) => e.kind === k && Date.parse(e.at) >= trial.start && Date.parse(e.at) <= now)]));
   return { trial, modes, shadow, caught };
 }
-// The repo the trial's item is listed and counted under: the first readable batch of `shown`, in the
-// home screen's order. -> its slug, or null.
-export const leaseTrialHome = (shown) => shown.find((b) => !b.error && b.q)?.slug ?? null;
+// The repo the trial's item is listed and counted under: the first readable batch the home screen
+// shows, in its order, else the first readable batch of any repo, so a quiet machine is still asked.
+// desk-q and this list both take it from every loaded repo. -> its slug, or null.
+const readable = (b) => !b.error && b.q;
+export const leaseTrialHome = (repos) => (shownRepos(repos, false).find(readable) ?? shownRepos(repos, true).find(readable) ?? repos.find(readable))?.slug ?? null;
 // The lease-kinds row with `on` kinds set on and every other kind as it is now.
 const leaseRow = (modes, on) => LEASE_KINDS.map((k) => `${k}=${on.includes(k) ? 'on' : modes[k]}`).join(',');
 // Each answer: the kinds it turns on. -> { <action>: kinds }.
@@ -1371,17 +1373,20 @@ function trialChoices(a) {
   const clean = a.shadow.filter((k) => !a.caught[k].length);
   return { 'on-clean': clean, 'on-all': a.shadow, keep: [] };
 }
-function leaseTrialItems(repos, scope, now) {
+function leaseTrialItems(repos, named, now) {
   const a = leaseTrialAsk(now);
-  const slug = a && leaseTrialHome(shownRepos(repos, false));
-  if (!slug || !scope.some((b) => b.slug === slug && !b.error && b.q)) return [];
-  const r = scope.find((b) => b.slug === slug && b.batch == null && !b.error && b.q) ?? scope.find((b) => b.slug === slug && !b.error && b.q);
+  const slug = a && leaseTrialHome(repos);
+  if (!slug || (named && named.slug !== slug)) return [];
+  const r = repos.find((b) => b.slug === slug && b.batch == null && readable(b)) ?? repos.find((b) => b.slug === slug && readable(b));
   const dm = (t) => dayAndTime(t).split(' ').slice(1, 3);
   const [d1, m1] = dm(a.trial.start), [d2, m2] = dm(a.trial.ends);
   const span = m1 === m2 ? `${d1} to ${d2} ${m2}` : `${d1} ${m1} to ${d2} ${m2}`;
   const n = (k) => a.caught[k].length;
   const days = (k) => andList([...new Set(a.caught[k].map((e) => dayAndTime(Date.parse(e.at)).split(' ').slice(0, 2).join(' ')))]);
-  const counts = a.shadow.map((k) => `${k} ${n(k)}${n(k) ? ` (${days(k)}; desk-env lease list --clashes shows them)` : ''}`).join(', ');
+  // The clash listing reaches back to the trial's start, however long the question has waited.
+  const back7 = Math.max(TRIAL_DAYS, Math.ceil((now - a.trial.start) / 86_400_000));
+  const listing = `desk-env lease list --clashes${back7 > TRIAL_DAYS ? ` --days ${back7}` : ''}`;
+  const counts = a.shadow.map((k) => `${k} ${n(k)}${n(k) ? ` (${days(k)}; ${listing} shows them)` : ''}`).join(', ');
   const { 'on-clean': clean } = trialChoices(a);
   const dirty = a.shadow.filter((k) => n(k));
   const total = dirty.reduce((x, k) => x + n(k), 0);
@@ -1395,11 +1400,13 @@ function leaseTrialItems(repos, scope, now) {
       ? [['keep', `keep all ${all} on trial for ${TRIAL_DAYS} more days: every kind caught a clash, so turning one on would turn away work that runs today`], ['on-all', null, `${onAll}: ${caughtWords}`]]
       : [['on-clean', `turn on the ${clean.length} with no clashes: nothing they would refuse happened all week, so turning them on blocks nothing that works today. ${andList(dirty)} ${dirty.length === 1 ? 'stays' : 'stay'} on trial while ${dirty.length === 1 ? 'its' : 'their'} ${total} clash${total === 1 ? ' is' : 'es are'} looked at`],
         ['on-all', null, `${onAll}: ${caughtWords}`], keep];
-  const first = actions[0][0] === 'keep' ? a.shadow : trialChoices(a)[actions[0][0]];
+  // The command is for after a turn-on: the recommended one, or turning them all on where keep is recommended.
+  const kept = actions[0][0] === 'keep';
+  const first = kept ? a.shadow : trialChoices(a)[actions[0][0]];
   const back = leaseRow(a.modes, first).replace(`${first[0]}=on`, `${first[0]}=shadow`);
   return [{ r, dir: deskHome(), t: { key: LEASE_TRIAL }, item: { kind: LEASE_TRIAL, repoLevel: true,
     need: `Leases finished their ${TRIAL_DAYS}-day trial (${span}). Turn them on, so a second session is turned away from a port, test slot, build or merge someone else holds, instead of let through?`,
-    note: `Clashes caught: ${counts}. Any kind goes back to trial with one command: desk-env machine set lease-kinds=${back}`,
+    note: `Clashes caught: ${counts}. ${kept ? 'If you turn them on, any kind goes back' : 'Any kind goes back'} to trial with one command: desk-env machine set lease-kinds=${back}`,
     actions, since: a.trial.ends } }];
 }
 // Records an answer to the trial's item: lease-kinds set in the machine profile, then the trial restarted.
@@ -1801,7 +1808,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of stalledItems(inScope, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
-  for (const s of leaseTrialItems(repos, inScope, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  for (const s of leaseTrialItems(repos, named, now)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
   if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);

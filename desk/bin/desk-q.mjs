@@ -42,7 +42,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { emitKeypressEvents } from 'node:readline';
 import { PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames } from './desk-env.mjs';
+import { expandHome, otherRepoEnv, batchPaths, deskConfigRoot, repoPortClaims, portClashes, repoConfigValue, repoConfigValues, isNone, repoPermission, mergeGrant, mergeDriverHolder, releaseCommand, concurrencyLimits, machineWhy, availableGiB, spawnGate, skillsDir, costsPath, baseFixKey, subscriptionsPath, repoSubscriptions, personStepLabels, personInputLabels, psRows, machineValue, shortName, shownNames, slugOf } from './desk-env.mjs';
 import { isHeld, stoppedHold, dateHeld, badLabelText, spinePark, readJsonOrRefuse, describeCrash, batchConcurrency, needsSession, prStatusOf, waitingOnRead, failedWhy, settlesByScript, personStep, triagePark, holdsKept, unpromotedHolds, promotionWords }from './batch-state.mjs';
 import { attachArchive } from './queue-store.mjs';
 import { describeCond, restating } from './clears-when.mjs';
@@ -2763,7 +2763,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   // REPO fits the names with a row; with a width, only those on screen.
   const w = Math.max(14, ...(width == null ? repos : [...list, ...(all ? none : [])]).map((r) => r.repo.length + 2));
   // The lease trial's day-7 question is the machine's, counted once, in the row /desk-needs-you lists it under.
-  const trialHome = leaseTrialAsk(now) ? leaseTrialHome(shown) : null;
+  const trialHome = leaseTrialAsk(now) ? leaseTrialHome(repos) : null;
   const needOf = (r) => { const c = needsCount(r); return r.slug === trialHome ? { ...c, shown: c.shown + 1 } : c; };
   const needs = new Map(list.filter((r) => !r.error).map((r) => [r, needOf(r)]));
   const claude = loginsNow(repos, now)?.claude;
@@ -2799,7 +2799,7 @@ function overviewParts(repos, { all = false, now = Date.now(), avail = available
   const readable = shown.filter((r) => !r.error), quiet = quietNotes(readable), old = oldCodeNotes(readable);
   const out = claude?.limit ? claude : null;
   const leases = leaseNotes(repos, now);
-  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))), ...leases.warn,
+  const notes = [...(out ? [defaultOutNote(out, now)] : []), ...leases.warn, ...list.flatMap((r) => (r.unreadable ?? []).map((b) => warnNote(`▲ ${r.name}`, unreadableText(b)))),
     ...readable.flatMap((r) => stallNotes(r, quiet, old, !!out && out.follows(r.slug))), ...shown.filter((r) => !r.error && handsOver(r) && (r.live || unfinished(r))).map(handOverNote)];
   // GitHub's page change pauses every repo's uploads, so it is one note for the machine, not one per PR.
   const pause = uploadPause();
@@ -2877,7 +2877,7 @@ function leaseNotes(repos, now) {
 // A stuck lease's note: who holds what, since when it stopped checking in, and the command that frees it.
 function stuckNote(l, repos, now) {
   const h = leaseHolder(l.kind, l.label);
-  const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === h.repo.replace('/', '__').toLowerCase())?.name ?? h.repo.split('/').pop() : null;
+  const repo = h.repo ? repos.find((r) => r.slug.toLowerCase() === slugOf(h.repo))?.name ?? h.repo.split('/').pop() : null;
   const who = h.worker ? `${h.name}'s worker` : capital(h.name);
   const what = l.kind === 'port' ? 'the port' : l.kind === 'slot' ? 'the slot' : 'it';
   return { tag: `▲ ${repo ?? 'leases'}`, sgr: WARN,
@@ -2920,7 +2920,7 @@ function portLeaseOf(r, key, now) {
   const repo = r.slug.toLowerCase();
   return held.filter((l) => {
     const h = l.kind === 'port' && leaseHolder('port', l.label);
-    return h?.worker && h.name === key && h.repo.replace('/', '__').toLowerCase() === repo;
+    return h?.worker && h.name === key && slugOf(h.repo) === repo;
   }).sort((a, b) => Date.parse(b.acquired) - Date.parse(a.acquired))[0] ?? null;
 }
 

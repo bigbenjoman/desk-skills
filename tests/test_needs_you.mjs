@@ -3553,7 +3553,7 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   t('DS-959 AC9 it asks whether to turn the kinds on, for the trial\'s dates', i?.need,
     `Leases finished their 7-day trial (${span}). Turn them on, so a second session is turned away from a port, test slot, build or merge someone else holds, instead of let through?`);
   t('DS-959 AC9 it counts each kind\'s clashes over the trial, and says how a kind goes back on trial', i?.note,
-    `Clashes caught: port 0, slot 0, preview-build 0, merge 0, mem 3 (${on(3)} and ${on(5)}; desk-env lease list --clashes shows them). Any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow`);
+    `Clashes caught: port 0, slot 0, preview-build 0, merge 0, mem 3 (${on(3)} and ${on(5)}; desk-env lease list --clashes --days 8 shows them). Any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=shadow`);
   t('DS-959 AC9 the recommended answer turns on the kinds with no clashes; the others turn all on or keep the trial',
     i?.actions.map(([a, why, note]) => `${a}:${why ? 'recommended' : 'other'}`).join(' '), 'on-clean:recommended on-all:other keep:other');
   t('DS-959 AC9 the recommendation names what stays on trial', i?.actions[0][1],
@@ -3566,6 +3566,12 @@ t('an unknown repo exits 11', cli('record', 'nosuchrepo', 'Z-1', 'done').code, 1
   const restarted = readFileSync(join(dir, 'leases.log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).at(-1);
   t('DS-959 AC9 the answer restarts the trial for the kind left on it, so no item until 7 more days pass',
     `${restarted.event} ${trialItems(Date.parse(restarted.at) + DAY).length} ${trialItems(Date.parse(restarted.at) + 7 * DAY + 1).length}`, 'trial 0 1');
+  // Every kind clashed: keep is recommended, and the command reads as one for after a turn-on.
+  log(...['port', 'slot', 'preview-build', 'merge'].map((k) => refuse(k, start + DAY)));
+  const all = trialItems()[0];
+  t('DS-959 AC9 with every kind clashed, keep is recommended and the command is for after turning them on',
+    `${all?.actions.map(([a, why]) => `${a}:${why ? 'recommended' : 'other'}`).join(' ')} | ${/If you turn them on, any kind goes back to trial with one command: desk-env machine set lease-kinds=port=shadow,slot=on,preview-build=on,merge=on,mem=on$/.test(all?.note ?? '')}`,
+    'keep:recommended on-all:other | true');
   log();
   const listed = () => /\blease-trial\b/.test(cli('list', '--no-settle').out);
   t('DS-959 AC9 the list command shows it while mem is on trial', listed(), true);

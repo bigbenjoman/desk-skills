@@ -2861,7 +2861,9 @@ try {
   };
   const LATE = 72 * 60 + 20; // stopped checking in 1h 12m ago
   const DAY = 86400;
-  const refuse = (kind, key, h, label, holder) => JSON.stringify({ at: new Date(Date.now() - h * 3600_000).toISOString(), event: 'would-refuse', kind, key, units: 1, label,
+  // One clock read for the clash log and the times the checks expect, so a minute boundary cannot split them.
+  let T0 = Date.now();
+  const refuse = (kind, key, h, label, holder) => JSON.stringify({ at: new Date(T0 - h * 3600_000).toISOString(), event: 'would-refuse', kind, key, units: 1, label,
     holders: [{ kind, key, units: 1, label: holder }] });
   const begun = (days) => JSON.stringify({ at: new Date(Date.now() - days * DAY * 1000).toISOString(), event: 'grant', kind: 'port' });
   const run = (d, more = {}) => spawnSync(process.execPath, [BIN, '--plain', ...(more.args ?? [])], { encoding: 'utf8', env: { ...L.env, DESK_LEASE_DIR: d, ...(more.env ?? {}) }, cwd: L.T }).stdout;
@@ -2912,7 +2914,7 @@ try {
     [a1, a2].map((id) => twoNotes.filter((l) => l.trim() === `desk-env lease force-release ${id} --reason <why>`).length).join() + ` ${twoNotes.filter((l) => /▲ desk-skills +DS-79[67]'s worker/.test(l)).length}`, '1,1 2');
 
   // Clashes: the log began 2 days ago, so the trial ends in 5; port and slot caught clashes today, mem only 30 hours ago.
-  const clashLog = (d) => writeFileSync(join(d, 'leases.log.jsonl'), `${[begun(2),
+  const clashLog = (d) => (T0 = Date.now()) && writeFileSync(join(d, 'leases.log.jsonl'), `${[begun(2),
     refuse('port', '3203', 5, 'acme/desk-skills standing DS-801', 'acme/desk-skills standing DS-790'),
     refuse('port', '3204', 2, 'acme/desk-skills standing DS-806', 'acme/desk-skills standing DS-796'),
     refuse('slot', 'test', 3, 'test ~/studia/acme-worktrees/DS-1: bash tests/run.sh', 'test ~/studia/acme-worktrees/DS-2: bash tests/run.sh'),
@@ -2921,7 +2923,7 @@ try {
   ].join('\n')}\n`);
   const clash = dir('clash'); clashLog(clash);
   const clashNotes = noteBlock(run(clash));
-  const hhmm = (h) => new Date(Date.now() - h * 3600_000).toTimeString().slice(0, 5);
+  const hhmm = (h) => new Date(T0 - h * 3600_000).toTimeString().slice(0, 5);
   const ends = (() => { const d = new Date(Date.now() + 5 * DAY * 1000); return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()]}`; })();
   const leaseNote = (ls) => ls.flatMap((l, i) => (/^(note| {4}) {4}leases +/.test(l) ? [[l.replace(/^(note| {4}) {4}leases +/, ''), ls[i + 1].trim()].join(' / ')] : []));
   t('DS-959 AC5 one grey note per kind on trial with a clash today: the count, the latest clash, that it went through and when the trial ends',
@@ -2947,13 +2949,14 @@ try {
   // AC8: VPL-1's worker holds port 4101; VPL-2 holds none.
   const port = dir('port');
   const p1 = take(port, 'port', '4101', DAY, 'acme/voicepa vp-batch VPL-1');
-  age(port, p1, 2 * 3600);
+  age(port, p1, 5 * 60);
+  const { dayAndTime } = await import(pathToFileURL(join(dirname(BIN), 'desk-q-eta.mjs')).href);
   const ticket = (d, key) => lines(run(d, { args: ['voicepa', 'show', key] }));
   const shown = ticket(port, 'VPL-1');
   const portAt = shown.findIndex((l) => l.startsWith('Port '));
   const held = JSON.parse(readFileSync(join(port, 'leases.json'), 'utf8')).leases[0];
   t('DS-959 AC8 a ticket whose worker holds a port has a Port row after its timing rows',
-    `${shown[portAt]} | ${/^(Starts|Ships|Based on| {10}\S)/.test(shown[portAt - 1] ?? '')}`, `Port      4101 · its dev server, held since ${new Date(held.acquired).toTimeString().slice(0, 5)} | true`);
+    `${shown[portAt]} | ${/^(Starts|Ships|Based on| {10}\S)/.test(shown[portAt - 1] ?? '')}`, `Port      4101 · its dev server, held since ${new Date(held.acquired).toDateString() === new Date().toDateString() ? new Date(held.acquired).toTimeString().slice(0, 5) : dayAndTime(Date.parse(held.acquired))} | true`);
   t('DS-959 AC8 a ticket with no port lease has no Port row', ticket(port, 'VPL-2').some((l) => l.startsWith('Port ')), false);
   age(port, p1, 0, LATE);
   const late = ticket(port, 'VPL-1');

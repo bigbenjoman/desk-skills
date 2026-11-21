@@ -606,6 +606,7 @@ try {
     const rows = r.out.split('\n').slice(1).map((l) => l.split('\t'));
     t('DS-959 AC10 the rows, oldest first, with both labels', rows.map((x) => [x[0], x[1], Number.isFinite(Date.parse(x[2])), x[3], x[4]].join('|')).join('\n'),
       'port|3204|true|acme/desk-skills standing DS-806|acme/desk-skills standing DS-796\nslot|test|true|test ~/w/DS-1: bash t.sh|test ~/w/DS-2: bash t.sh; test ~/w/DS-3: bash t.sh');
+    t('DS-959 --days reaches further back for a trial question that has waited', deskEnv(d, ['list', '--clashes', '--days', '9']).out.split('\n').length - 1, 3);
     t('DS-959 AC10 with no clash in the last 7 days it says so', deskEnv(fresh(), ['list', '--clashes']).out, 'no clashes in the last 7 days');
   }
 } finally {
