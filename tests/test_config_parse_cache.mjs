@@ -48,6 +48,15 @@ t('AC1 each config.md is read at most once while the home view is built', slugs.
 Q.homeJson(Q.loadRepos(), { all: true, avail: 30 });
 t('AC1 a second build of the home view reads no config.md again', slugs.map((s) => reads.get(config(s)) ?? 0).map((n) => n <= 1), [true, true, true, true]);
 
+// DS-949: more repos than the cache once held (64, cleared whole when full): a second pass over all
+// of them reads none again, where clearing made every pass reread and reparse every config.
+const many = Array.from({ length: 100 }, (_, i) => `acme__many${i}`);
+many.forEach((slug, i) => writeConfig(slug, 5000 + i));
+const pass = () => many.map((slug) => E.repoConfigValue(slug, 'dev-port'));
+t('DS-949 100 repos read their own values', pass().slice(0, 2), ['5000', '5001']);
+pass();
+t('DS-949 a second pass over 100 repos reads each config.md once in all', many.filter((s) => reads.get(config(s)) !== 1), []);
+
 // AC2: an edit made after the first read is returned, with no clearing by hand.
 const one = slugs[0];
 t('AC2 the first read', E.repoConfigValue(one, 'dev-port'), '3100');
