@@ -7,6 +7,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; B="$S/../desk/bin"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"; mkdir -p "$HOME"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
@@ -120,6 +121,14 @@ q front A-5
 check "DS-189 AC4: front says it will not spawn until answered"           '[ $rc -eq 0 ] && [[ "$out" == "A-5 moved to the front of the spawn order; it still has 1 question(s) open and will not spawn until they are answered: answer with answer.mjs A-5 \"<answer>\"" ]]'
 q set A-5 open_questions=0; q front A-5
 check "front with no question open says nothing more"                     '[ $rc -eq 0 ] && [ "$out" = "A-5 moved to the front of the spawn order" ]'
+
+# #774: a ticket handed off between sessions is triaged until its next session starts; it reads as a
+# handoff to that stage, not as a fresh ticket, unless a question still blocks it.
+q set A-5 handoff=pending handoff_stage=7; q render
+check "#774 a pending handoff reads as HANDOFF, starting its stage"       '[ $rc -eq 0 ] && echo "$out" | grep -q "^  HANDOFF  A-5       starting Stage 7$"'
+q set A-5 open_questions=1; q render
+check "#774 a handoff a question blocks still reads as blocked"           '[ $rc -eq 0 ] && echo "$out" | grep -q "^  TRIAGED  A-5       blocked: 1 question(s) open"'
+q set A-5 open_questions=0 handoff=null handoff_stage=null
 
 # DS-419 AC4: a done ticket is DONE only once its PR has merged, or it finished with no PR.
 q set A-5 state=done result.pr=2289; q render

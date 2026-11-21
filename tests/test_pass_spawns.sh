@@ -113,6 +113,7 @@ node -e 'const s = Date.parse(JSON.parse(process.argv[1])); console.log(JSON.str
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 its PR is its result, on the PR's own branch" '[ "$(field CW-1 state)" = "\"done\"" ] && [ "$(field CW-1 result.pr)" = 31 ] && [ "$(field CW-1 branch)" = "\"claude/cw-1-abc\"" ]'
 check "DS-124 AC2 the pass gives its session URL and its wall time to the PR" 'echo "$out" | grep -q "CW-1: PR #31 from cloud session https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj.from=cli&m=0 in 40m 00s"'
+check "its tracker steps are the pass's to make, and with no tracker there are none" 'echo "$out" | grep -qF "CW-1: PR #31 from cloud session" && echo "$out" | grep -qF "its tracker steps are made by the pass" && [ "$(field CW-1 tracker_steps)" = "\"none\"" ]'
 all_done; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC2 the batch report shows tokens and cost as not reported for cloud, never \$0" 'echo "$out" | grep -E "^  CW-1 " | grep -q "not reported for cloud" && ! echo "$out" | grep -E "^  CW-1 " | grep -q "\$0\.00" && echo "$out" | grep -q "cloud session: https://claude.ai/code/session_01Vy49H7Z4T3CSgAhSxsuhqj"'
 cloud_ticket CW-2; : > "$T/cloud-fail"
@@ -120,13 +121,16 @@ out=$(node "$B/pass.mjs" 2>&1)
 check "DS-124 AC4 a cloud worker that fails to start parks with the error" '[ "$(field CW-2 state)" = "\"parked\"" ] && field CW-2 park.question | grep -q "cloud worker did not start — Error: --cloud cannot be combined with --print."'
 check "DS-124 AC4 and is not run locally" '[ ! -e "$T/wt/CW-2" ] && ! echo "$out" | grep -q "CW-2 port="'
 check "DS-752 a cloud start that fails keeps no start time for a session that never began" '[ "$(field CW-2 cloud)" = null ]'
-# Requeued for a fix try on the PR its session opened: a new session would start over with no fix brief.
+# Requeued for a fix try on the PR its session opened: the session is over, so a local worker takes the
+# try on its branch at origin's tip, never a new cloud session.
 rm -f "$T/cloud-fail" "$T/cloud-prompt"; cloud_ticket CW-3
-q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"what":"a P1 review finding"}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj"}'
+q set CW-3 result.pr=40 'fix={"try":1,"of":2,"pr":40,"kind":"checks","what":"red: Lint","checks":[{"name":"Lint","runId":"7"}]}' 'cloud={"session":"session_01Vy49H7Z4T3CSgAhSxsuhqj","pr_at":"2026-11-20T10:00:00Z"}'
 out=$(node "$B/pass.mjs" 2>&1)
-check "DS-124 a cloud ticket back for a fix try on its PR parks, naming the try" '[ "$(field CW-3 state)" = "\"parked\"" ] && field CW-3 park.question | grep -q "fix try 1 of 2 (a P1 review finding) on its PR #40"'
-check "DS-124 and names the session to resume, never a local requeue" 'field CW-3 park.question | grep -q "claude --teleport session_01Vy49H7Z4T3CSgAhSxsuhqj" && ! field CW-3 park.question | grep -q "location=null"'
-check "DS-124 and no new cloud session or local worker starts for it" '[ ! -e "$T/cloud-prompt" ] && [ ! -e "$T/wt/CW-3" ] && ! echo "$out" | grep -q "CW-3 port="'
+check "a cloud ticket back for a fix try on its PR runs as a local worker, not parked" '[ "$(field CW-3 state)" = "\"running\"" ] && echo "$out" | grep -q "CW-3 port=.*(fix try 1 of 2 on PR #40)"'
+check "and no new cloud session starts for it" '[ ! -e "$T/cloud-prompt" ]'
+out=$(node "$B/pass.mjs" 2>&1)
+check "the next pass leaves its local worker running, never recorded done from the cloud session" '[ "$(field CW-3 state)" = "\"running\"" ] && ! echo "$out" | grep -q "CW-3: PR #40 from cloud session"'
+q set CW-3 state=done
 # DS-450: a ticket placed in the cloud before the effort lever went on. Nothing gives a cloud session
 # an effort, so it parks rather than run at the session default, and a malformed row names its value.
 effort_cfg(){ { cat "$T/config.md"; printf '\n## 3b. Cost and autonomy\n| Field | Recommended | Your setting |\n|---|---|---|\n| Phase 0 levers | `none` | `effort` |\n| Worker effort | `none` | `%s` |\n' "$1"; } > "$T/config-ef.md"; }
@@ -430,18 +434,59 @@ check "DS-606 a pass that finds a worker exited records the head its worktree wa
   '[ "$(field W-9 state)" = "\"parked\"" ] && [ "$(field W-9 worker_head.sha)" = "\"$W9_HEAD\"" ]'
 # W-11 is ahead with a head no worker of its own left; W-12's push is refused by origin; W-13 has an
 # uncommitted change on its last worker's head. W-10's origin ref is stale, its head already pushed.
-for k in 11 12 13; do wb_clone "W-$k"; q add "W-$k"; done
+for k in 11 12 13 14 15 16 17 18 19 20; do wb_clone "W-$k"; q add "W-$k"; done
 q set W-11 "worker_head={\"sha\":\"$(git -C "$T/wt/W-11" rev-parse HEAD)\"}"; git -C "$T/wt/W-11" commit -q --allow-empty -m "by hand"
 git -C "$T/wt/W-12" commit -q --allow-empty -m "worker's"; q set W-12 "worker_head={\"sha\":\"$(git -C "$T/wt/W-12" rev-parse HEAD)\"}"
 q set W-13 "worker_head={\"sha\":\"$(git -C "$T/wt/W-13" rev-parse HEAD)\"}"; echo b >> "$T/wt/W-13/a.txt"
 wb_clone W-10; git -C "$T/wt/W-10" commit -q --allow-empty -m b; git -C "$T/wt/W-10" push -q origin fix/W-10 2>/dev/null
 git -C "$T/wt/W-10" update-ref refs/remotes/origin/fix/W-10 HEAD~1; q add W-10
-for k in 11 12 13 9; do wb_fix "W-$k"; done
+# W-14's and W-15's last worker rebased its branch: origin has c, the head has its own d before it. W-14's
+# head holds c again by its patch; W-15's dropped it. W-16's holds c, but origin also merged a side branch
+# (m) after it, a merge git cherry never lists.
+for k in 14 15 16; do
+  echo c > "$T/wt/W-$k/c.txt"; git -C "$T/wt/W-$k" add c.txt; git -C "$T/wt/W-$k" commit -q -m c
+  base=$(git -C "$T/wt/W-$k" rev-parse HEAD); C=$base
+  if [ "$k" = 16 ]; then
+    git -C "$T/wt/W-$k" checkout -q -b side HEAD~1; echo m > "$T/wt/W-$k/m.txt"; git -C "$T/wt/W-$k" add m.txt; git -C "$T/wt/W-$k" commit -q -m m
+    git -C "$T/wt/W-$k" checkout -q "fix/W-$k"; git -C "$T/wt/W-$k" merge -q --no-ff --no-edit side; git -C "$T/wt/W-$k" branch -q -D side
+  fi
+  git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
+  git -C "$T/wt/W-$k" reset -q --hard "$base~1"
+  echo d > "$T/wt/W-$k/d.txt"; git -C "$T/wt/W-$k" add d.txt; git -C "$T/wt/W-$k" commit -q -m d
+  [ "$k" != 15 ] && git -C "$T/wt/W-$k" cherry-pick "$C" >/dev/null
+  q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"
+done
+# W-17's worker folded its fix into origin's c with an amend, so c's patch changed; W-18's re-made c by
+# hand after a reset, with its fix in another file, so the head still holds c's change. W-19's rebased c,
+# then reset away from it and committed e: c is in neither its head nor its tree. W-20's c was amended on
+# origin by someone else, author, date and subject kept, after the worker pushed it.
+for k in 17 18 19 20; do
+  echo c > "$T/wt/W-$k/c.txt"; git -C "$T/wt/W-$k" add c.txt; git -C "$T/wt/W-$k" commit -q -m c
+  git -C "$T/wt/W-$k" push -q origin "fix/W-$k" 2>/dev/null
+done
+echo fix >> "$T/wt/W-17/c.txt"; git -C "$T/wt/W-17" commit -q -a --amend --no-edit
+git -C "$T/wt/W-18" reset -q --hard HEAD~1; echo c > "$T/wt/W-18/c.txt"; echo fix > "$T/wt/W-18/e.txt"
+git -C "$T/wt/W-18" add c.txt e.txt; git -C "$T/wt/W-18" commit -q -m "c, with its fix"
+git -C "$T/wt/W-19" commit -q --amend --no-edit --date=now; git -C "$T/wt/W-19" reset -q --hard HEAD~1
+echo e > "$T/wt/W-19/e.txt"; git -C "$T/wt/W-19" add e.txt; git -C "$T/wt/W-19" commit -q -m e
+W19_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)
+git clone -q -b fix/W-20 "$T/wb-origin.git" "$T/other-W-20"; echo humanfix >> "$T/other-W-20/c.txt"
+git -C "$T/other-W-20" commit -q -a --amend --no-edit; git -C "$T/other-W-20" push -q -f origin fix/W-20 2>/dev/null
+echo w > "$T/wt/W-20/w.txt"; git -C "$T/wt/W-20" add w.txt; git -C "$T/wt/W-20" commit -q -m w
+W20_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-20)
+for k in 17 18 19 20; do q set "W-$k" "worker_head={\"sha\":\"$(git -C "$T/wt/W-$k" rev-parse HEAD)\"}"; done
+W17_HEAD=$(git -C "$T/wt/W-17" rev-parse HEAD); W18_HEAD=$(git -C "$T/wt/W-18" rev-parse HEAD)
+W14_HEAD=$(git -C "$T/wt/W-14" rev-parse HEAD); W15_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)
+W16_ORIGIN=$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)
+for k in 11 12 13 14 15 16 17 18 19 20 9; do wb_fix "W-$k"; done
 printf '#!/bin/sh\nwhile read o n r; do [ "$r" = refs/heads/fix/W-12 ] && { echo "W-12 is protected" >&2; exit 1; }; done; exit 0\n' > "$T/wb-origin.git/hooks/pre-receive"
 chmod +x "$T/wb-origin.git/hooks/pre-receive"
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-606 with config §3 git-push not yes, its last worker's commits are held, naming the row" \
   '[ "$(field W-9 state)" = "\"triaged\"" ] && ! grep -q "^W-9 " "$T/wb-spawns" && echo "$out" | grep -qF "W-9: WORKTREE IN USE — its branch fix/W-9 is 1 commit(s) ahead of origin/fix/W-9, not pushed: they are its last worker'"'"'s, but config §3 git-push is"'
+check "uncommitted changes on its last worker's head are its interrupted worker's: its fix try spawns over them, naming them" \
+  '[ "$(field W-13 state)" = "\"running\"" ] && grep -q "^W-13 " "$T/wb-spawns" && [ "$(field W-13 fix.left_dirty)" = "[\"a.txt\"]" ] && ! echo "$out" | grep -q "W-13: WORKTREE IN USE"'
+q set W-13 state=done
 node -e 'const f = process.argv[1], fs = require("fs"); fs.writeFileSync(process.argv[2], fs.readFileSync(f, "utf8").replace(/^(\| `autopilot-workers` .*\n)/m, "$1| `git-push` | Push | `yes` | `yes` |\n"))' "$T/config.md" "$T/config-gp.md"
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC1 a fix try ahead of origin at its last worker's head is pushed, and its worker spawns" \
@@ -450,20 +495,49 @@ check "DS-606 AC3 a fix try ahead with a head no worker of its own left is held,
   '[ "$(field W-11 state)" = "\"triaged\"" ] && ! grep -q "^W-11 " "$T/wb-spawns" && echo "$out" | grep -qF "W-11: WORKTREE IN USE — its branch fix/W-11 is 1 commit(s) ahead of origin/fix/W-11, not pushed, so no worker was spawned. The next pass looks again"'
 check "DS-606 AC4 a refused push of its last worker's head holds it, quoting the push's error" \
   '[ "$(field W-12 state)" = "\"triaged\"" ] && ! grep -q "^W-12 " "$T/wb-spawns" && field W-12 worktree_busy.why | grep -qF "its branch fix/W-12 is 1 commit(s) ahead of origin/fix/W-12, not pushed: they are its last worker'"'"'s, and the pass'"'"'s git push origin fix/W-12 was refused (" && field W-12 worktree_busy.why | grep -qF "W-12 is protected"'
-check "DS-606 AC5 uncommitted changes on its last worker's head still hold it" \
-  '[ "$(field W-13 state)" = "\"triaged\"" ] && ! grep -q "^W-13 " "$T/wb-spawns" && echo "$out" | grep -qF "W-13: WORKTREE IN USE — its worktree $T/wt/W-13 has uncommitted changes (a.txt)"'
+check "a branch its last worker rebased is pushed with a lease on origin's tip when origin's commits are in it by their patch" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-14)" = "$W14_HEAD" ] && grep -q "^W-14 " "$T/wb-spawns" && echo "$out" | grep -qF "W-14: pushed fix/W-14 to ${W14_HEAD:0:9}, the head its last worker rebased it to, with --force-with-lease=fix/W-14:"'
+q set W-14 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "one that dropped a commit origin has is not overwritten: held, naming the exact lease push" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-15)" = "$W15_ORIGIN" ] && ! grep -q "^W-15 " "$T/wb-spawns" && field W-15 worktree_busy.why | grep -qF "but origin/fix/W-15 has 1 commit(s) the head does not hold by their patch, so the pass does not overwrite them. Check them, then push with git push --force-with-lease=fix/W-15:$W15_ORIGIN origin fix/W-15"'
+check "nor one whose origin holds a merge git cherry cannot compare: held, naming it" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-16)" = "$W16_ORIGIN" ] && ! grep -q "^W-16 " "$T/wb-spawns" && field W-16 worktree_busy.why | grep -qF "but origin/fix/W-16 has 1 merge commit(s) the head does not hold, whose resolutions git cherry cannot compare, so the pass does not overwrite them"'
+check "a branch whose worker amended its fix into origin's commit is lease-pushed: the commit keeps its author, date and subject" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-17)" = "$W17_HEAD" ] && echo "$out" | grep -qF "W-17: pushed fix/W-17 to ${W17_HEAD:0:9}" && echo "$out" | grep -qF "each is rewritten in it: a commit there keeps its author, author date and subject"'
+q set W-17 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "and one whose head holds origin's change by its tree, after a reset, is lease-pushed" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-18)" = "$W18_HEAD" ] && echo "$out" | grep -qF "W-18: pushed fix/W-18 to ${W18_HEAD:0:9}" && echo "$out" | grep -qF "the head holds their change"'
+q set W-18 state=done; out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
+check "one rewritten, then reset away from origin's commit, is not overwritten: held" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-19)" = "$W19_ORIGIN" ] && field W-19 worktree_busy.why | grep -qF "but origin/fix/W-19 has 1 commit(s) the head does not hold by their patch"'
+check "nor one whose commit someone amended on origin, author, date and subject kept: held" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-20)" = "$W20_ORIGIN" ] && field W-20 worktree_busy.why | grep -qF "but origin/fix/W-20 has 1 commit(s) the head does not hold by their patch"'
+# W-21's last worker left a commit unpushed while another push's preview build holds §4 Vercel's
+# preview-build slot: the pass leaves its push for a later pass, then pushes once the slot is free.
+wb_clone W-21; q add W-21; git -C "$T/wt/W-21" commit -q --allow-empty -m "worker's"
+q set W-21 "worker_head={\"sha\":\"$(git -C "$T/wt/W-21" rev-parse HEAD)\"}"; wb_fix W-21; W21_HEAD=$(git -C "$T/wt/W-21" rev-parse HEAD)
+sed 's/^| Ticket key pattern | `T-\[0-9\]+` |$/&\n| Vercel | `acme` `web: prj_1` |/' "$T/config-gp.md" > "$T/config-gpv.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
+pv(){ DESK_CONFIG="$T/config-gpv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" "$@"; }
+pv node "$B/desk-env.mjs" lease acquire preview-build acme --ttl 600 --no-owner --label "another PR's push" >/dev/null
+out=$(pv node "$B/pass.mjs" 2>&1)
+check "a push the preview-build slot is taken for waits for a later pass, naming it" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the pass'"'"'s push of them waits on the preview build for acme: the preview-build slot for acme is held by another PR'"'"'s push"'
+rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
+check "once the slot is free the pass pushes, keeping the slot for that push's build under its PR's or branch's label" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e "(.leases[0].label | test(\"(@fix/W-21|#[0-9]+)\$\")) and .leases[0].ttl == 1200" "$T/leases-pv/leases.json" >/dev/null'
+q set W-21 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
 check "DS-606 AC2 a stale origin ref is fetched first, so a head already on origin is not held" \
   'grep -q "^W-10 " "$T/wb-spawns" && [ "$(field W-10 worktree_busy)" = null ] && ! echo "$out" | grep -q "W-10: WORKTREE IN USE"'
-for k in 10 11 12 13; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
+for k in 10 11 12 13 14 15 16 17 18 19 20; do q set "W-$k" state=done; done; rm -f "$T/wb-origin.git/hooks/pre-receive"
 
 # ---- DS-397: routine recoveries the pass settles by script, with no decider and no person -----------
 # D-1's branch adds nothing to main, where merged PR #88 names it. P-2 parked on a refused push with its
 # PR body in its log. R-1 parked on a scope call it recommends an option for; R-2's recommendation is a
 # money call, never taken.
 export DESK_QUEUE="$T/queue-rc.json" DESK_AUTOPILOT_STATE="$T/state-rc"; mkdir -p "$T/state-rc/logs"
-ln -s "$B/answer.mjs" "$T/desk/bin/answer.mjs"
 # Into the §3 table: later sections appended tables of their own after it.
 node -e 'const f = process.argv[1], fs = require("fs"); fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/^(\| `autopilot-workers` .*\n)/m, "$1| `git-push` | Push | `yes` | `yes` |\n| `pr-open` | Open a PR | `yes` | `yes` |\n"))' "$T/config.md"
 cat > "$T/stub/gh" <<EOF
@@ -514,7 +588,13 @@ q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
 q add R-2; q set R-2 state=running lane=A branch=fix/R-2 session_id=gone
 say "AUTOPILOT_PARK: R-2: buy the paid plan (recommended), or stay on free?" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["buy the paid plan", "stay on free"], "chose": "buy the paid plan", "category": "money"}' > "$T/state-rc/logs/R-2.log"
-out=$(node "$B/pass.mjs" 2>&1)
+# DS-912: this pass runs with §4 Vercel set and the preview-build kind on, so each push it makes takes a unit.
+node -e 'const [f, g] = process.argv.slice(1), fs = require("fs"); fs.writeFileSync(g, fs.readFileSync(f, "utf8").replace(/^(\| Ticket key pattern .*\n)/m, "$1| Vercel | `acme` |\n"))' "$T/config.md" "$T/config-pv.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n| `preview-build-slots` | `3` | test |\n' > "$T/machine-pv.md"
+rm -rf "$T/leases-pv"
+out=$(DESK_CONFIG="$T/config-pv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" node "$B/pass.mjs" 2>&1)
+check "DS-912 a draft the pass opens takes a unit before its push, the unit takes the PR's number once it is open, and P-3's failed push gives its unit back" \
+  '[ "$(DESK_LEASE_DIR="$T/leases-pv" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | sort | paste -sd, -)" = "acme/widgets#91" ] && grep -q "\"event\":\"release\".*acme/widgets@fix/P-3" "$T/leases-pv/"*.jsonl'
 check "DS-397 AC6 a branch adding nothing beyond a merged PR for its key is recorded done on that PR" \
   '[ "$(field D-1 state)" = "\"done\"" ] && [ "$(field D-1 result.pr)" = 88 ] && [ "$(field D-1 park)" = null ] && echo "$out" | grep -qF "D-1: its branch fix/D-1 adds nothing to main, and merged PR #88 (fix(x): D-1 add x) names it: recorded done on that PR, worktree and branch dropped"'
 check "DS-397 AC6 its worktree and branch are dropped" '[ ! -e "$T/wt/D-1" ] && ! git -C "$T/repo" rev-parse --verify -q refs/heads/fix/D-1 >/dev/null'
@@ -969,6 +1049,38 @@ out=$(AUTOPILOT_MIN_AVAIL_GB=100000 node "$B/pass.mjs" 2>&1); code=$?
 check "DS-758 AC3 a metrics file that cannot be written: the pass completes and its report says so" \
   'echo "$out" | grep -q "metrics: this pass.s metrics line was not written to $T/state-mx/passes.jsonl" && echo "$out" | grep -q "^memory: vmmem=" && [ "$code" -ne 1 ] && [ "$(jq -r .pass.at "$DESK_QUEUE")" != null ]'
 
+# ---- a cloud ticket's tracker steps: made by the pass, since the session has no tracker access ------
+# The fake desk-jira logs each call: C-1 and C-2 are In Progress with a transition to In Review, C-3 is
+# already In Review. C-2's config does not grant jira-transition.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/cj-calls"
+case "\$1" in
+  comments) [ -f "$T/cj-said-\$2" ] && cat "$T/cj-said-\$2"; exit 0 ;;
+  comment) echo "\$3" > "$T/cj-said-\$2" ;;
+  get) [ "\$2" = C-3 ] && s="In Review" || s="In Progress"; printf '{"key":"%s","fields":{"status":{"name":"%s"}}}\n' "\$2" "\$s" ;;
+  transitions) printf '21\tStart review\t-> In Review\n31\tClose\t-> Done\n' ;;
+  transition) echo "\$2 -> In Review" ;;
+esac
+EOF
+chmod +x "$T/stub/desk-jira"
+for v in y:yes a:ask; do sed -e "s#^\(| \`pr-images\` .*\)\$#\1\\
+| \`jira-comment\` | Comment | \`yes\` | \`yes\` |\\
+| \`jira-transition\` | Move | \`yes\` | \`${v#*:}\` |#" "$T/config.md" > "$T/config-cj${v%%:*}.md"
+  printf '\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `C-[0-9]+` |\n| Review state | `In Review` |\n| Done state | `Done` |\n' >> "$T/config-cj${v%%:*}.md"; done
+export DESK_QUEUE="$T/queue-cj.json" DESK_AUTOPILOT_STATE="$T/state-cj"; mkdir -p "$T/state-cj/logs"; q init cj
+for k in C-1 C-3; do q add "$k"; q set "$k" state=done location=cloud "result.pr=5${k#C-}" tracker_steps=due; done
+out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a cloud ticket's PR-link comment and its move to §4 Review state are made by the pass" \
+  'grep -qx "comment C-1 PR #51, opened by a cloud session: https://github.com/acme/widgets/pull/51 (C-1/desk-autopilot cloud PR)" "$T/cj-calls" && grep -qx "transition C-1 21" "$T/cj-calls" && echo "$out" | grep -qF "C-1 cloud PR #51 → tracker: commented the link to PR #51, and moved it from In Progress to In Review" && [ "$(field C-1 tracker_steps)" != "\"due\"" ]'
+check "one already in §4 Review state is commented on, never moved" '! grep -q "^transition C-3" "$T/cj-calls" && grep -q "^comment C-3 " "$T/cj-calls"'
+: > "$T/cj-calls"; q set C-1 tracker_steps=due; out=$(DESK_CONFIG="$T/config-cjy.md" node "$B/pass.mjs" 2>&1)
+check "a comment already on the ticket is not posted again" '! grep -q "^comment C-1" "$T/cj-calls"'
+q add C-2; q set C-2 state=done location=cloud result.pr=52 tracker_steps=due
+out=$(DESK_CONFIG="$T/config-cja.md" node "$B/pass.mjs" 2>&1)
+check "a step whose §3 row is not yes is the person's, with its command" \
+  '! grep -q "^transition C-2" "$T/cj-calls" && echo "$out" | grep -qF "C-2: cloud PR #52'"'"'s tracker step is yours: config §3 jira-transition is \"ask\": move it to In Review with desk-jira transition C-2"'
+
 # ---- DS-573: a parked ticket whose own PR merged before its Jira tail was done goes back to a worker
 # for its after-merge steps only. PR 701, 703 and 704 merged, 702 is open; MT-3 is done in Jira. GitHub's
 # list of merged PRs holds 701 and 704 from the tickets' own branches, which the spawn's shipped-elsewhere
@@ -1206,6 +1318,16 @@ fbt FB-41 triaged src/big.ts; fbt FB-42 triaged src/big.ts
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-755 AC10 a row the pass cannot read is 1 for every file, and the report says so" \
   'spawned FB-41 && ! spawned FB-42 && echo "$out" | grep -qF "collisions: config §3b \"Per-file collision budget\" reads \"three, mostly\"" && echo "$out" | grep -qF "read as 1 for every file"'
+# A review try changes no file: running, it fills no place of a file; ready, it waits on none.
+fbq fbf '1'
+fbt FB-51 running src/big.ts; q set FB-51 session_id=live-51 'fix={"kind":"rereview","try":1,"of":2,"pr":51,"head":"aaa","what":"review its head","at":"T0","started":"T0"}'
+fbt FB-52 triaged src/big.ts
+fbt FB-53 running src/edge.ts; q set FB-53 session_id=live-53
+fbt FB-54 triaged src/edge.ts; q set FB-54 'fix={"kind":"rereview","try":1,"of":2,"pr":54,"head":"bbb","what":"review its head","at":"T0"}' result.pr=54
+out=$(node "$B/pass.mjs" 2>&1)
+check "#1001 a running review try fills no place: a ticket naming the same file starts" 'spawned FB-52'
+check "#1001 a ready review try is not held back behind a worker editing its files" '! echo "$out" | grep "^held back by a collision:" | grep -qF "FB-54"'
+check "#1001 negative control: a ticket naming a file a running worker edits is still held" 'q set FB-52 state=triaged >/dev/null; fbt FB-55 triaged src/edge.ts; out=$(node "$B/pass.mjs" 2>&1); echo "$out" | grep "^held back by a collision:" | grep -qF "FB-55 (src/edge.ts has 1 running of its 1: FB-53)"'
 # fbrow <row>: what desk-env reads the row as, "<big> <small> <serial globs joined by +> <bad>".
 fbrow(){ node --input-type=module -e "import { fileBudget } from '$B/desk-env.mjs'; const b = fileBudget(process.argv[1]); console.log(b.big, b.small, b.serial.join('+'), b.bad != null)" "$1"; }
 check "DS-755 AC10 a serial list with an empty or spaced entry does not read either, so it is 1 for every file" \
@@ -1572,5 +1694,19 @@ check "DS-798 AC2 a step it failed is recorded with what it found and the run UR
 check "DS-798 a step a checker ran is not run again" \
   ': > "$T/follow-prompts"; DESK_CONFIG="$T/config-fs.md" node "$B/pass.mjs" >/dev/null 2>&1; [ ! -s "$T/follow-prompts" ] && [ "$(field FS-2 follow_run)" = null ]'
 cp "$T/claude-before-fs" "$T/stub/claude"
+
+# ---- DS-843 AC4: a config row the pass cannot read stops it before it starts any worker.
+# A §4 Evidence workflow row naming `none` beside a workflow is a config error, and the pass uses the
+# row only after its spawns.
+export DESK_QUEUE="$T/queue-771.json" DESK_AUTOPILOT_STATE="$T/state-771"; mkdir -p "$T/state-771/logs"
+{ cat "$T/config.md"; printf '\n## 4. Tracker, tools and team\n\n| Field | Value |\n|---|---|\n| Evidence workflow | `none` `x.yml` |\n'; } > "$T/config-771.md"
+q init c771; q set-batch concurrency=1
+q add C-1; q set C-1 state=triaged branch=fix/C-1
+out=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" 2>&1); rc=$?
+check "DS-843 AC4 an unreadable Evidence workflow row stops the pass with its error before any spawn" \
+  '[ $rc -eq 11 ] && echo "$out" | grep -q "pass.mjs crashed: .*Evidence workflow" && ! echo "$out" | grep -q "spawned" && [ "$(field C-1 state)" = "\"triaged\"" ] && [ "$(field C-1 session_id)" = null ]'
+jout=$(DESK_CONFIG="$T/config-771.md" node "$B/pass.mjs" --json 2>/dev/null)
+check "DS-843 AC4 and its JSON error names no spawned ticket" \
+  'echo "$jout" | jq -e ".status == \"error\" and (has(\"spawned\") | not)" >/dev/null'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

@@ -76,6 +76,11 @@
 // `promotion:<n>` is a feature batch's: its promotion PR #<n>, still red once its check tries are spent,
 // listed above the follow items waiting on it (done records nothing; the next pass reads its checks again).
 // `ask:<n>` is the repo's too: an action a session handed the person (done takes it off the list).
+// `base-red:<branch>` is a batch's: its base red on checks that hold its PRs' fix tries, naming the
+// PRs held and the last merges desk made (done records nothing; each hold clears once its check passes there).
+// `base-sync` is a batch's: its base sync could not push while the base lags too far to spawn, so every
+// ticket ready to spawn is frozen; listed first, naming the command that pushes it (done records nothing;
+// the next pass clears it once the base is current).
 // `stalled` (`stalled:<batch>` for a named batch) is a batch's: a session runs it and its passes stopped
 // with work left (done records nothing; the next pass clears it).
 // Items are what desk-q's home screen counts as "◆ needs you", in order: a PRODUCTION BROKEN park
@@ -97,8 +102,9 @@ import { deskHome, expandHome, slugOf, repoConfigValue, repoConfigValues, parseL
 import { fixClass } from './failure-class.mjs';
 import { describeCond } from './clears-when.mjs';
 import { readRecord as templatesRecord, check as templatesCheck } from './repo-templates.mjs';
-import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
+import { readQueue, isHeld, heldBehindOf, spinePark, planPark, openQuestion, approvalText, sessionPark, neverStep, noWorkerWork, personOnlyStep, moveTarget, targetsText, moveOffer, prStatusOf, shippedSet, ownPr, mergedTailPr, mergedTailSteps, gitHold, gitHeld, triageGate, triagePark as parkedAtTriage, holdsKept, epicBatch, promotedAt, unpromotedHolds, promotionState, EXIT } from './batch-state.mjs';
 import { promotionTitle } from './pass/promotion-pr.mjs';
+import { dayAndTime } from './desk-q-eta.mjs';
 import { browserSignins, reviewerRecord } from './health.mjs';
 import { PAGE_RESUMES, readUploadQueue, SIGNIN_CMD, uploadPause, waitingPrs } from './upload-queue.mjs';
 import { sessionFile } from './find-playwright.mjs';
@@ -249,6 +255,12 @@ export const READS = {
       return { pr: p ? Number(p.number) : null, err: '' };
     } catch (e) { return { pr: null, err: one(e.stderr || e.message) }; }
   },
+  // The repo's open ci-main-red issues assigned to the person gh is signed in as: [{ number, title,
+  // url, createdAt }], none when unread.
+  ciRed: (r) => {
+    try { return JSON.parse(execFileSync('gh', ['issue', 'list', '--repo', ghRepoOf(r), '--label', 'ci-main-red', '--state', 'open', '--assignee', '@me', '--limit', '5', '--json', 'number,title,url,createdAt'], quiet)); }
+    catch { return []; }
+  },
 };
 const mergedRead = new Map();
 // The ticket's own PR merged in a configured repo other than r's, where it was built: that repo's
@@ -398,7 +410,9 @@ export function refresh({ word = null, now = Date.now(), repos = loadRepos(now, 
 // No commit SHA, fix try or review-verdict wording: those are the pass's, for its log. Recorded text
 // quoted in one is kept whole, and a URL in it untouched, so the session can ask it as it stands.
 const URL_PART = /(https?:\/\/\S+)/;
-const passWords = (s) => s.replace(/,\s*at [0-9a-f]{7,40}\b,/g, '').replace(/\s*\bat [0-9a-f]{7,40}\b/g, '').replace(/\b[0-9a-f]{7,40}\b/g, 'its latest commit')
+// A commit SHA standing on its own: hex inside a path or file name (fix-338f2164.md) is not one.
+const SHA = String.raw`(?<![\w./-])[0-9a-f]{7,40}(?![\w/-]|\.\w)`;
+const passWords = (s) => s.replace(new RegExp(String.raw`,\s*at ${SHA},`, 'g'), '').replace(new RegExp(String.raw`\s*\bat ${SHA}`, 'g'), '').replace(new RegExp(SHA, 'g'), 'its latest commit')
   .replace(/\s*after \d+ fix tr(?:y|ies)/g, '').replace(/\bfix tr(?:y|ies)\b/g, 'repair').replace(/\breview verdict\b/g, 'review');
 const plainWords = (s) => one(one(s).split(URL_PART).map((p, i) => (i % 2 ? p : passWords(p))).join(''));
 // Once the person's step is done: desk merges it where it may, else merging is theirs too.
@@ -631,6 +645,7 @@ function prPlain(r, t, gapLines = null, reads = null) {
     case 'hold': return holdPlain(n, w, reads && holdStepDone(r, t, w, reads));
     case 'feedback': return `${n} is held for review: ${one(w.text)}. Resolve or answer it; desk then merges it.`;
     case 'approval': return `${n} waits on a person's approval: ${plainWords(w.text).replace(/: a person approves it before desk merges it$/, '')}. Review and approve it on GitHub; desk then merges it.`;
+    case 'merge-ref': return `${n} looks stuck on GitHub: ${plainWords(w.text).replace(/: push a new commit .*$/, '')}. Push a new commit to its branch (an empty one will do) for a fresh merge ref, or open a new PR from it; desk then merges it once it is green.`;
     case 'conflict': return conflictPlain(r, t, n, w.base);
     case 'red': {
       const red = ask ? ask.left : w.names;
@@ -728,10 +743,14 @@ const basePushRow = (r) => (r.q?.base_push_ask && r.q.approved?.base_push !== tr
 // by this: no new work of the repo starts until the person moves the pin or sets the subscription unused.
 const SUB_OFF_ITEM = 'subscription-off';
 const subOffRow = (r) => (r.q?.subscription_off?.email ? { t: { key: SUB_OFF_ITEM }, subOff: true } : null);
-const batchRows = (r) => [usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
-// The base-push and subscription-off items desk-q counts, one per batch of a repo row (each keyed in its
-// batch, `b`): unlike a usage hold neither lifts by itself, so each needs the person.
-const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
+// A batch whose base sync merged but could not push while the base lags too far to spawn (pass.mjs
+// base_sync_stuck) is one item, named by this: every ticket ready to spawn waits on it, so it is listed first.
+const BASE_SYNC_ITEM = 'base-sync';
+const baseSyncRow = (r) => (r.q?.base_sync_stuck?.base ? { t: { key: BASE_SYNC_ITEM }, baseSync: true } : null);
+const batchRows = (r) => [baseSyncRow(r), usageRow(r), basePushRow(r), subOffRow(r)].filter(Boolean);
+// The base-sync, base-push and subscription-off items desk-q counts, one per batch of a repo row (each
+// keyed in its batch, `b`): unlike a usage hold none lifts by itself, so each needs the person.
+const countedBatchRows = (r) => (r.batches ?? [r]).flatMap((b) => [baseSyncRow(b), basePushRow(b), subOffRow(b)].filter(Boolean).map((x) => ({ ...x, b })));
 
 // ---- repo-level items: one for the repo, not one per ticket ------------------------------------
 // A §3 row the repo's config does not set reads as `no`, so every ticket whose worker needed it parks
@@ -888,12 +907,13 @@ function promotionOf(q, t) {
   return m ? { pr: m.pr, merge_commit: m.merge_commit ?? q?.promotion_commits?.[String(m.pr)] ?? null } : null;
 }
 const SHA40 = /^[0-9a-f]{40}$/;
-function gateHeld(r, t, s) {
+// `reads` is collect's (READS); its git reads the refs, READS.git where it has none.
+function gateHeld(r, t, s, reads = null) {
   const after = s.after ?? 'merge';
   if (after === 'merge') return { held: true, note: null };
   const root = gitRootOf(r);
   if (!root) return { held: true, note: 'its gate could not be checked: config §2 "Primary repo root" is unset' };
-  const git = (args) => READS.git(root, args);
+  const git = (args) => (reads?.git ?? READS.git)(root, args);
   const commit = (x) => git(['rev-parse', '--verify', '--quiet', `${x}^{commit}`]);
   const within = (a, b) => git(['merge-base', a, b]) === a;
   const pr = `PR #${t.result?.pr ?? '?'}`;
@@ -943,7 +963,7 @@ export const followGateHeld = (slug, q, t, s) => gateHeld({ slug, q }, t, s).hel
 // checker's to run, and `failed`, the checker's record, where one failed it), `waiting` not yet. A step a
 // checker passed is neither, nor is a runnable one not yet passed or failed while its checker runs (up
 // to FOLLOW_TIMEOUT_MS) or, for FOLLOW_WAIT_MS after the code went out, is still to.
-function followSplit(r, t, now = Date.now()) {
+function followSplit(r, t, now = Date.now(), reads = null) {
   const ready = [], waiting = [];
   const labels = personStepLabels(r.slug);
   const waited = now - (timeOf(outAt(r.q, t)) ?? now) >= FOLLOW_WAIT_MS;
@@ -951,7 +971,7 @@ function followSplit(r, t, now = Date.now()) {
   for (const s of t.follow_on) {
     const c = checkOf(t, s);
     if (c?.result === 'pass') continue;
-    const g = gateHeld(r, t, s);
+    const g = gateHeld(r, t, s, reads);
     if (!g.held) { waiting.push(s); continue; }
     // A step a checker ran stays its own, whatever the labels read now.
     const checked = settled(c) || followKind(s, labels) === 'runnable';
@@ -975,9 +995,9 @@ const gatedFollow = (t) => t.follow_on.some((s) => gateOf(s) !== 'merge');
 // step is an item of its own, `…:checked:<id>` (stepId), listed as soon as it failed or went unrun: its
 // result comes in on its own time, and would otherwise join an item the person was already shown.
 const stepId = (s) => createHash('sha1').update(String(s.step)).digest('hex').slice(0, 6);
-function followItems(r) {
+function followItems(r, reads = null) {
   return followsOf(r).flatMap((t) => {
-    const { ready, waiting } = followSplit(r, t);
+    const { ready, waiting } = followSplit(r, t, Date.now(), reads);
     const groups = GATES.flatMap((g) => {
       const here = ready.filter((x) => gateOf(x.s) === g);
       return [{ g, ready: here.filter((x) => !x.checked) }, ...here.filter((x) => x.checked).map((x) => ({ g, id: stepId(x.s), ready: [x] }))];
@@ -1041,6 +1061,39 @@ function promotionItems(r) {
       need: `promotion PR #${red.pr} (${base} into the default branch) is red, failing ${andList(checks)}; ${what}, so no more workers go to it. Fix what fails on ${base} and push it, then say done; merging it stays yours${waits}`,
       actions: [['done', 'once it is fixed on the base, the next pass reads its checks again and this item goes while they pass'], ['not-now']],
       since: timeOf(red.since) } }];
+}
+
+// ---- the base red under a batch's PRs (fix-tries.mjs againstBase, kept on each ticket as base_red) ---
+// A check red on the base holds every PR it fails on without a fix try (BASE RED), and no worker repairs
+// the base. While any open PR holds on one, one item says so: the checks, the PRs held and the last merges
+// desk made, which may be what turned it red. done records nothing: the next pass reads the base again,
+// each hold clears once its check passes there, and the item goes with the last.
+const BASE_RED = 'base-red:';
+const BASE_RED_MERGES = 3;
+function baseRedItems(r) {
+  const tickets = Object.values(r.q?.tickets ?? {});
+  // Held now: the last call held it, and its PR is open at the head the hold read, one of those checks
+  // still red there. A record a PR left on going green, closing or taking a fix try is not a hold.
+  // `live` is each held ticket's checks still red on its PR, the only ones the item names.
+  const liveOf = (t) => {
+    const b = t.base_red, st = prStatusOf(t);
+    if (!b?.held || !b.checks?.length || st?.state !== 'OPEN' || st.head !== b.head) return [];
+    // The status's checks are already the latest per workflow and name (readPrStatus), so read as they are.
+    return [...new Set((st.checks ?? []).filter((c) => b.checks.includes(c.name) && FAILED.has(c.conclusion)).map((c) => c.name))];
+  };
+  const held = tickets.map((t) => ({ t, live: liveOf(t) })).filter((x) => x.live.length);
+  if (!held.length) return [];
+  const base = r.q.base ?? 'the default branch';
+  const checks = [...new Set(held.flatMap((x) => x.live))].sort();
+  const prOf = (t) => (t.result?.pr != null ? `#${t.result.pr} (${t.key})` : t.key);
+  const merges = tickets.filter((t) => t.merged_at).sort((a, b) => Date.parse(b.merged_at) - Date.parse(a.merged_at)).slice(0, BASE_RED_MERGES)
+    .map((t) => `${prOf(t)} on ${dayAndTime(t.merged_at)}`);
+  const last = merges.length ? `. The last merges desk made: ${andList(merges)}` : '';
+  return [{ r, t: { key: `${BASE_RED}${r.q.base ?? 'default'}` }, behind: held.length,
+    item: { kind: 'base-red', repoLevel: true, checks,
+      need: `${base} is red on ${andList(checks.map((c) => `"${c}"`))}, so ${andList(held.map((x) => prOf(x.t)))} ${held.length === 1 ? 'holds' : 'hold'} with no fix try and no worker repairs ${base}${last}. Fix it on ${base}, or revert the merge that turned it red, then say done`,
+      actions: [['done', 'the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last'], ['not-now']],
+      since: timeOf(held.map((x) => x.t.base_red.since).filter(Boolean).sort()[0]) } }];
 }
 
 // ---- one ticket queued in two repos (batches.mjs queuedCopies) -----------------------------------
@@ -1299,6 +1352,20 @@ const ASK = 'ask:';
 const askItems = (batches) => batches.filter((b) => b.batch == null && !b.error).flatMap((r) => (r.asks ?? []).map((a) => ({ r, dir: r.stateDir, t: { key: `${ASK}${a.id}` },
   item: { kind: 'ask', repoLevel: true, id: a.id, need: a.text, actions: [['done', 'a session handed this to you; say done once it is done, and it leaves the list'], ['not-now']], since: timeOf(a.at) } })));
 
+// ---- a red main assigned to the person (tests/ci_main_red.mjs): one item an issue -------------------
+// CI's alarm keeps one issue labelled ci-main-red open, assigned to the repo's owner, while a lane on
+// main is red, cancelled or stale. It is read through gh only when items are listed (`read`, READS.ciRed),
+// never for desk-q's count, and listed on the repo's standing batch. done records nothing: the alarm
+// closes the issue once every lane is green and fresh, and the item goes with it.
+const CI_RED = 'ci-red:';
+const ciRedItems = (repos, scope, read) => [...new Set(scope.filter((b) => !b.error).map((b) => b.slug))].flatMap((slug) => {
+  const r = repos.find((b) => b.slug === slug && b.batch == null && !b.error) ?? scope.find((b) => b.slug === slug && !b.error);
+  return (read(r) ?? []).map((i) => ({ r, dir: r.stateDir, t: { key: `${CI_RED}${i.number}` }, item: { kind: 'ci-red', repoLevel: true,
+    need: `main is red in ${ghRepoOf(r)}: issue #${i.number} (${one(i.title)}, ${i.url}) says which CI lane on main failed, was cancelled or went stale. Fix it on main, or rerun a lane that only flaked`,
+    actions: [['done', 'the alarm closes the issue once every lane on main is green and fresh, and this item goes with it; done records nothing'], ['not-now']],
+    since: timeOf(i.createdAt) } }));
+});
+
 // ---- a session-run batch whose passes stopped (desk-q passesPaused): one item a batch ---------------
 // A batch an interactive session runs (§3b Batches run by `session`) has no supervisor to start its
 // passes again, so when that session stalls (a turn that ended short of its next step, a request that
@@ -1328,6 +1395,13 @@ function itemOf(r, x, reads = null, finds = reads) {
     const s = r.q.subscription_off;
     return { kind: 'subscription-off', need: `${r.slug} is pinned to ${s.email}, which is off${s.login ? ` (claude ${s.login})` : ''}, so no new work starts for it: move it to another subscription (desk-env subscription set ${r.slug} <default|email>)${s.login ? `, or set ${s.login} unused (desk-env logins set claude ${s.login} unused)` : ''}`,
       actions: [['done', 'once it is moved, or the subscription is unused, the next pass starts its work and drops this item'], ['not-now']] };
+  }
+  if (x.baseSync) {
+    const b = r.q.base_sync_stuck;
+    const n = b.frozen ?? 0;
+    return { kind: 'base-sync', holdsAll: true,
+      need: `the base sync of ${b.base} could not push, so ${n === 1 ? '1 ticket ready to spawn is' : `${n} tickets ready to spawn are`} frozen until ${b.base} takes ${b.source ?? 'the default branch'}: ${b.why}. Run it by hand to see the hook's full output and push it: ${b.cmd}`,
+      actions: [['done', 'once the base is pushed, the next pass finds it current, spawns again and drops this item'], ['not-now']] };
   }
   if (x.basePush) {
     const a = r.q.base_push_ask;
@@ -1426,7 +1500,11 @@ function itemOf(r, x, reads = null, finds = reads) {
   if (t.state === 'parked' && !isHeld(t)) {
     const need = one(t.park?.question) || 'parked, with no question recorded';
     // What its worktree holds that origin does not, as the last pass read it.
-    const note = t.park?.unpushed ? `${capital(t.park.unpushed)}.` : undefined;
+    // The text a gated write waits on (the worker's park file `approve`, kept by the pass), whole and
+    // on this one line: JSON keeps its line breaks, so it is relayed verbatim.
+    const ap = t.park?.approve;
+    const approval = ap?.body ? `Awaiting approval, ${approvalText(ap)}` : '';
+    const note = [t.park?.unpushed ? `${capital(t.park.unpushed)}.` : '', approval].filter(Boolean).join(' ') || undefined;
     if (planPark(t)) return { kind: 'plan', need, note, actions: [['answer', 'say start, discard, or the edit to make; the supervisor acts on it at its next tick: an edit is applied and the batch starts, and one it cannot apply comes back here naming why'], ['not-now']] };
     const sp = spinePark(t);
     if (sp === 'approval') return { kind: 'spine', need, note, actions: [['approve', 'its acceptance specs passed the spec check'], ['reject'], ['not-now']] };
@@ -1552,35 +1630,43 @@ function stampItem(r, x, item) {
 // is in `stepRows`, not `rows`, while a step holding it is not put off: it needs the person, but is
 // counted once, through its step item. A reader that draws "not in rows" as put off counts
 // `stepRows` as needing the person too, so a row whose every step is put off is drawn put off.
+// `items` are the counted items that are not ticket rows (steps, follow-ons, asks, sign-ins, …), each
+// { r, t, item }, so a reader can draw a row for every one it counts; `offItems` those put off.
 export function needsCount(r) {
   const registers = new Map();
   const register = (b) => { if (!registers.has(b.stateDir)) registers.set(b.stateDir, readRegister(b.stateDir)); return registers.get(b.stateDir); };
   const rows = [], held = [];
-  let putOff = 0, steps = 0;
-  for (const x of [...countedBatchRows(r), ...needsRows(r)]) {
+  let putOff = 0;
+  const items = [], offItems = [];
+  // A batch's base-sync, base-push and subscription-off items are no ticket's row, so they are items.
+  for (const x of countedBatchRows(r)) {
+    const { item, l } = judged(x.b, x, register(x.b));
+    if (l.status === 'put_off') { putOff++; offItems.push({ r: x.b, t: x.t, item }); } else items.push({ r: x.b, t: x.t, item });
+  }
+  for (const x of needsRows(r)) {
     const b = x.b ?? r;
     if (stepHeld(b, x)) { held.push(x); continue; }
     if (judged(b, x, register(b)).l.status === 'put_off') putOff++; else rows.push(x);
   }
   const live = new Set();
   for (const s of stepItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else { steps++; live.add(s.item.step); }
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else { items.push(s); live.add(s.item.step); }
   }
   const stepRows = held.filter((x) => { const b = x.b ?? r; return startSteps(b.q, x.t, b.ctx?.stepOf).some((k) => live.has(k)); });
-  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...duplicateItems(b)])) {
-    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') putOff++; else steps++;
+  for (const f of (r.batches ?? [r]).filter((x) => x.q).flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...promotionItems(b), ...baseRedItems(b), ...duplicateItems(b)])) {
+    if (lookup(register(f.r), putOffKey(f.r, f.t, f.item)).status === 'put_off') { putOff++; offItems.push(f); } else items.push(f);
   }
   for (const s of reviewerItems((r.batches ?? [r]).filter((x) => x.q))) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   const own = (r.batches ?? [r]).filter((x) => x.q);
   for (const s of [...signinItems(own, own), ...pageItems(own, { home: true })]) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
   for (const s of [...askItems(r.batches ?? [r]), ...stalledItems(own)]) {
-    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') putOff++; else steps++;
+    if (lookup(register({ stateDir: s.dir }), putOffKey(s.r, s.t, s.item)).status === 'put_off') { putOff++; offItems.push(s); } else items.push(s);
   }
-  return { shown: rows.length + steps, putOff, rows, stepRows };
+  return { shown: rows.length + items.length, putOff, rows, stepRows, items, offItems };
 }
 
 // The batches `word` names, else every batch desk-q's home screen shows.
@@ -1590,7 +1676,8 @@ const scopeOf = (repos, word) => (word ? batchesNamed(repos, word) : { named: nu
 // those put off with unchanged inputs (`putOff` counts them). One whose inputs changed says what did.
 // A usage-limit hold is an item here, but not in desk-q's count; a base-push or subscription-off item is in both.
 // `reads` (READS) is how a draft whose review left gaps quotes them from GitHub; null reads none.
-export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS } = {}) {
+// `ciRed` (READS.ciRed) reads the red-main issues assigned to the person; null reads none.
+export function collect({ word = null, now = Date.now(), repos = loadRepos(now, word), reads = READS, ciRed = reads?.ciRed ?? null } = {}) {
   const { named, scope } = scopeOf(repos, word);
   const items = [];
   let putOff = 0;
@@ -1615,7 +1702,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if (stepHeld(r, x)) continue;
       const { item, l } = judged(r, x, register, reads);
       if (l.status === 'put_off') { putOff++; continue; }
-      const since = x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
+      const since = x.baseSync ? timeOf(r.q.base_sync_stuck.since) : x.usage ? timeOf(r.q.usage_hold.since) : x.basePush ? timeOf(r.q.base_push_ask.since) : x.subOff ? timeOf(r.q.subscription_off.since) : timeOf(x.t.park?.since ?? (x.pr ? x.t.undraft?.at : null) ?? x.t.added_at);
       const row = item.kind === 'parked' ? unsetRowOf(r, x.t, unsetIn) : null;
       if (row) {
         const id = `${r.slug}\t${row}`;
@@ -1635,7 +1722,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
       if ([...s.in].some((b) => dirs.has(resolve(b.stateDir)))) repoItem(s.r, s.t, s.item, s.item.since, s.dir, s.behind, s.said);
     }
   }
-  for (const f of inScope.flatMap((b) => [...followItems(b), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap((b) => [...followItems(b, reads), ...linkItems(b), ...unpromotedItems(b), ...duplicateItems(b)])) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind ?? 0);
+  for (const f of inScope.flatMap(baseRedItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   // Its need names the follow items waiting on it, so it ranks by them without saying the count.
   for (const f of inScope.flatMap(promotionItems)) repoItem(f.r, f.t, f.item, f.item.since, f.r.stateDir, f.behind, false);
   for (const slug of new Set(inScope.map((x) => x.slug))) {
@@ -1645,6 +1733,8 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   for (const s of signinItems(inScope, word ? inScope : null)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of pageItems(inScope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const s of askItems(scope)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
+  // Unscoped, every configured repo: a quiet repo, which the home screen does not show, is where a lane goes stale.
+  if (ciRed) for (const s of ciRedItems(repos, word ? scope : repos, ciRed)) repoItem(s.r, s.t, s.item, s.item.since, s.dir);
   for (const g of groups.values()) repoItem(g.r, { key: `${UNSET}${g.key}` }, unsetItem(g), finite(Math.min(...g.parked.map((p) => p.since ?? Infinity))), g.r.stateDir, heldBehindAll(g.parked.map((p) => [p.r, p.t.key])));
   const slugs = new Set((word ? scope : repos).map((x) => x.slug));
   for (const slug of slugs) {
@@ -1655,7 +1745,7 @@ export function collect({ word = null, now = Date.now(), repos = loadRepos(now, 
   // Heads of one batch with tickets waiting behind them go in build order (its queue's), as a fork's do.
   const built = (x) => Object.keys(x.r?.q?.tickets ?? {}).indexOf(x.t.key);
   const heads = (a, b) => (a.r === b.r && (a.behind ?? 0) > 0 && built(a) >= 0 && built(b) >= 0 ? built(a) - built(b) : 0);
-  items.sort((a, b) => (b.broken - a.broken) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
+  items.sort((a, b) => (b.broken - a.broken) || (!!b.holdsAll - !!a.holdsAll) || ((b.behind ?? 0) - (a.behind ?? 0)) || heads(a, b) || ((a.since ?? Infinity) - (b.since ?? Infinity)) || a.t.key.localeCompare(b.t.key));
   return { repos, scope, items, named, putOff };
 }
 
@@ -1730,7 +1820,7 @@ function namedFixturesText(r, ticket, text) {
 
 // Records one answer: { ok, line, message } where `message` is what a live session must be sent.
 export function record({ word, ticket, action, text = '', now = Date.now(), repos = loadRepos(now, word), reads = READS }) {
-  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK)) return recordRepoItem({ word, ticket, action, now, repos });
+  if (ticket.startsWith(UNSET) || ticket.startsWith(STEP) || ticket.startsWith(FOLLOW) || ticket.startsWith(LINK) || ticket.startsWith(UNPROMOTED) || ticket.startsWith(PROMOTION) || ticket.startsWith(BASE_RED) || ticket === TEMPLATES || ticket === REVIEWER || ticket === STALLED || ticket.startsWith(`${STALLED}:`) || ticket === PAGE || ticket.startsWith(`${SIGNIN}:`) || ticket.startsWith(ASK) || ticket.startsWith(CI_RED)) return recordRepoItem({ word, ticket, action, now, repos, reads });
   // A ticket is in one batch at most, so the batch named that holds it is the one its answer goes to.
   const { named, scope } = batchesNamed(repos, word);
   const r = scope.find((b) => b.q?.tickets?.[ticket]) ?? named;
@@ -2014,6 +2104,7 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
       if (x.pr || heldDraft(x.t)) return prDone();
       if (item.kind === 'session') return sessionDone();
       if (item.kind === 'usage') return say(true, 'noted: the batch carries on by itself once the usage limit lifts.');
+      if (item.kind === 'base-sync') return say(true, 'noted: the next pass reads the base again, and spawns once it is current.');
       if (item.kind === 'subscription-off') return say(true, 'noted: the next pass reads the repo\'s subscription again, and starts its work once that is not off.');
       if (item.kind === 'worktree') return say(true, 'noted: the next pass that finds the worktree clean drops the record and starts it.');
       return say(true, 'noted: the next pass reads it again and moves it on once your step shows.');
@@ -2025,8 +2116,8 @@ export function record({ word, ticket, action, text = '', now = Date.now(), repo
 // A repo-level or step item's answer. Done on an unset row requeues every ticket parked on it once the
 // row is set, each in its own batch (or names the live session to message); done on behind templates
 // checks the copies again now; done on a step records nothing, since the pass reads the step from Jira.
-function recordRepoItem({ word, ticket, action, now, repos }) {
-  const c = collect({ word, now, repos, reads: null });
+function recordRepoItem({ word, ticket, action, now, repos, reads = READS }) {
+  const c = collect({ word, now, repos, reads: null, ciRed: ticket.startsWith(CI_RED) ? (reads ?? READS).ciRed : null });
   let i = c.items.find((y) => (y.repoLevel || y.kind === 'step' || y.kind === 'follow' || y.blocker || y.unpromoted || y.promotion != null) && y.t.key === ticket);
   // A row set since the list was shown no longer groups its parks there; done still finds them.
   if (!i && ticket.startsWith(UNSET) && c.named) {
@@ -2062,6 +2153,8 @@ function recordRepoItem({ word, ticket, action, now, repos }) {
     return say(true, 'done, so it is off your list.');
   }
   if (i.kind === STALLED) return say(true, 'noted: this item goes once a pass runs again; done records nothing.');
+  if (i.kind === 'base-red') return say(true, 'noted: the next pass reads the base again; each hold clears once its check passes there, and this item goes with the last; done records nothing.');
+  if (i.kind === 'ci-red') return say(true, 'noted: this item goes once the alarm closes the issue, when every CI lane on main is green and fresh; done records nothing.');
   if (i.kind === SIGNIN) return say(true, 'noted: the next pass checks the login again; once it passes this item goes and the upload queue resumes.');
   if (i.kind === PAGE) return say(true, 'noted: once desk is installed again, the next upload checks the page; once it finds the composer this item goes and the upload queue resumes.');
   if (i.kind === 'step') return say(true, `noted: the next pass that reads ${i.step} from Jira lifts the hold on what waits for it once it is Done${i.r.ctx?.merges ? ', and desk then merges them' : ''}.`);
@@ -2114,36 +2207,49 @@ export function ask({ word, text, now = Date.now(), repos = loadRepos(now, word)
   return { ok: true, line: `${r.repo} ${ASK}${id}: ${added ? 'recorded' : 'already recorded'}; /desk-needs-you and desk-q list it until you say done.` };
 }
 
+// One run of the command line, in this process: { code, out, err }, which the entry below prints and exits
+// with. `reads` is what list's refresh and collect, and record, read through (READS where none is given).
+export function run(argv, { reads } = {}) {
+  const [cmd, ...rest] = argv;
+  const lines = [];
+  const end = (code, err = '') => ({ code, out: lines.map((l) => `${l}\n`).join(''), err });
+  const at = reads === undefined ? {} : { reads };
+  try {
+    if (cmd === 'list' && rest.length <= 1) {
+      const settled = refresh({ word: rest[0] ?? null, ...at });
+      lines.push([...settled, listText(collect({ word: rest[0] ?? null, ...at }))].join('\n'));
+    }
+    else if (cmd === 'left' && rest.length <= 1) lines.push(leftText({ word: rest[0] ?? null }));
+    else if (cmd === 'record' && rest.length >= 3) {
+      const [word, ticket, verb, ...more] = rest;
+      // An override names its decision id before the choice.
+      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
+      const res = record({ word, ticket, action, text, ...at });
+      lines.push(res.line);
+      if (res.message) lines.push(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'move' && rest.length === 3) {
+      const [word, ticket, to] = rest;
+      const res = record({ word, ticket, action: 'move', text: to, ...at });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else if (cmd === 'ask' && rest.length === 2) {
+      const res = ask({ word: rest[0], text: rest[1] });
+      lines.push(res.line);
+      if (!res.ok) return end(EXIT.SHOW_PERSON);
+    } else return end(EXIT.SHOW_PERSON, 'usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"\n');
+  } catch (e) { return end(EXIT.SHOW_PERSON, `${e.message}\n`); }
+  return end(0);
+}
+
 const isMain = (() => {
   try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
   catch { return false; }
 })();
 if (isMain) {
-  const [cmd, ...rest] = process.argv.slice(2);
-  const refuse = (why) => { console.error(why); process.exit(EXIT.SHOW_PERSON); };
-  try {
-    if (cmd === 'list' && rest.length <= 1) {
-      const settled = refresh({ word: rest[0] ?? null });
-      console.log([...settled, listText(collect({ word: rest[0] ?? null }))].join('\n'));
-    }
-    else if (cmd === 'left' && rest.length <= 1) console.log(leftText({ word: rest[0] ?? null }));
-    else if (cmd === 'record' && rest.length >= 3) {
-      const [word, ticket, verb, ...more] = rest;
-      // An override names its decision id before the choice.
-      const [action, text] = verb === 'override' ? [`override ${more[0] ?? ''}`, more.slice(1).join(' ')] : [verb, more.join(' ')];
-      const res = record({ word, ticket, action, text });
-      console.log(res.line);
-      if (res.message) console.log(`MESSAGE ${res.message.to ?? '(no batch name recorded)'}: ${res.message.text}`);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'move' && rest.length === 3) {
-      const [word, ticket, to] = rest;
-      const res = record({ word, ticket, action: 'move', text: to });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else if (cmd === 'ask' && rest.length === 2) {
-      const res = ask({ word: rest[0], text: rest[1] });
-      console.log(res.line);
-      if (!res.ok) process.exit(EXIT.SHOW_PERSON);
-    } else refuse('usage: needs-you.mjs list [<repo>] | record <repo> <TICKET> <action> ["<text>"] | move <repo> <TICKET> <batch> | left [<repo>] | ask <repo> "<what to do>"');
-  } catch (e) { refuse(e.message); }
+  const { code, out, err } = run(process.argv.slice(2));
+  // Through console, which drops a write to a closed pipe rather than throwing EPIPE and exiting 1.
+  if (out) console.log(out.replace(/\n$/, ''));
+  if (err) console.error(err.replace(/\n$/, ''));
+  process.exitCode = code;
 }

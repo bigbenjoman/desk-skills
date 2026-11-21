@@ -38,7 +38,8 @@ cat > "$T/config.md" <<EOF
 |---|---|---|---|
 | \`autopilot-workers\` | Run detached headless workers | \`yes\` | \`yes\` |
 EOF
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 cat > "$T/desk/bin/setup-worktree.sh" <<EOF
 mkdir -p "$T/wt/\$2"; echo "[setup-worktree] worktree=$T/wt/\$2"; echo "[setup-worktree] branch=\$3"
 EOF
@@ -94,6 +95,21 @@ check "DS-615 AC4 the decider item shows the note, under the park's own id" \
 fresh ac5; held B X 12; pr 12 BLOCKED
 out=$(verdict)
 check "DS-615 AC5 a mergeable PR with no cycle adds nothing" "has '$CYCLE.length === 0 && !v.parked.some((p) => p.note) && !/PARK NOTES/.test(v.message)'"
+
+# DS-852: no cycle, PR 12 closed unmerged: the park can never clear, so it stays the person's.
+fresh closed; printf '{"state":"CLOSED","isDraft":false,"mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","baseRefName":"main","headRefOid":"abc"}\n' > "$T/fx/12.json"
+out=$(verdict)
+check "DS-852 a park on a PR closed unmerged is parked for the person, with a note" "has 'v.parked.find((p) => p.key === \"A\")?.note === \"PR #12 was closed without merging\"'"
+
+# DS-852: the same for another repo's PR, which no cycle can involve.
+export DESK_QUEUE="$T/closed-other.json"; q init t; q add A
+q set A state=parked 'park={"question":"Merge o/x#34 first?","clears_when":{"kind":"pr-merged","pr":34,"repo":"o/x"}}'
+printf '{"state":"CLOSED","isDraft":false,"mergedAt":null}\n' > "$T/fx/34.json"
+out=$(verdict)
+check "DS-852 a park on another repo's PR closed unmerged is parked for the person" "has 'v.parked.find((p) => p.key === \"A\")?.note === \"PR o/x#34 was closed without merging\"'"
+printf '{"state":"OPEN","isDraft":false,"mergedAt":null}\n' > "$T/fx/34.json"
+out=$(verdict)
+check "DS-852 while that PR is open, the park is the pass's" "has '!v.parked.some((p) => p.key === \"A\")'"
 
 echo "park cycle: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

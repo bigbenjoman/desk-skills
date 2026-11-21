@@ -4,14 +4,14 @@
 // for the Vercel API and a scratch AWS config. Scratch directories only; nothing reads this computer.
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseAwsConfig, parseVercelTeams, parseVercelProjects, matchName, propose, parseEdits,
   renderCosts, parseCosts, readCosts, costsByName,
 } from '../desk/bin/costs.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
@@ -140,7 +140,7 @@ const plan = propose({ found: { ...found, vercel: { ...found.vercel, teams: with
 t('AC8 a changed plan is refreshed and said', `${one(plan, 'vercel:voice-pa/voicepa-web').plan} ${one(plan, 'vercel:voice-pa/voicepa-web').status}`, 'enterprise changed');
 
 // ---- the CLI, end to end (AC1, AC2, AC6, AC8, AC9)
-const T = mkdtempSync(join(tmpdir(), 'desk-costs-'));
+const T = scratch('desk-costs-');
 const server = createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };

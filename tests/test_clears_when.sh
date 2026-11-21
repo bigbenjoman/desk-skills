@@ -10,6 +10,7 @@
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$S/.." && pwd)"; B="$SRC/desk/bin"
 T="$(mktemp -d)"; mkdir -p "$T/home" "$T/state/logs" "$T/desk/bin" "$T/stub" "$T/wt" "$T/gh" "$T/jira"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home" GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1; : > "$GIT_CONFIG_GLOBAL"
 git config --global user.email t@example.com; git config --global user.name t
 unset DESK_REPO_OVERRIDE DESK_SLUG DESK_STATE DESK_REPO_DIR DESK_REPO_ROOT DESK_WORKTREES_DIR DESK_DEFAULT_BRANCH \
@@ -40,7 +41,8 @@ cat > "$T/config.md" <<EOF
 | \`git-force-with-lease\` | Force-push with a lease | \`ask\` | \`ask\` |
 EOF
 
-for f in queue.mjs harvest.mjs desk-env.mjs batch-state.mjs briefing.mjs; do ln -s "$B/$f" "$T/desk/bin/$f"; done
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 printf 'echo "[spawn] ticket=$1"\n' > "$T/desk/bin/spawn-worker.sh"
 printf '#!/bin/sh\necho "[]"\n' > "$T/stub/claude"
 # gh: a PR is $T/gh/pr-<n>.json (none is a failed read), a branch's merged PR $T/gh/merged-<branch with
@@ -524,6 +526,22 @@ check "DS-779 a push that hangs past its limit keeps the park and its condition"
   '! on_origin P-7 && [ "$(field P-7 state)" = "\"parked\"" ] && [ "$(field P-7 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-7\"}" ] && [ "$(field P-7 park.recovery)" = null ] && grep -q "P-7: could not check \"git push origin feat/P-7 succeeds\" (git push ran past its 1 seconds)" <<< "$out"'
 out=$(node "$B/pass.mjs" 2>&1)
 check "DS-496 and the next pass that reaches origin pushes it" 'on_origin P-7 && [ "$(field P-7 state)" = "\"triaged\"" ]'
+# DS-912: the pass's push starts a preview build, so with §4 Vercel set it takes the team's
+# preview-build unit first, and leaves the push for a later pass while every unit is held.
+cp "$T/config.md" "$T/config-vercel.md"; printf '\n## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | `acme` |\n' >> "$T/config-vercel.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n' > "$T/machine-pv.md"
+LD="$T/leases"; pvl(){ DESK_LEASE_DIR="$LD" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | paste -sd',' -; }
+DESK_LEASE_DIR="$LD" DESK_MACHINE="$T/machine-pv.md" node "$B/leases.mjs" acquire preview-build acme --ttl 1200 --no-owner --label acme/site#7 >/dev/null 2>&1
+pushpark P-11 A; q set P-11 result.pr=1911; pr 1911 OPEN true
+out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
+check "DS-912 with the team's one unit held, the pass does not push, keeps the park, and says it waits on the preview build" \
+  '! on_origin P-11 && [ "$(field P-11 state)" = "\"parked\"" ] && [ "$(field P-11 park.clears_when)" = "{\"kind\":\"push-ok\",\"branch\":\"feat/P-11\"}" ] && grep -q "P-11: waiting on \"git push origin feat/P-11 succeeds\" (it waits on the preview build for acme: the preview-build slot for acme is held by acme/site#7" <<< "$out"'
+rm -rf "$LD"
+# The label is the branch's open PR as GitHub lists it (the stub answers `pr list --head` from this file).
+echo 1911 > "$T/gh/merged-feat_P-11"
+out=$(DESK_CONFIG="$T/config-vercel.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$LD" node "$B/pass.mjs" 2>&1)
+rm -f "$T/gh/merged-feat_P-11"
+check "DS-912 once a unit is free the pass takes it, labelled with the PR, pushes and requeues" 'on_origin P-11 && [ "$(field P-11 state)" = "\"triaged\"" ] && [ "$(pvl)" = "acme/widgets#1911" ]'
 # While the batch is on a usage hold no decider starts, so a line past the window is not lapsed to none.
 q add C-9 Story A; q park C-9 "waiting on KAN-1087"
 q set C-9 'park.clears_when={"kind":"unreadable","text":"KAN-1087s fix PR is merged to main","why":"x","at":"2026-01-01T00:00:00Z"}'

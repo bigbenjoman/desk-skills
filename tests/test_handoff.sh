@@ -21,6 +21,7 @@ PASS=0; FAIL=0; out=""
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: $out"; fi; }
 
 R="$T/repo"; git init -q -b main "$R"; git -C "$R" remote add origin https://github.com/acme/demo.git
+R="$(cd "$R" && pwd -P)"  # the hook prints the resolved path (/private/var on macOS)
 mkdir -p "$R/sub"
 DAY="$(date +%Y-%m-%d)"
 # config <Handoff at context %> [<Handoff at context % on a 1M window>]

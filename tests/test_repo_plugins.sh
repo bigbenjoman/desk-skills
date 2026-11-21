@@ -7,6 +7,7 @@
 # shellcheck disable=SC2034
 set -u
 S="$(cd "$(dirname "$0")" && pwd)"; T="$(mktemp -d)"
+trap 'rm -rf "$T"' EXIT
 export HOME="$T/home"
 PASS=0; FAIL=0
 check(){ if eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     rc=$rc out: $out"; fi; }

@@ -205,7 +205,10 @@ for (let i = items.length - 1; i >= 0; i--) {
   const forms = twins(p.cmd);
   const rows = items.filter((x) => x.id !== 'pre-push-checks' && normDir(x.dir) === normDir(p.dir));
   if (rows.some((x) => twins(x.cmd).some((c) => forms.includes(c)))) { items.splice(i, 1); continue; }
-  const locks = new Set(rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `)))).map((x) => E.lockFor(x.id)));
+  const near = rows.filter((x) => E.lockFor(x.id) !== 'nolock' && twins(x.cmd).some((c) => forms.some((f) => f.startsWith(`${c} `) || c.startsWith(`${f} `))));
+  const locks = new Set(near.map((x) => E.lockFor(x.id)));
+  // Near a lock-only row's item (§4 Lint, §4 Storybook), its bare prefix rule would run that row bare.
+  p.lockOnly = near.some((x) => E.LOCK_ONLY.has(x.id));
   if (locks.size > 1) items.splice(i, 1);
   else if (locks.size) p.lock = [...locks][0];
   else if (p.cmd.includes('typecheck')) p.lock = 'tsc';
@@ -358,12 +361,15 @@ if (mode === 'triage') {
   // An installed package binary, run from the worktree by relative or absolute path: named tools that
   // take no lock and write no database, never a wildcard, which would let a suite, a typecheck or a
   // migration skip with-lock.sh or the per-ticket database by any spelling of its path. A `..` is denied.
-  const NODE_BIN = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`].flatMap(withPrefix);
-  const NODE_BIN_TOOLS = ['eslint', 'prettier', 'biome', 'oxlint', 'stylelint', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  const NODE_BIN_DIRS = ['./node_modules/.bin/', 'node_modules/.bin/', `${WT}/node_modules/.bin/`];
+  const NODE_BIN = NODE_BIN_DIRS.flatMap(withPrefix);
+  const NODE_BIN_TOOLS = ['prettier', 'tsx', 'prisma generate', 'prisma format', 'prisma validate'];
+  // A lint tool may be type-aware, as heavy as a typecheck, so it runs only under the tsc lock (below).
+  const NODE_BIN_LINT = E.LINT_BINS;
 
   // ---- files ---------------------------------------------------------------------------------
-  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file and
-  // screenshots. The resume file lives in the state dir because the harness write-protects the
+  // The worktree, and in the state dir only this ticket's park file, handoff briefing, resume file,
+  // screenshots and review results (reviews/<KEY>/, kept so a later accepted re-verdict can re-run them). The resume file lives in the state dir because the harness write-protects the
   // worktree's `.claude/`, where desk-ticket keeps it interactively. Not answers/ (a worker must not
   // answer itself), not workers/ (its own settings), not the queue or the locks.
   allow.push(
@@ -372,6 +378,7 @@ if (mode === 'triage') {
     `Edit(${abs(STATE)}/handoffs/${T}.json)`,
     `Edit(${abs(STATE)}/resume/${T}.json)`,
     `Edit(${abs(STATE)}/images/${T}/**)`, `Edit(${abs(STATE)}/images/${T}/**)`,
+    `Edit(${abs(STATE)}/reviews/${T}/**)`,
   );
   // Inside the worktree, the harness's own settings (which it may reload) and git's pointer file.
   deny.push(
@@ -457,10 +464,10 @@ if (mode === 'triage') {
   for (const it of items) {
     const form = (wrapped) => (c) => (it.id === 'install-cmd' && (wrapped || !depsOk) ? `Bash(${c})` : rule(c, ''));
     for (const cmd of twins(it.cmd)) {
-      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id)) allow.push(...withPrefix(cmd).map(form(false)));
+      if (it.dir === '.' && !E.LOCK_ONLY.has(it.id) && !it.lockOnly) allow.push(...withPrefix(cmd).map(form(false)));
       // Every item also runs through with-lock.sh: under its lock where it has one, else `nolock`,
-      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook), has no
-      // bare form (the worker cannot `cd`).
+      // which only changes directory. A directory item, or a lock-only row's (§4 Storybook, §4 Lint),
+      // has no bare form (the worker cannot `cd`).
       allow.push(...lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd).map(form(true)));
     }
     if (BIN_NAME.test(it.bin) && !NOT_A_TOOL.has(it.bin)) probeBins.add(it.bin);
@@ -469,6 +476,17 @@ if (mode === 'triage') {
   // covers, which the worker runs under the test lock like any suite line. workspace-test re-reads the
   // workspaces when it runs, so one rule covers a workspace the worker adds after spawn.
   allow.push(...lockForms('test', '.', 'desk-env workspace-test').map((c) => rule(c, '')));
+  // A lint binary runs at the root and in each directory a §4 item names, so a worker lints one file
+  // from its workspace package. A form a configured item holding `..` extends is left to that item's
+  // own rule: its `..` deny would refuse the item, and its prefix allow without the deny takes any `..`.
+  const lintDirs = [...new Set(['.', ...items.map((it) => normDir(it.dir))])];
+  const configured = items.flatMap((it) => twins(it.cmd).flatMap((cmd) => lockForms(it.lock ?? E.lockFor(it.id), it.dir, cmd)));
+  const allLint = lintDirs.flatMap((dir) => NODE_BIN_DIRS.flatMap((d) => NODE_BIN_LINT.flatMap((t) => lockForms('tsc', dir, `${d}${t}`))));
+  const extends_ = (k, c) => k.startsWith(c) && k.slice(c.length).includes('..');
+  const lintBins = allLint.filter((c) => !configured.some((k) => extends_(k, c)));
+  allow.push(...lintBins.map((c) => rule(c, '')));
+  // Such an item still takes no further `..` of the worker's.
+  deny.push(...lintBins.map((c) => `Bash(${c}*..*)`), ...configured.filter((k) => allLint.some((c) => extends_(k, c))).map((k) => `Bash(${k}*..*)`));
   if (PM && BIN_NAME.test(PM)) {
     probeBins.add(PM);
     allow.push(...withPrefix(`${PM} install`).map((c) => `Bash(${c})`)); // exactly, no arguments
@@ -695,7 +713,7 @@ if (mode === 'triage') {
   const composeFile = !stackByEnv && base ? [base, override].filter(Boolean).join(' -f ') : null;
   const services = [];
   for (const raw of cfgList('local-services')) {
-    const name = /^[a-z0-9][a-z0-9_.-]*(?=\s|$)/.exec(raw.trim())?.[0];
+    const name = E.localServiceName(raw);
     if (name) services.push(name);
     else if (E.permission('worker-local-services') === 'yes') warns.push(`§4 Local services item "${raw}" does not start with a compose service name — not allow-listed`);
   }

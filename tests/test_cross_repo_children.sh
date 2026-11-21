@@ -56,9 +56,8 @@ for r in zendesk studia-web; do
 EOF
 done
 
-# A DESK_HOME whose bin holds the real scripts beside a stub intake.mjs, which logs where and how it
-# ran and admits, or refuses, as $T/intake.mode says.
-for f in "$B"/*; do [ "${f##*/}" = intake.mjs ] || ln -s "$f" "$T/desk/bin/${f##*/}"; done
+# A DESK_HOME whose bin holds the real scripts (link_bin, after the stub) beside a stub intake.mjs,
+# which logs where and how it ran and admits, or refuses, as $T/intake.mode says.
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, readFileSync } from 'node:fs';
 const e = process.env;
@@ -74,6 +73,8 @@ if (mode === 'ok') {
   process.exitCode = 11;
 }
 EOF
+# shellcheck source=link_bin.sh
+. "$S/link_bin.sh"; link_bin "$B" "$T/desk/bin"
 export DESK_HOME="$T/desk" DESK_AUTOPILOT_STATE="$T/state" DESK_QUEUE="$T/queue.json"
 cd "$T/zendesk" || exit 1
 

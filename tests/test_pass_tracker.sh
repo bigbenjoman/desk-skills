@@ -126,8 +126,8 @@ cat > "$T/stub/gh" <<EOF
 echo "\$*" >> "$T/gh-calls"
 case "\$*" in
   "pr view 310 "*) echo '{"state":"OPEN","headRefOid":"abc","reviews":[{"state":"APPROVED","author":{"login":"old"},"commit":{"oid":"zzz"}},{"state":"APPROVED","author":{"login":"mousedown"},"commit":{"oid":"abc"}},{"state":"COMMENTED","author":{"login":"me"},"commit":{"oid":"abc"}}],"statusCheckRollup":[{"__typename":"CheckRun","name":"Review gate","workflowName":"gate","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/7/job/70"},{"__typename":"CheckRun","name":"tests","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/80"},{"__typename":"CheckRun","name":"Lint","workflowName":"ci","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-23T10:00:00Z","detailsUrl":"https://github.com/acme/widgets/actions/runs/8/job/81"}]}' ;;
-  "api repos/"*"/check-runs/70/annotations") jq -c '.protected' "$FIX" ;;
-  "api repos/"*"/check-runs/81/annotations") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
+  "api repos/"*"/check-runs/70/annotations?per_page=100") jq -c '.protected' "$FIX" ;;
+  "api repos/"*"/check-runs/81/annotations?per_page=100") if [ -f "$T/annotations-ok" ]; then echo '[]'; else exit 1; fi ;;
   "run view 8 "*"--job 81 --log-failed") printf 'Lint\tRun\t2026-10-23T10:00:00.000Z ReferenceError: React is not defined\n' ;;
   "pr list "*) echo '[]' ;;
   *) exit 1 ;;
@@ -137,6 +137,7 @@ q init ga
 q add GA-1; q set GA-1 state=done result.pr=310
 : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
 check "DS-499 AC1 a failed check keeps its gate's error line, not GitHub's exit code line" 'field GA-1 pr_status | jq -r ".checks[] | select(.name == \"Review gate\") | .error" | grep -q "^Approval required — 2 protected file(s): "'
+check "#831 the error lines keep each failure annotation's path and title beside them, exit-code lines aside" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name == \"Review gate\") | .error_notes[] | [.path, .title, (.message | startswith(\"Approval required\"))]]")" = "[[\".github\",\"\",true]]" ]'
 check "DS-499 a passing check is not read, and one whose annotations could not be read keeps no error" '[ "$(field GA-1 pr_status | jq -c "[.checks[] | select(.name != \"Review gate\") | has(\"error\")]")" = "[false,false]" ] && ! grep -q "check-runs/80" "$T/gh-calls"'
 check "DS-499 AC2 who approved the head is recorded, and an approval of an older commit is not" '[ "$(field GA-1 pr_status.approvals | jq -c .)" = "[\"mousedown\"]" ]'
 touch "$T/annotations-ok"; : > "$T/gh-calls"; out=$(node "$B/pass.mjs" 2>&1)
@@ -236,7 +237,6 @@ cat >> "$T/config-j.md" <<EOF
 EOF
 export DESK_CONFIG="$T/config-j.md" DESK_QUEUE="$T/queue-j.json" DESK_AUTOPILOT_STATE="$T/state-j"
 mkdir -p "$T/state-j/logs" "$T/state-j/triage" "$T/jira"
-ln -s "$B/ticket-facts.mjs" "$T/desk/bin/ticket-facts.mjs"
 # A search answers `key in (...)` with each key's $T/jira/<KEY>.json that exists, as Jira leaves out an
 # issue it does not show.
 cat > "$T/jira-search.mjs" <<'EOF'
@@ -846,6 +846,7 @@ check "DS-578 AC1 a clean draft red only on a §4 State check is undrafted" '[ "
 { cat "$T/config-j.md"; printf '| Jira project | `J` |\n| Person-input labels | `ben-input` |\n'; } > "$T/config-a.md"
 CONFIG_WAS=$DESK_CONFIG; export DESK_CONFIG="$T/config-a.md" DESK_QUEUE="$T/queue-a.json" DESK_AUTOPILOT_STATE="$T/state-a"
 mkdir -p "$T/state-a/logs" "$T/state-a/triage"; : > "$T/admits-a"
+rm -f "$T/desk/bin/intake.mjs"
 cat > "$T/desk/bin/intake.mjs" <<EOF
 import { appendFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -986,5 +987,47 @@ check "DS-373 AC1 the pass starts it there too" \
 ebfix=$(node -e 'const f = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); console.log(Object.values(f).map((r) => r.fix).join(" "))' "$T/state-eb/evidence-runs/fixes.json" 2>/dev/null)
 check "DS-373 the fix ticket for a failed run reproduces it where the pass runs it" \
   'grep -qF -- "--ref main -f pr=805" "$T/state-eb/tickets/$ebfix.md" && ! grep -q "feat/x" "$T/state-eb/tickets/$ebfix.md"'
+
+# ---- DS-854: with Jira, the fix ticket's body is sent from the batch state dir, which desk-jira accepts
+# The fake desk-jira applies desk-jira's path check to the body, with $DESK_STATE as the only allowed
+# root ($T is itself a temp dir, which the real check would also allow). $T/jira-refuse refuses it anyway,
+# and $T/jira-lint refuses it as a lint block does, with findings above a last line naming no file.
+cat > "$T/stub/desk-jira" <<EOF
+#!/bin/sh
+echo "\$*" >> "$T/jira-calls"
+[ "\$1" = create ] || exit 0
+if [ -f "$T/jira-lint" ]; then printf 'desk-jira: not created: the ticket has blocking findings (ticket-template.md):\nERROR  Acceptance criteria: none found\nFix the body, or pass --no-lint to file it as it is\n' >&2; exit 1; fi
+real=\$(cd "\$(dirname "\$4")" && pwd -P)/\$(basename "\$4")
+st=\$(cd "\${DESK_STATE:-/nonexistent}" 2>/dev/null && pwd -P)
+if [ ! -f "$T/jira-refuse" ] && [ -n "\$st" ]; then case "\$real" in "\$st"/*) echo "created J-900"; exit 0 ;; esac; fi
+echo "desk-jira: refusing to send \$4 (\$real): a body, field=@file or attachment must be inside this repo's worktree (none here), \\\$DESK_STATE or a temp dir (\\\$TMPDIR, /tmp)" >&2; exit 1
+EOF
+chmod +x "$T/stub/desk-jira"
+jconfig(){
+  uconfig yes
+  awk -v g="$1" '{ print } /^\| `pr-ready`/ { print "| `jira-create` | File tickets | `yes` | `" g "` |" }' "$T/config-u.md" > "$T/config-ej.md"
+  printf '| Evidence workflow | `pr-evidence.yml` |\n\n## 4. Tracker\n| Field | Value |\n|---|---|\n| Tracker | `jira` |\n| Ticket key pattern | `[A-Z]+-[0-9]+` |\n' >> "$T/config-ej.md"
+}
+export DESK_CONFIG="$T/config-ej.md" DESK_QUEUE="$T/queue-ej.json" DESK_AUTOPILOT_STATE="$T/state-ej"
+mkdir -p "$T/state-ej/logs" "$T/state-ej/evidence-runs"; : > "$T/admits"; : > "$T/jira-calls"
+q init ej; q add E-806; q set E-806 state=done result.pr=806
+printf '{"workflow":"pr-evidence.yml","runId":"9806","url":"https://github.com/acme/widgets/actions/runs/9806","at":"2026-11-01T19:28:00Z","cells":2}\n' > "$T/state-ej/evidence-runs/806-$HEAD_A.json"
+bodies(){ find "$T/state-ej/evidence-runs" -name 'fix-*.md' | wc -l | tr -d ' '; }
+jconfig ask; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC2 jira-create ask: no ticket is created and the item names the setting" \
+  '! grep -q "^create " "$T/jira-calls" && [ "$(field E-806 undraft.call)" = "\"person\"" ] && field E-806 undraft.why | grep -q "jira-create.* to be .*yes.* (it is .*ask"'
+jconfig yes; touch "$T/jira-refuse"; out=$(node "$B/pass.mjs" 2>&1)
+body=$(find "$T/state-ej/evidence-runs" -name 'fix-*.md')
+check "DS-854 AC3 a refused create is quoted with the body file's real path, its id included" \
+  '[ "$(bodies)" = 1 ] && echo "$out" | grep -qF "refusing to send $body" && field E-806 undraft.why | grep -qF "$(basename "$body")"'
+out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC4 the next refused try reuses the body file rather than leaving another" '[ "$(bodies)" = 1 ] && [ "$(grep -c "^create " "$T/jira-calls")" = 2 ]'
+rm -f "$T/jira-refuse"; touch "$T/jira-lint"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC3 a refusal whose last line names no file still quotes its findings and the body file's path" \
+  'field E-806 undraft.why | grep -qF "Acceptance criteria: none found" && field E-806 undraft.why | grep -qF "its body is $body"'
+rm -f "$T/jira-lint"; out=$(node "$B/pass.mjs" 2>&1)
+check "DS-854 AC1 desk-jira accepts the body from the batch state dir and the fix is admitted" \
+  'grep -q "^admit J-900 --by evidence$" "$T/admits" && echo "$out" | grep -q "evidence: filed J-900 .*admitted to the batch" && [ "$(field E-806 undraft.call)" = "\"evidence-fix\"" ] && ! echo "$out" | grep -q "DRAFT — PR #806"'
+check "DS-854 AC4 and once filed, the body file is removed" '[ "$(bodies)" = 0 ]'
 
 echo "pass: $PASS passed, $FAIL failed"; rm -rf "$T"; [ "$FAIL" -eq 0 ]

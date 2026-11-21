@@ -1,8 +1,8 @@
 // suite: conflict record (merge-time conflicts per file, and the per-file budget they lower)
-import { mkdtempSync, readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, writeFileSync, mkdirSync, chmodSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { conflictsPath, readConflicts, recordConflicts, conflictTimes, loweredBy, recentCount, CONFLICT_WINDOW_MS } from '../desk/bin/conflict-record.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 
@@ -40,7 +40,7 @@ t('AC4 a cap at 1 then 7 days quiet: back up one', k([ago(10), ago(9.9), ago(9.8
 t('recentCount counts the last 7 days', recentCount([ago(1), ago(6.9), ago(7), ago(30)], NOW), 2);
 
 // The record on disk.
-const dir = mkdtempSync(join(tmpdir(), 'conflict-record-'));
+const dir = scratch('conflict-record-');
 const file = join(dir, 'state', 'conflicts.jsonl');
 t('a missing record reads as empty', JSON.stringify(readConflicts(file)), '{"entries":[],"bad":null}');
 const at = '2026-11-17T12:00:00.000Z';

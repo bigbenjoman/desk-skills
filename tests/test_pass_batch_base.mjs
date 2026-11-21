@@ -71,6 +71,27 @@ const batchWrites = (as) => as.filter((a) => a.type === 'set-batch').flatMap((a)
     j([['base sync: refused — spawning carries on from the base as it stands (how far feat/x is behind main could not be read)'], false]));
 }
 
+// DS-808 AC4: a refused push that holds every spawn is recorded for needs-you, and cleared once it does not.
+{
+  const refused = { ok: false, reason: 'push', why: 'the push to feat/x was refused: ! [remote rejected] feat/x -> feat/x (protected branch hook declined)' };
+  const CMD = `git -C ${WT} fetch -q origin && git -C ${WT} merge --no-edit origin/main && git -C ${WT} push origin HEAD:refs/heads/feat/x || git -C ${WT} reset -q --hard origin/feat/x`;
+  const stuck = { base: 'feat/x', source: 'main', behind: 61, frozen: 4, why: refused.why, path: WT, cmd: CMD };
+  const far = sync(snap({}, { frozen: 4 }), { behind: 61, sync: refused });
+  t('DS-808 AC4 past the lag, a refused push records the frozen base for needs-you', j(batchWrites(far)), j([`base_sync_stuck=${JSON.stringify({ since: '2026-11-18T12:00:00.000Z', ...stuck })}`]));
+  t('DS-808 a later pass with the same refusal writes nothing', batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 4 }), { behind: 61, sync: refused })).length, 0);
+  t('DS-808 one that changed keeps when it began', JSON.parse(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } }, { frozen: 5 }), { behind: 61, sync: refused }))[0].slice('base_sync_stuck='.length)).since, 'x');
+  t('DS-808 within the lag it records nothing', batchWrites(sync(snap({}, { frozen: 4 }), { sync: refused })).length, 0);
+  t('DS-808 nor does a refusal that is not a push', batchWrites(sync(snap({}, { frozen: 4 }), { behind: 61, sync: { ok: false, reason: 'error', why: 'x' } })).length, 0);
+  t('DS-808 the record is cleared once the base syncs', j(batchWrites(sync(snap({ base_sync_stuck: { since: 'x', ...stuck } })))), j(['base_sync_stuck=null']));
+  t('DS-808 a dry run writes nothing', batchWrites(sync(snap({}, { frozen: 4, dry: true }), { behind: 61, sync: refused })).length, 0);
+  const made = sync(snap(), { worktree: { ok: true, path: WT, made: true, env: { copied: ['.env'], missing: ['apps/web/.env'] } } });
+  t('DS-808 AC1 a made base worktree says which env files it was given', lines(made)[0],
+    `base worktree for feat/x made at ${WT}; §4 Env files copied in (.env), with every §4 Database URL variable blanked; §4 Env files not copied (apps/web/.env): not in the primary checkout, or not ignored by git`);
+  t('DS-808 one made earlier says only what it was given now', lines(sync(snap(), { worktree: { ok: true, path: WT, made: false, env: { copied: ['.env'], missing: ['x'] } } }))[0],
+    `base worktree for feat/x at ${WT}: §4 Env files copied in (.env), with every §4 Database URL variable blanked`);
+  t('DS-808 and nothing when it lacked none', lines(sync(snap(), { worktree: { ok: true, path: WT, made: false, env: { copied: [], missing: ['x'] } } }))[0], 'base sync: merged 3 commit(s) from main into feat/x and pushed');
+}
+
 // When the base syncs, and what a sync that lands says.
 {
   const as = sync(snap());

@@ -4,11 +4,11 @@
 // file, so import.meta.url is the real path while process.argv[1] keeps the linked one: a guard that
 // compares them unresolved never fires, and the script exits 0 having printed nothing.
 // Scratch directories only.
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, symlinkSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -28,7 +28,7 @@ t('every guard compares real paths on both sides',
   guards.filter(({ l }) => !(real('process\\.argv\\[1\\]').test(l) && real('fileURLToPath\\(import\\.meta\\.url\\)').test(l))).map(({ f }) => f), []);
 
 // The install's layout: bin -> current/bin, current -> releases/<commit>, releases/<commit>/bin -> this checkout's.
-const S = mkdtempSync(join(tmpdir(), 'bin-guard-'));
+const S = scratch('bin-guard-');
 mkdirSync(join(S, 'releases/abc'), { recursive: true });
 symlinkSync(join(root, 'desk/bin'), join(S, 'releases/abc/bin'));
 symlinkSync('releases/abc', join(S, 'current'));
@@ -53,6 +53,11 @@ r = sh(`. "${F}/desk-env.sh" && desk_tool_args worker`);
 t('an empty list for worker is refused, and says why', [r.status !== 0, /empty/.test(r.stderr)], [true, true]);
 r = sh(`. "${F}/desk-env.sh" && desk_tool_args none && printf '%s|' "\${DESK_TOOL_ARGS[@]}"`);
 t('none still passes an empty list', [r.status, r.stdout], [0, '--tools||']);
+
+// The prose facts registry imports desk-env.mjs and the queue's command list: importing it prints
+// nothing and runs no script's command.
+r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(join(root, 'desk/bin/prose-facts.mjs'))})`], { encoding: 'utf8', cwd: S });
+t('importing prose-facts.mjs prints nothing and runs no main', [r.status, r.stdout, r.stderr], [0, '', '']);
 
 rmSync(S, { recursive: true, force: true });
 if (fails) { console.log(`${fails} check(s) did not pass`); process.exit(1); }

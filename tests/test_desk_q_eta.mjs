@@ -2,12 +2,12 @@
 // The eta history against a fixture queue, fixture worker logs and a temporary state directory, with
 // a fake gh on PATH; then the forecast against fixture repos under a temporary HOME and DESK_HOME.
 // Nothing touches your real queue, state or GitHub.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, chmodSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { buildHistory, recordMerge, readHistory, firstSpawnFromLogs } from '../desk/bin/desk-q-eta.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
@@ -23,7 +23,7 @@ const daysAgo = (d) => hoursAgo(d * 24);
 const log = (stamp) => `${JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' })}\n${JSON.stringify({ type: 'user', timestamp: stamp })}\n${JSON.stringify({ type: 'user', timestamp: hoursAgo(-1, Date.parse(stamp)) })}\n`;
 
 function world({ tickets, logs = {}, sizes = {}, merged = {} }) {
-  const T = mkdtempSync(join(tmpdir(), 'desk-eta-'));
+  const T = scratch('desk-eta-');
   const state = join(T, 'state');
   mkdirSync(join(state, 'logs'), { recursive: true });
   mkdirSync(join(state, 'triage'), { recursive: true });
@@ -135,7 +135,7 @@ function world({ tickets, logs = {}, sizes = {}, merged = {} }) {
 // Every check but the CLI's runs on a fixed clock: Mon 19 Oct 2026 18:51, local time.
 const FIXED = new Date(2026, 9, 19, 18, 51).getTime();
 const HOUR = 3_600_000;
-const Z = mkdtempSync(join(tmpdir(), 'desk-q-ships-'));
+const Z = scratch('desk-q-ships-');
 const zenv = { HOME: join(Z, 'home'), DESK_HOME: join(Z, 'deskhome'), DESK_CONFIG_ROOT: join(Z, 'config'), DESK_MACHINE: join(Z, 'machine.md') };
 // A machine cap the fixture repos' workers together never fill, so each batch's own slots decide.
 writeFileSync(zenv.DESK_MACHINE, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| autopilot-concurrency | `5 / 100` | x |\n');

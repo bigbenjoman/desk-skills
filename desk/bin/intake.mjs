@@ -389,8 +389,11 @@ const holdArgs = ({ held, outside, merge = [] }) => [...(held.length ? ['--hold'
 // read is admitted parked on it, its holds kept for when it is requeued (queue.mjs admit).
 function admitHeld(key, holds, by) {
   const a = queueCmd('admit', key, '--by', by, ...holdArgs(holds));
-  return a.status === 0 ? { held: holds.held, outside: holds.outside, merge: holds.merge, gates: holds.gates, free: holds.free } : { why: lastLine(a) };
+  return a.status === 0 ? { held: holds.held, outside: holds.outside, merge: holds.merge, gates: holds.gates, free: holds.free, runs: runsOf(a) } : { why: lastLine(a) };
 }
+// Where queue.mjs admit placed the ticket, as its line ends in a batch whose workers run in the cloud
+// (`runs: cloud`, or `runs: local — <why>`), so the admit says it as the batch plan does; else null.
+const runsOf = (a) => /; (runs: .*?)(?: — its own Jira blockers \(.*)?$/.exec(String(a.stdout ?? '').trim().split('\n').pop() ?? '')?.[1] ?? null;
 // The register entry for an epic whose feature batch was started, so intake never takes it again.
 const epicEntry = (s, by, now) => ({ at: now.toISOString(), outcome: 'admitted', batch: s.batch,
   text: `feature batch ${s.batch} started, ${s.children.length} ${s.children.length === 1 ? 'child' : 'children'} held behind its plan, by ${by}` });
@@ -521,7 +524,7 @@ function placeOne(key, rec, { started, by, now, mayStart = true, session = false
     batch = started = st.name;
   }
   const a = admitHeld(key, holds, by);
-  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && sessionRun(cur) } : { admitFailed: a.why, started: startNew ? started : null };
+  return a.held ? { batch, base, held: a.held, outside: a.outside, merge: a.merge, gates: a.gates, free: a.free, runs: a.runs, started: startNew ? started : null, note: epicFinishedNote(rec), sessionRun: !startNew && sessionRun(cur) } : { admitFailed: a.why, started: startNew ? started : null };
 }
 
 async function intake({ state, query, reg, now }) {
@@ -724,7 +727,7 @@ async function joinFeature(key, epic, { by, say = () => {} }) {
   if (a.status !== 0) return { why: lastLine(a) };
   let held = holds.held;
   try { held = String(readQueueAt(b.queue).tickets?.[key]?.held_by ?? '').split('|').filter((k) => k && !holds.outside.includes(k)); } catch { /* admitted: say the holds asked for */ }
-  return { batch: b, base, held, outside: holds.outside, merge: holds.merge, gates: holds.gates, free: holds.free, rec: t.rec, took: logTaken(key, t.rec, b.state, holds.free) };
+  return { batch: b, base, held, outside: holds.outside, merge: holds.merge, gates: holds.gates, free: holds.free, runs: runsOf(a), rec: t.rec, took: logTaken(key, t.rec, b.state, holds.free) };
 }
 
 // Up to triageConcurrency() triages run at once, a ticket's Jira blockers dispatched before it, and each
@@ -759,7 +762,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     base: () => (moveTo(b)
       ? `batch ${b.batch ?? '?'} runs on base ${b.base} in the standing slot: move it to ${moveTo(b)} (node ${join(HERE, 'move-batch.mjs')}), then admit these again`
       : `batch ${b.batch ?? '?'} runs on base ${b.base}: run /desk-autopilot for these in a session`),
-    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session`,
+    session: () => `batch ${b.batch ?? '?'} is run by a session, not the supervisor: send these tickets to that session (ListAgents names it) and let it admit them with node ${join(HERE, 'intake.mjs')} admit ${keys.join(' ')} --session, or, if this session is the one that runs it, run that yourself`,
     free: () => `no batch is live, and starting one without a plan approval needs config §3 ${E.permissionKey('autopilot-workers')} to be "yes" (it is "${E.permission('autopilot-workers')}"): run /desk-autopilot ${keys.join(' ')}`,
   }[code]?.() ?? null);
   const nowhere = (b) => said(closed(b, session) ?? (free(b) && !mayStart ? 'free' : null), b);
@@ -878,7 +881,7 @@ async function byHand(keys, { state, by, front, into, session, now, onLine }) {
     writeIntake(state, reg);
     admitted.push(key);
     if (!feature && r.sessionRun) ours.push(key);
-    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}${ownEpicText(rec)}`);
+    say(`admitted ${key} by ${by} into ${feature ? `feature batch ${feature.name}` : `batch ${r.batch ?? '?'}`} (${laneSize(rec)})${heldText(r, new Set(refused))}${took}${r.note ?? ''}${ownEpicText(rec)}${r.runs ? `; ${r.runs}` : ''}`);
     const open = new Set(openBlockers(rec));
     for (const b of r.outside ?? []) if (open.has(b) && !keys.includes(b)) next.add(b);
     if (front) say(toFrontIn(feature ? batchEnv(feature) : process.env, key));

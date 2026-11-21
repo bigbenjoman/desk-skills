@@ -31,6 +31,7 @@ import { permissionOrUnset, queueFile, configValue, configValues, isNone } from 
 import { parseVerdict as gateVerdict } from '../templates/scripts/desk/review-gate.mjs';
 // The workflow YAML scanner every rule here reads lines with.
 import { parseWorkflow, checkNameOf, keyOf, blockAfter, mapping, unquote } from './workflow-yaml.mjs';
+import { quantile } from './quantile.mjs';
 export { parseWorkflow, checkNameOf };
 
 // ---- the rules --------------------------------------------------------------------------------
@@ -265,14 +266,7 @@ const PASSING = new Set(['success', 'skipped', 'neutral']);
 const ms = (s) => (s ? Date.parse(s) : NaN);
 const finite = (xs) => xs.filter(Number.isFinite);
 
-// Linear interpolation between closest ranks, so the median of an even count is the mean of the two.
-export function quantile(xs, q) {
-  const v = finite(xs).sort((a, b) => a - b);
-  if (!v.length) return null;
-  const pos = (v.length - 1) * q;
-  const lo = Math.floor(pos);
-  return v[lo] + (v[Math.min(lo + 1, v.length - 1)] - v[lo]) * (pos - lo);
-}
+export { quantile };
 
 export const isSelfHosted = (job) => (job.labels ?? []).includes('self-hosted')
   || (!!job.runner_group_name && job.runner_group_name !== 'GitHub Actions');

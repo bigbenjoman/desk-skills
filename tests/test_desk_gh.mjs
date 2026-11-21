@@ -4,18 +4,18 @@
 // A mutation, a non-GET method, --input, a file field or an unknown flag is refused with exit 1 and
 // never reaches gh. A fake gh on PATH records what it was run with. Scratch directory only.
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeKeyword } from '../desk/bin/desk-gh.mjs';
+import { scratch } from './scratch.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCRIPT = join(ROOT, 'desk', 'bin', 'desk-gh.mjs');
 let fails = 0;
 const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
-const T = mkdtempSync(join(tmpdir(), 'desk-gh-'));
+const T = scratch('desk-gh-');
 const log = join(T, 'gh.log');
 writeFileSync(join(T, 'gh'), `#!/bin/sh\nprintf '%s\\n' "$@" > "${log}"\necho '{"data":{}}'\n`);
 chmodSync(join(T, 'gh'), 0o755);

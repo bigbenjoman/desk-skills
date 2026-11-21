@@ -1,8 +1,10 @@
 // suite: pass phase: advance running tickets and the usage limit (the decisions, and the generator runner)
 import { runSteps } from '../desk/bin/pass/run-phase.mjs';
 import { decideAdvance, decideUsageLimit, logMarkers, REBOOT } from '../desk/bin/pass/advance.mjs';
-import { registryView } from '../desk/bin/pass/shared.mjs';
+import { registryView, BUDGET_RESUME_USD } from '../desk/bin/pass/shared.mjs';
+import { budgetStop } from '../desk/bin/harvest.mjs';
 import { withNoIo } from './pass_phase_trap.mjs';
+import { scratch } from './scratch.mjs';
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 const j = (x) => JSON.stringify(x);
@@ -31,7 +33,7 @@ const snap = (tk, log, { sessions = [], read = true, upload = true } = {}) => ({
 const READS = {
   'open-pr': '', 'suite-wait': null, 'build-park': null, 'merge-park': null, shots: [], cells: null, 'open-question': null,
   'settle-links': [], 'live-read': null, 'clears-when': { kind: 'none' }, register: { inputs: {}, status: 'new' }, recommends: null,
-  'refuse-lease': false, lifted: false, 'exit-code': null,
+  'refuse-lease': false, lifted: false, 'exit-code': null, uncommitted: null,
 };
 const WRITES = ['set', 'report', 'cloud', 'note', 'hold', 'kill', 'park', 'upload', 'worker-head', 'done', 'park-links', 'keep-links', 'decisions', 'handoff', 'fail', 'keep-holds', 'usage-hold'];
 function drive(decide, s, answers = {}) {
@@ -57,6 +59,7 @@ const finishes = (as) => as.filter((a) => FINISHES.has(a.type) || (a.type === 's
 // AC4: a running ticket with no log yet gets no action. A cloud session has no log here either.
 t('AC4 a running ticket with no log yet gets no action', j(advance(snap(ticket('A'), null))), '[]');
 t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A', { location: 'cloud', cloud: { started: 'x' } }), null))), j([{ type: 'cloud', key: 'A' }]));
+t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), is not read as the cloud session again', j(advance(snap(ticket('A', { location: 'cloud', cloud: { started: 'x', pr_at: 'y' }, result: null, fix: { kind: 'checks', started: 'z' } }), null))), j([]));
 
 // AC1: with the session registry unread, nothing is marked finished or started again, whatever the logs say.
 {
@@ -118,6 +121,37 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
     j([types(suite).includes('park'), sets(suite), lines(suite, 'quiet')]), j([false, ['idle_passes=6', `suite_wait_since=${NOW}`], ['T-13: quiet for 6 passes, running its suite']]));
 }
 
+// A worker its per-worker budget stopped resumes once in its own session to commit, push and finish.
+{
+  const BUDGET = { type: 'result', subtype: 'error_max_budget_usd', is_error: true };
+  const stopped = (key, extra = {}) => snap(ticket(key, { worktree: `/wt/${key}`, ...extra }), logOf(key, '', [said('all suites green'), BUDGET]));
+  t('a budget stop is queued to resume once, naming its session',
+    j(sets(advance(stopped('B-1'))).filter((f) => !LIVENESS.test(f))), j(['state=triaged', 'resume=budget', 'resume_why=stopped at the per-worker budget (config §3b "Autopilot per-worker budget (USD)")', 'budget_resumed=sid-B-1']));
+  const again = advance(stopped('B-2', { budget_resumed: 'sid-B-2' }), { uncommitted: null });
+  t('a second budget stop in that session parks, naming the budget and the worktree',
+    again.find((a) => a.type === 'park')?.question, `stopped at the per-worker budget (config §3b "Autopilot per-worker budget (USD)") again after its one resume with $${BUDGET_RESUME_USD} more, and its worktree /wt/B-2 may hold uncommitted work (git status could not be read). Commit and push it by hand, or raise the budget and requeue it with queue.mjs requeue B-2`);
+  t('a budget stop in a new session resumes once again', sets(advance(stopped('B-3', { budget_resumed: 'sid-old' }))).includes('resume=budget'), true);
+  t('a resume that wrote nothing since its launch is not read as a second budget stop', sets(advance(snap(ticket('B-5', { budget_resumed: 'sid-B-5' }), logOf('B-5', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }])))).includes('resume=budget') || advance(snap(ticket('B-5', { budget_resumed: 'sid-B-5' }), logOf('B-5', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }]))).some((a) => a.type === 'park' && /budget/.test(a.question)), false);
+  t('a resume that stopped at its allowance is a second budget stop', advance(snap(ticket('B-6', { budget_resumed: 'sid-B-6', worktree: '/wt/B-6' }), logOf('B-6', '', [said('x'), BUDGET, { type: 'desk_spawn', at: 'y' }, said('commit'), BUDGET]))).some((a) => a.type === 'park' && /again after its one resume/.test(a.question)), true);
+  t('a session that ended any other way is not a budget stop', sets(advance(snap(ticket('B-4'), logOf('B-4', '', [said('x'), { ...BUDGET, subtype: 'error_max_turns' }])))).includes('resume=budget'), false);
+}
+
+// A worker that parked or stopped when the computer could not run commands (no space or inodes left)
+// is the host's fault: an environment park, never its own words read as a lane.
+{
+  const FULL = { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'mkdir: cannot create directory: No space left on device' }] } };
+  const lane = advance(snap(ticket('H-1'), logOf('H-1', 'AUTOPILOT_PARK: lane C: needs a person\'s judgement', [FULL, said('AUTOPILOT_PARK: lane C: needs a person\'s judgement'), RESULT])));
+  const q = lane.find((a) => a.type === 'park')?.question ?? '';
+  t('a park after a host fault is an environment park, naming the error', q.startsWith('environment: ') && q.includes('No space left on device') && q.includes('queue.mjs requeue H-1'), true);
+  t('and never reads as the worker\'s lane', /lane C/.test(q), false);
+  const stopped = advance(snap(ticket('H-2'), logOf('H-2', '', [FULL, said('cannot go on'), RESULT])), { 'open-pr': '' });
+  t('a stop with no marker after a host fault parks as environment, not failed', `${types(stopped).includes('fail')} ${stopped.find((a) => a.type === 'park')?.question.startsWith('environment: ')}`, 'false true');
+  t('a fault park is never read as a build-only park', types(advance(snap(ticket('H-4'), logOf('H-4', 'AUTOPILOT_PARK: waits only on the build check', [FULL, said('AUTOPILOT_PARK: waits only on the build check'), RESULT])), { 'build-park': { pr: 9, head: 'abcdef1234567', checks: ['build'], command: 'make' } })).filter((x) => ['build-park', 'done', 'park'].includes(x)).join(' '), 'park');
+  const READ = { type: 'user', message: { content: [{ type: 'tool_result', content: [{ type: 'text', text: "const HOST_FAULT = /ENOSPC|No space left on device/;" }] }] } };
+  t('a call that only prints the words, not one that failed on them, is no host fault: the park keeps its question', advance(snap(ticket('H-5'), logOf('H-5', 'AUTOPILOT_PARK: which colour?', [READ, said('No space left on device is what ENOSPC means'), said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
+  t('a park with no host fault in its log is the worker\'s own, as before', advance(snap(ticket('H-3'), logOf('H-3', 'AUTOPILOT_PARK: which colour?', [said('AUTOPILOT_PARK: which colour?'), RESULT])), { 'clears-when': null }).find((a) => a.type === 'park')?.question, 'which colour?');
+}
+
 // How an exited worker with no marker ended.
 {
   const dead = (key, extra = {}, mtimeMs = NOW - HOUR) => snap(ticket(key, extra), logOf(key, '', [said('working')], { mtimeMs }));
@@ -138,6 +172,54 @@ t('a cloud session is advanced from its PR, not a log', j(advance(snap(ticket('A
   t('a fix holding the merge on an instruction is parked, not done, with no marker', /^its worker ended with no marker, so your instruction on PR #40/.test(held.find((a) => a.type === 'park')?.question), true);
 }
 
+// A session that ended on the per-worker budget is resumed once, then parked; any other error fails.
+{
+  const stopped = (subtype) => ({ type: 'result', subtype, is_error: true, total_cost_usd: 25.01 });
+  const ended = (key, subtype, fields = {}, budget = { usd: 25 }) => ({
+    ...snap(ticket(key, { worktree: `/wt/${key}`, ...fields }), logOf(key, '', [said('tests green'), stopped(subtype)])), budget,
+  });
+  t('budgetStop reads the max-budget subtype as a budget stop', budgetStop(ended('B', 'error_max_budget_usd').log.text, { usd: 25 }), true);
+  t('budgetStop reads another error subtype as not one', budgetStop(ended('B', 'error_during_execution').log.text, { usd: 25 }), false);
+  t('budgetStop reads a session that went on after the stop as not one',
+    budgetStop(`${ended('B', 'error_max_budget_usd').log.text}${JSON.stringify(said('resumed'))}\n`, { usd: 25 }), false);
+  t('budgetStop reads the subtype with the budget off as not one', budgetStop(ended('B', 'error_max_budget_usd').log.text, { off: true }), false);
+  const first = advance(ended('B-1', 'error_max_budget_usd'));
+  t('DS-849 AC1 a worker stopped at the per-worker budget is queued to resume once, not failed',
+    j([sets(first).filter((f) => !LIVENESS.test(f)), types(first).includes('fail')]),
+    j([['state=triaged', 'resume=budget', 'resume_why=stopped at the per-worker budget ($25, config §3b "Autopilot per-worker budget (USD)")', 'budget_resumed=sid-B-1'], false]));
+  t('DS-849 AC1 and the report says it resumes with more to commit and push',
+    lines(first, 'advanced').at(-1), `B-1 stopped at the per-worker budget ($25, config §3b "Autopilot per-worker budget (USD)"): queued to resume once in its own session with $${BUDGET_RESUME_USD} more, to commit, push and finish its stage`);
+  const again = advance(ended('B-2', 'error_max_budget_usd', { budget_resumed: 'sid-B-2' }), { uncommitted: 3 });
+  const parked = again.find((a) => a.type === 'park')?.question ?? '';
+  t('DS-849 AC2 a second budget stop parks naming the budget and the uncommitted work',
+    j([/^stopped at the per-worker budget \(\$25, config §3b "Autopilot per-worker budget \(USD\)"\) again after its one resume/.test(parked),
+      parked.includes('its worktree /wt/B-2 holds uncommitted work (3 changed file(s))'), sets(again).some((f) => f.startsWith('resume=')), types(again).includes('fail')]),
+    '[true,true,false,false]');
+  const other = advance(ended('B-3', 'error_during_execution'), { 'exit-code': 1 });
+  t('DS-849 AC3 another error is failed as before',
+    j([other.find((a) => a.type === 'fail')?.why.startsWith('exited with no marker and no open PR on fix/B-3'), sets(other).some((f) => f.startsWith('resume='))]), '[true,false]');
+  const off = advance(ended('B-4', 'error_max_budget_usd', {}, { off: true }), { 'exit-code': 1 });
+  t('DS-849 AC4 with the per-worker budget none, a budget-stop subtype is failed as any error',
+    j([types(off).includes('fail'), sets(off).some((f) => f.startsWith('resume='))]), '[true,false]');
+}
+
+// The text a park's write waits on, from the worker's park file: only for the question it parked on.
+{
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { parkApprove } = await import('../desk/bin/batch-state.mjs');
+  const dir = scratch('park-approve-');
+  mkdirSync(join(dir, 'parks'));
+  const write = (o) => writeFileSync(join(dir, 'parks', 'P-1.json'), JSON.stringify(o));
+  write({ question: 'post the comment?', approve: { kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' } });
+  t('#775 a park file naming the question parked on gives its text', j(parkApprove(dir, 'P-1', 'post the comment?')), j({ kind: 'jira-comment', target: 'P-1', body: 'exact\ntext' }));
+  t('#775 an earlier round\'s file, on another question, gives nothing', parkApprove(dir, 'P-1', 'which colour?'), null);
+  write({ question: 'post the comment?' });
+  t('#775 a file with no approve gives nothing', parkApprove(dir, 'P-1', 'post the comment?'), null);
+  t('#775 no file gives nothing', parkApprove(dir, 'P-2', 'x'), null);
+}
+
 // The markers: whichever was written last says how the worker ended.
 t('a DONE after a PARK has finished', j(logMarkers('AUTOPILOT_PARK: q\nAUTOPILOT_DONE: pr=1', {})), j({ done: 'pr=1', reboots: 0 }));
 t('a PARK after a DONE is a park', j(logMarkers('AUTOPILOT_DONE: pr=1\nAUTOPILOT_PARK: q', {})), j({ park: 'q', reboots: 0 }));
@@ -152,7 +234,8 @@ t('a new reboot stop is one', j(logMarkers('AUTOPILOT_REBOOT: patch', {})), j({ 
   const as = advance(s, { 'settle-links': [{ why: 'no grant', link: null }] });
   t('a park\'s question carries the links not made', as.find((a) => a.type === 'park')?.question, 'which colour?. Issue links not made: no grant');
   t('its reads and writes run in the pass\'s order', j(types(as).slice(types(as).indexOf('worker-head'))),
-    '["worker-head","settle-links","park","set","live-read","clears-when","register","recommends","set","keep-links","decisions","report"]');
+    '["worker-head","settle-links","park","park-approve","set","live-read","clears-when","register","recommends","set","keep-links","decisions","report"]');
+  t('#775 the text a park awaits approval of is read for the question the worker parked on', j(as.find((a) => a.type === 'park-approve')), j({ type: 'park-approve', key: 'Q-1', question: 'which colour?' }));
   t('and it is reported parked', j(lines(as, 'parked')), j(['Q-1: which colour?. Issue links not made: no grant']));
   const off = advance(s, { register: { inputs: {}, status: 'put_off', entry: { at: '2026-11-01T00:00:00Z' } } });
   t('a park the person put off is reported put off', j(lines(off, 'putOff')), j(['Q-1: which colour? (put off on 2026-11-01)']));

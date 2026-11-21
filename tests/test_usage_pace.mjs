@@ -2,18 +2,18 @@
 // usage-pace.mjs with a fixed clock against fake worker logs carrying rate_limit_event lines, then the
 // real pass.mjs, with stub claude, gh, setup-worktree and spawn-worker, once per acceptance criterion.
 // A throwaway HOME, DESK_HOME and DESK_CONFIG_ROOT: nothing touches your real state.
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, readFileSync, symlinkSync, utimesSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
 
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-usage-pace-'));
+const T = scratch('desk-usage-pace-');
 const env = { HOME: join(T, 'home'), DESK_HOME: join(T, 'deskhome'), DESK_CONFIG_ROOT: join(T, 'config'), DESK_MACHINE: join(T, 'machine.md'), DESK_LOCK_DIR: join(T, 'locks') };
 for (const k of ['DESK_REPO_OVERRIDE', 'DESK_SLUG', 'DESK_STATE', 'DESK_REPO_DIR', 'DESK_REPO_ROOT', 'DESK_WORKTREES_DIR', 'DESK_DEFAULT_BRANCH',
   'DESK_QUEUE', 'DESK_AUTOPILOT_STATE', 'DESK_CONFIG', 'CLAUDE_CODE_SESSION_ID', 'AUTOPILOT_DRY_RUN', 'AUTOPILOT_RERUN', 'AUTOPILOT_PORT_FLOOR',
@@ -116,6 +116,40 @@ t('AC3 unit: a log last written over 6 hours ago does not count', P.newestUsage(
 t('DS-465 AC4 unit: a wider `recent` reads it', P.newestReading({ dirs: P.stateDirs({ self: A, root }), now: real, recent: P.WEEK_MS }).seven_day?.utilization, 0.4);
 writeFileSync(join(B, 'logs', 'B-2.log.round1.gz'), gzipSync(`${event(0.5, resetIn(real, 2 * DAY))}\n`));
 t('a round moved aside gzipped is read too', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.5);
+// Every pass is a new process, and gunzipping each recent round again is most of a pass's own CPU.
+// A log's events are kept on disk by its path, size, modified time and inode, so a new process reads an unchanged round from there. Its bytes are swapped for garbage of the same length, its time
+// put back: only the cache can still give 0.55.
+{
+  process.env.DESK_USAGE_DIR = join(T, 'usage-794');
+  mkdirSync(P.usageDir(), { recursive: true });
+  const gz = join(B, 'logs', 'B-3.log.round1.gz');
+  const s = Math.ceil(Date.now() / 1000) + 2;
+  const body = gzipSync(`${event(0.55, resetIn(real, 2 * DAY))}\n`);
+  writeFileSync(gz, body); utimesSync(gz, s, s);
+  t('DS-794 the round is read', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.55);
+  t('DS-794 and its events are kept on disk', JSON.stringify(JSON.parse(readFileSync(P.eventsCachePath(), 'utf8'))[gz]?.events?.map((e) => e.seven_day?.utilization)), '[0.55]');
+  writeFileSync(gz, Buffer.alloc(body.length, 0x78)); utimesSync(gz, s, s);
+  const child = (extra = {}) => spawnSync(process.execPath, ['--input-type=module', '-e',
+    `const P = await import(${JSON.stringify(join(BIN, 'usage-pace.mjs'))}); console.log(P.newestUsage({ dirs: P.stateDirs({ self: ${JSON.stringify(A)}, root: ${JSON.stringify(root)} }), now: ${real} })?.utilization ?? null);`],
+  { encoding: 'utf8', env: { ...process.env, ...extra } }).stdout.trim();
+  t('DS-794 a new process takes the unchanged round from the cache, not by gunzipping it', child(), '0.55');
+  t('DS-794 with no cache it would have read the round again (the garbage is no reading)', child({ DESK_USAGE_DIR: join(T, 'usage-794-none') }), '0.5');
+  utimesSync(gz, s + 1, s + 1);
+  t('DS-794 a round whose time changed is read again', child(), '0.5');
+  // That read failed (the bytes are not gzip), so nothing was kept for it: the round readable again at
+  // the same size, time and inode is read, not taken as no reading from the cache.
+  writeFileSync(gz, body); utimesSync(gz, s + 1, s + 1);
+  t('DS-794 a read that failed is kept nowhere, so the next process reads the round again', child(), '0.55');
+  // A live log can be rewritten at the same size within the same millisecond, so only rounds go on disk.
+  const live = join(B, 'logs', 'B-4.log');
+  writeFileSync(live, `${event(0.61, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log is read', P.newestUsage({ dirs: P.stateDirs({ self: A, root }), now: real })?.utilization, 0.61);
+  writeFileSync(live, `${event(0.62, resetIn(real, 2 * DAY))}\n`); utimesSync(live, s + 3, s + 3);
+  t('DS-794 a live log rewritten at the same size and time is read again by a new process', child(), '0.62');
+  rmSync(live);
+  rmSync(gz);
+  delete process.env.DESK_USAGE_DIR;
+}
 // A named batch's logs sit under its repo's state directory, in batches/<name>/.
 const dirsOf = (self) => JSON.stringify(P.stateDirs({ self, root }).sort());
 t('DS-305 AC5 unit: with only standing batches, the directories are the repos\'', dirsOf(A), JSON.stringify([A, B]));
@@ -132,7 +166,7 @@ rmSync(root, { recursive: true, force: true });
 // A world for passes: a DESK_HOME whose bin holds the real queue scripts beside stubs, and this repo
 // with one running worker and one ready ticket. -> { state, run }, where run() resolves to the output.
 let floor = 46100;
-function world({ pacing } = {}) {
+function world({ pacing, sub } = {}) {
   rmSync(join(T, 'w'), { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
   rmSync(env.DESK_HOME, { recursive: true, force: true });
@@ -169,7 +203,8 @@ function world({ pacing } = {}) {
     'Y-1': { key: 'Y-1', state: 'triaged', open_questions: 0, branch: 'fix/Y-1' },
   } }));
   const penv = { ...gitEnv, PATH: `${join(W, 'stub')}:${process.env.PATH}`, DESK_CONFIG: config, DESK_QUEUE: q, DESK_AUTOPILOT_STATE: state,
-    WT_DIR: join(W, 'wt'), AUTOPILOT_MIN_AVAIL_GB: '0', AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor += 100) };
+    WT_DIR: join(W, 'wt'), AUTOPILOT_MIN_AVAIL_GB: '0', AUTOPILOT_HEALTH_CHECKS: 'off', AUTOPILOT_ORCHESTRATOR: 'test', AUTOPILOT_PORT_FLOOR: String(floor += 100),
+    ...(sub ? { DESK_SUBSCRIPTIONS: sub.file, DESK_SUBSCRIPTION: sub.email } : {}) };
   const run = () => new Promise((res) => {
     const c = spawn('node', [join(BIN, 'pass.mjs')], { env: penv, cwd: join(W, 'repo') });
     let out = '';
@@ -202,7 +237,7 @@ w = world();
 log(w.state, 'R-1', [event(0.9, soon(3.5))], 7 * HOUR);
 out = await w.run();
 t('pass AC3: it spawns as usual', w.ticket('Y-1'), 'running');
-t('pass AC3: it reports no recent data', /^usage: no recent data$/m.test(out), true);
+t('pass AC3: it reports no recent data, naming the login it read', /^usage: no recent data for login default$/m.test(out), true);
 
 // AC4: pacing off, usage well ahead of pace.
 w = world({ pacing: 'off' });
@@ -231,7 +266,37 @@ w = world({ pacing: '5' });
 log(w.state, 'R-1', [event(0.99, soon(-0.1))]);
 out = await w.run();
 t('pass AC7: usage is unknown, so it spawns', w.ticket('Y-1'), 'running');
-t('pass AC7: it reports no recent data', /^usage: no recent data \(the newest reading's 7-day window reset at /m.test(out), true);
+t('pass AC7: it reports no recent data', /^usage: no recent data for login default \(the newest reading's 7-day window reset at /m.test(out), true);
+
+// #772: the pass paces on the login this repo's workers spawn on, not the one it runs under. The
+// repo's subscription is a second login; its worker's log is ahead of pace; the pass runs on default.
+{
+  const acct = (dir, email, json = join(dir, '.claude.json')) => { mkdirSync(dir, { recursive: true }); writeFileSync(json, JSON.stringify({ oauthAccount: { emailAddress: email, planDisplayName: 'Max' } })); };
+  acct(join(env.HOME, '.claude'), 'own@example.com', join(env.HOME, '.claude.json'));
+  const second = join(env.HOME, '.claude-logins', 'login-2');
+  acct(second, 'repo@example.com');
+  const file = join(T, 'subscriptions-772.md');
+  writeFileSync(file, '| Tool | Name | Folder | Rule |\n|---|---|---|---|\n| `claude` | `default` | `~/.claude` | `default` |\n| `claude` | `login-2` | `~/.claude-logins/login-2` | `unused` |\n');
+  w = world({ pacing: '5', sub: { file, email: 'repo@example.com' } });
+  mkdirSync(join(w.state, 'workers'), { recursive: true });
+  writeFileSync(join(w.state, 'workers', 'R-1.login.json'), JSON.stringify({ config_dir: second }));
+  log(w.state, 'R-1', [event(0.62, soon(3.5))]);
+  out = await w.run();
+  t('#772 a worker log on the repo\'s login, ahead of pace, holds its spawns', `${w.ticket('Y-1')} ${/^usage: 7-day 62%, pace 50% \+ 5: holding spawns$/m.test(out)}`, 'triaged true');
+}
+
+// #772: with no reading for the login it paces on, the pass probes it once; a plan whose newest event
+// names no 7-day window has none to read, so it is not probed.
+{
+  const stamp = () => existsSync(join(root, 'usage', 'probe.at'));
+  w = world({ pacing: '5' });
+  out = await w.run();
+  t('#772 no reading at all: the pass probes the login once', stamp(), true);
+  w = world({ pacing: '5' });
+  log(w.state, 'R-1', [both(win(0.1, 4 * HOUR), null)]);
+  out = await w.run();
+  t('#772 a plan with no 7-day window is not probed', `${stamp()} ${w.ticket('Y-1')}`, 'false running');
+}
 
 console.log(fails ? `${fails} FAILED` : 'all usage pace checks passed');
 process.exit(fails ? 1 : 0);

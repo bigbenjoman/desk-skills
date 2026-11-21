@@ -33,11 +33,18 @@ export function readJsonOrRefuse(path, action) {
   try { text = readFileSync(path, 'utf8'); } catch (e) { throw new Refusal(`${path} could not be read (${e.code ?? e.message}): ${action}`); }
   try { return JSON.parse(text); } catch (e) { throw new Refusal(`${path} is not valid JSON (${e.message}): ${action}`); }
 }
+// The paths this module builds under a batch's state folder, `<KEY>` standing for the ticket. Every
+// one goes through statePath, which refuses a name not declared here.
+export const STATE_PATHS = Object.freeze({ triage: 'triage/<KEY>.json', parks: 'parks/<KEY>.json', answers: 'answers/<KEY>.txt' });
+export function statePath(stateDir, name, key) {
+  if (!Object.hasOwn(STATE_PATHS, name)) throw new Error(`not a declared state path: ${name}`);
+  return join(stateDir, STATE_PATHS[name].split('<KEY>').join(key));
+}
 // The two every script reads: the batch queue and a ticket's triage record. A queue's archived tickets
 // are found by key behind its live ones (queue-store.mjs attachArchive).
 export const readQueue = (path) => attachArchive(readJsonOrRefuse(path,
   `restore it, or re-create ${path} (queue.mjs init <batch-name>, then re-seed it with plan-batch.mjs) — refusing to read it as an empty batch`), path);
-export const readTriage = (stateDir, t) => readJsonOrRefuse(join(stateDir, 'triage', `${t}.json`), `re-run triage.sh ${t}`);
+export const readTriage = (stateDir, t) => readJsonOrRefuse(statePath(stateDir, 'triage', t), `re-run triage.sh ${t}`);
 
 // The PR state the last pass recorded for a done ticket's PR (pr_status), or null when none was read.
 // Nothing here calls GitHub.
@@ -49,6 +56,12 @@ export const prStatusOf = (t) => (t?.state === 'done' && t.result?.pr != null &&
 export const shippedSet = (t, how, pr = null, mergedAt = null) => ['set', t.key, 'state=done', 'park=null', 'handoff=null', 'handoff_stage=null', 'resume=null',
   `result.summary=shipped outside its worker: ${how}`, ...(pr == null ? [] : [`result.pr=${pr}`]),
   ...(pr != null && Number(t.pr_status?.pr) === Number(pr) ? ['pr_status.state=MERGED', ...(mergedAt ? [`pr_status.merged_at=${mergedAt}`] : [])] : [])];
+
+// A parked ticket recorded done on PR #pr, its park cleared: the `queue.mjs set` fields the pass writes
+// when it opens a refused worker's draft itself, and queue.mjs finish when the orchestrator finished the
+// last step. draft_pr only while the PR is a draft.
+export const doneOnPr = (pr, { draft = false, summary }) => ['state=done', 'park=null', 'handoff_stage=null', `result.pr=${pr}`,
+  ...(draft ? [`draft_pr=${pr}`] : []), `result.summary=${summary}`];
 
 // The PR a parked ticket recorded: the one it opened, else its draft. A PR that merged before the
 // ticket was requeued for more work (merged_at) belongs to that earlier work, not to this park.
@@ -108,10 +121,25 @@ export const moveOffer = (ts) => `move <batch> takes it out of this batch and qu
 // The question a worker parked on and nobody has answered yet, or null: its park file's `question`
 // while no answer file sits beside it. A half-written park file is not an error.
 export function openQuestion(stateDir, t) {
-  const park = join(stateDir, 'parks', `${t}.json`);
-  if (!existsSync(park) || existsSync(join(stateDir, 'answers', `${t}.txt`))) return null;
+  const park = statePath(stateDir, 'parks', t);
+  if (!existsSync(park) || existsSync(statePath(stateDir, 'answers', t))) return null;
   try { return JSON.parse(readFileSync(park, 'utf8')).question || null; } catch { return null; }
 }
+
+// The text a worker's park waits on approval of, from its park file's `approve` ({kind, target, body}),
+// or null: kept only when the file's question is the one the worker parked on, so an earlier round's
+// file is never read as this one's, and only with a body to relay.
+export function parkApprove(stateDir, t, question) {
+  let f;
+  try { f = JSON.parse(readFileSync(statePath(stateDir, 'parks', t), 'utf8')); } catch { return null; }
+  const a = f?.approve;
+  if (!a || typeof a.body !== 'string' || !a.body.trim() || String(f.question ?? '').trim() !== String(question ?? '').trim()) return null;
+  return { kind: String(a.kind ?? 'write'), target: a.target == null ? null : String(a.target), body: a.body };
+}
+
+// The text a park awaits approval of, as both needs-you and the pass report relay it: its kind and
+// target, then the body as JSON so its line breaks survive on one line.
+export const approvalText = (ap) => `its exact text (${ap.kind}${ap.target ? ` on ${ap.target}` : ''}, as JSON): ${JSON.stringify(ap.body)}`;
 
 // Why a failed ticket's worker stopped, never empty: the reason the pass recorded (`failed.why`), else
 // a park the ticket kept, else that none was recorded.
@@ -431,6 +459,12 @@ export const settlesByScript = (t) => {
   return t?.state === 'parked' && !isHeld(t) && !t.park?.claim?.session && !!c?.kind && c.kind !== 'none' && !personClears(c) && !needsSession(t);
 };
 
+// A park a pass settles that waits on an Actions run or a PR's checks: those finish within minutes, so
+// an idle batch holding one is rechecked every RUN_RECHECK_MS (supervisor.mjs), not IDLE_RECHECK_MS.
+const RUN_KINDS = new Set(['run-completed', 'checks-pass']);
+export const waitingOnRun = (t) => settlesByScript(t) && RUN_KINDS.has(t.park.clears_when.kind);
+export const RUN_RECHECK_MS = Number(process.env.DESK_RUN_RECHECK_MS) || 2 * 60 * 1000;
+
 // A parked lane C or D triage record whose lane challenge could not read the code (triage.sh's
 // INCONCLUSIVE): one unchecked opinion, which the user confirms or re-lanes rather than reading as settled.
 export const laneUnchecked = (r) => needsPersonLane(r) && r.lane_challenge?.verdict === 'INCONCLUSIVE';
@@ -551,13 +585,17 @@ export const startWithout = (t, k, status, why) => ({ question: `${t} is blocked
 // A predecessor failed or parked for a reason of its own is already a question for the person, so the
 // tickets behind it wait on that answer. `prState(n)` gives a PR's state when the caller looked it up
 // ('OPEN' | 'MERGED' | 'CLOSED'); unknown counts as open.
-function holdLeadsTo(q, t, prState, seen) {
+function holdLeadsTo(q, t, prState, seen, memo = new Map()) {
   // `seen` is the current path only: a ticket on it again is a hold cycle (a hand-edited queue), which
   // can never release. Two paths meeting at one held ticket (a diamond) is normal and is followed.
   if (!holdsKept(t) || seen.has(t)) return null;
   // Held on its label, it starts on its day by itself, and a fixed label is only read by a pass, so
   // the batch is not settled while either waits.
   if (dateHeld(t)) return [];
+  // A ticket's answer is the same by whichever path the walk reaches it (one cut short by the path is
+  // on a cycle, which answers null from anywhere), so it is read once per walk: a dense held_by graph
+  // (each ticket naming every one before it) has exponentially many paths.
+  if (memo.has(t)) return memo.get(t);
   seen.add(t);
   const preds = String(t.held_by ?? '').split('|').filter(Boolean);
   const outside = String(t.held_outside ?? '').split('|');
@@ -568,11 +606,13 @@ function holdLeadsTo(q, t, prState, seen) {
     else if (['running', 'triaged'].includes(pt.state) || spinePark(pt)) continue;
     else if (pt.state === 'done') { if (!pt.merged_at && (pt.result?.pr == null || prState(pt.result.pr) === 'CLOSED')) parks = null; }
     else if (pt.state === 'failed' || (pt.state === 'parked' && !isHeld(pt))) parks.push(p);
-    else { const up = holdLeadsTo(q, pt, prState, seen); parks = up && [...parks, ...up]; }
+    else { const up = holdLeadsTo(q, pt, prState, seen, memo); parks = up && [...parks, ...up]; }
     if (!parks) break;
   }
   seen.delete(t);
-  return parks && [...new Set(parks)];
+  const out = parks && [...new Set(parks)];
+  memo.set(t, out);
+  return out;
 }
 
 // A held ticket is still going somewhere on its own: every predecessor progressing or merged.

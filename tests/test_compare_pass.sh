@@ -3,7 +3,9 @@
 # tests/compare_pass.sh over scratch trees whose stand-in pass.mjs writes one queue field and prints one
 # line: a head that matches lists nothing; one that writes a field or prints a line differently lists
 # it; one whose pass crashes is not compared; one that moved a shell case into a unit suite still runs
-# the base's case. Then the real pass suite against itself lists nothing. Scratch dirs only.
+# the base's case. Then the real pass suite against itself lists nothing: all of it, or on a pull
+# request only test_pass_other_repo.sh. Scratch dirs only.
+# covers: tests/test_pass*.sh
 # check() evals its condition string, so the variables it reads look unused to shellcheck.
 # shellcheck disable=SC2034
 set -u
@@ -71,6 +73,100 @@ cmp "$T/wall0" "$T/wall1"
 check "#917 an elapsed wall time a second apart on the two trees is not reported" '[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
 cmp "$T/wall0" "$T/wall5"
 check "#917 one minutes apart is listed, with both times" '[ $rc = 1 ] && echo "$out" | grep -qF "(0m 00s since it started)" && echo "$out" | grep -qF "(5m 00s since it started)"'
+
+# A tree whose pass sets A-1 running with the fields $2 (JavaScript, `now` being the time it runs) and
+# prints $3: what two runs of one tree write differently without behaving differently.
+fieldtree(){ mkdir -p "$T/$1/desk/bin" "$T/$1/tests"; cp "$T/base/tests/test_pass.sh" "$T/$1/tests/"
+  cat > "$T/$1/desk/bin/pass.mjs" <<EOF
+import { readFileSync, writeFileSync } from 'node:fs';
+const f = process.env.DESK_QUEUE, q = JSON.parse(readFileSync(f, 'utf8')), now = Date.now();
+q.tickets['A-1'] = { ...q.tickets['A-1'], state: 'running', $2 };
+writeFileSync(f, JSON.stringify(q));
+console.log(\`$3\`);
+EOF
+}
+same0='[ $rc = 0 ] && [ "$out" = "compare_pass: 2 pass run(s) compared, 0 differ, 0 not compared" ]'
+
+fieldtree port1 'port: 47704, cloud: { port: 47704 }' 'spawned: A-1 port=47704 model=default\n  RUNNING  A-1  stage 4b  port 47704  on localhost:47704'
+fieldtree port2 'port: 47705, cloud: { port: 47705 }' 'spawned: A-1 port=47705 model=default\n  RUNNING  A-1  stage 4b  port 47705  on localhost:47705'
+cmp "$T/port1" "$T/port2"
+check "DS-819 AC1 a port that differs in a queue field and a report line is not reported" "$same0"
+fieldtree port3 'port: 47704, cloud: { port: 47705 }' 'spawned: A-1 port=47704 model=default\n  RUNNING  A-1  stage 4b  port 47704  on localhost:47704'
+cmp "$T/port1" "$T/port3"
+check "DS-819 AC1 two ports where the base had one is still listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 port: base port <PORT1>, head port <PORT2>"'
+
+for form in '15d 12h|15d 13h' '2h 05m|2h 06m' '2h 5m|2h 6m' '0m 05s|0m 09s'; do
+  fieldtree span1 '' "A-1 in_progress for ${form%|*}"; fieldtree span2 '' "A-1 in_progress for ${form#*|}"
+  cmp "$T/span1" "$T/span2"
+  check "DS-819 AC2 an elapsed time ${form%|*} against ${form#*|} is not reported" "$same0"
+done
+fieldtree span1 '' 'A-1 in_progress for 15d 12h'; fieldtree span2 '' 'A-1 in_progress for 17d 12h'
+cmp "$T/span1" "$T/span2"
+check "DS-819 AC2 an elapsed time in days two days apart is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "for 15d 12h" && echo "$out" | grep -qF "for 17d 12h"'
+
+# An error the pass cuts at a length, at a different place on each tree as a port before the cut is
+# longer on one, carrying each tree's own path and SHA: cut on both trees in the queue, and on one only
+# in the report line.
+cut='set state=running worktree=${import.meta.url} port=4770 idle_pas… — fetching ${process.env.SHA} failed'
+fieldtree cut1 "why: \`$cut\`" "failed: $cut"
+fieldtree cut2 "why: \`set state=running worktree=\${import.meta.url} port=47705 idle_passes=0 lo… — fetching \${process.env.SHA} failed\`" 'failed: set state=running worktree=${import.meta.url} port=47705 idle_passes=0 log_bytes=97 — fetching ${process.env.SHA} failed'
+printf '#!/usr/bin/env bash\nD="$(mktemp -d)"; export DESK_QUEUE="$D/queue.json"\necho %s > "$DESK_QUEUE"\n' "'{\"tickets\":{}}'" > "$T/cut1/tests/test_pass.sh"
+printf 'case "$PWD" in */base) export SHA=4a1f0c2e9 ;; *) export SHA=8b2e1d3f7 ;; esac\nnode desk/bin/pass.mjs; echo "ok   the pass"\n' >> "$T/cut1/tests/test_pass.sh"
+cp "$T/cut1/tests/test_pass.sh" "$T/cut2/tests/test_pass.sh"
+cmp "$T/cut1" "$T/cut2"
+check "DS-819 AC3 error text alike up to where one side is cut, past masked paths and SHAs, is not reported" '[ $rc = 0 ] && [ "$out" = "compare_pass: 1 pass run(s) compared, 0 differ, 0 not compared" ]'
+fieldtree cut2 "why: \`set state=parked worktree=\${import.meta.url} port=47705 idle_passes=0 lo… — fetching \${process.env.SHA} failed\`" 'failed: set state=parked worktree=${import.meta.url} port=47705 idle_passes=0 log_bytes=97 — fetching ${process.env.SHA} failed'
+cp "$T/cut1/tests/test_pass.sh" "$T/cut2/tests/test_pass.sh"
+cmp "$T/cut1" "$T/cut2"
+check "DS-819 AC4 error text that differs before the cut is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "queue A-1 why: base" && echo "$out" | grep -qF "output head: failed: set state=parked"'
+fieldtree word1 'why: "set A-1 state=runn… — fetching failed"' 'failed: set A-1 state=runn… — fetching failed'
+fieldtree word2 'why: "set A-1 state=park… — fetching failed"' 'failed: set A-1 state=park… — fetching failed'
+cmp "$T/word1" "$T/word2"
+check "DS-819 AC4 a difference inside the word the cut falls in, before the cut, is listed" '[ $rc = 1 ] && echo "$out" | grep -qF "queue A-1 why: base" && echo "$out" | grep -qF "output head: failed: set A-1 state=park…"'
+# A port the cut falls just after on one tree and whole on the other: the next port has one name on both.
+fieldtree cutport1 '' 'failed: set A-1 port=47704… — fetching failed\n  RUNNING  A-2  on localhost:47801'
+fieldtree cutport2 '' 'failed: set A-1 port=47705 idl… — fetching failed\n  RUNNING  A-2  on localhost:47802'
+cmp "$T/cutport1" "$T/cutport2"
+check "DS-819 AC1 a port cut short on one tree does not shift the names of the ports after it" "$same0"
+fieldtree cutport3 '' 'failed: set A-1 port=4… — fetching failed\n  RUNNING  A-2  on localhost:47801\n  RUNNING  A-3  on localhost:47802'
+fieldtree cutport4 '' 'failed: set A-1 port=47705 idl… — fetching failed\n  RUNNING  A-2  on localhost:47802\n  RUNNING  A-3  on localhost:47803'
+cmp "$T/cutport3" "$T/cutport4"
+check "DS-819 AC1 a port cut to its first digit does not give its name to the ports after it" "$same0"
+fieldtree cutport5 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING  A-2  on localhost:47704\n  RUNNING  A-3  on localhost:47704'
+fieldtree cutport6 '' 'failed: set A-1 port=47… — fetching failed\n  RUNNING  A-2  on localhost:47705\n  RUNNING  A-3  on localhost:47706'
+cmp "$T/cutport5" "$T/cutport6"
+check "DS-819 AC1 after a cut port, two tickets on one port where the base had two ports is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head:   RUNNING  A-3  on localhost:<PORT2>"'
+# A port and a SHA in a line cut on one tree only, then whole ones after it: they stand one for one,
+# and one port on the head where the base had two is still listed.
+fieldtree cutline1 '' 'failed: set A-1 port=47704 ref 4a1f0c2e9 idle_pas… — fetching failed\n  RUNNING  A-2  on localhost:47801 at 5f6a7b8c9\n  RUNNING  A-3  on localhost:47802'
+fieldtree cutline2 '' 'failed: set A-1 port=47705 ref 8b2e1d3f7 idle_passes=0 port=47999 ref 0c1d2e3f4 log_bytes=97 — fetching failed\n  RUNNING  A-2  on localhost:47901 at 1b2c3d4e5\n  RUNNING  A-3  on localhost:47902'
+cmp "$T/cutline1" "$T/cutline2"
+check "DS-819 AC3 a port and SHA in a line cut on one tree only do not shift the ports and SHAs after it" "$same0"
+fieldtree cutline3 '' 'failed: set A-1 port=47705 ref 8b2e1d3f7 idle_passes=0 port=47999 ref 0c1d2e3f4 log_bytes=97 — fetching failed\n  RUNNING  A-2  on localhost:47901 at 1b2c3d4e5\n  RUNNING  A-3  on localhost:47901'
+cmp "$T/cutline1" "$T/cutline3"
+check "DS-819 AC1 after a line cut on one tree only, one port where the base had two is still listed" '[ $rc = 1 ] && echo "$out" | grep -qF "output head:   RUNNING  A-3  on localhost:<PORT"'
+# A SHA cut short, all digits on one tree and not on the other: the next SHA has one name on both.
+fieldtree cutsha1 '' 'failed: set A-1 ref 332065893… — fetching failed\nhead at 1b2c3d4e5'
+fieldtree cutsha2 '' 'failed: set A-1 ref 4a1f0c2e9… — fetching failed\nhead at 5f6a7b8c9'
+cmp "$T/cutsha1" "$T/cutsha2"
+check "DS-819 AC3 a SHA cut short, all digits on one tree, does not shift the names of the SHAs after it" "$same0"
+
+fieldtree git1 'why: "fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: remote error: upload-pack: not our ref 4a1f0c2e9'
+fieldtree git2 'why: "fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9"' 'fetching the head failed: fatal: git upload-pack: not our ref 4a1f0c2e9'
+cmp "$T/git1" "$T/git2"
+check "DS-819 AC3 git's two wordings of one refused fetch are not reported" "$same0"
+
+# A queue stamp an hour apart on the two trees, as one written late under load is; and one set on the head only.
+fieldtree stamp1 'updated_at: new Date(now).toISOString(), spawned_at: now, last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+fieldtree stamp2 'updated_at: new Date(now + 3600e3).toISOString(), spawned_at: now + 3600e3, last_start: new Date(now + 3600e3).toISOString(), cloud: { started: new Date(now + 3600e3).toISOString() }' 'A-1 running'
+cmp "$T/stamp1" "$T/stamp2"
+check "DS-819 AC5 queue stamps that differ only in value are not reported" "$same0"
+fieldtree stamp0 'updated_at: new Date(now).toISOString(), spawned_at: null, last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+cmp "$T/stamp0" "$T/stamp1"
+check "DS-819 AC6 a queue stamp the head sets and the base leaves unset is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base null, head <STAMP:number>" && [ "$(echo "$out" | grep -c "^  ")" = 2 ]'
+fieldtree stamp3 'updated_at: new Date(now).toISOString(), spawned_at: new Date(now).toISOString(), last_start: new Date(now).toISOString(), cloud: { started: new Date(now).toISOString() }' 'A-1 running'
+cmp "$T/stamp1" "$T/stamp3"
+check "DS-819 AC6 a queue stamp written as a string where the base wrote a number is listed" '[ $rc = 1 ] && echo "$out" | grep -qxF "  queue A-1 spawned_at: base <STAMP:number>, head <STAMP:string>"'
 
 # Each tree's commit abbreviated as the pass prints it: one of them all digits, as one in about 70 is.
 mktree shabase running running 1 ' at origin/main 332065893'
@@ -143,8 +239,16 @@ PASS_CMP_NODE="$(command -v node)" PASS_CMP_OUT="$T/stopped" node "$S/compare_pa
 check "DS-763 a pass stopped by a signal ends the recorder with its status" '[ $rc = 143 ] && [ "$(jq -r .signal "$T/stopped/1.json")" = SIGTERM ]'
 
 # The real pass suites against themselves: whatever differs between two runs of one tree is noise.
-out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>/dev/null); rc=$?
-check "DS-763 AC4 the whole pass shell suite against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [0-9]{3,} pass run\(s\) compared, 0 differ, 0 not compared$"'
+# The whole replay takes 9 to 14 minutes, so a pull request replays one small suite instead; a main
+# push and a local run (GITHUB_EVENT_NAME unset) still replay them all.
+if [ "${GITHUB_EVENT_NAME:-}" = pull_request ]; then
+  out=$(bash "$S/compare_pass.sh" --suite test_pass_other_repo.sh "$SRC" "$SRC" 2>/dev/null); rc=$?
+  check "DS-920 AC1 on a pull request, test_pass_other_repo.sh against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [1-9][0-9]* pass run\(s\) compared, 0 differ, 0 not compared$"'
+  echo "SKIP DS-763 AC4 the whole pass shell suite against the same tree: this run is a pull request, so only test_pass_other_repo.sh was replayed (main pushes and local runs replay them all)"
+else
+  out=$(bash "$S/compare_pass.sh" "$SRC" "$SRC" 2>/dev/null); rc=$?
+  check "DS-763 AC4 the whole pass shell suite against the same tree lists nothing" '[ $rc = 0 ] && echo "$out" | grep -qE "^compare_pass: [0-9]{3,} pass run\(s\) compared, 0 differ, 0 not compared$"'
+fi
 
 echo "$PASS checks passed, $FAIL failed"
 [ "$FAIL" = 0 ]

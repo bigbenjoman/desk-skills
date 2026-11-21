@@ -1,7 +1,7 @@
 // The pure helpers more than one phase of a pass uses, and the snapshot every phase starts from. Each
 // takes what it reads as arguments: none starts a process, calls git, gh or Jira, or writes the queue.
 // A helper that does any of those stays in pass.mjs as an action handler.
-import { isNone } from '../desk-env.mjs';
+import { isNone, CONFIG_ROWS } from '../desk-env.mjs';
 import { resetText, limitName } from '../usage-limit.mjs';
 import { HANDOFF_STAGES } from '../handoff.mjs';
 import { FOLLOW_ON_MAX } from '../harvest.mjs';
@@ -118,7 +118,26 @@ export function reviewerGated(s, { reviewer, gate, stateChecks }) {
   return verdict.size > 0 && g.failing.every((f) => verdict.has(f.name));
 }
 
+// ---- fix tries ---------------------------------------------------------------
+// The files a PR conflicts on, from `git merge-tree --write-tree --name-only` output `o` (its first line
+// is the tree), or null when git could not say (o null) or named none.
+export function conflictFilesIn(o) {
+  const files = o?.split('\n').slice(1).filter(Boolean) ?? [];
+  return files.length ? files : null;
+}
+// What a fix try's record on the ticket keeps beside its try, kind and head: a review try what it quoted,
+// so a later review can tell a finding it cleared from one that survived it; a protected-files try the
+// files it judged, so none is sent to a worker twice; a renames try its renames; a conflict try the base
+// it was read against.
+export const fixTryQuote = (f) => (f.kind === 'review' ? { ...(f.findings?.length ? { findings: f.findings } : {}), ...(f.gaps?.length ? { gaps: f.gaps } : {}) }
+  : f.kind === 'protected' ? { paths: f.paths } : f.kind === 'renames' ? { renames: f.renames }
+    : f.kind === 'conflict' && f.base_sha ? { base_sha: f.base_sha, merge_base: f.merge_base } : {});
+
 // ---- handoffs and resumes --------------------------------------------------
+// What a session stopped at the per-worker budget gets on top of that budget, once, to commit, push
+// and finish its stage (resume=budget).
+export const BUDGET_RESUME_USD = 5;
+export const WORKER_BUDGET_ROW = `config §${CONFIG_ROWS['worker-budget'].section} "${CONFIG_ROWS['worker-budget'].row}"`;
 // The stages a session hands off to, in stage order: Object.keys lists an integer-like key (7) before '4b'.
 export const HANDOFF_ORDER = Object.keys(HANDOFF_STAGES).sort((a, b) => parseFloat(a) - parseFloat(b));
 export const FROM_ZERO = (t) => `To start it again from Stage 0 instead: queue.mjs set ${t.key} handoff_stage=null, then queue.mjs requeue ${t.key}`;
@@ -166,3 +185,14 @@ export function rebootReady(t, { bootMs, drainMins, drainRow, now = Date.now() }
 export const liveReadsUnparsed = (readRow) => (readRow.errors.length
   ? `live reads: none run this pass, since config §4 Live reads does not parse: ${readRow.errors.join(', ')} (want \`<name>: <command>\`). Run /desk-setup`
   : null);
+
+// A review try (kind rereview) reviews its PR's head and changes no file.
+export const reviewOnlyTry = (t) => Boolean(t?.fix && !t.fix.finished && t.fix.kind === 'rereview');
+// A cloud ticket runs in the cloud only until its PR is read (advanceCloud records result.pr and
+// cloud.pr_at): the session is then over, and its branch is on origin with no session pushing to it.
+// Any work after that, a fix try of any kind or a rework, is a local worker's on that branch at
+// origin's tip (setup-worktree.sh with DESK_BRANCH_FROM_ORIGIN), which pushes there; nothing reads it
+// for a cloud session again. cloud.pr_at outlives the local spawn, which clears result; a new cloud
+// start resets it.
+export const cloudPrHere = (t) => t?.location === 'cloud' && (t.result?.pr != null || t.cloud?.pr_at != null);
+export const runsInCloud = (t) => t?.location === 'cloud' && !cloudPrHere(t);

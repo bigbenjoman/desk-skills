@@ -4,18 +4,18 @@
 // signed-in and signed-out; no fixture token in anything shown; rule changes through the CLI. A
 // scratch HOME only; nothing reads this computer's logins.
 import { execFile } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   readSubscriptions, parseSubscriptions, renderSubscriptions, checkLogins, checkLines, loginJson, setRule, removeLogin, loginEnv, normRule,
 } from '../desk/bin/logins.mjs';
+import { scratch } from './scratch.mjs';
 
 let fails = 0;
 const t = (name, got, want) => { const ok = got === want; if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${got}${ok ? '' : ` (want ${want})`}`); };
 const BIN = join(dirname(fileURLToPath(import.meta.url)), '..', 'desk', 'bin');
-const T = mkdtempSync(join(tmpdir(), 'desk-logins-'));
+const T = scratch('desk-logins-');
 const H = join(T, 'home');
 mkdirSync(H, { recursive: true });
 process.env.HOME = H;

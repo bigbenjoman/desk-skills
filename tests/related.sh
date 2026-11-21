@@ -1,39 +1,59 @@
 #!/usr/bin/env bash
 # Runs the tests/run.sh suites this branch's change reaches: tests/scope_sections.mjs decides them
 # from the change against the merge base with origin/<default branch> (desk-env's, else main),
-# committed, staged, unstaged and untracked, as desk-env test-scope reads it. When it cannot decide,
-# every suite runs. One plain command, so a desk worker's allow-list can name it as §4 Related tests.
+# committed, staged, unstaged and untracked, with the same rules CI's pull request plan uses. When it
+# cannot decide, every suite runs. The suites run as many at once as run.sh runs without -j, or
+# DESK_TEST_JOBS at once where that is set. One plain command, so a desk worker's allow-list can name
+# it as §4 Related tests.
 #   bash tests/related.sh
+# It takes a test slot first (with-lock.sh test: the installed one, else this repo's), so it never runs
+# beside the slots' holders: it runs this worktree's suites once it holds one, and while it waits the
+# wrapper says on whom. It waits up to DESK_RELATED_WAIT seconds (an hour by default), then exits with
+# the wrapper's 75 having run nothing. A run already in a slot (with-lock.sh exports DESK_LOCK_HELD to
+# its command) takes no second one. With no with-lock.sh to find, as in CI, it runs with no slot.
 set -u
 T="$(cd "$(dirname "$0")" && pwd)"
 SH="${BASH:-bash}"
+root="$(cd "$T/.." && pwd -P)"
+wl="${HOME:-}/.claude/desk/bin/with-lock.sh"
+[ -f "$wl" ] || wl="$root/desk/bin/with-lock.sh"
+# A run called through a with-lock.sh that does not export DESK_LOCK_HELD yet is still seen inside its
+# slot (a holder file or lease names it, or a flock(1) on the lock runs it), so it does not wait behind
+# itself. This repo's slot-lease.mjs asks, else the one beside the wrapper.
+lease="$root/desk/bin/slot-lease.mjs"
+[ -f "$lease" ] || lease="$(dirname "$wl")/slot-lease.mjs"
+if [ -z "${DESK_LOCK_HELD:-}" ] && ! node "$lease" in-slot "$$" 2>/dev/null; then
+  if [ -f "$wl" ]; then
+    wait_s="${DESK_RELATED_WAIT:-3600}"
+    case "$wait_s" in ''|*[!0-9]*) echo "related: DESK_RELATED_WAIT wants a whole number of seconds, not '$wait_s'" >&2; exit 2 ;; esac
+    echo "related: taking a test slot first, waiting up to ${wait_s}s for one"
+    # DESK_LOCK_HELD set here too, so a wrapper that does not export it yet cannot make this recurse.
+    (cd "$root" && "$SH" "$wl" test --timeout "$wait_s" -- env DESK_LOCK_HELD=test "$SH" "$T/related.sh" "$@")
+    rc=$?
+    # The suites' own runs exit 0, 1 or 2 (run.sh), so 75 is the wrapper giving up before any ran.
+    [ "$rc" -eq 75 ] && echo "related: timed out after ${wait_s}s waiting for a test slot, so no suite ran"
+    exit "$rc"
+  fi
+  echo "related: no with-lock.sh found, so the suites run without a test slot"
+fi
+jobs=()
+[ -z "${DESK_TEST_JOBS:-}" ] || jobs=(-j "$DESK_TEST_JOBS")
 base="origin/$(desk-env get default-branch 2>/dev/null || echo main)"
-every(){ echo "related: $1, so every suite runs" >&2; "$SH" "$T/run.sh"; exit $?; }
-mb=$(git merge-base "$base" HEAD 2>/dev/null) || every "no merge base with $base"
-diff=$(git diff --name-status -M "$mb") || every "git diff against $base failed"
-files=()
-while IFS=$'\t' read -r st path _; do
-  [ -n "$st" ] || continue
-  case "$st" in D*|R*) every "$path was deleted or renamed against $base" ;; esac
-  files+=("$path")
-done <<EOF
-$diff
-EOF
-while IFS= read -r path; do [ -n "$path" ] && files+=("$path"); done <<EOF
-$(git ls-files --others --exclude-standard)
-EOF
+every(){ echo "related: $1, so every suite runs" >&2; "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?; }
+git merge-base "$base" HEAD >/dev/null 2>&1 || every "no merge base with $base"
 OUT="$(mktemp "${TMPDIR:-/tmp}/desk-related.XXXXXX")" || exit 1
 trap 'rm -f "$OUT"' EXIT
-if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --github-output --files ${files[@]+"${files[@]}"} >/dev/null; then
+if ! GITHUB_OUTPUT="$OUT" node "$T/scope_sections.mjs" --base "$base" --worktree --github-output >/dev/null; then
   every "scope_sections.mjs failed against $base"
 fi
 scope=$(grep -m 1 '^scope=' "$OUT"); scope=${scope#scope=}
+reason=$(grep -m 1 '^reason=' "$OUT"); reason=${reason#reason=}
 suites=$(grep -m 1 '^suites=' "$OUT"); suites=${suites#suites=}
 if [ "$scope" = full ] || [ -z "$suites" ]; then
-  echo "related: scope ${scope:-unknown} against $base, so every suite runs"
-  "$SH" "$T/run.sh"; exit $?
+  echo "related: scope ${scope:-unknown} against $base (${reason:-no reason given}), so every suite runs"
+  "$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"}; exit $?
 fi
 echo "related: scope $scope against $base: $suites"
 # Suite names never hold spaces, so the word split is the list.
 # shellcheck disable=SC2086
-"$SH" "$T/run.sh" $suites
+"$SH" "$T/run.sh" ${jobs[@]+"${jobs[@]}"} $suites

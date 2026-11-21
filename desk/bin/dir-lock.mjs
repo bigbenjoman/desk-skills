@@ -10,10 +10,15 @@ export const lockPid = (dir) => { try { return Number(readFileSync(join(dir, 'pi
 export const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
 
 // One with no pid yet is between its mkdir and its write, unless it has sat that way for a minute
-// (with-lock.sh's rule).
-function stale(dir, pidOf = lockPid, unwrittenMs = 60_000) {
+// (with-lock.sh's rule). With maxAgeMs, one older than that is stale whatever its pid, for a lock no
+// holder keeps that long, whose dead holder's pid may since belong to another process.
+function stale(dir, pidOf = lockPid, unwrittenMs = 60_000, maxAgeMs = 0) {
   const pid = pidOf(dir);
-  try { return pid ? !alive(pid) : Date.now() - statSync(dir).mtimeMs > unwrittenMs; } catch { return false; } // already gone
+  try {
+    const age = Date.now() - statSync(dir).mtimeMs;
+    if (maxAgeMs && age > maxAgeMs) return true;
+    return pid ? !alive(pid) : age > unwrittenMs;
+  } catch { return false; } // already gone
 }
 
 // Clear a stale lock. Takers that all saw the same stale lock must not each remove "the lock", or a
@@ -34,9 +39,11 @@ function clearStale(dir, isStale = () => stale(dir)) {
 }
 
 // Takes `dir` without waiting: true once taken, else the holder's pid (null when it has written none
-// yet). A stale lock is cleared and taken; one another taker is clearing counts as held.
-export function tryLock(dir) {
+// yet). A stale lock is cleared and taken; one another taker is clearing counts as held. maxAgeMs as
+// for stale.
+export function tryLock(dir, { maxAgeMs = 0 } = {}) {
   mkdirSync(dirname(dir), { recursive: true });
+  const isStale = () => stale(dir, lockPid, 60_000, maxAgeMs);
   for (;;) {
     try {
       mkdirSync(dir);
@@ -44,15 +51,15 @@ export function tryLock(dir) {
       held.add(dir);
       return true;
     } catch (e) { if (e.code !== 'EEXIST') throw e; }
-    if (!(stale(dir) && clearStale(dir))) return lockPid(dir);
+    if (!(isStale() && clearStale(dir, isStale))) return lockPid(dir);
   }
 }
 
 // Takes `dir`, waiting up to waitMs; past it, throws timeout(pid) (pid null when none is written yet).
-export function lock(dir, { waitMs = 10_000, timeout = (pid) => new Error(`${dir} is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) } = {}) {
+export function lock(dir, { waitMs = 10_000, maxAgeMs = 0, timeout = (pid) => new Error(`${dir} is locked by pid ${pid ?? '?'} past the ${waitMs / 1000}s wait`) } = {}) {
   const until = Date.now() + waitMs;
   for (;;) {
-    const got = tryLock(dir);
+    const got = tryLock(dir, { maxAgeMs });
     if (got === true) return;
     if (Date.now() >= until) throw timeout(got);
     sleepSync(50);

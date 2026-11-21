@@ -20,6 +20,7 @@
 //                  config key, command: the uploader to show the person }
 //   resume         config §3b "Resume a killed worker (times)" (pass/shared.mjs resumeSetting)
 //   bootMs         when this computer last started, in ms
+//   budget         the per-worker budget (desk-env.mjs workerBudget): {usd}, {off}, or null unread
 //   read           { branch, checkout }: the live reads' branch and their clean checkout
 //
 // Actions, beside the shared `set` and `report` ({ type, key, ... }; "->" is what the handler returns):
@@ -50,17 +51,18 @@
 //   handoff {key, said, imgs, stopped}   queue the handed-off stage for a fresh session
 //   lifted {key, limit}            -> whether the limit on the worker's login has lifted
 //   exit-code {key}                -> the exit code spawn-worker.sh recorded, or null
+//   uncommitted {key}              -> how many files git status lists in the worktree, or null unread
 //   fail {key, why, tail}          mark the ticket failed
 import { expandHome, SCREENSHOT_FILE } from '../desk-env.mjs';
 import { LIVE_READ, needsSession, unnamedForcePush } from '../batch-state.mjs';
-import { endedNormally, followOnIn, workerEnd } from '../harvest.mjs';
+import { endedNormally, followOnIn, workerEnd, budgetStop, hostFault } from '../harvest.mjs';
 import { noteLine } from '../decisions.mjs';
 import { usageLimit, resetText, limitName } from '../usage-limit.mjs';
 import { wroteSince } from '../worker-cost.mjs';
 import { crashOf } from '../undraft.mjs';
 import { ticketShotDir } from '../evidence.mjs';
 import { SUITE_WAIT_TEXT } from '../suite-wait.mjs';
-import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say } from './shared.mjs';
+import { QUIET_PASSES, WEDGE_PASSES, SUITE_WAIT_CEILING_MS, BUDGET_RESUME_USD, WORKER_BUDGET_ROW, sameLogin, liftedHow, untilText, pausedOn, linksLine, linkSteps, parkFollowOn, resumeRefusal, set, say, runsInCloud } from './shared.mjs';
 
 // Why a worker that is not in the registry, and ended with no marker and no result, stopped.
 export const REBOOT = 'the computer restarted after its last log write';
@@ -101,9 +103,16 @@ export function logMarkers(h, t) {
 
 // ---- advance running tickets --------------------------------------------
 // One running ticket's turn: its actions, in the order the pass carries them out.
+// An environment park: the worker parked or stopped (`verb`) when the computer could not run commands.
+function* hostPark(t, fault, verb) {
+  const question = `environment: ${fault} — this computer could not run commands when its worker ${verb}, so nothing about the ticket changed. Free the space, then requeue it with queue.mjs requeue ${t.key}`;
+  yield { type: 'park', key: t.key, question };
+  yield say(t.key, 'parked', `${t.key}: ${question}`);
+}
+
 export function* decideAdvance(s) {
   const { t, log, registry } = s;
-  if (t.location === 'cloud' && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
+  if (runsInCloud(t) && t.cloud) { yield { type: 'cloud', key: t.key }; return; }
   if (!log) return;
   const { h } = log;
   const live = registry.read && !!t.session_id && registry.liveSids.has(t.session_id);
@@ -138,8 +147,9 @@ export function* decideAdvance(s) {
   else if (t.usage_paused) yield set(t.key, 'usage_paused=null');
 
   // Log growth is the honest liveness signal: it comes from the harness, not from self-reporting.
-  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s,
-  // so a worker wedged for hours still grows its log. See references/orchestrator-recovery.md.
+  // It is not sufficient on its own — a hung `codex exec` emits a tool_progress heartbeat every 30s
+  // until the harness moves the call to the background at 600s, so for those ten minutes log growth
+  // overstates liveness. See references/orchestrator-recovery.md.
   // Workers log no partial messages, so a long model turn writes nothing until its message ends: six
   // quiet passes is the margin for it. A suite under the test lock, or a wait for it, is read from the
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
@@ -189,11 +199,14 @@ export function* decideAdvance(s) {
   const imgDir = namedImgDir ?? ticketShotDir(t, s.stateDir);
   // A park that waits only on a check §4 Check builds names, once its worker has exited (buildParkOf):
   // recorded done below, so its screenshots go to its PR here as a DONE worker's do.
-  const built = park && !wedged && registry.read && !(t.session_id && registry.liveSids.has(t.session_id))
+  // A park made after the computer could not run commands (hostFault) is an environment park, so its
+  // words are never read as a build-only or merge-only park, nor as its lane.
+  const fault = park && !wedged ? hostFault(log.text) : null;
+  const built = park && !fault && !wedged && registry.read && !(t.session_id && registry.liveSids.has(t.session_id))
     ? yield { type: 'build-park', key: t.key, question: park.trim() } : null;
   // A park asking only who merges its green, clean PR (mergeParkOf): done where desk may merge it, else
   // the merge question naming the row that keeps desk from it.
-  const merging = park && !built && !wedged && registry.read && !(t.session_id && registry.liveSids.has(t.session_id))
+  const merging = park && !fault && !built && !wedged && registry.read && !(t.session_id && registry.liveSids.has(t.session_id))
     ? yield { type: 'merge-park', key: t.key } : null;
   const mergeOnly = merging?.call === 'done' ? merging : null;
   // This round's log names the PR first: after a requeue, t.result.pr is the previous round's PR.
@@ -264,6 +277,11 @@ export function* decideAdvance(s) {
       sets: [parkFollowOn(park, t.follow_on), 'follow_on_comment=due', ...(logImgDir ? [`images_dir=${logImgDir}`] : [])],
     };
     yield* linksOnDone(t, n);
+  } else if (fault) {
+    // The computer could not run commands (no space or no inodes left), so the worker's park says
+    // nothing about its ticket: an environment park, requeued once the host is healthy, never a lane.
+    // Its own words are not quoted, so a "lane C" said then is never read as its lane.
+    yield* hostPark(t, fault, 'parked');
   } else if (park) {
     // Without the rows that let desk merge it, a merge-only park is the merge question, naming them.
     // The links the worker asked for are made now; any not made join its question, and its follow-ons
@@ -272,6 +290,9 @@ export function* decideAdvance(s) {
     const linkNeeds = yield { type: 'settle-links', key: t.key };
     const asked = `${merging?.call === 'ask' ? `${merging.question}. The park: ${question}` : question}${linkNeeds.length ? `. ${linksLine(linkNeeds)}` : ''}`;
     yield { type: 'park', key: t.key, question: asked };
+    // The exact text a gated write waits on, which the worker keeps in its park file (approve), is kept
+    // with the park, so it is relayed from there rather than dug out of the log.
+    yield { type: 'park-approve', key: t.key, question };
     // The round a requeue's fresh spawn may resume (resumeRound). Only a worker's own park records
     // one: a stalled or failed worker starts again at Stage 0. Dated by the log's last write, so an
     // answer given before this pass saw the park still counts as its answer.
@@ -323,6 +344,28 @@ export function* decideAdvance(s) {
         'advanced', `${t.key} ${why}: queued to resume in its own session`);
     }
   } else {
+    // Stopped at the per-worker budget, often with its work done and not yet committed: resumed once
+    // in its own session (budget_resumed names it) with BUDGET_RESUME_USD more, not counted as a kill,
+    // to commit, push and finish its stage. A second stop in that session parks, naming the budget and
+    // what the worktree holds.
+    if (!wedged && t.session_id && budgetStop(log.text, s.budget)) {
+      const ceiling = `the per-worker budget (${s.budget?.usd ? `$${s.budget.usd}, ` : ''}${WORKER_BUDGET_ROW})`;
+      if (t.budget_resumed !== t.session_id) {
+        yield* setAndSay(t.key, ['state=triaged', 'resume=budget', `resume_why=stopped at ${ceiling}`, `budget_resumed=${t.session_id}`],
+          'advanced', `${t.key} stopped at ${ceiling}: queued to resume once in its own session with $${BUDGET_RESUME_USD} more, to commit, push and finish its stage`);
+        return;
+      }
+      const dirty = yield { type: 'uncommitted', key: t.key };
+      const where = t.worktree ?? '(none recorded)';
+      const left = dirty == null ? `its worktree ${where} may hold uncommitted work (git status could not be read)`
+        : dirty > 0 ? `its worktree ${where} holds uncommitted work (${dirty} changed file(s))`
+          : `its worktree ${where} holds no uncommitted work, but may hold unpushed commits on ${t.branch}`;
+      const why = `stopped at ${ceiling} again after its one resume with $${BUDGET_RESUME_USD} more, and ${left}. Commit and push it by hand, or raise the budget and requeue it with queue.mjs requeue ${t.key}`;
+      yield { type: 'decisions', key: t.key, pr: null };
+      yield { type: 'park', key: t.key, question: why };
+      yield say(t.key, 'parked', `${t.key}: ${why}`);
+      return;
+    }
     // Killed mid-run, PR open or not: resumed in its own session by the spawn, ahead of new
     // tickets, unless config §3b refuses another resume.
     const killed = !wedged && !endedNormally(log.text) && t.session_id ? (log.mtimeMs < s.bootMs ? REBOOT : DIED) : null;
@@ -362,6 +405,9 @@ export function* decideAdvance(s) {
       } else if (stop?.park) {
         yield { type: 'park', key: t.key, question: stop.park };
         yield say(t.key, 'parked', `${t.key}: ${stop.park}`);
+      } else if (hostFault(log.text)) {
+        // Stopped when the computer could not run commands: the host's fault, not the ticket's.
+        yield* hostPark(t, hostFault(log.text), 'stopped');
       } else {
         const code = yield { type: 'exit-code', key: t.key };
         yield { type: 'fail', key: t.key, why: `exited with no marker and no open PR on ${t.branch}${limit ? `, last seen at ${limitName(limit.type)}${limit.resetsAt != null ? ` (resets ${resetText(limit.resetsAt)})` : ''}` : ''} (${workerEnd(log.text)}, ${exitText(code)})`, tail: ` — check ${log.path}` };
