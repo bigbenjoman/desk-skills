@@ -340,9 +340,9 @@ export function loads(path, text, { importsOnly = false } = {}) {
   const t = String(text);
   const out = [];
   if (/\.(mjs|cjs|js|py)$/.test(path)) {
-    // Line comments go first, so a `/*` inside one opens no block; a block opens only where a comment
-    // can start (a line's start, or after a space or punctuation), so a '/*' or 'a/*/b' string opens none.
-    const code = t.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n').replace(/(^|[\s;,(){}])\/\*[\s\S]*?\*\//gm, '$1 ');
+    // Line comments go first, so a `/*` inside one opens no block; a block opens only at a line's
+    // start or after a space, `;` or `,`, so a `/*` glued to a quote, a word or `}` in a string opens none.
+    const code = t.split('\n').filter((l) => !/^\s*(\/\/|#)/.test(l)).join('\n').replace(/(^|[\s;,])\/\*[\s\S]*?\*\//gm, '$1 ');
     if (!/\.py$/.test(path)) {
       // `import x from './a.mjs'`, `} from './a.mjs'`, `import './a.mjs'`: no quote before the keyword on
       // its line, so a fixture string that holds an import is not one.

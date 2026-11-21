@@ -7,7 +7,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { grown, report, BASELINE_PATH } from './prose_baseline_guard.mjs';
-import { parseWorkflow, mapping } from '../desk/bin/workflow-yaml.mjs';
+import { parseWorkflow, mapping, jobSteps } from '../desk/bin/workflow-yaml.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -45,19 +45,8 @@ t('a baseline missing at the base counts as empty', at('base.json', 'no-such-ref
 // ---- CI: the step runs on every pull request, whatever it changes, and its failure fails `tests` --
 const wf = parseWorkflow(readFileSync(join(R, '.github/workflows/tests.yml'), 'utf8'));
 const job = (id) => wf.jobs.find((j) => j.id === id);
-// A job's steps, each as the mapping of its keys: the `- ` comes off an item's first line.
-const stepsOf = (j) => {
-  const block = j.keys.steps?.block ?? [];
-  const at = block.find((l) => !l.blank && !l.scalar && /^-(\s|$)/.test(l.text))?.indent;
-  const items = [];
-  for (const l of block) {
-    if (!l.blank && !l.scalar && l.indent === at && /^-(\s|$)/.test(l.text)) items.push([{ ...l, indent: at + 2, text: l.text.replace(/^-\s*/, '') }]);
-    else items.at(-1)?.push(l);
-  }
-  return items.map(mapping);
-};
 const text = (k) => [k?.value ?? '', ...(k?.block ?? []).map((l) => l.text)].join('\n');
-const steps = stepsOf(job('plan'));
+const steps = jobSteps(job('plan'));
 const gi = steps.findIndex((s) => text(s.run).includes('prose_baseline_guard.mjs'));
 const step = steps[gi] ?? {};
 t('the plan job runs the guard against the base', step.run?.value, 'node tests/prose_baseline_guard.mjs --base HEAD^1');
