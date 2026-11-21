@@ -1,5 +1,5 @@
 // suite: self-review growth (a fix that grows is a scope call a worker takes under autopilot-judgement)
-// covers: skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/ask-or-take.md
+// covers: skills/desk-autopilot/references/worker-contract-stage-4.md skills/desk-autopilot/references/ask-or-take.md skills/desk-ticket/references/stage-4b-self-review.md
 // What the worker contract tells a worker whose self-review fix needs a file outside its diff: widen
 // within the ticket's size, split past it, park where judgement is off or a §3 row is not granted.
 // Each check is also run on the text before this rule, which must fail it.
@@ -55,7 +55,12 @@ for (const [name, ok] of checks) {
   t(`negative control: the text before this rule fails: ${name}`, ok(before), false);
 }
 t('DS-648 a round-1 split P2 no longer parks', now.take.includes('no round 2 to carry it; and'), false);
-t('the old rule is gone',now.stage4.includes('is the user\'s call to widen the PR or split it out'), false);
+const stage4b = read('skills/desk-ticket/references/stage-4b-self-review.md');
+t('DS-648 AC1 desk-ticket Stage 4b carries a split P2 from round 1, kept carried in later rounds',
+  stage4b.includes('- **A P2 split to a filed follow-up ticket** (under autopilot, `desk-autopilot`\'s `ask-or-take.md`) is carried from round 1 too, the follow-up\'s key in its `follow_up`, and it stays in every later round\'s results, carried'), true);
+t('DS-648 AC1 desk-ticket Stage 4b red-flags only a round-1 carry with no follow-up',
+  stage4b.includes('- Carrying a P0 or P1, or a P2 on round 1 that names no filed follow-up ticket in `follow_up`'), true);
+t('the old rule is gone', now.stage4.includes('is the user\'s call to widen the PR or split it out'), false);
 t('a fix needing someone else\'s decision still parks, in a sentence of its own', now.stage4.includes('naming it. A fix needing someone else\'s decision parks.'), true);
 
 console.log(fails ? `${fails} failed` : 'all passed');
