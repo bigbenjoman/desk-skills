@@ -103,7 +103,7 @@
 #   - its base is red                        the newest completed run of a §4 Required check on the base
 #                                            failed (base-red.mjs, read once per loop down its newest
 #                                            commits): no PR merges into it but its repair ticket's
-#                                            (base-red-<base>), and the loop logs the hold naming the
+#                                            (base-red-<base>-<spell start>), and the loop logs the hold naming the
 #                                            check. The record it keeps in <state>/base-red.json is the
 #                                            pass's to report and repair; it goes once the check passes
 #                                            there. A base whose runs cannot be read merges as before,
