@@ -163,7 +163,8 @@ export function* decideAdvance(s) {
   // worktree's processes instead, up to SUITE_WAIT_CEILING_MS.
   let wedged = false;
   const hung = heartbeatOnly(log.raw, t.log_bytes ?? 0);
-  if (hung && hung.secs * 1000 > TOOL_CALL_CEILING_MS && !done && !handoff && !reboot && registry.read) {
+  // Only a live session: one that has exited is the exit handling's below, as it is with no ceiling.
+  if (hung && hung.secs * 1000 > TOOL_CALL_CEILING_MS && !done && !handoff && !reboot && live) {
     yield set(t.key, `log_bytes=${log.size}`, ...(t.suite_wait_since != null ? ['suite_wait_since=null'] : []));
     yield { type: 'kill', key: t.key, sid: t.session_id, pid: pidOf() };
     wedged = true;

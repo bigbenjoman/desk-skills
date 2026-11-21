@@ -181,6 +181,11 @@ t('a local worker on a cloud ticket\'s PR, as its spawn leaves it (no result), i
 
   const unread = advance({ ...beating('H-4', [beat(1830)]), registry: registryView({ why: 'claude agents failed' }) });
   t('DS-857 with the registry unread, a hung call is not stopped', types(unread).filter((a) => ['kill', 'park'].includes(a)).length, 0);
+
+  // A session that exited mid-call is the exit handling's: never parked wedged and then recorded done or failed too.
+  const exited = advance({ ...beating('H-5', [beat(1830)]), registry: registryView({ live: [] }) });
+  t('DS-857 a hung call whose session has exited is not parked as wedged',
+    j([lines(exited, 'stalled').length, exited.filter((a) => a.type === 'park' && /^wedged/.test(a.question)).length]), '[0,0]');
 }
 
 // DS-857 AC4: ending a session's processes takes its own groups (its hung codex's too) and no other session's.
