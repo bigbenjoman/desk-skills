@@ -165,7 +165,7 @@ function apply(state, ev) {
   const to = TRANSITIONS[ev.type].to;
   if (to !== KEEP) t.state = to;
   switch (ev.type) {
-    case 'seeded': t.fields = {}; t.archived = false; overlay(t, d.fields); break;
+    case 'seeded': Object.assign(t, newTicket(ev.key), { batch: ev.batch }); overlay(t, d.fields); break;
     case 'legacy_set': overlay(t, d.fields); break;
     case 'admitted': t.archived = false; t.park = null; break;
     case 'triaged': t.questions = [...d.questions]; break;

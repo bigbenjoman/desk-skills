@@ -204,6 +204,8 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('AC8 and when it merged', q.tickets['DS-2'].merged_at, '2026-11-20T10:00:06Z');
   t('AC8 the seeded fields come through', q.tickets['DS-1'].added_at, 'x');
   t('AC8 a projection-only field never does', 'log_bytes' in q.tickets['DS-1'], false);
+  const reseeded = L.reduce([{ ...seed('DS-1', { key: 'DS-1', state: 'queued' }, 9), id: 'reseed' }], s).tickets['DS-1'];
+  t('AC8 a ticket seeded again is what its fields say, nothing kept from before', j([reseeded.state, reseeded.park, reseeded.holds]), j(['queued', null, []]));
   t('AC8 a moved ticket leaves its old batch', Object.keys(L.project(L.reduce([env(8, ev('moved', { from: 'B1', to: 'B2' }))], s), 'B1').tickets).join(), 'DS-2');
 }
 
