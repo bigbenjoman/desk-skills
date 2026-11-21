@@ -95,7 +95,8 @@
 //                                             --cap sizes this repo's block instead of its concurrency row
 //   node desk-env.mjs default-mode            print DEFAULT_MODE= and SOURCE= for the cwd's repo; exit 1 (with
 //                                             the warning on stderr) when it is dontAsk
-//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), `ask` rows
+//   node desk-env.mjs drift [--all]           rows the template has that the config lacks (MISSING), set rows
+//                                             whose value does not fit the schema's type (INVALID), `ask` rows
 //                                             an unattended batch parks on (STALLS), §4 command items no worker
 //                                             may run or, with worker-local-services yes, a Local services
 //                                             item with no service name (UNLISTED), an app directory other command rows
@@ -1703,8 +1704,37 @@ export function configDrift({ config, template = templatePath(), root = null, ho
   // §4 Suite weight set in both places and disagreeing: the committed value wins, so the row is stale.
   const w = suiteWeightIn(parsed, root);
   const weight = w.committed && w.row != null && w.row !== w.committed.value ? { row: w.row, committed: w.committed.value, file: w.committed.file } : null;
-  return { missing, stalls, unlisted, noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
+  return { missing, stalls, unlisted, invalid: invalidRows(parsed), noDev: root ? devServerGaps(parsed, root) : [], weight, dontAsk: mode === 'dontAsk' ? file : null };
 }
+
+// Every set row of the config file whose items do not fit the type the schema declares for it, as the
+// file has it (no machine fallback or override): -> [{ section, label, item, error, fatal }].
+export function invalidRows(parsed) {
+  const out = [];
+  for (const e of ROWS) {
+    let items;
+    if (e.kind === 'perm') {
+      const raw = parsed.sections['3']?.byKey[norm(e.label)]?.value;
+      items = unset(raw) ? null : [raw];
+    } else if (e.kind === 'table') {
+      items = tableItemsIn(parsed, e.id);
+    } else {
+      const row = parsed.sections[e.section]?.byName[norm(e.label)];
+      items = !row || unset(row.value) ? null : row.items.filter((x) => !unset(x));
+    }
+    if (!items?.length) continue;
+    for (const { item, error, fatal } of checkRow(e, items).errors) out.push({ section: e.section, label: e.label, item, error, fatal });
+  }
+  return out;
+}
+
+// An INVALID line: the row, then the reader's own words where they already name the row, else the item.
+const invalidLine = ({ section, label, item, error }) => {
+  const own = error.replace(/^desk(-env)?: /, '');
+  const head = `config §${section} "${label}" `;
+  if (own.startsWith(head)) return `INVALID  §${section} ${label} ${own.slice(head.length)}`;
+  return `INVALID  §${section} ${label}${item != null && !own.includes(item) ? ` item "${item}"` : ''}: ${own}`;
+};
 
 // App directories the other §4 command rows name, whose package.json has a `dev` script, that §4 Dev
 // server has no item for: a worker on a ticket there is refused that app's dev server. A Dev server
@@ -1786,9 +1816,10 @@ const jobKeyedLine = (j) => {
   return `JOBKEY   §4 Pre-merge steps item "${j.name}" names a job of ${j.steps} steps, so desk guesses from its words which failed step is yours: ${fix}`;
 };
 
-export function driftLines({ missing, stalls, unlisted = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
+export function driftLines({ missing, stalls, unlisted = [], invalid = [], noDev = [], weight = null, jobKeyed = [], dontAsk }) {
   const lines = [
     ...missing.map((m) => `MISSING  §${m.section} ${m.label}: the template has this row, the config does not`),
+    ...invalid.map(invalidLine),
     ...stalls.map((s) => `STALLS   §3 ${s.key} is ask with autopilot-workers yes: ${s.reason}`),
     ...unlisted.map((u) => `UNLISTED §4 ${u.row} item "${u.item}" ${u.why}: every worker is refused it`),
     ...noDev.map((g) => `NODEV    §4 Dev server has no item for ${g.dir}, which §4 ${g.rows.join(', ')} name${g.rows.length > 1 ? '' : 's'} and whose package.json has a dev script: a worker on a ticket there cannot run its dev server`),

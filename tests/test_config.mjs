@@ -173,11 +173,11 @@ writeFileSync(tpl, `${P3}${['autopilot-workers', 'git-push', 'pr-ready', 'pr-mer
   + `${P2}| Primary repo root | \`TODO\` | |\n\n${P4}| Branch protection | \`TODO\` |\n`);
 const repoDir = join(T, 'repo');
 mkdirSync(join(repoDir, '.claude'), { recursive: true });
-const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true } = {}) => {
+const conf = ({ omit = [], perms = {}, protection = 'ruleset main', b3 = true, b3rows = '' } = {}) => {
   const base = ['autopilot-workers', 'git-push', 'pr-ready', 'pr-merge-green', 'batch-base-push'];
   const keys = [...base, ...Object.keys(perms).filter((k) => !base.includes(k))].filter((k) => !omit.includes(k));
   return `${P3}${keys.map((k) => row3(k, perms[k] ?? 'yes')).join('')}\n`
-    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n\n`
+    + `${B3}${b3 ? '| Worker models | `default` | `default` |\n' : ''}| Check-in times | \`08:00, 17:00\` | \`08:00\` |\n${b3rows}\n`
     + `${P2}| Primary repo root | \`${repoDir}\` | |\n\n${P4}| Branch protection | \`${protection}\` |\n`;
 };
 const driftEnv = (extra) => ({ ...process.env, DESK_CONFIG_TEMPLATE: tpl, DESK_MACHINE: join(T, 'none.md'), HOME: T, DESK_REPO_DIR: T, ...extra });
@@ -246,12 +246,29 @@ t('DS-395 AC4 only the items workers cannot run are reported', d.out.split('\n')
 t('DS-395 AC4 and exits 1', d.code, 1);
 
 // A §4 Local services item a worker cannot start by its leading name is named, where workers may start them.
+const badService = 'INVALID  §4 Local services: "Typesense on port 8108" is not `<service> [:<port>]`';
 d = drift(`${conf({ perms: { 'worker-local-services': 'yes' } })}| Local services | \`search: 8108\` \`mailpit\` \`Typesense on port 8108\` |\n`);
-t('a Local services item with no service name is named, where workers start services', d.out,
-  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it');
+t('a Local services item with no service name is named, where workers start services', d.out, [badService,
+  'UNLISTED §4 Local services item "Typesense on port 8108" does not start with a compose service name (lowercase, then `:port` or a space): every worker is refused it'].join('\n'));
 t('and `name: port` reads as its name', d.code, 1);
-t('with workers starting no service it is not drift', drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`).out, 'no drift');
 t('DS-395 AC4 a script run as bash <path>.sh is not drift', drift(`${conf()}| Related tests | \`bash tests/related.sh\` |\n`).out, 'no drift');
+
+// A set row whose value does not fit the type the schema declares for it is named INVALID, report-only.
+d = drift(`${conf({ perms: { 'worker-local-services': 'no' } })}| Local services | \`Typesense on port 8108\` |\n`);
+t('DS-871 AC1 a Local services item that is no `<service> [:<port>]` is INVALID, naming the row, the item and the form', d.out, badService);
+t('DS-871 AC1 and exits 1', d.code, 1);
+t('DS-871 AC2 `search: 8108` fits, so says nothing about Local services', drift(`${conf()}| Local services | \`search: 8108\` |\n`).out, 'no drift');
+d = drift(conf({ b3rows: '| Worker effort | `none` | `0=medium bogus=high` |\n' }));
+t('DS-871 AC3 a Worker effort start desk does not know is INVALID, naming the row and that item',
+  `${d.code} ${d.out.split('\n').length} ${d.out.startsWith('INVALID  §3b Worker effort is "0=medium bogus=high" — unknown start `bogus`;')}`, '1 1 true');
+d = drift(`${conf()}| Evidence workflow | \`none\` \`pr-evidence.yml\` |\n`);
+t('DS-871 AC4 an Evidence workflow cell mixing none with another item is INVALID', d.out,
+  'INVALID  §4 Evidence workflow: `none` must stand alone, not beside other items (none | pr-evidence.yml)');
+t('DS-871 AC4 and exits 1', d.code, 1);
+t('DS-871 a single span holding none beside a lever is INVALID, as `desk-env levers` reads it',
+  drift(conf({ b3rows: '| Phase 0 levers | `none` | `none, codex` |\n' })).out.startsWith('INVALID  §3b Phase 0 levers: `none` cannot sit beside another name'), true);
+t('DS-871 a §3 value that is no permission is INVALID', drift(conf({ perms: { 'git-push': 'maybe' } })).out.startsWith('INVALID  §3 git-push: "maybe" is not'), true);
+t('DS-871 AC5 every row unset or fitting its type is no drift', drift(`${conf({ b3rows: '| Worker effort | `none` | `0=medium 4b=high` |\n| Phase 0 levers | `none` | `codex` `effort` |\n| Promotion slice size (children) | `8` | `TODO` |\n' })}| Local services | \`search: 8108\` \`mailpit :8025\` |\n| Evidence workflow | \`pr-evidence.yml\` |\n| Merge method | \`squash\` |\n`).out, 'no drift');
 
 // An app directory other command rows name, with a dev script and no Dev server item, is named NODEV.
 mkdirSync(join(repoDir, 'apps/portal/apps/web'), { recursive: true });
@@ -328,6 +345,11 @@ t('AC7 each repo is reported by slug', d.out, '== acme__clean\n  no drift\n== ac
 t('AC7 any drift exits 1', d.code, 1);
 rmSync(join(croot, 'repos', 'acme__stale'), { recursive: true });
 t('AC7 no drift anywhere exits 0', all().code, 0);
+mkdirSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
+writeFileSync(join(croot, 'repos', 'acme__typo', 'config.md'), `${conf()}| Local services | \`Typesense on port 8108\` |\n`);
+d = all();
+t('DS-871 AC6 the INVALID line is under the slug of the repo with the invalid row only', `${d.code}\n${d.out}`, `1\n== acme__clean\n  no drift\n== acme__typo\n  ${badService}`);
+rmSync(join(croot, 'repos', 'acme__typo'), { recursive: true });
 
 // `desk-env add-row`: a row drift names MISSING, copied from the template with the person's answer.
 const added = join(T, 'add.md');
