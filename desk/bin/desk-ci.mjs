@@ -253,28 +253,41 @@ const isFlowAxis = (text, at) => {
   return braces === 1 && brackets === 0;
 };
 
+// Whether a YAML value is an expression, quoted or not.
+const isExpr = (s) => /^["']?\s*\$\{\{/.test(s.trim());
 // Whether a flow value is computed: an expression itself, or a list with an expression for an item.
 const computedFlow = (v) => {
   const t = v.trim();
-  if (t.startsWith('${{')) return true;
+  if (isExpr(t)) return true;
   if (!t.startsWith('[')) return false;
   let end = 1;
   while (end < t.length && nesting(t.slice(0, end)).brackets > 0) end++;
-  return flowItems(t.slice(0, end)).some((i) => i.startsWith('${{'));
+  return flowItems(t.slice(0, end)).some(isExpr);
 };
-// Whether the matrix has an include it computes (`include: ${{ }}`, or an include item that is one):
-// that can add any value to any key, so no key's values can be read here. An exclude only removes.
-const computedInclude = (lines) => lines.some((l, idx) => {
-  if (l.scalar || l.blank) return false;
-  const kv = keyOf(l);
-  if (kv?.key === 'include') {
-    if (kv.value) return computedFlow(flowValue(kv.value, lines.slice(idx + 1)));
-    return blockAfter(lines, idx).some((b) => !b.blank && !b.scalar && /^-\s*\$\{\{/.test(b.text));
+// Whether the matrix has an include of its own that it computes (`include: ${{ }}`, or an include
+// item that is one): that can add any value to any key, so no key's values can be read here. An
+// include field inside an axis value is not the matrix's, and an exclude only removes.
+const computedInclude = (lines) => {
+  const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
+  if (mi < 0) return false;
+  const kv = keyOf(lines[mi]);
+  if (kv.value) {
+    const text = lines[mi].text;
+    return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
+      .some((m) => isFlowAxis(text, m.index) && computedFlow(text.slice(m.index + m[0].length)));
   }
-  if (kv?.key !== 'matrix') return false;
-  const text = flowValue(kv.value, lines.slice(idx + 1));
-  return [...text.matchAll(/[{,]\s*include\s*:/g)].some((m) => computedFlow(text.slice(m.index + m[0].length)));
-});
+  const block = blockAfter(lines, mi);
+  const axisIndent = block.find((l) => !l.blank && !l.scalar)?.indent;
+  return block.some((l, j) => {
+    if (l.indent !== axisIndent || /^-\s/.test(l.text) || keyOf(l)?.key !== 'include') return false;
+    const idx = mi + 1 + j;
+    const { value } = keyOf(l);
+    if (value) return computedFlow(flowValue(value, lines.slice(idx + 1)));
+    const items = blockAfter(lines, idx).filter((b) => !b.blank && !b.scalar);
+    const itemIndent = items[0]?.indent;
+    return items.some((b) => b.indent === itemIndent && isExpr(b.text.replace(/^-\s*/, '')));
+  });
+};
 
 // The values matrix.<key> can take, or null when the matrix is computed and cannot be read here. A
 // key directly under `matrix:` lists its values; one in an include or exclude entry is one value.

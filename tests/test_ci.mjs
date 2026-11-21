@@ -320,8 +320,26 @@ t('a computed include beside a declared axis is reported', linted(computedInc(fr
 t('a computed include finding names the secret', lint(computedInc(fromNeeds), VPA).at(-1).problem, 'can run self-hosted but receives secret DATABASE_URL');
 t('a computed include item in a flow list is reported', linted(computedInc(`[${fromNeeds}]`), VPA), 'm@9 m@13');
 t('a computed include item in a block list is reported', linted(computedInc(`\n          - ${fromNeeds}`), VPA), 'm@10 m@14');
+t('a quoted computed include is reported', linted(computedInc(`'${fromNeeds}'`), VPA), 'm@9 m@13');
+t('a quoted computed include item in a flow list is reported', linted(computedInc(`["${fromNeeds}"]`), VPA), 'm@9 m@13');
+t('a quoted computed include item in a block list is reported', linted(computedInc(`\n          - "${fromNeeds}"`), VPA), 'm@10 m@14');
+t('a computed include on the line after its key is reported', linted(computedInc(`\n          ${fromNeeds}`), VPA), 'm@10 m@14');
 t('a computed include in an inline matrix is reported',
-  linted(inlineMatrix(`{ label: [voicepa-linux-arm64], include: ${fromNeeds} }`), VPA), 'm@7 m@11');
+  linted(inlineMatrix(`{ label: [voicepa-linux-arm64], include: "${fromNeeds}" }`), VPA), 'm@7 m@11');
+t('an include field inside an inline axis value is not the matrix\'s',
+  linted(inlineMatrix(`{ label: [ubuntu-latest], cfg: [{ include: "${fromNeeds}" }] }`)), '');
+t('an include field inside a block axis value is not the matrix\'s', linted(wf(`  m:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+        cfg:
+          - include: ${fromNeeds}
+    runs-on: \${{ matrix.os }}
+    steps:
+      - run: npm test
+        env:
+          DATABASE_URL: \${{ secrets.DATABASE_URL }}
+`)), '');
 t('a static include beside a declared axis lints clean', linted(computedInc('[{ label: voicepa-linux-arm64-8cpu }]'), VPA), '');
 t('a computed exclude only removes, so it lints clean', linted(computedInc('[]').replace('include: []', `exclude: ${fromNeeds}`), VPA), '');
 
