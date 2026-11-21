@@ -203,6 +203,10 @@ const REWRITTEN = [
   // shortened to fit the core's cap: the payload also goes in the park file as `approve` (Stage 8 file)
   ['#775', '(the exact Jira text, the PR body, the diff, whatever needs approving)', 1],
   ['#775', 'read-only to you apart from your park and image files', 1],
+  // shortened to fit the push-nothing region in the Stage 4 file's cap; the briefing's batch notes assign the port
+  ['DS-889', 'kill a server you did not start, it is likely another session\'s.', 1],
+  ['DS-889', 'it posts at a head nothing has reviewed.', 1], // the verdict rule shortened; desk-review phase-7-post.md holds it whole
+
 ];
 checkRewritten({ t, label: 'AC4', rewritten: REWRITTEN, items: paras });
 const dropped = paras.filter((p) => !after.includes(p) && !rewrittenBy(REWRITTEN, p));

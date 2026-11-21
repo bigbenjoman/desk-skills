@@ -1,5 +1,5 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
-// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
+// covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs desk/bin/fix-tries.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
 // the check must name the bad one and pass the good one. Then the real skills and agents tree, against
 // the baseline, in-process and under two seconds.
@@ -125,6 +125,16 @@ const written = facts('--write', join(tmp, 'a.md'));
 t('DS-886 the command names the region, then --write restores it and touches nothing around it',
   [before.status, written.status, readFileSync(join(tmp, 'a.md'), 'utf8') === edited.replace('`claude`, `codex` or `gemini`', '`claude` or `codex`')].join(' '), '1 0 true');
 rmSync(tmp, { recursive: true, force: true });
+
+// ---- DS-889: the push-nothing rule is fix-tries' text ----------------------------------------------
+const { pushNothing } = await import('../desk/bin/fix-tries.mjs');
+const POST = 'skills/desk-review/references/phase-7-post.md', STAGE4 = 'skills/desk-autopilot/references/worker-contract-stage-4.md';
+for (const [file, what] of [[POST, "desk-review's post phase"], [STAGE4, 'the Stage 4 worker contract']]) {
+  t(`DS-889 AC4 ${what} holds the push-nothing rule and its accepted-gap exception as fix-tries renders them`, regionIn(readFileSync(join(R, file), 'utf8'), 'push-nothing'), pushNothing(true));
+}
+const ruleChanged = check([join(R, POST), join(R, STAGE4)], { values: { 'push-nothing': { text: 'If you pushed nothing, post a review anyway.' } } }).filter((x) => x.kind === 'region');
+t('DS-889 AC3 a push-nothing rule changed in fix-tries fails both unregenerated regions, naming each and the regenerate command',
+  `${ruleChanged.map((x) => `${x.file} ${x.value}`).sort().join(', ')} ${ruleChanged.every((x) => x.message.includes(WRITE))}`, `${STAGE4} push-nothing, ${POST} push-nothing true`);
 
 // ---- AC9: main's drift is held by the baseline ----------------------------------------------------
 const baseline = readBaseline();
