@@ -38,7 +38,8 @@ export function counts(file) {
 }
 
 // The read model: desk-q's home view for every repo with a batch, each repo's ticket rows as its
-// repo view lists them, and each batch's heartbeat liveness, which the clock tick checks.
+// repo view lists them (their figures, not the screen's line, which carries ages that move with the
+// clock), and each batch's heartbeat liveness, which the clock tick checks.
 export async function readModel(now) {
   const Q = await import('./desk-q-model.mjs');
   E.forgetReads(); // the server outlives edits to the machine profile and configs
@@ -47,7 +48,7 @@ export async function readModel(now) {
   const tickets = {};
   for (const s of body.repos ?? []) {
     const r = s.error ? null : Q.repoPlace(repos, s.id);
-    tickets[s.slug] = r ? Q.repoJson(repos, r, { now }).tickets : [];
+    tickets[s.slug] = r ? Q.repoJson(repos, r, { now }).tickets.map(({ line, ...row }) => row) : [];
   }
   const batches = repos.filter((r) => r.queuePath).map((r) => ({ stateDir: r.stateDir, queuePath: r.queuePath, live: !!r.live }));
   return { at: now, body, tickets, batches };

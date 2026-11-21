@@ -196,7 +196,7 @@ const beatAt = new Date(Date.now() - LIVE_MS + 3000).toISOString();
 writeFileSync(beat, JSON.stringify({ queue: queueOf('acme__widgets'), batch: null, pid: 1, at: beatAt, pass: beatAt }));
 await waitFor(() => w.real().some((e) => e.event === 'repo' && e.data.slug === 'acme__widgets' && e.data.summary?.live === true));
 t('AC8 a fresh heartbeat is sent as the repo going live', view(w.events).repos.acme__widgets?.live, true);
-await sleep(300);
+await sleep(700); // a live batch's forecast saves its first estimates, a write of its own
 const tickFrom = w.events.length, tickBuilds = feed.builds.length;
 skew = 5000;
 await sleep(300);
