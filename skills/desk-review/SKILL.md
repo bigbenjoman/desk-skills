@@ -94,7 +94,7 @@ below marks its worker form. A sweep, or a review of someone else's PR, is never
 ## Phases
 
 Each phase's rules are in its own file under `references/`. **Read a phase's file when the review
-reaches it.** The phases overlap, so some are read together: Phase 3 dispatches Bea (Phase 5) in the
+reaches it.** Some phases are read together: Phase 3 dispatches Bea (Phase 5) in the
 same message as the finders, and its codex cold call follows Phase 4's quoting rules.
 
 | # | Phase | Read at its start |
