@@ -918,7 +918,10 @@ in `tests/suite_durations.json` first, each reported in one piece in name order 
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU
 seconds, and every finished run appends a line to `~/.desk-autopilot/test-runs.jsonl` with its
-date, suites, job count, wall and CPU seconds and the load average at its start. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
+date, suites, job count, wall and CPU seconds and the load average at its start. A suite that fails
+runs once more: passing then, the run passes, the suite's report shows its first run's failure, and
+the summary names it under `flaked:` (CI's `tests` job prints each shard's); failing again, the run
+fails with both runs printed. `test_compare_pass.sh` is never retried. `run.sh` finds every `tests/test_*.sh` and `tests/test_*.mjs` itself, so a new suite
 needs no edit there: give it a `# suite: <label>` line (`// suite: <label>` in `.mjs`) near the top.
 A suite that reads a directory rather than naming files says so with a `# covers: <glob>` line.
 `run.sh` starts every suite without the caller's `DESK_*` variables (bar CI's `DESK_REQUIRE_SHELLCHECK`)
