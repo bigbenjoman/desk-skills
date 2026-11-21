@@ -16,11 +16,17 @@
 // left_out, such as arm 1's tasks with no packet) is listed with why. A task a run left unstarted is listed as not
 // run, and when the arms did not run the same tasks each arm is shown on its own beside the
 // baseline, never beside another arm. The report states figures; it gives no verdict.
+//
+// Beside tasks accepted, each arm shows how many of the checks each task's PR added or changed its
+// accepted and rejected runs passed (the task set's added_checks, bench-checks.mjs). A run whose
+// result.json predates that figure is counted from its test-output.log. A failed run's figure is not
+// measured, and a task frozen before bench-build recorded added checks reads not available.
 import { readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { quantile } from './desk-ci.mjs';
 import { GO, OWN_USE, armVendor } from './bench-quota.mjs';
+import { tallyChecks } from './bench-checks.mjs';
 
 const USAGE = 'usage: bench-report.mjs --tasks <file.json> [--out <dir>] [--blind <dir>] [--baseline <file>] [--plans <file>]';
 export const NOT_SCORED = 'not scored';
@@ -91,8 +97,28 @@ export function loadBaseline(path) {
   return b.why ? { ok: false, path, why: `${path} is not a Phase 0 baseline report: ${b.why}` } : { ok: true, path, b };
 }
 
-// run.json with each run's result.json beside its entry. -> { seed, arms, tasks: [{ task, runs: [{ arm, status, why, result }] }] }
-export function loadRun(out) {
+export const NOT_AVAILABLE = 'not available';
+const FINISHED = new Set(['accepted', 'rejected']);
+
+// The task set's added_checks by task id; an unreadable set records none.
+export function loadAddedChecks(file) {
+  try { return new Map((JSON.parse(readFileSync(file, 'utf8')).tasks ?? []).map((t) => [t.id, t.added_checks])); } catch { return new Map(); }
+}
+
+// One run's added-or-changed checks. -> { passed, of } | { state: 'old' | 'unmatched' | 'failed' }
+//   old: the task records no added checks; unmatched: it names none, or the run's output names none.
+export function runChecks(added, status, result, dir) {
+  if (!Array.isArray(added?.checks)) return { state: 'old' };
+  if (!added.checks.length) return { state: 'unmatched' };
+  if (!FINISHED.has(status)) return { state: 'failed' };
+  const log = dir ? join(dir, 'test-output.log') : null;
+  const r = result?.added_checks ?? (log && existsSync(log) ? tallyChecks(added.checks, readFileSync(log, 'utf8')) : {});
+  return typeof r.passed === 'number' ? { passed: r.passed, of: r.of } : { state: 'unmatched' };
+}
+
+// run.json with each run's result.json beside its entry, and the run's added-or-changed checks from
+// `added` (loadAddedChecks). -> { seed, arms, tasks: [{ task, runs: [{ arm, status, why, result, checks }] }] }
+export function loadRun(out, added = new Map()) {
   const run = readJson(join(out, 'run.json'), 'the bench run');
   const arms = [];
   const tasks = (run.tasks ?? []).map((t) => ({
@@ -100,7 +126,8 @@ export function loadRun(out) {
     runs: t.runs.map((r) => {
       if (!arms.includes(r.arm)) arms.push(r.arm);
       const result = r.dir && existsSync(join(r.dir, 'result.json')) ? readJson(join(r.dir, 'result.json'), 'a run result') : null;
-      return { arm: r.arm, status: result?.status ?? r.status, why: r.why ?? result?.why ?? null, result };
+      const status = result?.status ?? r.status;
+      return { arm: r.arm, status, why: r.why ?? result?.why ?? null, result, checks: runChecks(added.get(t.task), status, result, r.dir) };
     }),
   }));
   return { seed: run.seed ?? null, arms: arms.sort(), tasks, leftOut: run.left_out ?? [], armStops: run.arm_stops ?? [] };
@@ -267,6 +294,10 @@ export function armFigures(tasks, arm, scores) {
   };
   const list = scores?.scores ?? [];
   const model = ran.map((r) => r.result?.model).find(Boolean);
+  const measured = ran.filter((r) => typeof r.checks?.passed === 'number');
+  const state = (s) => ran.filter((r) => r.checks?.state === s).length;
+  const checks = { passed: measured.reduce((s, r) => s + r.checks.passed, 0), of: measured.reduce((s, r) => s + r.checks.of, 0),
+    tasks: measured.length, old: state('old'), unmatched: state('unmatched'), failed: state('failed') };
   return {
     arm,
     model: model ?? null,
@@ -276,6 +307,7 @@ export function armFigures(tasks, arm, scores) {
     accepted: accepted.length,
     rejected: ran.filter((r) => r.status === 'rejected').length,
     failed: ran.filter((r) => r.status === 'failed').length,
+    checks,
     notRun: runs.filter((r) => r.status === 'not run').map((r) => ({ task: r.task, why: r.why })),
     score: meanScore(list),
     tokens, tokensOver: withTokens.length,
@@ -291,6 +323,16 @@ const over = (k, of) => (k < of ? ` (over ${k} of ${of})` : '');
 const accounts = (m, value) => ([...m].length ? [...m].sort((a, b) => a[0].localeCompare(b[0])).map(([name, e]) => `${name}: ${value(e)}`).join(' · ') : 'not recorded');
 const unread = (e) => (e.unreadable ? `, ${e.unreadable} run(s) unreadable` : '');
 
+// An arm's added-or-changed checks cell: the share passed where measured, and why the rest is not.
+export function checksCell({ checks: c }) {
+  const parts = [];
+  if (c.of) parts.push(`${c.passed} of ${c.of} (${Math.round((100 * c.passed) / c.of)}%) over ${c.tasks} task(s)`);
+  if (c.old) parts.push(`${NOT_AVAILABLE} for ${c.old} task(s): the task set records no added checks for them; refreeze it with bench-build.mjs --rewrite`);
+  if (c.unmatched) parts.push(`not measured for ${c.unmatched} task(s): no check line could be matched`);
+  if (c.failed) parts.push(`not measured for ${c.failed} failed run(s)`);
+  return parts.join('; ') || 'not measured';
+}
+
 // The table's rows: [label, baseline cell, (figures) -> arm cell].
 function rows(baseline) {
   const b = baseline.ok ? baseline.b : null;
@@ -300,6 +342,7 @@ function rows(baseline) {
   const tok = (k) => (f) => noTask(f, f.tokensOver ? `${num(f.tokens[k])}${over(f.tokensOver, f.accepted)}` : 'not recorded');
   return [
     ['Tasks accepted, of tasks run', b ? `${b.accepted} ticket(s) accepted of ${b.tickets} worked` : none, (f) => `${f.accepted} of ${f.accepted + f.rejected}`],
+    ['Checks the PR added or changed, passed', b ? '—' : none, checksCell],
     ['Runs failed (not counted)', b ? '—' : none, (f) => String(f.failed)],
     ['Mean blind score (1 to 5)', b ? '—' : none, (f) => (f.score ? `${f.score.mean.toFixed(2)} (${f.score.n} scored)` : NOT_SCORED)],
     ['£ per accepted task', b ? '—' : none, (f) => f.value.perTask],
@@ -340,7 +383,8 @@ export function renderReport({ out, run, joined, baseline, plans = { ok: false, 
   if (!joined) text.push(`Blind scores: ${NOT_SCORED}. Score the sheets \`bench-blind.mjs export\` wrote, then run \`bench-blind.mjs join\`.`, '');
   else if (joined.left_out?.length) text.push(`Blind scores: ${joined.left_out.length} sheet(s) left out, none of their scores counted: ${joined.left_out.map((l) => `${l.task} (${l.why})`).join('; ')}.`, '');
   text.push('## Tasks', '', `| Task | ${run.arms.map(cell).join(' | ')} |`, `|---|${run.arms.map(() => '---|').join('')}`);
-  for (const t of run.tasks) text.push(`| ${cell(t.task)} | ${run.arms.map((a) => cell(t.runs.find((r) => r.arm === a)?.status ?? '—')).join(' | ')} |`);
+  const taskCell = (r) => (!r ? '—' : typeof r.checks?.passed === 'number' ? `${r.status} (${r.checks.passed} of ${r.checks.of} added checks)` : r.status);
+  for (const t of run.tasks) text.push(`| ${cell(t.task)} | ${run.arms.map((a) => cell(taskCell(t.runs.find((r) => r.arm === a)))).join(' | ')} |`);
   text.push('');
   if (run.leftOut?.length) {
     text.push('## Left out', '', 'These tasks ran on no arm:', '');
@@ -371,7 +415,7 @@ export function renderReport({ out, run, joined, baseline, plans = { ok: false, 
 
 // Reads the run, the scores and the baseline, and writes <out>/report.md. -> { path, text, compared }
 export function writeReport(o) {
-  const run = loadRun(o.out);
+  const run = loadRun(o.out, loadAddedChecks(o.tasks));
   const joined = readJoined(o.blind);
   const r = renderReport({ out: o.out, run, joined, baseline: loadBaseline(o.baseline), plans: loadPlans(o.plans) });
   const path = join(o.out, 'report.md');

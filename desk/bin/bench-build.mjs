@@ -9,7 +9,8 @@
 // key, size, summary and description as they read when the PR's first commit was authored (later
 // edits are undone from the Jira changelog; comments are never read), and copies the PR's added or
 // changed test files at the merge commit to <set dir>/<task id>/hidden/. Each validation's test output
-// is kept under <set dir>/<task id>/validate/{base,merge}/.
+// is kept under <set dir>/<task id>/validate/{base,merge}/. The task's added_checks names the checks
+// the PR added or changed in those files (bench-checks.mjs), with why when it names none.
 //
 // A PR already in the set, kept or dropped, is left exactly as it is unless --rewrite is given, which
 // builds the PRs named on this run again. The set file is written after each PR, and only when
@@ -23,6 +24,7 @@ import { FILE_SAFE } from './skill-eval.mjs';
 import { deskEnv, makeCheckout, readRepo, score, testRuns } from './bench.mjs';
 import { keyRegex, SIZE_LINE } from './ticket-lint.mjs';
 import { SIZES } from './desk-q-eta.mjs';
+import { findChecks } from './bench-checks.mjs';
 
 const USAGE = 'usage: bench-build.mjs --set <file.json> --pr <owner/name>#<n> [--pr …] [--rewrite] [--timeout <seconds>]';
 const SHA = /^[0-9a-f]{40}$/;
@@ -157,6 +159,17 @@ function validateAt(repo, task, commit, dir, timeout) {
 
 const fail = (why) => { throw Object.assign(new Error(why), { drop: true }); };
 
+// The checks the PR added or changed in the hidden files it runs (bench-checks.mjs), read from the
+// diff between its base and merge commits. `hidden` holds the run files' merge versions.
+export function addedChecks(root, base, merge, runs, hidden) {
+  const diff = git(root, ['diff', '-U0', '--no-color', '--no-ext-diff', base, merge, '--', ...runs]);
+  if (diff.status !== 0) fail(`cannot diff the hidden tests from the base to the merge commit: ${(diff.stderr || '').trim()}`);
+  // Exit 1 is no match: no helper defined there.
+  const defs = git(root, ['grep', '-h', '-e', 'FAIL', merge, '--', ...new Set(runs.map((f) => dirname(f)))]);
+  const texts = Object.fromEntries(runs.map((f) => [f, readFileSync(join(hidden, f), 'utf8')]));
+  return findChecks({ diff: diff.stdout, defs: defs.status === 0 ? defs.stdout : '', texts });
+}
+
 // How many first-parent commits the PR put on the base branch. A merge commit or a squash is one. A
 // rebase merge lands each of the PR's commits with the author dates they had, so the merge commit is
 // the last of them: read from its first parent, the base would already hold the rest of the PR.
@@ -211,7 +224,8 @@ function freeze(want, setDir, opts, repos) {
 
   const prompt = `${key}: ${ticket.summary}\n\n${ticket.description}`.trim();
   const task = { id, repo: want.repo, pr: want.pr, base, merge, ticket, prompt,
-    hidden_tests: { dir: `${id}/hidden`, files, ...(runs.length < files.length ? { run: runs } : {}) } };
+    hidden_tests: { dir: `${id}/hidden`, files, ...(runs.length < files.length ? { run: runs } : {}) },
+    added_checks: addedChecks(repo.root, base, merge, runs, hidden) };
   const abs = { ...task, hidden_tests: { ...task.hidden_tests, dir: hidden } };
   const atMerge = validateAt(repo, abs, merge, join(taskDir, 'validate', 'merge'), opts.timeout);
   if (atMerge.status !== 'accepted') {

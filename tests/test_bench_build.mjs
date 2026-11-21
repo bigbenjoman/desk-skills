@@ -170,6 +170,8 @@ t('AC2 copied at the merge commit', readFileSync(join(hiddenDir, 'tests', 'test_
 t('AC2 beside the set, outside the repo', task.hidden_tests.dir === 'acme__widgets-1/hidden' && !hiddenDir.startsWith(repo), true);
 t('AC2 a fixture is copied but not run', JSON.stringify(task.hidden_tests.run), '["tests/test_fix.sh"]');
 t('the set loads as a bench task set', loadBenchTasks(setFile)[0].hidden_tests.dir, hiddenDir);
+t('DS-547 a PR whose test calls no check helper records no added checks, and why',
+  task.added_checks.checks.length === 0 && /no check helper/.test(task.added_checks.why), true);
 t('AC3 the base run failed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'base', 'test-output.log'), 'utf8').includes('exit 1'), true);
 t('AC3 the merge run passed', readFileSync(join(dir, 'set', 'acme__widgets-1', 'validate', 'merge', 'test-output.log'), 'utf8').includes('exit 0'), true);
 const why = Object.fromEntries(set.dropped.map((d) => [d.pr, d.why]));
