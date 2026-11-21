@@ -1,7 +1,7 @@
 // suite: prose check, every code reference a skill makes is one the code has, with today's drift in a baseline
 // covers: tests/prose_check.mjs tests/prose_scan.mjs tests/prose_facts.mjs desk/bin/spawn-order.mjs skills/desk-review/bin/verdict.mjs tests/command_shapes.mjs tests/fixtures/prose_baseline.json tests/fixtures/prose-code/*.md desk/bin/prose-facts.mjs desk/bin/queue-commands.mjs desk/bin/markers.mjs desk/bin/queue-writer.mjs desk/bin/batch-state.mjs desk/bin/with-lock.sh skills/**/*.md agents/*.md
 // covers: desk/bin/desk-env.mjs desk/bin/config-schema.mjs desk/bin/machine.mjs desk/bin/test-scope.mjs desk/bin/workflow-yaml.mjs desk/bin/dir-lock.mjs desk/bin/failure-class.mjs desk/bin/queue-store.mjs desk/bin/clears-when.mjs desk/bin/harvest.mjs desk/bin/spine-check.mjs desk/bin/scope-report.mjs desk/bin/baseline.mjs desk/bin/gate.mjs desk/bin/desk-ci.mjs desk/bin/decisions.mjs desk/templates/scripts/desk/review-gate.mjs
-// covers: desk/bin/costs.mjs desk/bin/desk-lines.mjs desk/bin/leases.mjs desk/bin/logins.mjs
+// covers: desk/bin/costs.mjs desk/bin/desk-lines.mjs desk/bin/leases.mjs desk/bin/logins.mjs desk/bin/quantile.mjs
 // The covers lines name every module the check imports, directly or through another (checked below),
 // so a change to any of them runs this suite.
 // Each fixture under tests/fixtures/prose-code/ adds one kind of drift beside a reference the code has;
