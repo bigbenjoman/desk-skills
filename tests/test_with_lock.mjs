@@ -245,6 +245,25 @@ try {
     await until(() => leaseList(env).length === 0, 3000);
     t('DS-909 AC14 and goes once it exits', leaseList(env).length, 0);
   }
+  // DS-924: the command learns it runs inside a slot of this lock (tests/related.sh then takes no
+  // second), and a run waiting on the lock files says on whom, on both lock paths.
+  {
+    const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: SHADOW1 });
+    const said = (args, e = env) => wl(e, [...args, '--', 'sh', '-c', 'printf %s "$DESK_LOCK_HELD"']).stdout;
+    t('DS-924 with-lock.sh exports DESK_LOCK_HELD as the lock its command holds',
+      [said(['test']), said(['tsc']), said(['light']), said(['test'], caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: ON2 })), said(['nolock'])],
+      ['test', 'tsc', 'light', 'test', '']);
+  }
+  for (const [path, extra] of [['mkdir', { PATH: noFlock }], ...(hasFlock ? [['flock', {}]] : [])]) {
+    const env = caseEnv({ leases: fresh('l'), locks: fresh('k'), profile: OFF1, extra });
+    const h = await hold(env, ['test']);
+    const r = wl(env, ['test', '--timeout', '2', '--', 'true']);
+    t(`DS-924 ${path} path: a run waiting on the test lock names the holder's run, and how long it has held it`,
+      [r.status, /^with-lock\.sh: waiting for test lock \(held by pid [\d ]+\): .+, held /m.test(r.stderr)], [75, true]);
+    const now = wl(env, ['test', '--timeout', '0', '--', 'true']);
+    t(`DS-924 ${path} path: a 0-second wait gives up without saying it waits`, [now.status, now.stderr.includes('waiting for test lock')], [75, false]);
+    h.release(); await h.done;
+  }
 } finally {
   for (const h of held) { h.release(); if (h.c.exitCode === null) h.c.kill(); }
   rmSync(S, { recursive: true, force: true });

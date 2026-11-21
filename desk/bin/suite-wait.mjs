@@ -5,7 +5,8 @@
 import { readFileSync, readdirSync, readlinkSync, realpathSync, statSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { psRows } from './desk-env.mjs';
+import { fileURLToPath } from 'node:url';
+import { lockDir, psRows } from './desk-env.mjs';
 import { since } from './gate.mjs';
 import { leaseDir, readStore, storeFile } from './leases.mjs';
 import { tilde } from './logins.mjs';
@@ -209,3 +210,18 @@ export function lockQueue({ waiting, slots, factor, held = [] }) {
 
 // What the pass says of each, in its quiet list and in a wedged park's reason.
 export const SUITE_WAIT_TEXT = { suite: 'running its suite', lock: 'waiting on the test lock', unknown: 'ps could not be read, so whether it is running its suite is unknown' };
+
+// `node suite-wait.mjs holders [--light]`: who holds the test lock (with --light, the light lock's
+// holders too), as holdersText's one line, or nothing where nobody can be named. with-lock.sh prints it
+// when it starts to wait, so a run held up says on whom.
+const isMain = (() => {
+  try { return !!process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); }
+  catch { return false; }
+})();
+if (isMain) {
+  const [sub, ...rest] = process.argv.slice(2);
+  if (sub !== 'holders' || rest.some((a) => a !== '--light')) { console.error('usage: suite-wait.mjs holders [--light]'); process.exit(2); }
+  const dir = lockDir();
+  const runs = lockHolderRuns({ procs: processList(), holders: lockHolders(dir, { light: rest.includes('--light') }), cwds: processCwds(), ages: processAges(), stamps: lockHolderStamps(dir) });
+  if (runs.length) console.log(holdersText(runs));
+}

@@ -101,7 +101,20 @@ case "$name" in
   *) echo "with-lock.sh: unknown lock '$name'" >&2; exit 2 ;;
 esac
 [ -n "$lock" ] || exec "$@"
+# The command knows it already runs inside a slot of this lock, so a script that takes a slot itself
+# (tests/related.sh) does not wait for a second one behind its own.
+export DESK_LOCK_HELD="$name"
 gave_up() { echo "with-lock.sh: gave up waiting for the $name lock after ${timeout}s" >&2; exit 75; }
+# Says once that this run waits, with the lock's state ($1) and, for the test and light locks, who holds
+# it as suite-wait.mjs names them: where each holder runs, what, and for how long.
+waiting() {
+  local by=""
+  case "$name" in
+    test|tsc) by="$(node "$here/suite-wait.mjs" holders 2>/dev/null)" ;;
+    light) by="$(node "$here/suite-wait.mjs" holders --light 2>/dev/null)" ;;
+  esac
+  echo "with-lock.sh: waiting for $name lock ($1)${by:+: $by}" >&2
+}
 
 # The slot lease. Anything but shadow or on, a failing node included, is off.
 lease_mode="$(node "$here/slot-lease.mjs" mode 2>/dev/null)" || lease_mode=off
@@ -140,13 +153,16 @@ holder() { echo "$$" > "$(slot_path "$1").pid" 2>/dev/null || true; }
 
 if command -v flock >/dev/null 2>&1; then
   if [ "$slots" -eq 1 ]; then
-    [ -n "$timeout" ] || [ "$lease_mode" = shadow ] || exec flock "$lock" "$@"
-    # The descriptor form, so a timeout is told apart from the command's own exit status, and a shadow
-    # lease is taken once the lock is held. The command inherits fd 9, so the lock is held until it exits.
+    # The descriptor form, so a wait is said before it blocks, a timeout is told apart from the
+    # command's own exit status, and a shadow lease is taken once the lock is held. The command
+    # inherits fd 9, so the lock is held until it exits.
     exec 9>>"$lock" || exit 2
-    # A timeout of 0 is one try: -n, since some flock builds (Homebrew's) refuse `-w 0`.
-    if [ -z "$timeout" ]; then flock 9 || exit 2
-    elif [ "$timeout" -eq 0 ]; then flock -n 9 || gave_up; else flock -w "$timeout" 9 || gave_up; fi
+    if ! flock -n 9; then
+      # A timeout of 0 is that one try: some flock builds (Homebrew's) refuse `-w 0`.
+      [ "${timeout:-}" = 0 ] && gave_up
+      waiting "held by pid $(cat "$lock.pid" 2>/dev/null || echo '?')"
+      if [ -z "$timeout" ]; then flock 9 || exit 2; else flock -w "$timeout" 9 || gave_up; fi
+    fi
     holder 1
     shadow_lease "$$" "$@"
     exec "$@"
@@ -162,7 +178,7 @@ if command -v flock >/dev/null 2>&1; then
       i=$((i + 1))
     done
     [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
-    [ "$waited" -eq 0 ] && echo "with-lock.sh: waiting for $name lock (all $slots slots held)" >&2
+    [ "$waited" -eq 0 ] && waiting "all $slots slots held"
     waited=$((waited + 2))
     sleep 2
   done
@@ -213,8 +229,8 @@ while [ -z "$ldir" ]; do
   [ -n "$ldir" ] && break
   [ -n "$timeout" ] && [ "$waited" -ge "$timeout" ] && gave_up
   if [ "$waited" -eq 0 ]; then
-    if [ "$slots" -eq 1 ]; then echo "with-lock.sh: waiting for $name lock (held by pid ${last_holders:-?})" >&2
-    else echo "with-lock.sh: waiting for $name lock (all $slots slots held)" >&2; fi
+    if [ "$slots" -eq 1 ]; then waiting "held by pid ${last_holders:-?}"
+    else waiting "all $slots slots held"; fi
   fi
   waited=$((waited + 2))
   sleep 2
