@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>desk-q ticket screen with its port</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+body{margin:0}
+.t{font-family:"SF Mono",Menlo,Monaco,"Cascadia Mono",monospace;font-size:13px;line-height:18px;color:#d6d7dc}
+.l{white-space:pre;height:18px;overflow:hidden}
+.b{font-weight:700;color:#f3f3f5}
+.d{color:#868991}
+.g{color:#93d081}
+.new{background:rgba(147,208,129,0.13);box-shadow:inset 3px 0 0 #93d081}
+</style>
+</helmet>
+<div style="width: 920px; height: 860px; display: flex; flex-direction: column; background: #f4f4f2; font-family: Inter, system-ui, sans-serif">
+<div class="t" style="height: 660px; background: #1d1e22; border-radius: 12px 12px 0 0; display: flex; flex-direction: column; overflow: hidden">
+<div style="height: 28px; background: #2a2b31; display: flex; align-items: center; gap: 8px; padding: 0 12px; flex-shrink: 0">
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #ef6a5e"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #f4bf4f"></span>
+<span style="width: 12px; height: 12px; border-radius: 6px; background: #61c454"></span>
+<span style="margin-left: 12px; font-size: 12px; color: #a3a5ad">desk-q</span>
+</div>
+<div style="padding: 10px 14px; display: flex; flex-direction: column; flex-grow: 1; overflow: hidden">
+<div class="l"><span class="b">DS-796</span>  <span class="g">● running</span> <span class="d">│ Bug · size M · lane A · position 7 of 66</span></div>
+<div class="l b">autopilot: a PR the merge driver merges for an outside-built ticket is recorded with no PR</div>
+<div class="l b">number, so its dependants are falsely held as "finished with no PR"</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="g">▌</span> Moves without you: a worker is on it, #898 · merge conflict with main · a worker repairs it,</div>
+<div class="l"><span class="g">▌</span> try 1 of 2, stage 4/9 as of 16:20.</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">Holding up</span>  · DS-797 (waiting), · DS-899 (waiting), · DS-897 (waiting) wait on this ticket</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">Starts</span>    running now</div>
+<div class="l"><span class="d">Ships</span>     today 18:12  <span class="d">could run to today 20:12 (1 run in 5 is later)</span></div>
+<div class="l"><span class="d">Based on</span>  105 merged size M tickets in desk-skills · typical 3.3 h spawn to merge, 4 in 5 within</div>
+<div class="l">          7.3 h</div>
+<div class="new" style="display: flex; flex-direction: column">
+<div class="l"><span class="d">Port</span>      3204 <span class="d">· its dev server, held since 13:59</span></div>
+</div>
+<div class="l">&#160;</div>
+<div class="l"><span class="d">Fix try</span>   1 of 2 · draft conflicts with main</div>
+<div class="l">&#160;</div>
+<div class="l b">Why lane A</div>
+<div class="l">Bug with the repro and cause already identified in the code at origin/main 93ab4379. queue.mjs</div>
+<div class="l">`merged` (1055-1069) stamps merged_at from its own clock and never sets result.pr, and</div>
+<div class="l">merge-driver.sh:1147 calls it without the PR number or GitHub's mergedAt. pass.mjs</div>
+<div class="l">shippedElsewhere (1428-1450) drops a PR whose mergedAt is before that stamp. desk-q.mjs</div>
+<div class="l">unmergedBlockers (592-593) and blockerHold (256), plus pass.mjs mergedHere (5046), require</div>
+<div class="l">result.pr, while batch-state.mjs childDone (633) and queue.mjs:273 accept merged_at. The fix is</div>
+<div class="l">mechanical: pass the number and time through, run the own-merge exclusion only when the ticket</div>
+<div class="l">recorded a PR, and use one shared predicate in batch-state.mjs.</div>
+<div class="l">&#160;</div>
+<div class="l b">Files in scope · 7</div>
+<div class="l">  desk/bin/merge-driver.sh</div>
+<div class="l">  desk/bin/queue.mjs</div>
+</div>
+</div>
+<div style="flex-grow: 1; background: #ffffff; border: 1px solid #deded9; border-top: 0; border-radius: 0 0 12px 12px; padding: 20px 24px; display: flex; flex-direction: column; gap: 8px; color: #26272b">
+<div style="font-size: 12px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: #2f6b3a">Proposed · where the detail lives</div>
+<div style="font-size: 18px; font-weight: 600; line-height: 24px">A ticket's port sits on that ticket's screen</div>
+<div style="font-size: 14px; line-height: 21px; color: #4a4b52">You need a port when a worker's dev server is misbehaving, and by then you are already looking at that ticket. One Port row, shown only while the ticket's worker holds a port lease. If the lease is stuck, the row reads "3204 · stopped checking in 1h 12m ago" in the ▲ colour, with the same command as the Queue note.</div>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":920,"height":860}}'>
+class Component extends DCLogic {
+renderVals() {
+return {};
+}
+}
+</script>
+</body>
+</html>
