@@ -260,6 +260,11 @@ const refusing = (grammar) => ({
 // reader catches configValues' refusal of a `none` beside other spans rather than throwing it.
 const cell = (type, noneFatal = true) => ({ cell: true, noneFatal, parse: (items) => type.parse([].concat(items ?? [])) });
 const matching = (form, test, value = (s) => s) => ({ parse: (item) => (test(item) ? ok(value(item)) : fail(`"${item}" is not ${form}`)) });
+// A type for a row whose grammar parses a list of items into { [key]: values, errors }: one item parses
+// alone, and its error is not fatal, as the row's reader returns it rather than throwing.
+const itemsOf = (grammar, key, form) => ({
+  parse(item) { const r = grammar([item]); return r.errors.length ? fail(`${r.errors[0]} is not ${form}`) : ok(r[key][0] ?? 'none'); },
+});
 const oneOf = (...words) => matching(words.map((w) => `\`${w}\``).join(' or '), (s) => words.includes(s.toLowerCase()), (s) => s.toLowerCase());
 const WHOLE = /^\d+$/;
 const NUMBER = /^\d+(\.\d+)?$/;
@@ -280,6 +285,96 @@ const servicePort = (s) => {
 // the type's error is not fatal.
 export const CHECKIN_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
 export const checkinTimesOf = (items) => [].concat(items).join(' ').split(/[\s,]+/).filter(Boolean);
+
+// §4 Known flaky checks items: `<check>: <glob> [<glob>…]`, split on the last `: ` so a check name may
+// hold one. The globs are the paths whose change can make that check fail for real: a PR touching one
+// never has the check waived. `<check>: <file> > <test>` names one test in a check instead, split on
+// the first ` > `: that check is waived only when each of its failure annotations names a listed test,
+// and the test's file is its path. An item with no check, no glob, or no file or test is an error.
+// gate.mjs re-exports it.
+export function parseFlaky(items) {
+  const flaky = [];
+  const errors = [];
+  for (const x of items || []) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const gt = x.indexOf(' > ');
+    if (gt >= 0) {
+      const head = x.slice(0, gt);
+      const j = head.lastIndexOf(': ');
+      const name = j < 0 ? '' : head.slice(0, j).trim();
+      const file = j < 0 ? '' : head.slice(j + 2).trim();
+      const title = x.slice(gt + 3).trim();
+      if (!name || !file || /\s/.test(file) || !title) errors.push(`\`${x}\``);
+      else flaky.push({ name, paths: [file], test: { file, title } });
+      continue;
+    }
+    const i = x.lastIndexOf(': ');
+    const name = i < 0 ? '' : x.slice(0, i).trim();
+    const paths = i < 0 ? [] : x.slice(i + 2).trim().split(/\s+/).filter(Boolean);
+    if (!name || !paths.length) errors.push(`\`${x}\``);
+    else flaky.push({ name, paths });
+  }
+  return { flaky, errors };
+}
+
+// §4 State checks items: checks that read the PR's state (its reviews, approvals, title or another
+// gate over those) rather than its code, so a rerun reads the same state and fails the same way. Each
+// is `<check>` or `<check>: <kind>`, split on the last `: `: kind `verdict` reads the desk-review
+// verdict at the head (a review worker posts a fresh one), `approval` reads a person's approval at
+// the head (only a person clears it); a bare check reads other state, such as the title or an
+// aggregate gate failing because of one of the others. A one-word tail that is no kind is an error,
+// never a guess. Unset is desk-gate.yml's two state jobs; `none` names none.
+// `<check>: external <login>` is a gate that reads the review of an outside reviewer, such as a review
+// bot posting from its own account: kind `external`, with `login` that account. desk posts no review
+// for it; the pass waits for that reviewer at the head and sends its findings to a fix worker.
+// gate.mjs re-exports these.
+export const STATE_KINDS = ['verdict', 'approval'];
+export const DEFAULT_STATE_CHECKS = [{ name: 'desk-review verdict', kind: 'verdict' }, { name: 'protected-path approval', kind: 'approval' }];
+export function parseStateChecks(items) {
+  if (items == null) return { checks: DEFAULT_STATE_CHECKS, errors: [] };
+  const checks = [];
+  const errors = [];
+  for (const x of items) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const i = x.lastIndexOf(': ');
+    const tail = i < 0 ? '' : x.slice(i + 2).trim();
+    const ext = /^external\s+(\S+)$/.exec(tail);
+    if (ext) { const name = x.slice(0, i).trim(); if (name) checks.push({ name, kind: 'external', login: ext[1] }); else errors.push(`\`${x}\``); continue; }
+    if (/^external$/.test(tail)) { errors.push(`\`${x}\` (external names the reviewer's login: \`<check>: external <login>\`)`); continue; }
+    const kind = STATE_KINDS.includes(tail) ? tail : null;
+    const name = (kind ? x.slice(0, i) : x).trim();
+    if (!name || (!kind && /^[a-z]+$/.test(tail))) errors.push(`\`${x}\``);
+    else checks.push({ name, kind });
+  }
+  return { checks, errors };
+}
+
+// §4 Checks workers can't fix, Check builds and Pre-merge steps items: `<check>: <what fixes it>`,
+// split on the first `: `, so the command may hold one. An item with no check or no command is an
+// error, never a guess. workflow-yaml.mjs and fix-tries.mjs re-export it.
+export function parseOperatorChecks(items) {
+  const checks = [];
+  const errors = [];
+  for (const x of items || []) {
+    if (!x || /^none$/i.test(x.trim())) continue;
+    const i = x.indexOf(': ');
+    const name = i < 0 ? '' : x.slice(0, i).trim();
+    const command = i < 0 ? '' : x.slice(i + 2).trim();
+    if (!name || !command) errors.push(`\`${x}\``);
+    else checks.push({ name, command });
+  }
+  return { checks, errors };
+}
+
+// §4 Live reads items: `<name>: <command>`, as parseOperatorChecks reads them, where the name is a file
+// name too, so it holds no path. -> { reads: [{ name, command }], errors: [item] }. live-read.mjs
+// re-exports it.
+const LIVE_READ_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export function parseLiveReads(items) {
+  const { checks, errors } = parseOperatorChecks(items);
+  const bad = checks.filter((c) => !LIVE_READ_NAME.test(c.name));
+  return { reads: checks.filter((c) => LIVE_READ_NAME.test(c.name)), errors: [...errors, ...bad.map((c) => `\`${c.name}: ${c.command}\` (a name holds only letters, digits, . _ and -)`)] };
+}
 
 export const TYPES = Object.freeze({
   text: matching('text', () => true),
@@ -318,6 +413,10 @@ export const TYPES = Object.freeze({
   'file-budget': cell({ parse(items) { const r = fileBudget(items); return r.bad ? fail(r.bad) : ok(r); } }, false),
   'git-author': cell({ parse(items) { const a = gitAuthorOf(items); return a === undefined ? fail(`"${items.join(' | ')}" is not \`Name <email>\` or \`Name\` / \`email\``, true) : ok(a); } }),
   'review-account': { parse(item) { const a = reviewAccountOf(item); return a === undefined ? fail(`"${item}" is not \`<login>: <gh config directory>\` or \`none\``, true) : ok(a); } },
+  'flaky-check': itemsOf(parseFlaky, 'flaky', '`<check>: <glob> [<glob>…]` or `<check>: <file> > <test>`'),
+  'state-check': itemsOf(parseStateChecks, 'checks', `\`<check>\`, \`<check>: ${STATE_KINDS.join('|')}\` or \`<check>: external <login>\``),
+  'operator-check': itemsOf(parseOperatorChecks, 'checks', '`<check>: <what fixes it>`'),
+  'live-read': itemsOf(parseLiveReads, 'reads', '`<name>: <command>`, a name of letters, digits, . _ and -'),
   'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
@@ -454,12 +553,12 @@ export const ROWS = Object.freeze([
   v('branch-protection', '4', 'Branch protection', 'text', '1 approval; CHANGES_REQUESTED blocks; up to date required'),
   l('required-checks', '4', 'Required checks', 'text', ['Lint', 'Unit tests']),
   l('advisory-checks', '4', 'Advisory checks', 'text', ['Lighthouse']),
-  l('flaky-checks', '4', 'Known flaky checks', 'text', ['Run e2e tests: e2e/** playwright.config.ts']),
-  l('state-checks', '4', 'State checks', 'text', ['🔐 Review gate: approval', '🏁 CI gate']),
-  l('operator-checks', '4', "Checks workers can't fix", 'text', ['Flows image missing: build it: ensure-flows-image.sh']),
-  l('check-builds', '4', 'Check builds', 'text', ['Flows image: ./scripts/ensure-flows-image.sh']),
-  l('live-reads', '4', 'Live reads', 'text', ['gateway-models: ./scripts/fetch-gateway-models.sh staging']),
-  l('pre-merge-steps', '4', 'Pre-merge steps', 'text', ["Check portal schema mirror: apply the PR's migrations to staging first"]),
+  l('flaky-checks', '4', 'Known flaky checks', 'flaky-check', ['Run e2e tests: e2e/** playwright.config.ts']),
+  l('state-checks', '4', 'State checks', 'state-check', ['🔐 Review gate: approval', '🏁 CI gate']),
+  l('operator-checks', '4', "Checks workers can't fix", 'operator-check', ['Flows image missing: build it: ensure-flows-image.sh']),
+  l('check-builds', '4', 'Check builds', 'operator-check', ['Flows image: ./scripts/ensure-flows-image.sh']),
+  l('live-reads', '4', 'Live reads', 'live-read', ['gateway-models: ./scripts/fetch-gateway-models.sh staging']),
+  l('pre-merge-steps', '4', 'Pre-merge steps', 'operator-check', ["Check portal schema mirror: apply the PR's migrations to staging first"]),
   l('evidence-workflow', '4', 'Evidence workflow', 'text', ['pr-evidence.yml']),
   l('worker-workflows', '4', 'Worker workflows', 'text', ['e2e-manual.yml -f environment=staging -f suite=all']),
   l('worker-read-repos', '4', 'Worker read-only repos', 'text', ['acme/web'], dflt(['none'])),

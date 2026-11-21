@@ -626,6 +626,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
     ['git-author', 'Pat <pat@example.com>', 'Pat', true], ['review-account', 'none', 'agent pullbot', true],
     ['gate-reviewers', 'agent-pullbot', 'agent pullbot', true],
+    ['flaky-check', 'e2e: e2e/** playwright.config.ts', 'e2e:', false], ['state-check', 'Review gate: approval', 'Review gate: external', false],
+    ['operator-check', 'Flows image: ./build.sh', 'Flows image', false], ['live-read', 'gateway-models: ./fetch.sh', 'gateway/models: ./fetch.sh', false],
   ];
   t('DS-868 every type has a parse case', Object.keys(TYPES).filter((n) => !CASES.some(([c]) => c === n)).join(' '), '');
   for (const [name, good, badItem, fatal] of CASES) {
