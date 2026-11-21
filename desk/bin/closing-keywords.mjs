@@ -13,8 +13,9 @@ const REF = String.raw`(?:https?://github\.com/[\w.-]+/[\w.-]+/issues/\d+|(?:[\w
 const JOIN = String.raw`(?::\s*|\s+)`;
 // A keyword directly before a reference, as GitHub reads it.
 const USE = new RegExp(String.raw`(?<![\w/#-])${KEYWORD}${JOIN}${REF}(?![\w-])`, 'gi');
-// A line that says only which issues the PR closes, after any list, task or quote marker and bold.
-const MARKER = /^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?(?:\[[ xX]\]\s+)?/;
+// A line that says only which issues the PR closes, after any list or quote marker and bold. A task
+// item ("- [ ] Close #12") is a step for later, never that line, so its box is not stripped.
+const MARKER = /^\s*(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?/;
 const ONLY = new RegExp(String.raw`^${KEYWORD}${JOIN}${REF}(?:\s*(?:,|&|\band\b)?\s*(?:${KEYWORD}${JOIN})?${REF})*\s*\.?$`, 'i');
 
 // Whether `line` says only that the PR closes the issues it names.

@@ -18,6 +18,9 @@ for (const k of ['close', 'closes', 'closed', 'fix', 'fixes', 'fixed', 'resolve'
 t('AC1 a colon between keyword and reference is still one', lines('It fixes: #12 for now.'), [1]);
 t('AC1 another repo\'s issue is a reference', lines('This resolves acme/web#7 too.'), [1]);
 t('AC1 an issue URL is a reference', lines('Then close https://github.com/acme/web/issues/7 by hand.'), [1]);
+for (const l of ['- [ ] Close #1090', '- [x] Fixes #12', '* [ ] Resolve acme/web#7.']) {
+  t(`AC1 a task item "${l}" is a step for later and is flagged`, [closesOnly(l), lines(l)], [false, [1]]);
+}
 t('AC1 every flagged line is named', lines('ok\nfixes #1 later\nok\nand closes #2 then'), [2, 4]);
 
 t('AC2 the issue named first passes', lines('- [ ] #1090 can be closed after a week of clean main runs.'), []);
