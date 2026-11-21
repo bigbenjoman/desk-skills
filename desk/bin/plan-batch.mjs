@@ -688,6 +688,8 @@ if (process.env.AUTOPILOT_WRITE_QUEUE) {
       : null);
     if (park) execFileSync('node', [QUEUE, 'park', t, park], { stdio: 'ignore' });
   }
+  // add leaves a ticket already queued (an epic's admitted children) where it was, so the order is laid over them too.
+  execFileSync('node', [QUEUE, 'order', ...order.filter((r) => !elsewhere(r)).map((r) => r.ticket)], { stdio: 'ignore' });
   // Seeding admits the batch, so the calls taken on triage's judgement are logged now, as intake logs
   // a record's calls when it admits the ticket.
   if (taken.length) {

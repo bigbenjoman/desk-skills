@@ -26,6 +26,8 @@ reads as `none`, and the pass report names it.
 **Spawn order is not a merge chain**: `plan-batch` seeds the queue blockers first, then the tickets
 that gate the most others (through any chain of holds), then, among tickets that gate none, the fewest
 planned files, then the order named, and prints it as SPAWN ORDER; `pass.mjs` spawns in queue order.
+Tickets already queued (an epic's children, admitted before its plan seeds them) are put in that
+order too (`queue.mjs order`), apart from one the user placed with `queue.mjs move`.
 `--keep-order` keeps the order named, blockers still first. If the user asks for a literal chain that would idle a gate,
 say what that costs and ask. Sharing a file never holds a ticket at admission: `queue.mjs admit`
 records `collides_with` for the plan and `desk-q` only, and the pass starts tickets that share a file
