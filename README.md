@@ -913,7 +913,10 @@ every shell script when shellcheck is installed (it says when it is not). On mac
 those suites, and `bash tests/related.sh` only the ones your branch's change reaches, chosen as CI
 chooses them, uncommitted and untracked files included (every suite when that cannot be decided;
 it runs as many at once as `run.sh` does without `-j`, or `DESK_TEST_JOBS` of them where that is
-set). `bash tests/run.sh -j 3` runs up to three suites at once, the longest
+set). `related.sh` takes a test slot first (`with-lock.sh test`), so it never runs beside the slots'
+holders: while it waits the wrapper says who holds them, and after `DESK_RELATED_WAIT` seconds (an
+hour by default) it exits 75 having run nothing. A run already inside a slot takes no second one.
+`bash tests/run.sh -j 3` runs up to three suites at once, the longest
 in `tests/suite_durations.json` first, each reported in one piece in name order (CI's shards do).
 Without `-j` it runs as many as `desk-env get test-cap` allows, or a quarter of the cores where that
 is unset; `-j 1` runs them one after another in name order. Each report gives the suite's CPU

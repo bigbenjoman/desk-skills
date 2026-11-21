@@ -407,6 +407,18 @@ rmSync(gtmp, { recursive: true, force: true });
   t('the queue line names them', lockQueue({ waiting: 2, slots: 1, factor: 2, held: runs.slice(1) }).line, `test lock queue: 2 run(s) waiting on its 1 slot(s), at or over the hold at 1 x 2 = 2; held by ${holdersText(runs.slice(1))}`);
   t('and with none held, says nothing of holders', lockQueue({ waiting: 0, slots: 1, factor: 2 }).line.includes('held by'), false);
   t('ps elapsed times read in seconds', [etimeSeconds('05:07'), etimeSeconds('01:00:00'), etimeSeconds('2-00:00:01'), etimeSeconds('x')].join(','), '307,3600,172801,');
+  // DS-924: the light lock's holders apart from the test lock's, for a run waiting on the light lock.
+  const light = [...procs, { pid: 80, ppid: 1, args: 'flock /tmp/desk-light.lock bash tests/related.sh' }, { pid: 81, ppid: 80, args: 'bash tests/related.sh' }];
+  t('DS-924 a run waiting on the light lock is told its holders and not the test lock\'s',
+    [lockHolderRuns({ procs: light, holders: new Set(), cwds, ages, now, locks: 'light' }).map((r) => r.pid).join(','),
+      lockHolderRuns({ procs: light, holders: new Set(), cwds, ages, now }).map((r) => r.pid).join(',')].join(' '), '80 41');
+  // DS-924: whether a run is already inside a slot, so tests/related.sh takes no second one.
+  const { inSlot } = await import('../desk/bin/suite-wait.mjs');
+  const slot = (pid, list = light) => inSlot(pid, { procs: list, holders: new Set([11, 12, 61]), ages, stamps, now });
+  t('DS-924 a run a current holder file names is in its slot', slot(12), true);
+  t('DS-924 a run a stale holder file names by a reused pid is not', slot(61), false);
+  t('DS-924 a run a test or light flock(1) runs as its child is in its slot, though no file names it', [slot(42), slot(81)].join(','), 'true,true');
+  t('DS-924 a waiting flock, a run beside the holders and an unlisted pid are not', [slot(51), slot(70, [...light, ...execd]), slot(99), inSlot(12, { procs: null, holders: new Set([12]) })].join(','), 'false,false,false,false');
 }
 // DS-909 AC12: with the slot kind on, a suite holds a slot lease and leaves no holder file, and the pass
 // reads the worktree as it did from the holder file with the kind off.
@@ -423,7 +435,7 @@ rmSync(gtmp, { recursive: true, force: true });
     const procs = [{ pid: 200, ppid: 1, args: 'bash tests/run.sh' }, // a suite: the command with-lock.sh exec'd into
       { pid: 210, ppid: 1, args: '/bin/bash /h/.claude/desk/bin/with-lock.sh tsc --cwd . -- pnpm typecheck' }, // waits for a slot
       { pid: 211, ppid: 210, args: 'node /h/.claude/desk/bin/slot-lease.mjs take tsc --pid 210 -- pnpm typecheck' }];
-    const read = (dir, list) => [String(suiteWait(wt,{ procs: list, cwds: list.map((p) => ({ pid: p.pid, cwd: wt })), holders: lockHolders(dir, { light: true }) })),
+    const read = (dir, list) => [String(suiteWait(wt,{ procs: list, cwds: list.map((p) => ({ pid: p.pid, cwd: wt })), holders: lockHolders(dir, { locks: 'both' }) })),
       lockHolderRuns({ procs: list, holders: lockHolders(dir), cwds: [], ages: new Map([[200, 60]]), stamps: lockHolderStamps(dir), now }).map((r) => r.pid).join(',')].join(' ');
     const lease = (key, pool, pid) => ({ id: `L-${pid}`, kind: 'slot', key, pool, units: 1, owner: { pid, start: 'x' }, label: `${key} ${wt}: bash tests/run.sh`,
       ttl: 600, acquired: new Date(now - 30_000).toISOString(), expires: new Date(now + 570_000).toISOString() });
@@ -431,7 +443,7 @@ rmSync(gtmp, { recursive: true, force: true });
     writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('test', 'slot:heavy', 200)] }));
     t('DS-909 AC12 a suite holding a slot lease reads as running its suite, as its holder file did', read(on, procs.slice(0, 1)), kindOff);
     t('DS-909 AC12 and it is that suite', kindOff, 'suite 200');
-    t('DS-909 AC12 a wrapper waiting on the lease reads as waiting on the lock', suiteWait(wt, { procs: procs.slice(1), cwds: [{ pid: 210, cwd: wt }], holders: lockHolders(on, { light: true }) }), 'lock');
+    t('DS-909 AC12 a wrapper waiting on the lease reads as waiting on the lock', suiteWait(wt, { procs: procs.slice(1), cwds: [{ pid: 210, cwd: wt }], holders: lockHolders(on, { locks: 'both' }) }), 'lock');
     writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('browser', 'slot:browser', 200)] }));
     t('DS-909 AC12 a browser slot lease holds no test lock', read(on, procs.slice(0, 1)), 'null ');
     writeFileSync(join(process.env.DESK_LEASE_DIR, 'leases.json'), JSON.stringify({ leases: [lease('light', 'slot:light', 200)] }));
