@@ -27,7 +27,7 @@ export const isNone = (v) => (Array.isArray(v) ? v.length === 1 && isNone(v[0]) 
 export const mixesNone = (items) => items.length > 1 && items.some((x) => isNone(x));
 
 // ---- the row grammars ------------------------------------------------------------------------
-// desk-env re-exports each under the name it has always had.
+// desk-env re-exports each under the same name.
 
 // A command item may name the directory it runs in, relative to the repo root: `apps/api: uv run pytest`.
 // -> { dir: 'apps/api' | '.', cmd }. The directory must be a plain relative path (no spaces, no ..).
@@ -44,6 +44,36 @@ export function parseCommandItem(item) {
 // name, and drift names an item it cannot read.
 export function localServiceName(item) {
   return /^[a-z0-9][a-z0-9_.-]*(?=[\s:]|$)/.exec(String(item ?? '').trim())?.[0] ?? null;
+}
+
+// §1 Git author name / email, from the row's spans: `Name <email>` or two spans, `Name` / `email`.
+//   -> { name, email }, null where the row is unset or `none`, undefined where it is malformed
+export function gitAuthorOf(items) {
+  if (items == null || isNone(items)) return null;
+  const one = items.length === 1 ? /^(.+?)\s*<([^<>]*)>$/.exec(String(items[0]).trim()) : null;
+  const [name, email] = (one ? one.slice(1) : items.length === 2 ? items : []).map((x) => String(x).trim());
+  if (!name || !email || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[<>\u0000-\u001f\u007f]/.test(name)) return undefined;
+  return { name, email };
+}
+
+// A GitHub login, a bot's included: what §4 Review account and §4 Gate reviewers both name.
+const LOGIN = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\[bot\\])?';
+// A §4 Review account value as { login, dir } (dir as written, `~` unexpanded), null where it is unset,
+// a TODO or `none`, and undefined where it is malformed.
+export function reviewAccountOf(value) {
+  const v = String(value ?? '').trim();
+  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
+  const m = new RegExp(`^(${LOGIN})\\s*:\\s*(\\S.*)$`).exec(v);
+  return m ? { login: m[1], dir: m[2].trim() } : undefined;
+}
+// §4 Gate reviewers from the row's spans: { logins, bad }. logins is null where the row is unset, a
+// TODO, `none` or `any` (the gate counts any account); bad lists the spans that are not a GitHub login.
+// `any` and a TODO match the whole span (a TODO may carry a note after a space or colon, which no login
+// holds), so a login that begins with either is still a login.
+export function gateReviewersOf(items) {
+  if (items == null || isNone(items) || (items.length === 1 && /^(?:any$|todo(?:[\s:]|$))/i.test(String(items[0]).trim()))) return { logins: null, bad: [] };
+  const bad = items.filter((x) => !new RegExp(`^${LOGIN}$`).test(String(x).trim()));
+  return { logins: items.map((x) => String(x).trim()), bad };
 }
 
 // The §3 values a row takes beyond yes, ask and no: branch-delete's merged deletes a local branch only
@@ -216,26 +246,39 @@ export function fileBudget(row) {
 
 // ---- the types ---------------------------------------------------------------------------------
 // A type parses one item (a backtick span, trimmed) and never throws: -> { value } or { error, fatal }.
+// A `cell` type parses the row's every span at once instead, for a row whose reader reads them together.
 // An error is fatal exactly where the row's reader refuses the value today (throws DeskConfigError),
 // and not fatal where the reader warns, returns it as an error or reads past it.
 const ok = (value) => ({ value });
 const fail = (error, fatal = false) => ({ error, fatal });
-const refusing = (form, grammar) => ({
-  form,
+const refusing = (grammar) => ({
   parse(item) {
     try { return ok(grammar(item)); } catch (e) { return fail(e.message, e instanceof DeskConfigError); }
   },
 });
-const matching = (form, test, value = (s) => s) => ({ form, parse: (item) => (test(item) ? ok(value(item)) : fail(`"${item}" is not ${form}`)) });
+// A cell type: its grammar takes the spans, and a lone item is one span. noneFatal is false where the
+// reader catches configValues' refusal of a `none` beside other spans rather than throwing it.
+const cell = (type, noneFatal = true) => ({ cell: true, noneFatal, parse: (items) => type.parse([].concat(items ?? [])) });
+const matching = (form, test, value = (s) => s) => ({ parse: (item) => (test(item) ? ok(value(item)) : fail(`"${item}" is not ${form}`)) });
 const oneOf = (...words) => matching(words.map((w) => `\`${w}\``).join(' or '), (s) => words.includes(s.toLowerCase()), (s) => s.toLowerCase());
 const WHOLE = /^\d+$/;
 const NUMBER = /^\d+(\.\d+)?$/;
 const permType = (key) => {
   const words = permWords(key);
   const form = `${words.slice(0, -1).map((w) => `\`${w}\``).join(', ')} or \`${words.at(-1)}\``;
-  return { form, parse: (item) => { const m = permMatch(key, item); return m ? ok(m) : fail(`"${item}" is not ${form}`); } };
+  return { parse: (item) => { const m = permMatch(key, item); return m ? ok(m) : fail(`"${item}" is not ${form}`); } };
 };
-const SERVICE_PORT = /^([a-z0-9][a-z0-9_.-]*)(?:\s*:\s*(\d{1,5}))?$/;
+// What follows a §4 Local services item's service name: nothing, or `:<port>`.
+const PORT_TAIL = /^\s*(?::\s*(\d{1,5}))?$/;
+const servicePort = (s) => {
+  const service = localServiceName(s);
+  const port = service == null ? null : PORT_TAIL.exec(s.slice(service.length));
+  return port && (port[1] == null || Number(port[1]) <= 65535) ? { service, port: port[1] == null ? null : Number(port[1]) } : null;
+};
+// §3b Check-in times as the digest reads them (digest.mjs checkinTimes): every span joined, then local
+// HH:MM times split on commas or spaces. The digest falls back to its default on a bad row, so not fatal.
+const CHECKIN_TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
+const checkinTimesOf = (items) => items.join(' ').split(/[\s,]+/).filter(Boolean);
 
 export const TYPES = Object.freeze({
   text: matching('text', () => true),
@@ -250,7 +293,7 @@ export const TYPES = Object.freeze({
   port: matching('a port number', (s) => WHOLE.test(s) && Number(s) >= 1 && Number(s) <= 65535, Number),
   'subagent-cap': matching('a whole number or `no cap`', (s) => WHOLE.test(s) || /^no cap$/i.test(s), (s) => (WHOLE.test(s) ? Number(s) : 'no cap')),
   concurrency: matching('`<default> / <cap>`', (s) => /^\d+(\s*\/\s*\d+)?$/.test(s), (s) => s.match(/\d+/g).map(Number)),
-  times: matching('HH:MM times, comma-separated', (s) => /^\d{1,2}:\d{2}(\s*,\s*\d{1,2}:\d{2})*$/.test(s), (s) => s.split(/\s*,\s*/)),
+  times: cell(matching('local HH:MM times', (items) => checkinTimesOf(items).length > 0 && checkinTimesOf(items).every((t) => CHECKIN_TIME.test(t)), checkinTimesOf)),
   'yes-no': oneOf('yes', 'no'),
   'on-off': oneOf('on', 'off'),
   tracker: oneOf('jira', 'none'),
@@ -261,28 +304,32 @@ export const TYPES = Object.freeze({
   'ai-attribution': oneOf('forbidden', 'allowed'),
   regex: matching('a regular expression', (s) => { try { new RegExp(s); return true; } catch { return false; } }),
   command: matching('a command', () => true, parseCommandItem),
-  'service-port': matching('`<service> [:<port>]`', (s) => SERVICE_PORT.test(s) && (SERVICE_PORT.exec(s)[2] == null || Number(SERVICE_PORT.exec(s)[2]) <= 65535),
-    (s) => { const m = SERVICE_PORT.exec(s); return { service: m[1], port: m[2] == null ? null : Number(m[2]) }; }),
+  'service-port': matching('`<service> [:<port>]`', (s) => servicePort(s) != null, servicePort),
   'required-fields': matching('`<Type>[, <Type>…]: <field>[, <field>…]`', (s) => !requiredFieldsIn([s], null).malformed.length,
     (s) => ({ types: s.split(':')[0].split(',').map((t) => t.trim()), fields: requiredFieldsIn([s], null).need })),
-  lever: { form: `a lever: ${LEVERS.join(', ')}`, parse(item) { const r = parseLevers([item]); return r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(r.on); } },
-  budget: refusing('a positive number of USD, or `none`', (s) => parseBudget(s, 'the budget')),
-  'worker-models': refusing('`default`, or `standard=<model> high=<model>`', parseWorkerModels),
-  'worker-effort': refusing('`none`, or `<start>=<effort>` pairs', (s) => parseWorkerEffort([s])),
-  'worker-location': refusing('`local` or `cloud`', parseWorkerLocation),
-  'codex-review': refusing('`none`, or `finder=<model>:<effort> refuter=<model>:<effort> timeout=<seconds>`', (s) => parseCodexReview([s])),
+  lever: { parse(item) { const r = parseLevers([item]); return r.unknown.length ? fail(`unknown lever ${r.unknown.map((n) => `\`${n}\``).join(', ')}: want ${LEVERS.join(', ')}`) : ok(r.on); } },
+  budget: refusing((s) => parseBudget(s, 'the budget')),
+  'worker-models': refusing(parseWorkerModels),
+  'worker-effort': cell(refusing(parseWorkerEffort)),
+  'worker-location': refusing(parseWorkerLocation),
+  'codex-review': cell(refusing(parseCodexReview)),
   'spawn-gate': matching('a spawn gate', () => true, spawnGateOf),
-  'file-budget': { form: '`<k> over <n> lines, else <k>; serial: <globs>`', parse(item) { const r = fileBudget([item]); return r.bad ? fail(r.bad) : ok(r); } },
+  'file-budget': cell({ parse(items) { const r = fileBudget(items); return r.bad ? fail(r.bad) : ok(r); } }, false),
+  'git-author': cell({ parse(items) { const a = gitAuthorOf(items); return a === undefined ? fail(`"${items.join(' | ')}" is not \`Name <email>\` or \`Name\` / \`email\``, true) : ok(a); } }),
+  'review-account': { parse(item) { const a = reviewAccountOf(item); return a === undefined ? fail(`"${item}" is not \`<login>: <gh config directory>\` or \`none\``, true) : ok(a); } },
+  'gate-reviewers': cell({ parse(items) { const r = gateReviewersOf(items); return r.bad.length ? fail(`"${items.join(' | ')}" is not one GitHub login per span, \`any\` or \`none\``, true) : ok(r.logins); } }),
 });
 
-// A row's items parsed by its entry's type: -> { value } or { error, fatal }; never throws. A value row
-// parses its first item, as configValue reads it. A list row parses each item, and `none` stands alone
-// (a lone `none` is the list's value), so `none` beside another item is fatal, as configValues refuses it.
+// A row's items parsed by its entry's type: -> { value } or { error, fatal }; never throws. A cell type
+// parses every item together, as its reader reads them. Otherwise a value row parses its first item, as
+// configValue reads it, and a list row parses each item. `none` stands alone in a list or a cell (a lone
+// `none` is the row's value), so `none` beside another item is fatal, as configValues refuses it.
 export function parseRow(entry, items) {
   const all = [].concat(items ?? []).map((x) => String(x).trim());
   const type = TYPES[entry.type];
+  if ((entry.kind === 'list' || type.cell) && mixesNone(all)) return fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, type.noneFatal !== false);
+  if (type.cell) return type.parse(all);
   if (entry.kind !== 'list' && entry.kind !== 'table') return type.parse(all[0] ?? '');
-  if (entry.kind === 'list' && mixesNone(all)) return fail(`\`none\` must stand alone, not beside other items (${all.join(' | ')})`, true);
   if (isNone(all)) return ok(['none']);
   const values = [];
   for (const item of all) {
@@ -306,7 +353,7 @@ export const ROWS = Object.freeze([
   // §0 This repo
   v('gh-repo', '0', 'GitHub repo', 'text', 'acme/widgets'),
   v('slug', '0', 'Slug', 'text', 'acme__widgets', unread),
-  v('default-branch', '0', 'Default branch', 'text', 'main'),
+  v('default-branch', '0', 'Default branch', 'text', 'main', dflt('main')),
   v('repo-description', '0', 'One-line description', 'text', 'A voice assistant for clinics'),
   // §1 Who you are in this repo
   v('name', '1', 'Name', 'text', 'Pat Example'),
@@ -315,7 +362,7 @@ export const ROWS = Object.freeze([
   v('jira-email', '1', 'Jira email', 'text', 'pat@example.com'),
   v('jira-display-name', '1', 'Jira display name', 'text', 'Pat Example'),
   v('jira-account-id', '1', 'Jira account id', 'text', '712020:0d2c1a9e'),
-  v('git-author', '1', 'Git author name / email', 'text', 'Pat Example <pat@example.com>'),
+  v('git-author', '1', 'Git author name / email', 'git-author', 'Pat Example <pat@example.com>'),
   v('pronouns', '1', 'Pronouns (optional)', 'text', 'they/them', unread),
   // §2 Paths on your machine
   v('repo-root', '2', 'Primary repo root', 'text', '~/widgets'),
@@ -325,7 +372,7 @@ export const ROWS = Object.freeze([
   v('design-dir', '2', 'Design canvases directory', 'text', 'docs/design/'),
   v('wsl', '2', 'Running on WSL?', 'yes-no', 'no'),
   v('browser-profile', '2', 'Signed-in browser profile', 'text', '~/.cache/ms-playwright-mcp/desk-profile', dflt('~/.cache/ms-playwright-mcp/desk-profile')),
-  v('handoff-pct', '2', 'Handoff at context %', 'whole', '45'),
+  v('handoff-pct', '2', 'Handoff at context %', 'whole', '45', dflt('45')),
   v('handoff-pct-1m', '2', 'Handoff at context % on a 1M window', 'whole', '20'),
   l('autopilot-state', '2', 'Autopilot state', 'text', ['~/.desk-autopilot/<slug>/', '~/.claude/desk/'], unread),
   // §3 Permissions: Reading
@@ -354,7 +401,7 @@ export const ROWS = Object.freeze([
   v('subagents-without-asking', '3b', 'Subagents that may run without asking', 'subagent-cap', 'no cap'),
   v('dev-port', '3b', 'Preferred dev-server port', 'port', '3000', dflt('3000')),
   v('concurrency', '3b', 'Autopilot worker concurrency', 'concurrency', '2 / 3', dflt('2 / 3', { machine: 'autopilot-concurrency' })),
-  v('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)', 'gb', '16', dflt('16', { machine: 'memory-ceiling-gb' })),
+  v('memory-ceiling', '3b', 'Memory ceiling for parallel work (GB)', 'gb', '16', { machine: 'memory-ceiling-gb' }),
   v('spawn-gate', '3b', 'Spawn gate (available memory)', 'spawn-gate', 'start work > 8 GiB · hold 4–8 · drop to 1 below 4', dflt('start work > 8 GiB · hold 4–8 · drop to 1 below 4')),
   v('file-budget', '3b', 'Per-file collision budget', 'file-budget', '3 over 1000 lines, else 1; serial: none', dflt('3 over 1000 lines, else 1; serial: none')),
   v('test-cap', '3b', 'Test worker cap under the test lock', 'whole', '4', { machine: 'test-cap' }),
@@ -425,8 +472,8 @@ export const ROWS = Object.freeze([
   v('codex-answers', '4', 'Codex answers a real call?', 'text', 'yes', unread),
   v('local-review', '4', 'Local review command', 'text', '/desk-review'),
   v('clean-verdict', '4', 'Clean review verdict', 'text', 'p0=0 p1=0 p2=0 deferred=0 gaps=0 unrefuted=0 partial=0'),
-  v('review-account', '4', 'Review account', 'text', 'agent-pullbot: ~/.config/gh-agent-pullbot', dflt('none')),
-  l('gate-reviewers', '4', 'Gate reviewers', 'text', ['agent-pullbot'], dflt(['any'])),
+  v('review-account', '4', 'Review account', 'review-account', 'agent-pullbot: ~/.config/gh-agent-pullbot', dflt('none')),
+  l('gate-reviewers', '4', 'Gate reviewers', 'gate-reviewers', ['agent-pullbot'], dflt(['any'])),
   v('review-bar', '4', 'Review bar', 'text', 'default'),
   l('review-experts', '4', 'Review domain experts', 'text', ['apps/api/pricing/**: energy-trader']),
   l('agents-sync', '4', 'Project subagents sync', 'command', ['pnpm agents:sync']),

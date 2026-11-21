@@ -160,7 +160,7 @@ import {
   PERMISSION_KEYS, CONFIG_ROWS, MACHINE_FALLBACK, ROWS, norm, DeskConfigError, isNone, mixesNone, parseCommandItem, localServiceName,
   permValues, permValue, requiredFieldsIn, parseBudget, EXTRA_MODELS, parseWorkerModels, parseWorkerLocation, LEVERS, parseLevers,
   EFFORTS, RESUME_STAGES, EFFORT_STARTS, parseWorkerEffort, CODEX_ROLES, CODEX_EFFORTS, CODEX_DEFAULTS, parseCodexReview, spawnGateOf,
-  fileBudget as fileBudgetOf,
+  fileBudget as fileBudgetOf, gitAuthorOf, reviewAccountOf, gateReviewersOf,
 } from './config-schema.mjs';
 
 export const HOME = process.env.HOME || homedir();
@@ -879,15 +879,18 @@ export function mergeGrant(q = readQueueOrNull(), perm = permission) {
   return { by: null, why: `${asked}${a === false ? ', and merging was declined for this batch at Stage 3' : ' with no batch approval'}` };
 }
 
+// The value a row's reader here falls back to when the row is unset: its schema entry's default.
+const rowDefault = (id) => ROWS.find((e) => e.id === id).default;
+
 // The §3b spend guards, each read by parseBudget (config-schema.mjs).
-export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: '25' }), 'the per-worker budget');
+export const workerBudget = () => parseBudget(resolve({ env: 'AUTOPILOT_BUDGET_USD', id: 'worker-budget', fallback: rowDefault('worker-budget') }), 'the per-worker budget');
 export const BATCH_BUDGET_LABEL = 'the batch budget';
-export const batchBudgetRaw = () => resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: 'none' });
+export const batchBudgetRaw = () => resolve({ env: 'AUTOPILOT_BATCH_BUDGET_USD', id: 'batch-budget', fallback: rowDefault('batch-budget') });
 export const batchBudget = () => parseBudget(batchBudgetRaw(), BATCH_BUDGET_LABEL);
 
 // §3b Worker models, Worker location and Phase 0 levers, each read by its grammar in config-schema.mjs.
-export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: 'default' }));
-export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: 'local' }));
+export const workerModels = () => parseWorkerModels(resolve({ id: 'worker-models', fallback: rowDefault('worker-models') }));
+export const workerLocation = () => parseWorkerLocation(resolve({ id: 'worker-location', fallback: rowDefault('worker-location') }));
 export function levers() {
   try { return parseLevers(configValues('levers')); } catch (e) { if (e instanceof NoRepoConfigError) return parseLevers(null); throw e; }
 }
@@ -923,14 +926,12 @@ export const jiraName = () => {
 // than git's own default, and the row is the one place a worker's commit author comes from.
 export function gitAuthor() {
   const items = configValues('git-author');
-  if (items == null || isNone(items)) return null;
-  const one = items.length === 1 ? /^(.+?)\s*<([^<>]*)>$/.exec(items[0].trim()) : null;
-  const [name, email] = (one ? one.slice(1) : items.length === 2 ? items : []).map((x) => String(x).trim());
-  if (!name || !email || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[<>\u0000-\u001f\u007f]/.test(name)) {
+  const author = gitAuthorOf(items);
+  if (author === undefined) {
     const r = CONFIG_ROWS['git-author'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not \`Name <email>\` or \`Name\` / \`email\` in ${configPathHint()}. Refusing to guess.`);
   }
-  return { name, email };
+  return author;
 }
 // §4 Review account, the login desk posts its review verdicts from and that login's gh config
 // directory: { login, dir }, or null where the row is unset, a TODO or `none` (verdicts post from the
@@ -944,15 +945,11 @@ export function reviewAccount() {
   }
   return acct;
 }
-// A GitHub login, a bot's included: what §4 Review account and §4 Gate reviewers both name.
-const LOGIN = '[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\\[bot\\])?';
 // A §4 Review account value as { login, dir }, null where it is unset, a TODO or `none`, and
 // undefined where it is malformed.
 function reviewAccountIn(value) {
-  const v = String(value ?? '').trim();
-  if (!v || isNone(v) || /^todo\b/i.test(v)) return null;
-  const m = new RegExp(`^(${LOGIN})\\s*:\\s*(\\S.*)$`).exec(v);
-  return m ? { login: m[1], dir: expandHome(m[2].trim()) } : undefined;
+  const acct = reviewAccountOf(value);
+  return acct ? { login: acct.login, dir: expandHome(acct.dir) } : acct;
 }
 // The logins whose review verdicts are desk's own, comma-separated as loginIn reads them: the §1
 // GitHub handle, and the §4 Review account's login where it is set (a malformed row adds none: the
@@ -969,16 +966,14 @@ export function verdictLogins() {
 export function gateReviewers() {
   return gateReviewersIn(configValues('gate-reviewers'));
 }
-// The same, from the row's spans. `any` and a TODO match the whole span (a TODO may carry a note after
-// a space or colon, which no login holds), so a login that begins with either is still a login.
+// The same, from the row's spans, read by gateReviewersOf (config-schema.mjs).
 export function gateReviewersIn(items) {
-  if (items == null || isNone(items) || (items.length === 1 && /^(?:any$|todo(?:[\s:]|$))/i.test(items[0].trim()))) return null;
-  const bad = items.filter((x) => !new RegExp(`^${LOGIN}$`).test(x.trim()));
+  const { logins, bad } = gateReviewersOf(items);
   if (bad.length) {
     const r = CONFIG_ROWS['gate-reviewers'];
     throw new DeskConfigError(`desk: config §${r.section} "${r.row}" (${items.join(' | ')}) is not one GitHub login per span, \`any\` or \`none\` in ${configPathHint()}. Refusing to guess.`);
   }
-  return items.map((x) => x.trim());
+  return logins;
 }
 // Another repo's §4 Gate reviewers, by slug, as gateReviewers reads this repo's.
 export function repoGateReviewers(slug, root = deskConfigRoot()) {
@@ -1003,7 +998,7 @@ export const worktreesDir = () => resolve({
 // One per machine, beside which github-signin.mjs saves the GitHub login that the uploader and Claude's
 // Playwright MCP share (install.sh registers the MCP on it). A repo's §2 row overrides it for that repo's
 // uploads only: the MCP is user-level and keeps the machine one.
-export const DEFAULT_BROWSER_PROFILE = join(HOME, '.cache', 'ms-playwright-mcp', 'desk-profile');
+export const DEFAULT_BROWSER_PROFILE = expandHome(rowDefault('browser-profile'));
 export const browserProfile = () => resolve({ env: 'DESK_BROWSER_PROFILE', id: 'browser-profile', fallback: DEFAULT_BROWSER_PROFILE });
 // The origin remote wins over the config row: the row is what setup saw, the remote is what is true now.
 export const ghRepo = () => currentRepo().ownerRepo ?? resolve({ env: 'DESK_GH_REPO', id: 'gh-repo', identity: true });
@@ -1017,7 +1012,7 @@ export const repoSlug = () => {
 // still wins.
 export const defaultBranch = () => {
   const base = unset(process.env.DESK_DEFAULT_BRANCH) && batchName() ? batchBase() : null;
-  return base ?? resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: 'main' });
+  return base ?? resolve({ env: 'DESK_DEFAULT_BRANCH', id: 'default-branch', fallback: rowDefault('default-branch') });
 };
 export const deskHome = () => expandHome(process.env.DESK_HOME ?? join(HOME, '.claude', 'desk'));
 export const binDir = () => join(deskHome(), 'bin');
@@ -1173,7 +1168,7 @@ export function isWSL() {
   return platform() === 'linux' && /microsoft/i.test(release());
 }
 
-const DEFAULT_DEV_PORT = 3000;
+const DEFAULT_DEV_PORT = Number(rowDefault('dev-port'));
 const positiveInt = (v) => (Number.isInteger(Number(v)) && Number(v) > 0 ? Number(v) : null);
 export function devPort() {
   return positiveInt(resolve({ env: 'DESK_DEV_PORT', id: 'dev-port', fallback: String(DEFAULT_DEV_PORT) })) ?? DEFAULT_DEV_PORT;

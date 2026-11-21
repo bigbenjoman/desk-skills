@@ -624,6 +624,8 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
     ['budget', '25', '25 USD', true], ['worker-models', 'default', 'fast', true], ['worker-effort', 'task=low', '4b=extreme', true],
     ['worker-location', 'cloud', 'remote', true], ['codex-review', 'timeout=60', 'timeout=soon', true],
     ['spawn-gate', 'start work > 8 GiB', null], ['file-budget', '2', 'two', false],
+    ['git-author', 'Pat <pat@example.com>', 'Pat', true], ['review-account', 'none', 'agent pullbot', true],
+    ['gate-reviewers', 'agent-pullbot', 'agent pullbot', true],
   ];
   t('DS-868 every type has a parse case', Object.keys(TYPES).filter((n) => !CASES.some(([c]) => c === n)).join(' '), '');
   for (const [name, good, badItem, fatal] of CASES) {
@@ -644,9 +646,18 @@ t('git-author with no name is refused', gitAuthor('`<ben@example.com>`'), 'exit 
   t('DS-868 none beside another item in a list row is fatal, as configValues refuses it', parseRow(list, ['none', 'pr-evidence.yml']).fatal, true);
   t('DS-868 a lone none is a list row\'s value', JSON.stringify(parseRow(list, ['none']).value), '["none"]');
 
-  // The machine profile fallback desk-env reads, now from the schema, as it was.
-  t('DS-868 MACHINE_FALLBACK is the three rows it was', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
-  t('DS-868 MACHINE_FALLBACK_ROWS is the labels it was', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
+  // A row whose reader reads every span is parsed whole, as the reader reads it.
+  const row = (id) => ROWS.find((e) => e.id === id);
+  t('DS-868 Worker effort named twice across spans is fatal, as its reader throws', parseRow(row('worker-effort'), ['0=low', '0=high']).fatal, true);
+  t('DS-868 Codex review named twice across spans is fatal, as its reader throws', parseRow(row('codex-models'), ['timeout=60', 'timeout=90']).fatal, true);
+  t('DS-868 a collision budget of two spans is refused, not fatal, as its reader reads it as 1', parseRow(row('file-budget'), ['2', 'serial: x']).fatal, false);
+  t('DS-868 Git author as two spans parses', JSON.stringify(parseRow(row('git-author'), ['Pat', 'pat@example.com']).value), '{"name":"Pat","email":"pat@example.com"}');
+  t('DS-868 Check-in times reads as the digest does', [parseRow(row('checkin-times'), ['08:00', '17:00']).error ?? 'ok', parseRow(row('checkin-times'), '08:00 17:00').error ?? 'ok', !!parseRow(row('checkin-times'), '25:00').error].join(' '), 'ok ok true');
+  t('DS-868 a default is only where the reader has one fixed value', ['memory-ceiling', 'handoff-pct-1m'].filter((id) => 'default' in row(id)).join(' '), '');
+
+  // The machine profile fallback desk-env reads.
+  t('DS-868 MACHINE_FALLBACK is the three machine rows', JSON.stringify(MACHINE_FALLBACK), '{"concurrency":"autopilot-concurrency","memory-ceiling":"memory-ceiling-gb","test-cap":"test-cap"}');
+  t('DS-868 MACHINE_FALLBACK_ROWS is their labels', MACHINE_FALLBACK_ROWS.join(' / '), 'autopilot worker concurrency / memory ceiling for parallel work (gb) / test worker cap under the test lock');
 }
 
 rmSync(T, { recursive: true, force: true });
