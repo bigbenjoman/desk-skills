@@ -8,7 +8,7 @@
 // The run is named by the output file the Bash tool printed ("Output is being written to: <file>",
 // a `tasks/<id>.output`), resolved to the processes holding it open (lsof, else /proc, as
 // hooks/desk-worker-stop.py reads it), or by a pid. Either must belong to this session: a descendant of
-// the nearest `claude` process above this script, else of its parent. It is the same run while those
+// the nearest Claude Code session above this script (leases.mjs claudeAncestor), else of its parent. It is the same run while those
 // processes are: a pid counts only while its start time is the one it had when the wait began. It
 // blocks up to --max seconds (540, at most 570) and prints one of
 //
@@ -33,6 +33,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { lockDir, psRows } from './desk-env.mjs';
 import { etimeSeconds, holdersNow, holdersText, wrapperOf } from './suite-wait.mjs';
+import { claudeAncestor } from './leases.mjs';
 
 export const MAX_DEFAULT = 540;
 export const MAX_CEILING = 570;
@@ -50,7 +51,6 @@ const HELPER = /^(?:\S*\/)?(?:flock|sleep|cat|mkdir|find|mv|rm|git|dirname|pwd|l
 const NODE_HELPER = /^(?:\S*\/)?node\s+\S*(?:slot-lease|desk-env)\.mjs(?:\s|$)/;
 // A Bash tool background task's output file.
 const TASK_OUTPUT = /\/tasks\/[^/]+\.output$/;
-const CLAUDE = /(?:^|[\s/])claude(?:\s|$)|claude-code\//;
 
 // Whether a process is part of a wait for the lock rather than the command it runs: with-lock.sh, the
 // shell the Bash tool started it from (whose command line names it), or one of its helpers.
@@ -108,9 +108,10 @@ function ancestors(procs) {
   return out;
 }
 
-// The session's processes: the nearest `claude` above this script and all below it, else its parent's.
-export function sessionTree(procs, chain = ancestors(procs)) {
-  const root = chain.slice(1).find((pid) => CLAUDE.test(procs.find((p) => p.pid === pid)?.args ?? '')) ?? chain[1];
+// The session's processes: the nearest Claude Code session above this script and all below it, else
+// its parent's.
+function sessionTree(procs, chain) {
+  const root = claudeAncestor(procs, process.pid) ?? chain[1];
   return root ? treeOf([root], procs) : new Set();
 }
 
