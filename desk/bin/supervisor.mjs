@@ -158,9 +158,11 @@ function plist(job) {
 const unitQuote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '%%')}"`;
 // The service runs one tick; the timer runs it at once when started (at install and at login) and an
 // interval after each run, the path unit whenever an entry in the exits folder changes, and systemd
-// starts no second run while one is still active.
+// starts no second run while one is still active. The tick returns at once, so a burst of exits (and the
+// deletions that consume them) starts the service many times a minute: with systemd's start limit (5 in
+// 10 s by default) that would fail the service, and with it the path unit and the timer, so it is lifted.
 function units(slug, job) {
-  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, '', '[Service]', 'Type=oneshot',
+  const service = ['[Unit]', `Description=desk-skills supervisor for ${slug}`, 'StartLimitIntervalSec=0', '', '[Service]', 'Type=oneshot',
     `ExecStart=${[process.execPath, job.script].map(unitQuote).join(' ')} tick`,
     `WorkingDirectory=${job.cwd.replace(/%/g, '%%')}`,
     ...Object.entries(job.env).map(([k, v]) => `Environment=${unitQuote(`${k}=${v}`)}`),
@@ -188,7 +190,9 @@ function installSystemd(slug, job, reload) {
   const text = units(slug, job);
   const names = [`${label(slug)}.timer`, `${label(slug)}.path`];
   const same = ['service', 'timer', 'path'].every((k) => existsSync(unitPath(slug, k)) && readFileSync(unitPath(slug, k), 'utf8') === text[k]);
-  if (!reload && same && loaded(slug)) {
+  // A path unit that failed (an older service's start limit) wakes nothing, though the timer still runs.
+  const pathUp = () => systemctl('is-active', '--quiet', `${label(slug)}.path`).status === 0;
+  if (!reload && same && loaded(slug) && pathUp()) {
     console.log(`supervisor: ${label(slug)} is already installed and loaded, unchanged (every ${job.interval}s, log ${join(job.state, 'supervisor.log')})`);
     return;
   }
@@ -197,6 +201,8 @@ function installSystemd(slug, job, reload) {
   let r = systemctl('daemon-reload');
   if (r.status !== 0) sysFail('daemon-reload', r);
   const was = loaded(slug);
+  // A unit a start limit failed starts again only once its failed state is cleared; one not failed is unaffected.
+  systemctl('reset-failed', `${label(slug)}.service`, ...names);
   r = was ? systemctl('restart', ...names) : systemctl('enable', '--now', ...names);
   if (r.status !== 0) sysFail(`${was ? 'restart' : 'enable --now'} ${names.join(' ')}`, r);
   // `enable` covers the next login; a unit restarted while loaded may still be disabled.
@@ -458,10 +464,15 @@ function exitFiles(dir) {
   });
 }
 // <repo state>/supervisor.wake, { consumed, round, counted }: when a tick last deleted exit files, last
-// started a round, and last started one whose passes counted a quiet pass. Unreadable reads as never.
+// started a round, and, per batch state folder, last started a pass that counted a quiet pass.
+// Unreadable reads as never.
 const readWake = () => { try { return JSON.parse(readFileSync(wakeFile(), 'utf8')) ?? {}; } catch { return {}; } };
 const wakeAt = (k) => Date.parse(readWake()[k] ?? '') || 0;
-const noteWake = (k, ms) => { try { writeFileSync(wakeFile(), `${JSON.stringify({ ...readWake(), [k]: new Date(ms).toISOString() })}\n`); } catch { /* the next tick runs as if never */ } };
+const writeWake = (w) => { try { writeFileSync(wakeFile(), `${JSON.stringify(w)}\n`); } catch { /* the next tick runs as if never */ } };
+const noteWake = (k, ms) => writeWake({ ...readWake(), [k]: new Date(ms).toISOString() });
+const countedMap = (w) => (w.counted && typeof w.counted === 'object' ? w.counted : {});
+const countedAt = (state) => Date.parse(countedMap(readWake())[state] ?? '') || 0;
+const noteCounted = (state, ms) => { const w = readWake(); writeWake({ ...w, counted: { ...countedMap(w), [state]: new Date(ms).toISOString() } }); };
 // Deletes the exit files a round of passes has seen, and records when, so the wake that deletion causes
 // runs nothing. A file that cannot be deleted stays and wakes nothing again.
 function consumeExits(files) {
@@ -469,9 +480,10 @@ function consumeExits(files) {
   for (const f of files) { try { rmSync(f.file); gone += 1; } catch { /* left for the next tick */ } }
   if (gone) noteWake('consumed', Date.now());
 }
-// A round's passes count a quiet pass once an interval has passed since the last round that did, whatever
-// started it, so exits never bring a quiet worker's wedge limit sooner, nor an exit file left behind
-// stop it coming. The slack covers a tick starting a moment early.
+// A batch's pass counts a quiet pass once an interval has passed since that batch's last pass that did,
+// decided as the pass starts, whatever started the tick: so exits never bring a quiet worker's wedge
+// limit sooner (a slow batch before it, or a batch skipped for its lock, moves no other batch's count),
+// nor an exit file left behind stop it coming. The slack covers a tick starting a moment early.
 const COUNT_SLACK_MS = 5000;
 const countDueMs = () => (Number(installedInterval(E.repoSlug())) || DEFAULT_INTERVAL) * 1000 - COUNT_SLACK_MS;
 
@@ -488,12 +500,6 @@ function takeTickLock(wait) {
     sleep(1000);
   }
 }
-// Whether this round runs between intervals (an exit woke it), before its quiet pass is due: pass.mjs
-// --woken then counts no quiet pass.
-let wokenRound = false;
-// Whether this round ran a pass for any batch: only a round that did has counted its quiet pass.
-let passedRound = false;
-
 // One tick: a round of every batch, and another while workers exited after the last round started and
 // before it ended, so their exits are not left for the next interval. A round whose pass was skipped for
 // a lock consumes nothing: the run holding it sees the exits when its own round ends. A tick woken by an
@@ -514,11 +520,8 @@ function interval() {
     const named = batchPinned();
     for (let round = 1; ; round += 1) {
       const start = Date.now();
-      wokenRound = start - wakeAt('counted') < countDueMs();
       noteWake('round', start);
-      passedRound = false;
       if (!intervalRound(named)) return;
-      if (!wokenRound && passedRound) noteWake('counted', start);
       const left = exitFiles(exits);
       consumeExits(left.filter((f) => f.at < start));
       if (round >= WAKE_ROUNDS || !left.some((f) => f.at >= start)) return;
@@ -783,8 +786,11 @@ function runPass(state, q, s, log, stamp, intake = []) {
   // The pass reads its time from it, so a read it records is at most the interval before the pass the
   // idle recheck starts (pass/parks.mjs decideOutsideHolds), however long each pass took to reach it.
   env.DESK_PASS_AT = startedAt;
-  passedRound = true;
-  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(wokenRound ? ['--woken'] : [])], {
+  // Before this batch's quiet pass is due (an exit woke the tick), pass.mjs --woken counts none.
+  const passStart = Date.parse(startedAt);
+  const woken = passStart - countedAt(state) < countDueMs();
+  if (!woken) noteCounted(state, passStart);
+  const r = spawnSync(process.execPath, [join(HERE, 'pass.mjs'), '--json', '--by', 'supervisor', ...(every > 0 ? ['--next', `+${every}`] : []), ...(woken ? ['--woken'] : [])], {
     cwd: process.cwd(), env, encoding: 'utf8', timeout: PASS_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024,
   });
   let v;

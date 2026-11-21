@@ -67,6 +67,7 @@ if (existsSync('$T/exit.burst')) {
   spawn(process.execPath, ['-e', more, E.exitsDir()], { detached: true, stdio: 'ignore' }).unref();
 }
 appendFileSync('$T/pass.args', \`\${process.argv.slice(2).join(' ')}\\n\`);
+appendFileSync('$T/pass.woken', \`\${process.env.DESK_BATCH ?? '-'} \${process.argv.includes('--woken')}\\n\`);
 let base;
 try { E.applyBatchBase(); base = E.defaultBranch(); } catch { base = 'REFUSED'; }
 appendFileSync('$T/pass.batches', \`\${process.env.DESK_BATCH ?? '-'} \${base}\\n\`);
@@ -657,6 +658,24 @@ check "DS-309 AC6: status lists every batch with its state" 'grep -q "^batch s1:
 : > "$T/pass.batches"; mkdir -p "$SS/exits"; printf '{}\n' > "$SS/exits/A.1.json"; touch -t 202001010000 "$SS/exits/A.1.json"; touch "$T/exit.during"
 out=$(DESK_WAKE_GAP_MS=0 mtick)
 check "DS-695: the round an exit adds passes every batch, the standing one included" '[ "$(grep -c "^- " "$T/pass.batches")" = 2 ] && [ "$(grep -c "^X-1 " "$T/pass.batches")" = 2 ] && [ -z "$(ls -A "$SS/exits")" ]'
+# Each batch counts its own quiet pass, decided as its pass starts. One batch skipped for its pass lock
+# leaves the round unconsumed, but X-1, which passed, has counted: the next woken round counts it no
+# second time, while the standing batch, which passed nothing, counts.
+rm -f "$SS/supervisor.wake"
+sleep 30 & HOLDER=$!
+printf '{"pid":%s,"since":"x"}\n' "$HOLDER" > "$SS/supervisor.lock"
+printf '{}\n' > "$SS/exits/A.6.json"; touch -t 202001010000 "$SS/exits/A.6.json"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: a round with one batch skipped for its lock still counts the batch that passed" '[ "$(cat "$T/pass.woken")" = "X-1 false" ] && [ -e "$SS/exits/A.6.json" ]'
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$SS/supervisor.lock"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: the next woken round counts the skipped batch and not again the one that passed" '[ "$(grep -c "^- false$" "$T/pass.woken")" = 1 ] && [ "$(grep -c "^X-1 true$" "$T/pass.woken")" = 1 ] && [ -z "$(ls -A "$SS/exits")" ]'
+# A batch whose quiet pass is due counts it though another batch in the same round is not due: the
+# standing batch counted just now, X-1 an interval ago.
+jq -c '.counted |= with_entries(.value = (if (.key | endswith("/batches/X-1")) then "2020-01-01T00:00:00.000Z" else (now | todate) end))' "$SS/supervisor.wake" > "$T/wake.new" && mv "$T/wake.new" "$SS/supervisor.wake"
+printf '{}\n' > "$SS/exits/A.7.json"; touch -t 202001010000 "$SS/exits/A.7.json"; : > "$T/pass.woken"
+out=$(DESK_WAKE_GAP_MS=0 mtick)
+check "DS-695: each batch's count is decided by its own last counted pass" '[ "$(head -1 "$T/pass.woken")" = "- true" ] && [ "$(sed -n 2p "$T/pass.woken")" = "X-1 false" ]'
 rm -f "$SS/supervisor.wake"
 
 # ---- DS-311: a feature batch whose promotion PR is merged or closed is archived -------------------
@@ -739,10 +758,10 @@ cat > "$T/fakes/systemctl" <<EOF
 #!/bin/sh
 echo "\$@" >> "$T/systemctl.calls"
 case "\$2" in
-  is-active) [ -f "$T/active" ] ;;
+  is-active) case "\$4" in *.path) [ -f "$T/active" ] && [ ! -f "$T/path.failed" ] ;; *) [ -f "$T/active" ] ;; esac ;;
   enable) touch "$T/active" ;;
   disable) rm -f "$T/active" ;;
-  restart) [ -f "$T/active" ] ;;
+  restart) rm -f "$T/path.failed"; [ -f "$T/active" ] ;;
   show) r=\$(cat "$T/result" 2>/dev/null || echo success)
         printf 'ActiveState=inactive\nResult=%s\nExecMainStatus=%s\n' "\$r" "\$([ "\$r" = success ] && echo 0 || echo 3)" ;;
 esac
@@ -765,6 +784,9 @@ check "#735 AC1: with lingering off, install says ticks stop at logout and how t
 check "DS-838 AC3: on plain Linux, install says nothing about WSL" '! grep -q "WSL" <<< "$out"'
 out=$(sup install)
 check "#735 AC1: an unchanged install enables nothing again" '[ "$(grep -c " enable " "$T/systemctl.calls")" = 1 ] && grep -q "unchanged" <<< "$out"'
+check "DS-695: the service lifts systemd's start limit, so a burst of exits cannot fail it" 'grep -qx "StartLimitIntervalSec=0" "$SV"'
+touch "$T/path.failed"; out=$(sup install)
+check "DS-695: an install finding the path unit failed clears it and restarts it, not unchanged" '! grep -q "unchanged" <<< "$out" && grep -qx -- "--user reset-failed com.desk-skills.supervisor.acme__widgets.service com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls" && [ ! -f "$T/path.failed" ]'
 out=$(sup install --interval 300)
 check "#735 AC1: a new interval rewrites the timer and restarts it" 'grep -qx "OnUnitActiveSec=300s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
 out=$(sup status); rc=$?
