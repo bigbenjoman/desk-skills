@@ -295,7 +295,8 @@ touch "$T/active"
 out=$(restart); rc=$?
 check "#735: restart exits 0 and says the unit was reloaded" '[ $rc -eq 0 ] && grep -q "^supervisor com.desk-skills.supervisor.acme__widgets: rewritten with node $NODE and reloaded$" <<< "$out"'
 check "#735: the service names this node, not the stale one, and keeps its working directory" 'grep -qF "ExecStart=\"$NODE\"" "$SV" && ! grep -q "/gone/node" "$SV" && grep -qxF "WorkingDirectory=$T/repo" "$SV"'
-check "#735: the timer keeps its interval and is restarted" 'grep -qx "OnUnitActiveSec=240s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer" "$T/systemctl.calls"'
+check "#735: the timer keeps its interval and is restarted" 'grep -qx "OnUnitActiveSec=240s" "$TM" && grep -qx -- "--user restart com.desk-skills.supervisor.acme__widgets.timer com.desk-skills.supervisor.acme__widgets.path" "$T/systemctl.calls"'
+check "DS-695: a timer installed before the exit watch gets its path unit as it is reloaded" 'grep -q "^PathChanged=.*/exits$" "$UD/com.desk-skills.supervisor.acme__widgets.path"'
 out=$(node --input-type=module -e "import { agentVersion } from '$T/bin/installed.mjs'; console.log(agentVersion('acme__widgets'))")
 check "#735 AC5: the service records the installed version the timer was loaded at" '[ "$out" = "$head_sha" ]'
 unset XDG_CONFIG_HOME; export DESK_PLATFORM=darwin
