@@ -7,7 +7,7 @@ import { delimiter, dirname, join } from 'node:path';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
-const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); };
+const t = (name, got, want) => { const ok = JSON.stringify(got) === JSON.stringify(want); if (!ok) fails++; console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}: ${JSON.stringify(got)}${ok ? '' : ` (want ${JSON.stringify(want)})`}`); return ok; };
 
 const T = scratch('desk-q-once-');
 const BIN = join(T, 'bin');
@@ -56,19 +56,28 @@ const prints = (cs, name) => cs.filter((c) => c.startsWith('launchctl\t') && c.e
 
 // ---- AC1, AC2, AC4: one build asks each question once, a failed one included -----------------------
 rmSync(CALLS, { force: true });
-const first = run(['--plain']);
+// --all: the home view otherwise hides a quiet repo whose supervisor is loaded, as alpha's is.
+const first = run(['--plain', '--all']);
 const one = calls();
-t('the home view was built', /alpha/.test(first) && /delta/.test(first), true);
+if (!t('the home view was built', /alpha/.test(first) && /delta/.test(first), true)) console.log(first);
 t('AC1 launchctl print ran once for each of the four labels, alpha\'s and gamma\'s two batches included',
   ['alpha', 'beta', 'gamma', 'delta'].map((n) => prints(one, n)), [1, 1, 1, 1]);
 t('AC2 no command ran twice in one build, in the same directory with the same arguments', repeated(one), []);
-t('AC2 the build asked git something', one.some((c) => c.startsWith('git\t')), true);
+
+// This checkout is a git repo, so `git -C HERE rev-parse HEAD` succeeds: asked twice in one build it
+// runs once, and both answers are the same commit.
+const HERE = dirname(new URL(import.meta.url).pathname);
+const headOf = (dir, cs) => cs.filter((c) => c === `git\t-C ${dir} rev-parse HEAD`).length;
+rmSync(CALLS, { force: true });
+const okTwice = oneBuild(() => [READS.git(HERE, ['rev-parse', 'HEAD']), READS.git(HERE, ['rev-parse', 'HEAD'])]);
+t('AC2 a git read asked twice in one build ran once, both answers the commit',
+  [/^[0-9a-f]{40}$/.test(okTwice[0] ?? ''), okTwice[0] === okTwice[1], headOf(HERE, calls())], [true, true, 1]);
 // gamma is not loaded and both its batches ask for its print, which fails: it runs once.
 t('AC4 a failed launchctl print was asked again and not rerun', prints(one, 'gamma'), 1);
 
 // T is no git checkout, so `git -C T rev-parse HEAD` fails: asked twice in one build it runs once and
 // both answers are the failure; asked twice outside a build it runs twice.
-const headOfT = (cs) => cs.filter((c) => c === `git\t-C ${T} rev-parse HEAD`).length;
+const headOfT = (cs) => headOf(T, cs);
 rmSync(CALLS, { force: true });
 const inBuild = oneBuild(() => [READS.git(T, ['rev-parse', 'HEAD']), READS.git(T, ['rev-parse', 'HEAD'])]);
 t('AC4 a failed git read asked twice in one build: both fail, it ran once', [inBuild, headOfT(calls())], [[null, null], 1]);
@@ -79,7 +88,7 @@ t('outside a build the same git read runs each time', headOfT(calls()), 2);
 // ---- AC3: the next build reads afresh -----------------------------------------------------------
 writeFileSync(LOADED, `${label('beta')}\n`);
 rmSync(CALLS, { force: true });
-const second = run(['--plain']);
+const second = run(['--plain', '--all']);
 const two = calls();
 t('AC3 the next build asks launchctl again', ['alpha', 'beta', 'gamma', 'delta'].map((n) => prints(two, n)), [1, 1, 1, 1]);
 // A line naming the repo that says its supervisor is off (the pass cell, or the band's "supervisor on" fix).
