@@ -518,10 +518,9 @@ export function triagePlacement(rec, root = deskConfigRoot()) {
   const repos = configuredRepos(root);
   const namesOf = (slug, gh) => [slug?.split('__').slice(1).join('__'), gh, String(gh ?? '').split('/').pop()].filter(Boolean);
   const selfNames = [...namesOf(self.slug, self.ownerRepo), ...(own ? namesOf(null, own) : [])];
-  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${esc(n)}(?![\\w-])`, 'i').test(text));
+  const named = (text, names) => names.some((n) => new RegExp(`(?<![\\w.-])${escapeRe(n)}(?![\\w-])`, 'i').test(text));
   for (const d of calls) {
-    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(esc).join('|')})(?![\\w-])`, 'gi');
+    const fromSelf = new RegExp(`\\bfrom\\s+(?:this\\s+|the\\s+)?(?:${selfNames.map(escapeRe).join('|')})(?![\\w-])`, 'gi');
     if (selfNames.length && named(d.chose.replace(fromSelf, ''), selfNames)) continue;
     const hits = repos.filter((r) => r.slug !== self.slug && !selfNames.some((n) => n.toLowerCase() === r.ghRepo.toLowerCase()) && named(d.chose, namesOf(r.slug, r.ghRepo)));
     if (hits.length !== 1) continue;
@@ -2028,7 +2027,7 @@ export const KNOWN_UNTRACKED = Object.freeze([
 ]);
 // The scratch files one desk-review run writes at the worktree root, `<run>` that run's id and `<seat>`
 // a role; `tree-status --run <run>` leaves out the ones carrying that id.
-export const REVIEW_SCRATCH = Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
+const REVIEW_SCRATCH =Object.freeze(['desk-review-codex-brief-<run>.txt', 'desk-review-<seat>-brief-<run>.txt', 'desk-review-results-<run>.json', 'desk-review.md']);
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const templateRe = (t, fill) => new RegExp(`^${t.split(/(<[A-Za-z]+>)/).map((p) => (/^<[A-Za-z]+>$/.test(p) ? fill(p) : escapeRe(p))).join('')}$`);
