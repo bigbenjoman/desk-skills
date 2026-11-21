@@ -56,6 +56,12 @@ const deskEnv = (dir, args) => {
   t('a second push while that build runs is refused when it will not wait', slot(d, team, ['--wait', '0', 'K-2']).code, 3);
   t('with §4 Vercel none there is nothing to take', [slot(fresh(), conf('`none`'), ['K-3']).code, slot(fresh(), conf('`none`'), ['K-3']).out], [0, 'no preview slot to take: §4 Vercel names no team']);
   t('a --wait that is not a whole number is a usage error', slot(fresh(), team, ['--wait', 'soon', 'K-4']).code, 2);
+  const r = fresh(); const id = slot(r, team, ['K-5']).out;
+  const label = () => JSON.parse(readFileSync(join(r, 'leases.json'), 'utf8')).leases[0].label;
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner']);
+  const kept = label();
+  deskEnv(r, ['renew', id, 'preview-build', 'acme', '--ttl', '600', '--no-owner', '--label', 'the build of K-5']);
+  t('a renew keeps its label unless it names one, which it then takes', [kept, label()], ['K-5', 'the build of K-5']);
 }
 
 const cliAsync = (dir, args) => new Promise((resolve) => {

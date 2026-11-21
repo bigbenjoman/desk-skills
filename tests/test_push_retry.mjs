@@ -71,26 +71,22 @@ const NFF = { status: 1, out: ' ! [rejected] b -> b (non-fast-forward)' };
 let r = await run(['origin', 'b'], [OK]);
 t('pushed first time: one push, no wait', [r.code, r.calls.length, r.slept], [0, 1, []]);
 
-// The preview-build slot: taken before the push without waiting, given back only when the push fails.
+// The preview-build slot: taken before the push without waiting; given back when the push fails, and
+// renewed for its build when it goes through.
 const slotted = async (answers, taken, args = ['origin', 'b']) => {
   const log = []; const said = []; const calls = [];
-  const slot = { take: () => { log.push('take'); return taken; }, give: (id) => { log.push(`give ${id}`); } };
+  const slot = { take: () => { log.push('take'); return taken; }, give: (id) => { log.push(`give ${id}`); }, keep: (id) => { log.push(`keep ${id}`); } };
   const git = (a) => { calls.push(a.join(' ')); return answers.shift(); };
   const code = await pushWithRetry(parseArgs(args), { git, sleep: async () => {}, now: () => 0, say: (l) => said.push(l), slot });
   return { code, log, said, calls };
 };
 let sl = await slotted([OK], { id: 'L-1' });
-t('a push takes the preview-build slot first and keeps it when it pushes', [sl.code, sl.log], [0, ['take']]);
+t('a push takes the preview-build slot first and, once it pushes, renews it for the build', [sl.code, sl.log], [0, ['take', 'keep L-1']]);
 sl = await slotted([NFF], { id: 'L-2' });
 t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take', 'give L-2']]);
 sl = await slotted([OK], { busy: 'held by #7' });
-t('a slot another build holds: exit 76, nothing pushed, naming the wait and the push to run after it',
-  [sl.code, sl.calls, /desk-env preview-slot --wait 540 'a push of b'/.test(sl.said[0]) && / --slot <that id> origin b\./.test(sl.said[0])], [76, [], true]);
-sl = await slotted([NFF], null, ['--slot', 'L-9', 'origin', 'b']);
-t('--slot <id> pushes on that lease, taking none, and gives it back when the push fails', [sl.code, sl.log, sl.calls], [1, ['give L-9'], ['push origin b']]);
-sl = await slotted([OK], null, ['--slot', 'none', 'origin', 'b']);
-t('--slot none pushes without one', [sl.code, sl.log], [0, []]);
-t('--slot takes a lease id or none, nothing else', [parseArgs(['--slot', 'x', 'origin', 'b']), parseArgs(['--slot']), parseArgs(['--slot', 'L-1', '--more', 'origin', 'b'])?.slot], [null, null, 'L-1']);
+t('a slot another build holds: exit 76, nothing pushed, naming the wait and then this same push',
+  [sl.code, sl.calls, /desk-env preview-slot --wait 540 'a push of b'/.test(sl.said[0]) && /then run this same push again: node \S+ origin b\./.test(sl.said[0])], [76, [], true]);
 sl = await slotted([OK], { why: 'the preview-build slot was not taken (store unreadable)' });
 t('a slot that could not be read: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (store unreadable): pushing anyway']]);
 r = await run(['origin', 'b'], [E5, E5, OK]);
@@ -198,6 +194,24 @@ c = cli(['origin', 'fix/A-1'], { STUB_OUT: ' ! [rejected] b -> b (non-fast-forwa
 t('AC3 the CLI exits with git\'s refusal, unretried', [c.status, pushes().length], [1, 2]);
 c = cli(['--force', 'origin', 'fix/A-1'], {});
 t('the CLI refuses any other push, running nothing', [c.status, pushes().length], [2, 2]);
+// The CLI against a real lease store, where §4 Vercel names a team and preview-build leases hold.
+{
+  const ld = join(dir, 'leases'); const conf = join(dir, 'conf.md'); const mach = join(dir, 'machine.md');
+  writeFileSync(conf, '## 4. Tracker, tools and team\n| Field | Value |\n|---|---|\n| Vercel | `acme` |\n');
+  writeFileSync(mach, '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n');
+  const envs = { DESK_CONFIG: conf, DESK_MACHINE: mach, DESK_LEASE_DIR: ld };
+  const deskEnv = (a) => spawnSync(process.execPath, [join(dirname(bin), 'desk-env.mjs'), ...a], { encoding: 'utf8', env: { ...process.env, ...envs } });
+  const held = () => deskEnv(['lease', 'list', '--json']).stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).label);
+  deskEnv(['preview-slot', '--wait', '0', "another PR's build"]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('the CLI, the slot held by another build: exit 76 and no push', [c.status, pushes().length], [76, 0]);
+  rmSync(ld, { recursive: true, force: true });
+  deskEnv(['preview-slot', '--wait', '0', 'a push of fix/A-1']);
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
+  t('the slot its own wait took is used, and renewed for the build once it pushes', [c.status, pushes().length, held()], [0, 1, ['the build of fix/A-1']]);
+}
+
 rmSync(dir, { recursive: true, force: true });
 
 console.log(`push-retry: ${fails ? `${fails} failed` : 'all passed'}`);

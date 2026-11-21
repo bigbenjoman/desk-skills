@@ -71,8 +71,8 @@ prints, the same one with `--more` first, which waits longer. **A second exit 75
 minutes of 5xx: end with your park, naming the tail as ever, and the line after it says what clears it.
 **Exit 76** is the preview-build slot taken by another push's build: nothing was pushed. Run the
 `desk-env preview-slot --wait 540 …` it prints in a call of its own, which waits for that build and
-prints a lease id, then the push again with `--slot <that id>` first (`--slot none` if the wait ended
-with exit 75). For the 5xx park:
+holds the slot for your push, then the same push again (the wait again if it exits 75). For the 5xx
+park:
 
 ```
 AUTOPILOT_PARK: GitHub answered the push of <branch> with a 5xx for over ten minutes

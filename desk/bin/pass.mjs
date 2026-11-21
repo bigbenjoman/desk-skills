@@ -264,6 +264,11 @@ function previewSlot(t) {
 function freeSlot(slot) {
   if (slot?.id) leaseCli(['release', slot.id], { env: LEASE_ENV, out: () => {}, err: () => {} });
 }
+// A push that went through renews its slot from now, for its build: the push itself may have taken minutes.
+function keepSlot(slot, branch) {
+  const team = slot?.id && E.previewTeam();
+  if (team) leaseCli(['renew', slot.id, 'preview-build', team, '--ttl', String(E.PREVIEW_TTL_S), '--no-owner', '--label', `the build of ${branch}`], { env: LEASE_ENV, out: () => {}, err: () => {} });
+}
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
 const shOut = (cmd, args, { fresh, ...opts } = {}) => {
@@ -1246,7 +1251,7 @@ function pushParked(t, c) {
   const slot = previewSlot(t);
   if (slot.wait) return { holds: false, note: slot.wait };
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
-  if (push.ok) return { holds: true };
+  if (push.ok) { keepSlot(slot, c.branch); return { holds: true }; }
   freeSlot(slot);
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
   if (push.unreached || unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
@@ -1385,7 +1390,7 @@ function finishPush(t) {
     return true;
   }
   const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
-  if (!push.ok) freeSlot(slot);
+  if (push.ok) keepSlot(slot, t.branch); else freeSlot(slot);
   if (!push.ok && (push.unreached || transientPush(push.out))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
     report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
@@ -2938,6 +2943,7 @@ function busyWorktree(t, { push = false } = {}) {
   if (slot.wait) return `${why}: they are its last worker's, but ${slot.wait}`;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
   if (pushed.ok) {
+    keepSlot(slot, branch);
     report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
     return null;
   }
@@ -2953,6 +2959,7 @@ function busyWorktree(t, { push = false } = {}) {
     if (lost && !lost.length) {
       const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
       if (forced.ok) {
+        keepSlot(slot, branch);
         report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: every commit origin had is in it by its patch`);
         return null;
       }

@@ -493,8 +493,8 @@ out=$(pv node "$B/pass.mjs" 2>&1)
 check "a push the preview-build slot is taken for waits for a later pass, naming it" \
   '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the preview-build slot for acme is taken"'
 rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
-check "once the slot is free the pass pushes, taking the slot for that push" \
-  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e ".leases[0].label == \"W-21: a push by the pass\"" "$T/leases-pv/leases.json" >/dev/null'
+check "once the slot is free the pass pushes, keeping the slot for that push's build" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e ".leases[0].label == \"the build of fix/W-21\"" "$T/leases-pv/leases.json" >/dev/null'
 q set W-21 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
