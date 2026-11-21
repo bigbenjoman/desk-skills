@@ -63,13 +63,15 @@ const recordKey = (r) => (r.kind === 'revert' ? `${r.ticket}|revert|${r.commit}`
 // The records a scan finds. `commits` are [{sha, at, subject}] from the default branch; `runs` are
 // [{id, name, url, conclusion, created_at}] from it, or null when they could not be read.
 export function findRecords({ merges, commits, runs, at }) {
-  const byPr = new Map(merges.map((m) => [m.pr, m]));
+  // A PR can be recorded on more than one ticket, so its revert is each one's.
+  const byPr = new Map();
+  for (const m of merges) byPr.set(m.pr, [...(byPr.get(m.pr) ?? []), m]);
   const found = [];
   for (const c of commits) {
-    const m = byPr.get(revertedPr(c.subject));
-    if (!m) continue;
-    const gap = Date.parse(c.at) - Date.parse(m.merged_at);
-    if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    for (const m of byPr.get(revertedPr(c.subject)) ?? []) {
+      const gap = Date.parse(c.at) - Date.parse(m.merged_at);
+      if (gap >= 0 && gap <= WATCH_DAYS * DAY_MS) found.push({ kind: 'revert', ticket: m.ticket, pr: m.pr, merged_at: m.merged_at, commit: c.sha, subject: c.subject, at });
+    }
   }
   for (const r of runs ?? []) {
     if (!FAILED.has(r.conclusion)) continue;

@@ -98,5 +98,10 @@ t('a scan is due for an archived merge', postMergeDue({ state: join(tmp, 'state9
 postMergeScan({ state: join(tmp, 'state9'), queue: archivedQueue, log, runs: () => [], now: NOW });
 t('an archived ticket\'s revert inside the watch is recorded', readPostMerge(join(tmp, 'state9')).filter((r) => r.kind === 'revert').map((r) => r.ticket).join(), 'T-A');
 
+// A PR recorded on two tickets (a shipped-elsewhere PR and the merge driver's record): its revert is each one's.
+const shared = { tickets: { 'T-A': { merged_at: iso(mergedA), result: { pr: 1 } }, 'T-F': { merged_at: iso(mergedA), pr_status: { pr: 1 } } } };
+postMergeScan({ state: join(tmp, 'state10'), queue: shared, log, runs: () => [], now: NOW });
+t('a revert of a PR on two tickets is recorded on both', readPostMerge(join(tmp, 'state10')).filter((r) => r.kind === 'revert').map((r) => r.ticket).sort().join(), 'T-A,T-F');
+
 rmSync(tmp, { recursive: true, force: true });
 if (fails) { console.log(`${fails} failed`); process.exit(1); }
