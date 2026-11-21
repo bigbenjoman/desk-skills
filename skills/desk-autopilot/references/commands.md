@@ -27,6 +27,7 @@ node ~/.claude/desk/bin/queue.mjs set-batch approved.undraft=true     # Stage 3:
 node ~/.claude/desk/bin/queue.mjs set-batch approved.merge=true       # Stage 3: §3 autopilot-merge / pr-merge-green are ask and the user approved merging this batch's green PRs (=false when declined)
 node ~/.claude/desk/bin/desk-env.mjs merge-grant                      # config, batch or none, and why: whether the merge driver may merge this batch
 node ~/.claude/desk/bin/queue.mjs render                              # status
+node ~/.claude/desk/bin/queue.mjs rebuild ABC-120                     # ledger lever: the batch's queue rebuilt from the log, written to queue.rebuilt.json beside queue.json, and each field that differs (`standing`, or none: this batch)
 node ~/.claude/desk/bin/queue.mjs front ABC-123                       # move a released ticket to the front of the spawn order (one the user placed stays put)
 node ~/.claude/desk/bin/queue.mjs move ABC-123 2                      # the user's order: position among unfinished tickets, or `last`; marks it placed
 node ~/.claude/desk/bin/queue.mjs hold ABC-124 ABC-123               # hold a ticket behind a blocker (recorded; released on its merge)

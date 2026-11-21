@@ -25,7 +25,7 @@ import { placement, featureRole, runsText } from './cloud-worker.mjs';
 import { lock as takeDirLock, unlock, alive, sleepSync, tryLockFile } from './dir-lock.mjs';
 import { processRows, workerProcs, endProcs } from './worker-stop.mjs';
 import { writeQueueFile, versionOf, archivePath, isArchived, archivedOf } from './queue-store.mjs';
-import { LEDGER_BY_ENV } from './queue-ledger.mjs';
+import { LEDGER_BY_ENV, queueDifference } from './queue-ledger.mjs';
 import { newPark, FINISHED, unfinished, toFront, applySet, applySetBatch, LOCK_WAIT_MS } from './queue-writer.mjs';
 import { followOnPending, postMergeUnmade, workerMarkers, lastStage, settleSteps } from './harvest.mjs';
 import { workerCalls, appendDecisions, noteLine, appendNotes } from './decisions.mjs';
@@ -1333,6 +1333,26 @@ switch (cmd) {
   case 'render':
     console.log(render(q));
     break;
+
+  // rebuild [<batch | standing>]: the batch's queue rebuilt from the ticket ledger, written to
+  // queue.rebuilt.json beside its queue.json, and each ticket field where queue.json differs from it.
+  // queue.json and the log are left as they are. Without a batch, this queue's.
+  case 'rebuild': {
+    const [name] = args;
+    let file = QUEUE;
+    if (name) {
+      const want = /^standing$/i.test(name) ? null : name;
+      const b = listBatches(repoSlug()).find((x) => x.name === want);
+      if (!b) throw new Error(`no batch ${name} in this repo: its batches are ${listBatches(repoSlug()).map((x) => x.name ?? 'standing').join(', ')}`);
+      file = b.queue;
+    }
+    const { rebuilt, diffs } = queueDifference(file, { waitMs: LOCK_WAIT_MS });
+    const out = join(dirname(file), 'queue.rebuilt.json');
+    writeFileSync(out, `${JSON.stringify(rebuilt, null, 2)}\n`);
+    for (const d of diffs) console.log(`${d.path}: queue.json ${d.queue ?? '(absent)'}, rebuilt ${d.rebuilt ?? '(absent)'}`);
+    console.log(`wrote ${out}: ${diffs.length} field(s) differ from ${file}`);
+    break;
+  }
 
   // The orchestrator's status monitor, run under Monitor: one plain command, so starting it never
   // prompts. Prints the table and the memory line once, then again only when a ticket's state or
