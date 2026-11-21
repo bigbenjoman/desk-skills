@@ -6,18 +6,20 @@
 // git's own refusal, never retried.
 // Each run takes the preview-build slot first (desk-env preview-slot: a push starts a preview build
 // where §4 Vercel names a team, and builds on a shared builder kill each other), waiting for none: a
-// wait here would come out of the one ten-minute call a slow push needs. One a wait already took for
-// this repo's branch on its §4 Vercel team (labelled `a push of <owner/repo>:<branch>`) is used. Taken
-// by another build, it exits 76 naming that wait, to run in a call of its own, before this same push
-// again. A push that fails gives its slot
-// back, since it started no build; one that succeeds renews it from then, as `the build of <branch>`,
-// so it covers the build however long the push took.
+// wait here would come out of the one ten-minute call a slow push needs. The slot is labelled with the
+// branch's open PR, `<owner/repo>#<n>`, or `<owner/repo>@<branch>` before one exists, so a unit a wait
+// or an earlier push of this PR already holds is renewed rather than waited behind. Taken by another
+// build, it exits 76 naming that wait, to run in a call of its own, before this same push again. A
+// push that fails gives back a unit it placed, since it started no build, and keeps one it only
+// renewed, which may cover a build still running, or one another taker renewed meanwhile; one that
+// succeeds renews it from then, so it covers the build however long the push took.
 import { spawnSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { setTimeout as wait } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describeCond } from './clears-when.mjs';
+import { previewLabel } from './desk-env.mjs';
 
 export const TRANSIENT_EXIT = 75;
 const FIRST_WAITS = [30, 60, 120, 240];
@@ -130,23 +132,28 @@ function parkCond(push, git) {
 }
 
 // git(args) → {status, out}; sleep(ms), now() and say(line) as the CLI gives them. → the exit code.
-// slot.take() → { id } of the preview-build lease taken or already waited for (none where there is
-// nothing to take), { busy } naming who holds it, or { why } it could not be read; slot.give(id)
-// releases one and slot.keep(id) renews it for the build.
-// The label a wait for this push's slot takes, naming the repo: the lease store is the machine's, so two
-// repos' branches of one name never hand each other a slot.
-export const slotLabel = (branch, repo = '') => `a push of ${repo ? `${repo}:` : ''}${branch}`;
+// slot.take() → { id, renewed, expires } of the preview-build lease taken, or renewed where its label
+// already held it (none where there is nothing to take), { busy } naming who holds it, or { why } it
+// could not be read; slot.give(id, expires) releases one unless another taker renewed it since, and
+// slot.keep(id) renews it for the build.
+// The label this push's slot takes (desk-env previewLabel), naming the repo: the lease store is the
+// machine's, so two repos' branches of one name never hand each other a slot.
+export const slotLabel = (branch, repo = '', pr = null) => previewLabel(repo, { pr, branch });
+// The exit-76 wait holds the slot under the push's label with this after it, so the push that follows
+// swaps it for a unit of its own, which it gives back if it fails, rather than renewing it as a build's.
+export const WAIT_SUFFIX = ' (wait)';
 export async function pushWithRetry({ more, push }, { git, sleep, now, say, slot = null }) {
   const waits = more ? MORE_WAITS : FIRST_WAITS;
   const began = now();
   const held = slot ? slot.take() : {};
   if (held.busy) {
-    say(`push-retry: the preview-build slot is taken (${held.busy}), so nothing was pushed. Run this in a call of its own, with the same ten-minute timeout: desk-env preview-slot --wait ${SLOT_WAIT_S} '${held.label ?? slotLabel(push.at(-1))}'. It waits for that build and holds the slot for this push; then run this same push again: node ${process.argv[1]} ${push.slice(1).join(' ')}. If the wait exits 75 (still taken), run it again.`);
+    say(`push-retry: the preview-build slot is taken (${held.busy}), so nothing was pushed. Run this in a call of its own, with the same ten-minute timeout: desk-env preview-slot --wait ${SLOT_WAIT_S} '${held.label ?? slotLabel(push.at(-1))}${WAIT_SUFFIX}'. It waits for that build and holds the slot for this push; then run this same push again: node ${process.argv[1]} ${push.slice(1).join(' ')}. If the wait exits 75 (still taken), run it again.`);
     return SLOT_BUSY_EXIT;
   }
   if (held.why) say(`push-retry: ${held.why}: pushing anyway`);
   const code = await tryPush({ more, push, waits, began }, { git, sleep, now, say });
-  if (held.id) (code === 0 ? slot.keep : slot.give)(held.id);
+  if (held.id && code === 0) slot.keep(held.id);
+  else if (held.id && !held.renewed) slot.give(held.id, held.expires);
   return code;
 }
 async function tryPush({ more, push, waits, began }, { git, sleep, now, say }) {
@@ -199,22 +206,27 @@ if (isMain()) {
   const deskEnv = (a) => spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'desk-env.mjs'), ...a], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   const branch = args.push.at(-1);
   const repo = /^GH_REPO='([^']*)'/m.exec(deskEnv(['where']).stdout ?? '')?.[1] ?? '';
-  const team = (deskEnv(['list', 'vercel']).stdout ?? '').split('\n')[0]?.trim() ?? '';
-  const label = slotLabel(branch, repo);
+  // The branch's open PR, whose number its unit carries once the PR exists; none read, the branch's label.
+  const pr = repo ? spawnSync('gh', ['pr', 'list', '--repo', repo, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number'], { encoding: 'utf8', timeout: 30_000, stdio: ['ignore', 'pipe', 'ignore'] }) : null;
+  const label = slotLabel(branch, repo, /^\d+$/.test(pr?.stdout?.trim() ?? '') ? pr.stdout.trim() : null);
   const leases = () => (deskEnv(['lease', 'list', '--json']).stdout ?? '').split('\n').flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
   const slot = {
     take: () => {
-      const waited = leases().find((l) => l.kind === 'preview-build' && l.key === team && l.label === label);
-      if (waited) return { id: waited.id };
+      // The slot an exit-76 wait held for this push is swapped for the push's own unit.
+      const waited = leases().find((l) => l.kind === 'preview-build' && l.label === `${label}${WAIT_SUFFIX}`);
+      if (waited) deskEnv(['lease', 'release', waited.id]);
       const r = deskEnv(['preview-slot', '--wait', '0', label]);
-      if (r.status === 0) return { id: (r.stdout ?? '').split('\n').find((l) => /^L-\w+$/.test(l.trim()))?.trim() ?? null };
+      if (r.status === 0) {
+        const id = (r.stdout ?? '').split('\n').find((l) => /^L-\w+$/.test(l.trim()))?.trim() ?? null;
+        return { id, renewed: /^renewed /m.test(r.stderr ?? ''), expires: id && leases().find((l) => l.id === id)?.expires };
+      }
       const said = `${r.stderr ?? ''}${r.stdout ?? ''}`.trim().split('\n').pop() || `exit ${r.status}`;
       return r.status === 3 ? { busy: said, label } : { why: `the preview-build slot was not taken (${said})` };
     },
-    give: (id) => { deskEnv(['lease', 'release', id]); },
+    give: (id, expires) => { deskEnv(['lease', 'release', id, ...(expires ? ['--if-expires', expires] : [])]); },
     keep: (id) => {
       const l = leases().find((x) => x.id === id);
-      if (l) deskEnv(['lease', 'renew', id, 'preview-build', l.key, '--ttl', String(l.ttl), '--no-owner', '--label', `the build of ${branch}`]);
+      if (l) deskEnv(['lease', 'renew', id, 'preview-build', l.key, '--ttl', String(l.ttl), '--no-owner']);
     },
   };
   process.exitCode = await pushWithRetry(args, { git, sleep: (ms) => wait(ms), now: Date.now, say: (l) => console.error(l), slot });

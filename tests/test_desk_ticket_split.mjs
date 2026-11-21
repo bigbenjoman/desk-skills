@@ -43,6 +43,7 @@ const REWRITTEN = [
     'Assuming the §3b dev-server port is yours',
   ].map((s) => ['DS-405', s, 1]),
   ['DS-427', '```bash codex exec --sandbox read-only ', 1], // the probe skips the trusted-directory check
+  ['DS-912', 'the Testing-bullet standard and the before/after image table. Ends with', 1], // desk-pr also owns the preview-build lease
 ];
 const kept = (s) => !rewrittenBy(REWRITTEN, s);
 

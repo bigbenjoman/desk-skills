@@ -522,10 +522,10 @@ pv(){ DESK_CONFIG="$T/config-gpv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_
 pv node "$B/desk-env.mjs" lease acquire preview-build acme --ttl 600 --no-owner --label "another PR's push" >/dev/null
 out=$(pv node "$B/pass.mjs" 2>&1)
 check "a push the preview-build slot is taken for waits for a later pass, naming it" \
-  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the preview-build slot for acme is taken"'
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" != "$W21_HEAD" ] && ! grep -q "^W-21 " "$T/wb-spawns" && field W-21 worktree_busy.why | grep -qF "the pass'"'"'s push of them waits on the preview build for acme: the preview-build slot for acme is held by another PR'"'"'s push"'
 rm -rf "$T/leases-pv"; out=$(pv node "$B/pass.mjs" 2>&1)
-check "once the slot is free the pass pushes, keeping the slot for that push's build" \
-  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e ".leases[0].label == \"the build of fix/W-21\"" "$T/leases-pv/leases.json" >/dev/null'
+check "once the slot is free the pass pushes, keeping the slot for that push's build under its PR's or branch's label" \
+  '[ "$(git --git-dir="$T/wb-origin.git" rev-parse refs/heads/fix/W-21)" = "$W21_HEAD" ] && grep -q "^W-21 " "$T/wb-spawns" && jq -e "(.leases[0].label | test(\"(@fix/W-21|#[0-9]+)\$\")) and .leases[0].ttl == 1200" "$T/leases-pv/leases.json" >/dev/null'
 q set W-21 state=done
 q set W-9 state=done; wb_fix W-10
 out=$(DESK_CONFIG="$T/config-gp.md" node "$B/pass.mjs" 2>&1)
@@ -588,7 +588,13 @@ q add R-1; q set R-1 state=running lane=A branch=fix/R-1 session_id=gone
 say "AUTOPILOT_PARK: $RQ" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["widen this PR", "split it into a follow-up"], "chose": "widen this PR", "category": "scope"}' > "$T/state-rc/logs/R-1.log"
 q add R-2; q set R-2 state=running lane=A branch=fix/R-2 session_id=gone
 say "AUTOPILOT_PARK: R-2: buy the paid plan (recommended), or stay on free?" 'AUTOPILOT_PARK_RECOMMENDS: {"options": ["buy the paid plan", "stay on free"], "chose": "buy the paid plan", "category": "money"}' > "$T/state-rc/logs/R-2.log"
-out=$(node "$B/pass.mjs" 2>&1)
+# DS-912: this pass runs with §4 Vercel set and the preview-build kind on, so each push it makes takes a unit.
+node -e 'const [f, g] = process.argv.slice(1), fs = require("fs"); fs.writeFileSync(g, fs.readFileSync(f, "utf8").replace(/^(\| Ticket key pattern .*\n)/m, "$1| Vercel | `acme` |\n"))' "$T/config.md" "$T/config-pv.md"
+printf '## Sizing\n\n| Key | Value | Why |\n|---|---|---|\n| `lease-kinds` | `preview-build=on` | test |\n| `preview-build-slots` | `3` | test |\n' > "$T/machine-pv.md"
+rm -rf "$T/leases-pv"
+out=$(DESK_CONFIG="$T/config-pv.md" DESK_MACHINE="$T/machine-pv.md" DESK_LEASE_DIR="$T/leases-pv" node "$B/pass.mjs" 2>&1)
+check "DS-912 a draft the pass opens takes a unit before its push, the unit takes the PR's number once it is open, and P-3's failed push gives its unit back" \
+  '[ "$(DESK_LEASE_DIR="$T/leases-pv" node "$B/leases.mjs" list --json 2>/dev/null | jq -r .label | sort | paste -sd, -)" = "acme/widgets#91" ] && grep -q "\"event\":\"release\".*acme/widgets@fix/P-3" "$T/leases-pv/"*.jsonl'
 check "DS-397 AC6 a branch adding nothing beyond a merged PR for its key is recorded done on that PR" \
   '[ "$(field D-1 state)" = "\"done\"" ] && [ "$(field D-1 result.pr)" = 88 ] && [ "$(field D-1 park)" = null ] && echo "$out" | grep -qF "D-1: its branch fix/D-1 adds nothing to main, and merged PR #88 (fix(x): D-1 add x) names it: recorded done on that PR, worktree and branch dropped"'
 check "DS-397 AC6 its worktree and branch are dropped" '[ ! -e "$T/wt/D-1" ] && ! git -C "$T/repo" rev-parse --verify -q refs/heads/fix/D-1 >/dev/null'

@@ -87,6 +87,12 @@ goes through, so you carry on from the steps you did not reach. **Any
 other exit is a refusal, not an outage** (a failed pre-push check, a non-fast-forward, a branch
 rule): it was not retried, so fix it or park on it as for any failed step.
 
+**Opening your PR takes the preview-build lease first too**, where §4 Vercel (`desk-env list
+vercel`) is set: `push-retry.mjs` takes it for each push, and before `gh pr create` you take it
+yourself and then put the PR's number on it, as `desk-pr` §4 *Before opening the PR, and before
+every push to it* says (off: as before; shadow: take it without waiting; on: wait for a unit, saying
+you wait on the preview build). Its `desk-env preview-slot` and `desk-env lease renew` are yours to run.
+
 ## 5. What the orchestrator owns, not you
 
 - **Your port and your database** are assigned in your briefing. Never the user's own dev-server

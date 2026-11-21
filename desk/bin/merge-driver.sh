@@ -550,6 +550,8 @@ disarm(){
 behind(){ # behind <n> <sha> <key>
   if [ "$UPDATE_PERM" = yes ]; then
     if [ -f "$SD/updated-$1-$2" ]; then log "#$1 BEHIND; update already requested at ${2:0:9} — waiting for it"; return; fi
+    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
+    preview_unit "$1" BEHIND "updating the branch" || return
     if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then touch "$SD/updated-$1-$2"; log "#$1 BEHIND -> gh pr update-branch (new head and fresh checks follow)"
     else log "#$1 BEHIND and update-branch refused: $(printf '%s' "$out" | tail -1)"; back_off "$1"; fi
   else

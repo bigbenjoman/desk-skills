@@ -239,28 +239,38 @@ const sh = (cmd, args, { fresh, ...opts } = {}) => {
   try { const out = execGit(cmd, args, { encoding: 'utf8', ...opts }).trim(); PR_READS.after(cmd, args, out); return out; }
   catch (e) { return opts.tolerant ? '' : `ERROR: ${e.message}`; }
 };
-// The preview-build slot a push of a ticket's branch takes first (desk-env previewSlotArgs), waiting for
-// none: a pass never blocks on a build. -> { wait } naming why the push waits for a later pass, else
-// { id } of the lease taken, or {} where there is nothing to take (no §4 Vercel team, the lease kind
-// off, or a lease store it cannot read, where leases.mjs says to go on without it). A push that fails
-// starts no build, so freeSlot gives its slot back.
+// The preview-build slot a push of ticket `t`'s `branch` takes first (desk-env previewSlotArgs), labelled
+// with the branch's open PR as GitHub reads it, or the branch before one exists (E.previewLabel), as
+// push-retry.mjs and rerun.sh label it, waiting for none: a pass never blocks on a build. -> { wait }
+// naming why the push waits for a later pass, else { id, renewed, expires } of the lease taken
+// (`renewed`: the PR's unit was already held, for a build that may still run), or {} where there is
+// nothing to take (no §4 Vercel team, the lease kind off, or a lease store it cannot read, where
+// leases.mjs says to go on without it). A push that fails starts no build, so freeSlot gives back a
+// unit it placed, unless another taker renewed it since, and keeps one it only renewed.
 const LEASE_ENV = { machineValue: E.machineValue, testLockSlots: E.testLockSlots, psRows: E.psRows };
-function previewSlot(t) {
-  if (DRY) return {};
-  const args = E.previewSlotArgs(`${t.key}: a push by the pass`, 0);
-  if (!args) return {};
+const leaseQuiet = (args) => leaseCli(args, { env: LEASE_ENV, out: () => {}, err: () => {} });
+function previewSlot(t, branch) {
+  if (DRY || !E.previewSlotArgs('', 0)) return {};
+  const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', branch, '--state', 'open', '--json', 'number', '-q', '.[0].number']);
+  const args = E.previewSlotArgs(E.previewLabel(GH_REPO, { pr: open.ok && /^\d+$/.test(open.out) ? open.out : null, branch }), 0);
   const said = [];
   const code = leaseCli(args, { env: LEASE_ENV, out: (s) => said.push(s), err: (s) => said.push(s) });
-  if (code === 3 || code === 75) return { wait: `the preview-build slot for ${args[2]} is taken (${String(said.at(-1) ?? 'refused').split('\n')[0]}), so the push waits for a later pass` };
-  return code === 0 ? { id: said.find((l) => /^L-\w+$/.test(l)) } : {};
+  if (code === 3 || code === 75) return { wait: `waits on the preview build for ${args[2]}: ${String(said.at(-1) ?? 'refused').replace(/^refused: /, '').split('\n')[0]}` };
+  if (code !== 0) return {};
+  const id = said.find((l) => /^L-\w+$/.test(l));
+  const listed = [];
+  if (id) leaseCli(['list', '--json'], { env: LEASE_ENV, out: (s) => listed.push(s), err: () => {} });
+  const expires = listed.flatMap((l) => l.split('\n')).map((l) => { try { return JSON.parse(l); } catch { return null; } }).find((l) => l?.id === id)?.expires;
+  return { id, renewed: said.some((l) => /^renewed /.test(l)), expires };
 }
 function freeSlot(slot) {
-  if (slot?.id) leaseCli(['release', slot.id], { env: LEASE_ENV, out: () => {}, err: () => {} });
+  if (slot?.id && !slot.renewed) leaseQuiet(['release', slot.id, ...(slot.expires ? ['--if-expires', slot.expires] : [])]);
 }
-// A push that went through renews its slot from now, for its build: the push itself may have taken minutes.
-function keepSlot(slot, branch) {
+// A push that went through renews its slot from now, for its build: the push itself may have taken
+// minutes. `pr`, once the pass has opened the PR, puts its number on a unit taken for the branch.
+function keepSlot(slot, pr = null) {
   const team = slot?.id && E.previewTeam();
-  if (team) leaseCli(['renew', slot.id, 'preview-build', team, '--ttl', String(E.PREVIEW_TTL_S), '--no-owner', '--label', `the build of ${branch}`], { env: LEASE_ENV, out: () => {}, err: () => {} });
+  if (team) leaseQuiet(['renew', slot.id, 'preview-build', team, '--ttl', String(E.PREVIEW_TTL_S), '--no-owner', ...(pr != null ? ['--label', E.previewLabel(GH_REPO, { pr })] : [])]);
 }
 // Like sh, but keeps what the command printed when it fails — a refusal's reason is the report.
 // `unreached`: a remote call that got no answer in time, or was not tried after one did not.
@@ -1241,10 +1251,10 @@ function pushParked(t, c) {
   if (rows.length) stop(`config §3 ${rows.map((k) => `${k} is "${E.permission(k)}"`).join(' and ')}`);
   if (c.branch !== t.branch) stop(`it names ${c.branch}, and the ticket's branch is ${t.branch ?? 'not recorded'}`);
   if (!t.worktree || !existsSync(t.worktree)) stop('it has no worktree to push from');
-  const slot = previewSlot(t);
-  if (slot.wait) return { holds: false, note: slot.wait };
+  const slot = previewSlot(t, c.branch);
+  if (slot.wait) return { holds: false, note: `it ${slot.wait}` };
   const push = shOut('git', ['-C', t.worktree, 'push', ...(c.lease ? [`--force-with-lease=${c.branch}:${c.lease}`] : []), 'origin', c.branch]);
-  if (push.ok) { keepSlot(slot, c.branch); return { holds: true }; }
+  if (push.ok) { keepSlot(slot); return { holds: true }; }
   freeSlot(slot);
   if (transientPush(push.out)) return { holds: false, note: 'GitHub still answers 5xx' };
   if (push.unreached || unreachedPush(push.out)) throw new Error(push.out.split('\n').pop());
@@ -1376,17 +1386,12 @@ function finishPush(t) {
   const open = shOut('gh', ['pr', 'list', '--repo', GH_REPO, '--head', t.branch, '--state', 'all', '--json', 'number', '-q', '.[0].number']);
   if (!open.ok) return false;
   if (/^\d+$/.test(open.out)) return left(`PR #${open.out} already exists from ${t.branch}`);
-  const slot = previewSlot(t);
-  if (slot.wait) {
+  const slot = previewSlot(t, t.branch);
+  const push = slot.wait ? null : shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
+  if (push) { if (push.ok) keepSlot(slot); else freeSlot(slot); }
+  if (slot.wait || (!push.ok && (push.unreached || transientPush(push.out)))) {
     q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${slot.wait}: left parked, and each pass tries the push until it can requeue it`);
-    return true;
-  }
-  const push = shOut('git', ['-C', wt, 'push', 'origin', t.branch]);
-  if (push.ok) keepSlot(slot, t.branch); else freeSlot(slot);
-  if (!push.ok && (push.unreached || transientPush(push.out))) {
-    q('set', t.key, `park.clears_when=${JSON.stringify({ kind: 'push-ok', branch: t.branch })}`);
-    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx'}: left parked, and each pass tries the push until it can requeue it`);
+    report.recovered.push(`${t.key}: parked on a refused push or draft PR with its PR body in the log, but ${slot.wait ? `the push ${slot.wait}` : (push.unreached ? `the push got no answer (${lastLine(push.out)})` : 'GitHub still answers 5xx')}: left parked, and each pass tries the push until it can requeue it`);
     return true;
   }
   if (!push.ok) return left(`git push origin ${t.branch} was refused (${lastLine(push.out)})`);
@@ -1397,6 +1402,7 @@ function finishPush(t) {
   const made = shOut('gh', ['pr', 'create', '--repo', GH_REPO, '--draft', '--base', DEFAULT_BRANCH, '--head', t.branch, '--title', title, '--body-file', bodyFile]);
   const n = /\/pull\/(\d+)/.exec(made.out)?.[1];
   if (!made.ok || !n) return left(`${t.branch} was pushed, but gh pr create failed (${lastLine(made.out)})`);
+  keepSlot(slot, n);
   q('set', t.key, ...doneOnPr(n, { draft: true, summary: `draft PR #${n} opened by the pass from its worker's PR body, after the worker's push or PR was refused` }));
   report.done.push(`${t.key}: PR #${n} pushed and opened as a draft by the pass from its worker's PR body; what else its park named is not done: ${shortQ(t.park.question)}`);
   return true;
@@ -2947,11 +2953,11 @@ function busyWorktree(t, { push = false } = {}) {
   if (!why || gitHeld(why)?.wt !== null || !own) return why;
   if (E.permission('git-push') !== 'yes') return `${why}: they are its last worker's, but config §3 git-push is "${E.permission('git-push')}", so the pass does not push them`;
   if (!push || DRY) return null;
-  const slot = previewSlot(t);
-  if (slot.wait) return `${why}: they are its last worker's, but ${slot.wait}`;
+  const slot = previewSlot(t, branch);
+  if (slot.wait) return `${why}: they are its last worker's, but the pass's push of them ${slot.wait}`;
   const pushed = shOut('git', ['-C', wt, 'push', 'origin', branch]);
   if (pushed.ok) {
-    keepSlot(slot, branch);
+    keepSlot(slot);
     report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker left, before its fix try`);
     return null;
   }
@@ -2970,7 +2976,7 @@ function busyWorktree(t, { push = false } = {}) {
     if (lost && (!lost.length || anyway)) {
       const forced = shOut('git', ['-C', wt, 'push', lease, 'origin', branch]);
       if (forced.ok) {
-        keepSlot(slot, branch);
+        keepSlot(slot);
         const how = anyway ? `origin's ${lost.length} commit(s) differ from it by their patch, but ${anyway}` : 'every commit origin had is in it by its patch';
         report.recovered.push(`${t.key}: pushed ${branch} to ${t.worker_head.sha.slice(0, 9)}, the head its last worker rebased it to, with ${lease}: ${how}`);
         return null;

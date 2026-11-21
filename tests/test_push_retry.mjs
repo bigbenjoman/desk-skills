@@ -4,7 +4,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseClearsWhen } from '../desk/bin/clears-when.mjs';
-import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
+import { TRANSIENT_EXIT, hookEnvFailure, parseArgs, pushWithRetry, refusalLine, slotLabel, transientPush, unreachedPush } from '../desk/bin/push-retry.mjs';
 import { scratch } from './scratch.mjs';
 
 let fails = 0;
@@ -86,7 +86,12 @@ sl = await slotted([NFF], { id: 'L-2' });
 t('a push git refuses gives the slot back: it started no build', [sl.code, sl.log], [1, ['take', 'give L-2']]);
 sl = await slotted([OK], { busy: 'held by #7' });
 t('a slot another build holds: exit 76, nothing pushed, naming the wait and then this same push',
-  [sl.code, sl.calls, /desk-env preview-slot --wait 540 'a push of b'/.test(sl.said[0]) && /then run this same push again: node \S+ origin b\./.test(sl.said[0])], [76, [], true]);
+  [sl.code, sl.calls, /desk-env preview-slot --wait 540 '@b \(wait\)'/.test(sl.said[0]) && /then run this same push again: node \S+ origin b\./.test(sl.said[0])], [76, [], true]);
+sl = await slotted([NFF], { id: 'L-3', renewed: true });
+t('DS-912 a push git refuses keeps a unit it only renewed: an earlier build of the PR may hold it', [sl.code, sl.log], [1, ['take']]);
+sl = await slotted([NFF], { id: 'L-4', expires: 'E' });
+t('DS-912 a refused push gives back its own unit only while unrenewed since', [sl.code, sl.log], [1, ['take', 'give L-4']]);
+t('DS-912 the label names the PR once one is open, else the branch', [slotLabel('fix/A-1', 'acme/web', '41'), slotLabel('fix/A-1', 'acme/web'), slotLabel('b')], ['acme/web#41', 'acme/web@fix/A-1', '@b']);
 sl = await slotted([OK], { why: 'the preview-build slot was not taken (store unreadable)' });
 t('a slot that could not be read: the push goes ahead anyway, saying so', [sl.code, sl.said], [0, ['push-retry: the preview-build slot was not taken (store unreadable): pushing anyway']]);
 r = await run(['origin', 'b'], [E5, E5, OK]);
@@ -182,8 +187,13 @@ t('and says nothing over a real failing check', r.said, []);
 // The CLI, against a stub git that prints $STUB_OUT and exits $STUB_RC.
 const dir = scratch('push-retry-');
 const log = join(dir, 'calls');
-writeFileSync(join(dir, 'git'), `#!/bin/sh\necho "$*" >> "${log}"\nprintf '%s\\n' "$STUB_OUT" >&2\nexit "$STUB_RC"\n`);
+// Only a push is stubbed: desk-env's reads of the repo (`where`, for the slot's label) run the real git.
+const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).stdout.trim();
+writeFileSync(join(dir, 'git'), `#!/bin/sh\n[ "$1" = push ] || exec "${realGit}" "$@"\necho "$*" >> "${log}"\nprintf '%s\\n' "$STUB_OUT" >&2\nexit "$STUB_RC"\n`);
 chmodSync(join(dir, 'git'), 0o755);
+// push-retry reads the branch's open PR with gh: the stub prints $STUB_PR (none by default).
+writeFileSync(join(dir, 'gh'), '#!/bin/sh\n[ -n "$STUB_PR" ] && printf \'%s\\n\' "$STUB_PR"\nexit 0\n');
+chmodSync(join(dir, 'gh'), 0o755);
 const bin = join(dirname(fileURLToPath(import.meta.url)), '../desk/bin/push-retry.mjs');
 const cli = (args, env) => spawnSync(process.execPath, [bin, ...args], { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, ...env } });
 // The pushes the stub ran: desk-env's own reads of the repo (for the preview slot) are not pushes.
@@ -211,14 +221,42 @@ t('the CLI refuses any other push, running nothing', [c.status, pushes().length]
   rmSync(ld, { recursive: true, force: true });
   deskEnv(['preview-slot', '--wait', '0', wait]);
   c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
-  t('the slot the named wait took is used, and renewed for the build once it pushes', [c.status, pushes().length, held()], [0, 1, ['the build of fix/A-1']]);
+  const own = wait.replace(/ \(wait\)$/, '');
+  t('the slot the named wait took is swapped for the push\'s own unit, kept for the build once it pushes', [c.status, pushes().length, held()], [0, 1, [own]]);
+  t('DS-912 with no PR open the label names the repo and branch', /@fix\/A-1$/.test(own), true);
+  // DS-912: a push that fails after its wait gives the slot back, since no build started.
+  rmSync(ld, { recursive: true, force: true });
+  deskEnv(['preview-slot', '--wait', '0', wait]);
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: ' ! [rejected] b -> b (non-fast-forward)', STUB_RC: '1' });
+  t('DS-912 a push refused after its wait leaves no unit behind', [c.status, held()], [1, []]);
+  // DS-912: a unit another taker renewed while the push ran is kept for that taker's build.
+  rmSync(ld, { recursive: true, force: true });
+  const placed = deskEnv(['preview-slot', '--wait', '0', own]).stdout.trim();
+  const exp = JSON.parse(deskEnv(['lease', 'list', '--json']).stdout.trim()).expires;
+  await new Promise((r) => setTimeout(r, 20));
+  deskEnv(['preview-slot', '--wait', '0', own]);
+  deskEnv(['lease', 'release', placed, '--if-expires', exp]);
+  t('DS-912 a release whose unit was renewed since keeps it', held(), [own]);
   // Another team's lease, or another repo's, labelled for a branch of the same name, is not this push's.
   rmSync(ld, { recursive: true, force: true });
   spawnSync(process.execPath, [join(dirname(bin), 'desk-env.mjs'), 'lease', 'acquire', 'preview-build', 'other-team', '--ttl', '600', '--no-owner', '--label', wait], { encoding: 'utf8', env: { ...process.env, ...envs } });
-  deskEnv(['preview-slot', '--wait', '0', 'a push of someone/else:fix/A-1']);
+  deskEnv(['preview-slot', '--wait', '0', 'someone/else@fix/A-1']);
   writeFileSync(log, '');
   c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0' });
   t('a lease of that label on another team, or for another repo of the branch name, is not taken for it', [c.status, pushes().length], [76, 0]);
+  // DS-912: with the branch's PR open, the push renews the PR's unit rather than waiting behind it.
+  rmSync(ld, { recursive: true, force: true });
+  // The label is `desk-env where`'s repo, then #<PR> once gh lists the branch's open PR.
+  const repoName = /^GH_REPO='([^']*)'/m.exec(deskEnv(['where']).stdout)?.[1];
+  t('DS-912 the branch label names the repo', own, `${repoName}@fix/A-1`);
+  const prLabel = `${repoName}#41`;
+  deskEnv(['preview-slot', '--wait', '0', prLabel]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: 'pushed', STUB_RC: '0', STUB_PR: '41' });
+  t('DS-912 AC2 a push to an open PR renews its own unit and pushes', [c.status, pushes().length, held()], [0, 1, [prLabel]]);
+  writeFileSync(log, '');
+  c = cli(['origin', 'fix/A-1'], { ...envs, STUB_OUT: ' ! [rejected] b -> b (non-fast-forward)', STUB_RC: '1', STUB_PR: '41' });
+  t('DS-912 and a refused push keeps that unit for the build it already covers', [c.status, held()], [1, [prLabel]]);
 }
 
 rmSync(dir, { recursive: true, force: true });

@@ -871,9 +871,14 @@ function configValuesIn(parsed, id) {
 // The preview-build slot (leases.mjs preview-build, one pool per §4 Vercel team, sized by the machine's
 // preview-build-slots row, default 1): a push that starts a preview build takes it first, so builds on
 // a shared builder never run at once and kill each other. It has no owner, since the build runs on
-// Vercel after the pusher exits, and lapses after PREVIEW_TTL_S, about one build. Null where §4 Vercel
-// names no team (unset, TODO or none): nothing to take.
-export const PREVIEW_TTL_S = 600;
+// Vercel after the pusher exits, and lapses after PREVIEW_TTL_S unless released. It is labelled by
+// previewLabel, and taking it again under the same label renews that unit (leases.mjs sameHolder), so
+// all of one PR's builds hold one unit. Null where §4 Vercel names no team (unset, TODO or none).
+export const PREVIEW_TTL_S = 1200;
+// How long `desk-env preview-slot` waits by default for the build in flight.
+export const PREVIEW_WAIT_S = 600;
+// A preview-build unit's label: `<owner/repo>#<PR>` once the PR exists, `<owner/repo>@<branch>` before.
+export const previewLabel = (repo, { pr = null, branch = '' } = {}) => (pr != null && pr !== '' ? `${repo}#${pr}` : `${repo}@${branch}`);
 export function previewTeam() {
   let v;
   try { v = configValues('vercel'); } catch { return null; }
@@ -2830,10 +2835,10 @@ if (isMain) {
         process.exit((await import('./leases.mjs')).leaseCli(args, { env: { machineValue, testLockSlots, psRows } }));
       case 'preview-slot': {
         // preview-slot [--wait <seconds>] <label>: take the preview-build slot before a push, waiting
-        // for the build in flight (default PREVIEW_TTL_S). Exit 0 taken or nothing to take, 3 refused, 75
+        // for the build in flight (default PREVIEW_WAIT_S). Exit 0 taken or nothing to take, 3 refused, 75
         // gave up waiting, as `lease acquire`.
         const i = args.indexOf('--wait');
-        const wait = i < 0 ? PREVIEW_TTL_S : Number(args[i + 1]);
+        const wait = i < 0 ? PREVIEW_WAIT_S : Number(args[i + 1]);
         if (!Number.isInteger(wait) || wait < 0) { console.error('usage: desk-env preview-slot [--wait <seconds>] <label>'); process.exit(2); }
         const label = args.filter((_, k) => i < 0 || (k !== i && k !== i + 1)).join(' ').trim() || 'a push';
         const lease = previewSlotArgs(label, wait);
