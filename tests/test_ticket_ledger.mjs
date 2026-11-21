@@ -141,6 +141,8 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   t('AC5 both lines are in the log', L.read(dir).events.length, 3);
   t('AC5 the state reflects it once', j(L.fold(dir).tickets['DS-1'].answered), '["q1"]');
   t('AC5 a record-mode retry of an event already folded is not checked again', L.append(dir, [{ ...ev('answered'), id: 'retry-1' }], { mode: 'record' }).length, 1);
+  t('AC5 the next append numbers past every retry', L.append(dir, [ev('answered', { qid: 'q2' })])[0].seq, 5);
+  t('AC5 and is read and folded', j([L.read(dir).events.length, L.fold(dir).tickets['DS-1'].answered]), j([5, ['q1', 'q2']]));
 }
 
 // AC6: a last line cut off mid-write: every whole event is returned, the cut line reported once.

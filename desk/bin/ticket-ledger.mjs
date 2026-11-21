@@ -196,13 +196,14 @@ export function reduce(events, base = null, { onIllegal = () => {} } = {}) {
   const seen = new Set(state.ids);
   const ids = [...state.ids];
   for (const ev of events) {
-    if (ev.seq <= state.seq || seen.has(ev.id)) continue;
+    if (ev.seq <= state.seq) continue;
+    state.seq = ev.seq; // a skipped retry still takes its seq, so the next append numbers past it
+    if (seen.has(ev.id)) continue;
     seen.add(ev.id);
     ids.push(ev.id);
     const { legal, from } = legality(state, ev);
     if (!legal) onIllegal(ev, from);
     apply(state, ev);
-    state.seq = ev.seq;
   }
   state.ids = ids.slice(-ID_WINDOW);
   return state;
