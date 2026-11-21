@@ -117,7 +117,8 @@ jobs:
           rc=${PIPESTATUS[0]}
           mkdir -p "$RUNNER_TEMP/result"
           failed=$(grep -m 1 '^failed suites:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
-          printf 'rc=%s\nfailed=%s\n' "$rc" "${failed# }" > "$RUNNER_TEMP/result/shard-$SHARD.txt"
+          flaked=$(grep -m 1 '^flaked:' "$RUNNER_TEMP/run.log" | cut -d: -f2-)
+          printf 'rc=%s\nfailed=%s\nflaked=%s\n' "$rc" "${failed# }" "${flaked# }" > "$RUNNER_TEMP/result/shard-$SHARD.txt"
           exit "$rc"
       - name: Save the result
         if: always()
@@ -159,8 +160,9 @@ jobs:
           for n in $(printf '%s' "$MATRIX" | jq -r '.include[].shard' 2>/dev/null); do
             f="results/shard-$n.txt"
             if [ ! -f "$f" ]; then echo "shard $n/$of did not finish: cancelled, timed out or stopped before its suites ran"; bad=1; continue; fi
-            rc=$(sed -n 's/^rc=//p' "$f"); failed=$(sed -n 's/^failed=//p' "$f")
+            rc=$(sed -n 's/^rc=//p' "$f"); failed=$(sed -n 's/^failed=//p' "$f"); flaked=$(sed -n 's/^flaked=//p' "$f")
             if [ "$rc" = 0 ]; then echo "shard $n/$of passed"; else echo "shard $n/$of failed: ${failed:-exit $rc}"; bad=1; fi
+            [ -z "$flaked" ] || echo "shard $n/$of flaked (failed, then passed its retry): $flaked"
           done
           [ "$SHARDS" = success ] || { echo "shards: $SHARDS"; bad=1; }
           exit "$bad"

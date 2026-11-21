@@ -14,7 +14,7 @@ PASS=0; FAIL=0
 check(){ if [ -n "${2:-}" ] && eval "$2"; then PASS=$((PASS+1)); echo "ok   $1"; else FAIL=$((FAIL+1)); echo "FAIL $1"; echo "     out: ${out:-}"; fi; }
 
 R="$T/repo/tests"; mkdir -p "$R"
-for f in run.sh suite_env.sh plan_shards.mjs scope_sections.mjs; do cat "$S/$f" > "$R/$f"; done
+for f in run.sh ci_shard.sh suite_env.sh plan_shards.mjs scope_sections.mjs; do cat "$S/$f" > "$R/$f"; done
 printf '{\n  "seconds": {\n    "test_a.sh": 1,\n    "test_b.sh": 50,\n    "test_c.sh": 10,\n    "test_d.sh": 30\n  }\n}\n' > "$R/suite_durations.json"
 # test_p1..p5: each waits until four run at once (or one has finished), then writes how many it saw.
 for p in 1 2 3 4 5; do cat > "$R/test_p$p.sh" <<'EOF'
@@ -30,6 +30,12 @@ for x in a:0.1 b:0.5 c:2 d:1.5; do
 done
 printf 'i=0; while [ $i -lt 300000 ]; do i=$((i + 1)); done; echo "ok burn"\n' > "$R/test_burn.sh"
 printf 'echo "ok one"\n' > "$R/test_one.sh"
+# Retry probes, each logging a line to $RUNS per run: test_flaky fails its first run only (its flag file
+# says it has run), test_broken always fails, and test_compare_pass.sh, the stand-in, fails once too.
+printf 'echo flaky >> "$RUNS"\nif [ -e "$FLAG" ]; then echo "ok flaky"; else : > "$FLAG"; echo "FAIL flaky first run"; exit 1; fi\n' > "$R/test_flaky.sh"
+printf 'echo broken >> "$RUNS"\necho "ok broken half"; echo "FAIL broken run $(grep -c broken "$RUNS")"\n' > "$R/test_broken.sh"
+printf 'echo compare >> "$RUNS"\nif [ -e "$FLAG.c" ]; then echo "ok compare"; else : > "$FLAG.c"; echo "FAIL compare first run"; fi\n' > "$R/test_compare_pass.sh"
+printf 'echo pass >> "$RUNS"; echo "ok pass"\n' > "$R/test_pass.sh"
 
 # The stub desk-env prints $CAP for test-cap, and exits 3 (unset) without it.
 STUB="$T/stub"; mkdir -p "$STUB"
@@ -96,9 +102,52 @@ checks(){ B=$1; v=$("$B" -c 'echo "${BASH_VERSINFO[0]}"'); at="(bash $v)"
   n=$(wc -l < "$LOGF")
   out=$(TEST_RUNS_LOG='' "$B" "$R/run.sh" --no-hook-test -j 1 test_one.sh 2>&1)
   check "AC6 $at a run with TEST_RUNS_LOG empty (a run.sh a suite starts) records nothing" '[ "$(wc -l < "$LOGF")" = "$n" ]'
+
+  # A failed suite runs once more, under -j 1 and -j 2 alike; test_compare_pass.sh never does.
+  for j in 1 2; do
+    export RUNS="$T/runs$v-$j" FLAG="$T/flag$v-$j"; : > "$RUNS"; rm -f "$FLAG" "$FLAG.c"
+    out=$("$B" "$R/run.sh" --no-hook-test -j $j test_flaky.sh test_pass.sh 2>&1); rc=$?
+    check "DS-926 AC1 $at -j $j a suite failing then passing runs twice, the run passes and the summary names it" \
+      '[ $rc -eq 0 ] && [ "$(grep -c flaky "$RUNS")" = 2 ] && printf "%s\n" "$out" | grep -qx "flaked: test_flaky.sh" && printf "%s\n" "$out" | grep -qx "all passed: 2 checks"'
+    check "DS-926 AC1 $at -j $j and its block prints the first run's failure" \
+      'printf "%s\n" "$out" | grep -A 10 "^== test_flaky.sh" | grep -qx "FAIL flaky first run" && printf "%s\n" "$out" | grep -A 10 "^== test_flaky.sh" | grep -qx "exit 1"'
+    check "DS-926 AC5 $at -j $j a passing suite runs once" '[ "$(grep -c pass "$RUNS")" = 1 ]'
+    : > "$RUNS"
+    out=$("$B" "$R/run.sh" --no-hook-test -j $j test_broken.sh test_pass.sh 2>&1); rc=$?
+    check "DS-926 AC2 $at -j $j a suite failing twice fails the run, named, with both runs' reports" \
+      '[ $rc -ne 0 ] && [ "$(grep -c broken "$RUNS")" = 2 ] && printf "%s\n" "$out" | grep -qx "failed suites: test_broken.sh" && printf "%s\n" "$out" | grep -qx "FAIL broken run 1" && printf "%s\n" "$out" | grep -qx "FAIL broken run 2" && ! printf "%s\n" "$out" | grep -q "^flaked:"'
+    : > "$RUNS"
+    out=$("$B" "$R/run.sh" --no-hook-test -j $j test_compare_pass.sh 2>&1); rc=$?
+    check "DS-926 AC3 $at -j $j a failed test_compare_pass.sh is not retried and fails the run" \
+      '[ $rc -ne 0 ] && [ "$(grep -c compare "$RUNS")" = 1 ] && printf "%s\n" "$out" | grep -qx "failed suites: test_compare_pass.sh"'
+  done
 }
 
 checks "$BASH"
+# The flaked suite in a CI shard's result file: tests.yml's own step scripts, run as CI runs them: the shard's "Run tests" step in the scratch
+# repo writes its result file, and the tests job's "Every shard passed" step reads it back.
+W="$S/../.github/workflows/tests.yml"
+# The `run: |` body of the step named $1 in tests.yml, unindented.
+step_body(){ node -e '
+const [f, name] = process.argv.slice(1); const L = require("fs").readFileSync(f, "utf8").split("\n");
+const at = (l) => l.search(/\S/); const i = L.findIndex((l) => l.trim() === `- name: ${name}`);
+if (i < 0) process.exit(2);
+let j = i + 1; while (j < L.length && !/^\s+run: \|$/.test(L[j])) { if (L[j].trim().startsWith("- ") && at(L[j]) <= at(L[i])) process.exit(2); j++; }
+const body = []; for (let k = j + 1; k < L.length && (L[k].trim() === "" || at(L[k]) > at(L[j])); k++) body.push(L[k]);
+const d = Math.min(...body.filter((l) => l.trim()).map(at)); console.log(body.map((l) => l.slice(d)).join("\n"));' "$W" "$1"; }
+shard_body=$(step_body "Run tests"); tests_body=$(step_body "Every shard passed")
+# Runs the shard step on suites $1 into $RT, then the tests job's step on its result file.
+ci_run(){ RT="$T/ci$2"; mkdir -p "$RT/job"; ln -s "$RT/result" "$RT/job/results"
+  export RUNS="$T/ciruns$2" FLAG="$T/ciflag$2"; : > "$RUNS"; rm -f "$FLAG"
+  ( cd "$T/repo" && RUNNER_TEMP=$RT SHARD=1 OF=1 SUITES=$1 HOOK=false bash -e -c "$shard_body" ) >/dev/null 2>&1; src=$?
+  res=$(cat "$RT/result/shard-1.txt" 2>/dev/null)
+  out=$(cd "$RT/job" && PLAN=success BASH32=success SHARDS=success MATRIX='{"include":[{"shard":1}]}' bash -e -c "$tests_body" 2>&1); trc=$?; }
+ci_run "test_flaky.sh test_pass.sh" 1
+check "DS-926 AC4 a shard whose suite flaked writes it into its result file, and the tests job passes and names it" \
+  '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qx "flaked=test_flaky.sh" && printf "%s\n" "$res" | grep -qx "rc=0" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qx "shard 1/1 passed" && printf "%s\n" "$out" | grep -qx "shard 1/1 flaked (failed, then passed its retry): test_flaky.sh"'
+ci_run "test_pass.sh" 2
+check "DS-926 AC4 a shard with no flake writes an empty flaked line, and the tests job names none" \
+  '[ $src -eq 0 ] && printf "%s\n" "$res" | grep -qx "flaked=" && [ $trc -eq 0 ] && printf "%s\n" "$out" | grep -qx "shard 1/1 passed" && ! printf "%s\n" "$out" | grep -q flaked'
 # AC7: the same under bash 3.2.
 case "$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}"' 2>/dev/null)" in
   3) [ "$(/bin/bash -c 'echo "$BASH_VERSION"')" = "$BASH_VERSION" ] || checks /bin/bash ;;
