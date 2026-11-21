@@ -332,6 +332,17 @@ t('a computed include in a flow matrix that opens below its key is reported',
 t('a computed include in a flow matrix continued at its key\'s own indent is reported',
   linted(inlineMatrix(`{ label: [voicepa-linux-arm64],\n      include: "${fromNeeds}" }`), VPA), 'm@8 m@12');
 t('a computed include item in a flow list below its key is reported', linted(computedInc(`\n          [ "${fromNeeds}" ]`), VPA), 'm@10 m@14');
+const aliased = (include) => wf(`  a:
+    strategy:
+      matrix:
+        label: [ubuntu-latest]
+        include: &extra [{ label: self-hosted }]
+    runs-on: \${{ matrix.label }}
+    steps: [{ run: 'true' }]
+${computedInc(include).split('\n').slice(3).join('\n')}`);
+t('an include written as a YAML alias is reported', linted(aliased('*extra'), VPA), 'm@16 m@20');
+t('an include item written as a YAML alias is reported', linted(aliased('\n          - *extra'), VPA), 'm@17 m@21');
+t('an include entry merged in with a YAML merge key is reported', linted(aliased('\n          - <<: *extra'), VPA), 'm@17 m@21');
 const hostedInc = computedInc(fromNeeds).replace('[voicepa-linux-arm64]', '[ubuntu-latest]');
 t('AC9 with nothing declared, a computed include is read as before', linted(hostedInc), '');
 t('with labels declared, a computed include beside a hosted axis is reported', linted(hostedInc, VPA), 'm@9 m@13');

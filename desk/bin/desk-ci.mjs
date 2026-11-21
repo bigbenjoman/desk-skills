@@ -264,9 +264,9 @@ const computedFlow = (v) => {
   while (end < t.length && nesting(t.slice(0, end)).brackets > 0) end++;
   return flowItems(t.slice(0, end)).some(isExpr);
 };
-// Whether the matrix has an include of its own that it computes (`include: ${{ }}`, or an include
-// item that is one): that can add any value to any key, so no key's values can be read here. An
-// include field inside an axis value is not the matrix's, and an exclude only removes.
+// Whether the matrix has an include of its own that it computes (an expression anywhere in it) or
+// that comes from elsewhere (a YAML alias): that can add any value to any key, so no key's values can
+// be read here. An include field inside an axis value is not the matrix's, and an exclude only removes.
 const computedInclude = (lines) => {
   const mi = lines.findIndex((l) => keyOf(l)?.key === 'matrix');
   if (mi < 0) return false;
@@ -280,6 +280,11 @@ const computedInclude = (lines) => {
       if (nesting(flow).braces <= 0) break;
       if (!l.blank && !l.scalar) flow += ` ${l.text}`;
     }
+  }
+  // A YAML alias (`*name`) or merge key (`<<:`) brings in entries written elsewhere in the file, which
+  // this matrix's own text cannot show, so it is read as unreadable too.
+  if (/(^|[\s,[{:-])\*[\w-]|<<\s*:/.test(flow)) return true;
+  if (flow.startsWith('{')) {
     const text = `matrix: ${flow}`;
     return [...text.matchAll(/[{,]\s*["']?include["']?\s*:/g)]
       .some((m) => isFlowAxis(text, m.index) && computedFlow(text.slice(m.index + m[0].length)));
