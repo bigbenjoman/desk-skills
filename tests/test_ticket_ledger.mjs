@@ -1,5 +1,5 @@
 // suite: ticket ledger (typed events in one append-only log per repo, the reducer, the projection and the diff)
-import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import * as L from '../desk/bin/ticket-ledger.mjs';
@@ -131,6 +131,8 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   t('AC4 the illegal event is written', r.events.at(-1).id, w.id);
   t('AC4 the read reports it as one illegal transition', j(r.illegal.map((x) => [x.seq, x.key, x.type, x.from])), j([[4, 'DS-1', 'spawned', 'done']]));
   t('AC4 and the fold applies it', L.fold(dir).tickets['DS-1'].state, 'running');
+  t('AC4 a read narrowed to its batch reports it too', L.read(dir, { batch: 'B1' }).illegal.length, 1);
+  t('AC4 and one narrowed to another batch does not', L.read(dir, { batch: 'B2' }).illegal.length, 0);
 }
 
 // AC5: an event appended twice with the same id is folded once.
@@ -177,6 +179,10 @@ t('a batch event is never illegal', L.legality(L.emptyState(), ev('base_red')).l
   t('AC7 a read from the start still returns every event', j(L.read(dir).events.map((e) => e.seq)), j(all.map((e) => e.seq)));
   t('AC7 a read since the snapshot reads the tail', j(L.read(dir, { since: 11 }).events.map((e) => e.seq)), '[12,13]');
   t('AC7 the seq keeps rising after a rotation', L.append(dir, [ev('archived')], { snapshotEvery: 5 })[0].seq, 14);
+  all.push(...L.read(dir, { since: 13 }).events);
+  writeFileSync(p.snapshot, '{"v":1,"state":{"seq":1');
+  t('AC7 a snapshot cut off mid-write is replayed from the start', j(L.fold(dir)), j(L.reduce(all)));
+  t('AC7 and the read still returns every event', L.read(dir).events.length, 14);
 }
 
 // AC8: a batch's events project to queue.json's shape.
@@ -206,6 +212,12 @@ const env = (seq, e, atTime = `2026-11-20T10:00:${String(seq).padStart(2, '0')}Z
   t('AC8 a projection-only field never does', 'log_bytes' in q.tickets['DS-1'], false);
   const reseeded = L.reduce([{ ...seed('DS-1', { key: 'DS-1', state: 'queued' }, 9), id: 'reseed' }], s).tickets['DS-1'];
   t('AC8 a ticket seeded again is what its fields say, nothing kept from before', j([reseeded.state, reseeded.park, reseeded.holds]), j(['queued', null, []]));
+  const onDisk = { batch: 'B1', version: 7, concurrency: 2, base: 'feature/x', tickets: {} };
+  t('AC8 the batch\'s own fields come from the queue on disk', j(L.project(s, 'B1', onDisk)), j({ batch: 'B1', concurrency: 2, base: 'feature/x', tickets: q.tickets }));
+  const unheld = { key: 'DS-5', state: 'queued', held_by: null };
+  const sq = L.project(L.reduce([seed('DS-5', unheld, 1)]), 'B1', { batch: 'B1', tickets: {} });
+  t('AC8 an unheld ticket keeps held_by null', sq.tickets['DS-5'].held_by, null);
+  t('AC8 so a seeded queue differs from its projection only by the holds list', j(L.diffQueues({ batch: 'B1', tickets: { 'DS-5': unheld } }, sq).map((d) => d.field)), '["holds"]');
   t('AC8 a moved ticket leaves its old batch', Object.keys(L.project(L.reduce([env(8, ev('moved', { from: 'B1', to: 'B2' }))], s), 'B1').tickets).join(), 'DS-2');
 }
 

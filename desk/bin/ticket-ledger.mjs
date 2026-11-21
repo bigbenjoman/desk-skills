@@ -12,13 +12,13 @@
 //
 // Once the live file holds SNAPSHOT_EVERY events, the folded state goes to ledger/snapshot.json and
 // those events move to events.<seq>.jsonl.gz beside it; a fold is the snapshot plus the live file.
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, writeSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { lock, unlock, writeJsonAtomic } from './dir-lock.mjs';
+import { lock, unlock } from './dir-lock.mjs';
 import { STATES, FINISHED } from './queue-writer.mjs';
-import { same } from './queue-store.mjs';
+import { batchFields, keys as keysOf, same } from './queue-store.mjs';
 
 export const SNAPSHOT_EVERY = 1000;
 export const LOCK_WAIT_MS = 2000;
@@ -124,7 +124,6 @@ export function invalid(ev) {
 // --- the reducer ---
 
 export const emptyState = () => ({ v: 1, seq: 0, tickets: {}, batches: {}, ids: [] });
-const keysOf = (held) => String(held ?? '').split('|').filter(Boolean);
 const newTicket = (key) => ({ key, batch: null, state: null, archived: false, fields: {}, park: null, holds: [], pr: null, merge: null,
   questions: [], answered: [], waits: {}, automerge: null, spawn: null });
 const withoutProjectionOnly = (fields) => Object.fromEntries(Object.entries(fields).filter(([f]) => !PROJECTION_ONLY.includes(f)));
@@ -211,19 +210,22 @@ export function reduce(events, base = null, { onIllegal = () => {} } = {}) {
 
 // Batch `batch`'s queue.json shape from a folded state: each live ticket, in the order the log first
 // named it, with its fields, its state, park, holds as a list, PR and merge record. Archived tickets
-// and those moved to another batch are left out.
-export function project(state, batch) {
+// and those moved to another batch are left out. No event records the batch's own fields
+// (concurrency, base, …), so they are carried over from `current`, the queue.json on disk, as a
+// rebuild carries the projection-only fields.
+export function project(state, batch, current = null) {
   const tickets = {};
   for (const t of Object.values(state.tickets)) {
     if (t.batch !== batch || t.archived) continue;
     const out = { ...t.fields, key: t.key, state: t.state, holds: [...t.holds] };
     if (t.park != null || 'park' in t.fields) out.park = t.park;
-    if (t.holds.length || 'held_by' in t.fields) out.held_by = t.holds.join('|');
+    // Unheld is null, as every writer that releases a hold leaves it.
+    if (t.holds.length || 'held_by' in t.fields) out.held_by = t.holds.length ? t.holds.join('|') : null;
     if (t.pr != null) out.result = { ...(t.fields.result ?? {}), pr: t.pr };
     if (t.merge) { out.merge = { ...t.merge }; out.merged_at = t.merge.at ?? t.fields.merged_at; }
     tickets[t.key] = out;
   }
-  return { batch, tickets };
+  return { ...batchFields(current), batch, tickets };
 }
 
 // Every field that differs between queues `before` and `after`: { ticket (null for a batch field),
@@ -235,8 +237,7 @@ export function diffQueues(before, after) {
   const cmp = (ticket, a, b) => {
     for (const field of fieldsOf(a, b)) if (!same(a?.[field], b?.[field])) out.push({ ticket, field, before: a?.[field], after: b?.[field] });
   };
-  const top = (q) => Object.fromEntries(Object.entries(q ?? {}).filter(([k]) => k !== 'tickets' && k !== 'version'));
-  cmp(null, top(before), top(after));
+  cmp(null, batchFields(before), batchFields(after));
   const bt = before?.tickets ?? {}; const at = after?.tickets ?? {};
   for (const k of new Set([...Object.keys(bt), ...Object.keys(at)])) cmp(k, bt[k], at[k]);
   return out;
@@ -257,10 +258,14 @@ function parseLines(text, file, torn) {
   return out;
 }
 
+// The snapshot's state: null when there is none, false when it does not read as one, so the reader
+// replays from the start instead.
 const readSnapshot = (paths) => {
   if (!existsSync(paths.snapshot)) return null;
-  const s = JSON.parse(readFileSync(paths.snapshot, 'utf8'));
-  return s?.state && Number.isInteger(s.state.seq) ? s.state : null;
+  try {
+    const s = JSON.parse(readFileSync(paths.snapshot, 'utf8'));
+    return s?.state && Number.isInteger(s.state.seq) ? s.state : false;
+  } catch { return false; }
 };
 const rotated = (paths) => (existsSync(paths.dir) ? readdirSync(paths.dir) : [])
   .map((f) => /^events\.(\d+)\.jsonl\.gz$/.exec(f)).filter(Boolean)
@@ -269,13 +274,17 @@ const liveText = (paths) => (existsSync(paths.events) ? readFileSync(paths.event
 
 // The log as { base, events, torn, gaps }: base the snapshot's state (null when reading from the
 // start), events every whole envelope after it in seq order, torn every line that did not parse, gaps
-// every break in the seq run ({ after, next }).
-function load(paths, { fromStart = false } = {}) {
+// every break in the seq run ({ after, next }). With `since`, it reads from the start when the
+// snapshot is past that seq. Readers take no lock, so the live file is read before the snapshot and
+// the archives: a rotation in between only adds a snapshot or archive covering lines already read.
+function load(paths, { since } = {}) {
+  const live = liveText(paths);
   const snap = readSnapshot(paths);
+  const fromStart = snap === false || (since !== undefined && (!snap || since < snap.seq));
   const base = fromStart ? null : snap;
   const torn = [];
   const files = fromStart ? rotated(paths).map((r) => ({ file: r.file, text: gunzipSync(readFileSync(r.file)).toString('utf8') })) : [];
-  files.push({ file: paths.events, text: liveText(paths) });
+  files.push({ file: paths.events, text: live });
   let last = base?.seq ?? 0;
   const events = [];
   const gaps = [];
@@ -292,13 +301,11 @@ function load(paths, { fromStart = false } = {}) {
 
 // The events of the log, oldest first: { events, torn, gaps, illegal }. With `batch`, only that
 // batch's; with `since`, only those after that seq (from the snapshot on, unless since is before it).
-// illegal lists each event read that was an illegal transition, as { seq, id, key, type, from }.
+// illegal lists each event read that was an illegal transition, as { seq, id, batch, key, type, from }.
 export function read(repoDir, { batch, since = 0 } = {}) {
-  const paths = ledgerPaths(repoDir);
-  const snap = readSnapshot(paths);
-  const { base, events, torn, gaps } = load(paths, { fromStart: !snap || since < snap.seq });
+  const { base, events, torn, gaps } = load(ledgerPaths(repoDir), { since });
   const illegal = [];
-  reduce(events, base, { onIllegal: (ev, from) => illegal.push({ seq: ev.seq, id: ev.id, key: ev.key, type: ev.type, from }) });
+  reduce(events, base, { onIllegal: (ev, from) => illegal.push({ seq: ev.seq, id: ev.id, batch: ev.batch, key: ev.key, type: ev.type, from }) });
   const keep = (ev) => ev.seq > since && (batch === undefined || ev.batch === batch);
   return { events: events.filter(keep), torn, gaps, illegal: illegal.filter(keep) };
 }
@@ -353,17 +360,25 @@ export function append(repoDir, events, { mode = 'shadow', by, now = () => new D
   } finally { unlock(paths.lock); }
 }
 
+// Writes `data` to `file` through a temporary file fsynced before the rename, so a power cut leaves
+// the old file or the whole new one.
+function writeDurable(file, data) {
+  const fd = openSync(`${file}.tmp`, 'w');
+  try { writeSync(fd, data); fsyncSync(fd); } finally { closeSync(fd); }
+  renameSync(`${file}.tmp`, file);
+}
+const syncDir = (dir) => { const fd = openSync(dir, 'r'); try { fsyncSync(fd); } finally { closeSync(fd); } };
+
 // Folds the log into snapshot.json and moves the events it holds to events.<seq>.jsonl.gz, with the
-// ledger lock held. Each step leaves a log that folds the same if the next never happens: the archive
-// is written first, the snapshot second, and the live file is emptied last.
+// ledger lock held. Each step leaves a log that folds the same if the next never happens, a power cut
+// included: the archive is written first, the snapshot second, both reach the disk, and the live
+// file is emptied last.
 function snapshot(paths) {
   const { base, events } = load(paths);
   if (!events.length) return;
   const state = reduce(events, base);
-  const gz = join(paths.dir, `events.${state.seq}.jsonl.gz`);
-  writeFileSync(`${gz}.tmp`, gzipSync(events.map((ev) => `${JSON.stringify(ev)}\n`).join('')));
-  renameSync(`${gz}.tmp`, gz);
-  writeJsonAtomic(paths.snapshot, { v: 1, at: new Date().toISOString(), state });
-  writeFileSync(`${paths.events}.tmp`, '');
-  renameSync(`${paths.events}.tmp`, paths.events);
+  writeDurable(join(paths.dir, `events.${state.seq}.jsonl.gz`), gzipSync(events.map((ev) => `${JSON.stringify(ev)}\n`).join('')));
+  writeDurable(paths.snapshot, `${JSON.stringify({ v: 1, at: new Date().toISOString(), state }, null, 2)}\n`);
+  syncDir(paths.dir);
+  writeDurable(paths.events, '');
 }
