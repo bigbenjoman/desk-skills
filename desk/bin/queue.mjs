@@ -265,7 +265,7 @@ function repointRequeued(t, key) {
     return `; its worktree, branch or recorded PR changed while its PR #${pre.pr.number} was being read, so its branch ${t.branch} was left as it was`;
   }
   const moved = repointToPr({ worktree: t.worktree, branch: t.branch, pr: pre.pr, fetchError: pre.fetchError });
-  if (moved?.why) return `; its branch ${t.branch} was not re-pointed: ${moved.why}`;
+  if (moved?.why) return `; left on its branch ${t.branch}: ${moved.why}`;
   if (!moved?.branch) return '';
   const was = t.branch;
   t.branch = moved.branch;

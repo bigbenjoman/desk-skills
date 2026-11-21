@@ -203,7 +203,7 @@ prs([], view(PR));
 queue(rq3, parkedB({ draft_pr: 861 }));
 const rr3 = requeue();
 t('RQ AC3 commits outside the PR leave the branch and worktree as they were', `${rr3.status} ${queued().state} ${queued().branch} ${git(rq3, 'branch', '--show-current')}`, '0 triaged task/K-1-old task/K-1-old');
-t('RQ AC3 the requeue line names those commits', rr3.stdout.includes(`not re-pointed`) && rr3.stdout.includes(`${shaRq3} work only on the old branch`), true);
+t('RQ AC3 the requeue line names those commits', rr3.stdout.includes('left on its branch task/K-1-old') &&rr3.stdout.includes(`${shaRq3} work only on the old branch`), true);
 
 // RQ AC4: no recorded PR (an unrecorded one naming the ticket is not read), or a recorded one no longer open.
 const rq4 = fixture();
