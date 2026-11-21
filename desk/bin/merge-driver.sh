@@ -64,6 +64,9 @@
 #                                            sends it to a fix worker (fix-tries.mjs)
 #   - BEHIND                                 updated with `gh pr update-branch` where §3 pr-update-branch
 #                                            is yes (once per head), else parked for a person
+#   - UNKNOWN past the limit                 no mergeability answer (a wedged merge ref): updated once with
+#                                            `gh pr update-branch` where §3 pr-update-branch is yes, then
+#                                            noted for the person (unknown_age)
 #   - fails §4 Merged-tree check             last before the merge, its head merged into the base's head
 #                                            in a throwaway checkout must pass the check (base-sync.mjs
 #                                            prTreeCheck), once per head and base commit. GitHub reports
@@ -138,7 +141,9 @@
 #   MERGE_DRIVER_ONE_LOOP=1      one full loop (join, release, at most one merge), then exit instead of
 #                                sleeping: 0, or 1 when the PR list could not be read
 #   MERGE_DRIVER_GREEN_SECS=<n>  how long a head must stay green before it merges (default 60)
-#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer at a head before the queue asks the person (default 3600)
+#   MERGE_DRIVER_UNKNOWN_SECS=<n>  how long a ready PR may have no mergeability answer before its one
+#                                branch update, and again after it before the queue asks the person
+#                                (default DESK_UNKNOWN_SECS, which the pass's undraft reads too, else 1800)
 #
 # Exit codes: 2 bad arguments · 1 not permitted, missing tool or config row, another driver running, or
 # gh signed out (a PR list it refuses for that is logged and stops the driver, never read as empty).
@@ -959,22 +964,45 @@ NODE
 
 # A ready PR GitHub has no mergeability answer for (UNKNOWN) is aged from the loop that first saw it at
 # that head (`unknown-<n>`: the head and that time). A merge ref can wedge: no answer for hours, and no
-# run started for the head. Past UNKNOWN_LIMIT_SECS the queue asks the person for a new commit, which
-# gives it a fresh merge ref. Any answer, or another head, starts it again and clears the note.
-UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-3600}"
+# run started for the head. Past UNKNOWN_LIMIT_SECS its branch is updated from its base once where §3
+# pr-update-branch is yes (`unknown-repair-<n>`: when the spell began, and `updated` or `refused`), and
+# past the limit again at the new head the queue asks the person for a new commit, which gives it a
+# fresh merge ref. Any answer starts it again and clears the note; so does another head with no repair.
+UNKNOWN_LIMIT_SECS="${MERGE_DRIVER_UNKNOWN_SECS:-${DESK_UNKNOWN_SECS:-1800}}"
 unknown_age(){ # unknown_age <n> <sha> <key> <merge state>
-  local f="$SD/unknown-$1" was="" at="" now age
+  local f="$SD/unknown-$1" r="$SD/unknown-repair-$1" was="" at="" first="" tried="" now age total how out
   if [ "$4" != UNKNOWN ]; then
-    if [ -f "$f" ]; then rm -f "$f"; blocked_clear "$3" "merge ref:"; fi
+    if [ -f "$f" ] || [ -f "$r" ]; then rm -f "$f" "$r"; blocked_clear "$3" "merge ref:"; fi
     return 0
   fi
   read -r was at < "$f" 2>/dev/null || true
+  if [ -f "$r" ]; then read -r first tried < "$r" || true; fi
   now=$(date +%s)
-  if [ "$was" != "$2" ] || [ -z "$at" ]; then printf '%s %s\n' "$2" "$now" > "$f"; blocked_clear "$3" "merge ref:"; return 0; fi
-  age=$(( now - at ))
+  if [ "$was" != "$2" ] || [ -z "$at" ]; then
+    printf '%s %s\n' "$2" "$now" > "$f"
+    [ -n "$tried" ] || blocked_clear "$3" "merge ref:"
+    return 0
+  fi
+  age=$(( now - at )); total=$(( now - ${first:-$at} ))
   [ "$age" -ge "$UNKNOWN_LIMIT_SECS" ] || return 0
-  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( age / 60 )) minutes — its merge ref looks wedged; the person pushes a new commit"
-  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( age / 60 )) minutes, and starts no run for that head: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
+  if [ -z "$tried" ] && [ "$UPDATE_PERM" = yes ]; then
+    # The update is a new head, so a new preview build: it takes the PR's preview-build unit first (rerun.sh).
+    preview_unit "$1" "with no mergeability answer for $(( total / 60 )) minutes" "updating the branch" || return 0
+    if out=$(gh pr update-branch "$1" --repo "$REPO" 2>&1); then
+      printf '%s updated\n' "$at" > "$r"; printf '%s %s\n' "$2" "$now" > "$f"
+      log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged; gh pr update-branch once for a fresh merge ref"
+      return 0
+    fi
+    printf '%s refused\n' "$at" > "$r"; tried=refused
+    log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes, and gh pr update-branch was refused: $(printf '%s' "$out" | tail -1)"
+  fi
+  case "$tried" in
+    updated) how="; desk already updated its branch from its base once, and GitHub still has no answer" ;;
+    refused) how="; desk's one repair, updating its branch from its base, was refused" ;;
+    *) how="; no repair was permitted, as §3 pr-update-branch is $UPDATE_PERM" ;;
+  esac
+  log "#$1 at ${2:0:9} has had no mergeability answer from GitHub for $(( total / 60 )) minutes — its merge ref looks wedged$how; the person pushes a new commit"
+  queue_note "$3" "merge ref: GitHub has not worked out whether #$1 conflicts with its base at ${2:0:9} for $(( total / 60 )) minutes, and starts no run for that head$how: push a new commit (an empty one will do) for a fresh merge ref, or open a new PR from its branch"
 }
 
 try_pr(){ # try_pr <n> <key> [epic] -> 0 when it merged
